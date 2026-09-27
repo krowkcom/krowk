@@ -37,7 +37,8 @@
 //! - `project` — the log as a `krowk_import::Source`, so krowk.db lists
 //!   native sessions beside imported ones.
 //! - `instances` — the named provider instances in krowk's config;
-//!   `readiness` — whether each can run a turn here, and what fixes it.
+//!   `readiness` — whether each can run a turn here, and what fixes it;
+//!   `connect` — connecting one and signing it out, for the CLI and the TUI.
 //! - `headless` — `krowk -p`.
 //!
 //! Canon `engineering/harness.md` describes all of it for readers who will
