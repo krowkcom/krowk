@@ -164,8 +164,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `--key-stdin` stores a key piped in, and `--key-ref '$VAR'` or
   `--key-ref '!pass show anthropic'` stores a reference — the variable read
   when krowk starts, or the command's output (one line, run once per krowk
-  process, 30 seconds at most, its errors never shown since they may hold
-  the key). There is no `--key <value>`: it would be in your shell's
+  process, its errors never shown since they may hold the key). The command
+  runs with no terminal — 30 seconds at most, so a password manager that
+  would ask for a passphrase fails at once, saying to unlock it first —
+  except when `krowk connect` runs it at a terminal, where you can type the
+  passphrase. There is no `--key <value>`: it would be in your shell's
   history. The key goes in `~/.config/krowk/providers/credentials.json`
   (0600), the file SuperGrok's login is in; `config.json` still names only
   a variable. A stored key is used before the variable, and when it cannot
@@ -176,7 +179,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `krowk status` runs a stored command to check it, and one that fails is
   `unknown`. `krowk disconnect` deletes a stored key and says whether the
   variable is set too. The file tools no longer read or search krowk's
-  credentials files without asking, even inside the working directory.
+  credentials files without asking, even inside the working directory, by
+  whatever path leads there.
+
+- **krowk no longer uses a relative `.krowk` as its config directory when
+  `HOME` is unset**, which made a repository's own `.krowk/` its config and
+  credentials. `krowk status`, `-p`, the TUI and `connect` now refuse with
+  "set HOME"; a relative `XDG_CONFIG_HOME` is ignored.
 
 - **`krowk connect` connects a model provider, by vendor and method**
   (in the `harness` build). `krowk connect anthropic` offers a Claude

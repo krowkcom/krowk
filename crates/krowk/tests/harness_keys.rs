@@ -301,28 +301,142 @@ fn r_cred_1_at_a_terminal_a_key_is_pasted_without_echo_and_without_one_the_flags
 
 #[test]
 fn r_cred_1_the_file_tools_neither_read_nor_search_the_credentials_file_unasked() {
-    // The model reads the credentials file by name, then greps krowk's
-    // config directory for the key, from a session whose working directory
-    // holds that directory (the home): what it is sent back never holds it.
+    // The model reads the credentials file by name, then searches krowk's
+    // config directory for the key by every spelling that leads there —
+    // plainly, through `..`, through a symlinked alias — from a session
+    // whose working directory holds it (the home): what it is sent back
+    // never holds the key, and a search rooted in the secret is refused.
     let creds = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let path = creds.clone();
+    let calls = [
+        ("grep", json!({"pattern": "STORED-SENTINEL", "path": ".config/krowk"})),
+        ("grep", json!({"pattern": "STORED-SENTINEL", "path": ".config/krowk/../krowk"})),
+        ("grep", json!({"pattern": "STORED-SENTINEL", "path": "alias"})),
+        ("glob", json!({"pattern": "**/*.json", "path": ".config/krowk/../krowk"})),
+        ("glob", json!({"pattern": "**/*.json", "path": "alias"})),
+        ("grep", json!({"pattern": "STORED-SENTINEL", "path": ".config/krowk/agents/../providers"})),
+    ];
     let m = mock::serve(move |_, n| match n {
-        0 => mock::Reply::sse(&mock::tool_use("toolu_01Read", "read", &json!({"path": *path.lock().unwrap()}))),
-        1 => mock::Reply::sse(&mock::tool_use("toolu_02Grep", "grep", &json!({"pattern": "STORED-SENTINEL", "path": ".config/krowk"}))),
+        0 => mock::Reply::sse(&mock::tool_use("toolu_00Read", "read", &json!({"path": *path.lock().unwrap()}))),
+        n if n <= calls.len() => {
+            let (tool, input) = &calls[n - 1];
+            mock::Reply::sse(&mock::tool_use(&format!("toolu_0{n}Search"), tool, input))
+        }
         _ => mock::Reply::sse(&mock::text_stream("done")),
     });
     let b = Sandbox::new("fence", &m.url);
     *creds.lock().unwrap() = b.credentials().display().to_string();
     assert!(b.piped(&["connect", "anthropic", "--method", "api-key", "--key-stdin"], SENTINEL).status.success());
     std::fs::write(b.root.join("home/.config/krowk/notes.txt"), "STORED-SENTINEL-control\n").unwrap();
+    std::fs::write(b.root.join("home/.config/krowk/other.json"), "{}\n").unwrap();
+    std::fs::create_dir_all(b.root.join("home/.config/krowk/agents")).unwrap();
+    std::os::unix::fs::symlink(b.root.join("home/.config/krowk"), b.root.join("home/alias")).unwrap();
     let mut cmd = b.command(&["-p", "look", "--model", "anthropic/claude-sonnet-4-6", "--permission-mode", "acceptEdits"], &[]);
     let out = cmd.current_dir(b.root.join("home")).output().unwrap();
     assert!(out.status.success(), "{}", printed(&out));
     let seen = m.seen.lock().unwrap();
     let result = |i: usize| seen[i].body["messages"].as_array().unwrap().last().unwrap().to_string();
     assert!(result(1).contains("holds krowk's API keys and logins"), "the read is refused: {}", result(1));
-    assert!(result(2).contains("notes.txt") && !result(2).contains("credentials.json"), "the search skips it: {}", result(2));
-    for i in 1..seen.len() {
-        assert!(!seen[i].body.to_string().contains(SENTINEL), "the key reached the model: {}", seen[i].body);
+    for i in 2..=4 {
+        assert!(result(i).contains("notes.txt") && !result(i).contains("credentials.json"), "search {i} skips it: {}", result(i));
     }
+    for i in 5..=6 {
+        assert!(result(i).contains("other.json") && !result(i).contains("credentials.json"), "glob {i} skips it: {}", result(i));
+    }
+    assert!(result(7).contains("holds krowk's API keys and logins"), "a search rooted in the secret is refused: {}", result(7));
+    for s in seen.iter().skip(1) {
+        assert!(!s.body.to_string().contains(SENTINEL), "the key reached the model: {}", s.body);
+    }
+}
+
+#[test]
+fn r_cred_1_a_credentials_file_krowk_cannot_read_is_named_without_quoting_it() {
+    let m = answer();
+    let b = Sandbox::new("unreadable", &m.url);
+    std::fs::create_dir_all(b.credentials().parent().unwrap()).unwrap();
+    // A key and a token written by hand as bare strings: serde's own words
+    // would quote them back.
+    for file in [json!({"version": 1, "keys": {"anthropic": SENTINEL}}), json!({"version": 1, "instances": {"supergrok": SENTINEL}})] {
+        std::fs::write(b.credentials(), file.to_string()).unwrap();
+        let row = b.row("anthropic", &[("ANTHROPIC_API_KEY", DECOY)]);
+        assert_eq!(row["state"], "unknown", "{row}");
+        assert!(row["reason"].as_str().unwrap().contains("not valid JSON krowk can read (line 1, column"), "{row}");
+        let mut outs = vec![b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &[("ANTHROPIC_API_KEY", DECOY)])];
+        for args in [&["status", "--json"][..], &["status"], &["providers", "list", "--json"], &["doctor", "--json"]] {
+            outs.push(b.krowk(args, &[]));
+        }
+        for o in &outs {
+            assert!(!printed(o).contains(SENTINEL), "quoted: {}", printed(o));
+        }
+    }
+    assert!(m.seen.lock().unwrap().is_empty(), "no key was sent while the file could not be read");
+}
+
+#[test]
+fn r_cred_1_with_no_home_krowk_reads_no_repositorys_dot_krowk_as_its_own() {
+    let m = answer();
+    let b = Sandbox::new("nohome", &m.url);
+    let pwned = b.root.join("pwned");
+    // A repository that ships krowk's config directory, as a relative
+    // fallback would find it.
+    std::fs::create_dir_all(b.root.join("repo/.krowk/providers")).unwrap();
+    std::fs::write(b.root.join("repo/.krowk/providers/credentials.json"), json!({"version": 1, "keys": {"anthropic": {"command": format!("touch {}", pwned.display())}}}).to_string()).unwrap();
+    std::fs::write(b.root.join("repo/.krowk/config.json"), json!({"defaultModel": "anthropic/claude-sonnet-4-6"}).to_string()).unwrap();
+    let run = |args: &[&str]| {
+        let mut c = b.command(args, &[("ANTHROPIC_API_KEY", DECOY)]);
+        c.env_remove("HOME");
+        c.output().unwrap()
+    };
+    for args in [&["status"][..], &["-p", "hi", "--model", "anthropic/claude-sonnet-4-6"], &["connect", "anthropic", "--method", "api-key", "--key-ref", "$X"]] {
+        let out = run(args);
+        assert!(!out.status.success() && printed(&out).contains("no config directory"), "{args:?}: {}", printed(&out));
+    }
+    assert!(!pwned.exists(), "the repository's command ran");
+    assert!(m.seen.lock().unwrap().is_empty());
+    assert_eq!(std::fs::read_dir(b.root.join("repo/.krowk/providers")).unwrap().count(), 1, "nothing written beside it");
+}
+
+#[test]
+fn r_cred_1_a_command_runs_once_per_process_with_no_terminal_and_bounded_output() {
+    let b = Sandbox::new("once", "http://127.0.0.1:9");
+    // One that asks on the terminal; one that never stops printing.
+    b.install("tty-pass", &format!("#!/bin/sh\nread x </dev/tty || exit 1\necho \"{SENTINEL}\"\n"));
+    b.install("chatty", "#!/bin/sh\nhead -c 1000000 /dev/zero | tr '\\0' a\n");
+    std::fs::create_dir_all(b.credentials().parent().unwrap()).unwrap();
+    let cmd = |c: &str| json!({"command": c});
+    std::fs::write(
+        b.credentials(),
+        json!({"version": 1, "keys": {"anthropic": cmd("fake-pass show x"), "openai": cmd("fake-pass show x"), "xai": cmd("tty-pass"), "openrouter": cmd("chatty")}}).to_string(),
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let rows: Vec<Value> = ["anthropic", "openai", "xai", "openrouter"].iter().map(|i| b.row(i, &[])).collect();
+    assert!(started.elapsed() < Duration::from_secs(20), "no command waited out its timeout: {:?}", started.elapsed());
+    assert_eq!((rows[0]["state"].as_str(), rows[1]["state"].as_str()), (Some("ready"), Some("ready")));
+    assert_eq!(b.pass_runs(), 4, "one run per status process, whichever instances share the command");
+    assert!(rows[2]["state"] == "unknown" && rows[2]["reason"].as_str().unwrap().contains("with no terminal"), "{}", rows[2]);
+    assert!(rows[3]["state"] == "unknown" && rows[3]["reason"].as_str().unwrap().contains("more than 64 KiB"), "{}", rows[3]);
+
+    // `krowk status` at a terminal too: the command still has none, so it
+    // fails at once rather than stop on a read it can never make.
+    let mut c = b.command(&["status"], &[]);
+    c.env("TERM", "xterm-256color");
+    let mut t = pty::Pty::spawn(c, 200, 30);
+    let started = std::time::Instant::now();
+    t.wait(Duration::from_secs(25)).expect("krowk status finished");
+    assert!(started.elapsed() < Duration::from_secs(15), "the tty prompt hung: {:?}", started.elapsed());
+    assert!(t.text().contains("with no terminal"), "{}", t.text());
+
+    // At a terminal, `krowk connect` runs it there, so its passphrase can be typed.
+    let mut c = b.command(&["connect", "xai", "--method", "api-key"], &[]);
+    c.env("TERM", "xterm-256color");
+    let mut t = pty::Pty::spawn(c, 120, 30);
+    let wait = Duration::from_secs(20);
+    assert!(t.wait_for("Paste a key", wait).is_some(), "{}", t.text());
+    t.write(b"!tty-pass\r");
+    std::thread::sleep(Duration::from_millis(500));
+    t.write(b"hunter2\r");
+    let exit = t.wait(wait).expect("krowk connect finished");
+    assert!(exit.success(), "{}", t.text());
+    assert!(t.text().contains("stored (!tty-pass)") && !t.text().contains(SENTINEL), "{}", t.text());
 }
