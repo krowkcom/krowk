@@ -1,4 +1,7 @@
-//! `auth`: getting a key onto this machine, printing it, and checking it.
+//! `auth`, and its short forms `login`, `logout` and `whoami`: your krowk
+//! account — getting a key onto this machine, printing it, checking it,
+//! and taking it off again. A model provider is not signed in to here but
+//! connected, with `krowk connect`.
 
 use super::agent::new_client;
 use super::workspace::resolve_workspace;
@@ -19,6 +22,21 @@ const DEFAULT_POLL: Duration = Duration::from_secs(5);
 const MIN_POLL: Duration = Duration::from_secs(1);
 const MAX_POLL: Duration = Duration::from_secs(30);
 
+/// Words that name a model provider, or an instance of one, rather than
+/// anything `login` takes: somebody who types them wants `krowk connect`.
+const PROVIDER_WORDS: &[&str] =
+    &["anthropic", "claude", "openai", "chatgpt", "codex", "gpt", "xai", "grok", "supergrok", "openrouter", "openai-compatible"];
+
+/// Where a model provider is connected, in the words of an error that
+/// points there.
+fn connect_hint(word: &str) -> String {
+    if cfg!(feature = "harness") {
+        format!("to connect a model provider, run `krowk connect {word}`")
+    } else {
+        "a model provider is connected with `krowk connect`, in the full build (a release, or `--features harness`)".into()
+    }
+}
+
 pub(crate) fn login(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     // A key typed without its flag is caught by name — and not quoted back,
     // since it is already in a shell history.
@@ -26,12 +44,19 @@ pub(crate) fn login(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         if first.starts_with("krowk_sk_") {
             return Err(fail(
                 "token_not_a_positional",
-                "a key has to go behind the flag: `krowk auth login --token krowk_sk_...` — passed as a bare argument it is ignored",
+                "a key has to go behind the flag: `krowk login --token krowk_sk_...` — passed as a bare argument it is ignored",
+            ));
+        }
+        let word = first.trim().to_ascii_lowercase();
+        if PROVIDER_WORDS.contains(&word.as_str()) || PROVIDER_WORDS.iter().any(|p| word.starts_with(&format!("{p}:"))) {
+            return Err(fail(
+                "unexpected_argument",
+                format!("`krowk login` signs in to your krowk account and takes no provider — {}", connect_hint(first.trim())),
             ));
         }
         return Err(fail(
             "unexpected_argument",
-            format!("`krowk auth login` takes no arguments, and got `{}` — the key goes behind --token", args[..args.len().min(2)].join(" ")),
+            format!("`krowk login` takes no arguments, and got `{}` — the key goes behind --token", args[..args.len().min(2)].join(" ")),
         ));
     }
     if ctx.f.token.is_empty() { login_in_browser(ctx) } else { login_with_token(ctx) }
@@ -80,7 +105,7 @@ fn login_in_browser(ctx: &mut Ctx) -> Result<(), Error> {
     if in_ci(ctx) && !ctx.f.no_browser {
         return Err(fail(
             "no_one_to_approve",
-            "a browser login needs somebody to approve it, and this looks like CI — pass `krowk auth login --token krowk_sk_...`, \
+            "a browser login needs somebody to approve it, and this looks like CI — pass `krowk login --token krowk_sk_...`, \
              or add --no-browser if there is somebody to hand the code to",
         ));
     }
@@ -91,7 +116,7 @@ fn login_in_browser(ctx: &mut Ctx) -> Result<(), Error> {
         if e.status == 404 {
             e.body.insert(
                 "fix".into(),
-                json!("this registry does not answer browser login — check KROWK_API_URL, or issue a key in the dashboard and store it with `krowk auth login --token krowk_sk_...`"),
+                json!("this registry does not answer browser login — check KROWK_API_URL, or issue a key in the dashboard and store it with `krowk login --token krowk_sk_...`"),
             );
         }
         e
@@ -114,7 +139,7 @@ fn login_in_browser(ctx: &mut Ctx) -> Result<(), Error> {
         fail(
             "credentials_unwritable",
             format!(
-                "could not write {}: {} — the approved key was handed over once and the registry keeps no copy, so fix the path and run `krowk auth login` again for a new one",
+                "could not write {}: {} — the approved key was handed over once and the registry keeps no copy, so fix the path and run `krowk login` again for a new one",
                 creds::credentials_path().display(),
                 e.fix()
             ),
@@ -164,13 +189,13 @@ fn await_authorization(client: &Client, auth: &CliAuthorization, deadline: Insta
                 if granted.token.is_empty() {
                     return Err(fail(
                         "malformed_response",
-                        "the registry approved this login without handing over a key — run `krowk auth login` again, and report it if it repeats",
+                        "the registry approved this login without handing over a key — run `krowk login` again, and report it if it repeats",
                     ));
                 }
                 return Ok(granted);
             }
             Ok(granted) if granted.state == AUTHORIZATION_DENIED => {
-                return Err(fail("authorization_denied", "this login was denied in the browser — run `krowk auth login` to ask again"));
+                return Err(fail("authorization_denied", "this login was denied in the browser — run `krowk login` to ask again"));
             }
             // Pending, or a state this build has no word for: still inside the window.
             Ok(_) => unanswered = None,
@@ -180,7 +205,7 @@ fn await_authorization(client: &Client, auth: &CliAuthorization, deadline: Insta
 
 fn window_closed(unanswered: Option<Error>) -> Error {
     unanswered.unwrap_or_else(|| {
-        fail("authorization_expired", "nobody approved this login before it lapsed — run `krowk auth login` to ask again")
+        fail("authorization_expired", "nobody approved this login before it lapsed — run `krowk login` to ask again")
     })
 }
 
@@ -192,9 +217,9 @@ fn worth_another_poll(e: &Error) -> bool {
 /// nonsense to someone trying to log in.
 fn login_fix(mut e: Error) -> Error {
     let fix = match (e.code().as_str(), e.status) {
-        ("expired", _) => "this login lapsed before it was approved — run `krowk auth login` to ask again",
-        ("spent", _) => "this login's key was already collected, and the registry keeps no second copy — run `krowk auth login` for a new one",
-        (_, 404) => "the registry does not know this login — it may have lapsed and been swept; run `krowk auth login` to ask again",
+        ("expired", _) => "this login lapsed before it was approved — run `krowk login` to ask again",
+        ("spent", _) => "this login's key was already collected, and the registry keeps no second copy — run `krowk login` for a new one",
+        (_, 404) => "the registry does not know this login — it may have lapsed and been swept; run `krowk login` to ask again",
         _ => return e,
     };
     e.body.insert("fix".into(), json!(fix));
@@ -307,10 +332,50 @@ pub(crate) fn token(ctx: &mut Ctx) -> Result<(), Error> {
         env_token
     };
     if token.is_empty() {
-        return Err(fail("not_authenticated", "run `krowk auth login --token krowk_sk_...`, or upload anonymously"));
+        return Err(fail("not_authenticated", "run `krowk login --token krowk_sk_...`, or upload anonymously"));
     }
     let _ = writeln!(ctx.io.stdout, "{token}");
     Ok(())
+}
+
+/// Takes the key that resolves here off this machine: `--workspace`'s, the
+/// repository's, the default. The key itself keeps working until it is
+/// revoked in the dashboard, which is said, since "logged out" could be
+/// read as "revoked".
+pub(crate) fn logout(ctx: &mut Ctx) -> Result<(), Error> {
+    let (ws, _) = resolve_workspace(ctx)?;
+    let gone = creds::forget_credentials(&ws).map_err(|e| {
+        fail("credentials_unwritable", format!("could not write {}: {}", creds::credentials_path().display(), e.fix()))
+    })?;
+    let path = creds::credentials_path().display().to_string();
+    let shadowed = !ctx.env("KROWK_TOKEN").is_empty();
+    let left: Vec<String> = creds::stored_workspaces().into_iter().map(|k| k.name).collect();
+    if ctx.format != crate::output::Format::Human {
+        let data = json!({
+            "removed": gone.is_some(),
+            "workspace": gone.as_ref().map(|(n, _)| n.clone()).unwrap_or(ws),
+            "key_id": gone.as_ref().map(|(_, id)| id.key_id.clone()).filter(|k| !k.is_empty()),
+            "path": path,
+            "stored": left,
+            "shadowed_by_env": shadowed,
+        });
+        let rendered = if ctx.f.quiet { output::encode(&data) } else { output::encode(&json!({ "ok": true, "data": data, "summary": if gone.is_some() { "logged out" } else { "no key was stored" } })) };
+        return ctx.emit(&rendered);
+    }
+    let mut lines = match &gone {
+        Some((name, id)) => {
+            let key = if id.key_id.is_empty() { "its key".to_string() } else { format!("key {}", id.key_id) };
+            vec![format!("logged out of {name}: {key} is removed from {path}"), "  the key itself still works until it is revoked in the dashboard".to_string()]
+        }
+        None => vec!["no key is stored for the workspace that resolves here — nothing to log out of".to_string()],
+    };
+    if !left.is_empty() && gone.is_some() {
+        lines.push(format!("  still stored: {} — `krowk workspaces use <name>` makes one the default", left.join(", ")));
+    }
+    if shadowed {
+        lines.push("  ! KROWK_TOKEN is set and still wins — unset it too".into());
+    }
+    ctx.emit(&lines.join("\n"))
 }
 
 /// What the stored key can actually do. The registry just vouched for it, so a
@@ -318,7 +383,7 @@ pub(crate) fn token(ctx: &mut Ctx) -> Result<(), Error> {
 pub(crate) fn verify(ctx: &mut Ctx) -> Result<(), Error> {
     let client = new_client(ctx)?;
     if !client.authenticated() {
-        return Err(fail("not_authenticated", "no key to verify — run `krowk auth login --token krowk_sk_...`, or upload anonymously"));
+        return Err(fail("not_authenticated", "no key to verify — run `krowk login --token krowk_sk_...`, or upload anonymously"));
     }
     let key = client.verify_key()?;
     if ctx.env("KROWK_TOKEN").is_empty() {

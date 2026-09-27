@@ -40,6 +40,7 @@
 
 use crate::claude::auth as claude_auth;
 use crate::codex::auth as codex_auth;
+use crate::connect;
 use crate::engine::EngineError;
 use crate::instances::{Auth, Backend, Resolved};
 use crate::oauth;
@@ -173,6 +174,7 @@ impl Report {
         json!({
             "instance": self.instance,
             "kind": self.kind,
+            "label": crate::instances::kind_label(self.kind),
             "state": self.readiness.state(),
             "ready": self.readiness.is_ready(),
             "source": self.source,
@@ -316,32 +318,18 @@ fn vendor_login_source(inst: &Resolved, said: Option<&str>) -> String {
     }
 }
 
-/// `krowk providers add <vendor>[ --name N]` for a backend instance: the
-/// command that runs the vendor's own login in the instance's directory.
-fn add_command(inst: &Resolved) -> String {
-    let vendor = match inst.wire_api {
-        WireApi::CodexAppServer => "codex",
-        _ => "claude",
-    };
-    match inst.name.split_once(':') {
-        Some((_, n)) => format!("krowk providers add {vendor} --name {n}"),
-        None if inst.name == vendor => format!("krowk providers add {vendor}"),
-        None => format!("krowk providers add {vendor} --name {}", inst.name),
-    }
-}
-
 fn fix(inst: &Resolved, r: &Readiness) -> Option<String> {
     let codex = inst.wire_api == WireApi::CodexAppServer;
     Some(match r {
         Readiness::Ready { .. } => return None,
         Readiness::KeyNotSet { var } => format!("set {var} (krowk reads the key from the environment, never from a file)"),
-        Readiness::NotSignedIn | Readiness::Expired if matches!(inst.auth, Auth::OAuth { .. }) => format!("sign in with `{}`", oauth::login_command(&inst.name)),
+        Readiness::NotSignedIn | Readiness::Expired if matches!(inst.auth, Auth::OAuth { .. }) => format!("sign in with `{}`", connect::connect_command(&inst.name, inst.kind)),
         Readiness::NotSignedIn | Readiness::Expired => {
             let own = if codex { "Codex's" } else { "Claude's" };
-            format!("sign in with `{}`, which runs {own} own login", add_command(inst))
+            format!("sign in with `{}`, which runs {own} own login", connect::connect_command(&inst.name, inst.kind))
         }
-        Readiness::NotInstalled if codex => "install Codex (https://developers.openai.com/codex), or name the binary with `krowk providers add codex --binary <path>`".into(),
-        Readiness::NotInstalled => "install Claude Code (https://claude.com/claude-code), or name the binary with `krowk providers add claude --binary <path>`".into(),
+        Readiness::NotInstalled if codex => format!("install Codex (https://developers.openai.com/codex), or name the binary with `{} --binary <path>`", connect::connect_command(&inst.name, inst.kind)),
+        Readiness::NotInstalled => format!("install Claude Code (https://claude.com/claude-code), or name the binary with `{} --binary <path>`", connect::connect_command(&inst.name, inst.kind)),
         Readiness::Unknown { .. } => "see the reason, then run `krowk status` again".into(),
     })
 }
@@ -368,6 +356,16 @@ fn vendor_cached(inst: &Resolved, b: &Backend, probe: &Probe) -> Readiness {
         SIGNED_IN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(key, (Instant::now(), source.clone()));
     }
     r
+}
+
+/// Forgets what was believed of an instance's vendor login, in every
+/// directory it was asked in: a sign-in or a sign-out has just changed it,
+/// and a long-lived host (the TUI) asks again rather than believe the old
+/// answer for another minute.
+pub fn forget(instance: &str) {
+    if let Some(m) = SIGNED_IN.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        m.retain(|k, _| k.split('\0').next() != Some(instance));
+    }
 }
 
 /// Asks the vendor. Only whether there is a login and its kind come back;

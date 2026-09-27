@@ -83,6 +83,14 @@ pub struct Flags {
     pub binary: String,
     #[cfg(feature = "harness")]
     pub config_dir: String,
+    /// `connect`: the way in, and whether it becomes the default model;
+    /// `disconnect`: whether the definition goes too.
+    #[cfg(feature = "harness")]
+    pub method: String,
+    #[cfg(feature = "harness")]
+    pub default: bool,
+    #[cfg(feature = "harness")]
+    pub remove: bool,
     /// Which flags were typed, by canonical name — a different question from
     /// what they carry: `--jq "$UNSET"` was given and is empty.
     pub given: BTreeSet<String>,
@@ -244,6 +252,8 @@ impl Flags {
             "binary" => text(&mut self.binary),
             #[cfg(feature = "harness")]
             "config-dir" => text(&mut self.config_dir),
+            #[cfg(feature = "harness")]
+            "method" => text(&mut self.method),
             _ => {
                 let b = parse_bool(name, v)?;
                 *match name {
@@ -266,6 +276,10 @@ impl Flags {
                     "device" => &mut self.device,
                     #[cfg(feature = "harness")]
                     "trust" => &mut self.trust,
+                    #[cfg(feature = "harness")]
+                    "default" => &mut self.default,
+                    #[cfg(feature = "harness")]
+                    "remove" => &mut self.remove,
                     other => unreachable!("catalog flag {other} has no field"),
                 } = b;
             }

@@ -162,7 +162,7 @@ fn workspace_summary(ctx: &Ctx, resolved: &Result<(String, String), krowk_api::E
             return format!("{ws} ({source}) — but no key is stored for it, so every command here fails");
         }
         if !ctx.env("KROWK_TOKEN").is_empty() {
-            return format!("{ws} ({source}) — but KROWK_TOKEN is set and wins; uploads land wherever that key acts, and `krowk auth verify` names it");
+            return format!("{ws} ({source}) — but KROWK_TOKEN is set and wins; uploads land wherever that key acts, and `krowk whoami` names it");
         }
         return format!("{ws} ({source})");
     }
@@ -172,7 +172,7 @@ fn workspace_summary(ctx: &Ctx, resolved: &Result<(String, String), krowk_api::E
     if creds::token_source(ctx.io.env, "") == TOKEN_SOURCE_NONE {
         return "none — uploads will be anonymous".into();
     }
-    "unknown — not recorded at login; `krowk auth verify` asks the registry".into()
+    "unknown — not recorded at login; `krowk whoami` asks the registry".into()
 }
 
 fn config_summary() -> String {

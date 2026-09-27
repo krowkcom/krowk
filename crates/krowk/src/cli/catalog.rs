@@ -154,6 +154,20 @@ fn page_flags() -> Vec<Flag> {
     ]
 }
 
+/// Your krowk account, which a model provider is not: that is `krowk
+/// connect`, and the help says so where someone could confuse the two.
+#[cfg(feature = "harness")]
+const LOGIN_SUMMARY: &str = "Sign in to your krowk account: approve this machine in the browser, or store a key. A model provider is `krowk connect`";
+#[cfg(not(feature = "harness"))]
+const LOGIN_SUMMARY: &str = "Sign in to your krowk account: approve this machine in the browser, or store a key";
+
+fn login_flags() -> Vec<Flag> {
+    vec![
+        flag("token", STRING, "Check and store this key instead of asking the browser — how CI logs in, e.g. krowk_sk_..."),
+        flag("no-browser", BOOL, "Print the code and the page instead of opening a browser — the default over SSH, or with no display"),
+    ]
+}
+
 fn global_flag() -> Flag {
     flag("global", BOOL, "Write the machine-wide config instead of the repository's")
 }
@@ -219,23 +233,17 @@ pub fn catalog(version: &str) -> Catalog {
                 flags: vec![run_flag("The run to group it under while claiming — a claimed upload has none otherwise")],
                 ..cmd("claim", "krowk claim <artifact> <token> [--run]", "Keep an anonymous upload past expiry")
             },
+            Command { flags: login_flags(), ..cmd("login", "krowk login [--token <token>] [--no-browser]", LOGIN_SUMMARY) },
+            cmd("logout", "krowk logout", "Take the key that resolves here off this machine"),
+            cmd("whoami", "krowk whoami", "Check the key and its workspace"),
             Command {
                 subcommands: vec![
-                    Command {
-                        flags: vec![
-                            flag("token", STRING, "Check and store this key instead of asking the browser — how CI logs in, e.g. krowk_sk_..."),
-                            flag(
-                                "no-browser",
-                                BOOL,
-                                "Print the code and the page instead of opening a browser — the default over SSH, or with no display",
-                            ),
-                        ],
-                        ..cmd("login", "krowk auth login [--token <token>] [--no-browser]", "Approve this machine in the browser, or store a key")
-                    },
+                    Command { flags: login_flags(), ..cmd("login", "krowk auth login [--token <token>] [--no-browser]", LOGIN_SUMMARY) },
+                    cmd("logout", "krowk auth logout", "The same as `krowk logout`"),
                     Command { no_json: true, ..cmd("token", "krowk auth token", "Print the stored token") },
-                    cmd("verify", "krowk auth verify", "Check the key and its workspace"),
+                    cmd("verify", "krowk auth verify", "The same as `krowk whoami`"),
                 ],
-                ..cmd("auth", "", "Manage the API key")
+                ..cmd("auth", "", "Manage the API key — your krowk account")
             },
             Command {
                 subcommands: vec![
@@ -352,6 +360,8 @@ pub fn catalog(version: &str) -> Catalog {
         ],
     };
     #[cfg(feature = "harness")]
+    c.commands.extend(connect_commands());
+    #[cfg(feature = "harness")]
     c.commands.push(providers_command());
     #[cfg(feature = "harness")]
     c.commands.push(cmd(
@@ -380,6 +390,46 @@ pub fn global_flags() -> Vec<Flag> {
     #[cfg(feature = "harness")]
     let flags = [flags, prompt_flags()].concat();
     flags
+}
+
+/// `krowk connect` and `krowk disconnect`: a model source, by vendor and
+/// method. The harness build's only.
+#[cfg(feature = "harness")]
+fn connect_commands() -> Vec<Command> {
+    vec![
+        Command {
+            args: vec![arg(
+                "vendor",
+                "anthropic, openai, xai, openrouter or openai-compatible — or an instance to reconnect, e.g. claude:work. A person at a terminal may omit it and pick",
+                false,
+            )],
+            flags: vec![
+                flag("method", STRING, "subscription (Claude, ChatGPT or SuperGrok, signed in by the vendor's own login), device (the same with a code typed into any browser: ChatGPT, SuperGrok) or api-key. Required without a terminal when the vendor has more than one"),
+                flag("name", STRING, "Name a second account <provider>:<name> — claude:work, anthropic:work; the default-named one (claude, anthropic) when absent"),
+                flag("default", BOOL, "Make it the default model even when config.json names one already; the first connection is the default by itself"),
+                flag("api-key-env", STRING, "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"),
+                flag("base-url", STRING, "Where the API is, for a gateway, a router or a local server — asked for openai-compatible"),
+                flag("client-id", STRING, "SuperGrok: the OAuth client id to sign in as, when xAI's server offers no registration"),
+                flag("no-browser", BOOL, "SuperGrok: print the sign-in link instead of opening a browser"),
+                flag("binary", STRING, "A subscription: the claude or codex binary to run; the one on PATH when absent"),
+                flag("config-dir", STRING, "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one under krowk's data directory for a named account"),
+            ],
+            ..cmd(
+                "connect",
+                "krowk connect [vendor] [--method subscription|api-key|device] [--name N]",
+                "Connect a model provider: a Claude or ChatGPT subscription (the vendor's own login), SuperGrok, or an API key. Again renews its login",
+            )
+        },
+        Command {
+            args: vec![arg("instance", "The instance to sign out, e.g. claude:work — a person at a terminal may omit it and pick", false)],
+            flags: vec![flag("remove", BOOL, "Remove its definition too; without it the instance stays, not signed in")],
+            ..cmd(
+                "disconnect",
+                "krowk disconnect [instance] [--remove]",
+                "Sign an instance out: SuperGrok's tokens deleted, a subscription's own logout run, an API key's variable named",
+            )
+        },
+    ]
 }
 
 /// `krowk providers`: the native engine's instances — API-key profiles,
@@ -413,7 +463,7 @@ fn providers_command() -> Command {
                 ..cmd("remove", "krowk providers remove <instance>", "Remove an instance's definition, and forget its login")
             },
         ],
-        ..cmd("providers", "", "The provider instances: API keys, logins, and Claude Code and Codex accounts")
+        ..cmd("providers", "", "The provider instances by backend kind, one level below `krowk connect`: API keys, logins, and Claude Code and Codex accounts")
     }
 }
 
@@ -527,11 +577,11 @@ pub const SECTIONS: &[(&str, &[&str])] = &[
     ("SESSIONS", &["sessions", "sessions show", "sessions budget", "sessions import", "sessions rebuild", "sessions sync"]),
     // The harness build's own commands.
     #[cfg(feature = "harness")]
-    ("AGENT", &["status", "providers add", "providers list", "providers remove"]),
+    ("AGENT", &["status", "connect", "disconnect", "providers add", "providers list", "providers remove"]),
     (
         "ACCOUNT & SYSTEM",
         &[
-            "auth login", "auth verify", "auth token", "workspaces list", "workspaces use", "config show", "config set",
+            "login", "logout", "whoami", "auth login", "auth logout", "auth verify", "auth token", "workspaces list", "workspaces use", "config show", "config set",
             "config unset", "doctor", "pricing refresh", "upgrade", "help",
         ],
     ),

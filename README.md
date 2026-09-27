@@ -55,7 +55,7 @@ Every release has two builds of `krowk`. The **full build** carries krowk's own 
 | `krowk uploads attach <artifact> --run <run>` | Put an upload under a run after the fact |
 | `krowk uploads delete <artifact>` | Take an upload down — immediate and unrecoverable |
 | `krowk claim <artifact> <token>` | Keep an anonymous upload past its 24h expiry |
-| `krowk auth login` | Approve this machine in a browser (`--token` for CI) — one stored key per workspace |
+| `krowk login` / `logout` / `whoami` | Your krowk account: approve this machine in a browser (`--token` for CI) — one stored key per workspace — take the key off it again, or check which key and workspace this is. The same as `krowk auth login` / `logout` / `verify` |
 | `krowk workspaces list` / `use ws_9hj3kd8a` | List the stored keys, or make one the machine-wide default — `use` with no name picks from a list |
 | `krowk config set workspace ws_9hj3kd8a` | Pin this repository to a workspace (`--global` for the machine) |
 | `krowk config show` / `unset <key>` | The effective configuration and which layer set it, or remove a value |
@@ -75,6 +75,9 @@ In the full build, bare `krowk` on a terminal opens krowk's own agent: an inline
 
 | | |
 | --- | --- |
+| `krowk connect [vendor]` | Connect a model provider: `anthropic` by a Claude subscription (Claude Code's own `claude auth login`) or an API key, `openai` by a ChatGPT subscription (`codex login`) or an API key, `xai` by SuperGrok or an API key, `openrouter` and `openai-compatible` by an API key (`--method subscription\|api-key\|device`, `--name work` for a second account). With no vendor it asks; again renews the login. The first connection becomes the default model (`--default` for a later one) |
+| `krowk status` | Which instances can run a turn here, where each one's key or login comes from, and what fixes the rest |
+| `krowk disconnect <instance>` | Sign one out — SuperGrok's tokens deleted, a subscription's own logout run, an API key's variable named — keeping its definition unless `--remove` |
 | `krowk` | Open the agent (`--model <instance>/<model>`, `--permission-mode`) |
 | `krowk --resume` / `--resume <id>` | Continue a krowk session — picked from a list, or named |
 | `krowk -p "…"` | One prompt, headless (`--output-format text\|json\|stream-json`, `--resume`, `--model`) |
@@ -83,6 +86,8 @@ In the full build, bare `krowk` on a terminal opens krowk's own agent: an inline
 The agent's tools are read, write, an edit tool in its model's format, bash, grep, glob and `publish`, which pushes a screenshot, diff or log as a krowk artifact with `krowk_push`'s own rules (inside the working directory, no credential files, no hard links). With an API key, a session's first publish opens a krowk run recording the session, and every artifact is tagged `krowk.session` and grouped under it.
 
 It keeps a todo list (`todo_write`, Ctrl-T in the TUI), and hands work to subagents (`subagent`): child sessions with a fresh context and a cheaper model by default, several at once, each one line in the TUI (Ctrl-G to expand one or interrupt it alone), of which only the final summary comes back. Agent definitions — krowk's `.krowk/agents/*.md` or Claude Code's `.claude/agents/*.md`, as they are — give a subagent its instructions, model and tool allowlist.
+
+krowk never signs in to a Claude or ChatGPT subscription itself and never reads their login files: `krowk connect` runs the vendor's own CLI for that, on your terminal, and asks it afterwards whether it worked. An API key stays in the environment variable the instance names (`krowk connect anthropic --method api-key --name work` reads `$ANTHROPIC_WORK_API_KEY`). `krowk providers add|list|remove` are the same instances one level down, by backend kind.
 
 What you see: `❯` before what you asked; the answer as it streams, in light markdown (headings, `•` lists, `code` and fenced blocks coloured), two columns in from both edges and wrapped by krowk inside that padding (drawn by moving the cursor, not with spaces, as Claude Code does); each tool call once, with its outcome — `◆ Read README.md (3 lines)`, `◆ Run cargo test` with the head and tail of its output, `◆ Edit src/main.rs +3/-1` with the removed and added lines on red and green bands, a red `◆` when it failed; thinking collapsed to `◆ Thought for 4.2s`; and `Worked for 12s · 6.2k tokens` when the turn is done. While a turn runs, one line says what it is doing (`⠋ Thinking… 3.2s │ esc to interrupt`). The visual language follows xAI's Grok Build (see THIRD-PARTY-NOTICES).
 
@@ -223,7 +228,7 @@ On a narrow terminal the items give way one at a time — the device first, then
 
 A key or item the TUI does not know is named above the first prompt, and the rest still applies. Prompt history is kept beside the session logs, in `~/.local/share/krowk/tui-history.jsonl`.
 
-Credentials from `krowk auth login` live in `~/.config/krowk/credentials.json` (0600), one key per workspace. Which key a command uses resolves in order: `--workspace` → `KROWK_WORKSPACE` → `.krowk/config.json` at the git root → `~/.config/krowk/config.json` → whichever key logged in last. Commit the repo file and everyone who clones the repository — person or agent — uploads to the right workspace without naming it; the file selects among keys already on the machine and never carries one itself.
+Credentials from `krowk login` live in `~/.config/krowk/credentials.json` (0600), one key per workspace. Which key a command uses resolves in order: `--workspace` → `KROWK_WORKSPACE` → `.krowk/config.json` at the git root → `~/.config/krowk/config.json` → whichever key logged in last. Commit the repo file and everyone who clones the repository — person or agent — uploads to the right workspace without naming it; the file selects among keys already on the machine and never carries one itself.
 
 ## Development
 

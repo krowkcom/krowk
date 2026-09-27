@@ -73,3 +73,15 @@ pub fn status(b: &Backend, probe: &crate::readiness::Probe) -> Result<Status, St
 pub fn login(b: &Backend) -> Result<ExitStatus, String> {
     command(b, &["auth", "login"]).stdin(Stdio::inherit()).stdout(Stdio::from(std::io::stderr())).stderr(Stdio::inherit()).status().map_err(|e| not_found(b, e))
 }
+
+/// `claude auth logout`, for this instance's config directory: Claude
+/// Code's own sign-out, which asks nothing. Run where and as long as a
+/// status check is (`probe`), its output kept from the terminal, so a
+/// front end that owns the screen (the TUI) need not give it up. Whether
+/// it exited cleanly is all krowk reads of it.
+pub fn logout(b: &Backend, probe: &crate::readiness::Probe) -> Result<ExitStatus, String> {
+    let out = crate::readiness::output_within(&mut command(b, &["auth", "logout"]), probe)
+        .map_err(|e| not_found(b, e))?
+        .ok_or_else(|| format!("`{} auth logout` did not finish within {} seconds", b.binary, probe.within.as_secs_f32()))?;
+    Ok(out.status)
+}

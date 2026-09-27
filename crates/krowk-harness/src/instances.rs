@@ -314,6 +314,27 @@ impl InstanceKind {
             InstanceKind::CodexAppServer { .. } => "codex-app-server",
         }
     }
+
+    /// What a person calls it, beside its name wherever instances are
+    /// listed: `claude:work (Claude subscription)`.
+    pub fn label(&self) -> &'static str {
+        kind_label(self.tag())
+    }
+}
+
+/// `InstanceKind::label`, by the `kind` tag a resolved instance carries.
+pub fn kind_label(tag: &str) -> &'static str {
+    match tag {
+        "anthropic-api" => "Anthropic API key",
+        "openai-api" => "OpenAI API key",
+        "xai-api" => "xAI API key",
+        "openrouter-api" => "OpenRouter",
+        "openai-compatible" => "OpenAI-compatible",
+        "xai-oauth" => "SuperGrok",
+        "claude-code" => "Claude subscription",
+        "codex-app-server" => "ChatGPT subscription",
+        _ => "",
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -580,7 +601,7 @@ impl Registry {
     pub fn get(&self, name: &str) -> Result<&Resolved, String> {
         self.instances.get(name).ok_or_else(|| {
             let known: Vec<&str> = self.instances.keys().map(String::as_str).collect();
-            format!("no instance named {name:?} — this host has {}; add one with `krowk providers add`", known.join(", "))
+            format!("no instance named {name:?} — this host has {}; connect one with `krowk connect`", known.join(", "))
         })
     }
 }

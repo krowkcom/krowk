@@ -52,6 +52,7 @@ pub mod chat;
 pub mod claude;
 pub mod codex;
 pub mod compat;
+pub mod connect;
 pub mod effort;
 pub mod engine;
 pub mod evidence;

@@ -192,6 +192,17 @@ pub fn login(b: &Backend, device: bool) -> Result<ExitStatus, String> {
     command(b, args).stdin(Stdio::inherit()).stdout(std::io::stderr()).stderr(Stdio::inherit()).status().map_err(|e| format!("{} could not be run: {e}", b.binary))
 }
 
+/// `codex logout`, for this instance's home: Codex's own sign-out, which
+/// asks nothing. Run where and as long as a status check is (`probe`),
+/// its output kept from the terminal; whether it exited cleanly is all
+/// krowk reads of it.
+pub fn logout(b: &Backend, probe: &Probe) -> Result<ExitStatus, String> {
+    let out = crate::readiness::output_within(&mut command(b, &["logout"]), probe)
+        .map_err(|e| format!("{} could not be run: {e}", b.binary))?
+        .ok_or_else(|| format!("`{} logout` did not finish within {} seconds", b.binary, probe.within.as_secs_f32()))?;
+    Ok(out.status)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -170,7 +170,7 @@ pub fn resolve_token(env: Env, workspace: &str) -> Result<String, Error> {
             return Err(fail(
                 "no_key_for_workspace",
                 format!(
-                    "no key is stored for workspace {workspace} — stored: {}; run `krowk auth login` to add one",
+                    "no key is stored for workspace {workspace} — stored: {}; run `krowk login` to add one",
                     names.join(", ")
                 ),
             ));
@@ -178,7 +178,7 @@ pub fn resolve_token(env: Env, workspace: &str) -> Result<String, Error> {
         return Err(fail(
             "no_key_for_workspace",
             format!(
-                "no key is stored for workspace {workspace}, and nothing else is stored either — run `krowk auth login` first"
+                "no key is stored for workspace {workspace}, and nothing else is stored either — run `krowk login` first"
             ),
         ));
     }
@@ -195,7 +195,7 @@ pub fn resolve_token(env: Env, workspace: &str) -> Result<String, Error> {
         "dangling_default",
         format!(
             "the default names {}, and no key is stored under that name — {stored}; run `krowk workspaces use <name>` \
-             to point the default at a stored key, or `krowk auth login`",
+             to point the default at a stored key, or `krowk login`",
             c.default
         ),
     ))
@@ -271,6 +271,24 @@ pub fn adopt_identity(token: &str, id: &Identity) -> Result<bool, Error> {
     Ok(true)
 }
 
+/// Forgets the key stored for `workspace` — the default's, when empty — and
+/// the default with it when it was that one. The name it was stored under
+/// and its identity, or none when nothing was stored there. The key itself
+/// still works until it is revoked in the dashboard: this machine just no
+/// longer holds it.
+pub fn forget_credentials(workspace: &str) -> Result<Option<(String, Identity)>, Error> {
+    let mut c = read_strict()?;
+    let name = if workspace.is_empty() { c.default.clone() } else { workspace.to_string() };
+    let Some(k) = c.workspaces.remove(&name) else {
+        return Ok(None);
+    };
+    if c.default == name {
+        c.default.clear();
+    }
+    write(&c)?;
+    Ok(Some((name, Identity { key_id: k.key_id, workspace: k.workspace, workspace_name: k.workspace_name })))
+}
+
 /// Every stored key, by name.
 pub fn stored_workspaces() -> Vec<WorkspaceKey> {
     let c = read_lenient();
@@ -293,7 +311,7 @@ pub fn set_default_workspace(name: &str) -> Result<String, String> {
     if !c.workspaces.contains_key(name) {
         let names = c.names();
         if names.is_empty() {
-            return Err("no workspace keys are stored — run `krowk auth login` first".into());
+            return Err("no workspace keys are stored — run `krowk login` first".into());
         }
         return Err(format!("no stored key named {name} — stored: {}", names.join(", ")));
     }

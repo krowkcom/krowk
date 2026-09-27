@@ -618,7 +618,7 @@ pub struct Login {
 fn shadowed_crumb() -> Breadcrumb {
     crumb(
         "verify",
-        "krowk auth verify",
+        "krowk whoami",
         "KROWK_TOKEN outranks the key just stored, so this reports the one that uploads will really use — unset KROWK_TOKEN to use the stored one instead",
     )
 }
@@ -636,7 +636,7 @@ pub fn stored_key(l: &Login, f: Format, quiet: bool, colour: bool) -> String {
             summary = format!("token stored, unconfirmed — {}", l.reason);
             next = crumb(
                 "verify",
-                "krowk auth verify",
+                "krowk whoami",
                 "the token was written down but the registry never confirmed it, so whether it works is still unknown",
             );
         }
@@ -652,7 +652,7 @@ pub fn stored_key(l: &Login, f: Format, quiet: bool, colour: bool) -> String {
     } else {
         vec![
             format!("{tick} token stored in {}", l.path),
-            format!("  {} — {}; run `krowk auth verify` once the registry is reachable", paint(colour, DIM, "unconfirmed"), l.reason),
+            format!("  {} — {}; run `krowk whoami` once the registry is reachable", paint(colour, DIM, "unconfirmed"), l.reason),
         ]
     };
     if l.shadowed {
@@ -1009,10 +1009,10 @@ mod tests {
 
     #[test]
     fn a_failure_reads_as_its_fix_with_the_command_on_its_own_line() {
-        let e = fail("not_authenticated", "no key to verify — run `krowk auth login --token krowk_sk_...`, or upload anonymously");
+        let e = fail("not_authenticated", "no key to verify — run `krowk login --token krowk_sk_...`, or upload anonymously");
         assert_eq!(
             error(&e, Format::Human, false, false),
-            "✗ No key to verify.\n  (not_authenticated)\n  try:  krowk auth login --token krowk_sk_..."
+            "✗ No key to verify.\n  (not_authenticated)\n  try:  krowk login --token krowk_sk_..."
         );
         let json: Value = serde_json::from_str(&error(&e, Format::Json, false, false)).unwrap();
         assert_eq!((json["ok"].as_bool(), json["error"]["error"].as_str()), (Some(false), Some("not_authenticated")));
