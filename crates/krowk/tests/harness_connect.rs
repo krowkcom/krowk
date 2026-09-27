@@ -192,7 +192,7 @@ fn connect_without_a_terminal_needs_the_method_when_there_is_a_choice_and_the_ve
     assert_eq!((or["data"]["instance"].as_str(), or["data"]["api_key_env"].as_str()), (Some("openrouter"), Some("OPENROUTER_API_KEY")));
     let out = b.krowk(&["connect", "openrouter", "--name", "team", "--format", "human"], &[]);
     let said = String::from_utf8_lossy(&out.stdout);
-    assert!(said.contains("$OPENROUTER_TEAM_API_KEY, which is not set here"), "{said}");
+    assert!(said.contains("$OPENROUTER_TEAM_API_KEY is not set here"), "{said}");
 
     // An account word is not a vendor to `krowk login`, and says where to
     // go in the vendor, method and name form every fix line takes.
@@ -222,7 +222,7 @@ fn disconnecting_your_own_claude_login_says_so_and_is_refused_without_a_terminal
     std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
     let out = b.krowk(&["connect", "anthropic", "--method", "subscription", "--format", "human"], &[]);
     let said = String::from_utf8_lossy(&out.stdout);
-    assert!(said.contains("signed in already") && said.contains("`krowk connect anthropic --method subscription --name <new>`") && !said.contains("disconnect"), "{said}");
+    assert!(said.contains("signed in already") && said.contains("another account:  krowk connect anthropic --method subscription --name <new>") && !said.contains("disconnect"), "{said}");
 
     let out = b.krowk(&["disconnect", "claude"], &[]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
@@ -268,6 +268,39 @@ fn connect_refuses_a_name_that_would_share_a_login_or_a_key_or_pass_for_another_
     let dir = b.root.join("repo/accounts/rel");
     assert_eq!(c["data"]["definition"]["configDir"], dir.display().to_string());
     assert!(dir.join("fake-login").exists());
+
+    // A `~` the shell left alone is the home directory, never a `~` here.
+    let c = b.json(&["connect", "anthropic", "--method", "subscription", "--name", "tilde", "--config-dir", "~/accounts/tilde", "--json"], &[]);
+    assert_eq!(c["data"]["definition"]["configDir"], b.root.join("home/accounts/tilde").display().to_string());
+    assert!(!b.root.join("repo/~").exists());
+
+    // Your own ~/.claude is never a new account's, even while
+    // CLAUDE_CONFIG_DIR names another directory.
+    let own = b.root.join("home/.claude").display().to_string();
+    let elsewhere = b.root.join("elsewhere").display().to_string();
+    let out = b.krowk(&["connect", "anthropic", "--method", "subscription", "--name", "mine", "--config-dir", &own], &[("CLAUDE_CONFIG_DIR", &elsewhere)]);
+    assert!(!out.status.success() && stderr(&out).contains("your own login's directory"), "{}", stderr(&out));
+    // Nor is a defined account renewed onto it.
+    let out = b.krowk(&["connect", "claude:tilde", "--config-dir", &own], &[("CLAUDE_CONFIG_DIR", &elsewhere)]);
+    assert!(!out.status.success() && stderr(&out).contains("your own login's directory"), "a renew: {}", stderr(&out));
+    // `~user` is the shell's to expand.
+    let out = b.krowk(&["connect", "anthropic", "--method", "subscription", "--name", "other-user", "--config-dir", "~root/acct"], &[]);
+    assert!(!out.status.success() && stderr(&out).contains("give the whole path"), "{}", stderr(&out));
+}
+
+#[test]
+fn a_failed_codex_sign_in_leaves_a_home_that_was_there_as_it_was() {
+    let b = Sandbox::new("codex-existing");
+    // The person's own Codex configuration, which a new account's home links.
+    std::fs::create_dir_all(b.root.join("home/.codex")).unwrap();
+    std::fs::write(b.root.join("home/.codex/config.toml"), "model = \"gpt-5.5\"\n").unwrap();
+    std::fs::write(b.root.join("home/.codex/AGENTS.md"), "be brief\n").unwrap();
+    let there = b.root.join("accounts/team");
+    std::fs::create_dir_all(&there).unwrap();
+    let out = b.krowk(&["connect", "openai", "--method", "subscription", "--name", "team", "--config-dir", &there.display().to_string()], &[("FAKE_CODEX_LOGIN", "fail")]);
+    assert!(!out.status.success(), "the login gives up: {}", stderr(&out));
+    let left: Vec<_> = std::fs::read_dir(&there).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert!(left.is_empty(), "nothing was linked into it: {left:?}");
 }
 
 #[test]
@@ -337,7 +370,7 @@ fn connect_at_a_terminal_walks_vendor_method_and_account() {
     t.write(b"team\r");
     let exit = t.wait(wait).expect("krowk connect finished");
     assert!(exit.success(), "{}", t.text());
-    assert!(t.text().contains("connected claude:team"), "{}", t.text());
+    assert!(t.text().contains("Connected claude:team") && t.text().contains("try it:"), "{}", t.text());
     assert!(b.data().join("claude/claude-team/fake-login").exists());
 }
 
@@ -427,10 +460,13 @@ fn a_hand_written_relative_or_dotdot_config_dir_is_never_made_by_krowk() {
     let dots = format!("{}/x/../y", b.root.display());
     std::fs::create_dir_all(b.config_path().parent().unwrap()).unwrap();
     std::fs::write(b.config_path(), json!({"instances": {"claude:rel": {"kind": "claude-code", "configDir": "rel/acct"}, "claude:dots": {"kind": "claude-code", "configDir": dots}}}).to_string()).unwrap();
-    for instance in ["claude:rel", "claude:dots"] {
-        let out = b.krowk(&["connect", instance], &[("FAKE_CLAUDE_LOGIN", "fail")]);
-        assert_eq!(out.status.code(), Some(3), "{instance}: {}", stderr(&out));
-    }
+    // A relative one is refused before the vendor runs: its login runs in
+    // krowk's own directory, where the path would lead somewhere else.
+    let out = b.krowk(&["connect", "claude:rel"], &[]);
+    assert!(!out.status.success() && stderr(&out).contains("is relative"), "claude:rel: {}", stderr(&out));
+    assert!(!b.root.join("fake.log").exists() || !std::fs::read_to_string(b.root.join("fake.log")).unwrap().contains("auth"), "the vendor never ran for it");
+    let out = b.krowk(&["connect", "claude:dots"], &[("FAKE_CLAUDE_LOGIN", "fail")]);
+    assert_eq!(out.status.code(), Some(3), "claude:dots: {}", stderr(&out));
     // Where krowk runs, where the vendor runs, and both readings of `..`.
     for nothing in [b.root.join("repo/rel"), b.data().join("readiness/rel"), b.root.join("x"), b.root.join("y")] {
         assert!(!nothing.exists(), "{} was made", nothing.display());

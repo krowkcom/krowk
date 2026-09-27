@@ -769,11 +769,15 @@ pub fn find_binary(binary: &str, path: &str) -> Option<PathBuf> {
         #[cfg(not(unix))]
         p.is_file()
     };
+    // Absolute, since what runs it may start it in another directory (a
+    // vendor's login runs in krowk's own): `./claude`, or a relative PATH
+    // entry, is where krowk found it, not where the child would look.
+    let absolute = |p: PathBuf| std::path::absolute(&p).unwrap_or(p);
     if binary.contains(std::path::MAIN_SEPARATOR) || binary.contains('/') {
         let p = PathBuf::from(binary);
-        return runnable(&p).then_some(p);
+        return runnable(&p).then(|| absolute(p));
     }
-    std::env::split_paths(path).map(|d| d.join(binary)).find(|p| runnable(p))
+    std::env::split_paths(path).map(|d| d.join(binary)).find(|p| runnable(p)).map(absolute)
 }
 
 fn clean_url(u: &str) -> String {

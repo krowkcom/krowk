@@ -647,8 +647,22 @@ impl ProviderAuth<'_> {
         // A directory given relative to where krowk runs is kept as the
         // absolute one it means: the vendor's login runs elsewhere, and a
         // turn resolves a definition's path against its own project.
-        let config_dir = match clean(&o.config_dir) {
-            Some(d) => Some(normalised(&std::path::absolute(&d).map_err(|e| bad_flag(format!("--config-dir {d}: {e}")))?).display().to_string()),
+        // A `~` the shell left alone (`--config-dir=~/acct`, a quoted one) is
+        // the home directory, never a directory named `~` here.
+        let home = self.env("HOME");
+        let config_dir = match clean(&o.config_dir).map(|d| match d.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => match home.trim() {
+                "" => Err(bad_flag(format!("--config-dir {d}: HOME is not set, so `~` names nothing — give the whole path"))),
+                h => Ok(match h.trim_end_matches('/') {
+                    "" => format!("/{}", rest.trim_start_matches('/')),
+                    h => format!("{h}{rest}"),
+                }),
+            },
+            // `~user` and the like are the shell's to expand, not krowk's.
+            Some(_) => Err(bad_flag(format!("--config-dir {d}: krowk expands only a leading `~/` — give the whole path"))),
+            None => Ok(d),
+        }) {
+            Some(d) => Some(normalised(&std::path::absolute(&d?).map_err(|e| bad_flag(format!("--config-dir: {e}")))?).display().to_string()),
             None => None,
         };
         if !backend && (o.binary.is_some() || o.config_dir.is_some()) {
@@ -757,7 +771,16 @@ impl ProviderAuth<'_> {
                     n.remove("baseUrl");
                 }
                 if let (Some(m), Value::Object(new)) = (merged.as_object_mut(), new) {
-                    m.extend(new);
+                    for (k, v) in new {
+                        // `env` is merged by key: a base URL given does not
+                        // take the definition's other variables with it.
+                        match (m.get_mut(&k), v) {
+                            (Some(Value::Object(old)), Value::Object(v)) if k == "env" => old.extend(v),
+                            (_, v) => {
+                                m.insert(k, v);
+                            }
+                        }
+                    }
                 }
                 serde_json::from_value(merged).map_err(|e| EngineError::new("bad_config", format!("{instance}: {e}")))?
             }
@@ -781,7 +804,7 @@ impl ProviderAuth<'_> {
                     None => account("claude")?,
                 };
                 if !renewed || o.config_dir.is_some() {
-                    self.dir_free(&instance, config_dir.as_deref(), &known)?;
+                    self.dir_free(&instance, config_dir.as_deref(), &known, ("CLAUDE_CONFIG_DIR", ".claude"))?;
                 }
                 let kind = InstanceKind::ClaudeCode { binary, config_dir, env, args, api_key_env, effort };
                 vendor = Some(self.sign_in_claude(&instance, &kind, ui)?);
@@ -793,7 +816,7 @@ impl ProviderAuth<'_> {
                     None => account("codex")?,
                 };
                 if !renewed || o.config_dir.is_some() {
-                    self.dir_free(&instance, codex_home.as_deref(), &known)?;
+                    self.dir_free(&instance, codex_home.as_deref(), &known, ("CODEX_HOME", ".codex"))?;
                 }
                 let kind = InstanceKind::CodexAppServer { binary, codex_home, env, args, api_key_env, effort };
                 vendor = Some(self.sign_in_codex(&instance, &kind, way.method == Method::Device, ui)?);
@@ -837,13 +860,26 @@ impl ProviderAuth<'_> {
     ///
     /// Every instance counts, the built-ins' own `~/.claude` and `~/.codex`
     /// too, and paths are compared by where they really lead.
-    fn dir_free(&self, instance: &str, dir: Option<&str>, known: &Registry) -> Result<(), EngineError> {
+    ///
+    /// The vendor's own directories — the one its variable names and the one
+    /// in the home directory (`own`) — are the person's own login whichever
+    /// the built-in runs on, so neither is ever a new account's.
+    fn dir_free(&self, instance: &str, dir: Option<&str>, known: &Registry, own: (&str, &str)) -> Result<(), EngineError> {
         let Some(dir) = dir else { return Ok(()) };
         let taken = known.instances.values().find(|r| r.name != instance && r.backend.as_ref().and_then(|b| b.home.as_deref()).is_some_and(|h| same_dir(h, Path::new(dir))));
-        match taken {
-            Some(other) => Err(bad_flag(format!("{dir} is {}'s directory already — one login cannot be two accounts; give this one another --name or --config-dir", other.name))),
-            None => Ok(()),
+        if let Some(other) = taken {
+            return Err(bad_flag(format!("{dir} is {}'s directory already — one login cannot be two accounts; give this one another --name or --config-dir", other.name)));
         }
+        let (var, dot) = own;
+        let from_var = Some(self.env(var)).filter(|d| !d.trim().is_empty()).map(PathBuf::from);
+        let in_home = Some(self.env("HOME")).filter(|h| !h.trim().is_empty()).map(|h| PathBuf::from(h).join(dot));
+        // Only the built-in itself runs on it; a defined account renewed onto
+        // it would be one login, two accounts, as a new one would.
+        let built_in = instances::implicit().iter().any(|(n, _)| *n == instance);
+        if !built_in && [from_var, in_home].into_iter().flatten().any(|o| same_dir(&o, Path::new(dir))) {
+            return Err(bad_flag(format!("{dir} is your own login's directory — one login cannot be two accounts; give this one another --config-dir")));
+        }
+        Ok(())
     }
 
     /// R-INST-2: a Claude Code account is signed in by Claude Code. Its
@@ -858,6 +894,7 @@ impl ProviderAuth<'_> {
         if backend.path.is_none() {
             return Err(EngineError::new("backend_not_found", format!("{} was not found — install Claude Code (https://claude.com/claude-code), or name the binary with --binary", backend.binary)));
         }
+        absolute_home(instance, &backend)?;
         let probe = self.probe()?;
         let made = made_dir(backend.config_dir.as_deref())?;
         let undo = |e: EngineError| undo(&made, e);
@@ -865,8 +902,7 @@ impl ProviderAuth<'_> {
         if status.logged_in || backend.env.contains_key("ANTHROPIC_BASE_URL") || backend.key.is_some() {
             return Ok(VendorLogin { logged_in: status.logged_in, describe: status.describe(), ran: false, shared: Vec::new() });
         }
-        let kept = backend.config_dir.as_ref().map(|d| format!(", kept in {}", d.display())).unwrap_or_default();
-        ui.notify(Notice::Info(&format!("Signing {instance} in to Claude Code — what follows is Claude's own login (`claude auth login`){kept}:")));
+        ui.notify(Notice::Info(&format!("Signing in to Claude Code as {instance} — Claude's own login follows.")));
         let exit = ui.terminal(&mut || claude_auth::login(&backend, &probe.dir)).map_err(|e| undo(backend_failed(e)))?;
         let status = claude_auth::status(&backend, &probe).map_err(|e| undo(backend_failed(e)))?;
         if !status.logged_in {
@@ -888,9 +924,19 @@ impl ProviderAuth<'_> {
         if backend.path.is_none() {
             return Err(EngineError::new("backend_not_found", format!("{} was not found — install Codex (https://developers.openai.com/codex), or name the binary with --binary", backend.binary)));
         }
+        absolute_home(instance, &backend)?;
         let probe = self.probe()?;
         let made = made_dir(backend.config_dir.as_deref())?;
-        let undo = |e: EngineError| undo(&made, e);
+        // A home that was there is linked like any other — Codex is asked
+        // with the person's own config, as a turn and `krowk status` ask it —
+        // and a failed sign-in takes away the links it added, and only those.
+        let before = backend.config_dir.as_deref().filter(|_| made.is_none()).map(entries);
+        let undo = |e: EngineError| {
+            if let (Some(dir), Some(before)) = (backend.config_dir.as_deref(), &before) {
+                unlink_new(dir, before);
+            }
+            undo(&made, e)
+        };
         // The person's own Codex home: what a new account's home shares.
         let own = Some(self.env("CODEX_HOME")).filter(|d| !d.trim().is_empty()).map(PathBuf::from).or_else(|| Some(self.env("HOME")).filter(|h| !h.trim().is_empty()).map(|h| PathBuf::from(h).join(".codex")));
         let shared = match (&backend.config_dir, &own) {
@@ -901,8 +947,7 @@ impl ProviderAuth<'_> {
         if status.logged_in || backend.key.is_some() {
             return Ok(VendorLogin { logged_in: status.logged_in, describe: status.describe(), ran: false, shared });
         }
-        let kept = backend.config_dir.as_ref().map(|d| format!(", kept in {}", d.display())).unwrap_or_default();
-        ui.notify(Notice::Info(&format!("Signing {instance} in to Codex — what follows is Codex's own login (`codex login`){kept}:")));
+        ui.notify(Notice::Info(&format!("Signing in to Codex as {instance} — Codex's own login follows.")));
         let exit = ui.terminal(&mut || codex_auth::login(&backend, device, &probe.dir)).map_err(|e| undo(backend_failed(e)))?;
         let status = codex_auth::signed_in(&backend, &probe).map_err(|e| undo(backend_failed(e)))?;
         if !status.logged_in {
@@ -939,6 +984,8 @@ impl ProviderAuth<'_> {
                 if b.path.is_none() {
                     return Err(EngineError::new("backend_not_found", format!("{} was not found, so `{command}` cannot run for {instance}", b.binary)));
                 }
+                // Refused before anyone is asked to agree to it.
+                absolute_home(instance, b)?;
                 if let Some(home) = self.own_home(r).filter(|_| !own_login) {
                     let who = if codex { "Codex" } else { "Claude Code" };
                     let warning = format!("disconnecting {instance} signs you out of {who} itself, in {}, for every tool that uses it", home.display());
@@ -968,7 +1015,9 @@ impl ProviderAuth<'_> {
             self.write(instance, None)?;
             // A default that ran on it would name an instance that is gone.
             let default = self.raw_config()?.get("defaultModel").and_then(Value::as_str).map(String::from);
-            if let Some(m) = default.filter(|m| m.split_once('/').is_some_and(|(i, _)| i == instance)) {
+            // A built-in's name still resolves once its definition is gone.
+            let built_in = instances::implicit().iter().any(|(n, _)| *n == instance);
+            if let Some(m) = default.filter(|m| !built_in && m.split_once('/').is_some_and(|(i, _)| i == instance)) {
                 self.edit(|raw| {
                     raw.remove("defaultModel");
                 })?;
@@ -1031,16 +1080,64 @@ struct Made {
     top: PathBuf,
 }
 
+/// What a Codex home holds where `codex::share` links: its own entries and
+/// those of its `skills`.
+fn entries(dir: &Path) -> std::collections::HashSet<PathBuf> {
+    let list = |d: &Path| std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).collect::<Vec<_>>();
+    list(dir).into_iter().chain(list(&dir.join("skills"))).collect()
+}
+
+/// Takes away the links a failed sign-in added to a home that was there:
+/// every symlink not in `before`, and a `skills` directory it made, once
+/// empty. Nothing else — a file Codex wrote is Codex's.
+fn unlink_new(dir: &Path, before: &std::collections::HashSet<PathBuf>) {
+    let mut now: Vec<PathBuf> = entries(dir).into_iter().filter(|p| !before.contains(p)).collect();
+    now.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    for p in now {
+        if p.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+            let _ = std::fs::remove_file(&p);
+        } else if p == dir.join("skills") {
+            let _ = std::fs::remove_dir(&p);
+        }
+    }
+}
+
+/// A vendor's login and sign-out run in krowk's own directory, so a
+/// hand-written relative directory would be one there, not the one turns
+/// use: refused, with what to write instead.
+fn absolute_home(instance: &str, b: &instances::Backend) -> Result<(), EngineError> {
+    match &b.config_dir {
+        Some(d) if !d.is_absolute() => Err(EngineError::new("bad_config", format!("{instance}'s config directory {} is relative — write it as an absolute path in config.json, then run this again", d.display()))),
+        _ => Ok(()),
+    }
+}
+
 /// The directory a sign-in makes, when it is new — taken away again if the
 /// sign-in fails. Only a path that is absolute and lexically normal is made
 /// here — what `connect` writes, `--config-dir` included; a hand-written
-/// relative or `..` one is left for the vendor to make, from the path it is
-/// given, rather than made here somewhere else.
+/// `..` one is left for the vendor to make, from the path it is given.
 fn made_dir(dir: Option<&Path>) -> Result<Option<Made>, EngineError> {
     let Some(d) = dir.filter(|d| d.is_absolute() && normalised(d) == *d && d.symlink_metadata().is_err()) else { return Ok(None) };
     let top = d.ancestors().take_while(|a| a.symlink_metadata().is_err()).last().unwrap_or(d).to_path_buf();
-    private_dir(d).map_err(|e| EngineError::new("config_unwritable", format!("create {}: {e}", d.display())))?;
-    Ok(Some(Made { leaf: d.to_path_buf(), top }))
+    let failed = |e: std::io::Error| EngineError::new("config_unwritable", format!("create {}: {e}", d.display()));
+    if let Some(parent) = d.parent() {
+        private_dir(parent).map_err(failed)?;
+    }
+    // The account's own directory is made alone, not recursively: one that
+    // appeared since it was looked for (another connect of the same name)
+    // is not this one's, and a failure must never take it away.
+    #[cfg(unix)]
+    let leaf = {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(d)
+    };
+    #[cfg(not(unix))]
+    let leaf = std::fs::create_dir(d);
+    match leaf {
+        Ok(()) => Ok(Some(Made { leaf: d.to_path_buf(), top })),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+        Err(e) => Err(failed(e)),
+    }
 }
 
 /// `.` and `..` taken out of a path by its words alone, as a person reads
