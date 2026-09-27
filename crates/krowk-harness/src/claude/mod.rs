@@ -160,6 +160,13 @@ pub fn args(l: &Launch, extra: &[String]) -> Vec<String> {
     a
 }
 
+/// krowk's deny rules, as Claude Code is started with them: none under
+/// unhinged, which no rule of krowk's holds. The deny rules of Claude Code's
+/// own settings files Claude Code applies itself, before it asks krowk.
+fn disallowed(gate: &Gate) -> Vec<String> {
+    if gate.mode() == PermissionMode::Unhinged { Vec::new() } else { gate.policy().deny_list() }
+}
+
 /// krowk's ladder onto Claude Code's `--effort` levels (low … max): below
 /// low is low, since Claude Code has no switch for thinking off.
 pub fn effort_level(e: Effort) -> &'static str {
@@ -331,8 +338,7 @@ impl Engine for ClaudeEngine {
                 resume: ctx.backend_session.clone(),
                 effort: ctx.effort.map(effort_level),
                 plan: ctx.permission_mode == PermissionMode::Plan,
-                // Under unhinged no deny rule holds, Claude Code's copy included.
-                disallowed: if ctx.permission_mode == PermissionMode::Unhinged { Vec::new() } else { ctx.gate.policy().deny_list() },
+                disallowed: disallowed(&ctx.gate),
             };
             let ask = Answers {
                 session_id: ctx.session_id.clone(),
@@ -913,6 +919,11 @@ mod tests {
         // R-PERM-1: krowk's deny rules reach what Claude Code allows by itself.
         let denied = args(&Launch { disallowed: vec!["Bash(rm:*)".into(), "Read(.env)".into()], ..l }, &[]).join(" ");
         assert!(denied.contains("--disallowedTools Bash(rm:*) Read(.env) --permission-mode default"), "{denied}");
+        let mut p = permissions::Policy::modes_only(Path::new("/repo"));
+        p.loaded.rules.push((permissions::Kind::Deny, permissions::rules::parse("Bash(rm:*)", "test", Path::new("/repo")).unwrap()));
+        let gate = |m| Gate::new(p.clone(), m, Default::default(), None, None, "s", "t");
+        assert_eq!(disallowed(&gate(PermissionMode::BypassPermissions)), ["Bash(rm:*)"]);
+        assert!(disallowed(&gate(PermissionMode::Unhinged)).is_empty(), "unhinged starts Claude Code without krowk's deny rules");
         assert!(looser_than("bypassPermissions", PermissionMode::AcceptEdits) && looser_than("acceptEdits", PermissionMode::Default) && looser_than("auto", PermissionMode::AcceptEdits));
         assert!(looser_than("default", PermissionMode::Plan) && looser_than("somethingNew", PermissionMode::AcceptEdits));
         assert!(!looser_than("default", PermissionMode::Default) && !looser_than("plan", PermissionMode::Plan) && !looser_than("bypassPermissions", PermissionMode::BypassPermissions) && !looser_than("bypassPermissions", PermissionMode::Unhinged));

@@ -909,7 +909,7 @@ stdout:
       "name": "permission-mode",
       "type": "string",
       "default": "default",
-      "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which runs everything: no deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode"
+      "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode"
     },
     {
       "name": "toolset",
@@ -1883,7 +1883,7 @@ stdout:
       "name": "permission-mode",
       "type": "string",
       "default": "default",
-      "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which runs everything: no deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode"
+      "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode"
     },
     {
       "name": "toolset",
@@ -2871,7 +2871,7 @@ stdout:
       "name": "permission-mode",
       "type": "string",
       "default": "default",
-      "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which runs everything: no deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode"
+      "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode"
     },
     {
       "name": "toolset",
@@ -3859,7 +3859,7 @@ tty:
       "name": "permission-mode",
       "type": "string",
       "default": "default",
-      "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which runs everything: no deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode"
+      "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode"
     },
     {
       "name": "toolset",

@@ -12,16 +12,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 ### Added
 
 - **`--permission-mode unhinged` runs everything the agent asks to**, with
-  no approval and no exceptions: deny and ask rules, a hook's `ask`, and the
-  protected directories (`.git`, `.claude`, `.codex`, `.krowk`, krowk's own
-  config) no longer hold anything back. `bypassPermissions` still stops at a
-  deny rule and still asks where an ask rule or a hook says so; `unhinged`
-  is for when you trust the model with everything krowk can reach. Claude
-  Code and Codex backends run in their loosest setting and are started
-  without krowk's deny rules. A `PreToolUse` hook still runs and can still
-  block a call. Set it for good with `"permissions": {"defaultMode":
-  "unhinged"}` in `~/.config/krowk/config.json`; a repository's settings can
-  never choose it.
+  no approval: krowk's deny and ask rules, a hook's `ask`, and the protected
+  directories (`.git`, `.claude`, `.codex`, `.krowk`, krowk's own config) no
+  longer hold anything back. `bypassPermissions` still stops at a deny rule
+  and still asks where an ask rule or a hook says so; `unhinged` is for when
+  you trust the model with everything krowk can reach. Set it for good with
+  `"permissions": {"defaultMode": "unhinged"}` in
+  `~/.config/krowk/config.json`; a repository's settings can never choose
+  it. What still holds: a `PreToolUse` hook that blocks a call; `publish`
+  refusing credential files; on a Claude Code instance, the deny rules in
+  Claude Code's own settings files, which Claude Code applies itself; on a
+  Codex instance, Codex's own rules (it runs in full access, as under
+  `bypassPermissions`). A refusal that only `unhinged` gets past now says
+  so.
 
 ### Changed
 

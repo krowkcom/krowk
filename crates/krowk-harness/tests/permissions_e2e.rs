@@ -164,6 +164,18 @@ fn r_perm_1_unhinged_runs_what_a_deny_rule_would_have_stopped() {
 }
 
 #[test]
+fn r_perm_1_a_hook_that_blocks_still_blocks_under_unhinged() {
+    let m = mock::serve(one_tool("bash", json!({"command": "touch ran.txt"})));
+    let h = Home::new("unhinged-hook", &m.url);
+    let hooks = json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo 'not during the freeze' >&2; exit 2"}]}]}});
+    let host = h.host(Config { user: Some(hooks), ..Config::default() });
+    let (_, r) = run(&host, prompt("make a file", PermissionMode::Unhinged));
+    assert_eq!(r.result, "Done.");
+    assert!(tool_result_sent(&m).contains("not during the freeze"), "{}", tool_result_sent(&m));
+    assert!(!h.repo().join("ran.txt").exists(), "a hook is the person's own program, not a rule: its block stands");
+}
+
+#[test]
 fn r_compat_1_a_pretooluse_hook_exiting_2_blocks_the_tool_and_the_model_reads_why() {
     let m = mock::serve(one_tool("bash", json!({"command": "touch ran.txt"})));
     let h = Home::new("hook", &m.url);

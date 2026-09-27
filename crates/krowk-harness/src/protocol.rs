@@ -233,8 +233,8 @@ pub struct ErrorInfo {
 /// before edits and commands, `acceptEdits` before commands, `plan` changes
 /// nothing, and `bypassPermissions` asks before nothing — though a deny
 /// rule, an ask rule and a hook's ask still hold in each of those. krowk's
-/// own `unhinged` holds nothing: every call runs, whatever the rules say
-/// (`crate::permissions`).
+/// own `unhinged` holds nothing krowk's rules say: every call runs but one a
+/// hook blocks (`crate::permissions`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
@@ -252,7 +252,13 @@ impl PermissionMode {
     /// The mode as it is written: on the command line, in settings, on the
     /// wire.
     pub fn name(self) -> &'static str {
-        Self::NAMES[self as usize]
+        match self {
+            PermissionMode::Default => "default",
+            PermissionMode::AcceptEdits => "acceptEdits",
+            PermissionMode::Plan => "plan",
+            PermissionMode::BypassPermissions => "bypassPermissions",
+            PermissionMode::Unhinged => "unhinged",
+        }
     }
 
     /// Whether the mode asks a person before nothing: a backend runs in

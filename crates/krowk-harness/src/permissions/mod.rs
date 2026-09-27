@@ -295,6 +295,11 @@ impl Gate {
         &self.0.policy
     }
 
+    /// The same gate in another mode.
+    fn in_mode(&self, mode: PermissionMode) -> Gate {
+        Gate(Arc::new(Inner { policy: self.0.policy.clone(), mode, grants: self.0.grants.clone(), approvals: None, grants_file: None, session_id: self.0.session_id.clone(), turn_id: self.0.turn_id.clone() }))
+    }
+
     /// The same gate, with more directories no file tool changes unasked: a
     /// backend instance's own config directory.
     pub fn protecting(&self, dirs: impl IntoIterator<Item = PathBuf>) -> Gate {
@@ -458,7 +463,7 @@ impl Gate {
             Verdict::Ask { reason, remember } => (reason, remember),
         };
         let what = summary(call);
-        let Some(approvals) = &self.0.approvals else { return Err(self.nobody_to_ask(call, &what, &reason, &remember)) };
+        let Some(approvals) = &self.0.approvals else { return Err(self.nobody_to_ask(call, hook, &what, &reason, &remember)) };
         let request_id = krowk_store::new_id();
         let answer = approvals.wait(&request_id, &self.0.session_id);
         let req = ApprovalRequest {
@@ -508,19 +513,21 @@ impl Gate {
 
     /// The refusal for a call that would be asked about when nobody can
     /// answer: what it needed, and what would allow it.
-    fn nobody_to_ask(&self, call: &Call, what: &str, reason: &str, remember: &[String]) -> String {
+    fn nobody_to_ask(&self, call: &Call, hook: Option<hooks::Decision>, what: &str, reason: &str, remember: &[String]) -> String {
         // A session tool is asked about only by an ask rule or a hook, which
-        // no mode and no allow rule gets past.
+        // no allow rule and no mode but unhinged gets past.
         if call.access == Access::Session {
-            return format!("{what} needs approval — {reason} — and nobody is here to give it: this session cannot ask. Run it where someone can answer (bare `krowk`), or remove what asks.");
+            return format!("{what} needs approval — {reason} — and nobody is here to give it: this session cannot ask. Run it where someone can answer (bare `krowk`), remove what asks, or rerun with `--permission-mode unhinged`.");
         }
+        // What bypassPermissions would still ask about — an ask rule, a
+        // hook's ask, a line a deny rule could not see into — only unhinged
+        // runs.
+        let past_bypass = matches!(self.in_mode(PermissionMode::BypassPermissions).verdict(call, hook), Verdict::Ask { .. });
         let at = self.0.policy.places();
         let untrusted = self.0.policy.loaded.ignored_allow.iter().find(|r| rules::matches(r, call, &at, true));
         let (outside, fenced) = self.reach(call);
         let mode = match &call.access {
-            // What bypassPermissions still asks about, an ask rule or a
-            // hook's ask, only unhinged runs.
-            _ if self.0.mode == PermissionMode::BypassPermissions => "unhinged",
+            _ if past_bypass => "unhinged",
             Access::Edit(_) | Access::Publish(_) if outside.is_empty() && fenced.is_none() => "acceptEdits",
             _ => "bypassPermissions",
         };

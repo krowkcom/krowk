@@ -134,6 +134,14 @@ fn r_perm_1_unhinged_runs_everything_and_no_rule_fence_or_hooks_ask_holds_it() {
 }
 
 #[test]
+fn r_perm_1_every_mode_reads_back_as_it_is_written() {
+    for n in PermissionMode::NAMES {
+        let m = PermissionMode::parse(n).unwrap();
+        assert_eq!((m.name(), serde_json::to_value(m).unwrap()), (n, json!(n)));
+    }
+}
+
+#[test]
 fn r_perm_1_only_the_person_puts_a_session_in_unhinged() {
     let d = repo("unhinged-mode");
     std::fs::create_dir_all(d.join(".claude")).unwrap();
@@ -142,10 +150,17 @@ fn r_perm_1_only_the_person_puts_a_session_in_unhinged() {
     assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, None, "a trusted repository's unhinged never counts");
     let cfg = Config { user: Some(json!({"permissions": {"defaultMode": "unhinged"}})), ..cfg };
     assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, Some(PermissionMode::Unhinged), "the person's own settings choose it");
-    // What bypassPermissions still asks about, the refusal points past it.
-    let g = gate(&policy(&d, &[(Kind::Ask, "Bash(npm test)")]), PermissionMode::BypassPermissions);
-    let why = g.nobody_to_ask(&bash("npm test"), "Bash `npm test`", "the rule asks first", &[]);
-    assert!(why.contains("--permission-mode unhinged"), "{why}");
+    // What bypassPermissions still asks about, the refusal points past it,
+    // from whichever mode asked.
+    let asks = policy(&d, &[(Kind::Ask, "Bash(npm test)")]);
+    for m in [PermissionMode::Default, PermissionMode::BypassPermissions] {
+        let why = gate(&asks, m).nobody_to_ask(&bash("npm test"), None, "Bash `npm test`", "the rule asks first", &[]);
+        assert!(why.contains("--permission-mode unhinged"), "{m:?}: {why}");
+        let why = gate(&policy(&d, &[]), m).nobody_to_ask(&bash("ls"), Some(hooks::Decision::Ask), "Bash `ls`", "a hook asks", &[]);
+        assert!(why.contains("--permission-mode unhinged"), "{m:?}, a hook's ask: {why}");
+    }
+    let why = gate(&policy(&d, &[]), PermissionMode::Default).nobody_to_ask(&bash("npm test"), None, "Bash `npm test`", "it runs a command", &[]);
+    assert!(why.contains("--permission-mode bypassPermissions"), "what bypassPermissions runs, it is still pointed at: {why}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -186,7 +201,7 @@ fn r_perm_1_an_untrusted_repository_narrows_but_never_widens() {
     assert_eq!(letter(&g.verdict(&bash("curl https://x"), None)), '?', "its allow rule is not taken");
     assert_eq!(letter(&g.verdict(&read(d.join("src/.env")), None)), 'N', "its deny rule is");
     assert_eq!(letter(&g.verdict(&read(d.join("src/secrets/k")), None)), '?', "and its ask rule");
-    let why = g.nobody_to_ask(&bash("curl https://x"), "Bash `curl https://x`", "it runs a command", &[]);
+    let why = g.nobody_to_ask(&bash("curl https://x"), None, "Bash `curl https://x`", "it runs a command", &[]);
     assert!(why.contains("apply only once it is trusted") && why.contains("Bash(curl:*)"), "the refusal says why the repository's rule did not count: {why}");
 
     let cfg = Config { trusted: Some(Arc::new(|_: &Path| true)), ..Config::default() };
