@@ -107,8 +107,8 @@ unit = "bytes"
 # its code — leaving 207,928 bytes for the rest of Provider auth.
 # Provider auth 05, routing a bare model and the default to the one ready
 # instance (no new crate: the router and its refusals, the kind labels),
-# adds 21,088 bytes on the umbrella's 8,181,000: 8,202,088 (7.82 MiB),
-# 186,520 under this.
+# adds 21,856 bytes on the umbrella's 8,181,000: 8,202,856 (7.82 MiB),
+# 185,752 under this.
 max = { x86_64-linux = 8_388_608 }
 status = "enforced"
 
