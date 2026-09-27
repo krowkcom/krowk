@@ -426,6 +426,7 @@ impl Shared {
     /// one the turn will get. `known_good` skips the vendor: a session whose process
     /// is up and serving it has shown its login.
     async fn ready(&self, instance: &Resolved, cwd: &std::path::Path, known_good: bool) -> Result<(), EngineError> {
+        key_off_thread(instance).await?;
         let creds = &self.cfg.credentials;
         if let Some(r) = readiness::local(instance, creds)
             && let Some(e) = readiness::report(instance, r, creds).refusal(instance)
@@ -611,7 +612,10 @@ impl Shared {
         let (preset, _) = toolset::choose(toolset, self.cfg.registry.toolset.as_deref(), family.as_deref(), &model.model).map_err(|e| EngineError::new("bad_toolset", e))?;
         let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
         let native = match &instance.backend {
-            None => Some(engine_for(&instance, wire, &self.cfg.credentials, &self.cfg.krowk_version).map_err(staying)?),
+            None => {
+                key_off_thread(&instance).await.map_err(staying)?;
+                Some(engine_for(&instance, wire, &self.cfg.credentials, &self.cfg.krowk_version).map_err(staying)?)
+            }
             // A backend runs the repository's own hooks and MCP servers, so
             // it is not started in one nobody trusted; and a binary that is
             // not there, or a login that is not, is named before a session
@@ -712,6 +716,7 @@ impl Shared {
         let family = info.as_ref().and_then(|i| i.family.clone());
         let (preset, _) = toolset::choose(None, self.cfg.registry.toolset.as_deref(), family.as_deref(), &model.model).map_err(|e| EngineError::new("bad_toolset", e))?;
         let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
+        key_off_thread(&instance).await?;
         let engine = engine_for(&instance, wire, &self.cfg.credentials, &self.cfg.krowk_version)?;
         let p = &spawn.parent;
         let (log, root) = SessionLog::create_child(&self.cfg.sessions_dir, &p.cwd, &self.cfg.krowk_version, Some(&p.session_id), run.name.as_deref()).map_err(log_failure)?;
@@ -1142,6 +1147,19 @@ pub fn clock(ms: i64) -> String {
         let s = ms / 1000;
         format!("{:02}:{:02} UTC", (s / 3600) % 24, (s / 60) % 60)
     }
+}
+
+/// A stored key's command, run off the runtime's thread when this process
+/// has no key from it yet: it may take its whole timeout, and the TUI's
+/// drawing and keys run on that one thread. After it, `engine_for` finds
+/// the key kept (`keys::run`) and runs nothing; a failure is the turn's.
+async fn key_off_thread(instance: &Resolved) -> Result<(), EngineError> {
+    let crate::keys::Stored::Command { command, .. } = &instance.stored else { return Ok(()) };
+    if !instance.api_key.is_empty() || crate::keys::ran(command).is_some() {
+        return Ok(());
+    }
+    let inst = instance.clone();
+    tokio::task::spawn_blocking(move || crate::keys::materialise(&inst).map(drop)).await.unwrap_or_else(|_| Err(EngineError::new("not_authenticated", "the stored key's command did not finish")))
 }
 
 /// The engine an instance runs a model on, over the wire API chosen for
