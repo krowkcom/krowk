@@ -225,6 +225,36 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The TUI connects a provider itself: `/connect`, `/disconnect`, and a
+  "Connect a provider" card on the first run.** Before, a fresh machine's
+  first prompt failed against `anthropic` with `not_authenticated`, and the
+  way out was to quit and run `krowk connect`. Now, when nothing here can
+  run a model, bare `krowk` opens on a card that walks the same steps as
+  `krowk connect` — vendor, way in, account, each account marked ready or
+  not — and `/connect` (or `/connect claude:work`) does it any time. A
+  Claude or ChatGPT subscription is still signed in by the vendor's own
+  `claude auth login` or `codex login`: the TUI gives that command the
+  terminal, as Ctrl-Z would, and takes it back after, redrawn at whatever
+  size the window is by then; Ctrl-C there stops that login, not krowk. A
+  SuperGrok sign-in's page (a link) and device code, and a pasted API key,
+  stay in the TUI; the key is shown as bullets and never reaches the
+  screen, the prompt's history or config.json — while the overlay is up,
+  nothing typed or pasted reaches the prompt, and a question that comes up
+  while it is hidden waits for `/connect` to open it rather than taking
+  what is being typed. The result reads as `krowk connect`'s (`✓ Connected
+  claude`, then what it is), and when it is the first connection, or the
+  session had nothing ready to run on, the session moves onto it.
+  `/disconnect` signs the session's instance, or one picked, out, and asks
+  before signing you out of Claude Code or Codex itself. After either, a
+  Claude Code or Codex process already running on the instance it
+  connected or signed out is not reused: the next turn asks the vendor
+  again and starts a new one, so a sign-out takes effect at once. A
+  cancelled or failed one, or one of another instance, keeps it. `/model` marks
+  each instance `✓ ready` or what it lacks (`✗ not signed in`), checking
+  the vendors in the background so a slow `claude` never holds up a key;
+  picking one that is not ready offers `/connect` for it. Both commands are
+  in the `/` menu and the help menu.
+
 - **An API key can be stored, not only read from the environment.**
   `krowk connect anthropic --method api-key` (or `openai`, `xai`,
   `openrouter`, `openai-compatible`) at a terminal asks "Paste a key, or
@@ -240,7 +270,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   would ask for a passphrase fails at once, saying to unlock it first —
   except when `krowk connect` runs it at a terminal, where you can type the
   passphrase. There is no `--key <value>`: it would be in your shell's
-  history. The key goes in `~/.krowk/credentials.json`
+  history. A key, `$VAR` or `!command` over more than one line is refused,
+  so a pasted command never runs as two. The key goes in `~/.krowk/credentials.json`
   (0600), the file SuperGrok's login is in; `config.json` still names only
   a variable. A stored key is used before the variable, and when it cannot
   be had — its variable unset, its command failing — the instance has no
@@ -830,6 +861,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   report says how many of each it found.
 
 ### Fixed
+
+- **An answer a backend sends whole is shown in the TUI.** A Claude Code
+  turn whose text arrived as one message, with no streamed pieces (an older
+  `claude`, or one that drops its partial messages), ran and was logged but
+  showed nothing between the prompt and `Worked for`, and Ctrl-Y copied
+  nothing of it.
 
 - **A Claude Code `defaultMode` krowk does not run no longer refuses every
   prompt.** `"defaultMode": "auto"` in `~/.claude/settings.json` (or any

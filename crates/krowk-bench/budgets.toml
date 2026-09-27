@@ -127,7 +127,18 @@ unit = "bytes"
 # (7.92 MiB), leaving 84,792 bytes.
 # Provider auth 06 (the short `krowk --help`, with `help --all`, topics and
 # each command's own prose) takes 1,376 off: 8,302,440.
-max = { x86_64-linux = 8_388_608 }
+# Provider auth 03 (stored keys) and 07 (one home) bring the umbrella to
+# 8,379,336, 9,272 under this, and CI measures some 7 KB more than a local
+# build. Provider auth 04, the TUI's `/connect` and `/disconnect` (no new
+# crate: the sign-in on a thread of its own asking through an overlay, the
+# terminal handed to a vendor's login and taken back, the first-run card,
+# readiness marks in `/model`, the host's instances replaced after a
+# connection, OSC 8 links), adds 58,432 bytes: 8,437,768 (8.05 MiB). Raised
+# 8.00 -> 8.25 MiB by 04 — the growth is its code — leaving 212,984 bytes.
+# Its review round 1 (SIGINT kept from krowk while a login has the
+# terminal, a backend not reused after a connection, the overlay's keys)
+# adds 1,696: 8,439,464, 211,288 under this.
+max = { x86_64-linux = 8_650_752 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---

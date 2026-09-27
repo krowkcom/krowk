@@ -129,6 +129,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         history_file,
         notices: notices.into_iter().chain(mode_notices).collect(),
         version: super::VERSION.into(),
+        config: Some(super::providers::config_path()?),
     });
     // As after `krowk -p`: the log is the session, krowk.db its listing.
     if let Some(id) = &outcome.session_id

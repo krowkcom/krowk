@@ -7,6 +7,8 @@ pub enum Action {
     /// Nothing to run: the entry only tells.
     Tell,
     Model,
+    Connect,
+    Disconnect,
     Todos,
     Agents,
     Details,
@@ -34,6 +36,8 @@ pub const ENTRIES: &[Entry] = &[
     e("History", "Bring back an earlier prompt", "↑ ↓", Action::Tell),
     e("Commands", "Type / for commands and skills", "/", Action::Tell),
     e("Model", "Switch model or instance", "/model", Action::Model),
+    e("Connect", "Connect a provider, or renew a login", "/connect", Action::Connect),
+    e("Disconnect", "Sign an instance out", "/disconnect", Action::Disconnect),
     e("Todos", "The task list for this session", "ctrl-t", Action::Todos),
     e("Subagents", "See, expand or stop subagents", "ctrl-g", Action::Agents),
     e("Session", "Tokens, limits and the log file", "ctrl-o", Action::Details),
@@ -62,7 +66,13 @@ pub struct Slash {
 }
 
 /// krowk's own commands, as `/` lists them. `/quit` works too, unlisted.
-pub const COMMANDS: &[(&str, &str)] = &[("model", "Switch model or instance"), ("help", "Keys and what they do"), ("exit", "Leave krowk")];
+pub const COMMANDS: &[(&str, &str)] = &[
+    ("model", "Switch model or instance"),
+    ("connect", "Connect a provider — a subscription or an API key"),
+    ("disconnect", "Sign an instance out"),
+    ("help", "Keys and what they do"),
+    ("exit", "Leave krowk"),
+];
 
 /// The commands and skills `typed` (the prompt, `/` and all) finds,
 /// fuzzily, as Grok Build's menu does: ranked by how well the name
