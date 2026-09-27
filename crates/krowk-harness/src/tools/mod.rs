@@ -395,6 +395,10 @@ pub struct Scope {
     /// directory, Claude Code's, a backend instance's (`CLAUDE_CONFIG_DIR`,
     /// `CODEX_HOME`), whose settings and hooks decide what runs next.
     pub protected: Vec<PathBuf>,
+    /// Files and directories no tool reads, searches or changes without a
+    /// person's say, wherever they sit: krowk's provider credentials (its
+    /// stored keys and logins) and its registry key.
+    pub secrets: Vec<PathBuf>,
     pub hidden: Hidden,
 }
 
@@ -419,7 +423,7 @@ const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".krowk"];
 impl Scope {
     /// Only the working directory, nothing opened.
     pub fn within(cwd: &Path) -> Scope {
-        Scope { cwd: cwd.to_path_buf(), roots: Vec::new(), read_roots: Vec::new(), outside: false, open: false, protected: Vec::new(), hidden: Hidden::default() }
+        Scope { cwd: cwd.to_path_buf(), roots: Vec::new(), read_roots: Vec::new(), outside: false, open: false, protected: Vec::new(), secrets: Vec::new(), hidden: Hidden::default() }
     }
 
     /// Where `p` (absolute) leads against the tools' reach, for a read or an
@@ -437,6 +441,9 @@ impl Scope {
             roots.extend(self.read_roots.iter().map(|d| canon(d)));
         }
         let inside = roots.iter().any(|r| real.starts_with(r));
+        if self.secret(p) || self.secret(&real) {
+            return Reach::Fenced(format!("{} holds krowk's API keys and logins, which the tools read or change only with a person's say", p.display()));
+        }
         if edit && let Some(why) = self.fence(p, &real, &root) {
             return Reach::Fenced(why);
         }
@@ -488,6 +495,14 @@ impl Scope {
         self.protected.iter().find(|d| within(real, d) || within(p, d)).map(|d| {
             format!("{} is inside {}, a directory whose settings decide what runs (krowk's, or a backend's own), which the file tools change only with a person's say", p.display(), d.display())
         })
+    }
+
+    /// Whether `p` is, or is inside, one of `secrets` — as spelled or as the
+    /// secret's own path leads, compared regardless of case.
+    pub fn secret(&self, p: &Path) -> bool {
+        let lower = |p: &Path| PathBuf::from(p.to_string_lossy().to_lowercase());
+        let p = lower(p);
+        self.secrets.iter().any(|s| p.starts_with(lower(s)) || p.starts_with(lower(&s.canonicalize().unwrap_or_else(|_| s.clone()))))
     }
 
     /// The path a tool was given, resolved against the working directory,

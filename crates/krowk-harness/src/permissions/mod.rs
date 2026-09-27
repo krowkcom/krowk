@@ -83,6 +83,9 @@ pub struct Policy {
     /// Directories no file tool changes without a person's say: krowk's
     /// config, Claude Code's, a backend instance's own home.
     pub protected: Vec<PathBuf>,
+    /// What no file tool reads or searches unasked either: krowk's
+    /// provider credentials and registry key (`Scope::secrets`).
+    pub secrets: Vec<PathBuf>,
 }
 
 impl Policy {
@@ -91,7 +94,8 @@ impl Policy {
         let loaded = settings::load(cfg, cwd)?;
         let mut protected: Vec<PathBuf> = cfg.krowk_dir.iter().cloned().collect();
         protected.extend(cfg.claude_home());
-        Ok(Policy { loaded, cwd: cwd.to_path_buf(), home: cfg.home.clone(), read_dirs: Vec::new(), protected })
+        let secrets = cfg.krowk_dir.iter().flat_map(|d| [d.join("providers"), d.join("credentials.json")]).collect();
+        Ok(Policy { loaded, cwd: cwd.to_path_buf(), home: cfg.home.clone(), read_dirs: Vec::new(), protected, secrets })
     }
 
     /// A policy with no settings: the modes alone.
@@ -127,6 +131,7 @@ impl Policy {
             outside: opens.outside,
             open: opens.fences,
             protected: self.protected.clone(),
+            secrets: self.secrets.clone(),
             hidden: Hidden::default(),
         }
     }
@@ -303,9 +308,10 @@ impl Gate {
     /// files a deny rule keeps from being read — which a search skips.
     pub fn scope(&self, opens: Opens) -> Scope {
         let mut s = self.0.policy.scope(opens);
-        let me = self.clone();
-        if self.0.policy.loaded.rules.iter().any(|(k, _)| *k == Kind::Deny) {
-            s.hidden = Hidden(Some(Arc::new(move |p: &Path| me.denies_read(p))));
+        let (me, secrets) = (self.clone(), Scope { secrets: s.secrets.clone(), ..Scope::within(&s.cwd) });
+        // A search skips the secrets as it skips what a deny rule hides.
+        if !s.secrets.is_empty() || self.0.policy.loaded.rules.iter().any(|(k, _)| *k == Kind::Deny) {
+            s.hidden = Hidden(Some(Arc::new(move |p: &Path| secrets.secret(p) || me.denies_read(p))));
         }
         s
     }
