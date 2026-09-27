@@ -1148,6 +1148,9 @@ pub fn clock(ms: i64) -> String {
 /// it. A credential that is missing is refused here, before a session is
 /// created for a turn that could not run.
 fn engine_for(instance: &Resolved, wire: WireApi, credentials: &std::path::Path, krowk_version: &str) -> Result<Box<dyn Engine>, EngineError> {
+    // A stored key's command runs here if nothing has run it yet in this
+    // process; one that fails refuses the turn, with no fallback.
+    let instance = &*crate::keys::materialise(instance)?;
     // A native instance's readiness needs no process: a key, or a login in
     // krowk's own file that is there and not expired past refreshing.
     if let Some(r) = readiness::local(instance, credentials)

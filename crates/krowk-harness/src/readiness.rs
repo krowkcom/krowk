@@ -9,7 +9,9 @@
 //! credential comes from (`source` — an environment variable's name, a
 //! vendor's own login, krowk's OAuth file; never the secret) and one line
 //! that fixes it. A key is checked in the environment krowk resolved at
-//! start, an OAuth login in krowk's provider credentials file (an expired
+//! start, or — stored — in krowk's provider credentials file, whose
+//! `!command` is the one command `check` runs besides a vendor's (see
+//! `crate::keys`), an OAuth login in krowk's provider credentials file (an expired
 //! access token with no refresh token is `Expired`: nothing krowk can do
 //! renews it), and a vendor login by asking the vendor — `claude auth status
 //! --json`, Codex's `account/read` over `codex app-server` with `codex login
@@ -44,6 +46,7 @@ use crate::connect;
 use crate::engine::EngineError;
 use crate::catalog::Listed;
 use crate::instances::{kind_label, Asked, Auth, Backend, Registry, Resolved};
+use crate::keys::{self, Stored};
 use crate::oauth;
 use crate::protocol::{ModelRef, WireApi};
 use serde_json::{json, Value};
@@ -210,8 +213,19 @@ impl Resolved {
     /// wire clients, which keep it as a defensive check of their own.
     pub fn missing_key(&self) -> Option<String> {
         let keyed = self.auth == Auth::ApiKey || (self.auth == Auth::Vendor && !self.api_key_env.is_empty());
-        (keyed && self.api_key.is_empty()).then(|| {
-            format!("no API key for the {} instance — set {} (krowk reads the key from the environment, never from a file)", self.name, self.api_key_env)
+        if !keyed || !self.api_key.is_empty() {
+            return None;
+        }
+        let store = connect::connect_command(&self.name, self.kind);
+        Some(match &self.stored {
+            // A stored reference owns the instance: its variable, not the
+            // definition's, is the one to set.
+            Stored::Env(v) => format!("no API key for the {} instance — its stored key is ${v}, which is not set; set {v}, or store another with `{store}` (krowk does not fall back to ${} for it)", self.name, self.api_key_env),
+            Stored::Command { .. } | Stored::Unreadable(_) => format!("the {} instance's stored key has not been read", self.name),
+            Stored::Literal => format!("the {} instance's stored key is empty — store another with `{store}`", self.name),
+            // A backend's key is the environment's alone.
+            _ if self.backend.is_some() => format!("no API key for the {} instance — set {}", self.name, self.api_key_env),
+            _ => format!("no API key for the {} instance — set {}, or store one with `{store}`", self.name, self.api_key_env),
         })
     }
 }
@@ -224,16 +238,24 @@ pub fn local(inst: &Resolved, credentials: &Path) -> Option<Readiness> {
     {
         return Some(Readiness::NotInstalled);
     }
+    // A stored key's command is run by `check`, not here: this answers
+    // without spawning anything.
+    match &inst.stored {
+        Stored::Unreadable(reason) => return Some(Readiness::Unknown { reason: reason.clone() }),
+        Stored::Command { command, .. } if inst.api_key.is_empty() => return keys::ran(command).map(|_| Readiness::Ready { source: expected_source(inst, credentials) }),
+        Stored::Env(v) if inst.api_key.is_empty() => return Some(Readiness::KeyNotSet { var: v.clone() }),
+        _ => {}
+    }
     if inst.missing_key().is_some() {
         return Some(Readiness::KeyNotSet { var: inst.api_key_env.clone() });
     }
     match &inst.auth {
-        Auth::ApiKey => Some(Readiness::Ready { source: format!("${}", inst.api_key_env) }),
+        Auth::ApiKey => Some(Readiness::Ready { source: expected_source(inst, credentials) }),
         Auth::Keyless => Some(Readiness::Ready { source: "no key".into() }),
         Auth::OAuth { .. } => Some(oauth_login(inst, credentials)),
         // A keyed backend runs on its key, which is krowk's to check, not a
         // login the vendor holds.
-        Auth::Vendor if !inst.api_key_env.is_empty() => Some(Readiness::Ready { source: format!("${}, handed to {}", inst.api_key_env, inst.vendor) }),
+        Auth::Vendor if !inst.api_key_env.is_empty() => Some(Readiness::Ready { source: expected_source(inst, credentials) }),
         Auth::Vendor => None,
     }
 }
@@ -253,9 +275,14 @@ fn oauth_login(inst: &Resolved, credentials: &Path) -> Readiness {
 /// where `probe` says (bounded by its deadline, a "signed in" cached for
 /// `CACHE_FOR`). Blocks for as long as the vendor takes.
 pub fn check(inst: &Resolved, credentials: &Path, probe: &Probe) -> Report {
-    let readiness = local(inst, credentials).unwrap_or_else(|| match &inst.backend {
-        Some(b) => vendor_cached(inst, b, probe),
-        None => Readiness::Unknown { reason: "no way to check this instance".into() },
+    let readiness = local(inst, credentials).unwrap_or_else(|| match (&inst.stored, &inst.backend) {
+        // The one command readiness runs: the person's own, for its key.
+        (Stored::Command { .. }, _) => match keys::materialise(inst) {
+            Ok(_) => Readiness::Ready { source: expected_source(inst, credentials) },
+            Err(e) => Readiness::Unknown { reason: e.message },
+        },
+        (_, Some(b)) => vendor_cached(inst, b, probe),
+        (_, None) => Readiness::Unknown { reason: "no way to check this instance".into() },
     });
     report(inst, readiness, credentials)
 }
@@ -448,10 +475,10 @@ pub fn report(inst: &Resolved, readiness: Readiness, credentials: &Path) -> Repo
 /// ready, so the person knows which variable or login to look at.
 fn expected_source(inst: &Resolved, credentials: &Path) -> String {
     match &inst.auth {
-        Auth::ApiKey => format!("${}", inst.api_key_env),
+        Auth::ApiKey => inst.stored.source().unwrap_or_else(|| format!("env {}", inst.api_key_env)),
         Auth::Keyless => "no key".into(),
         Auth::OAuth { .. } => format!("OAuth login in {}", credentials.display()),
-        Auth::Vendor if !inst.api_key_env.is_empty() => format!("${}, handed to {}", inst.api_key_env, inst.vendor),
+        Auth::Vendor if !inst.api_key_env.is_empty() => format!("env {}, handed to {}", inst.api_key_env, inst.vendor),
         Auth::Vendor => vendor_login_source(inst, None),
     }
 }
@@ -469,7 +496,8 @@ fn fix(inst: &Resolved, r: &Readiness) -> Option<String> {
     let codex = inst.wire_api == WireApi::CodexAppServer;
     Some(match r {
         Readiness::Ready { .. } => return None,
-        Readiness::KeyNotSet { var } => format!("set {var} (krowk reads the key from the environment, never from a file)"),
+        Readiness::KeyNotSet { var } if inst.backend.is_some() => format!("set {var}"),
+        Readiness::KeyNotSet { var } => format!("set {var}, or store a key with `{}`", connect::connect_command(&inst.name, inst.kind)),
         Readiness::NotSignedIn | Readiness::Expired if matches!(inst.auth, Auth::OAuth { .. }) => format!("sign in with `{}`", connect::connect_command(&inst.name, inst.kind)),
         Readiness::NotSignedIn | Readiness::Expired => {
             let own = if codex { "Codex's" } else { "Claude's" };

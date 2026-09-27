@@ -201,8 +201,7 @@ impl ChatClient {
     fn auth_fix(&self) -> String {
         match &self.credential {
             Credential::OAuth(_) => format!("sign in again with `{}`", oauth::login_command(&self.instance.name)),
-            _ if self.instance.api_key_env.is_empty() => "the server wants a key: give the instance an apiKeyEnv".into(),
-            _ => format!("check {}", self.instance.api_key_env),
+            _ => crate::keys::auth_fix(&self.instance),
         }
     }
 }
