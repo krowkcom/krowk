@@ -190,13 +190,13 @@ fn write_binary(r: &mut impl Read, dest: &Path) -> std::io::Result<()> {
     result
 }
 
-fn state_path(_ctx: &Ctx) -> PathBuf {
+fn state_path(_ctx: &Ctx) -> Option<PathBuf> {
     // krowk's config directory, never a relative one (`creds::config_dir`).
-    krowk_api::creds::config_dir().join("update-check.json")
+    krowk_api::creds::config_dir().map(|d| d.join("update-check.json"))
 }
 
 fn write_state(ctx: &Ctx, state: &Value) {
-    let path = state_path(ctx);
+    let Some(path) = state_path(ctx) else { return };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -210,7 +210,7 @@ pub(crate) fn maybe_notify(ctx: &mut Ctx) {
     if !is_release(VERSION) || krowk_api::truthy(&ctx.env("CI")) || !ctx.env("GITHUB_ACTIONS").is_empty() || krowk_api::truthy(&ctx.env("KROWK_NO_UPDATE_CHECK")) {
         return;
     }
-    let path = state_path(ctx);
+    let Some(path) = state_path(ctx) else { return };
     let mut state: Value = std::fs::read(&path).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or(json!({}));
     let checked = state.get("checked_at").and_then(Value::as_str).and_then(|t| t.parse::<jiff::Timestamp>().ok());
     let stale = checked.is_none_or(|t| jiff::Timestamp::now().duration_since(t).as_secs() >= 24 * 3600);

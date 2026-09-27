@@ -275,8 +275,8 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
         }
         let text = help::help(
             &c,
-            &krowk_api::creds::credentials_path().display().to_string(),
-            &crate::config::global_path().display().to_string(),
+            &krowk_api::creds::shown(&krowk_api::creds::credentials_path()),
+            &krowk_api::creds::shown(&crate::config::global_path()),
         );
         let _ = writeln!(ctx.io.stdout, "{text}");
         return Ok(());

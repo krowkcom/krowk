@@ -64,43 +64,40 @@ pub const TOKEN_SOURCE_ENV: &str = "KROWK_TOKEN";
 pub const TOKEN_SOURCE_FILE: &str = "credentials file";
 pub const TOKEN_SOURCE_NONE: &str = "none";
 
-/// $XDG_CONFIG_HOME/krowk/credentials.json, else ~/.config/krowk/.
-pub fn credentials_path() -> PathBuf {
-    config_dir().join("credentials.json")
+/// $XDG_CONFIG_HOME/krowk/credentials.json, else ~/.config/krowk/; none
+/// with no home.
+pub fn credentials_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("credentials.json"))
 }
-
-/// Where krowk's config directory is when there is no home to put it in:
-/// absolute, and nowhere a repository or anyone else can put files — so
-/// nothing is read from it and nothing can be written there.
-pub const NO_HOME: &str = "/nonexistent/krowk";
 
 /// krowk's config directory: $XDG_CONFIG_HOME/krowk, else ~/.config/krowk,
 /// each only when absolute (a relative XDG_CONFIG_HOME is ignored, as the
-/// XDG spec says). None with no home: never a relative path, which would
-/// make a repository's own `.krowk` krowk's config — its keys, its trust
-/// list, its commands.
-pub fn home_config_dir() -> Option<PathBuf> {
+/// XDG spec says). None with no home — and then nothing under it is read or
+/// written: never a relative path, which would make a repository's own
+/// `.krowk` krowk's config (its keys, trust list and commands), nor a
+/// stand-in path, which on Windows is relative to a drive anyone can write.
+pub fn config_dir() -> Option<PathBuf> {
     let abs = |d: PathBuf| Some(d).filter(|d| d.is_absolute());
     std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()).and_then(|d| abs(PathBuf::from(d))).map(|d| d.join("krowk")).or_else(|| home_dir().and_then(abs).map(|h| h.join(".config").join("krowk")))
 }
 
-/// Refuses to write under `NO_HOME`, saying why, rather than fail on a
-/// directory nobody can make.
-pub fn no_home(p: &Path) -> std::io::Result<()> {
-    match p.starts_with(NO_HOME) {
-        true => Err(std::io::Error::other("there is no home directory to keep krowk's config in — set HOME (or XDG_CONFIG_HOME) to an absolute path")),
-        false => Ok(()),
-    }
+/// Why nothing is kept when there is no config directory.
+pub const NO_HOME: &str = "there is no home directory to keep krowk's config in — set HOME (or XDG_CONFIG_HOME) to an absolute path";
+
+/// A config path as a message shows it.
+pub fn shown(p: &Option<PathBuf>) -> String {
+    p.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(no home directory)".into())
 }
 
-/// `home_config_dir`, or `NO_HOME` when there is none.
-pub fn config_dir() -> PathBuf {
-    home_config_dir().unwrap_or_else(|| PathBuf::from(NO_HOME))
-}
-
-/// Go's os.UserHomeDir on unix: $HOME, and an error when it is empty.
+/// Go's os.UserHomeDir: $HOME, and on Windows %USERPROFILE% when HOME is
+/// unset (Windows sets no HOME); none when empty.
 pub fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
+    home_from(&|k| std::env::var_os(k), cfg!(windows))
+}
+
+fn home_from(var: &dyn Fn(&str) -> Option<std::ffi::OsString>, windows: bool) -> Option<PathBuf> {
+    let set = |k: &str| var(k).filter(|h| !h.is_empty());
+    set("HOME").or_else(|| if windows { set("USERPROFILE") } else { None }).map(PathBuf::from)
 }
 
 fn path_string(p: &Path) -> String {
@@ -129,7 +126,7 @@ fn read_lenient() -> Credentials {
 }
 
 fn read_strict() -> Result<Credentials, Error> {
-    let path = credentials_path();
+    let Some(path) = credentials_path() else { return Ok(Credentials::default()) };
     let data = match std::fs::read(&path) {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Credentials::default()),
@@ -343,7 +340,7 @@ pub fn set_default_workspace(name: &str) -> Result<String, String> {
 }
 
 fn write(c: &Credentials) -> Result<String, Error> {
-    let path = credentials_path();
+    let path = credentials_path().ok_or_else(|| fail("cli_error", NO_HOME))?;
     let dir = path.parent().unwrap_or(Path::new("."));
     let io = |e: std::io::Error| fail("cli_error", e.to_string());
     create_private_dir(dir).map_err(io)?;
@@ -365,7 +362,6 @@ fn write(c: &Credentials) -> Result<String, Error> {
 
 /// MkdirAll with 0700 for what it creates, as the Go build did.
 pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    no_home(dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
@@ -374,5 +370,21 @@ pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     #[cfg(not(unix))]
     {
         std::fs::create_dir_all(dir)
+    }
+}
+
+#[cfg(test)]
+mod home_tests {
+    use super::*;
+
+    // Windows sets USERPROFILE and no HOME: krowk's home is then that, as
+    // Go's os.UserHomeDir has it; elsewhere only HOME counts.
+    #[test]
+    fn windows_home_is_userprofile_when_home_is_unset() {
+        let only = |k: &'static str, v: &'static str| move |q: &str| (q == k).then(|| std::ffi::OsString::from(v));
+        assert_eq!(home_from(&only("USERPROFILE", r"C:\Users\ada"), true), Some(PathBuf::from(r"C:\Users\ada")));
+        assert_eq!(home_from(&only("USERPROFILE", r"C:\Users\ada"), false), None);
+        assert_eq!(home_from(&only("HOME", "/home/ada"), true), Some(PathBuf::from("/home/ada")));
+        assert_eq!(home_from(&|_| None, true), None);
     }
 }

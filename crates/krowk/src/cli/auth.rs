@@ -105,7 +105,7 @@ fn login_with_token(ctx: &mut Ctx) -> Result<(), Error> {
         workspace_name: k.workspace_name.clone(),
     });
     let path = creds::save_credentials(&token, id.as_ref().unwrap_or(&Identity::default())).map_err(|e| {
-        fail("credentials_unwritable", format!("could not write {}: {}", creds::credentials_path().display(), e.fix()))
+        fail("credentials_unwritable", format!("could not write {}: {}", creds::shown(&creds::credentials_path()), e.fix()))
     })?;
     let mut result = Login { path, confirmed: verified.is_ok(), shadowed: !ctx.env("KROWK_TOKEN").is_empty(), ..Login::default() };
     match &verified {
@@ -160,7 +160,7 @@ fn login_in_browser(ctx: &mut Ctx) -> Result<(), Error> {
             "credentials_unwritable",
             format!(
                 "could not write {}: {} — the approved key was handed over once and the registry keeps no copy, so fix the path and run `krowk login` again for a new one",
-                creds::credentials_path().display(),
+                creds::shown(&creds::credentials_path()),
                 e.fix()
             ),
         )
@@ -365,9 +365,9 @@ pub(crate) fn token(ctx: &mut Ctx) -> Result<(), Error> {
 pub(crate) fn logout(ctx: &mut Ctx) -> Result<(), Error> {
     let (ws, _) = resolve_workspace(ctx)?;
     let gone = creds::forget_credentials(&ws).map_err(|e| {
-        fail("credentials_unwritable", format!("could not write {}: {}", creds::credentials_path().display(), e.fix()))
+        fail("credentials_unwritable", format!("could not write {}: {}", creds::shown(&creds::credentials_path()), e.fix()))
     })?;
-    let path = creds::credentials_path().display().to_string();
+    let path = creds::shown(&creds::credentials_path());
     let shadowed = !ctx.env("KROWK_TOKEN").is_empty();
     let left: Vec<String> = creds::stored_workspaces().into_iter().map(|k| k.name).collect();
     if ctx.format != crate::output::Format::Human {

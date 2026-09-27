@@ -32,7 +32,7 @@ pub(super) fn reports(ctx: &Ctx) -> Result<(InstancesConfig, Registry, Vec<Repor
     let cfg = super::prompt::load_instances()?;
     let reg = Registry::resolve(&cfg, ctx.io.env);
     let all: Vec<_> = reg.instances.values().collect();
-    let reports = readiness::check_all(&all, &super::providers::credentials_path(), &neutral_probe(ctx)?);
+    let reports = readiness::check_all(&all, &super::providers::credentials_path()?, &neutral_probe(ctx)?);
     Ok((cfg, reg, reports))
 }
 

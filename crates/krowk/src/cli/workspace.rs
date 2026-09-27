@@ -56,7 +56,7 @@ pub(crate) fn config_show(ctx: &mut Ctx) -> Result<(), Error> {
     let view = ConfigView {
         workspace: cfg.workspace,
         sources: cfg.sources,
-        global_path: config::global_path().display().to_string(),
+        global_path: krowk_api::creds::shown(&config::global_path()),
         repo_path: config::repo_path("").map(|p| p.display().to_string()).unwrap_or_default(),
     };
     let rendered = render::config_show(&view, ctx.format, ctx.f.quiet, ctx.colour);
@@ -104,7 +104,7 @@ pub(crate) fn config_unset(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
 /// repository's, and a refusal outside one.
 fn config_file(ctx: &Ctx) -> Result<std::path::PathBuf, Error> {
     if ctx.f.global {
-        return Ok(config::global_path());
+        return config::global_path().ok_or_else(|| fail("config_unwritable", krowk_api::creds::NO_HOME));
     }
     config::repo_path("").ok_or_else(|| {
         fail(

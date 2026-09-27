@@ -99,7 +99,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
     // now, not after the answer was kept.
     krowk_harness::permissions::settings::load(&probe, &runs_in).map_err(prompt::bad_settings)?;
     let widens = krowk_harness::permissions::settings::widens(&probe, &runs_in);
-    let (trust, trusted, trust_ask) = prompt::tui_trust_gate(effective.as_ref(), &registry, &runs_in, home, widens);
+    let (trust, trusted, trust_ask) = prompt::tui_trust_gate(effective.as_ref(), &registry, &runs_in, super::providers::krowk_dir()?, home, widens);
     let permissions = prompt::permissions_config(ctx, &config, trusted, true);
     let (permission_mode, mode_notices) = prompt::resolve_mode(flag_mode, &permissions, &runs_in)?;
     let host = HostConfig {
@@ -109,7 +109,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         krowk_version: super::VERSION.into(),
         pricer: prompt::pricer(ctx.io.env),
         catalog: prompt::catalog(ctx.io.env),
-        credentials: super::providers::credentials_path(),
+        credentials: super::providers::credentials_path()?,
         trust,
         publisher: Some(prompt::publisher(ctx)),
         permissions,

@@ -36,7 +36,7 @@ pub fn load(dir: &str, env: &dyn Fn(&str) -> String, flag_workspace: &str) -> Re
             c.workspace = v;
         }
     };
-    if let Some(v) = read_file(&global_path())? {
+    if let Some(v) = global_path().map(|p| read_file(&p)).transpose()?.flatten() {
         apply(&mut c, v, SOURCE_GLOBAL);
     }
     if let Some(v) = repo_path(dir).map(|p| read_file(&p)).transpose()?.flatten() {
@@ -64,8 +64,8 @@ fn read_file(path: &Path) -> Result<Option<String>, String> {
 }
 
 /// $XDG_CONFIG_HOME/krowk/config.json, else ~/.config/krowk/config.json.
-pub fn global_path() -> PathBuf {
-    krowk_api::creds::config_dir().join("config.json")
+pub fn global_path() -> Option<PathBuf> {
+    krowk_api::creds::config_dir().map(|d| d.join("config.json"))
 }
 
 /// <git-root>/.krowk/config.json, when `dir` is inside a checkout. The root is
@@ -125,7 +125,6 @@ fn rewrite(path: &Path, edit: impl FnOnce(&mut Map<String, Value>)) -> Result<()
 }
 
 fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    krowk_api::creds::no_home(path)?;
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".config-{}.json", std::process::id()));
