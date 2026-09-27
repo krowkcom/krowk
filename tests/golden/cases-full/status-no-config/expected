@@ -67,7 +67,7 @@ stderr:
           "label": "SuperGrok",
           "state": "not_signed_in",
           "ready": false,
-          "source": "OAuth login in <scratch>/home/.config/krowk/providers/credentials.json",
+          "source": "OAuth login in <scratch>/home/.krowk/credentials.json",
           "fix": "sign in with `krowk connect xai --method subscription`",
           "var": null,
           "reason": null
@@ -161,7 +161,7 @@ stderr:
           "label": "SuperGrok",
           "state": "not_signed_in",
           "ready": false,
-          "source": "OAuth login in <scratch>/home/.config/krowk/providers/credentials.json",
+          "source": "OAuth login in <scratch>/home/.krowk/credentials.json",
           "fix": "sign in with `krowk connect xai --method subscription`",
           "var": null,
           "reason": null
@@ -254,7 +254,7 @@ stdout:
         "label": "SuperGrok",
         "state": "not_signed_in",
         "ready": false,
-        "source": "OAuth login in <scratch>/home/.config/krowk/providers/credentials.json",
+        "source": "OAuth login in <scratch>/home/.krowk/credentials.json",
         "fix": "sign in with `krowk connect xai --method subscription`",
         "var": null,
         "reason": null
@@ -283,7 +283,7 @@ claude      Claude subscription   not installed  Claude Code's own login in <scr
 codex       ChatGPT subscription  not installed  Codex's own login in <scratch>/home/.codex  — install Codex (https://developers.openai.com/codex), or name the binary with `krowk connect openai --method subscription --binary <path>`
 openai      OpenAI API key        key not set    env OPENAI_API_KEY  — set OPENAI_API_KEY, or store a key with `krowk connect openai --method api-key`
 openrouter  OpenRouter            key not set    env OPENROUTER_API_KEY  — set OPENROUTER_API_KEY, or store a key with `krowk connect openrouter`
-supergrok   SuperGrok             not signed in  OAuth login in <scratch>/home/.config/krowk/providers/credentials.json  — sign in with `krowk connect xai --method subscription`
+supergrok   SuperGrok             not signed in  OAuth login in <scratch>/home/.krowk/credentials.json  — sign in with `krowk connect xai --method subscription`
 xai         xAI API key           key not set    env XAI_API_KEY  — set XAI_API_KEY, or store a key with `krowk connect xai --method api-key`
 1 of 7 instances ready
 exit: 0
@@ -295,7 +295,7 @@ claude      Claude subscription   not installed  claude  (Claude Code's own logi
 codex       ChatGPT subscription  not installed  codex  (Codex's own login in <scratch>/home/.codex)
 openai      OpenAI API key        key not set    https://api.openai.com/v1  (env OPENAI_API_KEY)
 openrouter  OpenRouter            key not set    https://openrouter.ai/api/v1  (env OPENROUTER_API_KEY)
-supergrok   SuperGrok             not signed in  https://api.x.ai/v1  (OAuth login in <scratch>/home/.config/krowk/providers/credentials.json)
+supergrok   SuperGrok             not signed in  https://api.x.ai/v1  (OAuth login in <scratch>/home/.krowk/credentials.json)
 xai         xAI API key           key not set    https://api.x.ai/v1  (env XAI_API_KEY)
 exit: 0
 

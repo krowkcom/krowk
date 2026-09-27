@@ -69,7 +69,7 @@ impl Home {
             krowk_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
-            credentials: self.root.join("home/.config/krowk/providers/credentials.json"),
+            credentials: self.root.join("home/.krowk/credentials.json"),
             trust: gate,
             publisher: None,
             permissions: Default::default(),
@@ -146,7 +146,7 @@ fn readiness_a_trusted_repositorys_settings_count_and_an_untrusted_ones_are_neve
 
     // Outside any repository — `krowk status` — krowk's own directory: the
     // project's settings are not read, so the account is not signed in.
-    let data = h.root.join("home/.local/share/krowk");
+    let data = h.root.join("home/.krowk");
     let neutral = readiness::neutral_dir(&data).unwrap();
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(std::fs::metadata(&neutral).unwrap().permissions().mode() & 0o777, 0o700);
@@ -159,7 +159,7 @@ fn readiness_a_trusted_repositorys_settings_count_and_an_untrusted_ones_are_neve
     assert_eq!(std::fs::metadata(&neutral).unwrap().permissions().mode() & 0o777, 0o700);
     std::fs::remove_dir(&neutral).unwrap();
     std::os::unix::fs::symlink(h.root.join("repo"), &neutral).unwrap();
-    assert!(readiness::neutral_dir(&data).unwrap_err().contains("not a directory"));
+    assert!(readiness::neutral_dir(&data).unwrap_err().contains("is a symlink"));
 }
 
 #[test]

@@ -14,6 +14,8 @@ use std::path::PathBuf;
 fn dir(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("krowk-oauth-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
+    // krowk's home, which exists before anything is kept in it.
+    std::fs::create_dir_all(&d).unwrap();
     d
 }
 
@@ -49,10 +51,8 @@ async fn r_prov_4_a_device_login_is_stored_in_a_credentials_file_created_0600() 
     let store = Store::new(d.join("credentials.json"));
     store.save("supergrok", &stored).unwrap();
     #[cfg(unix)]
-    {
-        assert_eq!(mode(&store.path), 0o600, "the credentials file is created 0600");
-        assert_eq!(mode(store.path.parent().unwrap()), 0o700);
-    }
+    // The directory is krowk's home, made 0700 by `krowk_api::home`.
+    assert_eq!(mode(&store.path), 0o600, "the credentials file is created 0600");
     // A second login lands beside the first; neither is lost.
     store.save("grok:team", &stored).unwrap();
     assert_eq!(store.names().unwrap(), ["grok:team", "supergrok"]);

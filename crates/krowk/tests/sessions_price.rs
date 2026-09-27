@@ -32,11 +32,11 @@ const RATES: &str = r#"{"opencode":{"models":{
 #[test]
 fn the_zen_demo_prices_per_turn_and_an_unknown_model_reads_as_a_dash() {
     let home = scratch();
-    let ledger = home.join(".local/share/krowk/ledger");
+    let ledger = home.join(".krowk/ledger");
     std::fs::create_dir_all(&ledger).unwrap();
     std::fs::write(ledger.join("zen.jsonl"), ZEN).unwrap();
     std::fs::write(ledger.join("mystery.jsonl"), r#"{"id":"m-1","provider":"opencode","model":"mystery-model","input_tokens":5,"output_tokens":5,"cost_usd":0}"#.to_string() + "\n").unwrap();
-    let cache = home.join(".cache/krowk");
+    let cache = home.join(".krowk/cache");
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(cache.join("models.json"), RATES).unwrap();
     std::fs::write(cache.join("models.meta.json"), r#"{"etag":"","fetched_at_ms":1789031459675}"#).unwrap();

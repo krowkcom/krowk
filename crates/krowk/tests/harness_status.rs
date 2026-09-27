@@ -75,7 +75,7 @@ impl Sandbox {
     }
 
     fn write_config(&self, v: Value) {
-        let dir = self.home().join(".config/krowk");
+        let dir = self.home().join(".krowk");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("config.json"), v.to_string()).unwrap();
     }
@@ -83,7 +83,7 @@ impl Sandbox {
     /// krowk's provider credentials file, with logins as `providers add
     /// supergrok` would have left them.
     fn write_logins(&self, logins: Value) {
-        let dir = self.home().join(".config/krowk/providers");
+        let dir = self.home().join(".krowk");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("credentials.json"), json!({"version": 1, "instances": logins}).to_string()).unwrap();
     }
@@ -265,7 +265,7 @@ fn status_asks_vendors_in_krowks_own_directory_so_planted_settings_change_nothin
     let out = b.krowk(&["status", "--json"], &[("TMPDIR", tmp.to_str().unwrap()), ("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
     let rows = instances(&stdout_json(&out)["data"]);
     assert_eq!(row(&rows, "claude")["state"], "not_signed_in", "{rows:?}");
-    let own = b.home().join(".local/share/krowk/readiness");
+    let own = b.home().join(".krowk/readiness");
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(std::fs::metadata(&own).unwrap().permissions().mode() & 0o777, 0o700, "krowk's own directory, closed to others");
 }

@@ -250,7 +250,7 @@ mod tests {
     fn a_ledger_reads_one_turn_per_execution_and_refuses_what_it_cannot_count() {
         let (tmp, env) = home("read");
         assert!(Ledger.discover(&env).unwrap().is_empty(), "no directory is no ledger");
-        let dir = tmp.0.join(".local/share/krowk/ledger");
+        let dir = tmp.0.join(".krowk/ledger");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("zen.jsonl"),

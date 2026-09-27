@@ -166,8 +166,8 @@ fn r_perm_1_the_fenced_directories_are_asked_about_and_no_rule_opens_them() {
     }
     assert_eq!(letter(&gate(&p, PermissionMode::BypassPermissions).verdict(&edit(d.join(".claude/settings.json")), None)), 'Y');
     let mut protected = policy(&d, &[(Kind::Allow, "Edit")]);
-    protected.protected.push(PathBuf::from("/home/someone/.config/krowk"));
-    assert_eq!(letter(&gate(&protected, PermissionMode::AcceptEdits).verdict(&edit(PathBuf::from("/home/someone/.config/krowk/config.json")), None)), '?', "krowk's own config directory, wherever it is");
+    protected.protected.push(PathBuf::from("/home/someone/.krowk"));
+    assert_eq!(letter(&gate(&protected, PermissionMode::AcceptEdits).verdict(&edit(PathBuf::from("/home/someone/.krowk/config.json")), None)), '?', "krowk's own config directory, wherever it is");
     let _ = std::fs::remove_dir_all(&d);
 }
 

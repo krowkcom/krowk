@@ -109,8 +109,8 @@ impl Sandbox {
     fn config(&self, v: &Value) {
         let mut v = v.clone();
         v["instances"]["codex"] = json!({"kind": "codex-app-server", "binary": self.root.join("bin/no-codex").display().to_string()});
-        std::fs::create_dir_all(self.root.join("home/.config/krowk")).unwrap();
-        std::fs::write(self.root.join("home/.config/krowk/config.json"), v.to_string()).unwrap();
+        std::fs::create_dir_all(self.root.join("home/.krowk")).unwrap();
+        std::fs::write(self.root.join("home/.krowk/config.json"), v.to_string()).unwrap();
     }
 
     /// The argv of every turn the fake ran.
@@ -157,7 +157,7 @@ fn only_claude_signed_in_a_bare_sonnet_and_no_model_at_all_run_on_claude_asking_
     let out = b.krowk(&["-p", "hi", "--model", "sonnet"], &[]);
     assert_eq!(out.status.code(), Some(4), "untrusted_directory: {}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stderr).contains("trust"), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(b.status_checks(), vec![b.root.join("home/.local/share/krowk/readiness")], "{}", b.fake_log());
+    assert_eq!(b.status_checks(), vec![b.root.join("home/.krowk/readiness")], "{}", b.fake_log());
     assert!(b.turns().is_empty(), "Claude Code never ran a turn in an untrusted repository");
 }
 
@@ -201,7 +201,7 @@ fn with_a_key_and_a_subscription_a_bare_id_is_refused_as_ambiguous_until_a_defau
     // lists, and says so when it lists none.
     let out = b.krowk(&["-p", "hi", "--model", "sonnet"], &key);
     assert!(fail(&out, "bad_model").contains("krowk pricing refresh"));
-    let cache = b.root.join("home/.cache/krowk");
+    let cache = b.root.join("home/.krowk/cache");
     std::fs::create_dir_all(&cache).unwrap();
     let catalog = json!({"anthropic": {"models": {
         "claude-sonnet-4-6": {"family": "claude-sonnet", "release_date": "2026-02-17", "tool_call": true},
@@ -247,7 +247,7 @@ fn with_nothing_connected_the_refusal_names_each_instance_and_krowk_connect() {
     // Neither run spawned anything but the status checks, and those in
     // krowk's own directory.
     assert!(b.turns().is_empty());
-    assert!(b.status_checks().iter().all(|d| d.ends_with("krowk/readiness")), "{}", b.fake_log());
+    assert!(b.status_checks().iter().all(|d| d.ends_with(".krowk/readiness")), "{}", b.fake_log());
     // A router that is ready may serve it, which krowk cannot tell: the
     // refusal says to name it.
     let out = b.krowk(&["-p", "hi", "--model", "sonnet"], &[("OPENROUTER_API_KEY", "sk-or-test")]);

@@ -233,7 +233,7 @@ impl World {
             krowk_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
-            credentials: self.root.join("home/.config/krowk/providers/credentials.json"),
+            credentials: self.root.join("home/.krowk/credentials.json"),
             trust: self.trust.clone().unwrap_or_else(krowk_harness::trust::allow_all),
             publisher: None,
             permissions: krowk_harness::permissions::Config { trusted: self.trusted.then(|| Arc::new(|_: &Path| true) as krowk_harness::permissions::settings::Trusted), ..Default::default() },

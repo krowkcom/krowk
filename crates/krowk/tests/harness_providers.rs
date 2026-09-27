@@ -52,7 +52,7 @@ impl Sandbox {
     }
 
     fn config(&self) -> Value {
-        serde_json::from_str(&std::fs::read_to_string(self.root.join("home/.config/krowk/config.json")).unwrap()).unwrap()
+        serde_json::from_str(&std::fs::read_to_string(self.root.join("home/.krowk/config.json")).unwrap()).unwrap()
     }
 
     fn readme(&self) -> String {
@@ -71,7 +71,7 @@ fn r_prov_4_a_named_openai_profile_runs_a_gpt_that_patches_a_file_and_reads_the_
     let m = mock::serve(providers::responses_script);
     let b = Sandbox::new("openai");
     // The catalog: gpt-5.4 reasons, up to xhigh.
-    let cache = b.root.join("home/.cache/krowk");
+    let cache = b.root.join("home/.krowk/cache");
     std::fs::create_dir_all(&cache).unwrap();
     let catalog = json!({"openai": {"npm": "@ai-sdk/openai", "models": {"gpt-5.4": {"family": "gpt", "reasoning": true, "tool_call": true,
         "reasoning_options": [{"type": "effort", "values": ["none", "low", "medium", "high", "xhigh"]}], "limit": {"context": 1050000, "output": 128000},
@@ -120,7 +120,7 @@ fn r_prov_4_a_supergrok_device_login_writes_0600_credentials_and_runs_a_grok_tas
     let chat = providers::chat_behind(auth.state.clone());
     let b = Sandbox::new("supergrok");
     // Where this xAI stand-in lives: the definition keeps it across logins.
-    let dir = b.root.join("home/.config/krowk");
+    let dir = b.root.join("home/.krowk");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.json"), json!({"instances": {"supergrok": {"kind": "xai-oauth", "issuer": auth.mock.url, "baseUrl": chat.url}}}).to_string()).unwrap();
 
@@ -136,7 +136,7 @@ fn r_prov_4_a_supergrok_device_login_writes_0600_credentials_and_runs_a_grok_tas
     let added: Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(added["data"]["signed_in"], true);
     assert_eq!(b.config()["instances"]["supergrok"]["issuer"], auth.mock.url.as_str(), "the definition kept its issuer");
-    let creds = dir.join("providers/credentials.json");
+    let creds = dir.join("credentials.json");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

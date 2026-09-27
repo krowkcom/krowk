@@ -500,7 +500,7 @@ impl Scope {
     /// Whether `p` is, or is inside, one of `secrets` — by where it leads
     /// (`..` taken out by its words, and every symlink followed), against
     /// the secret as named and as it leads, regardless of case: a search
-    /// through `.config/krowk/../krowk` or a symlinked alias skips it too.
+    /// through `.krowk/../krowk` or a symlinked alias skips it too.
     pub fn secret(&self, p: &Path) -> bool {
         if self.secrets.is_empty() {
             return false;

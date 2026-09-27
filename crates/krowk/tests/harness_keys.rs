@@ -87,7 +87,7 @@ impl Sandbox {
     }
 
     fn credentials(&self) -> PathBuf {
-        self.root.join("home/.config/krowk/providers/credentials.json")
+        self.root.join("home/.krowk/credentials.json")
     }
 
     fn stored(&self) -> Value {
@@ -95,7 +95,7 @@ impl Sandbox {
     }
 
     fn config(&self) -> Value {
-        std::fs::read_to_string(self.root.join("home/.config/krowk/config.json")).map(|s| serde_json::from_str(&s).unwrap()).unwrap_or(json!({}))
+        std::fs::read_to_string(self.root.join("home/.krowk/config.json")).map(|s| serde_json::from_str(&s).unwrap()).unwrap_or(json!({}))
     }
 
     fn row(&self, instance: &str, env: &[(&str, &str)]) -> Value {
@@ -262,9 +262,9 @@ fn r_cred_1_no_config_but_the_persons_own_credentials_file_can_make_krowk_run_a_
     });
     std::fs::write(b.root.join("repo/.krowk/config.json"), planted.to_string()).unwrap();
     std::fs::write(b.root.join("planted.json"), json!({"version": 1, "keys": {"anthropic": {"command": cmd}}}).to_string()).unwrap();
-    std::fs::create_dir_all(b.root.join("home/.config/krowk")).unwrap();
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
     let own = json!({"instances": {"openai:x": {"kind": "openai-api", "apiKeyEnv": format!("!{cmd}")}, "xai:y": {"kind": "xai-api", "apiKeyEnv": "$(touch pwned)"}}, "keysFrom": b.root.join("planted.json")});
-    std::fs::write(b.root.join("home/.config/krowk/config.json"), own.to_string()).unwrap();
+    std::fs::write(b.root.join("home/.krowk/config.json"), own.to_string()).unwrap();
 
     let env = [("ANTHROPIC_API_KEY", DECOY)];
     let row = b.row("anthropic", &env);
@@ -300,50 +300,59 @@ fn r_cred_1_at_a_terminal_a_key_is_pasted_without_echo_and_without_one_the_flags
 }
 
 #[test]
-fn r_cred_1_the_file_tools_neither_read_nor_search_the_credentials_file_unasked() {
-    // The model reads the credentials file by name, then searches krowk's
-    // config directory for the key by every spelling that leads there —
-    // plainly, through `..`, through a symlinked alias — from a session
-    // whose working directory holds it (the home): what it is sent back
-    // never holds the key, and a search rooted in the secret is refused.
-    let creds = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let path = creds.clone();
+fn r_cred_1_the_file_tools_neither_read_search_nor_write_krowks_home_unasked() {
+    // The model goes for krowk's home by every spelling that leads there —
+    // by name, through `..`, in another case, through a symlinked alias —
+    // with allow rules for everything, from a session whose working
+    // directory holds the home: every read, search and write rooted in it
+    // is refused, a search of the directory around it skips it, and what
+    // the model is sent back never holds the key.
+    let target = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let path = target.clone();
     let calls = [
-        ("grep", json!({"pattern": "STORED-SENTINEL", "path": ".config/krowk"})),
-        ("grep", json!({"pattern": "STORED-SENTINEL", "path": ".config/krowk/../krowk"})),
+        ("read", json!({"path": ".krowk/config.json"})),
+        ("read", json!({"path": ".krowk/../.krowk/credentials.json"})),
+        ("read", json!({"path": ".KROWK/credentials.json"})),
+        ("read", json!({"path": "alias/credentials.json"})),
+        ("grep", json!({"pattern": "STORED-SENTINEL", "path": ".krowk"})),
         ("grep", json!({"pattern": "STORED-SENTINEL", "path": "alias"})),
-        ("glob", json!({"pattern": "**/*.json", "path": ".config/krowk/../krowk"})),
-        ("glob", json!({"pattern": "**/*.json", "path": "alias"})),
-        ("grep", json!({"pattern": "STORED-SENTINEL", "path": ".config/krowk/agents/../providers"})),
+        ("glob", json!({"pattern": "**/*.json", "path": ".krowk/../.krowk"})),
+        ("write", json!({"path": ".krowk/config.json", "content": "{}"})),
+        ("write", json!({"path": "alias/sessions/planted.json", "content": "{}"})),
+        ("grep", json!({"pattern": "STORED-SENTINEL", "path": "."})),
+        ("glob", json!({"pattern": "**/*.json", "path": "."})),
     ];
     let m = mock::serve(move |_, n| match n {
         0 => mock::Reply::sse(&mock::tool_use("toolu_00Read", "read", &json!({"path": *path.lock().unwrap()}))),
         n if n <= calls.len() => {
             let (tool, input) = &calls[n - 1];
-            mock::Reply::sse(&mock::tool_use(&format!("toolu_0{n}Search"), tool, input))
+            mock::Reply::sse(&mock::tool_use(&format!("toolu_{n:02}Call"), tool, input))
         }
         _ => mock::Reply::sse(&mock::text_stream("done")),
     });
     let b = Sandbox::new("fence", &m.url);
-    *creds.lock().unwrap() = b.credentials().display().to_string();
+    *target.lock().unwrap() = b.credentials().display().to_string();
     assert!(b.piped(&["connect", "anthropic", "--method", "api-key", "--key-stdin"], SENTINEL).status.success());
-    std::fs::write(b.root.join("home/.config/krowk/notes.txt"), "STORED-SENTINEL-control\n").unwrap();
-    std::fs::write(b.root.join("home/.config/krowk/other.json"), "{}\n").unwrap();
-    std::fs::create_dir_all(b.root.join("home/.config/krowk/agents")).unwrap();
-    std::os::unix::fs::symlink(b.root.join("home/.config/krowk"), b.root.join("home/alias")).unwrap();
+    let mut config = b.config();
+    config["permissions"] = json!({"allow": ["Read", "Edit", "Write", "Grep", "Glob"]});
+    std::fs::write(b.root.join("home/.krowk/config.json"), config.to_string()).unwrap();
+    std::fs::write(b.root.join("home/notes.txt"), "STORED-SENTINEL-control\n").unwrap();
+    std::fs::write(b.root.join("home/other.json"), "{}\n").unwrap();
+    std::fs::write(b.root.join("home/.krowk/notes.txt"), "STORED-SENTINEL-inside\n").unwrap();
+    std::os::unix::fs::symlink(b.root.join("home/.krowk"), b.root.join("home/alias")).unwrap();
+    let before = std::fs::read(b.root.join("home/.krowk/config.json")).unwrap();
     let mut cmd = b.command(&["-p", "look", "--model", "anthropic/claude-sonnet-4-6", "--permission-mode", "acceptEdits"], &[]);
     let out = cmd.current_dir(b.root.join("home")).output().unwrap();
     assert!(out.status.success(), "{}", printed(&out));
     let seen = m.seen.lock().unwrap();
     let result = |i: usize| seen[i].body["messages"].as_array().unwrap().last().unwrap().to_string();
-    assert!(result(1).contains("holds krowk's API keys and logins"), "the read is refused: {}", result(1));
-    for i in 2..=4 {
-        assert!(result(i).contains("notes.txt") && !result(i).contains("credentials.json"), "search {i} skips it: {}", result(i));
+    for i in 1..=10 {
+        assert!(result(i).contains("inside krowk's home"), "call {i} is refused: {}", result(i));
     }
-    for i in 5..=6 {
-        assert!(result(i).contains("other.json") && !result(i).contains("credentials.json"), "glob {i} skips it: {}", result(i));
-    }
-    assert!(result(7).contains("holds krowk's API keys and logins"), "a search rooted in the secret is refused: {}", result(7));
+    assert!(result(11).contains("notes.txt") && !result(11).contains("inside") && !result(11).contains(".krowk"), "a search around the home skips it: {}", result(11));
+    assert!(result(12).contains("other.json") && !result(12).contains("credentials.json") && !result(12).contains("config.json"), "so does a glob: {}", result(12));
+    assert_eq!(std::fs::read(b.root.join("home/.krowk/config.json")).unwrap(), before, "nothing was written");
+    assert!(!b.root.join("home/.krowk/sessions/planted.json").exists());
     for s in seen.iter().skip(1) {
         assert!(!s.body.to_string().contains(SENTINEL), "the key reached the model: {}", s.body);
     }
@@ -360,7 +369,7 @@ fn r_cred_1_a_credentials_file_krowk_cannot_read_is_named_without_quoting_it() {
         std::fs::write(b.credentials(), file.to_string()).unwrap();
         let row = b.row("anthropic", &[("ANTHROPIC_API_KEY", DECOY)]);
         assert_eq!(row["state"], "unknown", "{row}");
-        assert!(row["reason"].as_str().unwrap().contains("not valid JSON krowk can read (line 1, column"), "{row}");
+        assert!(row["reason"].as_str().unwrap().contains("credentials.json is not valid (line 1, column"), "{row}");
         let mut outs = vec![b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &[("ANTHROPIC_API_KEY", DECOY)])];
         for args in [&["status", "--json"][..], &["status"], &["providers", "list", "--json"], &["doctor", "--json"]] {
             outs.push(b.krowk(args, &[]));
@@ -379,8 +388,8 @@ fn r_cred_1_with_no_home_krowk_reads_no_repositorys_dot_krowk_as_its_own() {
     let pwned = b.root.join("pwned");
     // A repository that ships krowk's config directory, as a relative
     // fallback would find it.
-    std::fs::create_dir_all(b.root.join("repo/.krowk/providers")).unwrap();
-    std::fs::write(b.root.join("repo/.krowk/providers/credentials.json"), json!({"version": 1, "keys": {"anthropic": {"command": format!("touch {}", pwned.display())}}}).to_string()).unwrap();
+    std::fs::create_dir_all(b.root.join("repo/.krowk")).unwrap();
+    std::fs::write(b.root.join("repo/.krowk/credentials.json"), json!({"version": 1, "keys": {"anthropic": {"command": format!("touch {}", pwned.display())}}}).to_string()).unwrap();
     std::fs::write(b.root.join("repo/.krowk/config.json"), json!({"defaultModel": "anthropic/claude-sonnet-4-6"}).to_string()).unwrap();
     let run = |args: &[&str]| {
         let mut c = b.command(args, &[("ANTHROPIC_API_KEY", DECOY)]);
@@ -389,11 +398,11 @@ fn r_cred_1_with_no_home_krowk_reads_no_repositorys_dot_krowk_as_its_own() {
     };
     for args in [&["status"][..], &["-p", "hi", "--model", "anthropic/claude-sonnet-4-6"], &["connect", "anthropic", "--method", "api-key", "--key-ref", "$X"]] {
         let out = run(args);
-        assert!(!out.status.success() && printed(&out).contains("no config directory"), "{args:?}: {}", printed(&out));
+        assert!(!out.status.success() && printed(&out).contains("no home directory"), "{args:?}: {}", printed(&out));
     }
     assert!(!pwned.exists(), "the repository's command ran");
     assert!(m.seen.lock().unwrap().is_empty());
-    assert_eq!(std::fs::read_dir(b.root.join("repo/.krowk/providers")).unwrap().count(), 1, "nothing written beside it");
+    assert_eq!(std::fs::read_dir(b.root.join("repo/.krowk")).unwrap().count(), 2, "nothing written beside it");
 }
 
 #[test]

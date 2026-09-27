@@ -4,7 +4,7 @@ stdout:
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.local/share/krowk/krowk.db",
+    "store": "<scratch>/home/.krowk/sessions/krowk.db",
     "providers": [
       {
         "provider": "claude",
@@ -40,7 +40,7 @@ stdout:
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.local/share/krowk/krowk.db",
+    "store": "<scratch>/home/.krowk/sessions/krowk.db",
     "providers": [
       {
         "provider": "cursor",
@@ -74,7 +74,7 @@ stdout:
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.local/share/krowk/krowk.db",
+    "store": "<scratch>/home/.krowk/sessions/krowk.db",
     "providers": [
       {
         "provider": "opencode",
@@ -132,7 +132,7 @@ stdout:
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.local/share/krowk/krowk.db",
+    "store": "<scratch>/home/.krowk/sessions/krowk.db",
     "providers": [
       {
         "provider": "claude",

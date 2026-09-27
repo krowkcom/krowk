@@ -1,8 +1,8 @@
 $ krowk pricing refresh
 stdout:
 {
-  "meta_path": "<scratch>/home/.cache/krowk/models.meta.json",
-  "path": "<scratch>/home/.cache/krowk/models.json",
+  "meta_path": "<scratch>/home/.krowk/cache/models.meta.json",
+  "path": "<scratch>/home/.krowk/cache/models.json",
   "refreshed": false,
   "snapshot_date": "2026-09-10",
   "source": "https://models.dev/api.json",

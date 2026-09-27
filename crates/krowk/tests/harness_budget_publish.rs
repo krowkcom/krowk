@@ -53,7 +53,7 @@ impl Sandbox {
     }
 
     fn sessions(&self) -> PathBuf {
-        self.root.join("home/.local/share/krowk/sessions")
+        self.root.join("home/.krowk/sessions")
     }
 
     fn log(&self, session: &str) -> Vec<Value> {

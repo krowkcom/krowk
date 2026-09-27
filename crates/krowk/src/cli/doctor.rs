@@ -179,7 +179,7 @@ fn config_summary() -> String {
     let existing = |p: std::path::PathBuf| if p.exists() { p.display().to_string() } else { format!("{} (absent)", p.display()) };
     let mut parts = vec![match crate::config::global_path() {
         Ok(p) => format!("global {}", existing(p)),
-        Err(e) => format!("global none ({})", e.fix()),
+        Err(_) => "global (no home directory)".into(),
     }];
     if let Some(repo) = crate::config::repo_path("") {
         parts.push(format!("repo {}", existing(repo)));

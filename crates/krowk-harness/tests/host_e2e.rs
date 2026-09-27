@@ -60,7 +60,7 @@ impl Home {
             // A catalog that knows one model a router serves under a name
             // that says nothing of its family.
             catalog: Arc::new(|_, model| (model == "house-coder").then(|| ModelInfo { family: Some("grok-build".into()), ..ModelInfo::default() })),
-            credentials: self.root.join("home/.config/krowk/providers/credentials.json"),
+            credentials: self.root.join("home/.krowk/credentials.json"),
             trust: krowk_harness::trust::allow_all(),
             publisher: None,
             permissions: Default::default(),

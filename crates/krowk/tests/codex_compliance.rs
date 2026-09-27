@@ -179,7 +179,7 @@ fn r_back_3_a_whole_codex_workflow_never_opens_codexs_login_file() {
     std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/codex/fake-codex"), &bin).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let data = root.join("home/.local/share/krowk/codex");
+    let data = root.join("home/.krowk/accounts");
     let own = root.join("home/.codex").join(login_file());
     let team = data.join("codex-team").join(login_file());
     let work = root.join("home-work").join(login_file());

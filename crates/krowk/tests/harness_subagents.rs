@@ -65,7 +65,7 @@ impl Sandbox {
     }
 
     fn sessions(&self) -> PathBuf {
-        self.root.join("home/.local/share/krowk/sessions")
+        self.root.join("home/.krowk/sessions")
     }
 
     fn log(&self, session: &str) -> Vec<Value> {
@@ -82,11 +82,11 @@ impl Sandbox {
             krowk_version: "test".into(),
             pricer: Arc::new(sonnet),
             catalog: Arc::new(|_, _| None),
-            credentials: self.root.join("home/.config/krowk/providers/credentials.json"),
+            credentials: self.root.join("home/.krowk/credentials.json"),
             trust: krowk_harness::trust::allow_all(),
             publisher: None,
             // The sandbox's own home: the person's real settings stay out.
-            permissions: krowk_harness::permissions::Config { home: Some(self.root.join("home")), krowk_dir: Some(self.root.join("home/.config/krowk")), ..Default::default() },
+            permissions: krowk_harness::permissions::Config { home: Some(self.root.join("home")), krowk_dir: Some(self.root.join("home/.krowk")), ..Default::default() },
             agents: krowk_harness::subagent::AgentsConfig::none(),
         }
     }
@@ -94,7 +94,7 @@ impl Sandbox {
     /// A models.dev cache in the sandbox's home, as `krowk pricing refresh`
     /// leaves it: what a subagent's model alias is resolved against.
     fn catalog(&self) {
-        let dir = self.root.join("home/.cache/krowk");
+        let dir = self.root.join("home/.krowk/cache");
         std::fs::create_dir_all(&dir).unwrap();
         let model = |family: &str, released: &str, input: f64, output: f64| {
             json!({"family": family, "tool_call": true, "release_date": released, "modalities": {"input": ["text"], "output": ["text"]}, "cost": {"input": input, "output": output, "cache_read": input / 10.0, "cache_write": input * 1.25}, "limit": {"context": 200000, "output": 64000}})
@@ -481,7 +481,7 @@ fn r_sub_6_sessions_rebuild_restores_parent_and_children_from_the_logs_alone() {
     assert_eq!(kids.len(), 3);
     assert_eq!(listed_children(&b, &parent), kids, "`krowk -p` lists them under it at once");
     // The store, gone; the logs, all there is.
-    std::fs::remove_file(b.root.join("home/.local/share/krowk/krowk.db")).unwrap();
+    std::fs::remove_file(b.root.join("home/.krowk/sessions/krowk.db")).unwrap();
     let out = b.krowk(&["sessions", "rebuild", "--yes"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(listed_children(&b, &parent), kids, "the children hang from the parent again");
@@ -509,7 +509,7 @@ fn fan_three(pause: Duration) -> impl Fn(&Value, usize) -> mock::Reply + Send + 
 fn r_sub_2_max_parallel_one_runs_the_fan_out_one_subagent_at_a_time() {
     let m = mock::serve(fan_three(Duration::from_millis(150)));
     let b = Sandbox::new("max-parallel", &m.url);
-    let config = b.root.join("home/.config/krowk");
+    let config = b.root.join("home/.krowk");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("config.json"), r#"{"subagents": {"maxParallel": 1}}"#).unwrap();
     let out = b.krowk(&["-p", "three, one at a time", "--model", "claude-sonnet-4-6", "--output-format", "json"]);
@@ -917,7 +917,7 @@ fn r_sub_5_a_definition_spelled_in_another_case_never_dodges_a_task_deny() {
         std::fs::write(b.root.join("repo/.krowk/agents/Reviewer.md"), "---\nname: Reviewer\ndescription: the repository's\n---\n").unwrap();
         let mut cfg = b.host_with(json!({"permissions": {"deny": [rule]}}), false);
         if user_def {
-            let dir = b.root.join("home/.config/krowk/agents");
+            let dir = b.root.join("home/.krowk/agents");
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("reviewer.md"), "---\nname: reviewer\ndescription: the person's\n---\n").unwrap();
             cfg.agents.user_dirs = vec![dir];

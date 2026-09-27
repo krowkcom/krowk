@@ -1,0 +1,136 @@
+$ krowk auth login --token krowk_sk_test
+stdout:
+{
+  "ok": true,
+  "data": {
+    "path": "<scratch>/home/.krowk/credentials.json",
+    "confirmed": true,
+    "key_id": "<key_1>",
+    "workspace": "<ws_1>"
+  },
+  "summary": "<key_1> stored, uploads land in <ws_1>",
+  "breadcrumbs": [
+    {
+      "action": "push",
+      "cmd": "krowk push <file>",
+      "description": "the key is stored and accepted, so nothing else is needed before uploading; <file> is the path to upload"
+    }
+  ]
+}
+exit: 0
+
+$ krowk config set workspace ws_x --global
+stdout:
+{
+  "ok": true,
+  "data": {
+    "key": "workspace",
+    "value": "ws_x",
+    "path": "<scratch>/home/.krowk/config.json"
+  },
+  "summary": "workspace = ws_x in <scratch>/home/.krowk/config.json",
+  "breadcrumbs": [
+    {
+      "action": "check the effective configuration",
+      "cmd": "krowk config show",
+      "description": "reports what actually resolves here, which layer wins, and why"
+    }
+  ]
+}
+exit: 0
+
+$ krowk sessions import --from claude --quiet
+stdout:
+{
+  "dry_run": false,
+  "store": "<scratch>/home/.krowk/sessions/krowk.db",
+  "providers": [
+    {
+      "provider": "claude",
+      "files": 4,
+      "sessions_seen": 4,
+      "messages_seen": 20,
+      "parts_seen": 24,
+      "sessions_inserted": 4,
+      "messages_inserted": 20,
+      "parts_inserted": 24,
+      "skipped_by_type": {
+        "server_tool_use": 1
+      },
+      "skipped_lines": 2,
+      "files_failed": 0,
+      "files_unchanged": 0,
+      "errors_truncated": 0,
+      "duration_ms": <n>
+    }
+  ],
+  "duration_ms": <n>,
+  "unpriced_models": [
+    "anthropic/claude-opus-5-20260401"
+  ]
+}
+exit: 0
+
+@ls {home}/.krowk
+config.json 644
+credentials.json 600
+credentials.lock 600
+sessions/
+sessions/import.lock 600
+sessions/krowk.db 600
+
+$ krowk auth login --token krowk_sk_test
+stdout:
+{
+  "ok": true,
+  "data": {
+    "path": "<scratch>/home/elsewhere/credentials.json",
+    "confirmed": true,
+    "key_id": "<key_1>",
+    "workspace": "<ws_1>"
+  },
+  "summary": "<key_1> stored, uploads land in <ws_1>",
+  "breadcrumbs": [
+    {
+      "action": "push",
+      "cmd": "krowk push <file>",
+      "description": "the key is stored and accepted, so nothing else is needed before uploading; <file> is the path to upload"
+    }
+  ]
+}
+exit: 0
+
+$ krowk sessions --quiet
+stdout:
+{
+  "sessions": []
+}
+exit: 0
+
+@ls {home}/elsewhere
+credentials.json 600
+credentials.lock 600
+sessions/
+sessions/krowk.db 600
+
+$ krowk sessions --quiet
+stderr:
+{
+  "error": "bad_home",
+  "fix": "KROWK_HOME is \"relative/home\", which is not an absolute path below the root — set it to one, or unset it for ~/.krowk",
+  "retryable": false
+}
+exit: 1
+
+$ krowk doctor
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "bad_home",
+    "fix": "KROWK_HOME is \"relative/home\", which is not an absolute path below the root — set it to one, or unset it for ~/.krowk",
+    "retryable": false
+  }
+}
+exit: 1
+

@@ -44,6 +44,10 @@ fn no_home() -> Error {
 /// (`HOME`, or `USERPROFILE` on Windows). Never a relative path — that would
 /// make a repository's own files krowk's keys and settings.
 pub fn resolve(env: Env) -> Result<PathBuf, Error> {
+    resolve_on(env, cfg!(windows))
+}
+
+fn resolve_on(env: Env, windows: bool) -> Result<PathBuf, Error> {
     let own = env("KROWK_HOME");
     if !own.is_empty() {
         let p = PathBuf::from(&own);
@@ -53,7 +57,7 @@ pub fn resolve(env: Env) -> Result<PathBuf, Error> {
         return Ok(p);
     }
     let mut user = env("HOME");
-    if user.is_empty() && cfg!(windows) {
+    if user.is_empty() && windows {
         user = env("USERPROFILE");
     }
     let p = PathBuf::from(user);
@@ -170,5 +174,15 @@ mod tests {
         assert_eq!(resolve(&env(&[])).unwrap_err().code(), "no_home");
         let xdg = env(&[("HOME", "/h"), ("XDG_CONFIG_HOME", "/x"), ("XDG_DATA_HOME", "/y")]);
         assert_eq!(resolve(&xdg).unwrap(), PathBuf::from("/h/.krowk"), "XDG is not read");
+    }
+
+    // Windows sets USERPROFILE and no HOME; elsewhere only HOME counts.
+    #[test]
+    #[cfg(unix)]
+    fn on_windows_the_home_is_under_userprofile_when_home_is_unset() {
+        let up = env(&[("USERPROFILE", "/Users/ada")]);
+        assert_eq!(resolve_on(&up, true).unwrap(), PathBuf::from("/Users/ada/.krowk"));
+        assert_eq!(resolve_on(&up, false).unwrap_err().code(), "no_home");
+        assert_eq!(resolve_on(&env(&[("HOME", "/h"), ("USERPROFILE", "/u")]), true).unwrap(), PathBuf::from("/h/.krowk"));
     }
 }

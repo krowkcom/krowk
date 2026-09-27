@@ -22,8 +22,8 @@ stderr:
 {
   "ok": false,
   "error": {
-    "error": "config_unwritable",
-    "fix": "there is no home directory to keep krowk's config in — set HOME (or XDG_CONFIG_HOME) to an absolute path",
+    "error": "no_home",
+    "fix": "there is no home directory to keep krowk's files in — set HOME, or KROWK_HOME to an absolute path",
     "retryable": false
   }
 }
