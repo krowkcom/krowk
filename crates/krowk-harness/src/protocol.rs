@@ -232,7 +232,9 @@ pub struct ErrorInfo {
 /// Claude-Code-compatible permission modes (R-PERM-1): `default` asks
 /// before edits and commands, `acceptEdits` before commands, `plan` changes
 /// nothing, and `bypassPermissions` asks before nothing — though a deny
-/// rule still holds in every one (`crate::permissions`).
+/// rule, an ask rule and a hook's ask still hold in each of those. krowk's
+/// own `unhinged` holds nothing: every call runs, whatever the rules say
+/// (`crate::permissions`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
@@ -241,10 +243,23 @@ pub enum PermissionMode {
     AcceptEdits,
     Plan,
     BypassPermissions,
+    Unhinged,
 }
 
 impl PermissionMode {
-    pub const NAMES: [&'static str; 4] = ["default", "acceptEdits", "plan", "bypassPermissions"];
+    pub const NAMES: [&'static str; 5] = ["default", "acceptEdits", "plan", "bypassPermissions", "unhinged"];
+
+    /// The mode as it is written: on the command line, in settings, on the
+    /// wire.
+    pub fn name(self) -> &'static str {
+        Self::NAMES[self as usize]
+    }
+
+    /// Whether the mode asks a person before nothing: a backend runs in
+    /// its loosest setting, and krowk's evaluator answers what it asks.
+    pub fn asks_nothing(self) -> bool {
+        matches!(self, PermissionMode::BypassPermissions | PermissionMode::Unhinged)
+    }
 
     pub fn parse(s: &str) -> Option<PermissionMode> {
         Some(match s {
@@ -252,6 +267,7 @@ impl PermissionMode {
             "acceptEdits" => PermissionMode::AcceptEdits,
             "plan" => PermissionMode::Plan,
             "bypassPermissions" => PermissionMode::BypassPermissions,
+            "unhinged" => PermissionMode::Unhinged,
             _ => return None,
         })
     }

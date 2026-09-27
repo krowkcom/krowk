@@ -125,7 +125,7 @@ pub(super) fn permission_flag(ctx: &Ctx) -> Result<Option<PermissionMode>, Error
 
 /// The mode a prompt runs in: the flag, else the most specific
 /// `permissions.defaultMode` the settings name (a repository's only once it
-/// is trusted, and never bypassPermissions), else default — with the
+/// is trusted, and never bypassPermissions or unhinged), else default — with the
 /// notices to show: a `defaultMode` krowk does not run is read as default,
 /// and with the flag given no file's mode matters. A settings file that
 /// does not parse is named here, flag or not, before anything runs — or

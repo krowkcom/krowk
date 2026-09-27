@@ -1,5 +1,6 @@
 //! Claude-Code-compatible permissions (R-PERM-1, R-PERM-2): the modes
-//! `default`, `acceptEdits`, `plan` and `bypassPermissions`, the rules of
+//! `default`, `acceptEdits`, `plan` and `bypassPermissions`, krowk's own
+//! `unhinged`, the rules of
 //! `permissions.allow`, `ask` and `deny` in Claude Code's syntax (`rules`),
 //! the places they are read from (`settings`), grants remembered for a
 //! session or a project, and approval requests any client can answer.
@@ -8,6 +9,11 @@
 //! tools, and what a backend (Claude Code's `can_use_tool`, Codex's
 //! approval requests) asks. The order, for a call:
 //!
+//! 0. **`unhinged` allows it**, and none of what follows is read: no deny
+//!    rule, no fence, no ask rule, no hook's ask. The person chose to trust
+//!    the model with everything this process can reach. A `PreToolUse`
+//!    hook still runs, and a hook that blocks still blocks: a hook is the
+//!    person's own program, not a rule.
 //! 1. **A deny rule that matches denies it**, in every mode —
 //!    `bypassPermissions` too. Deny always wins.
 //! 2. What needs no permission (krowk's own bridged tools) runs.
@@ -304,7 +310,7 @@ impl Gate {
     pub fn scope(&self, opens: Opens) -> Scope {
         let mut s = self.0.policy.scope(opens);
         let me = self.clone();
-        if self.0.policy.loaded.rules.iter().any(|(k, _)| *k == Kind::Deny) {
+        if self.0.mode != PermissionMode::Unhinged && self.0.policy.loaded.rules.iter().any(|(k, _)| *k == Kind::Deny) {
             s.hidden = Hidden(Some(Arc::new(move |p: &Path| me.denies_read(p))));
         }
         s
@@ -365,6 +371,9 @@ impl Gate {
 
     /// The evaluator itself (see the module's notes for the order).
     pub fn verdict(&self, call: &Call, hook: Option<hooks::Decision>) -> Verdict {
+        if self.0.mode == PermissionMode::Unhinged {
+            return Verdict::Allow(Opens { outside: true, fences: true });
+        }
         let p = &self.0.policy;
         let at = p.places();
         let what = summary(call);
@@ -509,6 +518,9 @@ impl Gate {
         let untrusted = self.0.policy.loaded.ignored_allow.iter().find(|r| rules::matches(r, call, &at, true));
         let (outside, fenced) = self.reach(call);
         let mode = match &call.access {
+            // What bypassPermissions still asks about, an ask rule or a
+            // hook's ask, only unhinged runs.
+            _ if self.0.mode == PermissionMode::BypassPermissions => "unhinged",
             Access::Edit(_) | Access::Publish(_) if outside.is_empty() && fenced.is_none() => "acceptEdits",
             _ => "bypassPermissions",
         };

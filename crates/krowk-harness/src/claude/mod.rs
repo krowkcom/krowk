@@ -260,7 +260,7 @@ fn looser_than(claude: &str, krowk: PermissionMode) -> bool {
         PermissionMode::Plan => 0,
         PermissionMode::Default => 1,
         PermissionMode::AcceptEdits => 2,
-        PermissionMode::BypassPermissions => 3,
+        PermissionMode::BypassPermissions | PermissionMode::Unhinged => 3,
     };
     rank > allowed
 }
@@ -331,7 +331,8 @@ impl Engine for ClaudeEngine {
                 resume: ctx.backend_session.clone(),
                 effort: ctx.effort.map(effort_level),
                 plan: ctx.permission_mode == PermissionMode::Plan,
-                disallowed: ctx.gate.policy().deny_list(),
+                // Under unhinged no deny rule holds, Claude Code's copy included.
+                disallowed: if ctx.permission_mode == PermissionMode::Unhinged { Vec::new() } else { ctx.gate.policy().deny_list() },
             };
             let ask = Answers {
                 session_id: ctx.session_id.clone(),
@@ -436,7 +437,7 @@ impl Answers {
     /// Judges a call, asking a person when the verdict says to and a turn
     /// is there to ask through.
     async fn permit(&self, tool: &str, input: &Value, asking: Asking<'_>) -> Result<(), String> {
-        if tool == "AskUserQuestion" && self.mode != PermissionMode::BypassPermissions {
+        if tool == "AskUserQuestion" && !self.mode.asks_nothing() {
             return Err("krowk is running this turn without a person to ask: decide, say what you assumed, and carry on.".into());
         }
         let call = call_of(tool, input, &self.cwd);
@@ -784,7 +785,7 @@ impl Proc {
                                         format!(
                                             "Claude Code on {instance} came up in its `{}` permission mode, looser than krowk's `{}` for this turn, so krowk stopped it before it ran anything — check `permissions.defaultMode` in its settings and the instance's `args`, or rerun krowk with a mode that allows it",
                                             init.permission_mode,
-                                            permission_name(ask.mode)
+                                            ask.mode.name()
                                         ),
                                     ));
                                 }
@@ -861,14 +862,6 @@ impl Proc {
     }
 }
 
-fn permission_name(m: PermissionMode) -> &'static str {
-    PermissionMode::NAMES[match m {
-        PermissionMode::Default => 0,
-        PermissionMode::AcceptEdits => 1,
-        PermissionMode::Plan => 2,
-        PermissionMode::BypassPermissions => 3,
-    }]
-}
 
 async fn forward(events: &Events, out: Vec<EngineEvent>) {
     for ev in out {
@@ -922,7 +915,7 @@ mod tests {
         assert!(denied.contains("--disallowedTools Bash(rm:*) Read(.env) --permission-mode default"), "{denied}");
         assert!(looser_than("bypassPermissions", PermissionMode::AcceptEdits) && looser_than("acceptEdits", PermissionMode::Default) && looser_than("auto", PermissionMode::AcceptEdits));
         assert!(looser_than("default", PermissionMode::Plan) && looser_than("somethingNew", PermissionMode::AcceptEdits));
-        assert!(!looser_than("default", PermissionMode::Default) && !looser_than("plan", PermissionMode::Plan) && !looser_than("bypassPermissions", PermissionMode::BypassPermissions));
+        assert!(!looser_than("default", PermissionMode::Default) && !looser_than("plan", PermissionMode::Plan) && !looser_than("bypassPermissions", PermissionMode::BypassPermissions) && !looser_than("bypassPermissions", PermissionMode::Unhinged));
         assert_eq!([Effort::None, Effort::Medium, Effort::Max].map(effort_level), ["low", "medium", "max"]);
     }
 

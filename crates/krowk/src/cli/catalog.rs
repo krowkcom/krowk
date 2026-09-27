@@ -427,7 +427,7 @@ fn prompt_flags() -> Vec<Flag> {
             flag(
                 "permission-mode",
                 STRING,
-                "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code. Without it, the settings' permissions.defaultMode; a deny rule holds in every mode",
+                "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which runs everything: no deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode",
             ),
             "default",
         ),

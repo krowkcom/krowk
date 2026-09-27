@@ -151,6 +151,19 @@ fn r_perm_1_a_repository_whose_settings_deny_bash_rm_blocks_it_in_every_mode() {
 }
 
 #[test]
+fn r_perm_1_unhinged_runs_what_a_deny_rule_would_have_stopped() {
+    let m = mock::serve(one_tool("bash", json!({"command": "rm -f keep.txt"})));
+    let h = Home::new("unhinged", &m.url);
+    h.write(".claude/settings.json", &json!({"permissions": {"deny": ["Bash(rm:*)"]}}).to_string());
+    h.write("keep.txt", "going\n");
+    let host = h.host(Config::default());
+    let (_, r) = run(&host, prompt("clean up", PermissionMode::Unhinged));
+    assert_eq!(r.result, "Done.");
+    assert!(!tool_result_sent(&m).contains("denied"), "{}", tool_result_sent(&m));
+    assert!(!h.repo().join("keep.txt").exists(), "rm ran: unhinged holds nothing back");
+}
+
+#[test]
 fn r_compat_1_a_pretooluse_hook_exiting_2_blocks_the_tool_and_the_model_reads_why() {
     let m = mock::serve(one_tool("bash", json!({"command": "touch ran.txt"})));
     let h = Home::new("hook", &m.url);

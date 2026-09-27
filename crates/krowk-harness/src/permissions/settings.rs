@@ -19,11 +19,12 @@
 //! ask rule — always applies, and what widens — an allow rule, a directory
 //! outside the repository, a `defaultMode`, a hook, which is a command —
 //! applies only once the repository is trusted. Even then a repository's
-//! `defaultMode` is never `bypassPermissions`: that is the person's to
-//! choose, on the command line or in their own settings. None of these
-//! files is one the model can write: every file tool refuses `.claude`,
-//! `.krowk` and krowk's config directory unless a person approves that one
-//! call, and no allow rule or remembered grant opens them.
+//! `defaultMode` is never `bypassPermissions` or `unhinged`: that is the
+//! person's to choose, on the command line or in their own settings. None
+//! of these files is one the model can write: every file tool refuses
+//! `.claude`, `.krowk` and krowk's config directory unless a person
+//! approves that one call (or runs unhinged), and no allow rule or
+//! remembered grant opens them.
 //!
 //! A file that exists and does not parse, or holds a rule that does not,
 //! stops the turn with its name: a deny rule silently dropped is a rule
@@ -289,12 +290,13 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
         let widens = f.rules.iter().any(|(k, _)| *k == Kind::Allow) || !f.dirs.is_empty() || f.default_mode.is_some() || !f.hooks.is_empty();
         out.widens |= widens;
         if trusted {
-            // A repository never puts the person in bypassPermissions.
+            // A repository never puts the person in bypassPermissions, nor
+            // unhinged.
             let (mode, notice) = f.mode(home, &config);
-            said(mode.filter(|m| *m != PermissionMode::BypassPermissions), notice);
+            said(mode.filter(|m| !m.asks_nothing()), notice);
             out.rules.extend(f.rules);
             out.dirs.extend(f.dirs);
-            out.default_mode = mode.filter(|m| *m != PermissionMode::BypassPermissions).or(out.default_mode);
+            out.default_mode = mode.filter(|m| !m.asks_nothing()).or(out.default_mode);
             out.hooks.extend(f.hooks);
         } else {
             for (k, r) in f.rules {

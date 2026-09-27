@@ -40,6 +40,8 @@ fn letter(v: &Verdict) -> char {
     }
 }
 
+/// The modes a rule holds in; `unhinged`, which none holds, has its own
+/// test.
 const MODES: [PermissionMode; 4] = [PermissionMode::Default, PermissionMode::AcceptEdits, PermissionMode::Plan, PermissionMode::BypassPermissions];
 
 #[test]
@@ -101,6 +103,49 @@ fn r_perm_1_a_repository_that_denies_bash_rm_blocks_it_in_every_mode_bypass_incl
             }
         }
     }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn r_perm_1_unhinged_runs_everything_and_no_rule_fence_or_hooks_ask_holds_it() {
+    let d = repo("unhinged");
+    let p = policy(&d, &[(Kind::Deny, "Bash"), (Kind::Deny, "Read(.env)"), (Kind::Deny, "Edit"), (Kind::Ask, "WebFetch"), (Kind::Deny, "mcp__gh"), (Kind::Deny, "Task")]);
+    let calls = [
+        bash("rm -rf build"),
+        bash("$(printf rm) -rf x"),
+        read(d.join(".env")),
+        edit(d.join("src/a.rs")),
+        edit(d.join(".git/hooks/pre-commit")),
+        edit(d.join(".claude/settings.json")),
+        edit(PathBuf::from("/etc/hosts")),
+        Call { tool: "WebFetch".into(), access: Access::Fetch("https://docs.rs/x".into()), subject: None },
+        Call { tool: "mcp__gh__issue".into(), access: Access::Mcp { server: "gh".into(), tool: "issue".into() }, subject: None },
+        Call { tool: "Task".into(), access: Access::Session, subject: Some("reviewer".into()) },
+    ];
+    let g = gate(&p, PermissionMode::Unhinged);
+    for call in &calls {
+        for hook in [None, Some(hooks::Decision::Ask)] {
+            assert_eq!(g.verdict(call, hook), Verdict::Allow(Opens { outside: true, fences: true }), "{call:?} with the hook saying {hook:?}");
+        }
+    }
+    assert!(g.scope(Opens::default()).hidden.0.is_none(), "a search skips nothing a deny rule would have hidden");
+    assert_eq!(letter(&gate(&p, PermissionMode::BypassPermissions).verdict(&bash("ls"), None)), 'N', "the same rules still hold under bypassPermissions");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn r_perm_1_only_the_person_puts_a_session_in_unhinged() {
+    let d = repo("unhinged-mode");
+    std::fs::create_dir_all(d.join(".claude")).unwrap();
+    std::fs::write(d.join(".claude/settings.json"), json!({"permissions": {"defaultMode": "unhinged"}}).to_string()).unwrap();
+    let cfg = Config { trusted: Some(Arc::new(|_: &Path| true)), ..Config::default() };
+    assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, None, "a trusted repository's unhinged never counts");
+    let cfg = Config { user: Some(json!({"permissions": {"defaultMode": "unhinged"}})), ..cfg };
+    assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, Some(PermissionMode::Unhinged), "the person's own settings choose it");
+    // What bypassPermissions still asks about, the refusal points past it.
+    let g = gate(&policy(&d, &[(Kind::Ask, "Bash(npm test)")]), PermissionMode::BypassPermissions);
+    let why = g.nobody_to_ask(&bash("npm test"), "Bash `npm test`", "the rule asks first", &[]);
+    assert!(why.contains("--permission-mode unhinged"), "{why}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
