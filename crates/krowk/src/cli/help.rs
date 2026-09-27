@@ -11,13 +11,19 @@ const MARK: [&str; 2] = ["█  █", "█▀▀▄"];
 /// What every page is held to, so nothing wraps on a standard terminal.
 const COLUMNS: usize = 80;
 
+/// The greeting's line under the name: the catalog's summary, as a sentence.
+#[cfg(feature = "harness")]
+const TAGLINE: &str = "A coding agent, and permalinks for its output";
+#[cfg(not(feature = "harness"))]
+const TAGLINE: &str = "Permalinks for agent output";
+
 fn banner(version: &str) -> String {
-    format!("\n{}\n{}\n\nKrowk {version}\nPermalinks for agent output\n\n", MARK[0], MARK[1])
+    format!("\n{}\n{}\n\nKrowk {version}\n{TAGLINE}\n\n", MARK[0], MARK[1])
 }
 
 const GREETING_HINTS: &[(&str, &str)] = &[
-    ("krowk push screenshot.png", "Upload a file and get a link — no key needed, lasts a day"),
-    ("krowk login --token …", "Add a key: uploads keep, group under runs, and stay yours"),
+    ("krowk push screenshot.png", "Upload a file, get a link — no key, lasts a day"),
+    ("krowk login --token …", "Add a key: uploads keep, group under runs"),
     ("krowk help", "The commands; --all for every one, --json as data"),
 ];
 
@@ -190,32 +196,43 @@ fn rows(out: &mut String, indent: &str, width: usize, rows: &[(&str, &str)]) {
 /// One label and what it means, the meaning wrapped under itself so no line
 /// passes 80 columns; a label too wide for its column gets a line of its own.
 fn row(out: &mut String, indent: &str, width: usize, label: &str, text: &str) {
-    let mut label = label;
-    if label.chars().count() + 2 > width && !text.is_empty() {
+    if text.is_empty() {
         *out += &format!("{indent}{label}\n");
+        return;
+    }
+    let mut label = label;
+    if label.chars().count() + 2 > width {
+        wrap(out, indent, indent.len() + 4, label);
         label = "";
     }
-    let room = COLUMNS - indent.len() - width;
-    let mut line = String::new();
-    for word in text.split(' ') {
-        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > room {
-            put(out, indent, width, label, &line);
-            label = "";
-            line.clear();
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line += word;
-    }
-    put(out, indent, width, label, &line);
+    wrap(out, &format!("{indent}{label:<width$}"), indent.len() + width, text);
 }
 
-fn put(out: &mut String, indent: &str, width: usize, label: &str, line: &str) {
-    *out += &match line {
-        "" => format!("{indent}{label}\n"),
-        _ => format!("{indent}{label:<width$}{line}\n"),
-    };
+/// `text` on lines of at most 80 columns, the first after `first` and the
+/// rest `hang` columns in.
+fn wrap(out: &mut String, first: &str, hang: usize, text: &str) {
+    out.push_str(first);
+    let mut used = first.len();
+    let mut fresh = true;
+    for word in text.split(' ') {
+        // Bytes, which never count fewer than the columns a word takes.
+        if !fresh && used + 1 + word.len() > COLUMNS {
+            out.push('\n');
+            for _ in 0..hang {
+                out.push(' ');
+            }
+            used = hang;
+            fresh = true;
+        }
+        if !fresh {
+            out.push(' ');
+            used += 1;
+        }
+        out.push_str(word);
+        used += word.len();
+        fresh = false;
+    }
+    out.push('\n');
 }
 
 fn flag_rows(out: &mut String, width: usize, flags: &[Flag]) {
@@ -227,9 +244,12 @@ fn flag_rows(out: &mut String, width: usize, flags: &[Flag]) {
 
 /// One command's own help: the catalog read back as text.
 pub fn command_help(cmd: &Command, globals: &[Flag]) -> String {
+    // The title and the `about` are held under 80 columns by the tests below;
+    // only a usage runs long enough to need wrapping.
     let mut out = format!("krowk {} — {}\n", cmd.name, cmd.summary);
     if !cmd.usage.is_empty() {
-        out += &format!("\nUSAGE\n  {}\n", cmd.usage);
+        out += "\nUSAGE\n";
+        wrap(&mut out, "  ", 6, cmd.usage);
     }
     let about = catalog::about(&cmd.name);
     if !about.is_empty() {
@@ -261,7 +281,7 @@ pub fn command_help(cmd: &Command, globals: &[Flag]) -> String {
     for f in globals.iter().filter(|f| f.aliases.is_empty()) {
         out += &format!(" --{}", f.name);
     }
-    out + " — `krowk help flags`"
+    out + " — `help flags`"
 }
 
 fn arg_label(a: &super::catalog::Arg) -> String {
@@ -317,10 +337,19 @@ mod tests {
     fn every_topic_has_a_page_and_every_page_fits() {
         let c = catalog::catalog("dev");
         let files = Files { credentials: "/home/me/.config/krowk/credentials.json", config: "/home/me/.config/krowk/config.json" };
+        let globals = &c.global_flags[..catalog::CORE_FLAGS];
         for (name, _) in TOPICS {
-            let page = topic(name, &c, &files).or_else(|| c.find(&[name.to_string()]).map(|cmd| command_help(&cmd, &[])));
+            let page = topic(name, &c, &files).or_else(|| c.find(&[name.to_string()]).map(|cmd| command_help(&cmd, globals)));
             fits(&page.unwrap_or_else(|| panic!("no page for {name}")));
         }
         fits(&topics());
+        fits(&greeting("0.11.0-rc.1"));
+        assert!(greeting("dev").contains(&c.summary[1..]));
+        // Every command's own page, a group's and a leaf's, as `krowk help` prints it.
+        for cmd in c.commands.iter().chain(&c.leaves()) {
+            let page = command_help(cmd, globals);
+            assert!(page.contains("--jq"), "{page}");
+            fits(&page);
+        }
     }
 }

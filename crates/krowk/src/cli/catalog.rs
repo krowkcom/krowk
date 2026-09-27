@@ -306,9 +306,7 @@ pub fn catalog(version: &str) -> Catalog {
                 flags: login_flags(),
                 ..cmd("login", "krowk login [--token <token>] [--no-browser]", "Sign in to your krowk account")
             },
-            Command {
-                ..cmd("logout", "krowk logout", "Remove this machine's key")
-            },
+            cmd("logout", "krowk logout", "Remove this machine's key"),
             cmd("whoami", "krowk whoami", "Show the key and its workspace"),
             Command {
                 subcommands: vec![
@@ -382,7 +380,7 @@ pub fn catalog(version: &str) -> Catalog {
                         ..cmd(
                             "import",
                             "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
-                            "Read agent transcripts on this machine into the local store",
+                            "Import this machine's agent transcripts",
                         )
                     },
                     Command {
@@ -393,7 +391,7 @@ pub fn catalog(version: &str) -> Catalog {
                         args: vec![arg("id", "The session id, an unambiguous id prefix of at least 8 chars, or a foreign session id", true)],
                         flags: vec![
                             flag("max-usd", STRING, "Trip when the session's metered cost is over this many dollars"),
-                                        flag(
+                            flag(
                                 "max-tokens",
                                 STRING,
                                 "Trip when the session's generated tokens (output and reasoning — the session's and its subagents') are over this many",
@@ -403,7 +401,7 @@ pub fn catalog(version: &str) -> Catalog {
                     },
                     Command {
                         flags: vec![flag("no-network", BOOL, "Skip the models.dev price refresh")],
-                        ..cmd("sync", "krowk sessions sync [--no-network]", "Import what changed, and refresh prices")
+                        ..cmd("sync", "krowk sessions sync [--no-network]", "Import what changed since the last import, refresh prices")
                     },
                 ],
                 ..cmd(
@@ -419,6 +417,7 @@ pub fn catalog(version: &str) -> Catalog {
             cmd("upgrade", "krowk upgrade", "Upgrade krowk"),
             Command {
                 args: vec![arg("command", "The command or topic to describe, e.g. `uploads attach` or `exit-codes`", false)],
+                flags: vec![flag("all", BOOL, "List every command and subcommand")],
                 ..cmd("help", "krowk help [command|topic] [--all]", "This, a command's help, or a topic")
             },
         ],
@@ -441,9 +440,7 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(feature = "harness")]
     c.commands.push(providers_command());
     #[cfg(feature = "harness")]
-    c.commands.push(Command {
-        ..cmd("status", "krowk status", "What's connected, and whether each is ready")
-    });
+    c.commands.push(cmd("status", "krowk status", "What's connected, and whether each is ready"));
     c
 }
 
@@ -545,9 +542,7 @@ fn providers_command() -> Command {
                     "Add an instance, or sign one in",
                 )
             },
-            Command {
-                ..cmd("list", "krowk providers list", "List every instance, and whether it is ready")
-            },
+            cmd("list", "krowk providers list", "List every instance, and whether it is ready"),
             Command {
                 args: vec![arg("instance", "The instance to remove, e.g. openai:work", true)],
                 ..cmd("remove", "krowk providers remove <instance>", "Remove an instance's definition, and forget its login")
@@ -668,20 +663,16 @@ pub fn about(name: &str) -> &'static str {
         "uploads delete" => DELETE_ABOUT,
         "claim" => CLAIM_ABOUT,
         "login" | "auth login" => LOGIN_ABOUT,
-        "logout" => "Takes the key that resolves here — the one `krowk whoami` shows — off this machine.",
+        "logout" => "Takes the key that resolves here (what `krowk whoami` shows) off this machine.",
         "auth" => "Manage the API key — your krowk account.",
         "workspaces" => WORKSPACES_ABOUT,
         "config" => "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.",
         "doctor" => "Checks the local setup, and that the registry answers.",
         "sessions budget" => BUDGET_ABOUT,
-        "sessions sync" => "Imports only what changed since the last import, and refreshes the models.dev prices.",
         "sessions" => "Lists every agent thread on this machine, newest first.",
         "upgrade" => "Upgrades krowk to the latest release.",
-        "help" => "--all lists every command and subcommand; --json answers with the surface as data.",
         #[cfg(feature = "harness")]
-        "status" => "\
-Whether each provider instance can run a turn here: its readiness, where its
-key or login comes from, and what fixes it. Exits 3 when none is ready.",
+        "status" => "Also where its key or login comes from, and what fixes it. Exits 3 if none is.",
         #[cfg(feature = "harness")]
         "connect" => "A subscription signs in by the vendor's own login. Connecting again renews it.",
         #[cfg(feature = "harness")]
@@ -695,9 +686,7 @@ with `claude auth login` or `codex login`).",
         #[cfg(feature = "harness")]
         "providers list" => "Where each runs, too. The same check as `krowk status`.",
         #[cfg(feature = "harness")]
-        "providers" => "\
-The provider instances by backend kind, one level below `krowk connect`: API
-keys, logins, and Claude Code and Codex accounts.",
+        "providers" => "Below `krowk connect`: API keys, logins, Claude Code and Codex accounts.",
         _ => "",
     }
 }

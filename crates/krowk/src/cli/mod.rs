@@ -252,15 +252,21 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["providers", "remove", ..] => providers::remove(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["status", ..] => status::status(ctx),
-        _ if catalog::catalog(VERSION).leaves().iter().any(|l| p.starts_with(&l.name.split(' ').map(String::from).collect::<Vec<_>>())) => Err(fail(
-            "not_in_build",
-            format!(
-                "`{}` is not in this build — it is the agent build, without `sessions`; install a release, or build with `--features sessions`",
-                clip(p, 2).join(" ")
-            ),
-        )),
+        _ if catalog::catalog(VERSION).leaves().iter().any(|l| p.starts_with(&l.name.split(' ').map(String::from).collect::<Vec<_>>())) => Err(not_in_build(p)),
         _ => Err(fail("unknown_command", format!("`{}` is not a krowk command — run `krowk --help`", clip(p, 2).join(" ")))),
     }
+}
+
+/// A command the catalog names that this build does not have: the agent
+/// build, without `sessions`.
+fn not_in_build(p: &[String]) -> Error {
+    fail(
+        "not_in_build",
+        format!(
+            "`{}` is not in this build — it is the agent build, without `sessions`; install a release, or build with `--features sessions`",
+            clip(p, 2).join(" ")
+        ),
+    )
 }
 
 fn clip(s: &[String], n: usize) -> &[String] {
@@ -277,6 +283,9 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
         let text = help::help(&c, ctx.f.all);
         let _ = writeln!(ctx.io.stdout, "{text}");
         return Ok(());
+    }
+    if !cfg!(feature = "sessions") && matches!(topic[0].as_str(), "sessions" | "pricing") {
+        return Err(not_in_build(topic));
     }
     if let Some(cmd) = c.find(topic) {
         if !human {
