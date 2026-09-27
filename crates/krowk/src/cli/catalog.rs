@@ -32,11 +32,6 @@ pub struct Command {
     /// --jq has nothing to read on.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub no_json: bool,
-    /// What `krowk help <command>` says under the usage: everything the
-    /// one-line summary has no room for. Prose for a person, so not in
-    /// `--json`, whose shape stays the parser's.
-    #[serde(skip)]
-    pub about: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -113,10 +108,8 @@ into a workspace — where a paid plan keeps it and a free one gives it another
 day.";
 
 const CLAIM_ABOUT: &str = "\
-An upload made without an API key lands anonymously, expires within a day,
-and comes back with a claim token. `krowk claim` spends that token to move
-the upload into this key's workspace — where a paid plan keeps it and a free
-one gives it another day.";
+Moves an anonymous upload into this key's workspace, spending the claim token
+it came back with: `krowk help push`.";
 
 const DELETE_ABOUT: &str = "\
 Taking an upload down removes the bytes at once and leaves the link reporting
@@ -259,7 +252,6 @@ pub fn catalog(version: &str) -> Catalog {
             Command {
                 args: vec![file.clone()],
                 flags: upload_flags(),
-                about: PUSH_ABOUT,
                 ..cmd("push", "krowk push <file...> [flags]", "Upload files, get a link for each")
             },
             Command {
@@ -267,7 +259,6 @@ pub fn catalog(version: &str) -> Catalog {
                     Command {
                         args: vec![file],
                         flags: upload_flags(),
-                        about: PUSH_ABOUT,
                         ..cmd("create", "krowk uploads create <file...> [flags]", "Upload files: the long form of `krowk push`")
                     },
                     Command {
@@ -292,7 +283,6 @@ pub fn catalog(version: &str) -> Catalog {
                                 false,
                             ),
                         ],
-                        about: DELETE_ABOUT,
                         ..cmd("delete", "krowk uploads delete <art> [token]", "Take an upload down — immediate, cannot be undone")
                     },
                 ],
@@ -310,16 +300,13 @@ pub fn catalog(version: &str) -> Catalog {
             Command {
                 args: vec![arg("artifact", ARTIFACT_ARG, true), arg("claim-token", "The token the anonymous upload came back with", true)],
                 flags: vec![run_flag("The run to group it under while claiming — a claimed upload has none otherwise")],
-                about: CLAIM_ABOUT,
                 ..cmd("claim", "krowk claim <artifact> <token> [--run]", "Keep an anonymous upload past expiry")
             },
             Command {
                 flags: login_flags(),
-                about: LOGIN_ABOUT,
                 ..cmd("login", "krowk login [--token <token>] [--no-browser]", "Sign in to your krowk account")
             },
             Command {
-                about: "Takes the key that resolves here — the one `krowk whoami` shows — off this machine.",
                 ..cmd("logout", "krowk logout", "Remove this machine's key")
             },
             cmd("whoami", "krowk whoami", "Show the key and its workspace"),
@@ -327,14 +314,12 @@ pub fn catalog(version: &str) -> Catalog {
                 subcommands: vec![
                     Command {
                         flags: login_flags(),
-                        about: LOGIN_ABOUT,
                         ..cmd("login", "krowk auth login [--token <token>] [--no-browser]", "The long form of `krowk login`")
                     },
                     cmd("logout", "krowk auth logout", "The long form of `krowk logout`"),
                     Command { no_json: true, ..cmd("token", "krowk auth token", "Print the stored token") },
                     cmd("verify", "krowk auth verify", "The long form of `krowk whoami`"),
                 ],
-                about: "Manage the API key — your krowk account.",
                 ..cmd("auth", "", "Long forms of login, logout and whoami")
             },
             Command {
@@ -349,7 +334,6 @@ pub fn catalog(version: &str) -> Catalog {
                         ..cmd("use", "krowk workspaces use <workspace>", "Make a stored key the machine-wide default")
                     },
                 ],
-                about: WORKSPACES_ABOUT,
                 ..cmd("workspaces", "", "Switch between stored keys")
             },
             Command {
@@ -373,10 +357,9 @@ pub fn catalog(version: &str) -> Catalog {
                         ..cmd("unset", "krowk config unset <key> [--global]", "Remove one value from the repo config, or the global one")
                     },
                 ],
-                about: "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.",
                 ..cmd("config", "", "Show or set configuration")
             },
-            Command { about: "Checks the local setup, and that the registry answers.", ..cmd("doctor", "krowk doctor", "Check this machine's setup") },
+            cmd("doctor", "krowk doctor", "Check this machine's setup"),
             Command {
                 flags: vec![
                     flag("harness", STRING, "Only sessions from this harness, e.g. claude"),
@@ -416,16 +399,13 @@ pub fn catalog(version: &str) -> Catalog {
                                 "Trip when the session's generated tokens (output and reasoning — the session's and its subagents') are over this many",
                             ),
                         ],
-                        about: BUDGET_ABOUT,
                         ..cmd("budget", "krowk sessions budget <id> [--max-usd N] [--max-tokens N]", "Check a session against a spend limit")
                     },
                     Command {
                         flags: vec![flag("no-network", BOOL, "Skip the models.dev price refresh")],
-                        about: "Imports only what changed since the last import, and refreshes the models.dev prices.",
                         ..cmd("sync", "krowk sessions sync [--no-network]", "Import what changed, and refresh prices")
                     },
                 ],
-                about: "Lists every agent thread on this machine, newest first.",
                 ..cmd(
                     "sessions",
                     "krowk sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
@@ -436,14 +416,9 @@ pub fn catalog(version: &str) -> Catalog {
                 subcommands: vec![cmd("refresh", "krowk pricing refresh", "Refresh the models.dev price cache")],
                 ..cmd("pricing", "", "Refresh model prices")
             },
-            Command { about: "Upgrades krowk to the latest release.", ..cmd("upgrade", "krowk upgrade", "Upgrade krowk") },
+            cmd("upgrade", "krowk upgrade", "Upgrade krowk"),
             Command {
                 args: vec![arg("command", "The command or topic to describe, e.g. `uploads attach` or `exit-codes`", false)],
-                flags: vec![flag("all", BOOL, "List every command and subcommand")],
-                about: "\
-`krowk help` lists the commands, `krowk help --all` every command and
-subcommand, and `krowk help topics` the topics. With --json it answers with the
-whole surface as data, for tooling — or one command's, given its name.",
                 ..cmd("help", "krowk help [command|topic] [--all]", "This, a command's help, or a topic")
             },
         ],
@@ -467,9 +442,6 @@ whole surface as data, for tooling — or one command's, given its name.",
     c.commands.push(providers_command());
     #[cfg(feature = "harness")]
     c.commands.push(Command {
-        about: "\
-Whether each provider instance can run a turn here: its readiness, where its
-key or login comes from, and what fixes it. Exits 3 when none is ready.",
         ..cmd("status", "krowk status", "What's connected, and whether each is ready")
     });
     c
@@ -484,8 +456,11 @@ pub fn global_flags() -> Vec<Flag> {
     flags
 }
 
+/// How many of `global_flags` every command takes; the agent's follow them.
+pub const CORE_FLAGS: usize = 8;
+
 /// The flags every command takes.
-pub fn core_flags() -> Vec<Flag> {
+fn core_flags() -> Vec<Flag> {
     vec![
         flag("workspace", STRING, "Use this workspace's stored key for this one command — outranks KROWK_WORKSPACE and every config file"),
         flag("dev", BOOL, format!("Talk to a local registry at {}", krowk_api::DEV_BASE_URL)),
@@ -528,10 +503,6 @@ fn connect_commands() -> Vec<Command> {
                 flag("binary", STRING, "A subscription: the claude or codex binary to run; the one on PATH when absent"),
                 flag("config-dir", STRING, "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one under krowk's data directory for a named account"),
             ],
-            about: "\
-Connects a model provider: a Claude or ChatGPT subscription (signed in by the
-vendor's own login), SuperGrok, or an API key. Connecting one again renews its
-login.",
             ..cmd(
                 "connect",
                 "krowk connect [vendor] [--method subscription|api-key|device] [--name N]",
@@ -544,9 +515,6 @@ login.",
                 flag("remove", BOOL, "Remove its definition too; without it the instance stays, not signed in"),
                 flag("sign-out-vendor", BOOL, "The built-in claude or codex: yes, sign me out of Claude Code or Codex itself (~/.claude, ~/.codex), for every tool. Asked at a terminal; required without one"),
             ],
-            about: "\
-Signs an instance out: SuperGrok's tokens are deleted, a subscription's own
-logout is run, and an API key's variable is named for you to unset.",
             ..cmd("disconnect", "krowk disconnect [instance] [--remove]", "Sign a connected model out")
         },
     ]
@@ -571,9 +539,6 @@ fn providers_command() -> Command {
                     flag("binary", STRING, "claude, codex: the binary to run; claude or codex on PATH when absent"),
                     flag("config-dir", STRING, "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one under krowk's data directory for a named instance"),
                 ],
-                about: "\
-Adds an instance, signs in to SuperGrok, or adds a Claude Code or Codex account
-(signed in with `claude auth login` or `codex login`).",
                 ..cmd(
                     "add",
                     "krowk providers add <provider> [--name N] [--api-key-env VAR] [--base-url URL] [--device] [--binary PATH] [--config-dir DIR]",
@@ -581,9 +546,6 @@ Adds an instance, signs in to SuperGrok, or adds a Claude Code or Codex account
                 )
             },
             Command {
-                about: "\
-Lists every instance, where it runs, and whether it is ready — the same check
-as `krowk status`, a Claude Code or Codex login asked of Claude Code or Codex.",
                 ..cmd("list", "krowk providers list", "List every instance, and whether it is ready")
             },
             Command {
@@ -591,9 +553,6 @@ as `krowk status`, a Claude Code or Codex login asked of Claude Code or Codex.",
                 ..cmd("remove", "krowk providers remove <instance>", "Remove an instance's definition, and forget its login")
             },
         ],
-        about: "\
-The provider instances by backend kind, one level below `krowk connect`: API
-keys, logins, and Claude Code and Codex accounts.",
         ..cmd("providers", "", "Low-level instance config (add, list, remove)")
     }
 }
@@ -601,7 +560,7 @@ keys, logins, and Claude Code and Codex accounts.",
 /// `krowk -p "…"`: the harness build's headless agent. Flags rather than a
 /// command, because that is how every agent CLI spells it.
 #[cfg(feature = "harness")]
-pub fn prompt_flags() -> Vec<Flag> {
+fn prompt_flags() -> Vec<Flag> {
     vec![
         Flag {
             aliases: vec!["p"],
@@ -700,6 +659,49 @@ impl Catalog {
     }
 }
 
+/// What `krowk help <command>` says under the usage: everything the one-line
+/// summary has no room for, by the command's whole name. Prose for a person,
+/// so not in `--json`, whose shape stays the parser's.
+pub fn about(name: &str) -> &'static str {
+    match name {
+        "push" | "uploads create" => PUSH_ABOUT,
+        "uploads delete" => DELETE_ABOUT,
+        "claim" => CLAIM_ABOUT,
+        "login" | "auth login" => LOGIN_ABOUT,
+        "logout" => "Takes the key that resolves here — the one `krowk whoami` shows — off this machine.",
+        "auth" => "Manage the API key — your krowk account.",
+        "workspaces" => WORKSPACES_ABOUT,
+        "config" => "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.",
+        "doctor" => "Checks the local setup, and that the registry answers.",
+        "sessions budget" => BUDGET_ABOUT,
+        "sessions sync" => "Imports only what changed since the last import, and refreshes the models.dev prices.",
+        "sessions" => "Lists every agent thread on this machine, newest first.",
+        "upgrade" => "Upgrades krowk to the latest release.",
+        "help" => "--all lists every command and subcommand; --json answers with the surface as data.",
+        #[cfg(feature = "harness")]
+        "status" => "\
+Whether each provider instance can run a turn here: its readiness, where its
+key or login comes from, and what fixes it. Exits 3 when none is ready.",
+        #[cfg(feature = "harness")]
+        "connect" => "A subscription signs in by the vendor's own login. Connecting again renews it.",
+        #[cfg(feature = "harness")]
+        "disconnect" => "\
+Signs an instance out: SuperGrok's tokens are deleted, a subscription's own
+logout is run, and an API key's variable is named for you to unset.",
+        #[cfg(feature = "harness")]
+        "providers add" => "\
+Also signs in to SuperGrok, or adds a Claude Code or Codex account (signed in
+with `claude auth login` or `codex login`).",
+        #[cfg(feature = "harness")]
+        "providers list" => "Where each runs, too. The same check as `krowk status`.",
+        #[cfg(feature = "harness")]
+        "providers" => "\
+The provider instances by backend kind, one level below `krowk connect`: API
+keys, logins, and Claude Code and Codex accounts.",
+        _ => "",
+    }
+}
+
 /// A heading in the human help, and the commands under it in reading order.
 /// `krowk help` lists each command; `krowk help --all` each with everything
 /// under it. Every command the build has sits under exactly one heading.
@@ -750,6 +752,12 @@ mod tests {
         commands.sort_unstable();
         assert_eq!(listed, commands);
         assert!(ALL_ONLY.iter().all(|n| listed.contains(n)));
+    }
+
+    #[test]
+    fn the_core_flags_come_first() {
+        assert_eq!(core_flags().len(), CORE_FLAGS);
+        assert_eq!(catalog("dev").global_flags[CORE_FLAGS - 1].name, "version");
     }
 
     #[test]

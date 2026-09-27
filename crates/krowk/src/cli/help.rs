@@ -24,7 +24,12 @@ const GREETING_HINTS: &[(&str, &str)] = &[
 /// What `krowk` alone says: the first upload, the key that makes uploads
 /// keep, and where the rest is.
 pub fn greeting(version: &str) -> String {
-    format!("{}{}\n", banner(version), hints("  ", GREETING_HINTS).join("\n"))
+    // Unwrapped, as it always was: a hint is one line.
+    let mut out = banner(version);
+    for (hint, why) in GREETING_HINTS {
+        out += &format!("  {hint:<25}  {why}\n");
+    }
+    out
 }
 
 /// Where the files live, which only the running process knows.
@@ -55,62 +60,49 @@ const MORE: &[(&str, &str)] = &[
     ("krowk help topics", "flags, exit codes, environment, workspaces, links"),
 ];
 
-/// `krowk help`: what krowk is, how to start, and one line per command.
-pub fn help(c: &Catalog) -> String {
-    let groups = GROUPS.iter().map(|(title, names)| {
-        let rows: Vec<String> = names
-            .iter()
-            .filter(|n| !ALL_ONLY.contains(n))
-            .map(|n| format!("  {n:<12}  {}", c.commands.iter().find(|c| c.name == *n).map_or("", |c| c.summary)))
-            .collect();
-        format!("{title}\n{}", rows.join("\n"))
-    });
-    let blocks: Vec<String> = [format!("{}  krowk — {}\n{}  version {}", MARK[0], c.summary, MARK[1], c.version)]
-        .into_iter()
-        .chain([format!("USAGE\n{}", hints_at("  ", 25, USAGE).join("\n"))])
-        .chain(groups)
-        .chain([format!("FLAGS\n{}", hints_at("  ", 25, FLAGS).join("\n")), hints("", MORE).join("\n")])
-        .collect();
-    blocks.join("\n\n")
-}
+const ALL_MORE: &[(&str, &str)] = &[
+    ("krowk help <command>", "A command's own flags and explanation"),
+    ("krowk help topics", "flags, exit codes, environment, workspaces, links"),
+    ("krowk help --json", "The whole surface as data, for tooling"),
+];
 
-/// `krowk help --all`: every command and subcommand, one line each.
-pub fn help_all(c: &Catalog) -> String {
+/// `krowk help`: what krowk is, how to start, and one line per command; with
+/// `all`, one line per command and subcommand instead.
+pub fn help(c: &Catalog, all: bool) -> String {
+    let mut out = if all {
+        "krowk — every command and subcommand\n".to_string()
+    } else {
+        format!("{}  krowk — {}\n{}  version {}\n\nUSAGE\n", MARK[0], c.summary, MARK[1], c.version)
+    };
+    if !all {
+        rows(&mut out, "  ", 27, USAGE);
+    }
     let leaves = c.leaves();
-    let groups: Vec<(&str, Vec<&Command>)> = GROUPS
-        .iter()
-        .map(|(title, names)| {
-            let rows = names.iter().flat_map(|n| leaves.iter().filter(move |l| l.name.split(' ').next() == Some(n)));
-            (*title, rows.collect())
-        })
-        .collect();
-    let width = groups.iter().flat_map(|(_, rows)| rows.iter()).map(|l| l.name.len()).max().unwrap_or(0);
-    let mut blocks = vec!["krowk — every command and subcommand".to_string()];
-    blocks.extend(groups.iter().map(|(title, rows)| {
-        let rows: Vec<String> = rows.iter().map(|l| format!("  {:<width$}  {}", l.name, l.summary)).collect();
-        format!("{title}\n{}", rows.join("\n"))
-    }));
-    blocks.push(
-        hints(
-            "",
-            &[
-                ("krowk help <command>", "A command's own flags and explanation"),
-                ("krowk help flags", "The flags every command takes"),
-                ("krowk help topics", "Exit codes, environment, workspaces, links"),
-                ("krowk help --json", "The whole surface as data, for tooling"),
-            ],
-        )
-        .join("\n"),
-    );
-    blocks.join("\n\n")
+    for (title, names) in GROUPS {
+        heading(&mut out, title);
+        for name in *names {
+            if all {
+                for leaf in leaves.iter().filter(|l| l.name.split(' ').next() == Some(name)) {
+                    row(&mut out, "  ", 18, &leaf.name, leaf.summary);
+                }
+            } else if !ALL_ONLY.contains(name) {
+                row(&mut out, "  ", 14, name, c.commands.iter().find(|c| c.name == *name).map_or("", |c| c.summary));
+            }
+        }
+    }
+    if !all {
+        out += "\nFLAGS\n";
+        rows(&mut out, "  ", 27, FLAGS);
+    }
+    out.push('\n');
+    rows(&mut out, "", 22, if all { ALL_MORE } else { MORE });
+    out.pop();
+    out
 }
 
 /// What belongs to no one command. `workspaces` is the command's own help,
 /// which carries it; the rest are written here.
 pub const TOPICS: &[(&str, &str)] = &[
-    #[cfg(feature = "harness")]
-    ("flags", "The flags every command takes, and the agent's"),
-    #[cfg(not(feature = "harness"))]
     ("flags", "The flags every command takes"),
     ("exit-codes", "What each exit code means"),
     ("environment", "Environment variables, and where files live"),
@@ -120,7 +112,9 @@ pub const TOPICS: &[(&str, &str)] = &[
 
 /// `krowk help topics`.
 pub fn topics() -> String {
-    format!("TOPICS\n{}\n\nkrowk help <topic>", hints("  ", TOPICS).join("\n"))
+    let mut out = "TOPICS\n".to_string();
+    rows(&mut out, "  ", 13, TOPICS);
+    out + "\nkrowk help <topic>"
 }
 
 const EXIT_CODES: &str = "  0  it worked
@@ -150,126 +144,124 @@ two different ones, is refused before anything is sent.";
 /// A topic's page, or None for a name that is not one.
 pub fn topic(name: &str, c: &Catalog, files: &Files) -> Option<String> {
     let (_, summary) = TOPICS.iter().find(|(n, _)| *n == name)?;
-    let body = match name {
-        "flags" => flags_topic(),
-        "exit-codes" => format!("EXIT CODES\n{EXIT_CODES}"),
-        "environment" => {
-            let rows: Vec<(String, String)> = c
-                .environment
-                .iter()
-                .map(|e| {
-                    let why = if e.default.is_empty() { e.usage.to_string() } else { format!("{} (default {})", e.usage, e.default) };
-                    (e.name.to_string(), why)
-                })
-                .collect();
-            format!(
-                "ENVIRONMENT\n{}\n\nWhich registry: --dev, then KROWK_API_URL, then KROWK_DEV, then the default.\n\nFILES\n  Credentials live in {} (0600).\n  Config lives in {}, and per repository in\n  <git-root>/.krowk/config.json.",
-                table(&rows, 0).join("\n"),
-                files.credentials,
-                files.config,
-            )
-        }
-        "links" => LINKS.to_string(),
-        _ => return None,
-    };
-    Some(format!("krowk help {name} — {}\n\n{body}", lowered(summary)))
-}
-
-fn flags_topic() -> String {
-    let rows = |flags: &[Flag]| table(&flags.iter().map(|f| (flag_label(f), f.usage.clone())).collect::<Vec<_>>(), 0).join("\n");
-    #[allow(unused_mut)]
-    let mut out = format!("GLOBAL FLAGS\n{}", rows(&catalog::core_flags()));
-    #[cfg(feature = "harness")]
-    out.push_str(&format!(
-        "\n\nAGENT FLAGS\n  Bare `krowk` opens the agent here; `krowk -p \"…\"` runs one prompt headless.\n\n{}",
-        rows(&catalog::prompt_flags())
-    ));
-    out
-}
-
-/// Rows of a label and what it says, the labels in one column.
-fn hints(indent: &str, rows: &[(&str, &str)]) -> Vec<String> {
-    let width = rows.iter().filter(|(_, why)| !why.is_empty()).map(|(l, _)| l.chars().count()).max().unwrap_or(0);
-    hints_at(indent, width, rows)
-}
-
-fn hints_at(indent: &str, width: usize, rows: &[(&str, &str)]) -> Vec<String> {
-    rows.iter().map(|(l, why)| format!("{indent}{l:<width$}  {why}").trim_end().to_string()).collect()
-}
-
-/// Rows of a label and what it means, the meaning wrapped under itself so no
-/// line passes 80 columns. `width` is the label column's, at least; a label
-/// too long for the column gets a line of its own.
-fn table(rows: &[(String, String)], width: usize) -> Vec<String> {
-    const MOST: usize = 28;
-    let width = rows.iter().map(|(l, _)| l.chars().count() + 2).max().unwrap_or(0).max(width).min(MOST);
-    let mut out = Vec::new();
-    for (label, why) in rows {
-        let mut label = label.as_str();
-        if label.chars().count() + 2 > width {
-            out.push(format!("  {label}"));
-            label = "";
-        }
-        for line in wrap(why, COLUMNS - 2 - width) {
-            out.push(format!("  {label:<width$}{line}").trim_end().to_string());
-            label = "";
-        }
-    }
-    out
-}
-
-fn wrap(text: &str, room: usize) -> Vec<String> {
-    let mut lines = vec![String::new()];
-    for word in text.split(' ') {
-        let line = lines.last_mut().expect("never empty");
-        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > room {
-            lines.push(word.to_string());
-        } else {
-            if !line.is_empty() {
-                line.push(' ');
+    let mut out = format!("krowk help {name} — {}\n\n", summary);
+    match name {
+        "flags" => {
+            out += "GLOBAL FLAGS\n";
+            flag_rows(&mut out, 0, &c.global_flags[..catalog::CORE_FLAGS]);
+            #[cfg(feature = "harness")]
+            {
+                out += "\nAGENT FLAGS (krowk, krowk -p)\n";
+                flag_rows(&mut out, 0, &c.global_flags[catalog::CORE_FLAGS..]);
             }
-            line.push_str(word);
         }
+        "exit-codes" => out += &format!("EXIT CODES\n{EXIT_CODES}\n"),
+        "environment" => {
+            out += "ENVIRONMENT\n";
+            for e in &c.environment {
+                let why = if e.default.is_empty() { e.usage.to_string() } else { format!("{} (default {})", e.usage, e.default) };
+                row(&mut out, "  ", 23, e.name, &why);
+            }
+            out += &format!(
+                "\nWhich registry: --dev, then KROWK_API_URL, then KROWK_DEV, then the default.\n\nFILES\n  Credentials live in {} (0600).\n  Config lives in {}, and per repository in\n  <git-root>/.krowk/config.json.\n",
+                files.credentials, files.config,
+            );
+        }
+        "links" => out += &format!("{LINKS}\n"),
+        _ => return None,
     }
-    lines
+    out.pop();
+    Some(out)
 }
 
-fn lowered(s: &str) -> String {
-    let mut chars = s.chars();
-    chars.next().map(|c| c.to_lowercase().collect::<String>()).unwrap_or_default() + chars.as_str()
+fn heading(out: &mut String, title: &str) {
+    out.push('\n');
+    out.push_str(title);
+    out.push('\n');
+}
+
+/// Rows of a label and what it says, the text starting `width` columns in.
+fn rows(out: &mut String, indent: &str, width: usize, rows: &[(&str, &str)]) {
+    for (label, why) in rows {
+        row(out, indent, width, label, why);
+    }
+}
+
+/// One label and what it means, the meaning wrapped under itself so no line
+/// passes 80 columns; a label too wide for its column gets a line of its own.
+fn row(out: &mut String, indent: &str, width: usize, label: &str, text: &str) {
+    let mut label = label;
+    if label.chars().count() + 2 > width && !text.is_empty() {
+        *out += &format!("{indent}{label}\n");
+        label = "";
+    }
+    let room = COLUMNS - indent.len() - width;
+    let mut line = String::new();
+    for word in text.split(' ') {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > room {
+            put(out, indent, width, label, &line);
+            label = "";
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line += word;
+    }
+    put(out, indent, width, label, &line);
+}
+
+fn put(out: &mut String, indent: &str, width: usize, label: &str, line: &str) {
+    *out += &match line {
+        "" => format!("{indent}{label}\n"),
+        _ => format!("{indent}{label:<width$}{line}\n"),
+    };
+}
+
+fn flag_rows(out: &mut String, width: usize, flags: &[Flag]) {
+    let width = flags.iter().map(|f| flag_label(f).chars().count() + 2).max().unwrap_or(0).clamp(width, 28);
+    for f in flags {
+        row(out, "  ", width, &flag_label(f), &f.usage);
+    }
 }
 
 /// One command's own help: the catalog read back as text.
 pub fn command_help(cmd: &Command, globals: &[Flag]) -> String {
-    let mut lines = vec![format!("krowk {} — {}", cmd.name, lowered(cmd.summary))];
+    let mut out = format!("krowk {} — {}\n", cmd.name, cmd.summary);
     if !cmd.usage.is_empty() {
-        lines.extend(["".into(), "USAGE".into(), format!("  {}", cmd.usage)]);
+        out += &format!("\nUSAGE\n  {}\n", cmd.usage);
     }
-    if !cmd.about.is_empty() {
-        lines.extend(["".into(), cmd.about.into()]);
+    let about = catalog::about(&cmd.name);
+    if !about.is_empty() {
+        out += &format!("\n{about}\n");
     }
     if !cmd.subcommands.is_empty() {
         // Each under the group's name, `krowk uploads` read as said.
+        out += &format!("\nCOMMANDS (krowk {} …)\n", cmd.name);
         let prefix = format!("krowk {} ", cmd.name);
-        let rows: Vec<(String, String)> =
-            cmd.subcommands.iter().map(|s| (s.usage.trim_start_matches(&prefix).to_string(), s.summary.to_string())).collect();
-        lines.extend(["".into(), format!("COMMANDS (krowk {} …)", cmd.name)]);
-        lines.extend(table(&rows, 0));
-    }
-    let args: Vec<(String, String)> = cmd.args.iter().map(|a| (arg_label(a), a.summary.to_string())).collect();
-    let flags = |flags: &[Flag]| flags.iter().map(|f| (flag_label(f), f.usage.clone())).collect::<Vec<_>>();
-    let own = flags(&cmd.flags);
-    let width = args.iter().chain(&own).map(|(l, _)| l.chars().count() + 2).max().unwrap_or(0);
-    for (title, rows) in [("ARGUMENTS", &args), ("FLAGS", &own)] {
-        if !rows.is_empty() {
-            lines.extend(["".into(), title.into()]);
-            lines.extend(table(rows, width));
+        let width = cmd.subcommands.iter().map(|s| s.usage.len() - prefix.len() + 2).max().unwrap_or(0).min(28);
+        for s in &cmd.subcommands {
+            row(&mut out, "  ", width, s.usage.get(prefix.len()..).unwrap_or(s.usage), s.summary);
         }
     }
+    let labels: Vec<String> = cmd.args.iter().map(arg_label).collect();
+    let width = labels.iter().map(|l| l.len() + 2).chain(cmd.flags.iter().map(|f| flag_label(f).chars().count() + 2)).max().unwrap_or(0).min(28);
+    if !cmd.args.is_empty() {
+        out += "\nARGUMENTS\n";
+        for (label, a) in labels.iter().zip(&cmd.args) {
+            row(&mut out, "  ", width, label, a.summary);
+        }
+    }
+    if !cmd.flags.is_empty() {
+        out += "\nFLAGS\n";
+        flag_rows(&mut out, width, &cmd.flags);
+    }
     // Every command takes them, so they are named here and explained once.
-    let names: Vec<String> = globals.iter().filter(|f| f.aliases.is_empty()).map(|f| format!("--{}", f.name)).collect();
-    lines.extend(["".into(), format!("Global flags: {} — `krowk help flags`", names.join(" "))]);
-    lines.join("\n")
+    out += "\nGlobal flags:";
+    for f in globals.iter().filter(|f| f.aliases.is_empty()) {
+        out += &format!(" --{}", f.name);
+    }
+    out + " — `krowk help flags`"
 }
 
 fn arg_label(a: &super::catalog::Arg) -> String {
@@ -304,7 +296,7 @@ mod tests {
 
     #[test]
     fn the_overview_fits_on_one_screen() {
-        let page = help(&catalog::catalog("0.11.0-rc.1"));
+        let page = help(&catalog::catalog("0.11.0-rc.1"), false);
         assert!(page.lines().count() <= 45, "{} lines:\n{page}", page.lines().count());
         fits(&page);
     }
@@ -312,7 +304,7 @@ mod tests {
     #[test]
     fn help_all_lists_every_command_the_build_has_on_one_line_each() {
         let c = catalog::catalog("dev");
-        let page = help_all(&c);
+        let page = help(&c, true);
         fits(&page);
         for leaf in c.leaves() {
             let built = cfg!(feature = "sessions") || !matches!(leaf.name.split(' ').next(), Some("sessions" | "pricing"));

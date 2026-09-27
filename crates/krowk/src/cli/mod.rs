@@ -274,7 +274,7 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
         if !human {
             return ctx.emit(&output::encode(&c));
         }
-        let text = if ctx.f.all { help::help_all(&c) } else { help::help(&c) };
+        let text = help::help(&c, ctx.f.all);
         let _ = writeln!(ctx.io.stdout, "{text}");
         return Ok(());
     }
@@ -282,7 +282,7 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
         if !human {
             return ctx.emit(&output::encode(&cmd));
         }
-        let _ = writeln!(ctx.io.stdout, "{}", help::command_help(&cmd, &catalog::core_flags()));
+        let _ = writeln!(ctx.io.stdout, "{}", help::command_help(&cmd, &c.global_flags[..catalog::CORE_FLAGS]));
         return Ok(());
     }
     let (credentials, config) = (krowk_api::creds::credentials_path(), crate::config::global_path());
@@ -298,9 +298,9 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
             format!("`{}` is not a krowk command or help topic — run `krowk help` for the list", clip(topic, 2).join(" ")),
         ));
     };
-    // A topic is prose, so its JSON is the prose in a record.
+    // A topic is prose, so its JSON is the prose as one string.
     if !human {
-        return ctx.emit(&output::encode(&serde_json::json!({ "topic": topic[0], "text": page })));
+        return ctx.emit(&output::encode(&page));
     }
     let _ = writeln!(ctx.io.stdout, "{page}");
     Ok(())
