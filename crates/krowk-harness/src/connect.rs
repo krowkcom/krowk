@@ -888,6 +888,11 @@ impl ProviderAuth<'_> {
     /// that fails stores nothing.
     fn key_to_store(&self, instance: &str, kind: &InstanceKind, provider: &str, o: &Options, ui: &mut dyn AuthInteraction) -> Result<Option<crate::keys::KeyRef>, EngineError> {
         let api = matches!(provider, "anthropic" | "openai" | "xai" | "openrouter" | "openai-compatible");
+        // A stored key is used before any variable: naming one while it is
+        // there would print success and change nothing.
+        if api && o.key.is_none() && o.api_key_env.is_some() && self.resolve(instance, kind)?.stored != crate::keys::Stored::No {
+            return Err(bad_flag(format!("{instance} has a stored key, which is used before any variable — `krowk disconnect {instance}` first, then connect it with --api-key-env")));
+        }
         let key = match &o.key {
             Some(_) if !api => return Err(bad_flag("--key-stdin and --key-ref store an API key — a subscription signs in by its own login")),
             Some(k) => k.clone(),
@@ -908,13 +913,15 @@ impl ProviderAuth<'_> {
         };
         if let crate::keys::KeyRef::Command(c) = &key {
             let dir = self.credentials.parent().unwrap_or(Path::new("."));
-            private_dir(dir).map_err(|e| EngineError::new("credentials_unwritable", format!("{}: {e}", dir.display())))?;
+            // The command runs in that directory; one this call made is
+            // taken away again if it fails, so a failure writes nothing.
+            let made = made_dir(Some(dir))?;
             // A person at the terminal can answer a passphrase prompt: the
             // command runs in the foreground there, and what it gives is
             // this process's answer from then on.
             crate::keys::forget();
             let at = if ui.interactive() { Some(ui) } else { None };
-            crate::keys::run(instance, c, dir, at).map_err(|why| EngineError::new("not_authenticated", format!("{why}, so {instance} was not connected and nothing was written")))?;
+            crate::keys::run(instance, c, dir, at).map_err(|why| undo(&made, EngineError::new("not_authenticated", format!("{why}, so {instance} was not connected and nothing was written"))))?;
         }
         Ok(Some(key))
     }
