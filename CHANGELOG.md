@@ -11,6 +11,23 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **`krowk --help` fits on one screen**: about 40 lines at 80 columns, where
+  it was 217. It leads with the agent (`krowk`, `krowk -p "…"`, `--model`,
+  `--resume`), lists each command once with a one-line summary under AGENT,
+  PUBLISH, ACCOUNT and OTHER, and ends by pointing at the rest; the agent
+  build, which has no agent, shows neither the AGENT group nor its flags.
+  `krowk help --all` lists every command and subcommand, one line each, the
+  `auth …` long forms included. What the overview used to carry moved beside
+  what it is about: the upload flags, the anonymous upload and claim, and the
+  takedown into `krowk help push`, `claim` and `uploads delete`; logging in
+  into `krowk help login`; which key a command uses into `krowk help
+  workspaces`. Exit codes, the environment and where files live, links, and
+  the global and agent flags are topics: `krowk help topics` lists them,
+  `krowk help exit-codes` shows one. A command's page wraps at 80 columns and
+  names the global flags in one line instead of listing them. `krowk help
+  --json` keeps its shape, with the short summaries; a topic's `--json` is
+  its text as one JSON string. Both builds come out a little smaller.
+
 - **With `HOME` unset, krowk no longer uses `.krowk` beside you as its config
   directory** — that made a repository's own `.krowk/` its config, trust list
   and credentials. In every build, `krowk config set --global` and `krowk
