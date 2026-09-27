@@ -32,7 +32,7 @@ use crate::protocol::{
 use crate::claude::ClaudeEngine;
 use crate::codex::CodexEngine;
 use crate::trust;
-use crate::{compat, permissions};
+use crate::{compat, permissions, readiness};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -366,7 +366,7 @@ impl Shared {
                 // The next candidate, or the limit's own result.
                 (Err(e), Some(r)) => {
                     tried.push(r.to.instance.clone());
-                    match self.next_instance(&r.from, &tried, &r.cwd, true) {
+                    match self.next_instance(&r.from, &tried, &r.cwd, true).await {
                         Some(to) => {
                             model = Some(to.clone());
                             rolling = Some(Rolling { to, ..r });
@@ -386,38 +386,71 @@ impl Shared {
     }
 
     /// Checks that `model` can run a turn here before a session is moved to
-    /// it (R-SWITCH-4): the instance, its key or login, its binary, and for
-    /// a backend whether the repository is trusted to run one. `stays` is
-    /// the model the session is on, named in the refusal's words.
-    fn check_model(&self, model: &ModelRef, cwd: &std::path::Path, stays: Option<&ModelRef>) -> Result<(), EngineError> {
+    /// it (R-SWITCH-4): the instance, the readiness check — its key, login
+    /// or binary, a vendor's login asked of the vendor — and for a backend
+    /// whether the repository is trusted to run one. `stays` is the model
+    /// the session is on, named in the refusal's words.
+    async fn check_model(&self, model: &ModelRef, cwd: &std::path::Path, stays: Option<&ModelRef>) -> Result<(), EngineError> {
         let staying = |e: EngineError| match stays.filter(|s| *s != model) {
             Some(s) => EngineError { message: format!("{} — the session stays on {s}", e.message), ..e },
             None => e,
         };
         let instance = self.cfg.registry.get(&model.instance).map_err(|e| staying(EngineError::new("no_instance", e)))?;
-        match &instance.backend {
-            None => {
-                let info = (self.cfg.catalog)(&instance.provider, &model.model);
-                let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
-                engine_for(instance, wire, &self.cfg.credentials, &self.cfg.krowk_version).map(drop).map_err(staying)
-            }
-            Some(b) => {
-                if b.path.is_none() {
-                    return Err(staying(backend_missing(instance)));
-                }
-                if let Some(fix) = instance.missing_key() {
-                    return Err(staying(EngineError::new("not_authenticated", fix)));
-                }
-                (self.cfg.trust)(&trust::root(cwd)).map_err(staying)
-            }
+        self.ready(instance, cwd, false).await.map_err(staying)?;
+        if instance.backend.is_none() {
+            let info = (self.cfg.catalog)(&instance.provider, &model.model);
+            let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
+            engine_for(instance, wire, &self.cfg.credentials, &self.cfg.krowk_version).map(drop).map_err(staying)?;
         }
+        Ok(())
+    }
+
+    /// The readiness check before a turn runs on `instance` (`readiness`):
+    /// what needs no process first, then for a backend the repository's
+    /// trust, then the vendor's own login — so nothing at all is spawned
+    /// for a repository nobody trusted. The vendor is asked in the
+    /// session's own working directory — inside the root just trusted, and
+    /// where the turn will start it: Claude Code reads the project settings
+    /// of its working directory alone, not of its parents, so its answer
+    /// there (Bedrock, an `apiKeyHelper`, a Codex model provider) is the
+    /// one the turn will get. `known_good` skips the vendor: a session whose process
+    /// is up and serving it has shown its login.
+    async fn ready(&self, instance: &Resolved, cwd: &std::path::Path, known_good: bool) -> Result<(), EngineError> {
+        let creds = &self.cfg.credentials;
+        if let Some(r) = readiness::local(instance, creds)
+            && let Some(e) = readiness::report(instance, r, creds).refusal(instance)
+        {
+            return Err(e);
+        }
+        if instance.backend.is_none() {
+            return Ok(());
+        }
+        (self.cfg.trust)(&trust::root(cwd))?;
+        if known_good {
+            return Ok(());
+        }
+        let at = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        readiness::check_async(instance, creds, &readiness::Probe::at(at)).await.refusal(instance).map_or(Ok(()), Err)
+    }
+
+    /// Where a vendor is asked outside any repository: krowk's own `0700`
+    /// directory beside the sessions (`readiness::neutral_dir`).
+    fn neutral_probe(&self) -> Result<readiness::Probe, String> {
+        let data = self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir);
+        readiness::neutral_dir(data).map(readiness::Probe::at)
+    }
+
+    /// Whether `session_id` has a backend process for `instance` up now.
+    fn backend_up(&self, session_id: Option<&str>, instance: &str) -> bool {
+        let Some(id) = session_id else { return false };
+        self.backends.lock().unwrap_or_else(|e| e.into_inner()).get(id).is_some_and(|b| b.instance == instance)
     }
 
     /// `switchModel`: checked, then logged — now, or when the running turn
     /// is over — so the session's next turn runs there.
     async fn switch_model(self: &Arc<Self>, session_id: Option<&str>, model: ModelRef, out: mpsc::Sender<StreamLine>) -> Result<(), EngineError> {
         let Some(id) = session_id else {
-            return self.check_model(&model, &self.cfg.cwd, None);
+            return self.check_model(&model, &self.cfg.cwd, None).await;
         };
         if !log::valid_id(id) {
             return Err(EngineError::new("no_session", format!("{id:?} is not a krowk session id")));
@@ -429,7 +462,7 @@ impl Shared {
         if let Some(parent) = &past.parent {
             return Err(EngineError::new("subagent_session", format!("session {id} is a subagent of {parent}, and runs on the model it was started on — switch {parent}, whose next turn and subagents follow it")));
         }
-        self.check_model(&model, past.cwd.as_deref().unwrap_or(&self.cfg.cwd), past.model.as_ref())?;
+        self.check_model(&model, past.cwd.as_deref().unwrap_or(&self.cfg.cwd), past.model.as_ref()).await?;
         {
             let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(r) = running.get_mut(id) {
@@ -465,16 +498,30 @@ impl Shared {
 
     /// Where a session limited on `from` may continue: the first candidate
     /// that can run here (R-INST-7, R-INST-8). A rollover (`full`) checks
-    /// each as `switchModel` does, trust included; an offer leaves trust to
-    /// be asked when the person takes it and the turn runs there.
-    fn next_instance(&self, from: &ModelRef, tried: &[String], cwd: &std::path::Path, full: bool) -> Option<ModelRef> {
-        self.cfg.registry.rollover_candidates(from, tried).into_iter().find(|m| {
-            let Ok(i) = self.cfg.registry.get(&m.instance) else { return false };
-            match &i.backend {
-                Some(b) if !full => b.path.is_some() && i.missing_key().is_none(),
-                _ => self.check_model(m, cwd, None).is_ok(),
+    /// each as `switchModel` does: the checks that need no process, trust,
+    /// then the vendor in the repository. An offer never asks about trust —
+    /// that is asked when the person takes it and the turn runs there — so
+    /// it asks the readiness check as `krowk status` does: the checks that
+    /// need no process, then the vendor in krowk's own directory, never the
+    /// repository nobody has trusted yet. A signed-out account is never
+    /// offered; one whose login only a project's settings provide
+    /// (Bedrock, an `apiKeyHelper`) is not offered either, and is reached
+    /// by naming it.
+    async fn next_instance(&self, from: &ModelRef, tried: &[String], cwd: &std::path::Path, full: bool) -> Option<ModelRef> {
+        for m in self.cfg.registry.rollover_candidates(from, tried) {
+            let Ok(i) = self.cfg.registry.get(&m.instance) else { continue };
+            let ok = match &i.backend {
+                Some(_) if !full => match self.neutral_probe() {
+                    Ok(probe) => readiness::check_async(i, &self.cfg.credentials, &probe).await.refusal(i).is_none(),
+                    Err(_) => false,
+                },
+                _ => self.check_model(&m, cwd, None).await.is_ok(),
+            };
+            if ok {
+                return Some(m);
             }
-        })
+        }
+        None
     }
 
     /// One turn of a `prompt`, settled: everything that can refuse it
@@ -533,15 +580,10 @@ impl Shared {
             None => Some(engine_for(&instance, wire, &self.cfg.credentials, &self.cfg.krowk_version).map_err(staying)?),
             // A backend runs the repository's own hooks and MCP servers, so
             // it is not started in one nobody trusted; and a binary that is
-            // not there is named before a session exists for it.
-            Some(b) => {
-                if b.path.is_none() {
-                    return Err(staying(backend_missing(&instance)));
-                }
-                if let Some(fix) = instance.missing_key() {
-                    return Err(staying(EngineError::new("not_authenticated", fix)));
-                }
-                (self.cfg.trust)(&trust::root(&cwd)).map_err(staying)?;
+            // not there, or a login that is not, is named before a session
+            // exists for it.
+            Some(_) => {
+                self.ready(&instance, &cwd, self.backend_up(session_id, &instance.name)).await.map_err(staying)?;
                 None
             }
         };
@@ -848,7 +890,7 @@ impl Shared {
             Err(e) => (TurnStatus::Failed, Some(e.info())),
         };
         let (after, offer, next) = match &outcome {
-            Err(e) if plan.announce => self.after_failure(e, (plan.past.reached.as_ref(), &plan.tried, &plan.cwd), &model, &session_id, tally.calls, error.as_mut()),
+            Err(e) if plan.announce => self.after_failure(e, (plan.past.reached.as_ref(), &plan.tried, &plan.cwd), &model, &session_id, tally.calls, error.as_mut()).await,
             _ => (None, None, None),
         };
         let duration_ms = plan.started.elapsed().as_millis() as u64;
@@ -898,14 +940,14 @@ impl Shared {
     /// logged when that turn starts (R-INST-7, R-INST-8). `error` gets the
     /// words that say so.
     #[allow(clippy::type_complexity)]
-    fn after_failure(&self, e: &EngineError, (reached, tried, cwd): (Option<&ModelRef>, &[String], &PathBuf), model: &ModelRef, session_id: &str, calls: u32, error: Option<&mut crate::protocol::ErrorInfo>) -> (Option<(ModelRef, SwitchReason, String)>, Option<SwitchOffer>, Option<Rolling>) {
+    async fn after_failure(&self, e: &EngineError, (reached, tried, cwd): (Option<&ModelRef>, &[String], &PathBuf), model: &ModelRef, session_id: &str, calls: u32, error: Option<&mut crate::protocol::ErrorInfo>) -> (Option<(ModelRef, SwitchReason, String)>, Option<SwitchOffer>, Option<Rolling>) {
         let previous = reached.filter(|p| *p != model).cloned();
         if e.limited() {
             let until = e.resets_at_ms.map(|ms| format!(" until {}", clock(ms))).unwrap_or_default();
             let mut tried = tried.to_vec();
             tried.push(model.instance.clone());
             let auto = self.cfg.registry.rollover == Rollover::Auto;
-            return match self.next_instance(model, &tried, cwd, auto) {
+            return match self.next_instance(model, &tried, cwd, auto).await {
                 Some(to) if auto => (None, None, Some(Rolling { from: model.clone(), to, until, cwd: cwd.clone() })),
                 Some(to) => {
                     if let Some(err) = error {
@@ -1042,16 +1084,6 @@ fn cannot_run_here(code: &str, calls: u32) -> bool {
     }
 }
 
-/// A backend instance's binary is not there: named with how to install it.
-fn backend_missing(instance: &Resolved) -> EngineError {
-    let binary = instance.backend.as_ref().map(|b| b.binary.clone()).unwrap_or_default();
-    let (install, add) = match instance.wire_api {
-        WireApi::CodexAppServer => ("Codex (https://developers.openai.com/codex)", "codex"),
-        _ => ("Claude Code (https://claude.com/claude-code)", "claude"),
-    };
-    EngineError::new("backend_not_found", format!("{binary} was not found — install {install}, or name the binary with `krowk providers add {add} --binary <path>`"))
-}
-
 /// A moment as the person's clock shows it: `14:00` today, else with its
 /// date — for when a limit lifts.
 pub fn clock(ms: i64) -> String {
@@ -1082,8 +1114,12 @@ pub fn clock(ms: i64) -> String {
 /// it. A credential that is missing is refused here, before a session is
 /// created for a turn that could not run.
 fn engine_for(instance: &Resolved, wire: WireApi, credentials: &std::path::Path, krowk_version: &str) -> Result<Box<dyn Engine>, EngineError> {
-    if let Some(fix) = instance.missing_key() {
-        return Err(EngineError::new("not_authenticated", fix));
+    // A native instance's readiness needs no process: a key, or a login in
+    // krowk's own file that is there and not expired past refreshing.
+    if let Some(r) = readiness::local(instance, credentials)
+        && let Some(e) = readiness::report(instance, r, credentials).refusal(instance)
+    {
+        return Err(e);
     }
     let credential = match &instance.auth {
         Auth::ApiKey => Credential::Key(instance.api_key.clone()),

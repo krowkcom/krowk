@@ -806,7 +806,7 @@ stdout:
         {
           "name": "list",
           "usage": "krowk providers list",
-          "summary": "List every instance, and whether it has its key or login — a Claude Code or Codex one as `claude auth status` or `codex login status` reports it"
+          "summary": "List every instance, where it runs, and whether it is ready — the same check as `krowk status`, a Claude Code or Codex login asked of Claude Code or Codex"
         },
         {
           "name": "remove",
@@ -821,6 +821,11 @@ stdout:
           ]
         }
       ]
+    },
+    {
+      "name": "status",
+      "usage": "krowk status",
+      "summary": "Whether each provider instance can run a turn here: its readiness, where its key or login comes from, and what fixes it. Exits 3 when none is ready"
     }
   ],
   "global_flags": [
@@ -1780,7 +1785,7 @@ stdout:
         {
           "name": "list",
           "usage": "krowk providers list",
-          "summary": "List every instance, and whether it has its key or login — a Claude Code or Codex one as `claude auth status` or `codex login status` reports it"
+          "summary": "List every instance, where it runs, and whether it is ready — the same check as `krowk status`, a Claude Code or Codex login asked of Claude Code or Codex"
         },
         {
           "name": "remove",
@@ -1795,6 +1800,11 @@ stdout:
           ]
         }
       ]
+    },
+    {
+      "name": "status",
+      "usage": "krowk status",
+      "summary": "Whether each provider instance can run a turn here: its readiness, where its key or login comes from, and what fixes it. Exits 3 when none is ready"
     }
   ],
   "global_flags": [
@@ -2768,7 +2778,7 @@ stdout:
         {
           "name": "list",
           "usage": "krowk providers list",
-          "summary": "List every instance, and whether it has its key or login — a Claude Code or Codex one as `claude auth status` or `codex login status` reports it"
+          "summary": "List every instance, where it runs, and whether it is ready — the same check as `krowk status`, a Claude Code or Codex login asked of Claude Code or Codex"
         },
         {
           "name": "remove",
@@ -2783,6 +2793,11 @@ stdout:
           ]
         }
       ]
+    },
+    {
+      "name": "status",
+      "usage": "krowk status",
+      "summary": "Whether each provider instance can run a turn here: its readiness, where its key or login comes from, and what fixes it. Exits 3 when none is ready"
     }
   ],
   "global_flags": [
@@ -3756,7 +3771,7 @@ tty:
         {
           "name": "list",
           "usage": "krowk providers list",
-          "summary": "List every instance, and whether it has its key or login — a Claude Code or Codex one as `claude auth status` or `codex login status` reports it"
+          "summary": "List every instance, where it runs, and whether it is ready — the same check as `krowk status`, a Claude Code or Codex login asked of Claude Code or Codex"
         },
         {
           "name": "remove",
@@ -3771,6 +3786,11 @@ tty:
           ]
         }
       ]
+    },
+    {
+      "name": "status",
+      "usage": "krowk status",
+      "summary": "Whether each provider instance can run a turn here: its readiness, where its key or login comes from, and what fixes it. Exits 3 when none is ready"
     }
   ],
   "global_flags": [

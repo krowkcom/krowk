@@ -8,10 +8,6 @@
 use crate::instances::Backend;
 use serde_json::Value;
 use std::process::{Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
-
-/// How long `claude auth status` may take before the answer is "unknown".
-const STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// What `claude auth status` reports, less anything personal: the email it
 /// prints is never read into krowk.
@@ -57,27 +53,15 @@ fn not_found(b: &Backend, e: std::io::Error) -> String {
 }
 
 /// `claude auth status`, read as JSON. Signed out is an answer (Claude Code
-/// exits 1 for it), not a failure; no answer is.
-pub fn status(b: &Backend) -> Result<Status, String> {
-    let mut child = command(b, &["auth", "status", "--json"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| not_found(b, e))?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() > STATUS_TIMEOUT => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("`{} auth status` did not answer within {} seconds", b.binary, STATUS_TIMEOUT.as_secs()));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(e) => return Err(format!("`{} auth status`: {e}", b.binary)),
-        }
-    }
-    let mut out = String::new();
-    if let Some(mut s) = child.stdout.take() {
-        let _ = std::io::Read::read_to_string(&mut s, &mut out);
-    }
-    let v: Value = serde_json::from_str(out.trim()).map_err(|_| format!("`{} auth status --json` did not answer in JSON — is it Claude Code?", b.binary))?;
+/// exits 1 for it), not a failure; no answer is — nor one that takes longer
+/// than the readiness check waits for any vendor.
+/// It runs where `probe` says: Claude Code reads the project settings of
+/// its working directory, and they can decide the answer.
+pub fn status(b: &Backend, probe: &crate::readiness::Probe) -> Result<Status, String> {
+    let out = crate::readiness::output_within(&mut command(b, &["auth", "status", "--json"]), probe)
+        .map_err(|e| not_found(b, e))?
+        .ok_or_else(|| format!("`{} auth status` did not answer within {} seconds", b.binary, probe.within.as_secs_f32()))?;
+    let v: Value = serde_json::from_slice(out.stdout.trim_ascii()).map_err(|_| format!("`{} auth status --json` did not answer in JSON — is it Claude Code?", b.binary))?;
     let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
     Ok(Status { logged_in: v.get("loggedIn").and_then(Value::as_bool).unwrap_or(false), auth_method: s("authMethod"), subscription: s("subscriptionType") })
 }

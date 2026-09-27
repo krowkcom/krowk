@@ -427,15 +427,6 @@ impl Resolved {
             _ => self.wire_api,
         }
     }
-
-    /// Why a call cannot be made, before one is: an API-key instance whose
-    /// variable is unset.
-    pub fn missing_key(&self) -> Option<String> {
-        let keyed = self.auth == Auth::ApiKey || (self.auth == Auth::Vendor && !self.api_key_env.is_empty());
-        (keyed && self.api_key.is_empty()).then(|| {
-            format!("no API key for the {} instance — set {} (krowk reads the key from the environment, never from a file)", self.name, self.api_key_env)
-        })
-    }
 }
 
 /// The instances every host has without configuring any: one per provider

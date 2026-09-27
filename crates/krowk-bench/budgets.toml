@@ -97,7 +97,15 @@ unit = "bytes"
 # 10: 7,895,880 (7.53 MiB), 31,560 over 7.50 MiB. Raised 7.50 -> 7.75 MiB
 # by ticket 11, for 10 and 11 together — no crate is added, the growth is
 # their code — leaving 230,584 bytes for the rest of Harness P0.
-max = { x86_64-linux = 8_126_464 }
+# Provider auth starts at 8,112,488 bytes (7.74 MiB), 13,976 under. Its
+# ticket 01, provider readiness (no new crate: the readiness module and its
+# parallel, bounded vendor checks, Codex's account/read over app-server,
+# `krowk status`, doctor's providers line, and the host's switch, settle and
+# rollover checks made async to ask a vendor off the runtime's thread),
+# adds 68,192 bytes: 8,180,680 (7.80 MiB), 54,216 over 7.75 MiB. Raised
+# 7.75 -> 8.00 MiB by provider auth 01 — no crate is added, the growth is
+# its code — leaving 207,928 bytes for the rest of Provider auth.
+max = { x86_64-linux = 8_388_608 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---

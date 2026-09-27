@@ -196,6 +196,13 @@ fn lines_of(log: &str, prefix: &str) -> Vec<String> {
     log.lines().filter_map(|l| l.strip_prefix(prefix)).map(String::from).collect()
 }
 
+/// The `codex app-server` processes that served turns. The readiness check
+/// starts one too, before a session's first turn, that is asked only
+/// `initialize` and `account/read`; a backend's goes on to `model/list`.
+fn backend_processes(log: &str) -> usize {
+    lines_of(log, "in ").iter().filter(|l| l.contains(r#""method":"model/list""#)).count()
+}
+
 #[test]
 fn r_back_3_a_tool_using_turn_on_a_codex_instance_completes_and_is_logged() {
     let h = Home::new("tool-use");
@@ -270,7 +277,7 @@ fn r_back_3_a_tool_using_turn_on_a_codex_instance_completes_and_is_logged() {
         let (_, r2) = run(&host, prompt(Some(&r.session_id), "and now?", "codex:team/gpt-5.5", PermissionMode::Default)).await;
         assert_eq!(r2.unwrap().unwrap().result, "Still one file.");
         let log = h.fake_log();
-        assert_eq!(log.lines().filter(|l| l.starts_with("argv app-server")).count(), 1, "one process served the session");
+        assert_eq!(backend_processes(&log), 1, "one process served the session");
         assert!(!log.lines().any(|l| l.starts_with("resume ")), "an open thread is not resumed");
         assert_eq!(backend_sessions(&h.events(&r.session_id)).len(), 1, "an unchanged vendor session is not logged twice");
         host.shutdown().await;
@@ -296,7 +303,7 @@ fn r_back_5_a_new_host_resumes_the_codex_thread_the_log_names() {
         host.shutdown().await;
     });
     let log = h.fake_log();
-    assert_eq!(log.lines().filter(|l| l.starts_with("argv app-server")).count(), 2);
+    assert_eq!(backend_processes(&log), 2);
     assert!(log.contains(&format!("resume {THREAD}")), "{log}");
     let resume = lines_of(&log, "in ").into_iter().find(|l| l.contains("thread/resume")).unwrap();
     assert!(resume.contains(r#""sandbox":"read-only""#) && resume.contains(r#""approvalsReviewer":"user""#), "a resumed thread is put back in krowk's mode: {resume}");
@@ -402,7 +409,7 @@ fn r_back_3_an_interrupt_mid_turn_keeps_what_arrived_and_the_session_goes_on() {
         // The process lives on and serves the next turn.
         let (_, r2) = run(&host, prompt(Some(&r.session_id), "go on", "codex:team/gpt-5.5", PermissionMode::Default)).await;
         assert_eq!(r2.unwrap().unwrap().result, "Picking up where we left off.");
-        assert_eq!(h.fake_log().lines().filter(|l| l.starts_with("argv app-server")).count(), 1);
+        assert_eq!(backend_processes(&h.fake_log()), 1);
         host.shutdown().await;
     });
 }
@@ -436,7 +443,7 @@ fn r_back_3_a_codex_that_crashes_mid_turn_fails_the_turn_and_the_next_one_resume
         let (_, r2) = run(&host, prompt(Some(&r.session_id), "again", "codex:team/gpt-5.5", PermissionMode::Default)).await;
         assert_eq!(r2.unwrap().unwrap().result, "Back again.");
         let log = h.fake_log();
-        assert_eq!(log.lines().filter(|l| l.starts_with("argv app-server")).count(), 2);
+        assert_eq!(backend_processes(&log), 2);
         assert!(log.contains(&format!("resume {THREAD}")));
         host.shutdown().await;
     });
@@ -473,7 +480,8 @@ fn r_inst_1_two_codex_instances_with_their_own_homes_run_sessions_under_their_ow
         assert!(log.contains(&format!("home {}", home.display())), "{log}");
     }
     let accounts: Vec<String> = lines_of(&log, "out ").into_iter().filter(|l| l.contains(r#""account":"#)).collect();
-    assert!(accounts[0].contains("team@example.com") && accounts[1].contains(r#""type":"apiKey""#), "{accounts:?}");
+    // The readiness check and then the backend ask each account.
+    assert!(accounts[0].contains("team@example.com") && accounts.last().unwrap().contains(r#""type":"apiKey""#), "{accounts:?}");
 }
 
 #[test]
@@ -495,9 +503,10 @@ fn r_back_3_a_looser_sandbox_a_missing_login_or_binary_and_an_untrusted_reposito
         let empty = h.root.join("codex-empty");
         std::fs::create_dir_all(&empty).unwrap();
         let host = h.host(vec![("codex:empty", h.instance(&empty, None, &[]))], trust::allow_all());
+        // Refused by the readiness check, before a session exists.
         let (_, r) = run(&host, prompt(None, "hi", "codex:empty/gpt-5.5", PermissionMode::Default)).await;
-        let e = r.unwrap().unwrap().error.unwrap();
-        assert_eq!((e.code.as_str(), e.http_status), ("not_authenticated", Some(401)));
+        let e = r.unwrap_err();
+        assert_eq!((e.code.as_str(), e.status), ("not_authenticated", 401));
         assert!(e.message.contains("krowk providers add codex --name empty"), "{}", e.message);
         assert!(!h.fake_log().contains("thread/start"));
         // A login Codex finds stale mid-turn, as a real Codex reported it.

@@ -206,7 +206,7 @@ fn r_prov_4_a_grok_task_runs_signed_in_with_supergrok_and_its_token_is_refreshed
     let outcome = headless::run(cfg, opts, &mut Vec::new());
     let e = outcome.error.unwrap();
     assert_eq!(e.code, "not_authenticated");
-    assert!(e.message.contains("run `krowk providers add supergrok`"), "{}", e.message);
+    assert!(e.message.contains("sign in with `krowk providers add supergrok`"), "{}", e.message);
 
     // Signed in, with a token already expired: refreshed before the first call.
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();

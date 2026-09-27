@@ -97,6 +97,13 @@ impl Stored {
     fn fresh(&self, at_ms: i64) -> bool {
         !self.access_token.is_empty() && self.expires_at_ms.is_none_or(|e| e - EXPIRY_MARGIN_MS > at_ms)
     }
+
+    /// A login no call can use: its access token is spent and there is no
+    /// refresh token to get another, so only a new login helps. One with a
+    /// refresh token is still good — the next call refreshes it.
+    pub fn expired_for_good(&self, at_ms: i64) -> bool {
+        !self.fresh(at_ms) && self.refresh_token.is_none()
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]

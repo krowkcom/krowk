@@ -114,6 +114,11 @@ stdout:
     "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
     "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
   },
+  "providers": {
+    "name": "providers",
+    "status": "skip",
+    "message": "this build runs no model"
+  },
   "context": {}
 }
 exit: 0

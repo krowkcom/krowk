@@ -353,6 +353,12 @@ pub fn catalog(version: &str) -> Catalog {
     };
     #[cfg(feature = "harness")]
     c.commands.push(providers_command());
+    #[cfg(feature = "harness")]
+    c.commands.push(cmd(
+        "status",
+        "krowk status",
+        "Whether each provider instance can run a turn here: its readiness, where its key or login comes from, and what fixes it. Exits 3 when none is ready",
+    ));
     c
 }
 
@@ -401,7 +407,7 @@ fn providers_command() -> Command {
                     "Add an instance, sign in to SuperGrok, or add a Claude Code or Codex account (signed in with `claude auth login` or `codex login`)",
                 )
             },
-            cmd("list", "krowk providers list", "List every instance, and whether it has its key or login — a Claude Code or Codex one as `claude auth status` or `codex login status` reports it"),
+            cmd("list", "krowk providers list", "List every instance, where it runs, and whether it is ready — the same check as `krowk status`, a Claude Code or Codex login asked of Claude Code or Codex"),
             Command {
                 args: vec![arg("instance", "The instance to remove, e.g. openai:work", true)],
                 ..cmd("remove", "krowk providers remove <instance>", "Remove an instance's definition, and forget its login")
@@ -521,7 +527,7 @@ pub const SECTIONS: &[(&str, &[&str])] = &[
     ("SESSIONS", &["sessions", "sessions show", "sessions budget", "sessions import", "sessions rebuild", "sessions sync"]),
     // The harness build's own commands.
     #[cfg(feature = "harness")]
-    ("AGENT", &["providers add", "providers list", "providers remove"]),
+    ("AGENT", &["status", "providers add", "providers list", "providers remove"]),
     (
         "ACCOUNT & SYSTEM",
         &[

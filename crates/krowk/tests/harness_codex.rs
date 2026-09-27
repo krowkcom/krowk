@@ -110,13 +110,13 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
         assert_eq!(std::fs::read_link(dir.join("config.toml")).unwrap(), b.root.join("home/.codex/config.toml"));
     }
     // Codex's own login ran once per account, each with its own CODEX_HOME,
-    // after `codex login status` said there was none.
+    // after app-server's `account/read` said there was none.
     let fake = b.fake_log();
     let lines: Vec<&str> = fake.lines().collect();
     for name in ["team", "personal"] {
         let dir = b.data().join("codex").join(format!("codex-{name}"));
         let at = lines.iter().position(|l| *l == format!("home {}", dir.display())).expect("ran with the instance's CODEX_HOME");
-        assert_eq!(lines[at - 1], "argv login status");
+        assert_eq!(lines[at - 1], "argv app-server --listen stdio://");
     }
     assert_eq!(fake.lines().filter(|l| *l == "argv login").count(), 2);
 
@@ -124,19 +124,27 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
     b.json(&["providers", "add", "codex", "--name", "team", "--json"], &[]);
     assert_eq!(b.fake_log().lines().filter(|l| *l == "argv login").count(), 2);
 
-    // Status comes from `codex login status`, per instance.
+    // Status comes from `account/read`, per instance.
+    let before = b.fake_log().lines().count();
     let listed = b.json(&["providers", "list", "--json"], &[]);
     let rows = listed["data"]["instances"].as_array().unwrap();
     let row = |n: &str| rows.iter().find(|r| r["instance"] == n).unwrap_or_else(|| panic!("{n} not listed: {rows:?}")).clone();
     for n in ["codex:team", "codex:personal"] {
         let r = row(n);
-        assert_eq!((r["state"].as_str(), r["auth"].as_str(), r["wire_api"].as_str()), (Some("ready"), Some("runs Codex: signed in with ChatGPT"), Some("codex-app-server")), "{r}");
+        let home = b.data().join("codex").join(n.replace(':', "-"));
+        assert_eq!((r["state"].as_str(), r["source"].as_str(), r["wire_api"].as_str()), (Some("ready"), Some(format!("Codex's own login in {} (signed in with ChatGPT)", home.display()).as_str()), Some("codex-app-server")), "{r}");
         assert_eq!(r["binary"], b.root.join("bin/codex").display().to_string());
     }
-    assert_eq!(row("codex")["state"], "not signed in", "the implicit instance is the person's own Codex, not signed in here");
+    assert_eq!(row("codex")["state"], "not_signed_in", "the implicit instance is the person's own Codex, not signed in here");
+    // Asked structured, of app-server's account/read — `codex login status`'s
+    // words are only the fallback.
+    let listing: Vec<String> = b.fake_log().lines().skip(before).map(String::from).collect();
+    assert_eq!(listing.iter().filter(|l| l.starts_with("in ") && l.contains(r#""method":"account/read""#)).count(), 3, "{listing:?}");
+    assert!(!listing.iter().any(|l| l == "argv login status"), "{listing:?}");
 
     // A session on each account, with the native openai instance's key in
     // krowk's environment: it never reaches Codex.
+    let listed_up_to = b.fake_log().lines().count();
     let mut sessions = Vec::new();
     for name in ["team", "personal"] {
         let model = format!("codex:{name}/gpt-5.5");
@@ -154,8 +162,12 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
     let fake = b.fake_log();
     assert!(!fake.contains("sk-native-openai"), "the native instance's key reached Codex");
     assert!(fake.contains("env OPENAI_API_KEY=<unset>"));
-    let accounts: Vec<&str> = fake.lines().filter(|l| l.starts_with("out ") && l.contains(r#""account":{"#)).collect();
-    assert!(accounts[0].contains("team@example.com") && accounts[1].contains("me@example.com"), "each session ran under its own account: {accounts:?}");
+    // Each session's account is asked twice — by the readiness check before
+    // the session exists, and by the backend before its thread — and
+    // always of that account's own home.
+    let accounts: Vec<&str> = fake.lines().skip(listed_up_to).filter(|l| l.starts_with("out ") && l.contains(r#""account":{"#)).collect();
+    assert_eq!(accounts.len(), 4, "{accounts:?}");
+    assert!(accounts[..2].iter().all(|a| a.contains("team@example.com")) && accounts[2..].iter().all(|a| a.contains("me@example.com")), "each session ran under its own account: {accounts:?}");
 
     // krowk.db lists both.
     let listed = b.json(&["sessions", "--json"], &[]);
@@ -190,11 +202,12 @@ fn r_inst_2_a_codex_login_that_fails_adds_nothing() {
 fn r_back_6_a_codex_turn_is_not_started_headless_in_an_untrusted_repository() {
     let b = Sandbox::new("trust");
     b.json(&["providers", "add", "codex", "--name", "team", "--json"], &[]);
+    let added = b.fake_log().len();
     let out = b.krowk(&["-p", "hi", "--model", "codex:team/gpt-5.5", "--output-format", "json"], &[]);
     assert_eq!(out.status.code(), Some(4), "{}", String::from_utf8_lossy(&out.stderr));
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(said.contains("untrusted_directory") && said.contains("--trust"), "{said}");
-    assert!(!b.fake_log().contains("argv app-server"), "nothing was spawned");
+    assert!(!b.fake_log()[added..].contains("argv "), "nothing was spawned, not even a status check");
     assert!(!b.data().join("sessions").exists() || std::fs::read_dir(b.data().join("sessions")).unwrap().next().is_none(), "no session was left behind");
 }
 

@@ -118,14 +118,17 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
     b.json(&["providers", "add", "claude", "--name", "work", "--json"], &[]);
     assert_eq!(b.fake_log().lines().filter(|l| *l == "argv auth login").count(), 2);
 
-    // Status comes from `claude auth status`, per instance.
+    // Status comes from `claude auth status`, per instance, through the
+    // readiness check `krowk status` prints.
     let listed = b.json(&["providers", "list", "--json"], &[]);
     let rows = listed["data"]["instances"].as_array().unwrap();
     let row = |n: &str| rows.iter().find(|r| r["instance"] == n).unwrap_or_else(|| panic!("{n} in {rows:?}")).clone();
     for n in ["claude:personal", "claude:work"] {
-        assert_eq!((row(n)["state"].as_str(), row(n)["auth"].as_str()), (Some("ready"), Some("runs Claude Code: signed in with a Claude max subscription")));
+        let dir = b.data().join("claude").join(n.replace(':', "-"));
+        assert_eq!((row(n)["state"].as_str(), row(n)["source"].as_str()), (Some("ready"), Some(format!("Claude Code's own login in {} (signed in with a Claude max subscription)", dir.display()).as_str())));
     }
-    assert_eq!(row("claude")["state"], "not signed in", "the default account, in the sandbox's ~/.claude, has no login");
+    assert_eq!(row("claude")["state"], "not_signed_in", "the default account, in the sandbox's ~/.claude, has no login");
+    assert_eq!(row("claude")["fix"], "sign in with `krowk providers add claude`, which runs Claude's own login");
 
     // Each account runs a session, in its own config directory.
     for name in ["personal", "work"] {
@@ -280,7 +283,7 @@ fn r_inst_1_providers_add_claude_with_a_router_hands_it_the_named_key_and_nothin
 
     let listed = b.json(&["providers", "list", "--json"], &[("ROUTER_KEY", "sk-or-live")]);
     let row = listed["data"]["instances"].as_array().unwrap().iter().find(|r| r["instance"] == "claude:router").unwrap().clone();
-    assert_eq!((row["state"].as_str(), row["auth"].as_str()), (Some("ready"), Some("runs Claude Code with the key from $ROUTER_KEY")));
+    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("$ROUTER_KEY, handed to Claude Code")));
 
     // The ambient native key is exported too, and must not reach Claude Code.
     let env = [("ROUTER_KEY", "sk-or-live"), ("ANTHROPIC_API_KEY", "sk-ant-api-ambient"), ("ANTHROPIC_AUTH_TOKEN", "ambient-token")];

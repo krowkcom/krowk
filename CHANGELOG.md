@@ -108,6 +108,42 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk status` says which providers can run a turn here, and how to
+  fix the rest** (in the `harness` build). One row per instance — the
+  seven built in and every one you configured — with its kind, its state
+  (`ready`, `key not set`, `not signed in`, `expired`, `not installed`,
+  `unknown`), where its key or login comes from (`$ANTHROPIC_API_KEY`,
+  `Claude Code's own login in ~/.claude`, krowk's SuperGrok login file —
+  never the key itself), and the one command or variable that makes it
+  ready. It exits 0 when at least one instance is ready and 3
+  (`none_ready`) when none is; `--json` gives the rows with the same keys
+  on every row, and on exit 3 the rows are the error's `details`.
+  **`providers list` and `krowk doctor` now use the same check**: doctor
+  gains a `providers` line, and `providers list` rows carry `source` and
+  `fix` in place of `auth`, with `state` spelled as `krowk status` spells
+  it (`key_not_set`, `not_signed_in`, …). Claude Code and Codex are asked
+  at the same time instead of one after the other, so a listing takes as
+  long as the slowest vendor (at most 10 seconds, after which it and
+  anything it started are stopped) rather than their sum;
+  Codex is asked through `codex app-server`'s `account/read`, falling back
+  to `codex login status`. A SuperGrok login whose token expired and
+  cannot be refreshed now shows as `expired` instead of ready.
+- **A switch to a signed-out Claude Code or Codex account is refused
+  before anything starts.** `/model claude:work/sonnet`, `--model` on a
+  resumed session, and a rollover or its offer now ask the vendor whether
+  the account is signed in first, and refuse with the command that signs
+  it in (`krowk providers add claude --name work`); the session stays on
+  its model. Before, Claude Code was started and the turn failed. A
+  signed-in answer is remembered for a minute in the TUI, so switching
+  back and forth does not re-ask; a signed-out one is asked again every
+  time, so signing in in another terminal works at once. Before a turn the
+  vendor is asked in the session's own directory, once its repository is
+  trusted — where the turn will start it — so a project that signs
+  Claude Code in through its own settings — Bedrock, Vertex, an
+  `apiKeyHelper` — still runs; `krowk status` and `providers list` ask in
+  a directory of krowk's own, where such an account shows `not signed
+  in`.
+
 - **Switch model, instance or engine at any time, without losing the
   thread.** In the TUI, `/model` opens a picker of the models the session
   has run on and every instance you have, and `/model <instance>/<model>`
@@ -500,7 +536,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   threads, and signs it in by running `codex login` — OpenAI's own login,
   on your terminal (`--device` for its device code). krowk never reads
   Codex's login file or uses Codex's OAuth client; `providers list` asks
-  `codex login status`. One `codex app-server` serves the whole session:
+  Codex itself (`account/read`, else `codex login status`). One `codex app-server` serves the whole session:
   its turns stream into the same log and `krowk sessions` listing as
   native ones, with the commands Codex ran and the patches it applied as
   tool calls; typing while a turn runs steers it; Ctrl-C interrupts it

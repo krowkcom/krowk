@@ -6,14 +6,16 @@
 //! by `claude auth login` in Anthropic's own flow (R-INST-2), or a Codex
 //! account, `codex:team`: a `CODEX_HOME` of its own that shares the
 //! person's Codex configuration, signed in by `codex login` in OpenAI's own
-//! flow. `list` shows every instance and whether it can run; `remove` takes
-//! a definition, and a login, away.
+//! flow. `list` shows every instance and whether it can run — the readiness
+//! check `krowk status` prints; `remove` takes a definition, and a login,
+//! away.
 //!
 //! A definition names the variable its key is read from and never holds the
 //! key, so config.json stays something that can sync between hosts. A
 //! Claude Code login is Claude Code's: krowk asks `claude auth status`
 //! whether there is one and never reads it (R-BACK-2); a Codex login is
-//! Codex's, asked of `codex login status` (R-BACK-3).
+//! Codex's, asked of `codex app-server`'s `account/read`, or `codex login
+//! status` (R-BACK-3).
 
 use super::{auth, Ctx};
 use crate::config;
@@ -265,39 +267,19 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
+/// Every instance, where it runs, and whether it is ready — the readiness
+/// check `krowk status` prints, with the place each one runs beside it.
 pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
-    let cfg = super::prompt::load_instances()?;
-    let reg = Registry::resolve(&cfg, ctx.io.env);
-    let logins = Store::new(credentials_path()).names().unwrap_or_default();
-    let rows: Vec<Value> = reg
-        .instances
-        .values()
-        .map(|r| {
-            let (auth, ready, state) = match &r.auth {
-                Auth::ApiKey => (format!("api key from ${}", r.api_key_env), !r.api_key.is_empty(), "key not set"),
-                Auth::Keyless => ("no key".to_string(), true, ""),
-                Auth::OAuth { .. } => ("SuperGrok login".to_string(), logins.contains(&r.name), "not signed in"),
-                // Asked of the vendor, the only thing that may read its login.
-                // A keyed instance runs on its key, which is krowk's to check.
-                Auth::Vendor if !r.api_key_env.is_empty() => (format!("runs {} with the key from ${}", r.vendor, r.api_key_env), !r.api_key.is_empty() && r.backend.as_ref().is_some_and(|b| b.path.is_some()), "key not set"),
-                Auth::Vendor => match r.backend.as_ref().filter(|b| b.path.is_some()).map(|b| vendor_status(r.wire_api, b)) {
-                    None => (format!("runs {}", r.vendor), false, "not installed"),
-                    Some(Ok((true, said))) => (format!("runs {}: {said}", r.vendor), true, ""),
-                    Some(Ok((false, said))) => (format!("runs {}: {said}", r.vendor), false, "not signed in"),
-                    Some(Err(e)) => (format!("runs {}: {e}", r.vendor), false, "unknown"),
-                },
-            };
-            let mut row = json!({
-                "instance": r.name,
-                "kind": r.kind,
-                "provider": r.provider,
-                "wire_api": r.wire_api.name(),
-                "base_url": r.base_url,
-                "auth": auth,
-                "ready": ready,
-                "state": if ready { "ready" } else { state },
-                "configured": cfg.instances.contains_key(&r.name),
-            });
+    let (cfg, reg, reports) = super::status::reports(ctx)?;
+    let rows: Vec<Value> = reports
+        .iter()
+        .map(|rep| {
+            let r = &reg.instances[&rep.instance];
+            let mut row = rep.json();
+            row["provider"] = json!(r.provider);
+            row["wire_api"] = json!(r.wire_api.name());
+            row["base_url"] = json!(r.base_url);
+            row["configured"] = json!(cfg.instances.contains_key(&r.name));
             // A backend has a binary and a config directory where an API
             // has a base URL.
             if let Some(b) = &r.backend {
@@ -311,13 +293,12 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
         let summary = format!("{} instances", rows.len());
         return super::sessions::emit_data(ctx, json!({ "instances": rows }), summary);
     }
-    let width = rows.iter().map(|r| r["instance"].as_str().unwrap_or_default().len()).max().unwrap_or(0);
+    let width = reports.iter().map(|r| r.instance.len()).max().unwrap_or(0);
     let out = &mut *ctx.io.stdout;
-    for r in &rows {
-        let s = |k: &str| r[k].as_str().unwrap_or_default().to_string();
-        let state = s("state");
-        let place = if r.get("binary").is_some() { s("binary") } else { s("base_url") };
-        let _ = writeln!(out, "{:<width$}  {:<17}  {:<13}  {place}  ({})", s("instance"), s("kind"), state, s("auth"));
+    for (rep, row) in reports.iter().zip(&rows) {
+        let s = |k: &str| row[k].as_str().unwrap_or_default().to_string();
+        let place = if row.get("binary").is_some() { s("binary") } else { s("base_url") };
+        let _ = writeln!(out, "{:<width$}  {:<17}  {:<13}  {place}  ({})", rep.instance, rep.kind, rep.readiness.label(), rep.source);
     }
     Ok(())
 }
@@ -384,6 +365,8 @@ fn sign_in_claude(ctx: &mut Ctx, instance: &str, kind: &InstanceKind) -> Result<
     if backend.path.is_none() {
         return Err(fail("backend_not_found", format!("{} was not found — install Claude Code (https://claude.com/claude-code), or name the binary with --binary", backend.binary)));
     }
+    // Asked in krowk's own directory, as `krowk status` asks.
+    let probe = super::status::neutral_probe(ctx)?;
     let made = match &backend.config_dir {
         Some(dir) if !dir.exists() => {
             private_dir(dir).map_err(|e| fail("config_unwritable", format!("create {}: {e}", dir.display())))?;
@@ -397,7 +380,7 @@ fn sign_in_claude(ctx: &mut Ctx, instance: &str, kind: &InstanceKind) -> Result<
         }
         e
     };
-    let status = claude_auth::status(&backend).map_err(|e| undo(fail("backend_failed", e)))?;
+    let status = claude_auth::status(&backend, &probe).map_err(|e| undo(fail("backend_failed", e)))?;
     // A keyed instance — a router, a Console key — signs in with its key,
     // not a Claude login.
     if status.logged_in || backend.env.contains_key("ANTHROPIC_BASE_URL") || backend.key.is_some() {
@@ -406,7 +389,7 @@ fn sign_in_claude(ctx: &mut Ctx, instance: &str, kind: &InstanceKind) -> Result<
     let _ = writeln!(ctx.io.stderr, "Signing {instance} in to Claude Code — what follows is Claude's own login (`claude auth login`){}:", backend.config_dir.as_ref().map(|d| format!(", kept in {}", d.display())).unwrap_or_default());
     let _ = ctx.io.stderr.flush();
     let exit = claude_auth::login(&backend).map_err(|e| undo(fail("backend_failed", e)))?;
-    let status = claude_auth::status(&backend).map_err(|e| undo(fail("backend_failed", e)))?;
+    let status = claude_auth::status(&backend, &probe).map_err(|e| undo(fail("backend_failed", e)))?;
     if !status.logged_in {
         let how = if exit.success() { "finished without signing in".to_string() } else { format!("stopped ({exit})") };
         return Err(undo(fail("not_authenticated", format!("`claude auth login` {how}, so {instance} was not added — run `krowk providers add claude{}` again to retry", instance.split_once(':').map(|(_, n)| format!(" --name {n}")).unwrap_or_default()))));
@@ -414,17 +397,10 @@ fn sign_in_claude(ctx: &mut Ctx, instance: &str, kind: &InstanceKind) -> Result<
     Ok((status, true))
 }
 
-/// Whether a backend instance is signed in, and how, as its vendor says.
-fn vendor_status(wire: krowk_harness::protocol::WireApi, b: &instances::Backend) -> Result<(bool, String), String> {
-    match wire {
-        krowk_harness::protocol::WireApi::CodexAppServer => codex_auth::status(b).map(|st| (st.logged_in, st.describe())),
-        _ => claude_auth::status(b).map(|st| (st.logged_in, st.describe())),
-    }
-}
-
 /// R-INST-2, with `codex login`: a Codex account is signed in by Codex. Its
 /// home is made (0700) if it is new and given links to the person's own
-/// Codex configuration (`codex::share`), `codex login status` is asked, and
+/// Codex configuration (`codex::share`), Codex is asked whether it is signed
+/// in (`account/read`, else `codex login status`), and
 /// when it says no, `codex login` runs on this terminal in OpenAI's own
 /// flow; then status is asked again. A keyed instance — a router, named by
 /// `--api-key-env` — runs on that key, so no login is run for it. A failure
@@ -435,6 +411,8 @@ fn sign_in_codex(ctx: &mut Ctx, instance: &str, kind: &InstanceKind) -> Result<(
     if backend.path.is_none() {
         return Err(fail("backend_not_found", format!("{} was not found — install Codex (https://developers.openai.com/codex), or name the binary with --binary", backend.binary)));
     }
+    // Asked in krowk's own directory, as `krowk status` asks.
+    let probe = super::status::neutral_probe(ctx)?;
     let made = match &backend.config_dir {
         Some(dir) if !dir.exists() => {
             private_dir(dir).map_err(|e| fail("config_unwritable", format!("create {}: {e}", dir.display())))?;
@@ -454,14 +432,14 @@ fn sign_in_codex(ctx: &mut Ctx, instance: &str, kind: &InstanceKind) -> Result<(
         (Some(dir), Some(own)) => codex::share(dir, own).map_err(|e| undo(fail("config_unwritable", format!("link {} into {}: {e}", own.display(), dir.display()))))?,
         _ => Vec::new(),
     };
-    let status = codex_auth::status(&backend).map_err(|e| undo(fail("backend_failed", e)))?;
+    let status = codex_auth::signed_in(&backend, &probe).map_err(|e| undo(fail("backend_failed", e)))?;
     if status.logged_in || backend.key.is_some() {
         return Ok((status, shared));
     }
     let _ = writeln!(ctx.io.stderr, "Signing {instance} in to Codex — what follows is Codex's own login (`codex login`){}:", backend.config_dir.as_ref().map(|d| format!(", kept in {}", d.display())).unwrap_or_default());
     let _ = ctx.io.stderr.flush();
     let exit = codex_auth::login(&backend, ctx.f.device).map_err(|e| undo(fail("backend_failed", e)))?;
-    let status = codex_auth::status(&backend).map_err(|e| undo(fail("backend_failed", e)))?;
+    let status = codex_auth::signed_in(&backend, &probe).map_err(|e| undo(fail("backend_failed", e)))?;
     if !status.logged_in {
         let how = if exit.success() { "finished without signing in".to_string() } else { format!("stopped ({exit})") };
         return Err(undo(fail("not_authenticated", format!("`codex login` {how}, so {instance} was not added — run `krowk providers add codex{}` again to retry", instance.split_once(':').map(|(_, n)| format!(" --name {n}")).unwrap_or_default()))));

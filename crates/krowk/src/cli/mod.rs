@@ -17,6 +17,8 @@ mod providers;
 #[cfg(feature = "sessions")]
 mod sessions;
 #[cfg(feature = "harness")]
+mod status;
+#[cfg(feature = "harness")]
 mod tui;
 mod upgrade;
 mod workspace;
@@ -239,6 +241,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["providers"] | ["providers", "list", ..] => providers::list(ctx),
         #[cfg(feature = "harness")]
         ["providers", "remove", ..] => providers::remove(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["status", ..] => status::status(ctx),
         _ if catalog::catalog(VERSION).leaves().iter().any(|l| p.starts_with(&l.name.split(' ').map(String::from).collect::<Vec<_>>())) => Err(fail(
             "not_in_build",
             format!(
