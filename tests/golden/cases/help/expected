@@ -28,20 +28,20 @@ stdout:
           "name": "caption",
           "type": "string",
           "default": "",
-          "usage": "What this file shows, recorded on the artifact as `krowk.caption`. Repeat to caption several files, in the order they are given",
+          "usage": "What this file shows, recorded on the artifact as `krowk.caption` and used wherever it is pasted. Repeat to caption several files, in the order they are given",
           "repeatable": true
         },
         {
           "name": "destination",
           "type": "string",
           "default": "",
-          "usage": "Print what this tool wants pasted into it, e.g. github or slack. A tool krowk has not been told about gets the markdown block"
+          "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
         },
         {
           "name": "private",
           "type": "bool",
           "default": "false",
-          "usage": "Upload where only this workspace can read it. The image still embeds — the byte URL is the capability — but the card opens only for a signed-in member and unfurls nowhere. Needs an API key"
+          "usage": "Upload where only this workspace can read it. The image still embeds — the byte URL is the capability — but the card opens only for a signed-in member, reads as not found to everyone else, and unfurls nowhere. Needs an API key"
         },
         {
           "name": "pull-request",
@@ -53,7 +53,7 @@ stdout:
           "name": "link",
           "type": "string",
           "default": "",
-          "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`",
+          "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`; label or classify each with --link-title and --link-rel",
           "repeatable": true
         },
         {
@@ -81,7 +81,7 @@ stdout:
           "name": "session",
           "type": "string",
           "default": "",
-          "usage": "Agent session ID"
+          "usage": "Override the detected agent session ID"
         },
         {
           "name": "title",
@@ -111,19 +111,19 @@ stdout:
           "name": "metadata",
           "type": "string",
           "default": "",
-          "usage": "Extra key=value metadata — your value wins over a detected one. Public",
+          "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
           "repeatable": true
         }
       ]
     },
     {
       "name": "uploads",
-      "summary": "Work with uploads",
+      "summary": "List, show, attach or delete uploads",
       "subcommands": [
         {
           "name": "create",
           "usage": "krowk uploads create <file...> [flags]",
-          "summary": "The same thing, spelled out",
+          "summary": "Upload files: the long form of `krowk push`",
           "args": [
             {
               "name": "file",
@@ -143,20 +143,20 @@ stdout:
               "name": "caption",
               "type": "string",
               "default": "",
-              "usage": "What this file shows, recorded on the artifact as `krowk.caption`. Repeat to caption several files, in the order they are given",
+              "usage": "What this file shows, recorded on the artifact as `krowk.caption` and used wherever it is pasted. Repeat to caption several files, in the order they are given",
               "repeatable": true
             },
             {
               "name": "destination",
               "type": "string",
               "default": "",
-              "usage": "Print what this tool wants pasted into it, e.g. github or slack. A tool krowk has not been told about gets the markdown block"
+              "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
             },
             {
               "name": "private",
               "type": "bool",
               "default": "false",
-              "usage": "Upload where only this workspace can read it. The image still embeds — the byte URL is the capability — but the card opens only for a signed-in member and unfurls nowhere. Needs an API key"
+              "usage": "Upload where only this workspace can read it. The image still embeds — the byte URL is the capability — but the card opens only for a signed-in member, reads as not found to everyone else, and unfurls nowhere. Needs an API key"
             },
             {
               "name": "pull-request",
@@ -168,7 +168,7 @@ stdout:
               "name": "link",
               "type": "string",
               "default": "",
-              "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`",
+              "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`; label or classify each with --link-title and --link-rel",
               "repeatable": true
             },
             {
@@ -196,7 +196,7 @@ stdout:
               "name": "session",
               "type": "string",
               "default": "",
-              "usage": "Agent session ID"
+              "usage": "Override the detected agent session ID"
             },
             {
               "name": "title",
@@ -226,7 +226,7 @@ stdout:
               "name": "metadata",
               "type": "string",
               "default": "",
-              "usage": "Extra key=value metadata — your value wins over a detected one. Public",
+              "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
               "repeatable": true
             }
           ]
@@ -234,7 +234,7 @@ stdout:
         {
           "name": "list",
           "usage": "krowk uploads list [flags]",
-          "summary": "List uploads, newest first — a run's, or the workspace's",
+          "summary": "List uploads, newest first: a run's, or the workspace's",
           "flags": [
             {
               "name": "limit",
@@ -309,7 +309,7 @@ stdout:
     },
     {
       "name": "runs",
-      "summary": "Work with runs",
+      "summary": "Group uploads under a run",
       "subcommands": [
         {
           "name": "start",
@@ -326,7 +326,7 @@ stdout:
               "name": "link",
               "type": "string",
               "default": "",
-              "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`",
+              "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`; label or classify each with --link-title and --link-rel",
               "repeatable": true
             },
             {
@@ -354,7 +354,7 @@ stdout:
               "name": "session",
               "type": "string",
               "default": "",
-              "usage": "Agent session ID"
+              "usage": "Override the detected agent session ID"
             },
             {
               "name": "title",
@@ -384,7 +384,7 @@ stdout:
               "name": "metadata",
               "type": "string",
               "default": "",
-              "usage": "Extra key=value metadata — your value wins over a detected one. Public",
+              "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
               "repeatable": true
             }
           ]
@@ -462,13 +462,13 @@ stdout:
     {
       "name": "login",
       "usage": "krowk login [--token <token>] [--no-browser]",
-      "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
+      "summary": "Sign in to your krowk account",
       "flags": [
         {
           "name": "token",
           "type": "string",
           "default": "",
-          "usage": "Check and store this key instead of asking the browser — how CI logs in, e.g. krowk_sk_..."
+          "usage": "Check and store this key instead of asking the browser — how CI logs in, and it opens nothing. E.g. krowk_sk_..."
         },
         {
           "name": "no-browser",
@@ -481,27 +481,27 @@ stdout:
     {
       "name": "logout",
       "usage": "krowk logout",
-      "summary": "Take the key that resolves here off this machine"
+      "summary": "Remove this machine's key"
     },
     {
       "name": "whoami",
       "usage": "krowk whoami",
-      "summary": "Check the key and its workspace"
+      "summary": "Show the key and its workspace"
     },
     {
       "name": "auth",
-      "summary": "Manage the API key — your krowk account",
+      "summary": "Long forms of login, logout and whoami",
       "subcommands": [
         {
           "name": "login",
           "usage": "krowk auth login [--token <token>] [--no-browser]",
-          "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
+          "summary": "The long form of `krowk login`",
           "flags": [
             {
               "name": "token",
               "type": "string",
               "default": "",
-              "usage": "Check and store this key instead of asking the browser — how CI logs in, e.g. krowk_sk_..."
+              "usage": "Check and store this key instead of asking the browser — how CI logs in, and it opens nothing. E.g. krowk_sk_..."
             },
             {
               "name": "no-browser",
@@ -514,7 +514,7 @@ stdout:
         {
           "name": "logout",
           "usage": "krowk auth logout",
-          "summary": "The same as `krowk logout`"
+          "summary": "The long form of `krowk logout`"
         },
         {
           "name": "token",
@@ -525,13 +525,13 @@ stdout:
         {
           "name": "verify",
           "usage": "krowk auth verify",
-          "summary": "The same as `krowk whoami`"
+          "summary": "The long form of `krowk whoami`"
         }
       ]
     },
     {
       "name": "workspaces",
-      "summary": "The stored keys, one per workspace",
+      "summary": "Switch between stored keys",
       "subcommands": [
         {
           "name": "list",
@@ -554,7 +554,7 @@ stdout:
     },
     {
       "name": "config",
-      "summary": "Pin a repository, or the machine, to a workspace",
+      "summary": "Show or set configuration",
       "subcommands": [
         {
           "name": "show",
@@ -611,12 +611,12 @@ stdout:
     {
       "name": "doctor",
       "usage": "krowk doctor",
-      "summary": "Check the local setup"
+      "summary": "Check this machine's setup"
     },
     {
       "name": "sessions",
       "usage": "krowk sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
-      "summary": "List every agent thread on this machine, newest first",
+      "summary": "List and read agent sessions on this machine",
       "flags": [
         {
           "name": "harness",
@@ -705,7 +705,7 @@ stdout:
         {
           "name": "budget",
           "usage": "krowk sessions budget <id> [--max-usd N] [--max-tokens N]",
-          "summary": "Check a session against a spend limit, by what the provider metered",
+          "summary": "Check a session against a spend limit",
           "args": [
             {
               "name": "id",
@@ -724,14 +724,14 @@ stdout:
               "name": "max-tokens",
               "type": "string",
               "default": "",
-              "usage": "Trip when the session's generated tokens (output and reasoning) are over this many"
+              "usage": "Trip when the session's generated tokens (output and reasoning — the session's and its subagents') are over this many"
             }
           ]
         },
         {
           "name": "sync",
           "usage": "krowk sessions sync [--no-network]",
-          "summary": "Import only what changed since the last import, and refresh prices",
+          "summary": "Import what changed, and refresh prices",
           "flags": [
             {
               "name": "no-network",
@@ -745,7 +745,7 @@ stdout:
     },
     {
       "name": "pricing",
-      "summary": "Model price data",
+      "summary": "Refresh model prices",
       "subcommands": [
         {
           "name": "refresh",
@@ -757,17 +757,25 @@ stdout:
     {
       "name": "upgrade",
       "usage": "krowk upgrade",
-      "summary": "Upgrade krowk to the latest release"
+      "summary": "Upgrade krowk"
     },
     {
       "name": "help",
-      "usage": "krowk help [command]",
-      "summary": "Show this, or one command's own help",
+      "usage": "krowk help [command|topic] [--all]",
+      "summary": "This, a command's help, or a topic",
       "args": [
         {
           "name": "command",
-          "summary": "The command to describe, e.g. `uploads attach`",
+          "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
+        }
+      ],
+      "flags": [
+        {
+          "name": "all",
+          "type": "bool",
+          "default": "false",
+          "usage": "List every command and subcommand"
         }
       ]
     }
@@ -789,7 +797,7 @@ stdout:
       "name": "format",
       "type": "string",
       "default": "",
-      "usage": "human | json | markdown | url (default: human on a TTY, json when piped)"
+      "usage": "human | json | markdown | url (default: human on a TTY, json when piped). markdown and url describe an upload; other commands fall back to json"
     },
     {
       "name": "json",
@@ -888,20 +896,20 @@ stdout:
           "name": "caption",
           "type": "string",
           "default": "",
-          "usage": "What this file shows, recorded on the artifact as `krowk.caption`. Repeat to caption several files, in the order they are given",
+          "usage": "What this file shows, recorded on the artifact as `krowk.caption` and used wherever it is pasted. Repeat to caption several files, in the order they are given",
           "repeatable": true
         },
         {
           "name": "destination",
           "type": "string",
           "default": "",
-          "usage": "Print what this tool wants pasted into it, e.g. github or slack. A tool krowk has not been told about gets the markdown block"
+          "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
         },
         {
           "name": "private",
           "type": "bool",
           "default": "false",
-          "usage": "Upload where only this workspace can read it. The image still embeds — the byte URL is the capability — but the card opens only for a signed-in member and unfurls nowhere. Needs an API key"
+          "usage": "Upload where only this workspace can read it. The image still embeds — the byte URL is the capability — but the card opens only for a signed-in member, reads as not found to everyone else, and unfurls nowhere. Needs an API key"
         },
         {
           "name": "pull-request",
@@ -913,7 +921,7 @@ stdout:
           "name": "link",
           "type": "string",
           "default": "",
-          "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`",
+          "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`; label or classify each with --link-title and --link-rel",
           "repeatable": true
         },
         {
@@ -941,7 +949,7 @@ stdout:
           "name": "session",
           "type": "string",
           "default": "",
-          "usage": "Agent session ID"
+          "usage": "Override the detected agent session ID"
         },
         {
           "name": "title",
@@ -971,19 +979,19 @@ stdout:
           "name": "metadata",
           "type": "string",
           "default": "",
-          "usage": "Extra key=value metadata — your value wins over a detected one. Public",
+          "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
           "repeatable": true
         }
       ]
     },
     {
       "name": "uploads",
-      "summary": "Work with uploads",
+      "summary": "List, show, attach or delete uploads",
       "subcommands": [
         {
           "name": "create",
           "usage": "krowk uploads create <file...> [flags]",
-          "summary": "The same thing, spelled out",
+          "summary": "Upload files: the long form of `krowk push`",
           "args": [
             {
               "name": "file",
@@ -1003,20 +1011,20 @@ stdout:
               "name": "caption",
               "type": "string",
               "default": "",
-              "usage": "What this file shows, recorded on the artifact as `krowk.caption`. Repeat to caption several files, in the order they are given",
+              "usage": "What this file shows, recorded on the artifact as `krowk.caption` and used wherever it is pasted. Repeat to caption several files, in the order they are given",
               "repeatable": true
             },
             {
               "name": "destination",
               "type": "string",
               "default": "",
-              "usage": "Print what this tool wants pasted into it, e.g. github or slack. A tool krowk has not been told about gets the markdown block"
+              "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
             },
             {
               "name": "private",
               "type": "bool",
               "default": "false",
-              "usage": "Upload where only this workspace can read it. The image still embeds — the byte URL is the capability — but the card opens only for a signed-in member and unfurls nowhere. Needs an API key"
+              "usage": "Upload where only this workspace can read it. The image still embeds — the byte URL is the capability — but the card opens only for a signed-in member, reads as not found to everyone else, and unfurls nowhere. Needs an API key"
             },
             {
               "name": "pull-request",
@@ -1028,7 +1036,7 @@ stdout:
               "name": "link",
               "type": "string",
               "default": "",
-              "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`",
+              "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`; label or classify each with --link-title and --link-rel",
               "repeatable": true
             },
             {
@@ -1056,7 +1064,7 @@ stdout:
               "name": "session",
               "type": "string",
               "default": "",
-              "usage": "Agent session ID"
+              "usage": "Override the detected agent session ID"
             },
             {
               "name": "title",
@@ -1086,7 +1094,7 @@ stdout:
               "name": "metadata",
               "type": "string",
               "default": "",
-              "usage": "Extra key=value metadata — your value wins over a detected one. Public",
+              "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
               "repeatable": true
             }
           ]
@@ -1094,7 +1102,7 @@ stdout:
         {
           "name": "list",
           "usage": "krowk uploads list [flags]",
-          "summary": "List uploads, newest first — a run's, or the workspace's",
+          "summary": "List uploads, newest first: a run's, or the workspace's",
           "flags": [
             {
               "name": "limit",
@@ -1169,7 +1177,7 @@ stdout:
     },
     {
       "name": "runs",
-      "summary": "Work with runs",
+      "summary": "Group uploads under a run",
       "subcommands": [
         {
           "name": "start",
@@ -1186,7 +1194,7 @@ stdout:
               "name": "link",
               "type": "string",
               "default": "",
-              "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`",
+              "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`; label or classify each with --link-title and --link-rel",
               "repeatable": true
             },
             {
@@ -1214,7 +1222,7 @@ stdout:
               "name": "session",
               "type": "string",
               "default": "",
-              "usage": "Agent session ID"
+              "usage": "Override the detected agent session ID"
             },
             {
               "name": "title",
@@ -1244,7 +1252,7 @@ stdout:
               "name": "metadata",
               "type": "string",
               "default": "",
-              "usage": "Extra key=value metadata — your value wins over a detected one. Public",
+              "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
               "repeatable": true
             }
           ]
@@ -1322,13 +1330,13 @@ stdout:
     {
       "name": "login",
       "usage": "krowk login [--token <token>] [--no-browser]",
-      "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
+      "summary": "Sign in to your krowk account",
       "flags": [
         {
           "name": "token",
           "type": "string",
           "default": "",
-          "usage": "Check and store this key instead of asking the browser — how CI logs in, e.g. krowk_sk_..."
+          "usage": "Check and store this key instead of asking the browser — how CI logs in, and it opens nothing. E.g. krowk_sk_..."
         },
         {
           "name": "no-browser",
@@ -1341,27 +1349,27 @@ stdout:
     {
       "name": "logout",
       "usage": "krowk logout",
-      "summary": "Take the key that resolves here off this machine"
+      "summary": "Remove this machine's key"
     },
     {
       "name": "whoami",
       "usage": "krowk whoami",
-      "summary": "Check the key and its workspace"
+      "summary": "Show the key and its workspace"
     },
     {
       "name": "auth",
-      "summary": "Manage the API key — your krowk account",
+      "summary": "Long forms of login, logout and whoami",
       "subcommands": [
         {
           "name": "login",
           "usage": "krowk auth login [--token <token>] [--no-browser]",
-          "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
+          "summary": "The long form of `krowk login`",
           "flags": [
             {
               "name": "token",
               "type": "string",
               "default": "",
-              "usage": "Check and store this key instead of asking the browser — how CI logs in, e.g. krowk_sk_..."
+              "usage": "Check and store this key instead of asking the browser — how CI logs in, and it opens nothing. E.g. krowk_sk_..."
             },
             {
               "name": "no-browser",
@@ -1374,7 +1382,7 @@ stdout:
         {
           "name": "logout",
           "usage": "krowk auth logout",
-          "summary": "The same as `krowk logout`"
+          "summary": "The long form of `krowk logout`"
         },
         {
           "name": "token",
@@ -1385,13 +1393,13 @@ stdout:
         {
           "name": "verify",
           "usage": "krowk auth verify",
-          "summary": "The same as `krowk whoami`"
+          "summary": "The long form of `krowk whoami`"
         }
       ]
     },
     {
       "name": "workspaces",
-      "summary": "The stored keys, one per workspace",
+      "summary": "Switch between stored keys",
       "subcommands": [
         {
           "name": "list",
@@ -1414,7 +1422,7 @@ stdout:
     },
     {
       "name": "config",
-      "summary": "Pin a repository, or the machine, to a workspace",
+      "summary": "Show or set configuration",
       "subcommands": [
         {
           "name": "show",
@@ -1471,12 +1479,12 @@ stdout:
     {
       "name": "doctor",
       "usage": "krowk doctor",
-      "summary": "Check the local setup"
+      "summary": "Check this machine's setup"
     },
     {
       "name": "sessions",
       "usage": "krowk sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
-      "summary": "List every agent thread on this machine, newest first",
+      "summary": "List and read agent sessions on this machine",
       "flags": [
         {
           "name": "harness",
@@ -1565,7 +1573,7 @@ stdout:
         {
           "name": "budget",
           "usage": "krowk sessions budget <id> [--max-usd N] [--max-tokens N]",
-          "summary": "Check a session against a spend limit, by what the provider metered",
+          "summary": "Check a session against a spend limit",
           "args": [
             {
               "name": "id",
@@ -1584,14 +1592,14 @@ stdout:
               "name": "max-tokens",
               "type": "string",
               "default": "",
-              "usage": "Trip when the session's generated tokens (output and reasoning) are over this many"
+              "usage": "Trip when the session's generated tokens (output and reasoning — the session's and its subagents') are over this many"
             }
           ]
         },
         {
           "name": "sync",
           "usage": "krowk sessions sync [--no-network]",
-          "summary": "Import only what changed since the last import, and refresh prices",
+          "summary": "Import what changed, and refresh prices",
           "flags": [
             {
               "name": "no-network",
@@ -1605,7 +1613,7 @@ stdout:
     },
     {
       "name": "pricing",
-      "summary": "Model price data",
+      "summary": "Refresh model prices",
       "subcommands": [
         {
           "name": "refresh",
@@ -1617,17 +1625,25 @@ stdout:
     {
       "name": "upgrade",
       "usage": "krowk upgrade",
-      "summary": "Upgrade krowk to the latest release"
+      "summary": "Upgrade krowk"
     },
     {
       "name": "help",
-      "usage": "krowk help [command]",
-      "summary": "Show this, or one command's own help",
+      "usage": "krowk help [command|topic] [--all]",
+      "summary": "This, a command's help, or a topic",
       "args": [
         {
           "name": "command",
-          "summary": "The command to describe, e.g. `uploads attach`",
+          "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
+        }
+      ],
+      "flags": [
+        {
+          "name": "all",
+          "type": "bool",
+          "default": "false",
+          "usage": "List every command and subcommand"
         }
       ]
     }
@@ -1649,7 +1665,7 @@ stdout:
       "name": "format",
       "type": "string",
       "default": "",
-      "usage": "human | json | markdown | url (default: human on a TTY, json when piped)"
+      "usage": "human | json | markdown | url (default: human on a TTY, json when piped). markdown and url describe an upload; other commands fall back to json"
     },
     {
       "name": "json",
@@ -1748,20 +1764,20 @@ stdout:
           "name": "caption",
           "type": "string",
           "default": "",
-          "usage": "What this file shows, recorded on the artifact as `krowk.caption`. Repeat to caption several files, in the order they are given",
+          "usage": "What this file shows, recorded on the artifact as `krowk.caption` and used wherever it is pasted. Repeat to caption several files, in the order they are given",
           "repeatable": true
         },
         {
           "name": "destination",
           "type": "string",
           "default": "",
-          "usage": "Print what this tool wants pasted into it, e.g. github or slack. A tool krowk has not been told about gets the markdown block"
+          "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
         },
         {
           "name": "private",
           "type": "bool",
           "default": "false",
-          "usage": "Upload where only this workspace can read it. The image still embeds — the byte URL is the capability — but the card opens only for a signed-in member and unfurls nowhere. Needs an API key"
+          "usage": "Upload where only this workspace can read it. The image still embeds — the byte URL is the capability — but the card opens only for a signed-in member, reads as not found to everyone else, and unfurls nowhere. Needs an API key"
         },
         {
           "name": "pull-request",
@@ -1773,7 +1789,7 @@ stdout:
           "name": "link",
           "type": "string",
           "default": "",
-          "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`",
+          "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`; label or classify each with --link-title and --link-rel",
           "repeatable": true
         },
         {
@@ -1801,7 +1817,7 @@ stdout:
           "name": "session",
           "type": "string",
           "default": "",
-          "usage": "Agent session ID"
+          "usage": "Override the detected agent session ID"
         },
         {
           "name": "title",
@@ -1831,19 +1847,19 @@ stdout:
           "name": "metadata",
           "type": "string",
           "default": "",
-          "usage": "Extra key=value metadata — your value wins over a detected one. Public",
+          "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
           "repeatable": true
         }
       ]
     },
     {
       "name": "uploads",
-      "summary": "Work with uploads",
+      "summary": "List, show, attach or delete uploads",
       "subcommands": [
         {
           "name": "create",
           "usage": "krowk uploads create <file...> [flags]",
-          "summary": "The same thing, spelled out",
+          "summary": "Upload files: the long form of `krowk push`",
           "args": [
             {
               "name": "file",
@@ -1863,20 +1879,20 @@ stdout:
               "name": "caption",
               "type": "string",
               "default": "",
-              "usage": "What this file shows, recorded on the artifact as `krowk.caption`. Repeat to caption several files, in the order they are given",
+              "usage": "What this file shows, recorded on the artifact as `krowk.caption` and used wherever it is pasted. Repeat to caption several files, in the order they are given",
               "repeatable": true
             },
             {
               "name": "destination",
               "type": "string",
               "default": "",
-              "usage": "Print what this tool wants pasted into it, e.g. github or slack. A tool krowk has not been told about gets the markdown block"
+              "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
             },
             {
               "name": "private",
               "type": "bool",
               "default": "false",
-              "usage": "Upload where only this workspace can read it. The image still embeds — the byte URL is the capability — but the card opens only for a signed-in member and unfurls nowhere. Needs an API key"
+              "usage": "Upload where only this workspace can read it. The image still embeds — the byte URL is the capability — but the card opens only for a signed-in member, reads as not found to everyone else, and unfurls nowhere. Needs an API key"
             },
             {
               "name": "pull-request",
@@ -1888,7 +1904,7 @@ stdout:
               "name": "link",
               "type": "string",
               "default": "",
-              "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`",
+              "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`; label or classify each with --link-title and --link-rel",
               "repeatable": true
             },
             {
@@ -1916,7 +1932,7 @@ stdout:
               "name": "session",
               "type": "string",
               "default": "",
-              "usage": "Agent session ID"
+              "usage": "Override the detected agent session ID"
             },
             {
               "name": "title",
@@ -1946,7 +1962,7 @@ stdout:
               "name": "metadata",
               "type": "string",
               "default": "",
-              "usage": "Extra key=value metadata — your value wins over a detected one. Public",
+              "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
               "repeatable": true
             }
           ]
@@ -1954,7 +1970,7 @@ stdout:
         {
           "name": "list",
           "usage": "krowk uploads list [flags]",
-          "summary": "List uploads, newest first — a run's, or the workspace's",
+          "summary": "List uploads, newest first: a run's, or the workspace's",
           "flags": [
             {
               "name": "limit",
@@ -2029,7 +2045,7 @@ stdout:
     },
     {
       "name": "runs",
-      "summary": "Work with runs",
+      "summary": "Group uploads under a run",
       "subcommands": [
         {
           "name": "start",
@@ -2046,7 +2062,7 @@ stdout:
               "name": "link",
               "type": "string",
               "default": "",
-              "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`",
+              "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`; label or classify each with --link-title and --link-rel",
               "repeatable": true
             },
             {
@@ -2074,7 +2090,7 @@ stdout:
               "name": "session",
               "type": "string",
               "default": "",
-              "usage": "Agent session ID"
+              "usage": "Override the detected agent session ID"
             },
             {
               "name": "title",
@@ -2104,7 +2120,7 @@ stdout:
               "name": "metadata",
               "type": "string",
               "default": "",
-              "usage": "Extra key=value metadata — your value wins over a detected one. Public",
+              "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
               "repeatable": true
             }
           ]
@@ -2182,13 +2198,13 @@ stdout:
     {
       "name": "login",
       "usage": "krowk login [--token <token>] [--no-browser]",
-      "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
+      "summary": "Sign in to your krowk account",
       "flags": [
         {
           "name": "token",
           "type": "string",
           "default": "",
-          "usage": "Check and store this key instead of asking the browser — how CI logs in, e.g. krowk_sk_..."
+          "usage": "Check and store this key instead of asking the browser — how CI logs in, and it opens nothing. E.g. krowk_sk_..."
         },
         {
           "name": "no-browser",
@@ -2201,27 +2217,27 @@ stdout:
     {
       "name": "logout",
       "usage": "krowk logout",
-      "summary": "Take the key that resolves here off this machine"
+      "summary": "Remove this machine's key"
     },
     {
       "name": "whoami",
       "usage": "krowk whoami",
-      "summary": "Check the key and its workspace"
+      "summary": "Show the key and its workspace"
     },
     {
       "name": "auth",
-      "summary": "Manage the API key — your krowk account",
+      "summary": "Long forms of login, logout and whoami",
       "subcommands": [
         {
           "name": "login",
           "usage": "krowk auth login [--token <token>] [--no-browser]",
-          "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
+          "summary": "The long form of `krowk login`",
           "flags": [
             {
               "name": "token",
               "type": "string",
               "default": "",
-              "usage": "Check and store this key instead of asking the browser — how CI logs in, e.g. krowk_sk_..."
+              "usage": "Check and store this key instead of asking the browser — how CI logs in, and it opens nothing. E.g. krowk_sk_..."
             },
             {
               "name": "no-browser",
@@ -2234,7 +2250,7 @@ stdout:
         {
           "name": "logout",
           "usage": "krowk auth logout",
-          "summary": "The same as `krowk logout`"
+          "summary": "The long form of `krowk logout`"
         },
         {
           "name": "token",
@@ -2245,13 +2261,13 @@ stdout:
         {
           "name": "verify",
           "usage": "krowk auth verify",
-          "summary": "The same as `krowk whoami`"
+          "summary": "The long form of `krowk whoami`"
         }
       ]
     },
     {
       "name": "workspaces",
-      "summary": "The stored keys, one per workspace",
+      "summary": "Switch between stored keys",
       "subcommands": [
         {
           "name": "list",
@@ -2274,7 +2290,7 @@ stdout:
     },
     {
       "name": "config",
-      "summary": "Pin a repository, or the machine, to a workspace",
+      "summary": "Show or set configuration",
       "subcommands": [
         {
           "name": "show",
@@ -2331,12 +2347,12 @@ stdout:
     {
       "name": "doctor",
       "usage": "krowk doctor",
-      "summary": "Check the local setup"
+      "summary": "Check this machine's setup"
     },
     {
       "name": "sessions",
       "usage": "krowk sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
-      "summary": "List every agent thread on this machine, newest first",
+      "summary": "List and read agent sessions on this machine",
       "flags": [
         {
           "name": "harness",
@@ -2425,7 +2441,7 @@ stdout:
         {
           "name": "budget",
           "usage": "krowk sessions budget <id> [--max-usd N] [--max-tokens N]",
-          "summary": "Check a session against a spend limit, by what the provider metered",
+          "summary": "Check a session against a spend limit",
           "args": [
             {
               "name": "id",
@@ -2444,14 +2460,14 @@ stdout:
               "name": "max-tokens",
               "type": "string",
               "default": "",
-              "usage": "Trip when the session's generated tokens (output and reasoning) are over this many"
+              "usage": "Trip when the session's generated tokens (output and reasoning — the session's and its subagents') are over this many"
             }
           ]
         },
         {
           "name": "sync",
           "usage": "krowk sessions sync [--no-network]",
-          "summary": "Import only what changed since the last import, and refresh prices",
+          "summary": "Import what changed, and refresh prices",
           "flags": [
             {
               "name": "no-network",
@@ -2465,7 +2481,7 @@ stdout:
     },
     {
       "name": "pricing",
-      "summary": "Model price data",
+      "summary": "Refresh model prices",
       "subcommands": [
         {
           "name": "refresh",
@@ -2477,17 +2493,25 @@ stdout:
     {
       "name": "upgrade",
       "usage": "krowk upgrade",
-      "summary": "Upgrade krowk to the latest release"
+      "summary": "Upgrade krowk"
     },
     {
       "name": "help",
-      "usage": "krowk help [command]",
-      "summary": "Show this, or one command's own help",
+      "usage": "krowk help [command|topic] [--all]",
+      "summary": "This, a command's help, or a topic",
       "args": [
         {
           "name": "command",
-          "summary": "The command to describe, e.g. `uploads attach`",
+          "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
+        }
+      ],
+      "flags": [
+        {
+          "name": "all",
+          "type": "bool",
+          "default": "false",
+          "usage": "List every command and subcommand"
         }
       ]
     }
@@ -2509,7 +2533,7 @@ stdout:
       "name": "format",
       "type": "string",
       "default": "",
-      "usage": "human | json | markdown | url (default: human on a TTY, json when piped)"
+      "usage": "human | json | markdown | url (default: human on a TTY, json when piped). markdown and url describe an upload; other commands fall back to json"
     },
     {
       "name": "json",

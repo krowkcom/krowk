@@ -1,0 +1,234 @@
+$ @tty krowk --help
+tty:
+█  █  krowk — permalinks for agent output
+█▀▀▄  version 0.0.0-golden
+
+USAGE
+  krowk <command> [flags]
+  krowk push shot.png        Upload a file, get a link
+
+PUBLISH
+  push          Upload files, get a link for each
+  runs          Group uploads under a run
+  uploads       List, show, attach or delete uploads
+  claim         Keep an anonymous upload past expiry
+
+ACCOUNT
+  login         Sign in to your krowk account
+  logout        Remove this machine's key
+  whoami        Show the key and its workspace
+  workspaces    Switch between stored keys
+
+OTHER
+  sessions      List and read agent sessions on this machine
+  config        Show or set configuration
+  doctor        Check this machine's setup
+  pricing       Refresh model prices
+  upgrade       Upgrade krowk
+
+FLAGS
+  --json · --jq <expr>       Output as JSON, or filter it
+  -h, --help · -v, --version
+
+krowk help <command>  A command's own flags
+krowk help --all      Every command and subcommand
+krowk help topics     flags, exit codes, environment, workspaces, links
+exit: 0
+
+$ krowk help --format human
+stdout:
+█  █  krowk — permalinks for agent output
+█▀▀▄  version 0.0.0-golden
+
+USAGE
+  krowk <command> [flags]
+  krowk push shot.png        Upload a file, get a link
+
+PUBLISH
+  push          Upload files, get a link for each
+  runs          Group uploads under a run
+  uploads       List, show, attach or delete uploads
+  claim         Keep an anonymous upload past expiry
+
+ACCOUNT
+  login         Sign in to your krowk account
+  logout        Remove this machine's key
+  whoami        Show the key and its workspace
+  workspaces    Switch between stored keys
+
+OTHER
+  sessions      List and read agent sessions on this machine
+  config        Show or set configuration
+  doctor        Check this machine's setup
+  pricing       Refresh model prices
+  upgrade       Upgrade krowk
+
+FLAGS
+  --json · --jq <expr>       Output as JSON, or filter it
+  -h, --help · -v, --version
+
+krowk help <command>  A command's own flags
+krowk help --all      Every command and subcommand
+krowk help topics     flags, exit codes, environment, workspaces, links
+exit: 0
+
+$ krowk help --all --format human
+stdout:
+krowk — every command and subcommand
+
+PUBLISH
+  push              Upload files, get a link for each
+  runs start        Open a run to group uploads under
+  runs list         List the workspace's runs, newest first
+  runs show         Read one run back, with its metadata
+  runs finish       Close a run
+  uploads create    Upload files: the long form of `krowk push`
+  uploads list      List uploads, newest first: a run's, or the workspace's
+  uploads show      Read one artifact back
+  uploads attach    Put an upload under a run afterwards
+  uploads delete    Take an upload down — immediate, cannot be undone
+  claim             Keep an anonymous upload past expiry
+
+ACCOUNT
+  login             Sign in to your krowk account
+  logout            Remove this machine's key
+  whoami            Show the key and its workspace
+  workspaces list   List the stored keys, and which workspace resolves here
+  workspaces use    Make a stored key the machine-wide default
+  auth login        The long form of `krowk login`
+  auth logout       The long form of `krowk logout`
+  auth token        Print the stored token
+  auth verify       The long form of `krowk whoami`
+
+OTHER
+  sessions          List and read agent sessions on this machine
+  sessions show     Read one session back, with its turns, messages and parts
+  sessions import   Read agent transcripts on this machine into the local store
+  sessions rebuild  Delete the local store and re-import every transcript
+  sessions budget   Check a session against a spend limit
+  sessions sync     Import what changed, and refresh prices
+  config show       The effective configuration, and which layer set each value
+  config set        Write one value into the repo config, or the global one
+  config unset      Remove one value from the repo config, or the global one
+  doctor            Check this machine's setup
+  pricing refresh   Refresh the models.dev price cache
+  upgrade           Upgrade krowk
+  help              This, a command's help, or a topic
+
+krowk help <command>  A command's own flags and explanation
+krowk help flags      The flags every command takes
+krowk help topics     Exit codes, environment, workspaces, links
+krowk help --json     The whole surface as data, for tooling
+exit: 0
+
+$ krowk help topics --format human
+stdout:
+TOPICS
+  flags        The flags every command takes
+  exit-codes   What each exit code means
+  environment  Environment variables, and where files live
+  workspaces   Which stored key a command uses
+  links        Naming an upload or a run by any link to it
+
+krowk help <topic>
+exit: 0
+
+$ krowk help exit-codes --format human
+stdout:
+krowk help exit-codes — what each exit code means
+
+EXIT CODES
+  0  it worked
+  1  the command was wrong, or krowk failed on its own — also anything
+     unclassified
+  2  not found — no such artifact or run in this workspace, or no such endpoint
+  3  refused for want of credentials — no key, a key the registry rejects, a
+     browser login somebody denied or that nothing on CI could approve, or no
+     claim token where that is the only authority (a claim token the registry
+     does not recognise is 2, since it answers that as no such record)
+  4  refused by the registry on the request or the state of things — retrying
+     unchanged answers the same; also a session over its `sessions budget`
+  5  rate limited — wait and retry
+  6  the bytes did not move — the registry or object storage could not be
+     reached
+  7  the registry failed on its side, or answered something unreadable — or a
+     login page krowk will not open, which is the same news
+  8  gone — the artifact expired or was taken down, or a browser login lapsed
+     before anybody approved it; no retry brings any of them back
+exit: 0
+
+$ krowk help exit-codes --json
+stdout:
+{
+  "topic": "exit-codes",
+  "text": "krowk help exit-codes — what each exit code means\n\nEXIT CODES\n  0  it worked\n  1  the command was wrong, or krowk failed on its own — also anything\n     unclassified\n  2  not found — no such artifact or run in this workspace, or no such endpoint\n  3  refused for want of credentials — no key, a key the registry rejects, a\n     browser login somebody denied or that nothing on CI could approve, or no\n     claim token where that is the only authority (a claim token the registry\n     does not recognise is 2, since it answers that as no such record)\n  4  refused by the registry on the request or the state of things — retrying\n     unchanged answers the same; also a session over its `sessions budget`\n  5  rate limited — wait and retry\n  6  the bytes did not move — the registry or object storage could not be\n     reached\n  7  the registry failed on its side, or answered something unreadable — or a\n     login page krowk will not open, which is the same news\n  8  gone — the artifact expired or was taken down, or a browser login lapsed\n     before anybody approved it; no retry brings any of them back"
+}
+exit: 0
+
+$ krowk help push --format human
+stdout:
+krowk push — upload files, get a link for each
+
+USAGE
+  krowk push <file...> [flags]
+
+Run metadata — the pull request, the links, the references, the session — is
+recorded on a run, and a run belongs to a workspace, so it needs an API key.
+Without one an upload still works: it lands anonymously, expires within a
+day, and comes back with a claim token that `krowk claim` spends to move it
+into a workspace — where a paid plan keeps it and a free one gives it another
+day.
+
+ARGUMENTS
+  <file...>                Path to upload
+
+FLAGS
+  --run <string>           Attach to an existing run instead of opening one. Its
+                           slug, or a link carrying it
+  --caption <string>       What this file shows, recorded on the artifact as
+                           `krowk.caption` and used wherever it is pasted.
+                           Repeat to caption several files, in the order they
+                           are given
+  --destination <string>   Print what this tool wants pasted into it: the krowk
+                           block for github, linear and the like, the bare link
+                           for the ones that unfurl it themselves, like slack. A
+                           tool krowk has not been told about gets the block
+  --private                Upload where only this workspace can read it. The
+                           image still embeds — the byte URL is the capability —
+                           but the card opens only for a signed-in member, reads
+                           as not found to everyone else, and unfurls nowhere.
+                           Needs an API key
+  --pull-request <string>  Pull request the work belongs to
+  --link <string>          Link this work is about — the issue, the spec, the
+                           discussion. An absolute http(s) URL, repeatable up to
+                           20, recorded on the run as `krowk.links`; label or
+                           classify each with --link-title and --link-rel
+  --link-title <string>    What to call the --link before it, instead of its
+                           URL. One line
+  --link-rel <string>      What the --link before it is: tracks, fixes, spec,
+                           discussion, source, supersedes — or a word of your
+                           own
+  --reference <string>     Related identifier that is not a URL, e.g. a ticket
+                           key — repeat for more than one. A URL is a --link
+  --session <string>       Override the detected agent session ID
+  --title <string>         Title for the work this push belongs to, recorded on
+                           the run. What a pasted link says is the artifact's
+                           --caption
+  --repo <string>          Override the detected repository
+  --commit <string>        Override the detected commit
+  --agent <string>         Override the detected agent
+  --metadata <string>      Extra key=value metadata, repeatable: on push it
+                           lands on each artifact, on `runs start` on the run.
+                           Your value wins over a detected one. Metadata is
+                           public
+
+Global flags: --workspace --dev --format --json --quiet --jq — `krowk help flags`
+exit: 0
+
+$ krowk help exit codes --format human
+stderr:
+✗ `exit codes` is not a krowk command or help topic.
+  (unknown_command)
+  try:  krowk help
+exit: 1
+
