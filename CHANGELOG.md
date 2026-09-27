@@ -25,13 +25,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   key", "Claude subscription") and the `--model <instance>/<id>` that picks
   it, or `krowk connect <vendor> --default`; with none, `none_ready` (exit
   3): "no connected instance serves Claude models — run `krowk connect
-  anthropic` … or `krowk connect claude` …", with what each one needs. No
+  anthropic --method api-key` … or `krowk connect anthropic --method
+  subscription` …", with what each one needs. No
   model at all is the default model of the one ready instance, refused the
   same way. Claude Code's aliases go to a Claude Code instance as they are
   and to the API as the newest model of their family the catalog lists.
   `<instance>/<model>` is never rerouted. Routing asks each vendor once, in
   parallel, from the minute-long cache, and never in a repository nobody
-  trusted.
+  trusted. The TUI routes once its first frame is up, so its prompt never
+  waits on a vendor's status check, and when the model it routes runs on
+  Claude Code or Codex in a repository not yet trusted it asks the trust
+  question itself, holding a prompt sent meanwhile until it is answered.
 - **The TUI's status line is one line in one order**:
   `<user>/<host> | <instance>/<model> | $cost | [N tasks] | [N subagents] | ? help`,
   under the prompt box. The task count is the todo list's open items and

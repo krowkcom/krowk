@@ -176,7 +176,7 @@ fn with_a_key_and_a_subscription_a_bare_id_is_refused_as_ambiguous_until_a_defau
         let err = fail(&out, "ambiguous_model");
         assert_eq!(out.status.code(), Some(1), "{err}");
         assert!(err.contains("\n  anthropic, Anthropic API key: --model anthropic/") && err.contains("\n  claude, Claude subscription: --model claude/"), "{err}");
-        assert!(err.contains("`krowk connect <vendor> --default`"), "{err}");
+        assert!(err.contains("`krowk connect <vendor> --default` (e.g. `krowk connect anthropic --method api-key --default`)"), "{err}");
     }
     let out = b.krowk(&["-p", "hi", "--model", "sonnet", "--trust"], &key);
     assert!(fail(&out, "ambiguous_model").contains("claude, Claude subscription: --model claude/sonnet"));
@@ -230,8 +230,8 @@ fn with_nothing_connected_the_refusal_names_each_instance_and_krowk_connect() {
     let out = b.krowk(&["-p", "hi"], &[]);
     let err = fail(&out, "none_ready");
     assert_eq!(out.status.code(), Some(3), "none_ready is the missing-login class: {err}");
-    assert!(err.starts_with("no connected instance can run a model here (no --model, and config names no defaultModel) — run `krowk connect anthropic` (Anthropic API key), `krowk connect claude` (Claude subscription)"), "{err}");
-    assert!(err.contains("`krowk connect codex` (ChatGPT subscription)") && err.contains("`krowk connect supergrok` (SuperGrok)"), "{err}");
+    assert!(err.starts_with("no connected instance can run a model here (no --model, and config names no defaultModel) — run `krowk connect anthropic --method api-key` (Anthropic API key), `krowk connect anthropic --method subscription` (Claude subscription)"), "{err}");
+    assert!(err.contains("`krowk connect openai --method subscription` (ChatGPT subscription)") && err.contains("`krowk connect xai --method subscription` (SuperGrok)"), "{err}");
     assert!(err.contains("\n  anthropic, Anthropic API key (key not set): set ANTHROPIC_API_KEY"), "{err}");
     assert!(err.contains("\n  claude, Claude subscription (not signed in): "), "{err}");
     for other in ["openai, OpenAI API key (key not set)", "codex, ChatGPT subscription (not installed)", "xai, xAI API key (key not set)", "supergrok, SuperGrok (not signed in)"] {
@@ -242,12 +242,17 @@ fn with_nothing_connected_the_refusal_names_each_instance_and_krowk_connect() {
     let out = b.krowk(&["-p", "hi", "--model", "sonnet"], &[]);
     let err = fail(&out, "none_ready");
     assert_eq!(out.status.code(), Some(3), "{err}");
-    assert!(err.starts_with("no connected instance serves Claude models (asked for \"sonnet\") — run `krowk connect anthropic` (Anthropic API key) or `krowk connect claude` (Claude subscription)"), "{err}");
+    assert!(err.starts_with("no connected instance serves Claude models (asked for \"sonnet\") — run `krowk connect anthropic --method api-key` (Anthropic API key) or `krowk connect anthropic --method subscription` (Claude subscription)"), "{err}");
     assert!(!err.contains("openai") && err.contains("\n  claude, Claude subscription (not signed in): sign in with"), "{err}");
     // Neither run spawned anything but the status checks, and those in
     // krowk's own directory.
     assert!(b.turns().is_empty());
     assert!(b.status_checks().iter().all(|d| d.ends_with("krowk/readiness")), "{}", b.fake_log());
+    // A router that is ready may serve it, which krowk cannot tell: the
+    // refusal says to name it.
+    let out = b.krowk(&["-p", "hi", "--model", "sonnet"], &[("OPENROUTER_API_KEY", "sk-or-test")]);
+    let err = fail(&out, "none_ready");
+    assert!(err.contains(", or name one that may serve it: `--model openrouter/<id>`."), "{err}");
 }
 
 #[test]

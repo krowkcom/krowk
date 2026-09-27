@@ -67,30 +67,27 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
     });
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
     let runs_in = session_cwd.clone().unwrap_or_else(|| cwd.clone());
-    // The model is routed now, so the trust question below names the
-    // vendor it runs. With nothing ready and nothing asked, the TUI still
-    // opens — to say so on the first prompt, and let the person connect
-    // one — but a bare --model that nothing can run is refused here.
-    //
-    // With nothing asked and an instance ready by its key, routing waits
-    // for the first prompt, in the host: to tell one ready instance from
-    // several it asks every installed vendor (a Node start for `claude`),
-    // which the first frame should not wait on, and its answer cannot be a
-    // backend — the key's instance, or a refusal to guess — so no trust
-    // question hangs on it. The key's instance is shown until then.
-    let known = krowk_harness::trust::Store::new(krowk_api::creds::config_dir().join(krowk_harness::trust::FILE), home.clone()).trusts(&krowk_harness::trust::root(&runs_in));
-    let credentials = super::providers::credentials_path();
-    let nothing_asked = asked.is_none() && session_model.is_none() && registry.default_model.is_none();
-    let likely = nothing_asked
-        .then(|| registry.candidates(None).into_iter().find(|i| i.backend.is_none() && krowk_harness::readiness::local(i, &credentials).is_some_and(|r| r.is_ready())))
-        .flatten()
-        .and_then(|i| instances::default_model_of(i.kind).map(|m| krowk_harness::protocol::ModelRef { instance: i.name.clone(), model: m.into() }));
-    let (model, route_notice) = match likely {
-        Some(_) => (None, None),
-        None => match prompt::route(ctx, &registry, asked.as_ref(), session_model.as_ref(), &runs_in, known) {
-            Ok(m) => (m, None),
-            Err(e) if asked.is_none() => (None, Some(e.fix())),
-            Err(e) => return Err(e),
+    // A model that needs no vendor asked is known now: `--model` naming
+    // its instance, the session's own, a `defaultModel` naming its
+    // instance. Any other — a bare `--model`, or none at all — the TUI
+    // routes once its first frame is up (R-PERF-1: nothing before the
+    // prompt waits on a vendor's status check), and asks the trust question
+    // itself when the route lands on a backend.
+    let exact_default = registry.default_model.as_deref().and_then(|d| match registry.read_model(d) {
+        Ok(instances::Asked::Exact(m)) => Some(m),
+        _ => None,
+    });
+    let chosen = match &asked {
+        Some(instances::Asked::Exact(m)) => Some(m.clone()),
+        _ => None,
+    };
+    let (model, route) = match asked {
+        Some(instances::Asked::Exact(m)) => (Some(m), None),
+        Some(bare) => (None, Some(krowk_tui::Route { asked: Some(bare), current: session_model.clone() })),
+        None if session_model.is_some() => (None, None),
+        None => match exact_default {
+            Some(m) => (Some(m), None),
+            None => (None, Some(krowk_tui::Route { asked: None, current: None })),
         },
     };
     let effective = model.clone().or(session_model);
@@ -102,7 +99,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
     // now, not after the answer was kept.
     krowk_harness::permissions::settings::load(&probe, &runs_in).map_err(prompt::bad_settings)?;
     let widens = krowk_harness::permissions::settings::widens(&probe, &runs_in);
-    let (trust, trusted) = prompt::tui_trust_gate(effective.as_ref(), &registry, &runs_in, home, widens);
+    let (trust, trusted, trust_ask) = prompt::tui_trust_gate(effective.as_ref(), &registry, &runs_in, home, widens);
     let permissions = prompt::permissions_config(ctx, &config, trusted, true);
     let (permission_mode, mode_notices) = prompt::resolve_mode(flag_mode, &permissions, &runs_in)?;
     let host = HostConfig {
@@ -122,14 +119,16 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         host,
         resume,
         model,
-        likely,
+        chosen,
+        route,
+        trust: Some(trust_ask),
         permission_mode,
         toolset,
         effort,
         budget,
         settings,
         history_file,
-        notices: notices.into_iter().chain(mode_notices).chain(route_notice).collect(),
+        notices: notices.into_iter().chain(mode_notices).collect(),
         version: super::VERSION.into(),
     });
     // As after `krowk -p`: the log is the session, krowk.db its listing.

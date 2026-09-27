@@ -228,18 +228,11 @@ fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() 
     let url = silent_provider();
     let b = Sandbox::new("ctrlc2");
     let mut t = pty::Pty::spawn(b.command(&url, &[]), 80, 24);
-    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some());
+    // With no model asked, the TUI routes one once it is up: the key's
+    // instance, named in the status line once chosen.
+    assert!(t.wait_for("anthropic/claude-opus-5-5 |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"wait forever\r");
     assert!(t.wait_for("esc to interrupt", Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    // The session exists once the prompt is routed and settled — with no
-    // model asked, after the vendors on PATH were asked.
-    let sessions = b.root.join("home/.local/share/krowk/sessions");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while std::fs::read_dir(&sessions).map_or(0, |d| d.count()) == 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    // And the TUI has read the line that names it.
-    std::thread::sleep(Duration::from_millis(300));
     t.write(b"\x03\x03");
     let st = t.wait(Duration::from_secs(10)).expect("krowk exits on the second Ctrl-C");
     assert_eq!(st.code(), Some(130), "{st}");
@@ -778,4 +771,52 @@ fn slash_offers_commands_and_skills_and_a_skill_reaches_the_model() {
     let seen = m.seen.lock().unwrap();
     let first = seen.iter().find(|s| s.body["messages"].is_array()).expect("the model was asked").body["messages"].to_string();
     assert!(first.contains("/greet the team") && first.contains("MARMALADE"), "the prompt and the skill's body: {first}");
+}
+
+/// R-PERF-1 with no key: the only instance is a Claude subscription whose
+/// status check takes three seconds. The first frame does not wait for it;
+/// the TUI routes once it is up, then asks the trust question itself —
+/// the model was not known before it took the terminal — and a prompt sent
+/// meanwhile goes once it is answered.
+#[test]
+fn with_no_key_the_first_frame_never_waits_on_a_vendor_and_the_routed_backend_asks_trust_in_the_tui() {
+    let b = Sandbox::new("nokey");
+    std::fs::create_dir_all(b.root.join("home/.claude")).unwrap();
+    std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
+    let mut c = b.command("http://127.0.0.1:9", &[]);
+    c.env_remove("ANTHROPIC_API_KEY").env("FAKE_CLAUDE_STATUS_DELAY", "3").env("FAKE_CLAUDE_LOG", b.root.join("fake.log"));
+    let started = Instant::now();
+    let mut t = pty::Pty::spawn(c, 100, 30);
+    assert!(t.wait_for("? help", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    let first = started.elapsed();
+    assert!(first < Duration::from_millis(2500), "the first frame waited {first:?} on a vendor's status check");
+    assert!(!t.text().contains("claude/claude-opus-5-5"), "not routed yet: {:?}", t.text());
+    t.write(b"hello there\r");
+    assert!(t.wait_for("[y/N]", Duration::from_secs(15)).is_some(), "no trust question: {:?}", t.text());
+    assert!(t.text().contains("claude/claude-opus-5-5 runs Claude Code"), "{:?}", t.text());
+    let fake = || std::fs::read_to_string(b.root.join("fake.log")).unwrap_or_default();
+    assert!(!fake().contains("argv -p"), "nothing ran before the answer: {}", fake());
+    t.write(b"y");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !fake().contains("argv -p") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(fake().contains("--model claude-opus-5-5"), "the held prompt ran on the routed backend once trusted: {}", fake());
+}
+
+/// With an API key and a signed-in Claude subscription, nothing the TUI
+/// routed for itself counts as the session's instance: no model at start
+/// and `/model sonnet` are both refused as ambiguous, never sent to the
+/// key.
+#[test]
+fn with_a_key_and_a_subscription_model_sonnet_is_refused_as_ambiguous_in_the_tui() {
+    let b = Sandbox::new("ambiguous");
+    std::fs::create_dir_all(b.root.join("home/.claude")).unwrap();
+    std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
+    let mut t = pty::Pty::spawn(b.command("http://127.0.0.1:9", &[]), 120, 30);
+    assert!(t.wait_for("(ambiguous_model)", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    t.write(b"/model sonnet\r");
+    assert!(t.wait_for("could run \"sonnet\"", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    let text = t.text();
+    assert!(text.contains("claude, Claude subscription: --model claude/sonnet") && !text.contains("now on anthropic"), "{text:?}");
 }

@@ -184,9 +184,11 @@ impl Host {
     /// Where a bare model id — or, with none, the default — runs here
     /// (`readiness::route`), for a client choosing one before it asks for a
     /// turn or a switch (the TUI's `/model sonnet`). `current` is the
-    /// session's model, whose instance a bare id stays on when it can.
-    pub async fn route_model(&self, asked: Option<&Asked>, current: Option<&ModelRef>) -> Result<ModelRef, EngineError> {
-        self.shared.route_model(asked, current).await
+    /// session's model, whose instance a bare id stays on when it can;
+    /// `cwd` the session's working directory, where a vendor is asked once
+    /// its repository is trusted.
+    pub async fn route_model(&self, asked: Option<&Asked>, current: Option<&ModelRef>, cwd: &std::path::Path) -> Result<ModelRef, EngineError> {
+        self.shared.route_model(asked, current, cwd).await
     }
 
     /// Executes one command. A `prompt` streams its events to `out` and
@@ -442,14 +444,20 @@ impl Shared {
     }
 
     /// `Host::route_model`, off the runtime's thread: a vendor check blocks
-    /// on a process. Its vendors are asked in krowk's own directory, since
-    /// routing asks no trust question: the turn's own check then asks trust,
-    /// and the vendor again in the repository, before anything runs there.
-    async fn route_model(self: &Arc<Self>, asked: Option<&Asked>, current: Option<&ModelRef>) -> Result<ModelRef, EngineError> {
+    /// on a process. Routing asks no trust question: its vendors are asked
+    /// in `cwd` when its repository is trusted already (so the turn's own
+    /// check there is the cache's), else in krowk's own directory — and the
+    /// turn's own check then asks trust, and the vendor in the repository,
+    /// before anything runs there.
+    async fn route_model(self: &Arc<Self>, asked: Option<&Asked>, current: Option<&ModelRef>, cwd: &std::path::Path) -> Result<ModelRef, EngineError> {
         if let Some(Asked::Exact(m)) = asked {
             return Ok(m.clone());
         }
-        let probe = self.neutral_probe().map_err(|e| EngineError::new("data_dir_unwritable", e))?;
+        let trusted = self.cfg.permissions.trusted.as_ref().is_some_and(|t| t(&trust::root(cwd)));
+        let probe = match cwd.canonicalize() {
+            Ok(at) if trusted => readiness::Probe::at(at),
+            _ => self.neutral_probe().map_err(|e| EngineError::new("data_dir_unwritable", e))?,
+        };
         let (me, asked, current) = (self.clone(), asked.cloned(), current.cloned());
         tokio::task::spawn_blocking(move || {
             let cfg = &me.cfg;
@@ -585,11 +593,12 @@ impl Shared {
             None => None,
         };
         let past = opened.as_ref().map(|(log, events)| replay(&log::branch(events, log.head().unwrap_or_default()))).unwrap_or_default();
+        let cwd = past.cwd.clone().unwrap_or_else(|| self.cfg.cwd.clone());
         let model = match model {
             Some(m) => m,
             None => match past.model.clone() {
                 Some(m) => m,
-                None => self.route_model(None, None).await?,
+                None => self.route_model(None, None, &cwd).await?,
             },
         };
         let staying = |e: EngineError| match past.model.as_ref().filter(|p| **p != model) {
@@ -601,7 +610,6 @@ impl Shared {
         let family = info.as_ref().and_then(|i| i.family.clone());
         let (preset, _) = toolset::choose(toolset, self.cfg.registry.toolset.as_deref(), family.as_deref(), &model.model).map_err(|e| EngineError::new("bad_toolset", e))?;
         let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
-        let cwd = past.cwd.clone().unwrap_or_else(|| self.cfg.cwd.clone());
         let native = match &instance.backend {
             None => Some(engine_for(&instance, wire, &self.cfg.credentials, &self.cfg.krowk_version).map_err(staying)?),
             // A backend runs the repository's own hooks and MCP servers, so

@@ -364,6 +364,9 @@ pub struct App {
     /// The last turn hit its instance's limit, and the host suggests where
     /// to continue (R-INST-7): asked over the prompt, `y` or not.
     pub offer: Option<SwitchOffer>,
+    /// The model was routed to a backend in a repository nobody trusted
+    /// yet: the trust question, asked over the prompt, `y` or not.
+    pub trust_question: Option<String>,
     /// A `model.switched` the stream brought — a rollover, a switch that
     /// went back — for the client to follow with its next prompt.
     pub switched: Option<ModelRef>,
@@ -424,6 +427,7 @@ impl App {
             instances: BTreeMap::new(),
             turn_instance: None,
             offer: None,
+            trust_question: None,
             switched: None,
             used: Vec::new(),
             picks: Vec::new(),
@@ -512,6 +516,20 @@ impl App {
             };
             self.pending.push(Line::from(vec![Span::styled(format!("{:<label$}", format!("{l}:")), dim()), Span::raw(v)]));
         }
+        self.pending.push(Line::default());
+        self.last_blank = true;
+        self.dirty = true;
+    }
+
+    /// The header's `Model:` row, for a model routed after the header was
+    /// printed: aligned as the header's own rows are, under them.
+    pub fn header_model(&mut self, m: &ModelRef, effort: Option<&str>) {
+        let mut model = format!("{}/{}", m.instance, m.model);
+        if let Some(e) = effort {
+            model.push_str(&format!(" ({e})"));
+        }
+        let label = "Directory".width() + 2;
+        self.pending.push(Line::from(vec![Span::styled(format!("{:<label$}", "Model:"), dim()), Span::raw(clean(&model))]));
         self.pending.push(Line::default());
         self.last_blank = true;
         self.dirty = true;
@@ -1242,6 +1260,11 @@ impl App {
         }
         if let Some(o) = &self.offer {
             for row in wrap(&offer_question(o), width) {
+                rows.push(Line::from(Span::styled(row, yellow().add_modifier(Modifier::BOLD))));
+            }
+        }
+        if let Some(q) = &self.trust_question {
+            for row in wrap(q, width) {
                 rows.push(Line::from(Span::styled(row, yellow().add_modifier(Modifier::BOLD))));
             }
         }

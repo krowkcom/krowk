@@ -319,6 +319,29 @@ pub fn kind_label(kind: &str) -> &'static str {
     }
 }
 
+/// The `krowk connect` command that connects an instance named `name` of
+/// the kind tagged `kind`: the vendor, the method (`api-key` or
+/// `subscription`), and `--name <suffix>` for any but the vendor's own
+/// implicit instance (`claude:work` is `--name work`). None for a kind
+/// `krowk connect` does not set up (a router, a compatible server).
+pub fn connect_command(name: &str, kind: &str) -> Option<String> {
+    let (vendor, method, implicit) = match kind {
+        "anthropic-api" => ("anthropic", "api-key", "anthropic"),
+        "claude-code" => ("anthropic", "subscription", "claude"),
+        "openai-api" => ("openai", "api-key", "openai"),
+        "codex-app-server" => ("openai", "subscription", "codex"),
+        "xai-api" => ("xai", "api-key", "xai"),
+        "xai-oauth" => ("xai", "subscription", "supergrok"),
+        _ => return None,
+    };
+    let named = match name.split_once(':') {
+        _ if name == implicit => String::new(),
+        Some((_, suffix)) => format!(" --name {suffix}"),
+        None => format!(" --name {name}"),
+    };
+    Some(format!("krowk connect {vendor} --method {method}{named}"))
+}
+
 impl InstanceKind {
     /// `kind_label` of this kind.
     pub fn label(&self) -> &'static str {
@@ -709,7 +732,8 @@ fn line_of_kind(kind: &str) -> Option<Line> {
 }
 
 /// What a bare id — with none, any model — is, in the words of a refusal,
-/// and the providers `krowk connect <vendor>` connects to run it.
+/// and the implicit instances whose `connect_command` connects one to run
+/// it.
 pub fn serving(model: Option<&str>) -> (&'static str, Vec<&'static str>) {
     let words = |l: Line| match l {
         Line::Claude => "Claude models",
@@ -1176,6 +1200,21 @@ mod tests {
         let labels: Vec<&str> = ["anthropic", "claude", "openai", "codex", "xai", "supergrok", "openrouter", "router"].iter().map(|n| kind_label(reg.get(n).unwrap().kind)).collect();
         assert_eq!(labels, ["Anthropic API key", "Claude subscription", "OpenAI API key", "ChatGPT subscription", "xAI API key", "SuperGrok", "OpenRouter", "OpenAI-compatible"]);
         assert_eq!(InstanceKind::XaiOauth { base_url: None, issuer: None, client_id: None, scope: None, effort: None }.label(), "SuperGrok");
+        // How each is connected: the vendor, the method, and a named one's suffix.
+        let connect: Vec<Option<String>> = ["anthropic", "claude", "claude:work", "codex:team", "openai", "grok:team", "xai", "router"].iter().map(|n| connect_command(n, reg.get(n).unwrap().kind)).collect();
+        assert_eq!(
+            connect,
+            [
+                Some("krowk connect anthropic --method api-key".to_string()),
+                Some("krowk connect anthropic --method subscription".into()),
+                Some("krowk connect anthropic --method subscription --name work".into()),
+                Some("krowk connect openai --method subscription --name team".into()),
+                Some("krowk connect openai --method api-key".into()),
+                Some("krowk connect xai --method subscription --name team".into()),
+                Some("krowk connect xai --method api-key".into()),
+                None,
+            ]
+        );
 
         // Claude Code takes an alias as it is; the API takes the newest of
         // its family the catalog lists.

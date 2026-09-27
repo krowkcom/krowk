@@ -365,12 +365,15 @@ pub(super) fn ask_trust(store: &trust::Store, root: &std::path::Path, vendor: &s
 /// on (the flag, a resumed session's last, the default), in the directory
 /// it will run in — and the gate then answers from that answer and the
 /// trusted list. A no, or a home directory, is refused when the first
-/// prompt is sent, and the TUI shows why.
+/// prompt is sent, and the TUI shows why. A model known only once the TUI
+/// has routed it is asked about there instead (the returned `TrustAsk`),
+/// and a yes there counts in the gate and the rules the same way.
 ///
 /// A native session is asked the same question when the repository's own
 /// settings would widen what krowk may do there (allow rules, directories,
 /// hooks): the returned `Trusted` is what the permission rules consult.
-pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, registry: &Registry, cwd: &std::path::Path, home: Option<std::path::PathBuf>, widens: bool) -> (trust::Gate, permissions::settings::Trusted) {
+pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, registry: &Registry, cwd: &std::path::Path, home: Option<std::path::PathBuf>, widens: bool) -> (trust::Gate, permissions::settings::Trusted, krowk_tui::TrustAsk) {
+    use std::sync::atomic::{AtomicBool, Ordering};
     let store = trust::Store::new(krowk_api::creds::config_dir().join(trust::FILE), home);
     let backend = model.and_then(|m| registry.get(&m.instance).ok()).is_some_and(|i| i.backend.is_some());
     let asked = trust::root(cwd);
@@ -378,11 +381,23 @@ pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, 
     // The card is drawn on stderr: with that not a terminal it would be a
     // question nobody sees, answered by the next key.
     let seen = std::io::IsTerminal::is_terminal(&std::io::stderr());
-    let accepted = (backend || widens) && seen && !store.trusts(&asked) && store.refuses(&asked).is_none() && ask_trust(&store, &asked, vendor);
-    let (s2, a2) = (store.clone(), asked.clone());
-    let trusted: permissions::settings::Trusted = Arc::new(move |root: &std::path::Path| s2.trusts(root) || (accepted && root == a2));
+    // Yes now, or later in the TUI, when a routed model lands on a backend.
+    let accepted = Arc::new(AtomicBool::new((backend || widens) && seen && !store.trusts(&asked) && store.refuses(&asked).is_none() && ask_trust(&store, &asked, vendor)));
+    let (s2, a2, acc2) = (store.clone(), asked.clone(), accepted.clone());
+    let trusted: permissions::settings::Trusted = Arc::new(move |root: &std::path::Path| s2.trusts(root) || (acc2.load(Ordering::SeqCst) && root == a2));
+    let (s3, a3, acc3) = (store.clone(), asked.clone(), accepted.clone());
+    let (s4, a4, acc4) = (store.clone(), asked.clone(), accepted.clone());
+    let ask = krowk_tui::TrustAsk {
+        root: asked.clone(),
+        trusted: Arc::new(move || s3.trusts(&a3) || acc3.load(Ordering::SeqCst)),
+        refuses: store.refuses(&asked),
+        accept: Arc::new(move || {
+            acc4.store(true, Ordering::SeqCst);
+            s4.trust(&a4).err().map(|e| format!("trusted for this run, but not remembered: {e}"))
+        }),
+    };
     let gate: trust::Gate = Arc::new(move |root: &std::path::Path| {
-        if store.trusts(root) || (accepted && root == asked) {
+        if store.trusts(root) || (accepted.load(Ordering::SeqCst) && root == asked) {
             return Ok(());
         }
         if let Some(why) = store.refuses(root) {
@@ -390,7 +405,7 @@ pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, 
         }
         Err(trust::untrusted(root, "Nothing was run — start krowk again there and answer its trust prompt."))
     });
-    (gate, trusted)
+    (gate, trusted, ask)
 }
 
 /// Prices a model call from the models.dev cache or the embedded snapshot,
