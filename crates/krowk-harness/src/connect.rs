@@ -342,6 +342,63 @@ pub struct Connected {
     pub stored_key: Option<String>,
 }
 
+/// A connection in words, one way for `krowk connect` and the TUI's
+/// `/connect`: what it is and where its key or login comes from (`facts`,
+/// one dimmed line), and what is still the person's to do (`notes`).
+pub struct Summary {
+    pub facts: Vec<String>,
+    pub notes: Vec<String>,
+    /// The vendor said it was signed in already, so nothing was renewed:
+    /// another account is added by name.
+    pub signed_in_already: bool,
+}
+
+impl Connected {
+    /// `added` for `krowk providers add`, which only writes a definition.
+    /// Never the key: where it is kept, or the variable it is read from.
+    pub fn summary(&self, added: bool) -> Summary {
+        let r = &self.resolved;
+        let key_env = (r.auth == Auth::ApiKey || !r.api_key_env.is_empty()).then(|| r.api_key_env.clone());
+        let unset = key_env.is_some() && r.api_key.is_empty();
+        let codex = self.definition.tag() == "codex-app-server";
+        let mut facts: Vec<String> = vec![instances::kind_label(self.definition.tag()).to_string()];
+        let mut notes: Vec<String> = Vec::new();
+        match &key_env {
+            // A stored key, and where: never the key.
+            _ if r.stored.source().is_some() => {
+                let already = if self.stored_key.is_some() { "" } else { "was already " };
+                facts.push(format!("key {already}{} in krowk's credentials file (0600), used before any variable", r.stored.source().unwrap_or_default()));
+                if let (crate::keys::Stored::Env(v), true) = (&r.stored, r.api_key.is_empty()) {
+                    notes.push(format!("${v} is not set here — export it before running a prompt"));
+                }
+            }
+            Some(k) if unset => notes.push(format!("${k} is not set here — export it before running a prompt")),
+            Some(k) => facts.push(format!("key from ${k}")),
+            None if self.oauth => facts.push("signed in".into()),
+            None => {}
+        }
+        let mut signed_in_already = false;
+        if let Some(v) = &self.vendor {
+            // The vendor's own account says it better than the kind does —
+            // when there is one: a keyed router runs on its key, not a login.
+            if v.logged_in {
+                facts[0] = v.describe.chars().filter(|c| !c.is_control()).collect();
+            }
+            if codex && !v.shared.is_empty() {
+                facts.push(format!("shares your Codex {}", v.shared.join(", ")));
+            }
+            if !added && v.logged_in && !v.ran && r.api_key_env.is_empty() {
+                notes.push("it was signed in already".into());
+                signed_in_already = true;
+            }
+        }
+        if self.default_model.is_some() {
+            facts.push("your default model now".into());
+        }
+        Summary { facts, notes, signed_in_already }
+    }
+}
+
 /// What `disconnect` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignedOut {

@@ -284,7 +284,8 @@ impl Subagents {
         let host = &self.0.host;
         let cfg = &host.cfg;
         let p = &self.0.parent;
-        let choose = |asked| choose_model(asked, cfg.registry.subagents.model.as_deref(), &p.model, &p.provider, &cfg.registry, cfg.agents.models.as_ref());
+        let registry = host.registry();
+        let choose = |asked| choose_model(asked, registry.subagents.model.as_deref(), &p.model, &p.provider, &registry, cfg.agents.models.as_ref());
         let model = match choose(def.and_then(|d| d.model.as_deref())) {
             Ok(m) => m,
             Err(e) => return (format!("the subagent could not start: {e}"), true),

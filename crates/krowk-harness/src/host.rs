@@ -56,6 +56,8 @@ pub struct HostConfig {
     /// The working directory a new session starts in. A resumed session
     /// keeps the one it started in, so its system prompt stays byte-identical.
     pub cwd: PathBuf,
+    /// The instances: moved into the host by `Host::new` and read with
+    /// `Host::registry` from then on.
     pub registry: Registry,
     pub krowk_version: String,
     pub pricer: Pricer,
@@ -84,6 +86,10 @@ pub struct Host {
 
 pub(crate) struct Shared {
     pub(crate) cfg: HostConfig,
+    /// The instances, taken from `cfg.registry` (left empty) and replaced by
+    /// `set_registry`: a connection made while the host runs (the TUI's
+    /// `/connect`) is a turn's to use at once.
+    registry: std::sync::RwLock<Arc<Registry>>,
     /// Each session with a turn running — a subagent's too: its cancel
     /// switch and the queue its steering waits in.
     running: Mutex<HashMap<String, Running>>,
@@ -138,9 +144,11 @@ fn log_failure(e: LogError) -> EngineError {
 }
 
 impl Host {
-    pub fn new(cfg: HostConfig) -> Host {
+    pub fn new(mut cfg: HostConfig) -> Host {
+        let registry = std::mem::take(&mut cfg.registry);
         Host {
             shared: Arc::new(Shared {
+                registry: std::sync::RwLock::new(Arc::new(registry)),
                 cfg,
                 running: Mutex::new(HashMap::new()),
                 backends: Mutex::new(HashMap::new()),
@@ -177,8 +185,17 @@ impl Host {
         }
     }
 
-    pub fn registry(&self) -> &Registry {
-        &self.shared.cfg.registry
+    /// The instances as they are now: a turn already running keeps the
+    /// ones it started with.
+    pub fn registry(&self) -> Arc<Registry> {
+        self.shared.registry()
+    }
+
+    /// Replaces the instances — config.json and the credentials file read
+    /// again after a connection — for every turn from now on. A backend
+    /// already running for a session keeps its process.
+    pub fn set_registry(&self, registry: Registry) {
+        *self.shared.registry.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(registry);
     }
 
     /// Where a bare model id — or, with none, the default — runs here
@@ -299,6 +316,10 @@ struct ParentLink {
 }
 
 impl Shared {
+    pub(crate) fn registry(&self) -> Arc<Registry> {
+        self.registry.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// Lets go of every backend process idle for longer than the host keeps
     /// one, except a session's with a turn running. Swept when a prompt
     /// arrives, so an idle host costs nothing to keep tidy.
@@ -405,7 +426,8 @@ impl Shared {
             Some(s) => EngineError { message: format!("{} — the session stays on {s}", e.message), ..e },
             None => e,
         };
-        let instance = self.cfg.registry.get(&model.instance).map_err(|e| staying(EngineError::new("no_instance", e)))?;
+        let registry = self.registry();
+        let instance = registry.get(&model.instance).map_err(|e| staying(EngineError::new("no_instance", e)))?;
         self.ready(instance, cwd, false).await.map_err(staying)?;
         if instance.backend.is_none() {
             let info = (self.cfg.catalog)(&instance.provider, &model.model);
@@ -462,7 +484,7 @@ impl Shared {
         let (me, asked, current) = (self.clone(), asked.cloned(), current.cloned());
         tokio::task::spawn_blocking(move || {
             let cfg = &me.cfg;
-            readiness::route(&cfg.registry, asked.as_ref(), current.as_ref(), &cfg.credentials, &probe, &*cfg.agents.models)
+            readiness::route(&me.registry(), asked.as_ref(), current.as_ref(), &cfg.credentials, &probe, &*cfg.agents.models)
         })
         .await
         .unwrap_or_else(|_| Err(EngineError::new("none_ready", "choosing an instance for the model failed — name one as <instance>/<model>")))
@@ -543,8 +565,9 @@ impl Shared {
     /// (Bedrock, an `apiKeyHelper`) is not offered either, and is reached
     /// by naming it.
     async fn next_instance(&self, from: &ModelRef, tried: &[String], cwd: &std::path::Path, full: bool) -> Option<ModelRef> {
-        for m in self.cfg.registry.rollover_candidates(from, tried) {
-            let Ok(i) = self.cfg.registry.get(&m.instance) else { continue };
+        let registry = self.registry();
+        for m in registry.rollover_candidates(from, tried) {
+            let Ok(i) = registry.get(&m.instance) else { continue };
             let ok = match &i.backend {
                 Some(_) if !full => match self.neutral_probe() {
                     Ok(probe) => readiness::check_async(i, &self.cfg.credentials, &probe).await.refusal(i).is_none(),
@@ -606,10 +629,10 @@ impl Shared {
             Some(p) => EngineError { message: format!("{} — the session stays on {p}", e.message), ..e },
             None => e,
         };
-        let instance = self.cfg.registry.get(&model.instance).map_err(|e| staying(EngineError::new("no_instance", e)))?.clone();
+        let instance = self.registry().get(&model.instance).map_err(|e| staying(EngineError::new("no_instance", e)))?.clone();
         let info = (self.cfg.catalog)(&instance.provider, &model.model);
         let family = info.as_ref().and_then(|i| i.family.clone());
-        let (preset, _) = toolset::choose(toolset, self.cfg.registry.toolset.as_deref(), family.as_deref(), &model.model).map_err(|e| EngineError::new("bad_toolset", e))?;
+        let (preset, _) = toolset::choose(toolset, self.registry().toolset.as_deref(), family.as_deref(), &model.model).map_err(|e| EngineError::new("bad_toolset", e))?;
         let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
         let native = match &instance.backend {
             None => {
@@ -703,7 +726,7 @@ impl Shared {
     /// here, for the tool call.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn subagent(self: &Arc<Self>, spawn: &Spawn, call_id: &str, description: &str, prompt: &str, model: ModelRef, run: AgentRun, events: &Events) -> Result<RunResult, EngineError> {
-        let instance = self.cfg.registry.get(&model.instance).map_err(|e| EngineError::new("no_instance", e))?.clone();
+        let instance = self.registry().get(&model.instance).map_err(|e| EngineError::new("no_instance", e))?.clone();
         // A vendor runs its own agents, with its own tools: it could not be
         // held to the allowlist, so a subagent is always krowk's own loop.
         if instance.backend.is_some() {
@@ -714,7 +737,7 @@ impl Shared {
         }
         let info = (self.cfg.catalog)(&instance.provider, &model.model);
         let family = info.as_ref().and_then(|i| i.family.clone());
-        let (preset, _) = toolset::choose(None, self.cfg.registry.toolset.as_deref(), family.as_deref(), &model.model).map_err(|e| EngineError::new("bad_toolset", e))?;
+        let (preset, _) = toolset::choose(None, self.registry().toolset.as_deref(), family.as_deref(), &model.model).map_err(|e| EngineError::new("bad_toolset", e))?;
         let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
         key_off_thread(&instance).await?;
         let engine = engine_for(&instance, wire, &self.cfg.credentials, &self.cfg.krowk_version)?;
@@ -843,7 +866,7 @@ impl Shared {
                     cancel: cancel.clone(),
                 },
                 out: out.clone(),
-                gate: Arc::new(Semaphore::new(self.cfg.registry.subagents.max_parallel())),
+                gate: Arc::new(Semaphore::new(self.registry().subagents.max_parallel())),
                 defs,
                 spent: std::sync::Mutex::new((0.0, false)),
             };
@@ -985,7 +1008,7 @@ impl Shared {
             let until = e.resets_at_ms.map(|ms| format!(" until {}", clock(ms))).unwrap_or_default();
             let mut tried = tried.to_vec();
             tried.push(model.instance.clone());
-            let auto = self.cfg.registry.rollover == Rollover::Auto;
+            let auto = self.registry().rollover == Rollover::Auto;
             return match self.next_instance(model, &tried, cwd, auto).await {
                 Some(to) if auto => (None, None, Some(Rolling { from: model.clone(), to, until, cwd: cwd.clone() })),
                 Some(to) => {
@@ -1024,7 +1047,7 @@ impl Shared {
         let mut not_carried = None;
         let mut carried: Option<(&Vendor, PathBuf)> = None;
         if let Some(best) = best.filter(|v| v.instance != instance.name && own.is_none_or(|o| v.seen > o.seen)) {
-            let from_home = self.cfg.registry.get(&best.instance).ok().and_then(|i| i.backend.as_ref()).and_then(|fb| fb.home.clone());
+            let from_home = self.registry().get(&best.instance).ok().and_then(|i| i.backend.as_ref()).and_then(|fb| fb.home.clone());
             let r = match (&best.transcript, from_home, &b.home) {
                 (Some(t), Some(from), Some(to)) => handoff::carry(std::path::Path::new(t), &from, to, if vendor == crate::codex::BACKEND { handoff::Vendor::Codex } else { handoff::Vendor::ClaudeCode }, &best.session_id),
                 (None, _, _) => Err(format!("{} did not say where it keeps the transcript", best.instance)),

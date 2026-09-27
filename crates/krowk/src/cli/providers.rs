@@ -190,7 +190,6 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
     let (instance, kind, r) = (&done.instance, &done.definition, &done.resolved);
     let def = serde_json::to_value(kind).expect("a definition serializes");
     let key_env = (r.auth == Auth::ApiKey || !r.api_key_env.is_empty()).then(|| r.api_key_env.clone());
-    let unset = key_env.is_some() && r.api_key.is_empty();
     let codex = kind.tag() == "codex-app-server";
     if ctx.format != Format::Human {
         let mut report = json!({ "instance": instance, "kind": kind.tag(), "config": path, "definition": def });
@@ -227,41 +226,11 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
     let colour = ctx.colour;
     let dim = |s: &str| crate::output::paint(colour, crate::output::DIM, s);
     let mut lines = vec![format!("{} {} {instance}", crate::output::paint(colour, crate::output::GREEN, "✓"), capitalised(verb))];
-    let mut facts: Vec<String> = vec![krowk_harness::instances::kind_label(kind.tag()).to_string()];
-    let mut notes: Vec<String> = Vec::new();
-    match &key_env {
-        // A stored key, and where: never the key.
-        _ if r.stored.source().is_some() => {
-            let already = if done.stored_key.is_some() { "" } else { "was already " };
-            facts.push(format!("key {already}{} in krowk's credentials file (0600), used before any variable", r.stored.source().unwrap_or_default()));
-            if let (krowk_harness::keys::Stored::Env(v), true) = (&r.stored, r.api_key.is_empty()) {
-                notes.push(format!("${v} is not set here — export it before running a prompt"));
-            }
-        }
-        Some(k) if unset => notes.push(format!("${k} is not set here — export it before running a prompt")),
-        Some(k) => facts.push(format!("key from ${k}")),
-        None if done.oauth => facts.push("signed in".into()),
-        None => {}
-    }
-    let mut another = None;
-    if let Some(v) = &done.vendor {
-        // The vendor's own account says it better than the kind does — when
-        // there is one: a keyed router runs on its key, not a login.
-        if v.logged_in {
-            facts[0] = plain(&v.describe);
-        }
-        if codex && !v.shared.is_empty() {
-            facts.push(format!("shares your Codex {}", v.shared.join(", ")));
-        }
-        if verb != "added" && v.logged_in && !v.ran && r.api_key_env.is_empty() {
-            let (vendor, method) = krowk_harness::instances::kind_connect(kind.tag()).unwrap_or_default();
-            notes.push("it was signed in already".into());
-            another = Some(format!("krowk connect {vendor} --method {method} --name <new>"));
-        }
-    }
-    if done.default_model.is_some() {
-        facts.push("your default model now".into());
-    }
+    let krowk_harness::connect::Summary { facts, notes, signed_in_already } = done.summary(verb == "added");
+    let another = signed_in_already.then(|| {
+        let (vendor, method) = krowk_harness::instances::kind_connect(kind.tag()).unwrap_or_default();
+        format!("krowk connect {vendor} --method {method} --name <new>")
+    });
     lines.push(dim(&format!("  {}", facts.join(" · "))));
     lines.extend(notes.iter().map(|n| dim(&format!("  ! {n}"))));
     let try_it = match &done.default_model {
