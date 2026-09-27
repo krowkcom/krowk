@@ -268,6 +268,18 @@ fn connect_refuses_a_name_that_would_share_a_login_or_a_key_or_pass_for_another_
     let dir = b.root.join("repo/accounts/rel");
     assert_eq!(c["data"]["definition"]["configDir"], dir.display().to_string());
     assert!(dir.join("fake-login").exists());
+
+    // A `~` the shell left alone is the home directory, never a `~` here.
+    let c = b.json(&["connect", "anthropic", "--method", "subscription", "--name", "tilde", "--config-dir", "~/accounts/tilde", "--json"], &[]);
+    assert_eq!(c["data"]["definition"]["configDir"], b.root.join("home/accounts/tilde").display().to_string());
+    assert!(!b.root.join("repo/~").exists());
+
+    // Your own ~/.claude is never a new account's, even while
+    // CLAUDE_CONFIG_DIR names another directory.
+    let own = b.root.join("home/.claude").display().to_string();
+    let elsewhere = b.root.join("elsewhere").display().to_string();
+    let out = b.krowk(&["connect", "anthropic", "--method", "subscription", "--name", "mine", "--config-dir", &own], &[("CLAUDE_CONFIG_DIR", &elsewhere)]);
+    assert!(!out.status.success() && stderr(&out).contains("your own login's directory"), "{}", stderr(&out));
 }
 
 #[test]
@@ -427,10 +439,13 @@ fn a_hand_written_relative_or_dotdot_config_dir_is_never_made_by_krowk() {
     let dots = format!("{}/x/../y", b.root.display());
     std::fs::create_dir_all(b.config_path().parent().unwrap()).unwrap();
     std::fs::write(b.config_path(), json!({"instances": {"claude:rel": {"kind": "claude-code", "configDir": "rel/acct"}, "claude:dots": {"kind": "claude-code", "configDir": dots}}}).to_string()).unwrap();
-    for instance in ["claude:rel", "claude:dots"] {
-        let out = b.krowk(&["connect", instance], &[("FAKE_CLAUDE_LOGIN", "fail")]);
-        assert_eq!(out.status.code(), Some(3), "{instance}: {}", stderr(&out));
-    }
+    // A relative one is refused before the vendor runs: its login runs in
+    // krowk's own directory, where the path would lead somewhere else.
+    let out = b.krowk(&["connect", "claude:rel"], &[]);
+    assert!(!out.status.success() && stderr(&out).contains("is relative"), "claude:rel: {}", stderr(&out));
+    assert!(!b.root.join("fake.log").exists() || !std::fs::read_to_string(b.root.join("fake.log")).unwrap().contains("auth"), "the vendor never ran for it");
+    let out = b.krowk(&["connect", "claude:dots"], &[("FAKE_CLAUDE_LOGIN", "fail")]);
+    assert_eq!(out.status.code(), Some(3), "claude:dots: {}", stderr(&out));
     // Where krowk runs, where the vendor runs, and both readings of `..`.
     for nothing in [b.root.join("repo/rel"), b.data().join("readiness/rel"), b.root.join("x"), b.root.join("y")] {
         assert!(!nothing.exists(), "{} was made", nothing.display());
