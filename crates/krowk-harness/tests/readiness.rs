@@ -174,6 +174,7 @@ fn readiness_a_vendor_that_outlives_the_deadline_is_unknown_and_stopped_with_wha
         ("claude:slow", h.claude(&claude)),
         ("codex:slow", InstanceKind::CodexAppServer { binary: Some(codex.display().to_string()), codex_home: Some(h.root.join("cfg").display().to_string()), env: BTreeMap::new(), args: Vec::new(), api_key_env: None, effort: None }),
     ]);
+    std::fs::create_dir_all(h.root.join("data")).unwrap();
     let neutral = readiness::neutral_dir(&h.root.join("data")).unwrap();
     let probe = Probe { dir: neutral, within: Duration::from_millis(800) };
     for name in ["claude:slow", "codex:slow"] {
@@ -202,6 +203,7 @@ fn readiness_a_vendor_that_answers_and_leaves_a_process_behind_does_not_hold_the
     // Answers at once and exits 0, leaving a sleeper that holds its stdout.
     let claude = h.install("claude", &format!("#!/bin/bash\nsleep 60 &\necho $! >>'{}'\necho '{{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}}'\nexit 0\n", pids.display()));
     let reg = h.registry(vec![("claude:leaves", h.claude(&claude))]);
+    std::fs::create_dir_all(h.root.join("data")).unwrap();
     let neutral = readiness::neutral_dir(&h.root.join("data")).unwrap();
     let started = Instant::now();
     let r = readiness::check(reg.get("claude:leaves").unwrap(), &h.root.join("creds.json"), &Probe { dir: neutral, within: Duration::from_secs(5) });
@@ -227,6 +229,7 @@ fn readiness_a_leftover_that_escaped_the_group_cannot_hold_a_check_past_its_dead
     // out of reach of the group kill — that holds its stdout.
     let claude = h.install("claude", &format!("#!/bin/bash\nsetsid sleep 60 &\necho $! >>'{}'\necho '{{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}}'\nexit 0\n", pids.display()));
     let reg = h.registry(vec![("claude:escapes", h.claude(&claude))]);
+    std::fs::create_dir_all(h.root.join("data")).unwrap();
     let neutral = readiness::neutral_dir(&h.root.join("data")).unwrap();
     let started = Instant::now();
     let r = readiness::check(reg.get("claude:escapes").unwrap(), &h.root.join("creds.json"), &Probe { dir: neutral, within: Duration::from_millis(800) });
