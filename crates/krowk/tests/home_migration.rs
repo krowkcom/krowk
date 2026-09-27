@@ -101,6 +101,11 @@ impl Sandbox {
         self.write(&cfg.join("providers/credentials.json"), &providers.to_string(), 0o600);
         self.write(&cfg.join("providers/credentials.lock"), "", 0o600);
         self.write(&cfg.join("trusted.json"), &json!({"directories": [self.root.join("repo")]}).to_string(), 0o600);
+        // What the harness reads from krowk's own directory besides.
+        self.write(&cfg.join("permissions.json"), &json!({"grants": {}}).to_string(), 0o600);
+        self.write(&cfg.join("skills/greet/SKILL.md"), "---\nname: greet\ndescription: say hi\n---\nhi\n", 0o644);
+        self.write(&cfg.join("AGENTS.md"), "be brief\n", 0o644);
+        self.write(&data.join("import.lock"), "", 0o600);
         self.write(&account.join("fake-login"), "", 0o600);
         std::fs::set_permissions(&account, std::fs::Permissions::from_mode(0o700)).unwrap();
         self.write(&data.join("sessions/sess-old/events.jsonl"), "", 0o600);
@@ -183,6 +188,10 @@ fn an_older_layout_moves_into_the_home_once_and_everything_in_it_still_works() {
     assert!(h.join("sessions/sess-old/events.jsonl").is_file());
     assert!(h.join("cache/models.json").is_file());
     assert!(h.join("trusted.json").is_file());
+    for moved in ["permissions.json", "skills/greet/SKILL.md", "AGENTS.md"] {
+        assert!(h.join(moved).is_file(), "{moved} did not move");
+    }
+    assert_eq!(mode(&h.join("config.json")), 0o644, "config.json keeps its mode");
 
     // One credentials file holds the registry's key, the login and the
     // stored key; nothing of the old provider file's lock is carried.

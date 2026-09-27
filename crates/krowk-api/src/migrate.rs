@@ -90,6 +90,10 @@ pub fn run(home: &Path, env: Env) -> Result<(), String> {
             Ok(mut v) => {
                 repoint(&mut v, &data, home, &staging);
                 creds::write(&s(home::CONFIG), &v)?;
+                // Its own mode, not the credentials file's.
+                if let Ok(m) = std::fs::metadata(&conf) {
+                    let _ = std::fs::set_permissions(s(home::CONFIG), m.permissions());
+                }
                 let _ = std::fs::remove_file(&conf);
             }
             Err(_) => shift(&conf, &s(home::CONFIG)).map_err(|e| io(&conf, e))?,
@@ -97,9 +101,7 @@ pub fn run(home: &Path, env: Env) -> Result<(), String> {
     }
 
     let sessions = s(home::SESSIONS);
-    let moves: [(PathBuf, PathBuf); 10] = [
-        (cfg.join("trusted.json"), s("trusted.json")),
-        (cfg.join("agents"), s("agents")),
+    let moves: [(PathBuf, PathBuf); 8] = [
         (cfg.join("update-check.json"), s(home::CACHE).join("update-check.json")),
         (data.join("sessions"), sessions.clone()),
         (data.join("krowk.db"), sessions.join("krowk.db")),
@@ -112,8 +114,14 @@ pub fn run(home: &Path, env: Env) -> Result<(), String> {
     for (from, to) in &moves {
         shift(from, to).map_err(|e| io(from, e))?;
     }
-    for e in std::fs::read_dir(&cache).into_iter().flatten().flatten() {
-        shift(&e.path(), &s(home::CACHE).join(e.file_name())).map_err(|e| io(&cache, e))?;
+    let _ = std::fs::remove_file(data.join("import.lock"));
+    // The rest of each directory is krowk's too — remembered grants,
+    // skills, AGENTS.md, whatever a later krowk kept — and goes to the
+    // home's root (the cache's to `cache/`) as it is.
+    for (from, to) in [(&cfg, staging.clone()), (&data, staging.clone()), (&cache, s(home::CACHE))] {
+        for e in std::fs::read_dir(from).into_iter().flatten().flatten() {
+            shift(&e.path(), &to.join(e.file_name())).map_err(|e| io(from, e))?;
+        }
     }
     for d in [&cfg, &data, &cache] {
         let _ = std::fs::remove_dir(d);
