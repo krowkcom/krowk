@@ -12,7 +12,8 @@
 #   FAKE_CLAUDE_SCENARIO  the scenario file (below); a plain answer without one
 #   FAKE_CLAUDE_LOG       where every argv, config dir, working directory and line in or out is appended
 #   FAKE_CLAUDE_SESSION   the session id of a new session
-#   FAKE_CLAUDE_LOGIN     `fail`: `auth login` gives up, as a person closing the browser would
+#   FAKE_CLAUDE_LOGIN     `fail`: `auth login` gives up, as a person closing the browser would;
+#                         `ask`: it waits for a line on the terminal first, as the real one waits on a person
 #   FAKE_CLAUDE_STATUS_DELAY  seconds `auth status` takes to answer
 #   FAKE_CLAUDE_PERMISSION_MODE  the mode init reports, as a settings file
 #                         could make it; the --permission-mode given otherwise
@@ -59,6 +60,11 @@ auth)
     if [ "${FAKE_CLAUDE_LOGIN:-}" = fail ]; then
       echo "Login cancelled." >&2
       exit 1
+    fi
+    if [ "${FAKE_CLAUDE_LOGIN:-}" = ask ]; then
+      printf 'Press Enter to sign in to Claude...\n'
+      IFS= read -r answer
+      log "login-read $answer"
     fi
     mkdir -p "$DIR" && : >"$DIR/fake-login"
     echo "Login successful."

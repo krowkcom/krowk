@@ -918,3 +918,228 @@ fn with_a_key_and_a_subscription_model_sonnet_is_refused_as_ambiguous_in_the_tui
     let text = t.text();
     assert!(text.contains("claude, Claude subscription: --model claude/sonnet") && !text.contains("now on anthropic"), "{text:?}");
 }
+
+// ---- /connect, /disconnect and the first-run card ------------------------------
+
+/// What the TUI wrote after byte `from`, as words: a blank cell is skipped,
+/// not written — the next word starts with a move to its column — so each
+/// such move reads as the space it stands for, and styles as nothing.
+fn words(t: &pty::Pty, from: usize) -> String {
+    let raw = String::from_utf8_lossy(&t.output()[from..]).into_owned();
+    let mut out = String::new();
+    let mut rest = raw.as_str();
+    while let Some(i) = rest.find('\x1b') {
+        out.push_str(&rest[..i].replace('\r', ""));
+        let seq = &rest[i + 1..];
+        let end = if let Some(csi) = seq.strip_prefix('[') { csi.find(|c: char| c.is_ascii_alphabetic()).map(|e| e + 2) } else { Some(1) };
+        let Some(end) = end.filter(|e| *e <= seq.len()) else { break };
+        if seq[..end].ends_with('C') && rest[..i].ends_with('\r') {
+            out.push(' ');
+        }
+        rest = &seq[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether `needle`, as words, is in what the TUI wrote after `from`,
+/// within `timeout`.
+fn says(t: &pty::Pty, from: usize, needle: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if words(t, from).contains(needle) {
+            return true;
+        }
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+/// No key, no config, and a `claude` signed in to nothing: nothing here
+/// can run a model. `FAKE_CLAUDE_LOGIN=ask` makes its login wait for a line
+/// on the terminal, as the real one waits on a person.
+fn fresh(b: &Sandbox, url: &str) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = b.env(url).into_iter().filter(|(k, _)| k != "ANTHROPIC_API_KEY").collect();
+    env.push(("FAKE_CLAUDE_LOG".into(), b.root.join("fake.log").display().to_string()));
+    env.push(("FAKE_CLAUDE_LOGIN".into(), "ask".into()));
+    env
+}
+
+fn fresh_command(b: &Sandbox, url: &str) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+    c.env_clear().envs(fresh(b, url)).current_dir(b.root.join("repo"));
+    c
+}
+
+/// The first run: with nothing ready, the TUI opens "Connect a provider"
+/// instead of letting the first prompt fail. Claude subscription, the
+/// built-in account: Claude Code's own login runs on the real terminal —
+/// the TUI gave it up, so the Enter typed reaches the vendor, not the
+/// prompt — and once it is signed in the session is on it and a prompt
+/// runs there.
+#[test]
+fn the_first_run_card_connects_a_claude_subscription_and_the_prompt_runs_on_it() {
+    let b = Sandbox::new("firstrun");
+    let mut t = pty::Pty::spawn(fresh_command(&b, "http://127.0.0.1:9"), 110, 34);
+    assert!(says(&t, 0, "Nothing here can run a model yet", Duration::from_secs(15)), "no first-run card: {:?}", t.text());
+    assert!(!t.text().contains("none_ready"), "the failure is not shown, the card is: {:?}", t.text());
+    assert!(says(&t, 0, "Connect which provider?", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\r");
+    assert!(says(&t, at, "How do you connect anthropic?", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\r");
+    assert!(says(&t, at, "not signed in, reconnect", Duration::from_secs(10)), "the account, with its readiness: {:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\r");
+    assert!(says(&t, at, "Press Enter to sign in to Claude", Duration::from_secs(10)), "the vendor's login never ran: {:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\r");
+    assert!(says(&t, at, "Connected claude", Duration::from_secs(10)), "{:?}", t.text());
+    assert!(says(&t, 0, "now on claude/claude-opus-5-5", Duration::from_secs(5)), "{:?}", t.text());
+    let log = std::fs::read_to_string(b.root.join("fake.log")).unwrap_or_default();
+    assert!(log.lines().any(|l| l == "login-read "), "the Enter went to the vendor's login: {log}");
+    let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap()).unwrap();
+    assert_eq!(config["defaultModel"], "claude/claude-opus-5-5", "{config}");
+    // The prompt: the trust question for the repository, then the turn.
+    let at = t.output().len();
+    t.write(b"hello there\r");
+    assert!(says(&t, at, TRUST_ASKED, Duration::from_secs(10)), "{:?}", t.text());
+    std::thread::sleep(Duration::from_millis(600));
+    let at = t.output().len();
+    t.write(b"y");
+    assert!(says(&t, at, "Worked for", Duration::from_secs(15)), "the prompt did not run: {:?}", t.text());
+    assert!(fake_turns(&b).contains("--model claude-opus-5-5"), "{}", fake_turns(&b));
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+}
+
+/// A key pasted at `/connect`'s question is stored, never drawn back — not
+/// in the overlay, not in scrollback, not in the prompt's history — and the
+/// next prompt runs on it against the stand-in API.
+#[test]
+fn a_key_pasted_in_connect_is_never_shown_and_the_prompt_runs_on_it() {
+    const KEY: &str = "sk-ant-pasted-4242-secret";
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("pastekey");
+    let mut t = pty::Pty::spawn(fresh_command(&b, &m.url), 110, 34);
+    assert!(says(&t, 0, "Nothing here can run a model yet", Duration::from_secs(15)), "{:?}", t.text());
+    assert!(says(&t, 0, "Connect which provider?", Duration::from_secs(5)), "{:?}", t.text());
+    // Put away, the card says how to come back.
+    let at = t.output().len();
+    t.write(b"\x1b");
+    assert!(says(&t, at, "/connect when you are ready", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"/connect\r");
+    assert!(says(&t, at, "Connect which provider?", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\r");
+    assert!(says(&t, at, "How do you connect anthropic?", Duration::from_secs(5)), "{:?}", t.text());
+    t.write(b"\x1b[B");
+    std::thread::sleep(Duration::from_millis(150));
+    let at = t.output().len();
+    t.write(b"\r");
+    assert!(says(&t, at, "key not set, reconnect", Duration::from_secs(10)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\r");
+    assert!(says(&t, at, "Paste a key", Duration::from_secs(10)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(format!("\x1b[200~{KEY}\x1b[201~").as_bytes());
+    assert!(says(&t, at, "•••••••••••••••••••••••••", Duration::from_secs(5)), "one bullet a character: {:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\r");
+    assert!(says(&t, at, "Connected anthropic", Duration::from_secs(10)), "{:?}", t.text());
+    assert!(says(&t, 0, "in krowk's credentials file", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"read README.md and summarise it in one line\r");
+    assert!(says(&t, at, "anywhere.", Duration::from_secs(15)), "no answer: {:?}", t.text());
+    let sent = m.seen.lock().unwrap().iter().filter_map(|s| s.header("x-api-key").map(String::from)).collect::<Vec<_>>();
+    assert!(!sent.is_empty() && sent.iter().all(|k| k == KEY), "the stored key went to the API: {sent:?}");
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    assert!(!t.text().contains(KEY) && !t.text().contains("4242"), "the key was drawn");
+    let history = std::fs::read_to_string(b.root.join("home/.krowk/sessions/tui-history.jsonl")).unwrap_or_default();
+    assert!(!history.contains("4242"), "the key is in the prompt's history: {history}");
+    let config = std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap();
+    assert!(!config.contains("4242"), "the key is in config.json: {config}");
+}
+
+/// A vendor's login has the terminal while it runs: the TUI clears its
+/// live region first and draws nothing meanwhile, and takes the terminal
+/// back after — at the size it is by then — with nothing of the old
+/// region left in scrollback.
+#[test]
+fn a_suspended_vendor_login_gives_the_terminal_back_whole_after_a_resize() {
+    let b = Sandbox::new("suspend");
+    let Some(tm) = Tmux::start("suspend", 100, 30, &b.root.join("repo"), &fresh(&b, "http://127.0.0.1:9"), &[]) else { return };
+    assert!(tm.wait_for("Connect which provider?", Duration::from_secs(15)).is_some(), "{}", tm.screen());
+    tm.keys(&["Enter"]);
+    assert!(tm.wait_for("How do you connect", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    tm.keys(&["Enter"]);
+    assert!(tm.wait_for("Which account?", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["Enter"]);
+    assert!(tm.wait_for("Press Enter to sign in to Claude", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    let during = tm.screen();
+    for live in ["Plan, search, build anything", "Connect a provider", "? help"] {
+        assert!(!during.contains(live), "the live region was left on screen for the vendor: {live:?}\n{during}");
+    }
+    tm.tmux(&["resize-window", "-t", "t", "-x", "72", "-y", "24"]);
+    std::thread::sleep(Duration::from_millis(300));
+    tm.keys(&["Enter"]);
+    let back = |s: &str| s.contains("now on claude/claude-opus-5-5") && s.contains("→ Plan, search, build anything");
+    let history = tm.wait_still(back, Duration::from_secs(15)).unwrap_or_else(|| panic!("never back:\n{}", tm.screen()));
+    assert_eq!(history.matches("Press Enter to sign in to Claude").count(), 1, "{history}");
+    for gone in ["Connect a provider", "Nothing here can run a model yet", "Which account?"] {
+        assert!(!history.contains(gone), "the old live region was left in scrollback: {gone:?}\n{history}");
+    }
+    assert_eq!(history.matches("? help").count(), 1, "one status line:\n{history}");
+    let rules = history.lines().filter(|l| l.trim().len() > 3 && l.trim().chars().all(|c| c == '─')).count();
+    assert_eq!(rules, 2, "one prompt box, drawn at the new width:\n{history}");
+    let screen = tm.screen();
+    assert!(screen.lines().all(|l| l.chars().count() <= 72), "{screen}");
+}
+
+/// `/model` marks each instance ready or not, from checks that never hold
+/// a key up — a vendor whose status takes three seconds leaves the picker
+/// moving meanwhile — and a pick that is not ready offers `/connect` for
+/// it instead of a switch. `/disconnect` of the built-in `claude` asks
+/// before signing the person out of Claude Code itself.
+#[test]
+fn model_marks_readiness_in_the_background_and_offers_connect_and_disconnect_asks_first() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("marks");
+    let mut env = b.env(&m.url);
+    env.push(("FAKE_CLAUDE_STATUS_DELAY".into(), "3".into()));
+    let Some(tm) = Tmux::start("marks", 110, 34, &b.root.join("repo"), &env, &["--model", "anthropic/claude-sonnet-4-6"]) else { return };
+    assert!(tm.wait_for("? help", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["/model", "Enter"]);
+    assert!(tm.wait_for("switch to", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    let row = |s: &str, name: &str| s.lines().find(|l| l.trim_start().trim_start_matches("❯ ").starts_with(&format!("{name}/"))).unwrap_or_default().to_string();
+    let screen = tm.screen();
+    assert!(row(&screen, "claude").ends_with('…'), "claude is still being asked: {screen}");
+    assert!(row(&screen, "anthropic").contains("✓ ready") && row(&screen, "openai").contains("✗ key not set"), "a key is marked at once: {screen}");
+    // The arrows answer while `claude` is still being asked.
+    tm.keys(&["Down"]);
+    let moved = |s: &str| s.lines().any(|l| l.trim_start().starts_with("❯ codex/"));
+    assert!(tm.wait_still(moved, Duration::from_secs(1)).is_some() || moved(&tm.screen()), "a key waited on a vendor check: {}", tm.screen());
+    assert!(row(&tm.screen(), "claude").ends_with('…'), "and it was still being asked: {}", tm.screen());
+    let marked = |s: &str| row(s, "claude").contains("✗ not signed in");
+    tm.wait_still(marked, Duration::from_secs(15)).unwrap_or_else(|| panic!("claude marked once its check is back: {}", tm.screen()));
+    // A pick that is not ready offers /connect for it.
+    tm.keys(&["Up", "Enter"]);
+    assert!(tm.wait_for("not signed in — enter connects it", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    assert!(tm.wait_for("→ /connect claude", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    tm.keys(&["C-c"]);
+    std::thread::sleep(Duration::from_millis(200));
+    // /disconnect of the built-in asks before it signs the person out of
+    // Claude Code itself, and no keeps the login.
+    std::fs::create_dir_all(b.root.join("home/.claude")).unwrap();
+    std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
+    tm.keys(&["/disconnect claude", "Enter"]);
+    assert!(tm.wait_for("signs you out of Claude Code itself", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    assert!(tm.wait_for("❯ No — keep that login", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    tm.keys(&["Enter"]);
+    assert!(tm.wait_for("nothing was signed out", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    assert!(b.root.join("home/.claude/fake-login").exists(), "the person's own login is kept");
+}
