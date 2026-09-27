@@ -246,10 +246,7 @@ pub fn local(inst: &Resolved, credentials: &Path) -> Option<Readiness> {
     match &inst.stored {
         Stored::Unreadable(reason) => return Some(Readiness::Unknown { reason: reason.clone() }),
         Stored::Command { command, .. } if inst.api_key.is_empty() => {
-            return keys::ran(command).map(|r| match r {
-                Ok(_) => Readiness::Ready { source: expected_source(inst, credentials) },
-                Err(why) => Readiness::Unknown { reason: keys::no_fallback(inst, &why) },
-            });
+            return keys::ran(command).map(|_| Readiness::Ready { source: expected_source(inst, credentials) });
         }
         Stored::Env(v) if inst.api_key.is_empty() => return Some(Readiness::KeyNotSet { var: v.clone() }),
         _ => {}
