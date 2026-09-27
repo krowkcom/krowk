@@ -90,6 +90,10 @@ pub(crate) struct Shared {
     /// `set_registry`: a connection made while the host runs (the TUI's
     /// `/connect`) is a turn's to use at once.
     registry: std::sync::RwLock<Arc<Registry>>,
+    /// Counts `set_registry`s. A backend process made before the last one
+    /// may run on a login signed out since, or a key replaced: its session's
+    /// next turn checks the instance again and starts a new one.
+    generation: std::sync::atomic::AtomicU64,
     /// Each session with a turn running — a subagent's too: its cancel
     /// switch and the queue its steering waits in.
     running: Mutex<HashMap<String, Running>>,
@@ -123,6 +127,9 @@ struct Backend {
     instance: String,
     engine: Arc<dyn Engine>,
     used: Instant,
+    /// The instances it was made under (`Shared::generation`): one made
+    /// before a connection or sign-out changed them is never reused.
+    generation: u64,
 }
 
 /// A backend process kept this long without a turn is let go: a long-lived
@@ -149,6 +156,7 @@ impl Host {
         Host {
             shared: Arc::new(Shared {
                 registry: std::sync::RwLock::new(Arc::new(registry)),
+                generation: std::sync::atomic::AtomicU64::new(0),
                 cfg,
                 running: Mutex::new(HashMap::new()),
                 backends: Mutex::new(HashMap::new()),
@@ -192,10 +200,15 @@ impl Host {
     }
 
     /// Replaces the instances — config.json and the credentials file read
-    /// again after a connection — for every turn from now on. A backend
-    /// already running for a session keeps its process.
+    /// again after a connection or a sign-out — for every turn from now on.
+    /// A backend process already up is not reused by its session's next
+    /// turn, which checks the instance again (the vendor asked, not taken
+    /// on the process's word) and starts a new one on the vendor's resume:
+    /// the old one may run on the login just signed out, or the key just
+    /// replaced. A turn running now finishes on the one it has.
     pub fn set_registry(&self, registry: Registry) {
         *self.shared.registry.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(registry);
+        self.shared.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Where a bare model id — or, with none, the default — runs here
@@ -320,6 +333,10 @@ impl Shared {
         self.registry.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Lets go of every backend process idle for longer than the host keeps
     /// one, except a session's with a turn running. Swept when a prompt
     /// arrives, so an idle host costs nothing to keep tidy.
@@ -341,16 +358,18 @@ impl Shared {
         let mut backends = self.backends.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(b) = backends.get(session_id)
             && b.instance == instance.name
+            && b.generation == self.generation()
         {
             return Ok(b.engine.clone());
         }
-        // A session moved to another instance: the old engine's process is
-        // stopped with it when the last handle goes (its drop kills it).
+        // A session moved to another instance, or its instances changed: the
+        // old engine's process is stopped with it when the last handle goes
+        // (its drop kills it).
         let e: Arc<dyn Engine> = match instance.wire_api {
             WireApi::CodexAppServer => Arc::new(CodexEngine::new(instance.clone(), &self.cfg.krowk_version)?),
             _ => Arc::new(ClaudeEngine::new(instance.clone(), &self.cfg.krowk_version)?),
         };
-        backends.insert(session_id.to_string(), Backend { instance: instance.name.clone(), engine: e.clone(), used: Instant::now() });
+        backends.insert(session_id.to_string(), Backend { instance: instance.name.clone(), engine: e.clone(), used: Instant::now(), generation: self.generation() });
         Ok(e)
     }
 
@@ -497,10 +516,11 @@ impl Shared {
         readiness::neutral_dir(home).map(readiness::Probe::at)
     }
 
-    /// Whether `session_id` has a backend process for `instance` up now.
+    /// Whether `session_id` has a backend process for `instance` up now,
+    /// made under the instances as they are.
     fn backend_up(&self, session_id: Option<&str>, instance: &str) -> bool {
         let Some(id) = session_id else { return false };
-        self.backends.lock().unwrap_or_else(|e| e.into_inner()).get(id).is_some_and(|b| b.instance == instance)
+        self.backends.lock().unwrap_or_else(|e| e.into_inner()).get(id).is_some_and(|b| b.instance == instance && b.generation == self.generation())
     }
 
     /// `switchModel`: checked, then logged — now, or when the running turn
