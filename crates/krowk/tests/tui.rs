@@ -221,6 +221,11 @@ fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() 
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some());
     t.write(b"wait forever\r");
     assert!(t.wait_for("esc to interrupt", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    // The prompt drawn back as the log's `❯` line: the turn has started,
+    // so the TUI knows the session it is to record. The working line
+    // alone comes before that, and two Ctrl-Cs sent then, on a loaded
+    // machine, left before any session existed.
+    assert!(t.wait_for("❯ ", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"\x03\x03");
     let st = t.wait(Duration::from_secs(10)).expect("krowk exits on the second Ctrl-C");
     assert_eq!(st.code(), Some(130), "{st}");

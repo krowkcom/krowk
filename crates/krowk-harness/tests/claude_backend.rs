@@ -5,7 +5,8 @@
 //! and switching models in place, an interrupt the session survives, a
 //! resume from a new host, two instances with their own config
 //! directories, and the refusals — an untrusted repository, a missing
-//! login, a missing binary.
+//! login, a missing binary. And what goes on between turns: a background
+//! agent Claude Code runs, and the turn it begins by itself to answer it.
 
 #![cfg(unix)]
 
@@ -19,7 +20,7 @@ use krowk_harness::trust;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 const VENDOR_SESSION: &str = "fa4e0000-0000-4000-8000-000000000001";
 
@@ -693,4 +694,266 @@ fn r_budget_1_claude_codes_subagent_calls_count_toward_the_budget() {
 /// does not finish in 30 s: a turn that never ends is a test failure.
 fn within<F: std::future::Future>(f: F) -> F::Output {
     rt().block_on(async { tokio::time::timeout(std::time::Duration::from_secs(30), f).await.expect("finished within 30 s") })
+}
+
+/// Every `backend.agents` list a stream carried, as the agents' words.
+fn agents_said(lines: &[StreamLine]) -> Vec<Vec<String>> {
+    lines
+        .iter()
+        .filter_map(|l| match l {
+            StreamLine::Live(LiveEvent::BackendAgents { agents, .. }) => Some(agents.iter().map(|a| a.description.clone()).collect()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// What the host's watchers were told of `session` until Claude Code began
+/// a turn by itself: the lists of agents on the way, and why it began.
+async fn until_unprompted(watch: &mut broadcast::Receiver<StreamLine>, session: &str) -> (Vec<Vec<String>>, String) {
+    let mut said = Vec::new();
+    loop {
+        match watch.recv().await.expect("the host is watched") {
+            StreamLine::Live(LiveEvent::TurnUnprompted { session_id, reason }) if session_id == session => return (said, reason),
+            l @ StreamLine::Live(LiveEvent::BackendAgents { .. }) => said.extend(agents_said(&[l])),
+            other => panic!("only between-turn frames are watched: {other:?}"),
+        }
+    }
+}
+
+fn continue_turn(session_id: &str) -> Command {
+    Command::Continue { session_id: session_id.into(), budget: None }
+}
+
+/// R-SUB-3 for Claude Code's own agents: one it runs in the background is
+/// listed from the turn that starts it until it finishes between turns —
+/// its subagent's shell never counted — and what it asks meanwhile is
+/// answered under the last turn's permissions. The turn Claude Code then
+/// begins by itself waits for `continue`, which runs it as a turn of the
+/// session with krowk's note as its prompt; the agent's calls, made while
+/// no turn ran, are metered once, in it (R-BUDGET-1).
+#[test]
+fn r_sub_3_a_background_agent_is_listed_while_idle_and_the_turn_claude_code_begins_waits_for_continue() {
+    let home = Home::new("bg-agent");
+    let dir = home.signed_in("cfg-work");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_agent.jsonl")))], trust::allow_all());
+    let mut watch = host.watch();
+    within(Box::pin(async {
+        let (lines, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        let first = r.unwrap().unwrap();
+        assert_eq!((first.status, first.result.as_str()), (TurnStatus::Completed, "launched"), "{:?}", first.error);
+        assert_eq!(agents_said(&lines), [vec!["survey the repo".to_string()]], "listed from the turn that started it");
+        let listed = lines.iter().find_map(|l| match l {
+            StreamLine::Live(LiveEvent::BackendAgents { agents, .. }) => agents.first().cloned(),
+            _ => None,
+        });
+        assert_eq!(listed.map(|a| (a.task_id, a.agent)), Some(("a_bg_1".to_string(), Some("general-purpose".to_string()))));
+
+        let (said, reason) = until_unprompted(&mut watch, &first.session_id).await;
+        assert_eq!(said, [Vec::<String>::new()], "gone when it finished, and the subagent's shell never counted");
+        assert_eq!(reason, "background agent “survey the repo” completed");
+        let fake = home.fake_log();
+        assert!(fake.lines().any(|l| l.starts_with("answer ") && l.contains(r#""behavior":"allow""#) && l.contains("README.md")), "its Read, asked between turns, was answered: {fake}");
+        assert_eq!(fake.matches("in {\"type\":\"user\"").count(), 1, "nobody prompted the turn it began");
+
+        let (lines, r) = run(&host, continue_turn(&first.session_id)).await;
+        let second = r.unwrap().unwrap();
+        assert_eq!((second.status, second.result.as_str()), (TurnStatus::Completed, "The agent is done: the repo is small."));
+        assert_eq!(completed(&lines).first(), Some(&Item::UserText { text: krowk_harness::claude::unprompted(&reason) }), "its prompt is krowk's note of why");
+        assert_eq!(home.fake_log().matches("in {\"type\":\"user\"").count(), 1, "and nothing was sent for it");
+        let events = home.events(&first.session_id);
+        let metered: Vec<i64> = events.iter().filter_map(|e| match &e.body {
+            LogBody::SubagentResponse { usage, .. } => Some(usage.output_tokens),
+            _ => None,
+        }).collect();
+        assert_eq!(metered, [600], "the agent's call, made between turns, counted once");
+        assert_eq!(events.iter().filter(|e| matches!(e.body, LogBody::TurnStarted { .. })).count(), 2);
+
+        let (_, again) = run(&host, continue_turn(&first.session_id)).await;
+        assert_eq!(again.unwrap_err().code, "nothing_pending");
+        host.shutdown().await;
+    }));
+}
+
+/// R-BACK-5: a prompt that arrives while a turn Claude Code began is
+/// waiting runs that turn first, as its own, and ends at its own result —
+/// never at the answer to the agent.
+#[test]
+fn r_back_5_a_prompt_runs_the_waiting_turn_first_and_ends_at_its_own_result() {
+    let home = Home::new("bg-prompt");
+    let dir = home.signed_in("cfg-work");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_agent.jsonl")))], trust::allow_all());
+    let mut watch = host.watch();
+    within(Box::pin(async {
+        let (_, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        let first = r.unwrap().unwrap();
+        let _ = until_unprompted(&mut watch, &first.session_id).await;
+        let (lines, r) = run(&host, prompt(Some(&first.session_id), "anything else?", "claude:work/sonnet", PermissionMode::Default)).await;
+        let r = r.unwrap().unwrap();
+        assert_eq!((r.status, r.result.as_str()), (TurnStatus::Completed, "ok"), "the prompt's own answer");
+        let results = lines.iter().filter(|l| matches!(l, StreamLine::Live(LiveEvent::Result(_)))).count();
+        assert_eq!(results, 1, "one result for one prompt");
+        let texts: Vec<String> = completed(&lines)
+            .into_iter()
+            .filter_map(|i| match i {
+                Item::UserText { text } => Some(if text.starts_with(krowk_harness::claude::UNPROMPTED) { "<note>".into() } else { text }),
+                Item::AssistantText { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["<note>", "The agent is done: the repo is small.", "anything else?", "ok"], "the waiting turn, then the prompt's");
+        let turns = home.events(&first.session_id).iter().filter(|e| matches!(e.body, LogBody::TurnCompleted { .. })).count();
+        assert_eq!(turns, 3);
+        host.shutdown().await;
+    }));
+}
+
+/// R-BACK-5: a turn Claude Code begins as a prompt is on its way is read
+/// inside the prompt's turn — its `result` carries `origin`, so it is not
+/// the prompt's end — with krowk's note where it ended, and the prompt's
+/// answer after it.
+#[test]
+fn r_back_5_a_turn_claude_code_begins_as_a_prompt_arrives_is_folded_into_the_prompts() {
+    let home = Home::new("bg-fold");
+    let dir = home.signed_in("cfg-work");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_fold.jsonl")))], trust::allow_all());
+    within(Box::pin(async {
+        let (_, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        let first = r.unwrap().unwrap();
+        let (lines, r) = run(&host, prompt(Some(&first.session_id), "anything else?", "claude:work/sonnet", PermissionMode::Default)).await;
+        let r = r.unwrap().unwrap();
+        assert_eq!((r.status, r.result.as_str()), (TurnStatus::Completed, "Nothing else."), "{:?}", r.error);
+        let items = completed(&lines);
+        let note = items.iter().position(|i| matches!(i, Item::UserText { text } if text.starts_with(krowk_harness::claude::UNPROMPTED)));
+        let agent = items.iter().position(|i| matches!(i, Item::AssistantText { text } if text == "The agent is done: the repo is small."));
+        let own = items.iter().position(|i| matches!(i, Item::AssistantText { text } if text == "Nothing else."));
+        assert!(agent < note && note < own && agent.is_some(), "Claude Code's turn, the note, the prompt's answer: {items:?}");
+        assert_eq!(agents_said(&lines), [Vec::<String>::new()], "the agent finished inside the turn");
+        let (_, again) = run(&host, continue_turn(&first.session_id)).await;
+        assert_eq!(again.unwrap_err().code, "nothing_pending", "nothing is left waiting");
+        host.shutdown().await;
+    }));
+}
+
+/// A process with an agent running, or a turn it began waiting, is not let
+/// go as idle however long it has been; once neither is left, it is.
+#[test]
+fn r_back_1_a_process_with_a_background_agent_is_not_let_go_as_idle() {
+    let home = Home::new("bg-evict");
+    let dir = home.signed_in("cfg-work");
+    let other = home.signed_in("cfg-other");
+    // The other instance logs apart, so this log's `eof` is the agent's process.
+    let mut quiet = home.instance(&other, None);
+    if let InstanceKind::ClaudeCode { env, .. } = &mut quiet {
+        env.insert("FAKE_CLAUDE_LOG".into(), home.root.join("other.log").display().to_string());
+    }
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_agent.jsonl"))), ("claude:other", quiet)], trust::allow_all()).with_backend_idle(std::time::Duration::ZERO);
+    let mut watch = host.watch();
+    let let_go = |home: &Home| home.fake_log().lines().any(|l| l == "eof");
+    within(Box::pin(async {
+        let (_, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        let a = r.unwrap().unwrap();
+        // Another session's prompt sweeps the idle processes.
+        let (_, r) = run(&host, prompt(None, "hello", "claude:other/sonnet", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().result, "ok");
+        assert!(!let_go(&home), "kept while its agent runs");
+        let _ = until_unprompted(&mut watch, &a.session_id).await;
+        let (_, r) = run(&host, prompt(None, "hello", "claude:other/sonnet", PermissionMode::Default)).await;
+        r.unwrap().unwrap();
+        assert!(!let_go(&home), "kept while the turn it began waits");
+        let (_, r) = run(&host, continue_turn(&a.session_id)).await;
+        r.unwrap().unwrap();
+        let (_, r) = run(&host, prompt(None, "hello", "claude:other/sonnet", PermissionMode::Default)).await;
+        r.unwrap().unwrap();
+        assert!(let_go(&home), "let go once nothing of its own runs");
+        host.shutdown().await;
+    }));
+}
+
+/// A plan turn whose ExitPlanMode was approved leaves Claude Code in
+/// default: the turn it then begins by itself runs in that mode, which
+/// krowk accepted, and is not stopped as looser than the plan asked for —
+/// nor are the process and its agents killed for it.
+#[test]
+fn r_back_1_the_turn_claude_code_begins_after_an_approved_plan_runs_in_default() {
+    let home = Home::new("bg-plan");
+    let dir = home.signed_in("cfg-work");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_plan.jsonl")))], trust::allow_all());
+    let mut watch = host.watch();
+    within(Box::pin(async {
+        let (_, r) = run(&host, prompt(None, "plan it, and survey the repo in the background", "claude:work/sonnet", PermissionMode::Plan)).await;
+        let first = r.unwrap().unwrap();
+        assert_eq!(first.status, TurnStatus::Completed, "{:?}", first.error);
+        let _ = until_unprompted(&mut watch, &first.session_id).await;
+        let (_, r) = run(&host, continue_turn(&first.session_id)).await;
+        let second = r.unwrap().unwrap();
+        assert_eq!((second.status, second.result.as_str()), (TurnStatus::Completed, "The agent is done: the repo is small."), "{:?}", second.error);
+        let modes: Vec<PermissionMode> = home.events(&first.session_id).iter().filter_map(|e| match &e.body {
+            LogBody::TurnStarted { permission_mode, .. } => Some(*permission_mode),
+            _ => None,
+        }).collect();
+        assert_eq!(modes, [PermissionMode::Plan, PermissionMode::Default], "the mode the process was in, which krowk accepted");
+        host.shutdown().await;
+    }));
+    assert_eq!(processes(&home.fake_log()), 1, "never restarted");
+}
+
+/// A session moved to another instance lets its old Claude Code go, and
+/// the background agents it ran with it: the watchers are told the list is
+/// empty, and why, so no client goes on counting them.
+#[test]
+fn r_sub_3_background_agents_stopped_with_their_process_are_said_to_have_gone() {
+    let home = Home::new("bg-switch");
+    let dir = home.signed_in("cfg-work");
+    let other = home.signed_in("cfg-other");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_agent.jsonl"))), ("claude:other", home.instance(&other, None))], trust::allow_all());
+    let mut watch = host.watch();
+    within(Box::pin(async {
+        let (_, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        let a = r.unwrap().unwrap();
+        // While its agent runs, the session moves to the other account.
+        let (_, r) = run(&host, prompt(Some(&a.session_id), "go on over there", "claude:other/sonnet", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        let mut said = Vec::new();
+        let notice = loop {
+            match watch.recv().await.unwrap() {
+                StreamLine::Live(LiveEvent::Notice { session_id, text, .. }) if session_id == a.session_id => break text,
+                l @ StreamLine::Live(LiveEvent::BackendAgents { .. }) => said.extend(agents_said(&[l])),
+                _ => {}
+            }
+        };
+        assert_eq!(said, [Vec::<String>::new()], "the list, emptied");
+        assert!(notice.contains("claude:work") && notice.contains("background agents it ran stopped"), "{notice}");
+        host.shutdown().await;
+    }));
+}
+
+/// The order seen live: the agent finishes while idle, a prompt is sent
+/// and answered, and only then does Claude Code begin its own turn. The
+/// prompt ends at its own answer, and the turn that follows still says
+/// which agent it answers.
+#[test]
+fn r_back_5_a_turn_claude_code_begins_after_a_prompt_still_names_the_agent_it_answers() {
+    let home = Home::new("bg-after");
+    let dir = home.signed_in("cfg-work");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_after_prompt.jsonl")))], trust::allow_all());
+    let mut watch = host.watch();
+    within(Box::pin(async {
+        let (_, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        let first = r.unwrap().unwrap();
+        // The agent's end, read between turns.
+        loop {
+            if let StreamLine::Live(LiveEvent::BackendAgents { agents, .. }) = watch.recv().await.unwrap()
+                && agents.is_empty()
+            {
+                break;
+            }
+        }
+        let (_, r) = run(&host, prompt(Some(&first.session_id), "say second", "claude:work/sonnet", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().result, "second", "the prompt's own answer");
+        let (_, reason) = until_unprompted(&mut watch, &first.session_id).await;
+        assert_eq!(reason, "background agent “survey the repo” completed");
+        let (_, r) = run(&host, continue_turn(&first.session_id)).await;
+        assert_eq!(r.unwrap().unwrap().result, "The agent is done: the repo is small.");
+        host.shutdown().await;
+    }));
 }

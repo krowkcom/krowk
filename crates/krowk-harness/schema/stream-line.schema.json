@@ -982,7 +982,7 @@
           ]
         },
         {
-          "description": "Something for the person at the client and nobody else: an\nanonymous upload's claim command, whose token is a secret. Never\nlogged, never in what a model reads; `krowk -p` prints it on stderr\nand leaves it out of `stream-json`.",
+          "description": "Something for the person at the client and nobody else: an\nanonymous upload's claim command, whose token is a secret. Never\nlogged, never in what a model reads; `krowk -p` prints it on stderr\nand leaves it out of `stream-json`. One sent between turns (a\nbackend let go with its agents) has an empty `turnId`.",
           "type": "object",
           "properties": {
             "sessionId": {
@@ -1090,6 +1090,52 @@
           "$ref": "#/$defs/RunResult",
           "required": [
             "type"
+          ]
+        },
+        {
+          "description": "The agents a backend runs by itself for the session (Claude Code's\n`Agent` tool, often in the background), whole, each time the list\nchanges — during a turn and between turns alike. Between turns it\nreaches a host's watchers (`Host::watch`) rather than a turn's\nstream. Empty when the last one has finished.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BackendAgent"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "backend.agents"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "agents"
+          ]
+        },
+        {
+          "description": "A backend began a turn nobody prompted — Claude Code answering a\nbackground agent that finished — and it waits for `continue`. Sent\nto a host's watchers, between turns.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "reason": {
+              "description": "What it answers, in words: `background agent “x” completed`.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "turn.unprompted"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "reason"
           ]
         }
       ]
@@ -1418,6 +1464,31 @@
         "usage",
         "durationMs",
         "numModelCalls"
+      ]
+    },
+    "BackendAgent": {
+      "description": "One agent a backend runs by itself: it is the vendor's, with its own\nconversation, and krowk only reports it (its spend is metered as\n`subagent.response`).",
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "description": "The vendor's id for it, e.g. Claude Code's `task_id`.",
+          "type": "string"
+        },
+        "description": {
+          "description": "The few words the model gave it.",
+          "type": "string"
+        },
+        "agent": {
+          "description": "The agent definition it runs (Claude Code's `subagent_type`), when\nnamed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "taskId",
+        "description"
       ]
     }
   }

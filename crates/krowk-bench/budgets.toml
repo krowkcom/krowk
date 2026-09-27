@@ -97,7 +97,17 @@ unit = "bytes"
 # 10: 7,895,880 (7.53 MiB), 31,560 over 7.50 MiB. Raised 7.50 -> 7.75 MiB
 # by ticket 11, for 10 and 11 together — no crate is added, the growth is
 # their code — leaving 230,584 bytes for the rest of Harness P0.
-max = { x86_64-linux = 8_126_464 }
+# Main measured 8,112,744 (7.74 MiB) before Claude Code's background agents
+# were followed between turns (no new crate: the process's one stdout
+# reader and its idle loop, agent tracking and the meter moved onto the
+# process, `continue` and the unprompted turn, `backend.agents` and
+# `turn.unprompted`, `Host::watch`, the TUI's count, overlay and
+# auto-continue) adds 51,136 bytes, and its review round (the unprompted
+# turn's mode, agents said gone with their process, the meter on the
+# engine) 9,088 more: 8,172,968 (7.79 MiB), 46,504 over 7.75 MiB. Raised
+# 7.75 -> 8.00 MiB for it — no crate is added, the growth is its code —
+# leaving 215,640 bytes.
+max = { x86_64-linux = 8_388_608 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---
