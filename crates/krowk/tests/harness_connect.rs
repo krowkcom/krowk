@@ -201,6 +201,13 @@ fn connect_without_a_terminal_needs_the_method_when_there_is_a_choice_and_the_ve
         ("chatgpt", "krowk connect openai --method subscription"),
         ("grok", "krowk connect xai --method subscription"),
         ("claude:work", "krowk connect anthropic --method subscription --name work"),
+        // The prefix is the method: an `anthropic:` instance is a key.
+        ("anthropic:work", "krowk connect anthropic --method api-key --name work"),
+        ("openai:team", "krowk connect openai --method api-key --name team"),
+        ("codex:team", "krowk connect openai --method subscription --name team"),
+        ("xai:x", "krowk connect xai --method api-key --name x"),
+        ("supergrok:x", "krowk connect xai --method subscription --name x"),
+        ("grok:team", "krowk connect grok:team"),
     ] {
         let out = b.krowk(&["login", word], &[]);
         assert!(stderr(&out).contains(&format!("`{want}`")), "{word}: {}", stderr(&out));
@@ -332,4 +339,56 @@ fn connect_at_a_terminal_walks_vendor_method_and_account() {
     assert!(exit.success(), "{}", t.text());
     assert!(t.text().contains("connected claude:team"), "{}", t.text());
     assert!(b.data().join("claude/claude-team/fake-login").exists());
+}
+
+#[test]
+fn a_failed_sign_in_removes_only_the_directory_it_made_and_never_one_a_dotdot_climbs_into() {
+    let b = Sandbox::new("dotdot");
+    let acct = b.root.join("acct");
+    std::fs::create_dir_all(acct.join("Other")).unwrap();
+    std::fs::write(acct.join("Other/settings.json"), "{}").unwrap();
+    for leaf in ["Other", "Fresh"] {
+        let dir = format!("{}/new/../{leaf}", acct.display());
+        let out = b.krowk(&["connect", "anthropic", "--method", "subscription", "--name", &leaf.to_lowercase(), "--config-dir", &dir], &[("FAKE_CLAUDE_LOGIN", "fail")]);
+        assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    }
+    assert!(acct.join("Other/settings.json").exists(), "the directory that was there survives");
+    assert!(!acct.join("new").exists() && !acct.join("Fresh").exists(), "nothing made is left behind");
+}
+
+#[test]
+fn accounts_sharing_a_directory_by_hand_still_renew_and_a_new_one_cannot_take_any_instances_directory() {
+    let b = Sandbox::new("shared");
+    let shared = b.root.join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(shared.join("fake-login"), "").unwrap();
+    let dir = shared.display().to_string();
+    std::fs::create_dir_all(b.config_path().parent().unwrap()).unwrap();
+    std::fs::write(b.config_path(), json!({"instances": {"claude:a": {"kind": "claude-code", "configDir": dir}, "claude:b": {"kind": "claude-code", "configDir": dir}}}).to_string()).unwrap();
+    let r = b.json(&["connect", "claude:a", "--json"], &[]);
+    assert_eq!(r["data"]["renewed"], true);
+    // The built-in's own ~/.claude, and a symlink to an account's directory,
+    // are both taken.
+    let own = b.root.join("home/.claude");
+    std::fs::create_dir_all(&own).unwrap();
+    std::os::unix::fs::symlink(&shared, b.root.join("link")).unwrap();
+    for taken in [own.display().to_string(), b.root.join("link").display().to_string()] {
+        let out = b.krowk(&["connect", "anthropic", "--method", "subscription", "--name", "new", "--config-dir", &taken], &[]);
+        assert!(!out.status.success() && stderr(&out).contains("directory already"), "{taken}: {}", stderr(&out));
+    }
+}
+
+#[test]
+fn a_directory_in_home_is_the_persons_own_login_even_with_claude_config_dir_set_elsewhere() {
+    let b = Sandbox::new("ownvar");
+    let own = b.root.join("home/.claude");
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(own.join("fake-login"), "").unwrap();
+    std::fs::create_dir_all(b.config_path().parent().unwrap()).unwrap();
+    std::fs::write(b.config_path(), json!({"instances": {"claude:mine": {"kind": "claude-code", "configDir": own.display().to_string()}}}).to_string()).unwrap();
+    let elsewhere = b.root.join("elsewhere").display().to_string();
+    let out = b.krowk(&["disconnect", "claude:mine"], &[("CLAUDE_CONFIG_DIR", &elsewhere)]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("krowk disconnect claude:mine --sign-out-vendor") && !stderr(&out).contains("--remove"), "{}", stderr(&out));
+    assert!(own.join("fake-login").exists());
 }

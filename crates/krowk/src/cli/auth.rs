@@ -30,21 +30,28 @@ const PROVIDER_WORDS: &[&str] =
 /// Where a model provider is connected, in the words of an error that
 /// points there: the vendor and method a word means, in the one form every
 /// fix line takes — `krowk connect anthropic --method subscription --name
-/// work` — the name kept from `claude:work`.
+/// work` — the name and the method kept from an instance's name.
 fn connect_hint(word: &str) -> String {
-    if cfg!(feature = "harness") {
-        let (what, name) = match word.split_once(':') {
-            Some((w, n)) => (w.to_ascii_lowercase(), format!(" --name {n}")),
-            None => (word.to_ascii_lowercase(), String::new()),
+    #[cfg(feature = "harness")]
+    if let Some((prefix, _)) = word.split_once(':') {
+        // An instance's name: its prefix is the method's — `anthropic:work`
+        // an API key, `claude:work` a subscription — as a fix line says it.
+        use krowk_harness::connect;
+        let cmd = match connect::by_provider(&prefix.to_ascii_lowercase(), false) {
+            Some(m) => connect::connect_command(&format!("{}:{}", prefix.to_ascii_lowercase(), &word[prefix.len() + 1..]), m.kind),
+            None => format!("krowk connect {word}"),
         };
-        let way = match what.as_str() {
+        return format!("to connect a model provider, run `{cmd}`");
+    }
+    if cfg!(feature = "harness") {
+        let way = match word.to_ascii_lowercase().as_str() {
             "anthropic" | "claude" => "anthropic --method subscription",
             "openai" | "chatgpt" | "codex" | "gpt" => "openai --method subscription",
             "xai" | "grok" | "supergrok" => "xai --method subscription",
             "openrouter" => "openrouter",
             _ => return "to connect a model provider, run `krowk connect openai-compatible --name <name> --base-url <url>`".into(),
         };
-        format!("to connect a model provider, run `krowk connect {way}{name}`")
+        format!("to connect a model provider, run `krowk connect {way}`")
     } else {
         "model providers are connected in the full build (a release, or `--features harness`), with its connect command".into()
     }

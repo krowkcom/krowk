@@ -509,12 +509,14 @@ impl ProviderAuth<'_> {
     pub fn own_home(&self, r: &Resolved) -> Option<PathBuf> {
         let b = r.backend.as_ref().filter(|b| b.key.is_none())?;
         let (var, dot) = if r.kind == "codex-app-server" { ("CODEX_HOME", ".codex") } else { ("CLAUDE_CONFIG_DIR", ".claude") };
-        let default = Some(self.env(var)).filter(|d| !d.trim().is_empty()).map(PathBuf::from).or_else(|| Some(self.env("HOME")).filter(|h| !h.trim().is_empty()).map(|h| PathBuf::from(h).join(dot)))?;
-        let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        // The vendor's own directory: the one its variable names, and the
+        // one in the home directory, which is still the person's own login
+        // for every tool started without that variable.
+        let from_var = Some(self.env(var)).filter(|d| !d.trim().is_empty()).map(PathBuf::from);
+        let in_home = Some(self.env("HOME")).filter(|h| !h.trim().is_empty()).map(|h| PathBuf::from(h).join(dot));
         match &b.config_dir {
-            None => Some(default),
-            Some(d) if canon(d) == canon(&default) => Some(default),
-            Some(_) => None,
+            None => from_var.or(in_home),
+            Some(d) => [from_var, in_home].into_iter().flatten().find(|own| same_dir(d, own)),
         }
     }
 
@@ -544,7 +546,7 @@ impl ProviderAuth<'_> {
         let vendor = match target {
             None => {
                 let labels: Vec<&str> = Vendor::ALL.iter().map(|v| v.label()).collect();
-                Some(Vendor::ALL[choose(ui, "Connect which provider?", &labels, "a vendor: `krowk connect anthropic` (or openai, xai, openrouter, openai-compatible)")?])
+                Some(Vendor::ALL[choose(ui, "Connect which provider?", &labels, "a vendor: `krowk connect anthropic --method subscription` (or openai, xai, openrouter, openai-compatible)")?])
             }
             Some(t) => Vendor::parse(t),
         };
@@ -645,7 +647,7 @@ impl ProviderAuth<'_> {
         // absolute one it means: the vendor's login runs elsewhere, and a
         // turn resolves a definition's path against its own project.
         let config_dir = match clean(&o.config_dir) {
-            Some(d) => Some(std::path::absolute(&d).map_err(|e| bad_flag(format!("--config-dir {d}: {e}")))?.display().to_string()),
+            Some(d) => Some(normalised(&std::path::absolute(&d).map_err(|e| bad_flag(format!("--config-dir {d}: {e}")))?).display().to_string()),
             None => None,
         };
         if !backend && (o.binary.is_some() || o.config_dir.is_some()) {
@@ -777,7 +779,9 @@ impl ProviderAuth<'_> {
                     Some(d) => Some(d),
                     None => account("claude")?,
                 };
-                self.dir_free(&instance, config_dir.as_deref(), &existing)?;
+                if !renewed || o.config_dir.is_some() {
+                    self.dir_free(&instance, config_dir.as_deref(), &known)?;
+                }
                 let kind = InstanceKind::ClaudeCode { binary, config_dir, env, args, api_key_env, effort };
                 vendor = Some(self.sign_in_claude(&instance, &kind, ui)?);
                 kind
@@ -787,7 +791,9 @@ impl ProviderAuth<'_> {
                     Some(d) => Some(d),
                     None => account("codex")?,
                 };
-                self.dir_free(&instance, codex_home.as_deref(), &existing)?;
+                if !renewed || o.config_dir.is_some() {
+                    self.dir_free(&instance, codex_home.as_deref(), &known)?;
+                }
                 let kind = InstanceKind::CodexAppServer { binary, codex_home, env, args, api_key_env, effort };
                 vendor = Some(self.sign_in_codex(&instance, &kind, way.method == Method::Device, ui)?);
                 kind
@@ -827,18 +833,14 @@ impl ProviderAuth<'_> {
     /// An account's directory is its own: one another definition already
     /// signs in in — by the same path, or one differing only in case —
     /// would share that login.
-    fn dir_free(&self, instance: &str, dir: Option<&str>, defs: &InstancesConfig) -> Result<(), EngineError> {
+    ///
+    /// Every instance counts, the built-ins' own `~/.claude` and `~/.codex`
+    /// too, and paths are compared by where they really lead.
+    fn dir_free(&self, instance: &str, dir: Option<&str>, known: &Registry) -> Result<(), EngineError> {
         let Some(dir) = dir else { return Ok(()) };
-        let same = |d: &str| Path::new(d).display().to_string().trim_end_matches('/').to_lowercase() == dir.trim_end_matches('/').to_lowercase();
-        let taken = defs.instances.iter().find(|(n, k)| {
-            *n != instance
-                && match k {
-                    InstanceKind::ClaudeCode { config_dir: Some(d), .. } | InstanceKind::CodexAppServer { codex_home: Some(d), .. } => same(d),
-                    _ => false,
-                }
-        });
+        let taken = known.instances.values().find(|r| r.name != instance && r.backend.as_ref().and_then(|b| b.home.as_deref()).is_some_and(|h| same_dir(h, Path::new(dir))));
         match taken {
-            Some((other, _)) => Err(bad_flag(format!("{dir} is {other}'s directory already — one login cannot be two accounts; give this one another --name or --config-dir"))),
+            Some(other) => Err(bad_flag(format!("{dir} is {}'s directory already — one login cannot be two accounts; give this one another --name or --config-dir", other.name))),
             None => Ok(()),
         }
     }
@@ -940,7 +942,7 @@ impl ProviderAuth<'_> {
                     let who = if codex { "Codex" } else { "Claude Code" };
                     let warning = format!("disconnecting {instance} signs you out of {who} itself, in {}, for every tool that uses it", home.display());
                     if !ui.interactive() {
-                        return Err(EngineError::new("confirmation_required", format!("{warning} — pass --sign-out-vendor to do that, or `krowk disconnect {instance} --remove --sign-out-vendor`")));
+                        return Err(EngineError::new("confirmation_required", format!("{warning} — to do that, run `krowk disconnect {instance} --sign-out-vendor`")));
                     }
                     let options = ["No — keep that login", "Yes — sign me out of it"];
                     if choose(ui, &format!("{}. Go on?", capitalised(&warning)), &options, "--sign-out-vendor")? != 1 {
@@ -1023,13 +1025,66 @@ fn pick(vendor: Vendor, method: Option<Method>, ui: &mut dyn AuthInteraction) ->
 
 /// The directory a sign-in makes, when it is new — taken away again if the
 /// sign-in fails.
+/// The directory a failed sign-in takes away again is the outermost one it
+/// made, and nothing above it: `a/new/deeper` makes `new`, and only `new`
+/// goes. The path is lexically normal (`normalised`) by then, so no `..`
+/// can lead the removal into a directory that was there before.
 fn made_dir(dir: Option<&Path>) -> Result<Option<PathBuf>, EngineError> {
-    match dir {
-        Some(d) if !d.exists() => {
-            private_dir(d).map_err(|e| EngineError::new("config_unwritable", format!("create {}: {e}", d.display())))?;
-            Ok(Some(d.to_path_buf()))
+    let Some(d) = dir.filter(|d| d.symlink_metadata().is_err()) else { return Ok(None) };
+    let d = normalised(d);
+    let first = d.ancestors().take_while(|a| a.symlink_metadata().is_err()).last().map(Path::to_path_buf);
+    private_dir(&d).map_err(|e| EngineError::new("config_unwritable", format!("create {}: {e}", d.display())))?;
+    Ok(first)
+}
+
+/// `.` and `..` taken out of a path by its words alone, as a person reads
+/// it — `/a/new/../Other` is `/a/Other` — so a directory made or removed is
+/// the one named, never one a `..` climbs into.
+fn normalised(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(c);
+                }
+            }
+            c => out.push(c),
         }
-        _ => Ok(None),
+    }
+    out
+}
+
+/// Where a path really leads, for comparing two: the nearest ancestor that
+/// exists, resolved (symlinks and all), with the rest of the words after it.
+fn real(p: &Path) -> PathBuf {
+    let p = normalised(&std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()));
+    let mut rest = Vec::new();
+    let mut at = p.as_path();
+    loop {
+        if let Ok(c) = at.canonicalize() {
+            return rest.iter().rev().fold(c, |acc: PathBuf, r| acc.join(r));
+        }
+        match (at.file_name(), at.parent()) {
+            (Some(n), Some(up)) => {
+                rest.push(n.to_os_string());
+                at = up;
+            }
+            _ => return p,
+        }
+    }
+}
+
+/// Whether two paths are one directory. Case is folded only where the disk
+/// ignores it: macOS and Windows, by default.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let (a, b) = (real(a), real(b));
+    if cfg!(any(target_os = "macos", windows)) {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    } else {
+        a == b
     }
 }
 
@@ -1078,6 +1133,7 @@ mod tests {
 
     #[test]
     fn a_new_name_keeps_its_method_prefix_and_no_colon_of_its_own() {
+        assert_eq!(normalised(Path::new("/a/new/../Other/./x")), Path::new("/a/Other/x"));
         assert_eq!(new_instance("claude", "work").unwrap(), "claude:work");
         assert_eq!(new_instance("claude", "claude:work").unwrap(), "claude:work");
         assert_eq!(new_instance("openai-compatible", "local").unwrap(), "local");
