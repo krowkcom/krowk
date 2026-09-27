@@ -847,7 +847,7 @@ stdout:
           "name": "config-dir",
           "type": "string",
           "default": "",
-          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one under krowk's data directory for a named account"
+          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"
         }
       ]
     },
@@ -939,7 +939,7 @@ stdout:
               "name": "config-dir",
               "type": "string",
               "default": "",
-              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one under krowk's data directory for a named instance"
+              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"
             }
           ]
         },
@@ -1966,7 +1966,7 @@ stdout:
           "name": "config-dir",
           "type": "string",
           "default": "",
-          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one under krowk's data directory for a named account"
+          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"
         }
       ]
     },
@@ -2058,7 +2058,7 @@ stdout:
               "name": "config-dir",
               "type": "string",
               "default": "",
-              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one under krowk's data directory for a named instance"
+              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"
             }
           ]
         },
@@ -3099,7 +3099,7 @@ stdout:
           "name": "config-dir",
           "type": "string",
           "default": "",
-          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one under krowk's data directory for a named account"
+          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"
         }
       ]
     },
@@ -3191,7 +3191,7 @@ stdout:
               "name": "config-dir",
               "type": "string",
               "default": "",
-              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one under krowk's data directory for a named instance"
+              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"
             }
           ]
         },
@@ -4232,7 +4232,7 @@ tty:
           "name": "config-dir",
           "type": "string",
           "default": "",
-          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one under krowk's data directory for a named account"
+          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"
         }
       ]
     },
@@ -4324,7 +4324,7 @@ tty:
               "name": "config-dir",
               "type": "string",
               "default": "",
-              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one under krowk's data directory for a named instance"
+              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"
             }
           ]
         },
