@@ -961,8 +961,8 @@ fn join_values(v: &Value) -> String {
     }
 }
 
-const DIM: &str = "2";
-const GREEN: &str = "32";
+pub(crate) const DIM: &str = "2";
+pub(crate) const GREEN: &str = "32";
 const RED: &str = "31";
 
 pub fn paint(colour: bool, code: &str, s: &str) -> String {

@@ -50,6 +50,7 @@ struct Terminal<'a> {
     stderr: &'a mut dyn Write,
     interactive: bool,
     open: bool,
+    colour: bool,
 }
 
 impl AuthInteraction for Terminal<'_> {
@@ -72,7 +73,9 @@ impl AuthInteraction for Terminal<'_> {
 
     fn notify(&mut self, notice: Notice<'_>) {
         let _ = match notice {
-            Notice::Info(s) | Notice::Progress(s) => writeln!(self.stderr, "{s}"),
+            // krowk's own words around a vendor's, dimmed so the vendor's
+            // prompts and the result stand out.
+            Notice::Info(s) | Notice::Progress(s) => writeln!(self.stderr, "{}", crate::output::paint(self.colour, crate::output::DIM, s)),
             Notice::AuthUrl { url, message } => {
                 let _ = writeln!(self.stderr, "{message}\n  {}", plain(url));
                 if self.open && auth::open_browser(url) {
@@ -97,7 +100,8 @@ fn parts<'a>(ctx: &'a mut Ctx, asks: bool) -> (ProviderAuth<'a>, Terminal<'a>) {
     let interactive = asks && super::interactive(ctx) && ctx.io.stdin_tty;
     let open = !ctx.f.no_browser && !auth::headless(ctx);
     let pa = ProviderAuth { config: config::global_path(), credentials: credentials_path(), env: ctx.io.env };
-    (pa, Terminal { stderr: &mut *ctx.io.stderr, interactive, open })
+    let colour = ctx.colour;
+    (pa, Terminal { stderr: &mut *ctx.io.stderr, interactive, open, colour })
 }
 
 /// `krowk connect [vendor|instance]`: the vendor, its method and the
@@ -179,38 +183,53 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
         let summary = format!("{verb} {instance}");
         return super::sessions::emit_data(ctx, report, summary);
     }
-    let out = &mut *ctx.io.stdout;
-    let _ = writeln!(out, "{verb} {instance} ({}) {} {}", kind.tag(), if verb == "added" { "to" } else { "in" }, path.display());
+    // For a person: what happened, in one line; what it is, dimmed; and the
+    // command to try it. Paths and binaries are `--json`'s and `krowk
+    // status`'s — a power user asks for them, nobody needs them to go on.
+    let colour = ctx.colour;
+    let dim = |s: &str| crate::output::paint(colour, crate::output::DIM, s);
+    let mut lines = vec![format!("{} {} {instance}", crate::output::paint(colour, crate::output::GREEN, "✓"), capitalised(verb))];
+    let mut facts: Vec<String> = vec![krowk_harness::instances::kind_label(kind.tag()).to_string()];
+    let mut notes: Vec<String> = Vec::new();
     match &key_env {
-        Some(k) if unset => {
-            let _ = writeln!(out, "its key is read from ${k}, which is not set here — export it before running a prompt");
-        }
-        Some(k) => {
-            let _ = writeln!(out, "its key is read from ${k}");
-        }
-        None if done.oauth => {
-            let _ = writeln!(out, "signed in; the tokens are in {} (0600)", credentials_path().display());
-        }
+        Some(k) if unset => notes.push(format!("${k} is not set here — export it before running a prompt")),
+        Some(k) => facts.push(format!("key from ${k}")),
+        None if done.oauth => facts.push("signed in".into()),
         None => {}
     }
-    if let (Some(v), Some(b)) = (&done.vendor, &r.backend) {
-        let (what, var) = if codex { ("Codex", "CODEX_HOME") } else { ("Claude Code", "CLAUDE_CONFIG_DIR") };
-        let dir = b.config_dir.as_ref().map(|d| format!(" with {var}={}", d.display())).unwrap_or_default();
-        let _ = writeln!(out, "runs {what} ({}){dir} — {}", b.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| b.binary.clone()), v.describe);
+    let mut another = None;
+    if let Some(v) = &done.vendor {
+        // The vendor's own account says it better than the kind does.
+        facts[0] = v.describe.clone();
         if codex && !v.shared.is_empty() {
-            let _ = writeln!(out, "shares your Codex {} (linked, so an edit shows in every account)", v.shared.join(", "));
+            facts.push(format!("shares your Codex {}", v.shared.join(", ")));
         }
         if verb != "added" && v.logged_in && !v.ran && r.api_key_env.is_empty() {
             let (vendor, method) = krowk_harness::instances::kind_connect(kind.tag()).unwrap_or_default();
-            let _ = writeln!(out, "it was signed in already — to sign in as another account, add one: `krowk connect {vendor} --method {method} --name <new>`");
+            notes.push("it was signed in already".into());
+            another = Some(format!("krowk connect {vendor} --method {method} --name <new>"));
         }
     }
-    if let Some(m) = &done.default_model {
-        let _ = writeln!(out, "default model: {m}");
+    if done.default_model.is_some() {
+        facts.push("your default model now".into());
     }
-    let example = connect::default_model(kind.tag()).unwrap_or("<model>");
-    let _ = writeln!(out, "use it with: krowk -p --model {instance}/{example} \"…\"");
+    lines.push(dim(&format!("  {}", facts.join(" · "))));
+    lines.extend(notes.iter().map(|n| dim(&format!("  ! {n}"))));
+    let try_it = match &done.default_model {
+        Some(_) => "krowk".to_string(),
+        None => format!("krowk --model {instance}/{}", connect::default_model(kind.tag()).unwrap_or("<model>")),
+    };
+    lines.push(crate::output::crumb_line("try it", &try_it, colour));
+    if let Some(cmd) = another {
+        lines.push(crate::output::crumb_line("another account", &cmd, colour));
+    }
+    let _ = writeln!(ctx.io.stdout, "{}", lines.join("\n"));
     Ok(())
+}
+
+fn capitalised(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// `krowk disconnect [instance] [--remove]`: signs an instance out the way
