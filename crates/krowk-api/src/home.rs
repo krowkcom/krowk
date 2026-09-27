@@ -29,6 +29,8 @@ pub const SESSIONS: &str = "sessions";
 pub const CACHE: &str = "cache";
 pub const READINESS: &str = "readiness";
 pub const LEDGER: &str = "ledger";
+/// Marks a home whose old-layout check is done (`migrate::note_old`).
+pub const CHECKED: &str = ".old-layout-checked";
 
 /// The process environment, for the callers that have no `Env` of their own.
 pub fn process_env(k: &str) -> String {
@@ -55,7 +57,10 @@ fn resolve_on(env: Env, windows: bool) -> Result<PathBuf, Error> {
     let own = env("KROWK_HOME");
     if !own.is_empty() {
         let p = lexical(Path::new(&own));
-        if !Path::new(&own).is_absolute() || p.parent().is_none() || user.as_ref() == Some(&p) {
+        // The user's home itself is judged by where both really lead, and
+        // regardless of case, as macOS and Windows open them.
+        let is_user = user.as_ref().is_some_and(|u| holds(u, &p) && holds(&p, u));
+        if !Path::new(&own).is_absolute() || p.parent().is_none() || is_user {
             return Err(fail("bad_home", format!("KROWK_HOME is {own:?}, which is not an absolute path below the root and apart from your home directory — set it to one, or unset it for ~/.krowk")));
         }
         return Ok(p);
@@ -112,21 +117,19 @@ fn prepare(home: &Path, env: Env) -> Result<(), Error> {
     // Only the default home inherits an older krowk's files: a KROWK_HOME
     // is a sandbox, and never takes the person's own.
     let inherits = env("KROWK_HOME").is_empty();
-    let migrate = || crate::migrate::run(home, env).map_err(|m| fail("migration_failed", m));
     match std::fs::symlink_metadata(home) {
         Ok(m) => {
             own(home, &m).map_err(|m| fail("bad_home", m))?;
-            // One made by hand, or by a run with nothing to move, next to an
-            // older layout: filled from it. One more `stat` when the home
-            // holds its credentials file, the usual case.
-            if inherits && crate::migrate::unfilled(home) && crate::migrate::pending(home, env) {
-                migrate()?;
+            // Once per home, a line naming old files it never took: one
+            // `stat` of its marker after that.
+            if inherits {
+                crate::migrate::note_old(home, env);
             }
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if inherits && crate::migrate::pending(home, env) {
-                migrate()?;
+            if inherits {
+                crate::migrate::run(home, env).map_err(|m| fail("migration_failed", m))?;
             }
             if let Some(parent) = home.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -135,7 +138,13 @@ fn prepare(home: &Path, env: Env) -> Result<(), Error> {
             // missing: reads find nothing, and a write says why it failed.
             match make(home) {
                 Err(m) if exists(home) => Err(fail("bad_home", m)),
-                _ => Ok(()),
+                Err(_) => Ok(()),
+                Ok(()) => {
+                    if inherits {
+                        let _ = std::fs::write(home.join(CHECKED), "");
+                    }
+                    Ok(())
+                }
             }
         }
         Err(e) => Err(fail("bad_home", format!("{} cannot be read: {e}", home.display()))),

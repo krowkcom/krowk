@@ -2,7 +2,7 @@
 //! binary against a home laid out the way the last release left it: the
 //! config, the registry key, the provider file with a SuperGrok login and a
 //! stored key, a named Claude account (the fake `claude`, no real login),
-//! krowk.db, a session and the models.dev cache. Everything moves and still
+//! krowk.db, a session and the models.dev cache (rebuilt, not moved). Everything moves and still
 //! works; a second run moves nothing and never reads the old places again;
 //! a move cut short finishes on the next run; a KROWK_HOME never takes the
 //! person's own files; and a malformed old key file stops the move with its
@@ -186,7 +186,7 @@ fn an_older_layout_moves_into_the_home_once_and_everything_in_it_still_works() {
     assert_eq!(mode(&h.join("accounts/claude-work")), 0o700, "an account keeps its mode");
     assert_eq!(mode(&h.join("sessions/krowk.db")), 0o600);
     assert!(h.join("sessions/sess-old/events.jsonl").is_file());
-    assert!(h.join("cache/models.json").is_file());
+    assert!(!h.join("cache/models.json").exists(), "the cache is rebuilt, not moved");
     assert!(h.join("trusted.json").is_file());
     for moved in ["permissions.json", "skills/greet/SKILL.md", "AGENTS.md"] {
         assert!(h.join(moved).is_file(), "{moved} did not move");
@@ -253,26 +253,19 @@ fn an_older_layout_moves_into_the_home_once_and_everything_in_it_still_works() {
 }
 
 #[test]
-fn a_move_cut_short_finishes_on_the_next_run() {
+fn a_move_cut_short_is_undone_and_made_whole_on_the_next_run() {
     let b = Sandbox::new("resume");
     b.old_layout();
-    // As a crash after some steps leaves it: the registry key merged into
-    // the staging directory and its old file gone, one account moved and
-    // another not, and config.json and the provider file still where they
-    // were.
+    // As a crash leaves it: the merged credentials written into the staging
+    // directory, and one account renamed in after its journal line — the
+    // old files all still where they were but that account.
     let staging = b.home().join(".krowk.migrating");
-    std::fs::create_dir_all(&staging).unwrap();
-    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let registry = std::fs::read_to_string(b.old_config().join("credentials.json")).unwrap();
-    b.write(&staging.join("credentials.json"), &registry, 0o600);
-    std::fs::remove_file(b.old_config().join("credentials.json")).unwrap();
-    let data = b.old_data();
-    b.write(&data.join("claude/claude-home/fake-login"), "", 0o600);
-    let mut cfg: Value = serde_json::from_str(&std::fs::read_to_string(b.old_config().join("config.json")).unwrap()).unwrap();
-    cfg["instances"]["claude:home"] = json!({"kind": "claude-code", "configDir": data.join("claude/claude-home").display().to_string()});
-    b.write(&b.old_config().join("config.json"), &cfg.to_string(), 0o644);
     std::fs::create_dir_all(staging.join("accounts")).unwrap();
-    std::fs::rename(data.join("claude/claude-work"), staging.join("accounts/claude-work")).unwrap();
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700)).unwrap();
+    b.write(&staging.join("credentials.json"), r#"{"default":"ws_mig"}"#, 0o600);
+    let (from, to) = (b.old_data().join("claude/claude-work"), staging.join("accounts/claude-work"));
+    b.write(&staging.join(".moves"), &format!("{}\n", json!([from, to])), 0o600);
+    std::fs::rename(&from, &to).unwrap();
 
     let out = b.krowk(&["doctor", "--json"], &[]);
     assert!(out.status.success(), "{}", printed(&out));
@@ -280,16 +273,29 @@ fn a_move_cut_short_finishes_on_the_next_run() {
     assert!(!staging.exists() && !b.old_config().exists() && !b.old_data().exists() && !b.old_cache().exists());
     let h = b.krowk_home();
     let c = b.credentials();
-    assert_eq!(c["workspaces"]["ws_mig"]["token"], REGISTRY_KEY, "the half merged before the crash is kept");
-    assert_eq!(c["instances"]["supergrok"]["accessToken"], ACCESS, "the half after it is merged");
-    let cfg = b.config();
-    for (name, dir) in [("claude:work", "claude-work"), ("claude:home", "claude-home")] {
-        assert_eq!(cfg["instances"][name]["configDir"], h.join("accounts").join(dir).display().to_string(), "{name}");
-        assert!(h.join("accounts").join(dir).join("fake-login").exists(), "{name}");
+    assert_eq!(c["workspaces"]["ws_mig"]["token"], REGISTRY_KEY);
+    assert_eq!(c["instances"]["supergrok"]["accessToken"], ACCESS);
+    assert_eq!(b.config()["instances"]["claude:work"]["configDir"], h.join("accounts/claude-work").display().to_string());
+    assert!(h.join("accounts/claude-work/fake-login").exists() && !h.join(".moves").exists());
+    assert_eq!(b.row("claude:work")["state"], "ready");
+}
+
+#[test]
+fn a_home_that_exists_takes_nothing_from_an_old_layout_and_names_it_once() {
+    let b = Sandbox::new("exists");
+    b.old_layout();
+    std::fs::create_dir_all(b.krowk_home()).unwrap();
+    let first = b.krowk(&["doctor", "--json"], &[]);
+    let said = String::from_utf8_lossy(&first.stderr).into_owned();
+    assert!(said.contains("old krowk files at") && said.contains(&b.old_config().display().to_string()) && said.contains("move or delete them"), "{said}");
+    assert!(b.old_config().join("credentials.json").exists() && !b.krowk_home().join("credentials.json").exists(), "nothing merged in");
+    let again = b.krowk(&["doctor", "--json"], &[]);
+    assert!(!String::from_utf8_lossy(&again.stderr).contains("old krowk files"), "said once: {}", printed(&again));
+    for out in [&first, &again] {
+        for secret in [REGISTRY_KEY, STORED_KEY, ACCESS, REFRESH] {
+            assert!(!printed(out).contains(secret));
+        }
     }
-    assert_eq!(std::fs::read_to_string(h.join("cache/models.json")).unwrap(), r#"{"anthropic":{"claude-sonnet-4-6":{"input":3}}}"#);
-    assert!(!b.home().join(".krowk.migrate.lock").exists(), "the lock is removed after");
-    assert_eq!(b.row("claude:home")["state"], "ready");
 }
 
 #[test]
