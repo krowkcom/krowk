@@ -497,12 +497,20 @@ impl Scope {
         })
     }
 
-    /// Whether `p` is, or is inside, one of `secrets` — as spelled or as the
-    /// secret's own path leads, compared regardless of case.
+    /// Whether `p` is, or is inside, one of `secrets` — by where it leads
+    /// (`..` taken out by its words, and every symlink followed), against
+    /// the secret as named and as it leads, regardless of case: a search
+    /// through `.config/krowk/../krowk` or a symlinked alias skips it too.
     pub fn secret(&self, p: &Path) -> bool {
+        if self.secrets.is_empty() {
+            return false;
+        }
         let lower = |p: &Path| PathBuf::from(p.to_string_lossy().to_lowercase());
-        let p = lower(p);
-        self.secrets.iter().any(|s| p.starts_with(lower(s)) || p.starts_with(lower(&s.canonicalize().unwrap_or_else(|_| s.clone()))))
+        let seen: Vec<PathBuf> = [Some(lexical(p)), real_path(p, 0).ok()].into_iter().flatten().map(|q| lower(&q)).collect();
+        self.secrets.iter().any(|s| {
+            let named = [lower(&lexical(s)), lower(&s.canonicalize().unwrap_or_else(|_| s.clone()))];
+            seen.iter().any(|q| named.iter().any(|n| q.starts_with(n)))
+        })
     }
 
     /// The path a tool was given, resolved against the working directory,
@@ -532,6 +540,20 @@ impl Scope {
             Reach::Outside(why) => Err(format!("{why}: the file tools reach only inside the working directory and the directories the settings add, unless a person allows it, an allow rule covers it, or krowk runs with `--permission-mode bypassPermissions`")),
         }
     }
+}
+
+/// `.` and `..` taken out of a path by its words alone.
+fn lexical(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir if out.pop() => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Where a path leads once every symlink in it is followed, for a path
