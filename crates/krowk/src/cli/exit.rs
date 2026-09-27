@@ -1,5 +1,5 @@
 //! Exit codes are a contract a script branches on, so every failure maps to
-//! one here and nowhere else. The table is in `krowk help`.
+//! one here and nowhere else. The table is in `krowk help exit-codes`.
 
 use krowk_api::Error;
 

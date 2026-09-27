@@ -1,138 +1,131 @@
-//! The human help and the greeting. The command list is rendered from the
-//! catalog under the headings in `SECTIONS`; everything after it is prose,
-//! which is the half a struct has no way to say.
+//! The human help and the greeting. The command lists are rendered from the
+//! catalog under the headings in `GROUPS`, a command's own help from its
+//! entry and its `about`; the topics are what belongs to no one command.
 
-use super::catalog::{Catalog, Command, Flag, BOOL, SECTIONS};
+use super::catalog::{self, Catalog, Command, Flag, ALL_ONLY, BOOL, GROUPS};
 
 /// The Krowk mark: the logo's four-by-four grid of squares, two grid rows to a
 /// text row so a square stays square.
-const MARK: &str = "█  █\n█▀▀▄";
+const MARK: [&str; 2] = ["█  █", "█▀▀▄"];
+
+/// What every page is held to, so nothing wraps on a standard terminal.
+const COLUMNS: usize = 80;
 
 fn banner(version: &str) -> String {
-    format!("\n{MARK}\n\nKrowk {version}\nPermalinks for agent output\n\n")
+    format!("\n{}\n{}\n\nKrowk {version}\nPermalinks for agent output\n\n", MARK[0], MARK[1])
 }
 
 const GREETING_HINTS: &[(&str, &str)] = &[
     ("krowk push screenshot.png", "Upload a file and get a link — no key needed, lasts a day"),
     ("krowk login --token …", "Add a key: uploads keep, group under runs, and stay yours"),
-    ("krowk help", "Every command and flag — add --json for the surface as data"),
-];
-
-const LEARN_MORE: &[(&str, &str)] = &[
-    ("krowk help <command>", "One command's own arguments and flags"),
-    ("krowk help --json", "The whole surface as data, for tooling"),
-    ("krowk doctor", "Check this machine's setup and reach the registry"),
+    ("krowk help", "The commands; --all for every one, --json as data"),
 ];
 
 /// What `krowk` alone says: the first upload, the key that makes uploads
 /// keep, and where the rest is.
 pub fn greeting(version: &str) -> String {
-    format!("{}{}\n", banner(version), hint_block(GREETING_HINTS))
+    format!("{}{}\n", banner(version), hints("  ", GREETING_HINTS).join("\n"))
 }
 
-const HELP: &str = r#"USAGE
-  krowk <command> [flags]
-  krowk push shot.png     Upload a file, get a link
+/// Where the files live, which only the running process knows.
+pub struct Files<'a> {
+    pub credentials: &'a str,
+    pub config: &'a str,
+}
 
-{commands}
+#[cfg(feature = "harness")]
+const USAGE: &[(&str, &str)] =
+    &[("krowk", "Open the agent here"), ("krowk -p \"…\"", "One prompt, headless"), ("krowk <command> [flags]", "")];
+#[cfg(not(feature = "harness"))]
+const USAGE: &[(&str, &str)] = &[("krowk <command> [flags]", ""), ("krowk push shot.png", "Upload a file, get a link")];
 
-UPLOAD FLAGS
-  --run <slug|link>      Attach to an existing run instead of opening one, by
-                         slug or by any link carrying one. On
-                         `claim` and `uploads attach` it names the run an upload
-                         already made joins — a claimed upload has none otherwise
-  --pull-request <url>   Pull request the work belongs to
-  --link <url>           Link this work is about — the issue, the spec, the
-                         discussion. Repeat for more than one, up to 20, and
-                         label or classify each with the two flags below
-  --link-title <text>    What to call the --link before it, instead of its URL
-  --link-rel <kind>      What the --link before it is: tracks, fixes, spec,
-                         discussion, source, supersedes — or your own word
-  --reference <id>       Related identifier that is not a URL, e.g. a ticket
-                         key — repeat for more than one. A URL is a --link
-  --title <text>         Title for the work, recorded on the run. What a pasted
-                         link says about a file is that file's --caption
-  --caption <text>       What this file shows, recorded on the artifact as
-                         `krowk.caption` and used wherever it is pasted. Repeat
-                         to caption several files in the order they are given
-  --destination <tool>   Print what this tool wants pasted into it — the krowk
-                         block for `github`, `linear` and the like, the bare link for
-                         the ones that unfurl it themselves, like `slack`. A tool
-                         krowk has not been told about gets the block
-  --private              Upload where only this workspace can read it. The
-                         image still embeds anywhere — its byte URL is the
-                         capability — but the card opens only for a signed-in
-                         member, reads as not found to everyone else, and
-                         unfurls nowhere. Needs an API key
-  --session <id>         Override the detected agent session
-  --repo <owner/name>    Override the detected repository
-  --commit <sha>         Override the detected commit
-  --agent <name>         Override the detected agent
-  --metadata <key=val>   Extra metadata — repeat for more than one. On push it
-                         lands on each artifact; on `runs start`, on the run.
-                         Your value wins over a detected one. Metadata is public.
+/// The flags worth knowing before any command; `krowk help flags` has them all.
+const FLAGS: &[(&str, &str)] = &[
+    #[cfg(feature = "harness")]
+    ("--model <instance/model>", "Which model (e.g. claude/sonnet)"),
+    #[cfg(feature = "harness")]
+    ("--resume [id]", "Continue a session"),
+    ("--json · --jq <expr>", "Output as JSON, or filter it"),
+    ("-h, --help · -v, --version", ""),
+];
 
-LIST FLAGS
-  --limit <n>            Rows per page (1–100, default 50)
-  --before <slug>        Start after this row — the `next` of the last page
-  --run <slug|link>      On `uploads list`, narrow it to what one run produced
+const MORE: &[(&str, &str)] = &[
+    ("krowk help <command>", "A command's own flags"),
+    ("krowk help --all", "Every command and subcommand"),
+    ("krowk help topics", "flags, exit codes, environment, workspaces, links"),
+];
 
-SESSIONS FLAGS
-  --harness <name>       On `sessions`, only sessions from this harness
-  --worktree <path>      On `sessions`, only sessions in this worktree, by path
-  --limit <n>            On `sessions`, list at most this many (default 50)
-  --all                  On `sessions`, list every session, ignoring --limit
-  --thinking             On `sessions show`, show full thinking parts
-  --max-usd <n>          On `sessions budget`, trip over this metered cost
-  --max-tokens <n>       On `sessions budget`, trip over this many generated
-                         tokens (output and reasoning) — the session's and
-                         its subagents'. Over a limit it exits 4; a Claude
-                         Code hook blocks only on exit 2, so block on a trip
-                         alone: `krowk sessions budget "$ID" --max-usd 5;
-                         [ $? -ne 4 ] || exit 2` — any other failure then
-                         warns without stopping the agent
-  --from <source>        On `sessions import`, whose transcripts to read:
-                         claude, cursor, opencode, ledger, or all.
-                         Required
-  --dry-run              Count what would be imported and write nothing
-  --limit <n>            On `sessions import`, read at most this many
-                         transcripts per source (0, the default, is all)
-  --yes                  On `sessions rebuild`, delete krowk.db without asking —
-                         required when nobody is at a terminal to confirm
-  --no-network           On `sessions sync`, skip the models.dev price refresh
+/// `krowk help`: what krowk is, how to start, and one line per command.
+pub fn help(c: &Catalog) -> String {
+    let groups = GROUPS.iter().map(|(title, names)| {
+        let rows: Vec<String> = names
+            .iter()
+            .filter(|n| !ALL_ONLY.contains(n))
+            .map(|n| format!("  {n:<12}  {}", c.commands.iter().find(|c| c.name == *n).map_or("", |c| c.summary)))
+            .collect();
+        format!("{title}\n{}", rows.join("\n"))
+    });
+    let blocks: Vec<String> = [format!("{}  krowk — {}\n{}  version {}", MARK[0], c.summary, MARK[1], c.version)]
+        .into_iter()
+        .chain([format!("USAGE\n{}", hints_at("  ", 25, USAGE).join("\n"))])
+        .chain(groups)
+        .chain([format!("FLAGS\n{}", hints_at("  ", 25, FLAGS).join("\n")), hints("", MORE).join("\n")])
+        .collect();
+    blocks.join("\n\n")
+}
 
-AUTH FLAGS
-  --token <key>          Store this key rather than asking the browser — how CI
-                         logs in, and it opens nothing
-  --no-browser           Print the code and the page instead of opening a browser
+/// `krowk help --all`: every command and subcommand, one line each.
+pub fn help_all(c: &Catalog) -> String {
+    let leaves = c.leaves();
+    let groups: Vec<(&str, Vec<&Command>)> = GROUPS
+        .iter()
+        .map(|(title, names)| {
+            let rows = names.iter().flat_map(|n| leaves.iter().filter(move |l| l.name.split(' ').next() == Some(n)));
+            (*title, rows.collect())
+        })
+        .collect();
+    let width = groups.iter().flat_map(|(_, rows)| rows.iter()).map(|l| l.name.len()).max().unwrap_or(0);
+    let mut blocks = vec!["krowk — every command and subcommand".to_string()];
+    blocks.extend(groups.iter().map(|(title, rows)| {
+        let rows: Vec<String> = rows.iter().map(|l| format!("  {:<width$}  {}", l.name, l.summary)).collect();
+        format!("{title}\n{}", rows.join("\n"))
+    }));
+    blocks.push(
+        hints(
+            "",
+            &[
+                ("krowk help <command>", "A command's own flags and explanation"),
+                ("krowk help flags", "The flags every command takes"),
+                ("krowk help topics", "Exit codes, environment, workspaces, links"),
+                ("krowk help --json", "The whole surface as data, for tooling"),
+            ],
+        )
+        .join("\n"),
+    );
+    blocks.join("\n\n")
+}
 
-CONFIG FLAGS
-  --global               On `config set` and `config unset`, write the machine-wide
-                         file instead of the repository's
+/// What belongs to no one command. `workspaces` is the command's own help,
+/// which carries it; the rest are written here.
+pub const TOPICS: &[(&str, &str)] = &[
+    #[cfg(feature = "harness")]
+    ("flags", "The flags every command takes, and the agent's"),
+    #[cfg(not(feature = "harness"))]
+    ("flags", "The flags every command takes"),
+    ("exit-codes", "What each exit code means"),
+    ("environment", "Environment variables, and where files live"),
+    ("workspaces", "Which stored key a command uses"),
+    ("links", "Naming an upload or a run by any link to it"),
+];
 
-GLOBAL FLAGS
-  --workspace <name>     Use this workspace's stored key for this one command
-  --dev                  Talk to a local registry at {dev_url}
-  --format <fmt>         human | json | markdown | url (default: human on a TTY, json when piped)
-                         markdown and url describe an upload; other commands fall back to json
-  --json                 Shorthand for --format json
-  --quiet                Raw JSON, no envelope
-  --jq <expr>            Filter the JSON with a jq expression, built in — implies
-                         --format json, and reads the bare record under --quiet
-  -h, --help             Show this
-  -v, --version          Print the version
+/// `krowk help topics`.
+pub fn topics() -> String {
+    format!("TOPICS\n{}\n\nkrowk help <topic>", hints("  ", TOPICS).join("\n"))
+}
 
-ENVIRONMENT
-  KROWK_TOKEN            API token — wins over the credentials file
-  KROWK_WORKSPACE        Workspace to use, as if by --workspace
-  KROWK_API_URL          API base URL (default {default_url})
-  KROWK_DEV              1/true/yes/on — same as --dev
-  KROWK_AGENT            Agent name to report
-  KROWK_NO_UPDATE_CHECK  1/true/yes/on — never check for or mention new releases
-
-EXIT CODES
-  0  it worked
-  1  the command was wrong, or krowk failed on its own — also anything unclassified
+const EXIT_CODES: &str = "  0  it worked
+  1  the command was wrong, or krowk failed on its own — also anything
+     unclassified
   2  not found — no such artifact or run in this workspace, or no such endpoint
   3  refused for want of credentials — no key, a key the registry rejects, a
      browser login somebody denied or that nothing on CI could approve, or no
@@ -141,118 +134,141 @@ EXIT CODES
   4  refused by the registry on the request or the state of things — retrying
      unchanged answers the same; also a session over its `sessions budget`
   5  rate limited — wait and retry
-  6  the bytes did not move — the registry or object storage could not be reached
+  6  the bytes did not move — the registry or object storage could not be
+     reached
   7  the registry failed on its side, or answered something unreadable — or a
      login page krowk will not open, which is the same news
   8  gone — the artifact expired or was taken down, or a browser login lapsed
-     before anybody approved it; no retry brings any of them back
+     before anybody approved it; no retry brings any of them back";
 
-Registry precedence: --dev, then KROWK_API_URL, then KROWK_DEV, then the default.
-
-Run metadata — the pull request, the links, the references, the session — is
-recorded on a run, and a run belongs to a workspace, so it needs an API key.
-Without one an upload still works: it lands anonymously, expires within a day,
-and comes back with a claim token that `krowk claim` spends to move it
-into a workspace — where a paid plan keeps it and a free one gives it another day.
-
+const LINKS: &str = "\
 Wherever an artifact or a run is named — a positional, or --run — a link that
 carries it does just as well: the card page, the CDN URL under it, or anything
 else krowk printed. A link carrying no slug of the kind the command wants, or
-two different ones, is refused before anything is sent.
+two different ones, is refused before anything is sent.";
 
-Taking an upload down removes the bytes at once and leaves the link reporting
-that it was taken down. There is no undo and no confirmation — it is what to
-reach for when something was published by accident. A key takes down anything in
-its workspace; an upload that is still anonymous is taken down with the claim
-token it came back with, passed after the slug.
-
-Logging in goes through a browser. `krowk login` asks the registry to open
-an authorization, prints a short code and opens the page that approves it;
-approving mints a key and this command collects it, once. Over SSH or with no
-display it prints the code and the page instead of opening anything, which is
-what --no-browser asks for everywhere else. On CI it is refused outright, since
-nothing there can approve it — that is what --token is for, and --token never
-opens or waits for anything. `krowk login` is your krowk account; a model
-provider — a Claude or ChatGPT subscription, SuperGrok, an API key — is
-connected with the full build's `krowk connect`.
-
-A key belongs to one workspace, and the credentials file holds one key per
-workspace: logging in against a second workspace adds a key rather than
-replacing the first. Which key a command uses is decided in order by
---workspace, KROWK_WORKSPACE, the repository's .krowk/config.json, the global
-config, and finally whichever key logged in last. `krowk config set workspace <name>`
-pins a repository to a workspace, so every command run inside it — by anyone,
-agent or person — lands there without saying so.
-
-Credentials live in {credentials} (0600).
-Config lives in {config}, and per repository in <git-root>/.krowk/config.json.
-
-LEARN MORE
-{learn_more}"#;
-
-pub fn help(c: &Catalog, credentials: &str, config: &str) -> String {
-    banner(&c.version)
-        + &HELP
-            .replace("{commands}", &command_block(c))
-            .replace("{dev_url}", krowk_api::DEV_BASE_URL)
-            .replace("{default_url}", krowk_api::DEFAULT_BASE_URL)
-            .replace("{credentials}", credentials)
-            .replace("{config}", config)
-            .replace("{learn_more}", &hint_block(LEARN_MORE))
+/// A topic's page, or None for a name that is not one.
+pub fn topic(name: &str, c: &Catalog, files: &Files) -> Option<String> {
+    let (_, summary) = TOPICS.iter().find(|(n, _)| *n == name)?;
+    let body = match name {
+        "flags" => flags_topic(),
+        "exit-codes" => format!("EXIT CODES\n{EXIT_CODES}"),
+        "environment" => {
+            let rows: Vec<(String, String)> = c
+                .environment
+                .iter()
+                .map(|e| {
+                    let why = if e.default.is_empty() { e.usage.to_string() } else { format!("{} (default {})", e.usage, e.default) };
+                    (e.name.to_string(), why)
+                })
+                .collect();
+            format!(
+                "ENVIRONMENT\n{}\n\nWhich registry: --dev, then KROWK_API_URL, then KROWK_DEV, then the default.\n\nFILES\n  Credentials live in {} (0600).\n  Config lives in {}, and per repository in\n  <git-root>/.krowk/config.json.",
+                table(&rows, 0).join("\n"),
+                files.credentials,
+                files.config,
+            )
+        }
+        "links" => LINKS.to_string(),
+        _ => return None,
+    };
+    Some(format!("krowk help {name} — {}\n\n{body}", lowered(summary)))
 }
 
-/// The sections, each command beside what it does, in one column width
-/// across the whole page.
-fn command_block(c: &Catalog) -> String {
-    let leaves = c.leaves();
-    let summary = |name: &str| leaves.iter().find(|l| l.name == name).map_or("", |l| l.summary);
-    let width = SECTIONS.iter().flat_map(|(_, names)| names.iter()).map(|n| n.len()).max().unwrap_or(0);
-    SECTIONS
-        .iter()
-        .map(|(title, names)| {
-            let rows: Vec<String> = names.iter().map(|n| format!("  {n:<width$}  {}", summary(n))).collect();
-            format!("{title}\n{}", rows.join("\n"))
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+fn flags_topic() -> String {
+    let rows = |flags: &[Flag]| table(&flags.iter().map(|f| (flag_label(f), f.usage.clone())).collect::<Vec<_>>(), 0).join("\n");
+    #[allow(unused_mut)]
+    let mut out = format!("GLOBAL FLAGS\n{}", rows(&catalog::core_flags()));
+    #[cfg(feature = "harness")]
+    out.push_str(&format!(
+        "\n\nAGENT FLAGS\n  Bare `krowk` opens the agent here; `krowk -p \"…\"` runs one prompt headless.\n\n{}",
+        rows(&catalog::prompt_flags())
+    ));
+    out
 }
 
-fn hint_block(hints: &[(&str, &str)]) -> String {
-    let width = hints.iter().map(|(cmd, _)| cmd.chars().count()).max().unwrap_or(0);
-    hints.iter().map(|(cmd, why)| format!("  {cmd:<width$}  {why}")).collect::<Vec<_>>().join("\n")
+/// Rows of a label and what it says, the labels in one column.
+fn hints(indent: &str, rows: &[(&str, &str)]) -> Vec<String> {
+    let width = rows.iter().filter(|(_, why)| !why.is_empty()).map(|(l, _)| l.chars().count()).max().unwrap_or(0);
+    hints_at(indent, width, rows)
+}
+
+fn hints_at(indent: &str, width: usize, rows: &[(&str, &str)]) -> Vec<String> {
+    rows.iter().map(|(l, why)| format!("{indent}{l:<width$}  {why}").trim_end().to_string()).collect()
+}
+
+/// Rows of a label and what it means, the meaning wrapped under itself so no
+/// line passes 80 columns. `width` is the label column's, at least; a label
+/// too long for the column gets a line of its own.
+fn table(rows: &[(String, String)], width: usize) -> Vec<String> {
+    const MOST: usize = 28;
+    let width = rows.iter().map(|(l, _)| l.chars().count() + 2).max().unwrap_or(0).max(width).min(MOST);
+    let mut out = Vec::new();
+    for (label, why) in rows {
+        let mut label = label.as_str();
+        if label.chars().count() + 2 > width {
+            out.push(format!("  {label}"));
+            label = "";
+        }
+        for line in wrap(why, COLUMNS - 2 - width) {
+            out.push(format!("  {label:<width$}{line}").trim_end().to_string());
+            label = "";
+        }
+    }
+    out
+}
+
+fn wrap(text: &str, room: usize) -> Vec<String> {
+    let mut lines = vec![String::new()];
+    for word in text.split(' ') {
+        let line = lines.last_mut().expect("never empty");
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > room {
+            lines.push(word.to_string());
+        } else {
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+    }
+    lines
+}
+
+fn lowered(s: &str) -> String {
+    let mut chars = s.chars();
+    chars.next().map(|c| c.to_lowercase().collect::<String>()).unwrap_or_default() + chars.as_str()
 }
 
 /// One command's own help: the catalog read back as text.
 pub fn command_help(cmd: &Command, globals: &[Flag]) -> String {
-    let mut summary = cmd.summary.chars();
-    let lowered: String = summary.next().map(|c| c.to_lowercase().collect::<String>()).unwrap_or_default() + summary.as_str();
-    let mut lines = vec![format!("krowk {} — {lowered}", cmd.name)];
+    let mut lines = vec![format!("krowk {} — {}", cmd.name, lowered(cmd.summary))];
     if !cmd.usage.is_empty() {
         lines.extend(["".into(), "USAGE".into(), format!("  {}", cmd.usage)]);
     }
+    if !cmd.about.is_empty() {
+        lines.extend(["".into(), cmd.about.into()]);
+    }
     if !cmd.subcommands.is_empty() {
-        lines.extend(["".into(), "COMMANDS".into()]);
-        let width = cmd.subcommands.iter().map(|s| s.usage.len()).max().unwrap_or(0) + 4;
-        lines.extend(cmd.subcommands.iter().map(|s| format!("  {:<width$}{}", s.usage, s.summary)));
+        // Each under the group's name, `krowk uploads` read as said.
+        let prefix = format!("krowk {} ", cmd.name);
+        let rows: Vec<(String, String)> =
+            cmd.subcommands.iter().map(|s| (s.usage.trim_start_matches(&prefix).to_string(), s.summary.to_string())).collect();
+        lines.extend(["".into(), format!("COMMANDS (krowk {} …)", cmd.name)]);
+        lines.extend(table(&rows, 0));
     }
-    let width = cmd
-        .args
-        .iter()
-        .map(|a| arg_label(a).len())
-        .chain(cmd.flags.iter().chain(globals).map(|f| flag_label(f).len()))
-        .max()
-        .unwrap_or(0)
-        + 2;
-    if !cmd.args.is_empty() {
-        lines.extend(["".into(), "ARGUMENTS".into()]);
-        lines.extend(cmd.args.iter().map(|a| format!("  {:<width$}{}", arg_label(a), a.summary)));
+    let args: Vec<(String, String)> = cmd.args.iter().map(|a| (arg_label(a), a.summary.to_string())).collect();
+    let flags = |flags: &[Flag]| flags.iter().map(|f| (flag_label(f), f.usage.clone())).collect::<Vec<_>>();
+    let own = flags(&cmd.flags);
+    let width = args.iter().chain(&own).map(|(l, _)| l.chars().count() + 2).max().unwrap_or(0);
+    for (title, rows) in [("ARGUMENTS", &args), ("FLAGS", &own)] {
+        if !rows.is_empty() {
+            lines.extend(["".into(), title.into()]);
+            lines.extend(table(rows, width));
+        }
     }
-    if !cmd.flags.is_empty() {
-        lines.extend(["".into(), "FLAGS".into()]);
-        lines.extend(cmd.flags.iter().map(|f| format!("  {:<width$}{}", flag_label(f), f.usage)));
-    }
-    lines.extend(["".into(), "GLOBAL FLAGS".into()]);
-    lines.extend(globals.iter().map(|f| format!("  {:<width$}{}", flag_label(f), f.usage)));
+    // Every command takes them, so they are named here and explained once.
+    let names: Vec<String> = globals.iter().filter(|f| f.aliases.is_empty()).map(|f| format!("--{}", f.name)).collect();
+    lines.extend(["".into(), format!("Global flags: {} — `krowk help flags`", names.join(" "))]);
     lines.join("\n")
 }
 
@@ -274,4 +290,45 @@ fn flag_label(f: &Flag) -> String {
         label += &format!(" (default {})", f.default);
     }
     label
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fits(page: &str) {
+        for line in page.lines() {
+            assert!(line.chars().count() <= COLUMNS, "over {COLUMNS} columns: {line:?}");
+        }
+    }
+
+    #[test]
+    fn the_overview_fits_on_one_screen() {
+        let page = help(&catalog::catalog("0.11.0-rc.1"));
+        assert!(page.lines().count() <= 45, "{} lines:\n{page}", page.lines().count());
+        fits(&page);
+    }
+
+    #[test]
+    fn help_all_lists_every_command_the_build_has_on_one_line_each() {
+        let c = catalog::catalog("dev");
+        let page = help_all(&c);
+        fits(&page);
+        for leaf in c.leaves() {
+            let built = cfg!(feature = "sessions") || !matches!(leaf.name.split(' ').next(), Some("sessions" | "pricing"));
+            let listed = page.lines().any(|l| l.trim_start().starts_with(&format!("{}  ", leaf.name)));
+            assert_eq!(listed, built, "{}", leaf.name);
+        }
+    }
+
+    #[test]
+    fn every_topic_has_a_page_and_every_page_fits() {
+        let c = catalog::catalog("dev");
+        let files = Files { credentials: "/home/me/.config/krowk/credentials.json", config: "/home/me/.config/krowk/config.json" };
+        for (name, _) in TOPICS {
+            let page = topic(name, &c, &files).or_else(|| c.find(&[name.to_string()]).map(|cmd| command_help(&cmd, &[])));
+            fits(&page.unwrap_or_else(|| panic!("no page for {name}")));
+        }
+        fits(&topics());
+    }
 }

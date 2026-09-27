@@ -269,28 +269,40 @@ fn clip(s: &[String], n: usize) -> &[String] {
 
 fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
     let c = catalog::catalog(VERSION);
+    let human = ctx.format != Format::Json;
     if topic.is_empty() {
-        if ctx.format == Format::Json {
+        if !human {
             return ctx.emit(&output::encode(&c));
         }
-        let text = help::help(
-            &c,
-            &krowk_api::creds::credentials_path().display().to_string(),
-            &crate::config::global_path().display().to_string(),
-        );
+        let text = if ctx.f.all { help::help_all(&c) } else { help::help(&c) };
         let _ = writeln!(ctx.io.stdout, "{text}");
         return Ok(());
     }
-    let Some(cmd) = c.find(topic) else {
+    if let Some(cmd) = c.find(topic) {
+        if !human {
+            return ctx.emit(&output::encode(&cmd));
+        }
+        let _ = writeln!(ctx.io.stdout, "{}", help::command_help(&cmd, &catalog::core_flags()));
+        return Ok(());
+    }
+    let (credentials, config) = (krowk_api::creds::credentials_path(), crate::config::global_path());
+    let files = help::Files { credentials: &credentials.display().to_string(), config: &config.display().to_string() };
+    let page = match topic[0].as_str() {
+        "topics" if topic.len() == 1 => Some(help::topics()),
+        name if topic.len() == 1 => help::topic(name, &c, &files),
+        _ => None,
+    };
+    let Some(page) = page else {
         return Err(fail(
             "unknown_command",
-            format!("`{}` is not a krowk command — run `krowk help` for the list", clip(topic, 2).join(" ")),
+            format!("`{}` is not a krowk command or help topic — run `krowk help` for the list", clip(topic, 2).join(" ")),
         ));
     };
-    if ctx.format == Format::Json {
-        return ctx.emit(&output::encode(&cmd));
+    // A topic is prose, so its JSON is the prose in a record.
+    if !human {
+        return ctx.emit(&output::encode(&serde_json::json!({ "topic": topic[0], "text": page })));
     }
-    let _ = writeln!(ctx.io.stdout, "{}", help::command_help(&cmd, &c.global_flags));
+    let _ = writeln!(ctx.io.stdout, "{page}");
     Ok(())
 }
 
