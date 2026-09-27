@@ -117,7 +117,7 @@ $ krowk sessions --quiet
 stderr:
 {
   "error": "bad_home",
-  "fix": "KROWK_HOME is \"relative/home\", which is not an absolute path below the root — set it to one, or unset it for ~/.krowk",
+  "fix": "KROWK_HOME is \"relative/home\", which is not an absolute path below the root and apart from your home directory — set it to one, or unset it for ~/.krowk",
   "retryable": false
 }
 exit: 1
@@ -128,7 +128,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "bad_home",
-    "fix": "KROWK_HOME is \"relative/home\", which is not an absolute path below the root — set it to one, or unset it for ~/.krowk",
+    "fix": "KROWK_HOME is \"relative/home\", which is not an absolute path below the root and apart from your home directory — set it to one, or unset it for ~/.krowk",
     "retryable": false
   }
 }
