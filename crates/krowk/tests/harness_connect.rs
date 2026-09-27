@@ -192,7 +192,7 @@ fn connect_without_a_terminal_needs_the_method_when_there_is_a_choice_and_the_ve
     assert_eq!((or["data"]["instance"].as_str(), or["data"]["api_key_env"].as_str()), (Some("openrouter"), Some("OPENROUTER_API_KEY")));
     let out = b.krowk(&["connect", "openrouter", "--name", "team", "--format", "human"], &[]);
     let said = String::from_utf8_lossy(&out.stdout);
-    assert!(said.contains("$OPENROUTER_TEAM_API_KEY, which is not set here"), "{said}");
+    assert!(said.contains("$OPENROUTER_TEAM_API_KEY is not set here"), "{said}");
 
     // An account word is not a vendor to `krowk login`, and says where to
     // go in the vendor, method and name form every fix line takes.
@@ -222,7 +222,7 @@ fn disconnecting_your_own_claude_login_says_so_and_is_refused_without_a_terminal
     std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
     let out = b.krowk(&["connect", "anthropic", "--method", "subscription", "--format", "human"], &[]);
     let said = String::from_utf8_lossy(&out.stdout);
-    assert!(said.contains("signed in already") && said.contains("`krowk connect anthropic --method subscription --name <new>`") && !said.contains("disconnect"), "{said}");
+    assert!(said.contains("signed in already") && said.contains("another account:  krowk connect anthropic --method subscription --name <new>") && !said.contains("disconnect"), "{said}");
 
     let out = b.krowk(&["disconnect", "claude"], &[]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
@@ -370,7 +370,7 @@ fn connect_at_a_terminal_walks_vendor_method_and_account() {
     t.write(b"team\r");
     let exit = t.wait(wait).expect("krowk connect finished");
     assert!(exit.success(), "{}", t.text());
-    assert!(t.text().contains("connected claude:team"), "{}", t.text());
+    assert!(t.text().contains("Connected claude:team") && t.text().contains("try it:"), "{}", t.text());
     assert!(b.data().join("claude/claude-team/fake-login").exists());
 }
 

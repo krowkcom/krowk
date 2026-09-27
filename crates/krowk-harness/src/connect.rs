@@ -902,8 +902,7 @@ impl ProviderAuth<'_> {
         if status.logged_in || backend.env.contains_key("ANTHROPIC_BASE_URL") || backend.key.is_some() {
             return Ok(VendorLogin { logged_in: status.logged_in, describe: status.describe(), ran: false, shared: Vec::new() });
         }
-        let kept = backend.config_dir.as_ref().map(|d| format!(", kept in {}", d.display())).unwrap_or_default();
-        ui.notify(Notice::Info(&format!("Signing {instance} in to Claude Code — what follows is Claude's own login (`claude auth login`){kept}:")));
+        ui.notify(Notice::Info(&format!("Signing in to Claude Code as {instance} — Claude's own login follows.")));
         let exit = ui.terminal(&mut || claude_auth::login(&backend, &probe.dir)).map_err(|e| undo(backend_failed(e)))?;
         let status = claude_auth::status(&backend, &probe).map_err(|e| undo(backend_failed(e)))?;
         if !status.logged_in {
@@ -949,8 +948,7 @@ impl ProviderAuth<'_> {
             }
             return Ok(VendorLogin { logged_in: status.logged_in, describe: status.describe(), ran: false, shared });
         }
-        let kept = backend.config_dir.as_ref().map(|d| format!(", kept in {}", d.display())).unwrap_or_default();
-        ui.notify(Notice::Info(&format!("Signing {instance} in to Codex — what follows is Codex's own login (`codex login`){kept}:")));
+        ui.notify(Notice::Info(&format!("Signing in to Codex as {instance} — Codex's own login follows.")));
         let exit = ui.terminal(&mut || codex_auth::login(&asking, device, &probe.dir)).map_err(|e| undo(backend_failed(e)))?;
         let status = codex_auth::signed_in(&asking, &probe).map_err(|e| undo(backend_failed(e)))?;
         if !status.logged_in {

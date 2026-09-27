@@ -125,7 +125,7 @@ fn r_inst_2_the_account_picker_lists_each_account_with_its_readiness_and_a_new_o
     assert_eq!((done.instance.as_str(), done.renewed), ("claude:team", false));
     assert!(done.vendor.as_ref().is_some_and(|v| v.logged_in && v.ran), "Claude's own login ran");
     assert_eq!(ui.terminal_runs, 1, "the login ran inside the terminal hook, where a TUI suspends itself");
-    assert!(ui.told.iter().any(|t| t.starts_with("Signing claude:team in to Claude Code")), "{:?}", ui.told);
+    assert!(ui.told.iter().any(|t| t.starts_with("Signing in to Claude Code as claude:team")), "{:?}", ui.told);
     let dir = b.root.join("home/.local/share/krowk/claude/claude-team");
     assert!(dir.join("fake-login").exists(), "signed in in its own directory");
 
