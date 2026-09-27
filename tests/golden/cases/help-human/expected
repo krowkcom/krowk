@@ -190,10 +190,10 @@ FLAGS
                            for the ones that unfurl it themselves, like slack. A
                            tool krowk has not been told about gets the block
   --private                Upload where only this workspace can read it. The
-                           image still embeds — the byte URL is the capability
-                           — but the card opens only for a signed-in member,
-                           reads as not found to everyone else, and unfurls
-                           nowhere. Needs an API key
+                           image still embeds — the byte URL is the capability —
+                           but the card opens only for a signed-in member, reads
+                           as not found to everyone else, and unfurls nowhere.
+                           Needs an API key
   --pull-request <string>  Pull request the work belongs to
   --link <string>          Link this work is about — the issue, the spec, the
                            discussion. An absolute http(s) URL, repeatable up to

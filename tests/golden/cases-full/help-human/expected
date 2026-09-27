@@ -138,10 +138,9 @@ AGENT FLAGS (krowk, krowk -p)
                               or bypassPermissions, as in Claude Code. Without
                               it, the settings' permissions.defaultMode; a deny
                               rule holds in every mode
-  --toolset <string>          With -p: the tools' preset — claude
-                              (str_replace), gpt (apply_patch) or grok
-                              (search_replace). The model's family picks one
-                              when absent
+  --toolset <string>          With -p: the tools' preset — claude (str_replace),
+                              gpt (apply_patch) or grok (search_replace). The
+                              model's family picks one when absent
   --effort <string>           With -p: how hard the model thinks — none,
                               minimal, low, medium, high, xhigh or max, mapped
                               onto the nearest the model takes. The instance's,
