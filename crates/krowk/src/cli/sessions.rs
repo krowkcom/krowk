@@ -48,7 +48,7 @@ pub(super) fn project_native(ctx: &Ctx, session_id: &str) -> Result<(), Error> {
         return Err(fail("import_failed", format!("the log of session {session_id} is not where krowk keeps sessions")));
     };
     let mut tree = vec![r.clone()];
-    if let Some(dir) = krowk_harness::log::sessions_dir(ctx.io.env) {
+    if let Ok(dir) = krowk_harness::log::sessions_dir(ctx.io.env) {
         let children = krowk_harness::budget::descendants(&dir, session_id);
         tree.extend(children.iter().filter_map(|(id, _)| found.iter().find(|r| &r.id == id).cloned()));
     }

@@ -80,11 +80,11 @@ pub struct Policy {
     pub home: Option<PathBuf>,
     /// Directories the file tools may read, never change: skills.
     pub read_dirs: Vec<PathBuf>,
-    /// Directories no file tool changes without a person's say: krowk's
-    /// config, Claude Code's, a backend instance's own home.
+    /// Directories no file tool changes without a person's say: Claude
+    /// Code's, a backend instance's own home.
     pub protected: Vec<PathBuf>,
-    /// What no file tool reads or searches unasked either: krowk's
-    /// provider credentials and registry key (`Scope::secrets`).
+    /// What no file tool reads, searches or changes unasked: krowk's whole
+    /// home, its keys, logins, sessions and settings (`Scope::secrets`).
     pub secrets: Vec<PathBuf>,
 }
 
@@ -92,10 +92,9 @@ impl Policy {
     /// The policy for `cwd` from `cfg`'s sources.
     pub fn load(cfg: &Config, cwd: &Path) -> Result<Policy, String> {
         let loaded = settings::load(cfg, cwd)?;
-        let mut protected: Vec<PathBuf> = cfg.krowk_dir.iter().cloned().collect();
-        protected.extend(cfg.claude_home());
-        // Each as named and, when it exists, as it leads (`Scope::secret`).
-        let secrets = cfg.krowk_dir.iter().flat_map(|d| [d.join("providers"), d.join("credentials.json")]).flat_map(|s| [s.canonicalize().ok(), Some(s)]).flatten().collect();
+        let protected: Vec<PathBuf> = cfg.claude_home().into_iter().collect();
+        // The home as named and, when it exists, as it leads (`Scope::secret`).
+        let secrets = cfg.krowk_dir.iter().flat_map(|d| [d.canonicalize().ok(), Some(d.clone())]).flatten().collect();
         Ok(Policy { loaded, cwd: cwd.to_path_buf(), home: cfg.home.clone(), read_dirs: Vec::new(), protected, secrets })
     }
 
@@ -310,7 +309,7 @@ impl Gate {
     pub fn scope(&self, opens: Opens) -> Scope {
         let mut s = self.0.policy.scope(opens);
         let (me, secrets) = (self.clone(), Scope { secrets: s.secrets.clone(), ..Scope::within(&s.cwd) });
-        // A search skips the secrets as it skips what a deny rule hides.
+        // A search skips krowk's home as it skips what a deny rule hides.
         if !s.secrets.is_empty() || self.0.policy.loaded.rules.iter().any(|(k, _)| *k == Kind::Deny) {
             s.hidden = Hidden(Some(Arc::new(move |p: &Path| secrets.secret(p) || me.denies_read(p))));
         }

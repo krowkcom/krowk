@@ -468,10 +468,10 @@ impl Shared {
     }
 
     /// Where a vendor is asked outside any repository: krowk's own `0700`
-    /// directory beside the sessions (`readiness::neutral_dir`).
+    /// directory in its home, beside the sessions (`readiness::neutral_dir`).
     fn neutral_probe(&self) -> Result<readiness::Probe, String> {
-        let data = self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir);
-        readiness::neutral_dir(data).map(readiness::Probe::at)
+        let home = self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir);
+        readiness::neutral_dir(home).map(readiness::Probe::at)
     }
 
     /// Whether `session_id` has a backend process for `instance` up now.

@@ -36,8 +36,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
     let registry = Registry::resolve(&prompt::instances_from(&config)?, ctx.io.env);
     registry.check_rollover().map_err(|e| fail("bad_config", e))?;
     let asked = prompt::model_flag(ctx, &registry)?;
-    let sessions_dir = log::sessions_dir(ctx.io.env)
-        .ok_or_else(|| fail("store_unavailable", "no home directory in environment: set HOME (or XDG_DATA_HOME to an absolute path) so sessions have a place to live"))?;
+    let sessions_dir = log::sessions_dir(ctx.io.env)?;
     let resume = if ctx.f.resume_pick {
         Some(pick(ctx)?)
     } else {
@@ -49,7 +48,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
     let (settings, notices) = krowk_tui::settings::from_config(&config);
     let cwd = std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?;
     // Beside krowk.db and the session logs, so it goes where they go.
-    let history_file = sessions_dir.parent().map(|d| d.join("tui-history.jsonl"));
+    let history_file = Some(sessions_dir.join("tui-history.jsonl"));
     let toolset = prompt::toolset_flag(ctx)?;
     let effort = prompt::effort_flag(ctx)?;
     let budget = prompt::budget_flag(ctx)?;
@@ -109,7 +108,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         krowk_version: super::VERSION.into(),
         pricer: prompt::pricer(ctx.io.env),
         catalog: prompt::catalog(ctx.io.env),
-        credentials: super::providers::credentials_path(),
+        credentials: super::providers::credentials_path()?,
         trust,
         publisher: Some(prompt::publisher(ctx)),
         permissions,

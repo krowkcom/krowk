@@ -42,7 +42,7 @@ impl Home {
     }
 
     fn credentials(&self) -> PathBuf {
-        self.root.join("home/.config/krowk").join(oauth::CREDENTIALS_FILE)
+        self.root.join("home/.krowk/credentials.json")
     }
 
     fn readme(&self) -> String {

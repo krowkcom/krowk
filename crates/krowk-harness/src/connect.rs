@@ -493,16 +493,14 @@ impl ProviderAuth<'_> {
         result.map_err(|e| unwritable(e.to_string()))
     }
 
-    fn data_dir(&self) -> Result<PathBuf, EngineError> {
-        crate::log::sessions_dir(self.env)
-            .and_then(|d| d.parent().map(Path::to_path_buf))
-            .ok_or_else(|| EngineError::new("no_home", "krowk has no data directory to keep an account in — set HOME or XDG_DATA_HOME"))
+    fn home(&self) -> Result<PathBuf, EngineError> {
+        krowk_api::home::dir(self.env).map_err(|e| EngineError::new(&e.code(), e.fix()))
     }
 
     /// Where a vendor is asked: krowk's own directory, as `krowk status`
     /// asks, never the one krowk runs in.
     fn probe(&self) -> Result<Probe, EngineError> {
-        readiness::neutral_dir(&self.data_dir()?).map(Probe::at).map_err(|e| EngineError::new("data_dir_unwritable", e))
+        readiness::neutral_dir(&self.home()?).map(Probe::at).map_err(|e| EngineError::new("data_dir_unwritable", e))
     }
 
     fn resolve(&self, instance: &str, kind: &InstanceKind) -> Result<Resolved, EngineError> {
@@ -780,13 +778,13 @@ impl ProviderAuth<'_> {
 
         let stored_key = self.key_to_store(&instance, &kind, provider, o, ui)?;
 
-        // A new named account gets a directory of its own under krowk's
-        // data directory; the unnamed one is the vendor as the person
+        // A new named account gets a directory of its own in krowk's home,
+        // `accounts/<name>`; the unnamed one is the vendor as the person
         // already uses it.
-        let account = |vendor: &str| -> Result<Option<String>, EngineError> {
+        let account = || -> Result<Option<String>, EngineError> {
             Ok(match renewed || named.is_none() {
                 true => None,
-                false => Some(self.data_dir()?.join(vendor).join(instance.replace(':', "-")).display().to_string()),
+                false => Some(self.home()?.join(krowk_api::home::ACCOUNTS).join(instance.replace(':', "-")).display().to_string()),
             })
         };
         let mut vendor = None;
@@ -794,7 +792,7 @@ impl ProviderAuth<'_> {
             InstanceKind::ClaudeCode { binary, config_dir, env, args, api_key_env, effort } => {
                 let config_dir = match config_dir {
                     Some(d) => Some(d),
-                    None => account("claude")?,
+                    None => account()?,
                 };
                 if !renewed || o.config_dir.is_some() {
                     self.dir_free(&instance, config_dir.as_deref(), &known)?;
@@ -806,7 +804,7 @@ impl ProviderAuth<'_> {
             InstanceKind::CodexAppServer { binary, codex_home, env, args, api_key_env, effort } => {
                 let codex_home = match codex_home {
                     Some(d) => Some(d),
-                    None => account("codex")?,
+                    None => account()?,
                 };
                 if !renewed || o.config_dir.is_some() {
                     self.dir_free(&instance, codex_home.as_deref(), &known)?;

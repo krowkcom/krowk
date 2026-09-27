@@ -141,6 +141,14 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
         let _ = writeln!(io.stdout, "{VERSION}");
         return exit::OK;
     }
+    // A KROWK_HOME that is not absolute is refused before anything runs:
+    // every file krowk keeps would depend on where it was started. Judged
+    // by the environment alone, so it costs nothing.
+    if let Err(e) = krowk_api::home::resolve(io.env)
+        && e.code() == "bad_home"
+    {
+        return report(io, &e, format, f.quiet, colour, None);
+    }
     // `-p` is a mode rather than a command: its arguments are the prompt.
     #[cfg(feature = "harness")]
     if f.print && !f.help {
@@ -275,8 +283,8 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
         }
         let text = help::help(
             &c,
-            &krowk_api::creds::credentials_path().display().to_string(),
-            &crate::config::global_path().display().to_string(),
+            &krowk_api::creds::credentials_text(),
+            &crate::config::global_text(),
         );
         let _ = writeln!(ctx.io.stdout, "{text}");
         return Ok(());

@@ -65,9 +65,6 @@ pub const CACHE_FOR: Duration = Duration::from_secs(60);
 /// The most of a check's output that is kept, per stream (see
 /// `output_within`).
 pub const OUTPUT_CAP: usize = 64 * 1024;
-/// krowk's own directory for vendor checks outside any repository, under
-/// its data directory.
-pub const NEUTRAL_DIR: &str = "readiness";
 
 /// Where a vendor is asked, and how long it has to answer — one deadline
 /// for the whole check, a fallback included.
@@ -85,28 +82,14 @@ impl Probe {
 }
 
 /// krowk's own directory for asking a vendor outside any repository:
-/// `<data dir>/readiness`, made `0700` and kept that way, and refused when
-/// it is anything but a directory of its own (a symlink planted there
-/// would lead the check somewhere else). It holds nothing, so a vendor
-/// started in it reads only the person's own settings.
-pub fn neutral_dir(data_dir: &Path) -> Result<PathBuf, String> {
-    let dir = data_dir.join(NEUTRAL_DIR);
-    let fail = |e: std::io::Error| format!("{} cannot be made krowk's own: {e}", dir.display());
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-        match std::fs::symlink_metadata(&dir) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(fail)?,
-            Err(e) => return Err(fail(e)),
-            Ok(m) if !m.is_dir() => return Err(format!("{} is not a directory — move it aside", dir.display())),
-            // SAFETY: getuid has no preconditions and cannot fail.
-            Ok(m) if m.uid() != unsafe { libc::getuid() } => return Err(format!("{} belongs to another user — move it aside", dir.display())),
-            Ok(_) => {}
-        }
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(fail)?;
-    }
-    #[cfg(not(unix))]
-    std::fs::create_dir_all(&dir).map_err(fail)?;
+/// `readiness/` in krowk's home, made `0700` and kept that way, and refused
+/// when it is anything but a directory of its own (a symlink planted there
+/// would lead the check somewhere else) — the home's own rules
+/// (`krowk_api::home::own`). It holds nothing, so a vendor started in it
+/// reads only the person's own settings.
+pub fn neutral_dir(home: &Path) -> Result<PathBuf, String> {
+    let dir = home.join(krowk_api::home::READINESS);
+    krowk_api::home::make(&dir)?;
     Ok(dir)
 }
 

@@ -65,7 +65,8 @@ to krowk_claim_artifact if the upload should be grouped with the rest of them.
 
 krowk_push only uploads files from the working directory and below. Anything
 outside it is refused, symlinks included, and credential files are refused even
-inside it — .env, .ssh, .aws, .netrc, private keys, credentials.json. An artifact
+inside it — .env, .ssh, .aws, .netrc, private keys, credentials.json, and
+anything in krowk's own home (~/.krowk). An artifact
 is published at a URL that needs no credential to read — `private: true` narrows
 who finds the card, not who can fetch the bytes off the link — so do not try to
 route around this: if a file you were asked to share sits elsewhere, say so and
@@ -79,8 +80,14 @@ let the human move it.",
 /// purpose, and the cost of refusing is an error message.
 const SECRET_NAMES: &[&str] = &[
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".env", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
-    "credentials.json", "id_rsa", "id_ed25519", "id_ecdsa",
+    "credentials.json", ".krowk", "id_rsa", "id_ed25519", "id_ecdsa",
 ];
+
+/// krowk's home, wherever `KROWK_HOME` put it: its keys, logins and
+/// sessions are never published, whatever the path is called.
+fn in_krowk_home(real: &Path) -> bool {
+    krowk_api::home::resolve(&krowk_api::home::process_env).is_ok_and(|h| krowk_api::home::holds(&h, real))
+}
 
 fn secret_component(path: &Path) -> Option<String> {
     path.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).find(|part| {
@@ -103,13 +110,16 @@ impl Server<'_> {
         if abs == Path::new("/") {
             return Err(fail("root_too_broad", "the upload root is / — start the server in a project directory, or pass --root"));
         }
-        if let Some(home) = krowk_api::creds::home_dir()
+        if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
             && abs == home.canonicalize().unwrap_or(home)
         {
             return Err(fail(
                 "root_too_broad",
                 "the upload root is the home directory, which holds ~/.ssh and ~/.aws — start the server in a project directory, or pass --root",
             ));
+        }
+        if in_krowk_home(&abs) {
+            return Err(fail("root_too_broad", "the upload root is inside krowk's home, which holds its keys and logins — start the server in a project directory, or pass --root"));
         }
         if let Some(name) = secret_component(&abs) {
             return Err(fail(
@@ -137,6 +147,9 @@ fn permit(root: &Path, base: &Path, path: &str) -> Result<String, Error> {
     };
     if let Some(name) = secret_component(rel) {
         return Err(fail("secret_path", format!("`{path}` is a credential file (`{name}`) — refusing to publish it at a public URL")));
+    }
+    if in_krowk_home(&real) {
+        return Err(fail("secret_path", format!("`{path}` is inside krowk's home, which holds its keys and logins — refusing to publish it at a public URL")));
     }
     #[cfg(unix)]
     if let Ok(meta) = std::fs::metadata(&real) {

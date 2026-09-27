@@ -34,8 +34,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     let registry = Registry::resolve(&instances_from(&config)?, ctx.io.env);
     registry.check_rollover().map_err(|e| fail("bad_config", e))?;
     let asked = model_flag(ctx, &registry)?;
-    let sessions_dir = log::sessions_dir(ctx.io.env)
-        .ok_or_else(|| fail("store_unavailable", "no home directory in environment: set HOME (or XDG_DATA_HOME to an absolute path) so sessions have a place to live"))?;
+    let sessions_dir = log::sessions_dir(ctx.io.env)?;
     let resume = match ctx.f.resume.as_str() {
         "" => None,
         r => Some(resolve_resume(ctx, &sessions_dir, r)?),
@@ -57,7 +56,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // backend's. Headless, nobody answers an approval: what would be asked
     // is refused with what would allow it.
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
-    let store = trust::Store::new(krowk_api::creds::config_dir().join(trust::FILE), home.clone());
+    let store = trust::Store::new(trust_file(), home.clone());
     let flag_trust = ctx.f.trust;
     let session_cwd = resume.as_ref().and_then(|id| log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)).ok()).and_then(|events| {
         events.first().and_then(|e| match &e.body {
@@ -84,7 +83,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         krowk_version: super::VERSION.into(),
         pricer: pricer(ctx.io.env),
         catalog: catalog(ctx.io.env),
-        credentials: super::providers::credentials_path(),
+        credentials: super::providers::credentials_path()?,
         trust: trust_gate(ctx.f.trust, super::interactive(ctx) && std::io::stdin().is_terminal() && ctx.io.err_tty, home, vendor),
         publisher: Some(publisher(ctx)),
         permissions,
@@ -145,7 +144,7 @@ pub(super) fn route(ctx: &Ctx, registry: &Registry, asked: Option<&instances::As
         _ => super::status::neutral_probe(ctx)?,
     };
     let listed = agents_config(ctx.io.env).models;
-    readiness::route(registry, asked, session_model, &super::providers::credentials_path(), &probe, &*listed).map(Some).map_err(|e| engine_error(&e.code, &e.message, e.status))
+    readiness::route(registry, asked, session_model, &super::providers::credentials_path()?, &probe, &*listed).map(Some).map_err(|e| engine_error(&e.code, &e.message, e.status))
 }
 
 /// `--permission-mode`, when given.
@@ -187,10 +186,10 @@ pub(super) fn permissions_config(ctx: &Ctx, config: &serde_json::Value, trusted:
     let claude_dir = Some(ctx.env("CLAUDE_CONFIG_DIR")).filter(|d| !d.trim().is_empty()).map(std::path::PathBuf::from);
     permissions::Config {
         user: Some(config.clone()),
-        user_path: Some(crate::config::global_path()),
+        user_path: crate::config::global_path().ok(),
         home,
         claude_dir,
-        krowk_dir: Some(krowk_api::creds::config_dir()),
+        krowk_dir: krowk_api::home::get().ok(),
         trusted: Some(trusted),
         approvals,
     }
@@ -275,18 +274,23 @@ pub(super) fn load_instances() -> Result<instances::InstancesConfig, Error> {
     instances_from(&config_json()?)
 }
 
+/// `trusted.json` in krowk's home: the repositories a person said yes to.
+fn trust_file() -> Option<std::path::PathBuf> {
+    krowk_api::home::get().ok().map(|h| h.join(trust::FILE))
+}
+
 /// The person's own config's instances, with their stored keys: the one
 /// place the CLI names the credentials file keys are read from.
 pub(super) fn instances_from(v: &serde_json::Value) -> Result<instances::InstancesConfig, Error> {
-    super::providers::need_home()?;
-    let mut cfg = instances::from_config_json(v).map_err(|e| fail("bad_config", format!("{}: {e}", crate::config::global_path().display())))?;
-    cfg.keys_from = Some(super::providers::credentials_path());
+    let path = crate::config::global_path()?;
+    let mut cfg = instances::from_config_json(v).map_err(|e| fail("bad_config", format!("{}: {e}", path.display())))?;
+    cfg.keys_from = Some(super::providers::credentials_path()?);
     Ok(cfg)
 }
 
 /// The global config.json as JSON, or an empty object when there is none.
 pub(super) fn config_json() -> Result<serde_json::Value, Error> {
-    let path = crate::config::global_path();
+    let path = crate::config::global_path()?;
     let raw = match std::fs::read(&path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(serde_json::json!({})),
@@ -322,7 +326,7 @@ pub(super) fn resolve_resume(ctx: &Ctx, sessions_dir: &std::path::Path, referenc
 /// offered: only `--trust`, for one run, starts a backend there. Nothing is
 /// spawned until this answers.
 fn trust_gate(flag: bool, ask: bool, home: Option<std::path::PathBuf>, vendor: &'static str) -> trust::Gate {
-    let store = trust::Store::new(krowk_api::creds::config_dir().join(trust::FILE), home);
+    let store = trust::Store::new(trust_file(), home);
     Arc::new(move |root: &std::path::Path| {
         if flag || store.trusts(root) {
             return Ok(());
@@ -379,7 +383,7 @@ pub(super) fn ask_trust(store: &trust::Store, root: &std::path::Path, vendor: &s
 /// hooks): the returned `Trusted` is what the permission rules consult.
 pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, registry: &Registry, cwd: &std::path::Path, home: Option<std::path::PathBuf>, widens: bool) -> (trust::Gate, permissions::settings::Trusted, krowk_tui::TrustAsk) {
     use std::sync::atomic::{AtomicBool, Ordering};
-    let store = trust::Store::new(krowk_api::creds::config_dir().join(trust::FILE), home);
+    let store = trust::Store::new(trust_file(), home);
     let backend = model.and_then(|m| registry.get(&m.instance).ok()).is_some_and(|i| i.backend.is_some());
     let asked = trust::root(cwd);
     let vendor = if backend { vendor_of(model, registry) } else { "krowk" };
@@ -417,10 +421,10 @@ pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, 
 /// as every figure `krowk sessions` shows is priced. The environment is
 /// captured now: the engine runs on its own thread.
 pub(super) fn pricer(env: &dyn Fn(&str) -> String) -> krowk_harness::host::Pricer {
-    let (cache, home) = (env("XDG_CACHE_HOME"), env("HOME"));
+    let (own, home) = (env("KROWK_HOME"), env("HOME"));
     Arc::new(move |provider: &str, model: &str, u: &Usage| {
         let env = |k: &str| match k {
-            "XDG_CACHE_HOME" => cache.clone(),
+            "KROWK_HOME" => own.clone(),
             "HOME" => home.clone(),
             _ => String::new(),
         };
@@ -440,10 +444,10 @@ pub(super) fn pricer(env: &dyn Fn(&str) -> String) -> krowk_harness::host::Price
 /// snapshot is trimmed to prices, and a model it would miss is read for its
 /// family off its id instead. Captured like the pricer's environment.
 pub(super) fn catalog(env: &dyn Fn(&str) -> String) -> krowk_harness::host::Catalog {
-    let (cache, home) = (env("XDG_CACHE_HOME"), env("HOME"));
+    let (own, home) = (env("KROWK_HOME"), env("HOME"));
     Arc::new(move |provider: &str, model: &str| {
         let env = |k: &str| match k {
-            "XDG_CACHE_HOME" => cache.clone(),
+            "KROWK_HOME" => own.clone(),
             "HOME" => home.clone(),
             _ => String::new(),
         };
@@ -462,14 +466,14 @@ pub(super) fn agents_config(env: &dyn Fn(&str) -> String) -> AgentsConfig {
         d if std::path::Path::new(&d).is_absolute() => std::path::PathBuf::from(d),
         _ => std::path::Path::new(&home).join(".claude"),
     };
-    let mut user_dirs = vec![krowk_api::creds::config_dir().join("agents")];
+    let mut user_dirs: Vec<std::path::PathBuf> = krowk_api::home::dir(env).ok().map(|h| h.join("agents")).into_iter().collect();
     if claude.is_absolute() {
         user_dirs.push(claude.join("agents"));
     }
-    let cache = env("XDG_CACHE_HOME");
+    let own = env("KROWK_HOME");
     let models: Models = Arc::new(move |provider: &str| {
         let env = |k: &str| match k {
-            "XDG_CACHE_HOME" => cache.clone(),
+            "KROWK_HOME" => own.clone(),
             "HOME" => home.clone(),
             _ => String::new(),
         };

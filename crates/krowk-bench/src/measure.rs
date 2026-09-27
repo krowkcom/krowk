@@ -32,16 +32,12 @@ pub fn lean_deps() -> Outcome {
     }
 }
 
-/// A clean environment for a measured process: its own home and data
-/// directories, so neither the person's config nor their sessions change
-/// what is measured.
+/// A clean environment for a measured process: its own home, so neither
+/// the person's config nor their sessions change what is measured.
 pub fn sandboxed(bin: &Path, home: &Path) -> Command {
     let mut c = Command::new(bin);
     c.env_clear()
         .env("HOME", home)
-        .env("XDG_DATA_HOME", home.join("data"))
-        .env("XDG_CONFIG_HOME", home.join("config"))
-        .env("XDG_CACHE_HOME", home.join("cache"))
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .current_dir(home)
         .stdin(Stdio::null());
@@ -171,7 +167,7 @@ pub fn context_tokens(bin: &Path, home: &Path) -> Outcome {
 
 /// The session directories `krowk -p` has made under a sandboxed home.
 fn sessions(home: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(home.join("data/krowk/sessions")).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default()
+    std::fs::read_dir(home.join(".krowk/sessions")).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default()
 }
 
 /// What a process did while it sat idle for the window.

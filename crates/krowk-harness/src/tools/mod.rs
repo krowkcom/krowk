@@ -395,9 +395,9 @@ pub struct Scope {
     /// directory, Claude Code's, a backend instance's (`CLAUDE_CONFIG_DIR`,
     /// `CODEX_HOME`), whose settings and hooks decide what runs next.
     pub protected: Vec<PathBuf>,
-    /// Files and directories no tool reads, searches or changes without a
-    /// person's say, wherever they sit: krowk's provider credentials (its
-    /// stored keys and logins) and its registry key.
+    /// Directories no tool reads, searches or changes without a person's
+    /// say, wherever they sit: krowk's home, as named and as it leads — its
+    /// keys, logins, sessions and settings.
     pub secrets: Vec<PathBuf>,
     pub hidden: Hidden,
 }
@@ -442,7 +442,7 @@ impl Scope {
         }
         let inside = roots.iter().any(|r| real.starts_with(r));
         if self.secret(p) {
-            return Reach::Fenced(format!("{} holds krowk's API keys and logins, which the tools read or change only with a person's say", p.display()));
+            return Reach::Fenced(format!("{} is inside krowk's home, which holds its keys, logins and sessions: the tools read, search or change it only with a person's say", p.display()));
         }
         if edit && let Some(why) = self.fence(p, &real, &root) {
             return Reach::Fenced(why);
