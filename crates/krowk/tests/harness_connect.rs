@@ -280,6 +280,27 @@ fn connect_refuses_a_name_that_would_share_a_login_or_a_key_or_pass_for_another_
     let elsewhere = b.root.join("elsewhere").display().to_string();
     let out = b.krowk(&["connect", "anthropic", "--method", "subscription", "--name", "mine", "--config-dir", &own], &[("CLAUDE_CONFIG_DIR", &elsewhere)]);
     assert!(!out.status.success() && stderr(&out).contains("your own login's directory"), "{}", stderr(&out));
+    // Nor is a defined account renewed onto it.
+    let out = b.krowk(&["connect", "claude:tilde", "--config-dir", &own], &[("CLAUDE_CONFIG_DIR", &elsewhere)]);
+    assert!(!out.status.success() && stderr(&out).contains("your own login's directory"), "a renew: {}", stderr(&out));
+    // `~user` is the shell's to expand.
+    let out = b.krowk(&["connect", "anthropic", "--method", "subscription", "--name", "other-user", "--config-dir", "~root/acct"], &[]);
+    assert!(!out.status.success() && stderr(&out).contains("give the whole path"), "{}", stderr(&out));
+}
+
+#[test]
+fn a_failed_codex_sign_in_leaves_a_home_that_was_there_as_it_was() {
+    let b = Sandbox::new("codex-existing");
+    // The person's own Codex configuration, which a new account's home links.
+    std::fs::create_dir_all(b.root.join("home/.codex")).unwrap();
+    std::fs::write(b.root.join("home/.codex/config.toml"), "model = \"gpt-5.5\"\n").unwrap();
+    std::fs::write(b.root.join("home/.codex/AGENTS.md"), "be brief\n").unwrap();
+    let there = b.root.join("accounts/team");
+    std::fs::create_dir_all(&there).unwrap();
+    let out = b.krowk(&["connect", "openai", "--method", "subscription", "--name", "team", "--config-dir", &there.display().to_string()], &[("FAKE_CODEX_LOGIN", "fail")]);
+    assert!(!out.status.success(), "the login gives up: {}", stderr(&out));
+    let left: Vec<_> = std::fs::read_dir(&there).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert!(left.is_empty(), "nothing was linked into it: {left:?}");
 }
 
 #[test]

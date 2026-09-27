@@ -653,9 +653,14 @@ impl ProviderAuth<'_> {
         let config_dir = match clean(&o.config_dir).map(|d| match d.strip_prefix('~') {
             Some(rest) if rest.is_empty() || rest.starts_with('/') => match home.trim() {
                 "" => Err(bad_flag(format!("--config-dir {d}: HOME is not set, so `~` names nothing — give the whole path"))),
-                h => Ok(format!("{h}{rest}")),
+                h => Ok(match h.trim_end_matches('/') {
+                    "" => format!("/{}", rest.trim_start_matches('/')),
+                    h => format!("{h}{rest}"),
+                }),
             },
-            _ => Ok(d),
+            // `~user` and the like are the shell's to expand, not krowk's.
+            Some(_) => Err(bad_flag(format!("--config-dir {d}: krowk expands only a leading `~/` — give the whole path"))),
+            None => Ok(d),
         }) {
             Some(d) => Some(normalised(&std::path::absolute(&d?).map_err(|e| bad_flag(format!("--config-dir: {e}")))?).display().to_string()),
             None => None,
@@ -868,7 +873,10 @@ impl ProviderAuth<'_> {
         let (var, dot) = own;
         let from_var = Some(self.env(var)).filter(|d| !d.trim().is_empty()).map(PathBuf::from);
         let in_home = Some(self.env("HOME")).filter(|h| !h.trim().is_empty()).map(|h| PathBuf::from(h).join(dot));
-        if !known.instances.contains_key(instance) && [from_var, in_home].into_iter().flatten().any(|o| same_dir(&o, Path::new(dir))) {
+        // Only the built-in itself runs on it; a defined account renewed onto
+        // it would be one login, two accounts, as a new one would.
+        let built_in = instances::implicit().iter().any(|(n, _)| *n == instance);
+        if !built_in && [from_var, in_home].into_iter().flatten().any(|o| same_dir(&o, Path::new(dir))) {
             return Err(bad_flag(format!("{dir} is your own login's directory — one login cannot be two accounts; give this one another --config-dir")));
         }
         Ok(())
@@ -931,7 +939,10 @@ impl ProviderAuth<'_> {
         // whole of it away; into one that was there, only once the sign-in
         // worked, so a failed one leaves it as it was.
         let mut shared = if made.is_some() { share().map_err(undo)? } else { Vec::new() };
-        let status = codex_auth::signed_in(&backend, &probe).map_err(|e| undo(backend_failed(e)))?;
+        // Asking Codex links a home too (`codex_auth::account`, as before
+        // any process): not one that was there, until the sign-in worked.
+        let asking = if made.is_some() { backend.clone() } else { instances::Backend { shared_home: None, ..backend.clone() } };
+        let status = codex_auth::signed_in(&asking, &probe).map_err(|e| undo(backend_failed(e)))?;
         if status.logged_in || backend.key.is_some() {
             if made.is_none() {
                 shared = share()?;
@@ -940,8 +951,8 @@ impl ProviderAuth<'_> {
         }
         let kept = backend.config_dir.as_ref().map(|d| format!(", kept in {}", d.display())).unwrap_or_default();
         ui.notify(Notice::Info(&format!("Signing {instance} in to Codex — what follows is Codex's own login (`codex login`){kept}:")));
-        let exit = ui.terminal(&mut || codex_auth::login(&backend, device, &probe.dir)).map_err(|e| undo(backend_failed(e)))?;
-        let status = codex_auth::signed_in(&backend, &probe).map_err(|e| undo(backend_failed(e)))?;
+        let exit = ui.terminal(&mut || codex_auth::login(&asking, device, &probe.dir)).map_err(|e| undo(backend_failed(e)))?;
+        let status = codex_auth::signed_in(&asking, &probe).map_err(|e| undo(backend_failed(e)))?;
         if !status.logged_in {
             return Err(undo(not_signed_in("codex login", exit, instance, kind)));
         }
@@ -979,6 +990,8 @@ impl ProviderAuth<'_> {
                 if b.path.is_none() {
                     return Err(EngineError::new("backend_not_found", format!("{} was not found, so `{command}` cannot run for {instance}", b.binary)));
                 }
+                // Refused before anyone is asked to agree to it.
+                absolute_home(instance, b)?;
                 if let Some(home) = self.own_home(r).filter(|_| !own_login) {
                     let who = if codex { "Codex" } else { "Claude Code" };
                     let warning = format!("disconnecting {instance} signs you out of {who} itself, in {}, for every tool that uses it", home.display());
@@ -990,7 +1003,6 @@ impl ProviderAuth<'_> {
                         return Err(EngineError::new("selection_cancelled", format!("nothing was signed out — {instance} is as it was")));
                     }
                 }
-                absolute_home(instance, b)?;
                 let probe = self.probe()?;
                 let exit = if codex { codex_auth::logout(b, &probe) } else { claude_auth::logout(b, &probe) }.map_err(backend_failed)?;
                 if !exit.success() {
@@ -1074,11 +1086,6 @@ struct Made {
     top: PathBuf,
 }
 
-/// The directory a sign-in makes, when it is new — taken away again if the
-/// sign-in fails. Only a path that is absolute and lexically normal is made
-/// here — what `connect` writes, `--config-dir` included; a hand-written
-/// relative or `..` one is left for the vendor to make, from the path it is
-/// given, rather than made here somewhere else.
 /// A vendor's login and sign-out run in krowk's own directory, so a
 /// hand-written relative directory would be one there, not the one turns
 /// use: refused, with what to write instead.
@@ -1089,6 +1096,10 @@ fn absolute_home(instance: &str, b: &instances::Backend) -> Result<(), EngineErr
     }
 }
 
+/// The directory a sign-in makes, when it is new — taken away again if the
+/// sign-in fails. Only a path that is absolute and lexically normal is made
+/// here — what `connect` writes, `--config-dir` included; a hand-written
+/// `..` one is left for the vendor to make, from the path it is given.
 fn made_dir(dir: Option<&Path>) -> Result<Option<Made>, EngineError> {
     let Some(d) = dir.filter(|d| d.is_absolute() && normalised(d) == *d && d.symlink_metadata().is_err()) else { return Ok(None) };
     let top = d.ancestors().take_while(|a| a.symlink_metadata().is_err()).last().unwrap_or(d).to_path_buf();
