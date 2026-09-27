@@ -215,7 +215,15 @@ fn r_cred_1_a_var_and_a_command_reference_resolve_and_one_that_fails_has_no_fall
     let out = b.krowk(&["connect", "anthropic", "--method", "api-key", "--key-ref", "!fake-pass show anthropic", "--format", "human"], &[]);
     assert!(out.status.success(), "{}", printed(&out));
     assert_eq!(b.pass_runs(), 1, "connecting checks the command");
-    assert!(printed(&out).contains("stored (!fake-pass …)"), "{}", printed(&out));
+    assert!(printed(&out).contains("key stored (!fake-pass …) in krowk's credentials file (0600), used before any variable"), "{}", printed(&out));
+    let again = b.krowk(&["connect", "anthropic", "--method", "api-key", "--format", "human"], &[]);
+    assert!(printed(&again).contains("key was already stored (!fake-pass …)"), "{}", printed(&again));
+    // Naming a variable while a key is stored would change nothing: refused.
+    let named = b.krowk(&["connect", "anthropic", "--method", "api-key", "--api-key-env", "OTHER_KEY"], &[]);
+    assert!(!named.status.success() && printed(&named).contains("`krowk disconnect anthropic` first"), "{}", printed(&named));
+    // A stored $VAR that is unset says so, and offers nothing to try yet.
+    let unset = b.krowk(&["connect", "openai", "--method", "api-key", "--key-ref", "$NOT_SET_HERE", "--format", "human"], &[]);
+    assert!(printed(&unset).contains("$NOT_SET_HERE is not set here") && !printed(&unset).contains("try it"), "{}", printed(&unset));
     let row = b.row("anthropic", &env);
     assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored (!fake-pass …)")), "{row}");
     assert_eq!(b.pass_runs(), 2);
@@ -244,6 +252,12 @@ fn r_cred_1_a_var_and_a_command_reference_resolve_and_one_that_fails_has_no_fall
     assert!(printed(&out).contains("nothing was written") && !printed(&out).contains(SENTINEL), "{}", printed(&out));
     assert!(b.stored()["keys"].get("openrouter").is_none() && b.config()["instances"].get("openrouter").is_none());
     assert_eq!(b.holding(SENTINEL), Vec::<PathBuf>::new());
+    // On a fresh home, not even the credentials directory is left behind.
+    let fresh = Sandbox::new("refs-fresh", &m.url);
+    std::fs::write(fresh.root.join("pass.fail"), "").unwrap();
+    let out = fresh.krowk(&["connect", "openrouter", "--key-ref", "!fake-pass show openrouter"], &[]);
+    assert_eq!(out.status.code(), Some(3), "{}", printed(&out));
+    assert!(!fresh.credentials().parent().unwrap().exists(), "providers/ was made by a connection that wrote nothing");
 }
 
 #[test]

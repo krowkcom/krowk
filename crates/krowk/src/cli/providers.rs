@@ -232,7 +232,13 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
     let mut notes: Vec<String> = Vec::new();
     match &key_env {
         // A stored key, and where: never the key.
-        _ if r.stored.source().is_some() => facts.push(format!("key {} in krowk's credentials file (0600)", r.stored.source().unwrap_or_default())),
+        _ if r.stored.source().is_some() => {
+            let already = if done.stored_key.is_some() { "" } else { "was already " };
+            facts.push(format!("key {already}{} in krowk's credentials file (0600), used before any variable", r.stored.source().unwrap_or_default()));
+            if let (krowk_harness::keys::Stored::Env(v), true) = (&r.stored, r.api_key.is_empty()) {
+                notes.push(format!("${v} is not set here — export it before running a prompt"));
+            }
+        }
         Some(k) if unset => notes.push(format!("${k} is not set here — export it before running a prompt")),
         Some(k) => facts.push(format!("key from ${k}")),
         None if done.oauth => facts.push("signed in".into()),
@@ -263,7 +269,10 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
         Some(_) => "krowk".to_string(),
         None => format!("krowk --model {instance}/{}", connect::default_model(kind.tag()).unwrap_or("<model>")),
     };
-    lines.push(crate::output::crumb_line("try it", &try_it, colour));
+    // A stored $VAR that is unset cannot run anything yet.
+    if !matches!(&r.stored, krowk_harness::keys::Stored::Env(_) if r.api_key.is_empty()) {
+        lines.push(crate::output::crumb_line("try it", &try_it, colour));
+    }
     if let Some(cmd) = another {
         lines.push(crate::output::crumb_line("another account", &cmd, colour));
     }
