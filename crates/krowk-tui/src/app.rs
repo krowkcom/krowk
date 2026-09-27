@@ -1157,7 +1157,11 @@ impl App {
                 self.push_wrapped(look::PROMPT, "  ", text, look::prompt(), bold());
             }
             Item::AssistantText { text } => {
-                if streamed && live {
+                // Streamed, it is on screen but for its unfinished tail. A
+                // backend that announced it and sent it whole, with no delta
+                // (a fake `claude`, an older binary), has shown nothing yet.
+                let arrived = self.live.as_ref().is_some_and(|l| l.committed || !l.tail.is_empty());
+                if streamed && live && arrived {
                     self.finish_live();
                 } else if !text.is_empty() {
                     self.gap();
