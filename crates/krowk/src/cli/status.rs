@@ -64,7 +64,8 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
         return super::sessions::emit_data(ctx, data.clone(), summary);
     }
     let width = |f: &dyn Fn(&Report) -> usize| reports.iter().map(f).max().unwrap_or(0);
-    let (wn, wk, ws) = (width(&|r| r.instance.len()), width(&|r| r.kind.len()), width(&|r| r.readiness.label().len()));
+    let label = |r: &Report| krowk_harness::instances::kind_label(r.kind);
+    let (wn, wk, ws) = (width(&|r| r.instance.len()), width(&|r| label(r).len()), width(&|r| r.readiness.label().len()));
     let out = &mut *ctx.io.stdout;
     for r in &reports {
         // What failed, for a check that could not tell; else the fix.
@@ -73,7 +74,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
             _ => r.fix.as_ref(),
         };
         let fix = why.map(|f| format!("  — {f}")).unwrap_or_default();
-        let _ = writeln!(out, "{:<wn$}  {:<wk$}  {:<ws$}  {}{fix}", r.instance, r.kind, r.readiness.label(), r.source);
+        let _ = writeln!(out, "{:<wn$}  {:<wk$}  {:<ws$}  {}{fix}", r.instance, label(r), r.readiness.label(), r.source);
     }
     if ready == 0 {
         return Err(none());

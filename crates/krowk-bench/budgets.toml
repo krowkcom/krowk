@@ -31,6 +31,9 @@ what = "Agent build (no features): release binary size"
 unit = "bytes"
 # 3,943,808 bytes (3.76 MiB) with rust 1.97 when this budget was set. The
 # headroom is a quarter of a megabyte, so one real new dependency breaks it.
+# Provider auth 02 (no new crate: `krowk login`, `logout` and `whoami`, the
+# new `auth logout` and the words that point a provider at `krowk connect`)
+# adds 7,648 bytes: 3,953,024 (3.77 MiB).
 max = { x86_64-linux = 4_194_304 }
 status = "enforced"
 
@@ -112,6 +115,14 @@ unit = "bytes"
 # commands) 9,792 more, and round 2 (the settled trust question, held
 # prompts, /model off the loop, registered check groups) 3,360: 8,216,008
 # (7.84 MiB), 172,600 under this.
+# Ticket 02, `krowk connect` and `disconnect` (no new crate: the sign-in
+# moved into the harness behind ProviderAuth and AuthInteraction, the
+# vendor, method and account pickers, the default model, each kind's
+# sign-out; review rounds 1 to 3: naming rules, own-login confirmation,
+# path normalising, undoing only what a sign-in made), adds 89,344 bytes on
+# top of the umbrella's 8,181,000 before 05: 8,270,344 (7.89 MiB).
+# With 05 merged in (one connect command, one label table kept): 8,303,816
+# (7.92 MiB), leaving 84,792 bytes.
 max = { x86_64-linux = 8_388_608 }
 status = "enforced"
 

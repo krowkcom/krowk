@@ -55,6 +55,7 @@ case "${1:-}" in
 auth)
   case "${2:-}" in
   login)
+    log "login-cwd $(pwd)"
     if [ "${FAKE_CLAUDE_LOGIN:-}" = fail ]; then
       echo "Login cancelled." >&2
       exit 1

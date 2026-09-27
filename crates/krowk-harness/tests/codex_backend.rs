@@ -507,7 +507,7 @@ fn r_back_3_a_looser_sandbox_a_missing_login_or_binary_and_an_untrusted_reposito
         let (_, r) = run(&host, prompt(None, "hi", "codex:empty/gpt-5.5", PermissionMode::Default)).await;
         let e = r.unwrap_err();
         assert_eq!((e.code.as_str(), e.status), ("not_authenticated", 401));
-        assert!(e.message.contains("krowk providers add codex --name empty"), "{}", e.message);
+        assert!(e.message.contains("krowk connect openai --method subscription --name empty"), "{}", e.message);
         assert!(!h.fake_log().contains("thread/start"));
         // A login Codex finds stale mid-turn, as a real Codex reported it.
         let host = h.host(vec![("codex:team", h.instance(&home, Some("unauthorized.jsonl"), &[]))], trust::allow_all());

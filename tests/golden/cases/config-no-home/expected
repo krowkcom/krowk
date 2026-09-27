@@ -75,11 +75,11 @@ stdout:
     "source": "repo config",
     "key_missing": true
   },
-  "summary": "ws_x resolves here (repo config) but holds no key — every upload fails until `krowk auth login`",
+  "summary": "ws_x resolves here (repo config) but holds no key — every upload fails until `krowk login`",
   "breadcrumbs": [
     {
       "action": "log in",
-      "cmd": "krowk auth login",
+      "cmd": "krowk login",
       "description": "approving it in the browser stores a key, and uploads stop expiring — `--token krowk_sk_...` stores one directly instead"
     }
   ]

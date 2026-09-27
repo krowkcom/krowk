@@ -361,7 +361,7 @@ fn a_missing_login_or_binary_is_named_with_its_fix() {
     // a session or a Claude process exists, with the fix.
     let e = rt().block_on(async { run(&host, prompt(None, "hello", "claude:personal/sonnet", PermissionMode::Default)).await.1 }).unwrap_err();
     assert_eq!(e.code, "not_authenticated");
-    assert!(e.message.contains("krowk providers add claude --name personal") && e.message.contains("Claude's own login"), "{}", e.message);
+    assert!(e.message.contains("krowk connect anthropic --method subscription --name personal") && e.message.contains("Claude's own login"), "{}", e.message);
     assert_eq!(processes(&home.fake_log()), 0, "no turn process was started");
     assert!(home.fake_log().contains("argv auth status --json"), "{}", home.fake_log());
     assert!(log::list(&log::sessions_dir(&home.env()).unwrap()).unwrap_or_default().is_empty(), "a refusal leaves no session behind");

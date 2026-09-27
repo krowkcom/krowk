@@ -1,0 +1,8 @@
+@registry
+krowk login --token krowk_sk_test
+krowk whoami
+krowk logout
+krowk whoami
+krowk logout
+krowk login anthropic
+krowk auth login claude:work

@@ -319,29 +319,6 @@ pub fn kind_label(kind: &str) -> &'static str {
     }
 }
 
-/// The `krowk connect` command that connects an instance named `name` of
-/// the kind tagged `kind`: the vendor, the method (`api-key` or
-/// `subscription`), and `--name <suffix>` for any but the vendor's own
-/// implicit instance (`claude:work` is `--name work`). None for a kind
-/// `krowk connect` does not set up (a router, a compatible server).
-pub fn connect_command(name: &str, kind: &str) -> Option<String> {
-    let (vendor, method, implicit) = match kind {
-        "anthropic-api" => ("anthropic", "api-key", "anthropic"),
-        "claude-code" => ("anthropic", "subscription", "claude"),
-        "openai-api" => ("openai", "api-key", "openai"),
-        "codex-app-server" => ("openai", "subscription", "codex"),
-        "xai-api" => ("xai", "api-key", "xai"),
-        "xai-oauth" => ("xai", "subscription", "supergrok"),
-        _ => return None,
-    };
-    let named = match name.split_once(':') {
-        _ if name == implicit => String::new(),
-        Some((_, suffix)) => format!(" --name {suffix}"),
-        None => format!(" --name {name}"),
-    };
-    Some(format!("krowk connect {vendor} --method {method}{named}"))
-}
-
 impl InstanceKind {
     /// `kind_label` of this kind.
     pub fn label(&self) -> &'static str {
@@ -361,6 +338,25 @@ impl InstanceKind {
             InstanceKind::CodexAppServer { .. } => "codex-app-server",
         }
     }
+}
+
+/// The vendor and method `krowk connect` makes a kind with — `claude-code`
+/// is `anthropic` by `subscription` — for a fix line in the one form every
+/// one of them takes: `krowk connect anthropic --method subscription --name
+/// work`. `connect::METHODS` holds the same pairs, and a test holds the two
+/// to each other.
+pub fn kind_connect(tag: &str) -> Option<(&'static str, &'static str)> {
+    Some(match tag {
+        "anthropic-api" => ("anthropic", "api-key"),
+        "claude-code" => ("anthropic", "subscription"),
+        "openai-api" => ("openai", "api-key"),
+        "codex-app-server" => ("openai", "subscription"),
+        "xai-api" => ("xai", "api-key"),
+        "xai-oauth" => ("xai", "subscription"),
+        "openrouter-api" => ("openrouter", "api-key"),
+        "openai-compatible" => ("openai-compatible", "api-key"),
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -669,7 +665,7 @@ impl Registry {
     pub fn get(&self, name: &str) -> Result<&Resolved, String> {
         self.instances.get(name).ok_or_else(|| {
             let known: Vec<&str> = self.instances.keys().map(String::as_str).collect();
-            format!("no instance named {name:?} — this host has {}; add one with `krowk providers add`", known.join(", "))
+            format!("no instance named {name:?} — this host has {}; connect one with `krowk connect`", known.join(", "))
         })
     }
 }
@@ -1201,7 +1197,7 @@ mod tests {
         assert_eq!(labels, ["Anthropic API key", "Claude subscription", "OpenAI API key", "ChatGPT subscription", "xAI API key", "SuperGrok", "OpenRouter", "OpenAI-compatible"]);
         assert_eq!(InstanceKind::XaiOauth { base_url: None, issuer: None, client_id: None, scope: None, effort: None }.label(), "SuperGrok");
         // How each is connected: the vendor, the method, and a named one's suffix.
-        let connect: Vec<Option<String>> = ["anthropic", "claude", "claude:work", "codex:team", "openai", "grok:team", "xai", "router"].iter().map(|n| connect_command(n, reg.get(n).unwrap().kind)).collect();
+        let connect: Vec<Option<String>> = ["anthropic", "claude", "claude:work", "codex:team", "openai", "grok:team", "xai", "router"].iter().map(|n| Some(crate::connect::connect_command(n, reg.get(n).unwrap().kind))).collect();
         assert_eq!(
             connect,
             [
@@ -1210,9 +1206,10 @@ mod tests {
                 Some("krowk connect anthropic --method subscription --name work".into()),
                 Some("krowk connect openai --method subscription --name team".into()),
                 Some("krowk connect openai --method api-key".into()),
-                Some("krowk connect xai --method subscription --name team".into()),
+                // A name no --name spells is reconnected by its name.
+                Some("krowk connect grok:team".into()),
                 Some("krowk connect xai --method api-key".into()),
-                None,
+                Some("krowk connect openai-compatible --name router".into()),
             ]
         );
 

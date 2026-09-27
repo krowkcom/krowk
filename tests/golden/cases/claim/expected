@@ -211,7 +211,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unauthorized",
-    "fix": "this endpoint needs an API key — run `krowk auth login --token krowk_sk_...`, or set KROWK_TOKEN",
+    "fix": "this endpoint needs an API key — run `krowk login --token krowk_sk_...`, or set KROWK_TOKEN",
     "message": "Provide a valid API key as `Authorization: Bearer krowk_sk_...`.",
     "retryable": false,
     "status": 401

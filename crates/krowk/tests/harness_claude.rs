@@ -128,7 +128,7 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
         assert_eq!((row(n)["state"].as_str(), row(n)["source"].as_str()), (Some("ready"), Some(format!("Claude Code's own login in {} (signed in with a Claude max subscription)", dir.display()).as_str())));
     }
     assert_eq!(row("claude")["state"], "not_signed_in", "the default account, in the sandbox's ~/.claude, has no login");
-    assert_eq!(row("claude")["fix"], "sign in with `krowk providers add claude`, which runs Claude's own login");
+    assert_eq!(row("claude")["fix"], "sign in with `krowk connect anthropic --method subscription`, which runs Claude's own login");
 
     // Each account runs a session, in its own config directory.
     for name in ["personal", "work"] {

@@ -567,15 +567,11 @@ async fn callback(listener: &tokio::net::TcpListener, state: &str) -> Result<Str
     }
 }
 
-/// The command that signs an instance in: `supergrok` is the provider's
-/// own name, `supergrok:work` is `--name work`, and any other name is given
-/// whole (`--name grok:team`).
+/// The command that signs an instance in: `krowk connect xai --method
+/// subscription`, with `--name work` for `supergrok:work`, and `krowk
+/// connect grok:team` for a name no `--name` spells.
 pub fn login_command(instance: &str) -> String {
-    match instance.strip_prefix("supergrok:") {
-        _ if instance == "supergrok" => "krowk providers add supergrok".into(),
-        Some(name) => format!("krowk providers add supergrok --name {name}"),
-        None => format!("krowk providers add supergrok --name {instance}"),
-    }
+    crate::connect::connect_command(instance, "xai-oauth")
 }
 
 /// What a person is told during a login.
@@ -586,8 +582,13 @@ pub enum Step<'a> {
     Device(&'a DevicePrompt),
 }
 
-/// Signs in, from blocking code: the CLI's `providers add supergrok`,
+/// Signs in, from blocking code: `krowk connect xai`,
 /// which starts a runtime of its own for it, as `krowk -p` does.
+///
+/// It builds a runtime of its own and blocks until the browser answers, the
+/// device code is entered, or `LOGIN_TIMEOUT` passes: nothing cancels it
+/// sooner. A front end that must stay responsive meanwhile (the TUI's
+/// `/connect`) runs it off its own thread and needs a cancel added here.
 pub fn sign_in(login: &Login, device: bool, tell: &mut dyn FnMut(Step<'_>)) -> Result<Stored, EngineError> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -702,8 +703,8 @@ mod tests {
         let shown = format!("{s:?}");
         assert!(!shown.contains("at-secret") && !shown.contains("rt-secret"), "{shown}");
         assert!(!s.fresh(1) && Stored { expires_at_ms: None, ..s.clone() }.fresh(1));
-        assert_eq!(login_command("supergrok"), "krowk providers add supergrok");
-        assert_eq!(login_command("supergrok:work"), "krowk providers add supergrok --name work");
-        assert_eq!(login_command("grok:team"), "krowk providers add supergrok --name grok:team");
+        assert_eq!(login_command("supergrok"), "krowk connect xai --method subscription");
+        assert_eq!(login_command("supergrok:work"), "krowk connect xai --method subscription --name work");
+        assert_eq!(login_command("grok:team"), "krowk connect grok:team");
     }
 }

@@ -14,7 +14,7 @@ fn banner(version: &str) -> String {
 
 const GREETING_HINTS: &[(&str, &str)] = &[
     ("krowk push screenshot.png", "Upload a file and get a link — no key needed, lasts a day"),
-    ("krowk auth login --token …", "Add a key: uploads keep, group under runs, and stay yours"),
+    ("krowk login --token …", "Add a key: uploads keep, group under runs, and stay yours"),
     ("krowk help", "Every command and flag — add --json for the surface as data"),
 ];
 
@@ -166,13 +166,15 @@ reach for when something was published by accident. A key takes down anything in
 its workspace; an upload that is still anonymous is taken down with the claim
 token it came back with, passed after the slug.
 
-Logging in goes through a browser. `krowk auth login` asks the registry to open
+Logging in goes through a browser. `krowk login` asks the registry to open
 an authorization, prints a short code and opens the page that approves it;
 approving mints a key and this command collects it, once. Over SSH or with no
 display it prints the code and the page instead of opening anything, which is
 what --no-browser asks for everywhere else. On CI it is refused outright, since
 nothing there can approve it — that is what --token is for, and --token never
-opens or waits for anything.
+opens or waits for anything. `krowk login` is your krowk account; a model
+provider — a Claude or ChatGPT subscription, SuperGrok, an API key — is
+connected with the full build's `krowk connect`.
 
 A key belongs to one workspace, and the credentials file holds one key per
 workspace: logging in against a second workspace adds a key rather than

@@ -212,8 +212,13 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["runs", "finish", ..] => agent::runs_finish(ctx, rest(2)),
         ["claim", ..] => agent::claim(ctx, rest(1)),
         ["auth", "login", ..] => auth::login(ctx, rest(2)),
+        ["auth", "logout", ..] => auth::logout(ctx),
         ["auth", "token", ..] => auth::token(ctx),
         ["auth", "verify", ..] => auth::verify(ctx),
+        // Your krowk account, short: `krowk connect` is a model provider.
+        ["login", ..] => auth::login(ctx, rest(1)),
+        ["logout", ..] => auth::logout(ctx),
+        ["whoami", ..] => auth::verify(ctx),
         ["upgrade", ..] => upgrade::upgrade(ctx),
         ["doctor", ..] => doctor::doctor(ctx),
         ["config", "show", ..] => workspace::config_show(ctx),
@@ -235,6 +240,10 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["sessions", "sync", ..] => sessions::sync(ctx),
         #[cfg(feature = "sessions")]
         ["pricing", "refresh", ..] => sessions::pricing_refresh(ctx),
+        #[cfg(feature = "harness")]
+        ["connect", ..] => providers::connect(ctx, rest(1)),
+        #[cfg(feature = "harness")]
+        ["disconnect", ..] => providers::disconnect(ctx, rest(1)),
         #[cfg(feature = "harness")]
         ["providers", "add", ..] => providers::add(ctx, rest(2)),
         #[cfg(feature = "harness")]
@@ -359,9 +368,16 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
             }
         }
         let add = words.starts_with(&["providers", "add"]);
-        for name in ["name", "api-key-env", "base-url", "client-id", "device", "binary", "config-dir"] {
-            if f.given.contains(name) && !add {
-                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk providers add`")));
+        let connect = words.first() == Some(&"connect");
+        for name in ["name", "api-key-env", "base-url", "client-id", "binary", "config-dir"] {
+            if f.given.contains(name) && !add && !connect {
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk connect` and `krowk providers add`")));
+            }
+        }
+        let owners = [("device", "`krowk providers add` (`krowk connect` takes --method device)", add), ("method", "`krowk connect`", connect), ("default", "`krowk connect`", connect), ("remove", "`krowk disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`krowk disconnect`", words.first() == Some(&"disconnect"))];
+        for (name, owner, allowed) in owners {
+            if f.given.contains(name) && !allowed {
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of {owner}")));
             }
         }
     }

@@ -460,13 +460,42 @@ stdout:
       ]
     },
     {
+      "name": "login",
+      "usage": "krowk login [--token <token>] [--no-browser]",
+      "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
+      "flags": [
+        {
+          "name": "token",
+          "type": "string",
+          "default": "",
+          "usage": "Check and store this key instead of asking the browser — how CI logs in, e.g. krowk_sk_..."
+        },
+        {
+          "name": "no-browser",
+          "type": "bool",
+          "default": "false",
+          "usage": "Print the code and the page instead of opening a browser — the default over SSH, or with no display"
+        }
+      ]
+    },
+    {
+      "name": "logout",
+      "usage": "krowk logout",
+      "summary": "Take the key that resolves here off this machine"
+    },
+    {
+      "name": "whoami",
+      "usage": "krowk whoami",
+      "summary": "Check the key and its workspace"
+    },
+    {
       "name": "auth",
-      "summary": "Manage the API key",
+      "summary": "Manage the API key — your krowk account",
       "subcommands": [
         {
           "name": "login",
           "usage": "krowk auth login [--token <token>] [--no-browser]",
-          "summary": "Approve this machine in the browser, or store a key",
+          "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
           "flags": [
             {
               "name": "token",
@@ -483,6 +512,11 @@ stdout:
           ]
         },
         {
+          "name": "logout",
+          "usage": "krowk auth logout",
+          "summary": "The same as `krowk logout`"
+        },
+        {
           "name": "token",
           "usage": "krowk auth token",
           "summary": "Print the stored token",
@@ -491,7 +525,7 @@ stdout:
         {
           "name": "verify",
           "usage": "krowk auth verify",
-          "summary": "Check the key and its workspace"
+          "summary": "The same as `krowk whoami`"
         }
       ]
     },
@@ -1286,13 +1320,42 @@ stdout:
       ]
     },
     {
+      "name": "login",
+      "usage": "krowk login [--token <token>] [--no-browser]",
+      "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
+      "flags": [
+        {
+          "name": "token",
+          "type": "string",
+          "default": "",
+          "usage": "Check and store this key instead of asking the browser — how CI logs in, e.g. krowk_sk_..."
+        },
+        {
+          "name": "no-browser",
+          "type": "bool",
+          "default": "false",
+          "usage": "Print the code and the page instead of opening a browser — the default over SSH, or with no display"
+        }
+      ]
+    },
+    {
+      "name": "logout",
+      "usage": "krowk logout",
+      "summary": "Take the key that resolves here off this machine"
+    },
+    {
+      "name": "whoami",
+      "usage": "krowk whoami",
+      "summary": "Check the key and its workspace"
+    },
+    {
       "name": "auth",
-      "summary": "Manage the API key",
+      "summary": "Manage the API key — your krowk account",
       "subcommands": [
         {
           "name": "login",
           "usage": "krowk auth login [--token <token>] [--no-browser]",
-          "summary": "Approve this machine in the browser, or store a key",
+          "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
           "flags": [
             {
               "name": "token",
@@ -1309,6 +1372,11 @@ stdout:
           ]
         },
         {
+          "name": "logout",
+          "usage": "krowk auth logout",
+          "summary": "The same as `krowk logout`"
+        },
+        {
           "name": "token",
           "usage": "krowk auth token",
           "summary": "Print the stored token",
@@ -1317,7 +1385,7 @@ stdout:
         {
           "name": "verify",
           "usage": "krowk auth verify",
-          "summary": "Check the key and its workspace"
+          "summary": "The same as `krowk whoami`"
         }
       ]
     },
@@ -2112,13 +2180,42 @@ stdout:
       ]
     },
     {
+      "name": "login",
+      "usage": "krowk login [--token <token>] [--no-browser]",
+      "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
+      "flags": [
+        {
+          "name": "token",
+          "type": "string",
+          "default": "",
+          "usage": "Check and store this key instead of asking the browser — how CI logs in, e.g. krowk_sk_..."
+        },
+        {
+          "name": "no-browser",
+          "type": "bool",
+          "default": "false",
+          "usage": "Print the code and the page instead of opening a browser — the default over SSH, or with no display"
+        }
+      ]
+    },
+    {
+      "name": "logout",
+      "usage": "krowk logout",
+      "summary": "Take the key that resolves here off this machine"
+    },
+    {
+      "name": "whoami",
+      "usage": "krowk whoami",
+      "summary": "Check the key and its workspace"
+    },
+    {
       "name": "auth",
-      "summary": "Manage the API key",
+      "summary": "Manage the API key — your krowk account",
       "subcommands": [
         {
           "name": "login",
           "usage": "krowk auth login [--token <token>] [--no-browser]",
-          "summary": "Approve this machine in the browser, or store a key",
+          "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
           "flags": [
             {
               "name": "token",
@@ -2135,6 +2232,11 @@ stdout:
           ]
         },
         {
+          "name": "logout",
+          "usage": "krowk auth logout",
+          "summary": "The same as `krowk logout`"
+        },
+        {
           "name": "token",
           "usage": "krowk auth token",
           "summary": "Print the stored token",
@@ -2143,7 +2245,7 @@ stdout:
         {
           "name": "verify",
           "usage": "krowk auth verify",
-          "summary": "Check the key and its workspace"
+          "summary": "The same as `krowk whoami`"
         }
       ]
     },

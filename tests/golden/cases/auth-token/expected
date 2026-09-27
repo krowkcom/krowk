@@ -4,7 +4,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "not_authenticated",
-    "fix": "run `krowk auth login --token krowk_sk_...`, or upload anonymously",
+    "fix": "run `krowk login --token krowk_sk_...`, or upload anonymously",
     "retryable": false
   }
 }
@@ -16,7 +16,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "not_authenticated",
-    "fix": "no key to verify — run `krowk auth login --token krowk_sk_...`, or upload anonymously",
+    "fix": "no key to verify — run `krowk login --token krowk_sk_...`, or upload anonymously",
     "retryable": false
   }
 }

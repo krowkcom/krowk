@@ -347,9 +347,9 @@ impl Client {
                     // a rejected one is when the self-check earns its keep —
                     // except on the self-check itself.
                     let fix = if self.token.is_empty() {
-                        "this endpoint needs an API key — run `krowk auth login --token krowk_sk_...`, or set KROWK_TOKEN".to_string()
+                        "this endpoint needs an API key — run `krowk login --token krowk_sk_...`, or set KROWK_TOKEN".to_string()
                     } else if !url.ends_with("/key") {
-                        let hint = "run `krowk auth verify` to see what this key is allowed to do";
+                        let hint = "run `krowk whoami` to see what this key is allowed to do";
                         match err.fix() {
                             f if f.is_empty() => hint.into(),
                             f => format!("{f} — {hint}"),
@@ -660,7 +660,7 @@ fn response_error(status: u16, payload: &[u8], retry_after: &str) -> Error {
 /// The registry's codes turned into the next thing to do.
 fn fix_for(code: &str, status: u16) -> String {
     match code {
-        "unauthorized" => "the registry rejected the key — check KROWK_TOKEN, or run `krowk auth login --token krowk_sk_...`",
+        "unauthorized" => "the registry rejected the key — check KROWK_TOKEN, or run `krowk login --token krowk_sk_...`",
         "run_needs_key" => "attaching an upload to a run needs an API key — authenticate, or upload without --run",
         "upload_missing" => "the bytes had not landed when the upload was finalized — retry the upload",
         "checksum_mismatch" => "the file changed while it was being uploaded — retry the upload",

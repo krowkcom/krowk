@@ -248,7 +248,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "no_key_for_workspace",
-    "fix": "no key is stored for workspace <ws_3> — stored: <ws_1>, <ws_2>; run `krowk auth login` to add one",
+    "fix": "no key is stored for workspace <ws_3> — stored: <ws_1>, <ws_2>; run `krowk login` to add one",
     "retryable": false
   }
 }

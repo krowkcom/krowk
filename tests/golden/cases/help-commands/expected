@@ -472,12 +472,12 @@ $ krowk help auth
 stdout:
 {
   "name": "auth",
-  "summary": "Manage the API key",
+  "summary": "Manage the API key — your krowk account",
   "subcommands": [
     {
       "name": "login",
       "usage": "krowk auth login [--token <token>] [--no-browser]",
-      "summary": "Approve this machine in the browser, or store a key",
+      "summary": "Sign in to your krowk account: approve this machine in the browser, or store a key",
       "flags": [
         {
           "name": "token",
@@ -494,6 +494,11 @@ stdout:
       ]
     },
     {
+      "name": "logout",
+      "usage": "krowk auth logout",
+      "summary": "The same as `krowk logout`"
+    },
+    {
       "name": "token",
       "usage": "krowk auth token",
       "summary": "Print the stored token",
@@ -502,7 +507,7 @@ stdout:
     {
       "name": "verify",
       "usage": "krowk auth verify",
-      "summary": "Check the key and its workspace"
+      "summary": "The same as `krowk whoami`"
     }
   ]
 }

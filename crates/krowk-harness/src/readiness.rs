@@ -40,9 +40,10 @@
 
 use crate::claude::auth as claude_auth;
 use crate::codex::auth as codex_auth;
+use crate::connect;
 use crate::engine::EngineError;
 use crate::catalog::Listed;
-use crate::instances::{connect_command, kind_label, Asked, Auth, Backend, Registry, Resolved};
+use crate::instances::{kind_label, Asked, Auth, Backend, Registry, Resolved};
 use crate::oauth;
 use crate::protocol::{ModelRef, WireApi};
 use serde_json::{json, Value};
@@ -174,6 +175,7 @@ impl Report {
         json!({
             "instance": self.instance,
             "kind": self.kind,
+            "label": crate::instances::kind_label(self.kind),
             "state": self.readiness.state(),
             "ready": self.readiness.is_ready(),
             "source": self.source,
@@ -389,7 +391,7 @@ pub fn route(
                 .1
                 .iter()
                 .filter_map(|v| reg.instances.get(*v))
-                .filter_map(|i| connect_command(&i.name, i.kind).map(|c| format!("`{c}` ({})", kind_label(i.kind))))
+                .filter_map(|i| suggested(i).map(|c| format!("`{c}` ({})", kind_label(i.kind))))
                 .collect();
             let run = match run.split_last() {
                 Some((last, [])) => last.clone(),
@@ -401,7 +403,7 @@ pub fn route(
             let named: Vec<String> = reg
                 .instances
                 .values()
-                .filter(|i| i.backend.is_none() && connect_command(&i.name, i.kind).is_none() && local(i, credentials).is_some_and(|r| r.is_ready()))
+                .filter(|i| i.backend.is_none() && suggested(i).is_none() && local(i, credentials).is_some_and(|r| r.is_ready()))
                 .map(|i| format!("`--model {}/<id>`", i.name))
                 .collect();
             let named = if named.is_empty() { String::new() } else { format!(", or name one that may serve it: {}", named.join(", ")) };
@@ -418,7 +420,7 @@ pub fn route(
                     format!("  {}, {}: --model {}/{m}{unchecked}", i.name, kind_label(i.kind), i.name)
                 })
                 .collect();
-            let example = several.iter().find_map(|i| connect_command(&i.name, i.kind)).map(|c| format!(" (e.g. `{c} --default`)")).unwrap_or_default();
+            let example = several.iter().find_map(|i| suggested(i)).map(|c| format!(" (e.g. `{c} --default`)")).unwrap_or_default();
             Err(EngineError::new(
                 "ambiguous_model",
                 format!(
@@ -463,34 +465,28 @@ fn vendor_login_source(inst: &Resolved, said: Option<&str>) -> String {
     }
 }
 
-/// `krowk providers add <vendor>[ --name N]` for a backend instance: the
-/// command that runs the vendor's own login in the instance's directory.
-fn add_command(inst: &Resolved) -> String {
-    let vendor = match inst.wire_api {
-        WireApi::CodexAppServer => "codex",
-        _ => "claude",
-    };
-    match inst.name.split_once(':') {
-        Some((_, n)) => format!("krowk providers add {vendor} --name {n}"),
-        None if inst.name == vendor => format!("krowk providers add {vendor}"),
-        None => format!("krowk providers add {vendor} --name {}", inst.name),
-    }
-}
-
 fn fix(inst: &Resolved, r: &Readiness) -> Option<String> {
     let codex = inst.wire_api == WireApi::CodexAppServer;
     Some(match r {
         Readiness::Ready { .. } => return None,
         Readiness::KeyNotSet { var } => format!("set {var} (krowk reads the key from the environment, never from a file)"),
-        Readiness::NotSignedIn | Readiness::Expired if matches!(inst.auth, Auth::OAuth { .. }) => format!("sign in with `{}`", oauth::login_command(&inst.name)),
+        Readiness::NotSignedIn | Readiness::Expired if matches!(inst.auth, Auth::OAuth { .. }) => format!("sign in with `{}`", connect::connect_command(&inst.name, inst.kind)),
         Readiness::NotSignedIn | Readiness::Expired => {
             let own = if codex { "Codex's" } else { "Claude's" };
-            format!("sign in with `{}`, which runs {own} own login", add_command(inst))
+            format!("sign in with `{}`, which runs {own} own login", connect::connect_command(&inst.name, inst.kind))
         }
-        Readiness::NotInstalled if codex => "install Codex (https://developers.openai.com/codex), or name the binary with `krowk providers add codex --binary <path>`".into(),
-        Readiness::NotInstalled => "install Claude Code (https://claude.com/claude-code), or name the binary with `krowk providers add claude --binary <path>`".into(),
+        Readiness::NotInstalled if codex => format!("install Codex (https://developers.openai.com/codex), or name the binary with `{} --binary <path>`", connect::connect_command(&inst.name, inst.kind)),
+        Readiness::NotInstalled => format!("install Claude Code (https://claude.com/claude-code), or name the binary with `{} --binary <path>`", connect::connect_command(&inst.name, inst.kind)),
         Readiness::Unknown { .. } => "see the reason, then run `krowk status` again".into(),
     })
+}
+
+/// The command routing suggests for an instance — `connect::connect_command`,
+/// the one every fix line uses — for a kind `krowk connect` sets up by a
+/// vendor's own method. None for a router or a compatible server, whose
+/// models krowk cannot tell: routing only ever names those.
+fn suggested(i: &Resolved) -> Option<String> {
+    (!matches!(i.kind, "openrouter-api" | "openai-compatible")).then(|| connect::connect_command(&i.name, i.kind))
 }
 
 /// Vendor answers that said "signed in", by instance, and when.
@@ -515,6 +511,16 @@ fn vendor_cached(inst: &Resolved, b: &Backend, probe: &Probe) -> Readiness {
         SIGNED_IN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(key, (Instant::now(), source.clone()));
     }
     r
+}
+
+/// Forgets what was believed of an instance's vendor login, in every
+/// directory it was asked in: a sign-in or a sign-out has just changed it,
+/// and a long-lived host (the TUI) asks again rather than believe the old
+/// answer for another minute.
+pub fn forget(instance: &str) {
+    if let Some(m) = SIGNED_IN.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        m.retain(|k, _| k.split('\0').next() != Some(instance));
+    }
 }
 
 /// Asks the vendor. Only whether there is a login and its kind come back;

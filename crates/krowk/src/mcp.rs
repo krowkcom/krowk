@@ -632,7 +632,7 @@ impl Server<'_> {
         if !self.authenticated() {
             return Ok((
                 "No API key is configured, so pushes will be anonymous: they expire within a day and come back with a claim token.\n\n\
-                 Set KROWK_TOKEN, or run `krowk auth login --token krowk_sk_...`."
+                 Set KROWK_TOKEN, or run `krowk login --token krowk_sk_...`."
                     .into(),
                 json!({ "authenticated": false }),
             ));

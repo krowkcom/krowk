@@ -567,7 +567,7 @@ impl Proc {
         cmd.process_group(0);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                EngineError::new("backend_not_found", format!("{} was not found — install Claude Code (https://claude.com/claude-code), or name the binary with `krowk providers add claude --binary <path>`", b.binary))
+                EngineError::new("backend_not_found", format!("{} was not found — install Claude Code (https://claude.com/claude-code), or name the binary with `krowk connect anthropic --method subscription --binary <path>`", b.binary))
             } else {
                 EngineError::new("backend_failed", format!("{} could not be started: {e}", b.binary))
             }
@@ -819,10 +819,7 @@ impl Proc {
             return Err(EngineError::new("rate_limited", format!("Claude Code on {instance} is limited{until} ({said}) — continue on another instance with --model, or wait")).with_status(result.api_status.unwrap_or(429)).with_resets(resets));
         }
         if lower.contains("/login") || lower.contains("not logged in") || lower.contains("invalid api key") || result.api_status == Some(401) {
-            let add = match instance.split_once(':') {
-                Some((_, name)) => format!("krowk providers add claude --name {name}"),
-                None => "krowk providers add claude".into(),
-            };
+            let add = crate::connect::connect_command(instance, "claude-code");
             return Err(EngineError::new("not_authenticated", format!("Claude Code is not signed in for the {instance} instance ({said}) — sign in with `{add}`, which runs Claude's own login")).with_status(401));
         }
         Err(EngineError::new("backend_failed", format!("Claude Code could not finish the turn: {said}")).with_status(result.api_status.unwrap_or(0)))

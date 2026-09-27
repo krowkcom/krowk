@@ -36,7 +36,7 @@ pub(crate) fn workspaces_list(ctx: &mut Ctx) -> Result<(), Error> {
 
 pub(crate) fn workspaces_use(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if creds::stored_workspaces().is_empty() {
-        return Err(fail("not_authenticated", "no keys are stored to choose between — `krowk auth login` adds one"));
+        return Err(fail("not_authenticated", "no keys are stored to choose between — `krowk login` adds one"));
     }
     let name = match args.first() {
         Some(name) => name.clone(),
@@ -123,7 +123,7 @@ fn ask_for_workspace(ctx: &Ctx, title: &str, otherwise: Error) -> Result<String,
     }
     let stored = creds::stored_workspaces();
     if stored.is_empty() {
-        return Err(fail("not_authenticated", "no keys are stored to pick from — `krowk auth login` adds one"));
+        return Err(fail("not_authenticated", "no keys are stored to pick from — `krowk login` adds one"));
     }
     pick_workspace(title, &stored)
 }

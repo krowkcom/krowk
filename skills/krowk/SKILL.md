@@ -159,9 +159,9 @@ environment variable — so never guess at a spelling this file does not carry.
 | Group an artifact afterwards | `krowk uploads attach art_2e1d --run run_8Kd2wq --json` |
 | Take an artifact down | `krowk uploads delete art_2e1d --json` |
 | Take down a keyless artifact | `krowk uploads delete art_2e1d <claim-token> --json` |
-| Store an API key you were handed | `krowk auth login --token krowk_sk_… --json` |
-| Sign in when there is no key to paste | `krowk auth login --no-browser --json` |
-| Which key is this, whose workspace | `krowk auth verify --json` |
+| Store an API key you were handed | `krowk login --token krowk_sk_… --json` |
+| Sign in when there is no key to paste | `krowk login --no-browser --json` |
+| Which key is this, whose workspace | `krowk whoami --json` |
 | Which workspaces have a stored key | `krowk workspaces list --json` |
 | Switch the machine-wide default | `krowk workspaces use ws_9hj3kd8a --json` |
 | Pin this repository to a workspace | `krowk config set workspace ws_9hj3kd8a --json` |
@@ -220,7 +220,7 @@ Two commands answer with a bare record and no envelope, whatever the flags:
 
 ### Workspaces
 
-A key belongs to one workspace; `auth login` stores one key per workspace, so
+A key belongs to one workspace; `krowk login` stores one key per workspace, so
 logging into a second never replaces the first. Which key a command uses:
 `--workspace` → `KROWK_WORKSPACE` → `.krowk/config.json` at the git root → the
 global config → whichever key logged in last. A workspace is always its
@@ -229,7 +229,7 @@ global config → whichever key logged in last. A workspace is always its
 - In a repo with `.krowk/config.json`, never pass a workspace — it is already
   pinned.
 - A resolved workspace with no stored key fails with `no_key_for_workspace`
-  (exit 3), never an anonymous fallback. Fix: `krowk auth login`, or check
+  (exit 3), never an anonymous fallback. Fix: `krowk login`, or check
   `krowk workspaces list --json`.
 - Always pass values explicitly. The interactive picker behind an omitted
   value is for humans on a terminal; off a TTY the omission is an immediate
@@ -240,7 +240,7 @@ global config → whichever key logged in last. A workspace is always its
 ### Is there a key?
 
 ```
-krowk auth verify --json
+krowk whoami --json
 ├── ok:true  → keyed. Artifacts keep, group under runs, and are listable.
 │              Use runs for anything producing more than one file.
 └── ok:false, exit 3 → keyless. Push still works:
@@ -270,8 +270,8 @@ on the way out. `--run` names a run you opened, and leaves closing it to you.
 
 ```
 Do you now have a key?
-├── no  → krowk auth login --token krowk_sk_… --json   (if you were handed one)
-│         else krowk auth login --no-browser --json     (a person approves it — see below)
+├── no  → krowk login --token krowk_sk_… --json   (if you were handed one)
+│         else krowk login --no-browser --json     (a person approves it — see below)
 └── yes → does it belong under a run?
           ├── no  → krowk claim <artifact> <token> --json
           └── yes → krowk claim <artifact> <token> --run <run> --json
@@ -362,7 +362,7 @@ closes. With only an installed krowk there is no local registry to point at:
 don't try to host one, run the flow with `--token` or not at all.
 
 ```bash
-krowk auth login --no-browser --json
+krowk login --no-browser --json
 ```
 
 While it waits it writes `{"authorizing": {"code": …, "page": …}}` to **stderr** —
@@ -378,7 +378,7 @@ hand the code to. Drop it only where the browser on this machine is that person'
 own.
 
 The key goes behind `--token`, never as a bare argument.
-`krowk auth login krowk_sk_…` is refused with `token_not_a_positional` rather than
+`krowk login krowk_sk_…` is refused with `token_not_a_positional` rather than
 silently ignored.
 
 The key itself is not yours to read. It lands in the credentials file at 0600 and
@@ -390,7 +390,7 @@ rather than repeating:
   receipt names.
 - `confirmed: false` with a `reason` — the key is stored and works, but the
   registry did not say which key it is or where it acts. Settle it with
-  `krowk auth verify --json` before telling the person where their uploads land.
+  `krowk whoami --json` before telling the person where their uploads land.
 
 ### Keep an artifact that was pushed before signing in
 
@@ -398,7 +398,7 @@ rather than repeating:
 krowk push diagram.png --json
 # → data.artifacts[0].claim_token — treat as a secret, never echo it
 
-krowk auth login --token krowk_sk_… --json
+krowk login --token krowk_sk_… --json
 krowk claim art_2e1d "$CLAIM_TOKEN" --run run_8Kd2wq --json
 ```
 
@@ -429,7 +429,7 @@ repository. Then tell the person exactly what was exposed, and rotate it.
 | `KROWK_DEV` | `1`/`true`/`yes`/`on` — same as `--dev`, a local registry |
 
 A stored key lives at `~/.config/krowk/credentials.json`, mode 0600, written by
-`krowk auth login`. Never read it out to show a person, and never put a token on
+`krowk login`. Never read it out to show a person, and never put a token on
 a command line in a shared shell — `KROWK_TOKEN` in the environment is better.
 
 ## Error Handling
@@ -441,7 +441,7 @@ answer.
 ```json
 {"ok": false,
  "error": {"error": "run_needs_key", "status": 401, "retryable": false,
-           "fix": "krowk auth login --token krowk_sk_…, then push again"}}
+           "fix": "krowk login --token krowk_sk_…, then push again"}}
 ```
 
 - `error.retryable` says whether trying again can work at all. When it is false,
@@ -456,7 +456,7 @@ answer.
   taken down. Exit 8. No retry brings it back; push again.
 - **Exit 8 on a login:** a browser login lapsed unapproved (`authorization_expired`)
   or its key was already collected (`spent`). Same rule, different fix — nothing
-  brings that login back, so run `krowk auth login` again for a new one.
+  brings that login back, so run `krowk login` again for a new one.
 - **`krowk help <command> --json`** settles any question about a flag, and cannot
   be out of date — it is generated from the same catalog that routes the command.
 
@@ -467,7 +467,7 @@ answer.
 | 0 | It worked | — |
 | 1 | The command was wrong, or krowk failed on its own — bad flag, unknown command, unreadable file. Also anything unclassified | Fix the command; `krowk help <command> --json` |
 | 2 | Not found — no such artifact or run in this workspace, or an unrecognised claim token | Check the slug and the token, or `KROWK_API_URL` |
-| 3 | Refused for want of credentials — no key where one is needed, a rejected key, a browser login somebody denied or that CI could not approve, or no claim token where that is the only authority | `krowk auth login --token …`, or pass the claim token |
+| 3 | Refused for want of credentials — no key where one is needed, a rejected key, a browser login somebody denied or that CI could not approve, or no claim token where that is the only authority | `krowk login --token …`, or pass the claim token |
 | 4 | Understood and refused — validation, an artifact already finalized, a run that needs a key | Change something; retrying unchanged answers the same |
 | 5 | Rate limited | Wait `error.retry_after` seconds, then retry |
 | 6 | The bytes did not move — registry or object storage unreachable | Retry; `krowk doctor --json` |
