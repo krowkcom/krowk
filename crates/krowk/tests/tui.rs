@@ -1014,6 +1014,18 @@ fn the_first_run_card_connects_a_claude_subscription_and_the_prompt_runs_on_it()
     t.write(b"y");
     assert!(says(&t, at, "Worked for", Duration::from_secs(15)), "the prompt did not run: {:?}", t.text());
     assert!(fake_turns(&b).contains("--model claude-opus-5-5"), "{}", fake_turns(&b));
+    // A /connect cancelled at its first pick changes nothing: the next turn
+    // runs on the same Claude process.
+    let at = t.output().len();
+    t.write(b"/connect\r");
+    assert!(says(&t, at, "Connect which provider?", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\x1b");
+    assert!(says(&t, at, "nothing was chosen", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"once more\r");
+    assert!(says(&t, at, "Worked for", Duration::from_secs(15)), "{:?}", t.text());
+    assert_eq!(fake_turns(&b).lines().count(), 1, "one Claude process for both turns: {}", fake_turns(&b));
     t.write(b"\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
 }

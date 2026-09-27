@@ -698,12 +698,14 @@ fn within<F: std::future::Future>(f: F) -> F::Output {
     rt().block_on(async { tokio::time::timeout(std::time::Duration::from_secs(30), f).await.expect("finished within 30 s") })
 }
 
-/// Instances replaced while a session's process is up — the TUI's
-/// `/disconnect` or `/connect` — are not taken on that process's word: the
-/// next turn asks the vendor again, and a sign-out since is refused rather
-/// than run on the old, still signed-in process.
+/// Its instance changed while a session's process is up — the TUI's
+/// `/disconnect` or `/connect` of it — the process is not taken at its
+/// word: the next turn asks the vendor again, and a sign-out since is
+/// refused rather than run on the old, still signed-in process. Instances
+/// read again with nothing changed (a cancelled `/connect`), or another
+/// instance changed, keep it.
 #[test]
-fn a_session_process_is_not_reused_once_the_instances_are_replaced() {
+fn a_session_process_is_not_reused_once_its_instance_is_replaced() {
     let home = Home::new("replaced");
     let dir = home.signed_in("cfg");
     let inst = || vec![("claude:work", home.instance(&dir, None))];
@@ -714,16 +716,23 @@ fn a_session_process_is_not_reused_once_the_instances_are_replaced() {
         let (_, r) = run(&host, prompt(Some(&sid), "again", "claude:work/sonnet", PermissionMode::Default)).await;
         assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
         assert_eq!(processes(&home.fake_log()), 1, "one process serves the session");
-        // Signed out, as `/disconnect` does, and the instances read again.
+        let cfg = InstancesConfig { instances: inst().into_iter().map(|(n, k)| (n.to_string(), k)).collect(), ..Default::default() };
+        // Nothing changed, then another instance: the process is kept.
+        host.set_registry(Registry::resolve(&cfg, &home.env()), None);
+        host.set_registry(Registry::resolve(&cfg, &home.env()), Some("openai"));
+        let (_, r) = run(&host, prompt(Some(&sid), "still", "claude:work/sonnet", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        assert_eq!(processes(&home.fake_log()), 1, "the same process, after a change to nothing of its own");
+        // Signed out, as `/disconnect claude:work` does, and the instances
+        // read again.
         std::fs::remove_file(dir.join("fake-login")).unwrap();
         krowk_harness::readiness::forget("claude:work");
-        let cfg = InstancesConfig { instances: inst().into_iter().map(|(n, k)| (n.to_string(), k)).collect(), ..Default::default() };
-        host.set_registry(Registry::resolve(&cfg, &home.env()));
+        host.set_registry(Registry::resolve(&cfg, &home.env()), Some("claude:work"));
         let e = run(&host, prompt(Some(&sid), "after", "claude:work/sonnet", PermissionMode::Default)).await.1.unwrap_err();
         assert_eq!(e.code, "not_authenticated", "{}", e.message);
         // Signed in again: a new process, on the vendor's resume.
         home.signed_in("cfg");
-        host.set_registry(Registry::resolve(&cfg, &home.env()));
+        host.set_registry(Registry::resolve(&cfg, &home.env()), Some("claude:work"));
         let (_, r) = run(&host, prompt(Some(&sid), "back", "claude:work/sonnet", PermissionMode::Default)).await;
         assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
         host.shutdown().await;

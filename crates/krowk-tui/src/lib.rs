@@ -1154,8 +1154,12 @@ impl<'h> Ui<'h> {
         // (R-PERM-2): y once, s for the session, p for the project, n or
         // Esc no, v to print a request that was cut to fit (its y/s/p work
         // only after). Ctrl-C still interrupts the turn, which declines it too.
+        // Not while `/connect`'s text question is being typed into: an
+        // account name with a `p` in it would allow a call for the project.
+        let typing_answer = app.overlay == Overlay::Connect && app.flow.as_ref().is_some_and(|f| f.typing());
         if let Some(req) = app.approvals.first().cloned()
             && !ctrl
+            && !typing_answer
         {
             // A key already on its way when the request came up — the
             // person was typing — is not an answer.
@@ -1203,7 +1207,17 @@ impl<'h> Ui<'h> {
                     f.answer(None);
                     app.overlay = Overlay::None;
                 }
-                KeyCode::Char('d') if ctrl => return self.on_prompt_key(app, k, quitting).await,
+                // Leaves krowk whatever the prompt under the overlay holds,
+                // as it does on an empty prompt; with a turn running, it
+                // stops that turn first, as there.
+                KeyCode::Char('d') if ctrl => {
+                    if app.running() {
+                        *quitting = true;
+                        self.interrupt(app).await;
+                    } else {
+                        app.quit = true;
+                    }
+                }
                 KeyCode::Up if !typing => f.step(-1),
                 KeyCode::Down if !typing => f.step(1),
                 KeyCode::Enter if settled => f.enter(),
@@ -1646,14 +1660,23 @@ impl<'h> Ui<'h> {
         if app.overlay == Overlay::Connect {
             app.overlay = Overlay::None;
         }
-        if let Some(r) = registry {
+        // Only a connection or a sign-out that happened changes anything: a
+        // cancelled or failed one leaves the instances, and every session's
+        // running process, as they were. Of those, only the instance it
+        // names has its process replaced.
+        let changed = match &done {
+            Ok(connect::Done::Connected(c)) => Some(c.instance.clone()),
+            Ok(connect::Done::Disconnected(d)) => Some(d.instance.clone()),
+            Err(_) => None,
+        };
+        if let (Some(r), Some(changed)) = (registry, &changed) {
             app.vendor_instances = r.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
-            self.host.set_registry(r);
+            self.host.set_registry(r, Some(changed));
+            // Whatever was marked before may have changed, a check still
+            // out included: its answers are dropped with it.
+            app.marks.clear();
+            self.checks = None;
         }
-        // Whatever was marked before may have changed, a check still out
-        // included: its answers are dropped with it.
-        app.marks.clear();
-        self.checks = None;
         match done {
             Ok(connect::Done::Connected(c)) => {
                 let s = c.summary(false);
