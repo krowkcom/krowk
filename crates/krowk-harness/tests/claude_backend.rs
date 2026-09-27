@@ -104,7 +104,7 @@ impl Home {
             krowk_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
-            credentials: self.root.join("home/.config/krowk/providers/credentials.json"),
+            credentials: self.root.join("home/.krowk/credentials.json"),
             trust: gate,
             publisher,
             permissions: Default::default(),

@@ -6,7 +6,9 @@
 //! A definition holds nothing secret: an API-key instance names the
 //! environment variable its key is read from, never the key, and an OAuth
 //! instance's tokens live in krowk's provider credentials file, so
-//! definitions can sync between hosts and keys cannot (R-INST-5). The kinds
+//! definitions can sync between hosts and keys cannot (R-INST-5). A key
+//! can be stored too — in that same credentials file, never here — and is
+//! then used before the variable (`crate::keys`). The kinds
 //! are the native providers' (R-PROV-4): `anthropic-api`, `openai-api`,
 //! `xai-api`, `openrouter-api`, `openai-compatible` for anything else that
 //! speaks Chat Completions, and `xai-oauth` for a SuperGrok subscription.
@@ -83,6 +85,13 @@ pub struct InstancesConfig {
     /// kind.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rollover_order: Vec<String>,
+    /// The provider credentials file stored keys are read from
+    /// (`keys::apply`): set by whoever loads the person's own config, and
+    /// never by JSON — no config file, a repository's least of all, can
+    /// point krowk at keys, `$VAR`s or commands of its choosing.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub keys_from: Option<PathBuf>,
 }
 
 /// `subagents` in config.json (R-SUB-1, R-SUB-2).
@@ -447,6 +456,10 @@ pub struct Resolved {
     pub effort: Option<Effort>,
     /// Set on a backend instance: the process krowk drives.
     pub backend: Option<Backend>,
+    /// A key stored in the credentials file, which owns the instance: then
+    /// `api_key` is that key (a command's once it has run), and
+    /// `api_key_env` still the variable the definition names.
+    pub stored: crate::keys::Stored,
 }
 
 // Hand-written so a key never reaches a log line through `{:?}`.
@@ -457,6 +470,7 @@ impl std::fmt::Debug for Resolved {
             .field("kind", &self.kind)
             .field("base_url", &self.base_url)
             .field("api_key", &if self.api_key.is_empty() { "<unset>" } else { "<set>" })
+            .field("stored", &self.stored.source())
             .finish()
     }
 }
@@ -513,6 +527,9 @@ impl Registry {
         }
         for (name, kind) in &cfg.instances {
             instances.insert(name.clone(), resolve_one(name, kind, env));
+        }
+        if let Some(credentials) = &cfg.keys_from {
+            crate::keys::apply(&mut instances, credentials, env);
         }
         Registry { instances, default_model: cfg.default_model.clone(), toolset: cfg.toolset.clone(), subagents: cfg.subagents.clone(), rollover: cfg.rollover.unwrap_or_default(), rollover_order: cfg.rollover_order.clone() }
     }
@@ -817,6 +834,7 @@ fn resolve_one(name: &str, kind: &InstanceKind, env: &dyn Fn(&str) -> String) ->
         max_tokens: 32_000,
         effort,
         backend: None,
+        stored: crate::keys::Stored::No,
     };
     match kind {
         InstanceKind::AnthropicApi { api_key_env, base_url, thinking, max_tokens, effort } => {

@@ -3,7 +3,7 @@ stdout:
 {
   "ok": true,
   "data": {
-    "path": "<scratch>/home/.config/krowk/credentials.json",
+    "path": "<scratch>/home/.krowk/credentials.json",
     "confirmed": true,
     "key_id": "<key_1>",
     "workspace": "<ws_1>"
@@ -93,7 +93,7 @@ stdout:
     "removed": true,
     "workspace": "<ws_1>",
     "key_id": "<key_1>",
-    "path": "<scratch>/home/.config/krowk/credentials.json",
+    "path": "<scratch>/home/.krowk/credentials.json",
     "stored": [],
     "shadowed_by_env": false
   },
@@ -121,7 +121,7 @@ stdout:
     "removed": false,
     "workspace": "",
     "key_id": null,
-    "path": "<scratch>/home/.config/krowk/credentials.json",
+    "path": "<scratch>/home/.krowk/credentials.json",
     "stored": [],
     "shadowed_by_env": false
   },

@@ -34,7 +34,8 @@ pub type Env<'a> = &'a dyn Fn(&str) -> String;
 /// CLI answers differently.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StoreError {
-    /// Nowhere for krowk.db to live: no HOME and no absolute XDG_DATA_HOME.
+    /// Nowhere for krowk.db to live: no home, or a KROWK_HOME that is not
+    /// absolute.
     NoHome(String),
     /// The file is not the v1 schema; `krowk sessions rebuild` is the fix.
     SchemaMismatch(String),
@@ -66,25 +67,14 @@ pub(crate) fn other(what: &str, e: impl std::fmt::Display) -> StoreError {
     StoreError::Other(format!("store: {what}: {e}"))
 }
 
-/// $XDG_DATA_HOME/krowk/krowk.db when that is absolute, else
-/// ~/.local/share/krowk/krowk.db; None when there is no home to put it in —
-/// a store must not fall back to /krowk.db or the working directory.
-pub fn db_path(env: Env) -> Option<PathBuf> {
-    let xdg = env("XDG_DATA_HOME");
-    if Path::new(&xdg).is_absolute() {
-        return Some(Path::new(&xdg).join("krowk").join("krowk.db"));
+/// `sessions/krowk.db` in krowk's home (`krowk_api::home`); an error when
+/// there is no home to put it in — a store must never fall back to
+/// /krowk.db or the working directory.
+pub fn db_path(env: Env) -> Result<PathBuf, StoreError> {
+    match krowk_api::home::dir(env) {
+        Ok(home) => Ok(home.join(krowk_api::home::SESSIONS).join("krowk.db")),
+        Err(e) => Err(StoreError::NoHome(format!("store: {}", e.fix()))),
     }
-    let home = env("HOME");
-    if home.is_empty() || !Path::new(&home).is_absolute() {
-        return None;
-    }
-    Some(Path::new(&home).join(".local").join("share").join("krowk").join("krowk.db"))
-}
-
-fn no_home() -> StoreError {
-    StoreError::NoHome(
-        "store: no home directory in environment: set HOME (or XDG_DATA_HOME to an absolute path) so krowk.db has a place to live".into(),
-    )
 }
 
 fn rebuild_hint(path: &Path, why: &str) -> StoreError {
@@ -98,7 +88,7 @@ fn rebuild_hint(path: &Path, why: &str) -> StoreError {
 /// directory is 0700 and the files 0600: transcripts are what an agent was
 /// told, secrets included. A file that is not v1 is refused, never repaired.
 pub fn open(env: Env) -> Result<Connection, StoreError> {
-    let path = db_path(env).ok_or_else(no_home)?;
+    let path = db_path(env)?;
     let dir = path.parent().expect("a db path has a directory");
     create_private_dir(dir).map_err(|e| other(&format!("mkdir {}", dir.display()), e))?;
     tighten(dir, 0o700).map_err(|e| other(&format!("chmod {}", dir.display()), e))?;
@@ -284,12 +274,9 @@ pub struct StatusCheck {
 
 pub fn check(env: Env) -> StatusCheck {
     let status = |status: &str, message: String, hint: String| StatusCheck { name: "store".into(), status: status.into(), message, hint };
-    let Some(path) = db_path(env) else {
-        return status(
-            "fail",
-            "no home directory in environment, so krowk.db has nowhere to live".into(),
-            "set HOME (or XDG_DATA_HOME to an absolute path) so krowk.db has a place to live".into(),
-        );
+    let path = match db_path(env) {
+        Ok(p) => p,
+        Err(e) => return status("fail", "krowk.db has nowhere to live".into(), e.message().trim_start_matches("store: ").into()),
     };
     match open(env) {
         Ok(_) => status("pass", format!("healthy ({}, schema v{SCHEMA_VERSION}, wal)", path.display()), String::new()),
@@ -384,10 +371,8 @@ mod tests {
 
     #[test]
     fn no_home_is_no_store() {
-        assert!(db_path(&|_: &str| String::new()).is_none());
-        assert!(db_path(&|k: &str| if k == "HOME" { "relative".into() } else { String::new() }).is_none());
-        let xdg = |k: &str| if k == "XDG_DATA_HOME" { "/data".into() } else { String::new() };
-        assert_eq!(db_path(&xdg).unwrap(), PathBuf::from("/data/krowk/krowk.db"));
+        assert!(db_path(&|_: &str| String::new()).is_err());
+        assert!(db_path(&|k: &str| if k == "HOME" { "relative".into() } else { String::new() }).is_err());
         assert!(matches!(open(&|_: &str| String::new()).unwrap_err(), StoreError::NoHome(_)));
     }
 }

@@ -100,14 +100,9 @@ fn date_of(ms: i64) -> String {
     jiff::Timestamp::from_millisecond(ms).map(|t| t.strftime("%Y-%m-%d").to_string()).unwrap_or_else(|_| "at an unknown date".into())
 }
 
-/// $XDG_CACHE_HOME/krowk/models.json when absolute, else ~/.cache/krowk/.
+/// `cache/models.json` in krowk's home; none without one.
 pub fn cache_path(env: &dyn Fn(&str) -> String) -> Option<PathBuf> {
-    let xdg = env("XDG_CACHE_HOME");
-    if Path::new(&xdg).is_absolute() {
-        return Some(Path::new(&xdg).join("krowk").join("models.json"));
-    }
-    let home = env("HOME");
-    Path::new(&home).is_absolute().then(|| Path::new(&home).join(".cache").join("krowk").join("models.json"))
+    krowk_api::home::dir(env).ok().map(|h| h.join(krowk_api::home::CACHE).join("models.json"))
 }
 
 pub fn meta_path(cache: &Path) -> PathBuf {

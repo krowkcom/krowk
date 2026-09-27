@@ -2,7 +2,7 @@ $ krowk sessions import --from all --quiet
 stdout:
 {
   "dry_run": false,
-  "store": "<scratch>/home/.local/share/krowk/krowk.db",
+  "store": "<scratch>/home/.krowk/sessions/krowk.db",
   "providers": [
     {
       "provider": "claude",

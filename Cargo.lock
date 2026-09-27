@@ -1416,6 +1416,7 @@ version = "0.0.0"
 dependencies = [
  "jiff",
  "krowk-devregistry",
+ "libc",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1459,6 +1460,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "jsonschema",
+ "krowk-api",
  "krowk-import",
  "krowk-store",
  "libc",
@@ -1480,6 +1482,7 @@ name = "krowk-import"
 version = "0.0.0"
 dependencies = [
  "jiff",
+ "krowk-api",
  "krowk-store",
  "libc",
  "rusqlite",
@@ -1491,6 +1494,7 @@ dependencies = [
 name = "krowk-store"
 version = "0.0.0"
 dependencies = [
+ "krowk-api",
  "rusqlite",
  "serde",
  "serde_json",

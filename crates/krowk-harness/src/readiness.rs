@@ -9,7 +9,9 @@
 //! credential comes from (`source` — an environment variable's name, a
 //! vendor's own login, krowk's OAuth file; never the secret) and one line
 //! that fixes it. A key is checked in the environment krowk resolved at
-//! start, an OAuth login in krowk's provider credentials file (an expired
+//! start, or — stored — in krowk's provider credentials file, whose
+//! `!command` is the one command `check` runs besides a vendor's (see
+//! `crate::keys`), an OAuth login in krowk's provider credentials file (an expired
 //! access token with no refresh token is `Expired`: nothing krowk can do
 //! renews it), and a vendor login by asking the vendor — `claude auth status
 //! --json`, Codex's `account/read` over `codex app-server` with `codex login
@@ -44,6 +46,7 @@ use crate::connect;
 use crate::engine::EngineError;
 use crate::catalog::Listed;
 use crate::instances::{kind_label, Asked, Auth, Backend, Registry, Resolved};
+use crate::keys::{self, Stored};
 use crate::oauth;
 use crate::protocol::{ModelRef, WireApi};
 use serde_json::{json, Value};
@@ -59,9 +62,9 @@ use std::time::{Duration, Instant};
 pub const VENDOR_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a vendor's "signed in" is believed without asking again.
 pub const CACHE_FOR: Duration = Duration::from_secs(60);
-/// krowk's own directory for vendor checks outside any repository, under
-/// its data directory.
-pub const NEUTRAL_DIR: &str = "readiness";
+/// The most of a check's output that is kept, per stream (see
+/// `output_within`).
+pub const OUTPUT_CAP: usize = 64 * 1024;
 
 /// Where a vendor is asked, and how long it has to answer — one deadline
 /// for the whole check, a fallback included.
@@ -79,28 +82,14 @@ impl Probe {
 }
 
 /// krowk's own directory for asking a vendor outside any repository:
-/// `<data dir>/readiness`, made `0700` and kept that way, and refused when
-/// it is anything but a directory of its own (a symlink planted there
-/// would lead the check somewhere else). It holds nothing, so a vendor
-/// started in it reads only the person's own settings.
-pub fn neutral_dir(data_dir: &Path) -> Result<PathBuf, String> {
-    let dir = data_dir.join(NEUTRAL_DIR);
-    let fail = |e: std::io::Error| format!("{} cannot be made krowk's own: {e}", dir.display());
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-        match std::fs::symlink_metadata(&dir) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(fail)?,
-            Err(e) => return Err(fail(e)),
-            Ok(m) if !m.is_dir() => return Err(format!("{} is not a directory — move it aside", dir.display())),
-            // SAFETY: getuid has no preconditions and cannot fail.
-            Ok(m) if m.uid() != unsafe { libc::getuid() } => return Err(format!("{} belongs to another user — move it aside", dir.display())),
-            Ok(_) => {}
-        }
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(fail)?;
-    }
-    #[cfg(not(unix))]
-    std::fs::create_dir_all(&dir).map_err(fail)?;
+/// `readiness/` in krowk's home, made `0700` and kept that way, and refused
+/// when it is anything but a directory of its own (a symlink planted there
+/// would lead the check somewhere else) — the home's own rules
+/// (`krowk_api::home::own`). It holds nothing, so a vendor started in it
+/// reads only the person's own settings.
+pub fn neutral_dir(home: &Path) -> Result<PathBuf, String> {
+    let dir = home.join(krowk_api::home::READINESS);
+    krowk_api::home::make(&dir)?;
     Ok(dir)
 }
 
@@ -210,8 +199,19 @@ impl Resolved {
     /// wire clients, which keep it as a defensive check of their own.
     pub fn missing_key(&self) -> Option<String> {
         let keyed = self.auth == Auth::ApiKey || (self.auth == Auth::Vendor && !self.api_key_env.is_empty());
-        (keyed && self.api_key.is_empty()).then(|| {
-            format!("no API key for the {} instance — set {} (krowk reads the key from the environment, never from a file)", self.name, self.api_key_env)
+        if !keyed || !self.api_key.is_empty() {
+            return None;
+        }
+        let store = connect::connect_command(&self.name, self.kind);
+        Some(match &self.stored {
+            // A stored reference owns the instance: its variable, not the
+            // definition's, is the one to set.
+            Stored::Env(v) => format!("no API key for the {} instance — its stored key is ${v}, which is not set; set {v}, or store another with `{store}` (krowk does not fall back to ${} for it)", self.name, self.api_key_env),
+            Stored::Command { .. } | Stored::Unreadable(_) => format!("the {} instance's stored key has not been read", self.name),
+            Stored::Literal => format!("the {} instance's stored key is empty — store another with `{store}`", self.name),
+            // A backend's key is the environment's alone.
+            _ if self.backend.is_some() => format!("no API key for the {} instance — set {}", self.name, self.api_key_env),
+            _ => format!("no API key for the {} instance — set {}, or store one with `{store}`", self.name, self.api_key_env),
         })
     }
 }
@@ -224,16 +224,26 @@ pub fn local(inst: &Resolved, credentials: &Path) -> Option<Readiness> {
     {
         return Some(Readiness::NotInstalled);
     }
+    // A stored key's command is run by `check`, not here: this answers
+    // without spawning anything.
+    match &inst.stored {
+        Stored::Unreadable(reason) => return Some(Readiness::Unknown { reason: reason.clone() }),
+        Stored::Command { command, .. } if inst.api_key.is_empty() => {
+            return keys::ran(command).map(|_| Readiness::Ready { source: expected_source(inst, credentials) });
+        }
+        Stored::Env(v) if inst.api_key.is_empty() => return Some(Readiness::KeyNotSet { var: v.clone() }),
+        _ => {}
+    }
     if inst.missing_key().is_some() {
         return Some(Readiness::KeyNotSet { var: inst.api_key_env.clone() });
     }
     match &inst.auth {
-        Auth::ApiKey => Some(Readiness::Ready { source: format!("${}", inst.api_key_env) }),
+        Auth::ApiKey => Some(Readiness::Ready { source: expected_source(inst, credentials) }),
         Auth::Keyless => Some(Readiness::Ready { source: "no key".into() }),
         Auth::OAuth { .. } => Some(oauth_login(inst, credentials)),
         // A keyed backend runs on its key, which is krowk's to check, not a
         // login the vendor holds.
-        Auth::Vendor if !inst.api_key_env.is_empty() => Some(Readiness::Ready { source: format!("${}, handed to {}", inst.api_key_env, inst.vendor) }),
+        Auth::Vendor if !inst.api_key_env.is_empty() => Some(Readiness::Ready { source: expected_source(inst, credentials) }),
         Auth::Vendor => None,
     }
 }
@@ -253,9 +263,14 @@ fn oauth_login(inst: &Resolved, credentials: &Path) -> Readiness {
 /// where `probe` says (bounded by its deadline, a "signed in" cached for
 /// `CACHE_FOR`). Blocks for as long as the vendor takes.
 pub fn check(inst: &Resolved, credentials: &Path, probe: &Probe) -> Report {
-    let readiness = local(inst, credentials).unwrap_or_else(|| match &inst.backend {
-        Some(b) => vendor_cached(inst, b, probe),
-        None => Readiness::Unknown { reason: "no way to check this instance".into() },
+    let readiness = local(inst, credentials).unwrap_or_else(|| match (&inst.stored, &inst.backend) {
+        // The one command readiness runs: the person's own, for its key.
+        (Stored::Command { .. }, _) => match keys::materialise(inst) {
+            Ok(_) => Readiness::Ready { source: expected_source(inst, credentials) },
+            Err(e) => Readiness::Unknown { reason: e.message },
+        },
+        (_, Some(b)) => vendor_cached(inst, b, probe),
+        (_, None) => Readiness::Unknown { reason: "no way to check this instance".into() },
     });
     report(inst, readiness, credentials)
 }
@@ -448,10 +463,10 @@ pub fn report(inst: &Resolved, readiness: Readiness, credentials: &Path) -> Repo
 /// ready, so the person knows which variable or login to look at.
 fn expected_source(inst: &Resolved, credentials: &Path) -> String {
     match &inst.auth {
-        Auth::ApiKey => format!("${}", inst.api_key_env),
+        Auth::ApiKey => inst.stored.source().unwrap_or_else(|| format!("env {}", inst.api_key_env)),
         Auth::Keyless => "no key".into(),
         Auth::OAuth { .. } => format!("OAuth login in {}", credentials.display()),
-        Auth::Vendor if !inst.api_key_env.is_empty() => format!("${}, handed to {}", inst.api_key_env, inst.vendor),
+        Auth::Vendor if !inst.api_key_env.is_empty() => format!("env {}, handed to {}", inst.api_key_env, inst.vendor),
         Auth::Vendor => vendor_login_source(inst, None),
     }
 }
@@ -469,7 +484,8 @@ fn fix(inst: &Resolved, r: &Readiness) -> Option<String> {
     let codex = inst.wire_api == WireApi::CodexAppServer;
     Some(match r {
         Readiness::Ready { .. } => return None,
-        Readiness::KeyNotSet { var } => format!("set {var} (krowk reads the key from the environment, never from a file)"),
+        Readiness::KeyNotSet { var } if inst.backend.is_some() => format!("set {var}"),
+        Readiness::KeyNotSet { var } => format!("set {var}, or store a key with `{}`", connect::connect_command(&inst.name, inst.kind)),
         Readiness::NotSignedIn | Readiness::Expired if matches!(inst.auth, Auth::OAuth { .. }) => format!("sign in with `{}`", connect::connect_command(&inst.name, inst.kind)),
         Readiness::NotSignedIn | Readiness::Expired => {
             let own = if codex { "Codex's" } else { "Claude's" };
@@ -551,9 +567,27 @@ fn vendor(inst: &Resolved, b: &Backend, probe: &Probe) -> Readiness {
 /// rather than leaving it to its deadline, whose thread is gone with the
 /// process.
 pub(crate) fn probing(cmd: &mut Command, probe: &Probe) -> std::io::Result<std::process::Child> {
+    probing_as(cmd, probe, false)
+}
+
+/// `probing`, and with `detached` in a session of its own: no controlling
+/// terminal at all, so a command that would ask on `/dev/tty` fails at once
+/// rather than drawing a prompt it can never read. Its session's id is its
+/// process group's, so it is stopped the same way.
+fn probing_as(cmd: &mut Command, probe: &Probe, detached: bool) -> std::io::Result<std::process::Child> {
     cmd.current_dir(&probe.dir);
     #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(cmd, 0);
+    if detached {
+        // SAFETY: setsid is async-signal-safe and touches no memory of the
+        // parent's; it runs in the child between fork and exec.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(cmd, || if libc::setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+        }
+    } else {
+        std::os::unix::process::CommandExt::process_group(cmd, 0);
+    }
+    #[cfg(not(unix))]
+    let _ = detached;
     let child = cmd.spawn()?;
     crate::group::register(Some(child.id()));
     Ok(child)
@@ -590,15 +624,30 @@ fn kill_group(child: &std::process::Child) {
 /// exited: a process it left behind that escaped its group (`setsid`, a
 /// daemonizing credential helper) can hold the pipes open for good, and is
 /// then abandoned with whatever had been read — the check never waits on
-/// it past the deadline.
+/// it past the deadline. Each stream is kept to `OUTPUT_CAP`; stdout past
+/// it stops the command and is an error.
 pub(crate) fn output_within(cmd: &mut Command, probe: &Probe) -> std::io::Result<Option<Output>> {
+    output_as(cmd, probe, false)
+}
+
+/// `output_within`, with no controlling terminal (`probing_as`): a stored
+/// key's command.
+pub(crate) fn output_detached(cmd: &mut Command, probe: &Probe) -> std::io::Result<Option<Output>> {
+    output_as(cmd, probe, true)
+}
+
+fn output_as(cmd: &mut Command, probe: &Probe, detached: bool) -> std::io::Result<Option<Output>> {
     use std::io::Read;
     use std::sync::{mpsc, Arc};
     let within = probe.within;
-    let mut child = probing(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()), probe)?;
+    let mut child = probing_as(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()), probe, detached)?;
     // Each pipe is read into a buffer shared with this thread, and says
     // when it reached its end.
-    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+    // Each stream is kept to OUTPUT_CAP: past it stdout is an overflow the
+    // check fails on, and stderr is read on and dropped — a vendor's answer
+    // and a key are both far smaller, and nothing may grow without bound.
+    let overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let drain = |pipe: Option<Box<dyn Read + Send>>, over: Option<Arc<std::sync::atomic::AtomicBool>>| {
         let buf = Arc::new(Mutex::new(Vec::new()));
         let (done, finished) = mpsc::channel::<()>();
         let into = buf.clone();
@@ -609,15 +658,22 @@ pub(crate) fn output_within(cmd: &mut Command, probe: &Probe) -> std::io::Result
                     if n == 0 {
                         break;
                     }
-                    into.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&chunk[..n]);
+                    let mut b = into.lock().unwrap_or_else(|e| e.into_inner());
+                    if b.len() + n > OUTPUT_CAP {
+                        if let Some(o) = &over {
+                            o.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        continue;
+                    }
+                    b.extend_from_slice(&chunk[..n]);
                 }
             }
             let _ = done.send(());
         });
         (buf, finished)
     };
-    let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-    let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), Some(overflow.clone()));
+    let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>), None);
     let started = Instant::now();
     loop {
         let gone = match exited(&mut child) {
@@ -638,6 +694,10 @@ pub(crate) fn output_within(cmd: &mut Command, probe: &Probe) -> std::io::Result
             crate::group::release(Some(child.id()));
             break;
         }
+        if overflow.load(std::sync::atomic::Ordering::Relaxed) {
+            stop(&mut child);
+            return Err(std::io::Error::other(format!("it printed more than {} KiB", OUTPUT_CAP / 1024)));
+        }
         if started.elapsed() > within {
             stop(&mut child);
             return Ok(None);
@@ -653,7 +713,11 @@ pub(crate) fn output_within(cmd: &mut Command, probe: &Probe) -> std::io::Result
         let _ = finished.recv_timeout(within.saturating_sub(started.elapsed()).max(Duration::from_millis(50)));
         std::mem::take(&mut *buf.lock().unwrap_or_else(|e| e.into_inner()))
     };
-    Ok(Some(Output { status, stdout: take(out), stderr: take(err) }))
+    let (stdout, stderr) = (take(out), take(err));
+    if overflow.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(std::io::Error::other(format!("it printed more than {} KiB", OUTPUT_CAP / 1024)));
+    }
+    Ok(Some(Output { status, stdout, stderr }))
 }
 
 /// Whether the child has exited, without reaping it: its pid stays its own

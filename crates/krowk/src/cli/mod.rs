@@ -141,6 +141,16 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
         let _ = writeln!(io.stdout, "{VERSION}");
         return exit::OK;
     }
+    // A home krowk cannot use — a KROWK_HOME that is not absolute, a
+    // symlink or another user's directory in its place, an older layout
+    // that could not be moved in — is refused before anything runs, rather
+    // than read around. One `lstat` when it is there; none is fine (a
+    // container's anonymous push needs no home).
+    if let Err(e) = krowk_api::home::dir(io.env)
+        && e.code() != "no_home"
+    {
+        return report(io, &e, format, f.quiet, colour, None);
+    }
     // `-p` is a mode rather than a command: its arguments are the prompt.
     #[cfg(feature = "harness")]
     if f.print && !f.help {
@@ -301,8 +311,8 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
         let _ = writeln!(ctx.io.stdout, "{}", help::command_help(&cmd, &c.global_flags[..catalog::CORE_FLAGS]));
         return Ok(());
     }
-    let (credentials, config) = (krowk_api::creds::credentials_path(), crate::config::global_path());
-    let files = help::Files { credentials: &credentials.display().to_string(), config: &config.display().to_string() };
+    let (credentials, config) = (krowk_api::creds::credentials_text(), crate::config::global_text());
+    let files = help::Files { credentials: &credentials, config: &config };
     let page = match topic[0].as_str() {
         "topics" if topic.len() == 1 => Some(help::topics()),
         name if topic.len() == 1 => help::topic(name, &c, &files),
@@ -409,7 +419,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk connect` and `krowk providers add`")));
             }
         }
-        let owners = [("device", "`krowk providers add` (`krowk connect` takes --method device)", add), ("method", "`krowk connect`", connect), ("default", "`krowk connect`", connect), ("remove", "`krowk disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`krowk disconnect`", words.first() == Some(&"disconnect"))];
+        let owners = [("device", "`krowk providers add` (`krowk connect` takes --method device)", add), ("method", "`krowk connect`", connect), ("default", "`krowk connect`", connect), ("key-stdin", "`krowk connect`", connect), ("key-ref", "`krowk connect`", connect), ("remove", "`krowk disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`krowk disconnect`", words.first() == Some(&"disconnect"))];
         for (name, owner, allowed) in owners {
             if f.given.contains(name) && !allowed {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of {owner}")));

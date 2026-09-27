@@ -93,6 +93,12 @@ pub struct Flags {
     pub remove: bool,
     #[cfg(feature = "harness")]
     pub sign_out_vendor: bool,
+    /// `connect`: a key to store, read from stdin, or referenced (`$VAR`,
+    /// `!command`) — never the key itself as an argument.
+    #[cfg(feature = "harness")]
+    pub key_stdin: bool,
+    #[cfg(feature = "harness")]
+    pub key_ref: String,
     /// Which flags were typed, by canonical name — a different question from
     /// what they carry: `--jq "$UNSET"` was given and is empty.
     pub given: BTreeSet<String>,
@@ -256,6 +262,8 @@ impl Flags {
             "config-dir" => text(&mut self.config_dir),
             #[cfg(feature = "harness")]
             "method" => text(&mut self.method),
+            #[cfg(feature = "harness")]
+            "key-ref" => text(&mut self.key_ref),
             _ => {
                 let b = parse_bool(name, v)?;
                 *match name {
@@ -284,6 +292,8 @@ impl Flags {
                     "remove" => &mut self.remove,
                     #[cfg(feature = "harness")]
                     "sign-out-vendor" => &mut self.sign_out_vendor,
+                    #[cfg(feature = "harness")]
+                    "key-stdin" => &mut self.key_stdin,
                     other => unreachable!("catalog flag {other} has no field"),
                 } = b;
             }

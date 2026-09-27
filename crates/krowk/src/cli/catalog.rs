@@ -433,6 +433,7 @@ pub fn catalog(version: &str) -> Catalog {
             EnvVar { name: "KROWK_DEV", usage: "1/true/yes/on — same as --dev", default: "" },
             EnvVar { name: "KROWK_AGENT", usage: "Agent name to report", default: "" },
             EnvVar { name: "KROWK_NO_UPDATE_CHECK", usage: "1/true/yes/on — never check for or mention new releases", default: "" },
+            EnvVar { name: "KROWK_HOME", usage: "Where krowk keeps its files, an absolute path", default: "~/.krowk" },
         ],
     };
     #[cfg(feature = "harness")]
@@ -494,11 +495,13 @@ fn connect_commands() -> Vec<Command> {
                 flag("name", STRING, "Name a second account <provider>:<name> — claude:work, anthropic:work; the default-named one (claude, anthropic) when absent"),
                 flag("default", BOOL, "Make it the default model even when config.json names one already; the first connection is the default by itself"),
                 flag("api-key-env", STRING, "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"),
+                flag("key-stdin", BOOL, "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"),
+                flag("key-ref", STRING, "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"),
                 flag("base-url", STRING, "Where the API is, for a gateway, a router or a local server — asked for openai-compatible"),
                 flag("client-id", STRING, "SuperGrok: the OAuth client id to sign in as, when xAI's server offers no registration"),
                 flag("no-browser", BOOL, "SuperGrok: print the sign-in link instead of opening a browser"),
                 flag("binary", STRING, "A subscription: the claude or codex binary to run; the one on PATH when absent"),
-                flag("config-dir", STRING, "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one under krowk's data directory for a named account"),
+                flag("config-dir", STRING, "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"),
             ],
             ..cmd(
                 "connect",
@@ -534,7 +537,7 @@ fn providers_command() -> Command {
                     flag("device", BOOL, "supergrok, codex: sign in with a code typed into any browser, instead of one opened here"),
                     flag("no-browser", BOOL, "supergrok: print the sign-in link instead of opening a browser"),
                     flag("binary", STRING, "claude, codex: the binary to run; claude or codex on PATH when absent"),
-                    flag("config-dir", STRING, "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one under krowk's data directory for a named instance"),
+                    flag("config-dir", STRING, "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"),
                 ],
                 ..cmd(
                     "add",

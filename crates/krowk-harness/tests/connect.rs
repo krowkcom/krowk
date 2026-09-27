@@ -67,7 +67,7 @@ impl Sandbox {
     fn new(name: &str) -> Sandbox {
         let root = std::env::temp_dir().join(format!("krowk-harness-connect-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("home/.config/krowk")).unwrap();
+        std::fs::create_dir_all(root.join("home/.krowk")).unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();
         let bin = root.join("bin/claude");
         std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/fake-claude"), &bin).unwrap();
@@ -84,7 +84,7 @@ impl Sandbox {
         std::fs::create_dir_all(root.join("home/.claude")).unwrap();
         let own = root.join("home/.claude").display().to_string();
         let config = json!({"instances": {"claude:work": {"kind": "claude-code", "configDir": work.display().to_string()}, "claude": {"kind": "claude-code", "configDir": own}}});
-        std::fs::write(root.join("home/.config/krowk/config.json"), config.to_string()).unwrap();
+        std::fs::write(root.join("home/.krowk/config.json"), config.to_string()).unwrap();
         Sandbox { root }
     }
 
@@ -104,7 +104,7 @@ impl Drop for Sandbox {
 }
 
 fn auth<'a>(b: &Sandbox, env: &'a dyn Fn(&str) -> String) -> ProviderAuth<'a> {
-    ProviderAuth { config: b.root.join("home/.config/krowk/config.json"), credentials: b.root.join("home/.config/krowk/providers/credentials.json"), env }
+    ProviderAuth { config: b.root.join("home/.krowk/config.json"), credentials: b.root.join("home/.krowk/credentials.json"), env }
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn r_inst_2_the_account_picker_lists_each_account_with_its_readiness_and_a_new_o
     assert!(done.vendor.as_ref().is_some_and(|v| v.logged_in && v.ran), "Claude's own login ran");
     assert_eq!(ui.terminal_runs, 1, "the login ran inside the terminal hook, where a TUI suspends itself");
     assert!(ui.told.iter().any(|t| t.starts_with("Signing in to Claude Code as claude:team")), "{:?}", ui.told);
-    let dir = b.root.join("home/.local/share/krowk/claude/claude-team");
+    let dir = b.root.join("home/.krowk/accounts/claude-team");
     assert!(dir.join("fake-login").exists(), "signed in in its own directory");
 
     // Picking an account there is reconnects it; a new name that is one
@@ -209,7 +209,7 @@ fn a_failed_sign_in_leaves_the_account_another_connection_made_beside_it_under_a
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let env = b.env();
     let pa = auth(&b, &env);
-    let parent = b.root.join("home/.local/share/krowk/claude");
+    let parent = b.root.join("home/.krowk/accounts");
     assert!(!parent.exists(), "the accounts' parent is new");
     let other = parent.join("claude-b");
     let finished = other.clone();

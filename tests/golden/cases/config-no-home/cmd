@@ -1,4 +1,5 @@
-# With no HOME the config directory is .krowk beside the caller.
+# With no HOME there is no config directory: never .krowk beside the
+# caller, which would make a repository's own .krowk krowk's config.
 @unenv HOME
 @sh mkdir -p .git
 krowk config show

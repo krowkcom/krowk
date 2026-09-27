@@ -8,27 +8,40 @@
 //! terminal it asks and tells through, and the words of each result.
 //!
 //! A definition names the variable its key is read from and never holds the
-//! key, so config.json stays something that can sync between hosts. A
+//! key, so config.json stays something that can sync between hosts; a key
+//! pasted, piped (`--key-stdin`) or referenced (`--key-ref`) is stored in
+//! the provider credentials file instead (`krowk_harness::keys`). A
 //! Claude Code login is Claude Code's: krowk asks `claude auth status`
 //! whether there is one and never reads it (R-BACK-2); a Codex login is
 //! Codex's, asked of `codex app-server`'s `account/read`, or `codex login
 //! status` (R-BACK-3).
 
 use super::{auth, Ctx};
-use crate::config;
 use crate::output::Format;
 use krowk_api::{fail, Error};
 use krowk_harness::connect::{self, Answer, AuthInteraction, Connected, MakeDefault, Method, Notice, Options, Prompt, ProviderAuth, Request, SignedOut};
 use krowk_harness::engine::EngineError;
 use krowk_harness::instances::{kind_label, Auth};
-use krowk_harness::oauth;
+use krowk_harness::keys::KeyRef;
 use serde_json::{json, Value};
 use std::io::Write;
 use std::path::PathBuf;
 
-/// krowk's provider credentials file, beside config.json.
-pub(super) fn credentials_path() -> PathBuf {
-    krowk_api::creds::config_dir().join(oauth::CREDENTIALS_FILE)
+/// krowk's home, for the harness: without one there is none, and the
+/// harness runs nothing rather than read keys, trust or commands from
+/// anywhere else.
+pub(super) fn krowk_dir() -> Result<PathBuf, Error> {
+    krowk_api::home::get()
+}
+
+/// krowk's one credentials file, in its home.
+pub(super) fn credentials_path() -> Result<PathBuf, Error> {
+    krowk_api::creds::credentials_path()
+}
+
+/// config.json, for the harness.
+pub(super) fn config_path() -> Result<PathBuf, Error> {
+    crate::config::global_path()
 }
 
 const PROVIDERS: &[&str] = &["anthropic", "openai", "xai", "openrouter", "openai-compatible", "supergrok", "claude", "codex"];
@@ -89,20 +102,40 @@ impl AuthInteraction for Terminal<'_> {
     }
 }
 
-fn options(ctx: &Ctx) -> Options {
+fn options(ctx: &Ctx) -> Result<Options, Error> {
     let o = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
-    Options { name: o(&ctx.f.name), api_key_env: o(&ctx.f.api_key_env), base_url: o(&ctx.f.base_url), client_id: o(&ctx.f.client_id), binary: o(&ctx.f.binary), config_dir: o(&ctx.f.config_dir) }
+    let key = match (ctx.f.key_stdin, o(&ctx.f.key_ref)) {
+        (true, Some(_)) => return Err(fail("bad_flag", "--key-stdin and --key-ref each give the key — pass one")),
+        (true, None) if ctx.io.stdin_tty => return Err(fail("bad_flag", "--key-stdin reads a key piped in — at a terminal leave it out and paste the key at the prompt, which does not echo it")),
+        (true, None) => {
+            use std::io::Read;
+            let mut raw = String::new();
+            std::io::stdin().take(64 * 1024 + 1).read_to_string(&mut raw).map_err(|e| fail("bad_flag", format!("--key-stdin: {e}")))?;
+            if raw.len() > 64 * 1024 {
+                return Err(fail("bad_flag", "--key-stdin: more than 64 KiB was piped in, which is no key"));
+            }
+            // Piped in, it is the key itself, whatever it starts with.
+            Some(KeyRef::literal(&raw).map_err(|e| format!("--key-stdin: {e}")))
+        }
+        (false, Some(r)) => Some(match KeyRef::parse(&r) {
+            Ok(KeyRef::Literal(_)) => Err("--key-ref takes '$VAR' or '!command' — a key itself goes in with --key-stdin, or at the prompt".to_string()),
+            k => k,
+        }),
+        (false, None) => None,
+    };
+    let key = key.transpose().map_err(|e| fail("bad_flag", e))?;
+    Ok(Options { name: o(&ctx.f.name), api_key_env: o(&ctx.f.api_key_env), base_url: o(&ctx.f.base_url), client_id: o(&ctx.f.client_id), binary: o(&ctx.f.binary), config_dir: o(&ctx.f.config_dir), key })
 }
 
 /// The shared sign-in, over this invocation's config and environment, and
 /// the terminal it asks at — `asks` false for a command that never asks.
-fn parts<'a>(ctx: &'a mut Ctx, asks: bool) -> (ProviderAuth<'a>, Terminal<'a>) {
+fn parts<'a>(ctx: &'a mut Ctx, asks: bool) -> Result<(ProviderAuth<'a>, Terminal<'a>), Error> {
     let interactive = asks && super::interactive(ctx) && ctx.io.stdin_tty;
     let open = !ctx.f.no_browser && !auth::headless(ctx);
-    let pa = ProviderAuth { config: config::global_path(), credentials: credentials_path(), env: ctx.io.env };
+    let pa = ProviderAuth { config: config_path()?, credentials: credentials_path()?, env: ctx.io.env };
     // Its notices go to stderr, so stderr's terminal decides their colour.
     let colour = ctx.colour && ctx.io.err_tty;
-    (pa, Terminal { stderr: &mut *ctx.io.stderr, interactive, open, colour })
+    Ok((pa, Terminal { stderr: &mut *ctx.io.stderr, interactive, open, colour }))
 }
 
 /// `krowk connect [vendor|instance]`: the vendor, its method and the
@@ -116,10 +149,10 @@ pub(super) fn connect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         "" => None,
         m => Some(Method::parse(m).ok_or_else(|| fail("bad_flag", format!("--method {m:?} is not a way in — subscription, device or api-key")))?),
     };
-    let opts = options(ctx);
+    let opts = options(ctx)?;
     let make_default = ctx.f.default;
     let done = {
-        let (pa, mut ui) = parts(ctx, true);
+        let (pa, mut ui) = parts(ctx, true)?;
         let mut req = pa.request(args.first().map(String::as_str), method, opts, &mut ui).map_err(engine)?;
         if make_default {
             req.default = MakeDefault::Always;
@@ -143,9 +176,9 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if provider == "openai-compatible" && ctx.f.base_url.trim().is_empty() {
         return Err(fail("bad_flag", "openai-compatible needs --base-url, e.g. http://127.0.0.1:11434/v1"));
     }
-    let opts = options(ctx);
+    let opts = options(ctx)?;
     let done = {
-        let (pa, mut ui) = parts(ctx, false);
+        let (pa, mut ui) = parts(ctx, false)?;
         pa.connect(&Request { method: way, instance: None, options: opts, default: MakeDefault::Never }, &mut ui).map_err(engine)?
     };
     report(ctx, &done, "added")
@@ -153,23 +186,27 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 
 /// What a connection made, the same words for `connect` and `add`.
 fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
-    let path = config::global_path();
+    let path = config_path()?;
     let (instance, kind, r) = (&done.instance, &done.definition, &done.resolved);
     let def = serde_json::to_value(kind).expect("a definition serializes");
     let key_env = (r.auth == Auth::ApiKey || !r.api_key_env.is_empty()).then(|| r.api_key_env.clone());
     let unset = key_env.is_some() && r.api_key.is_empty();
     let codex = kind.tag() == "codex-app-server";
     if ctx.format != Format::Human {
-        let mut report = json!({ "instance": instance, "kind": kind.tag(), "config": path.display().to_string(), "definition": def });
+        let mut report = json!({ "instance": instance, "kind": kind.tag(), "config": path, "definition": def });
         if verb != "added" {
             report["renewed"] = json!(done.renewed);
         }
         if let Some(k) = &key_env {
             report["api_key_env"] = json!(k);
         }
+        if let Some(s) = r.stored.source() {
+            report["key_source"] = json!(s);
+            report["credentials"] = json!(credentials_path()?.display().to_string());
+        }
         if done.oauth {
             report["signed_in"] = json!(true);
-            report["credentials"] = json!(credentials_path().display().to_string());
+            report["credentials"] = json!(credentials_path()?.display().to_string());
         }
         if verb != "added" {
             report["default_model"] = json!(done.default_model);
@@ -193,6 +230,14 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
     let mut facts: Vec<String> = vec![krowk_harness::instances::kind_label(kind.tag()).to_string()];
     let mut notes: Vec<String> = Vec::new();
     match &key_env {
+        // A stored key, and where: never the key.
+        _ if r.stored.source().is_some() => {
+            let already = if done.stored_key.is_some() { "" } else { "was already " };
+            facts.push(format!("key {already}{} in krowk's credentials file (0600), used before any variable", r.stored.source().unwrap_or_default()));
+            if let (krowk_harness::keys::Stored::Env(v), true) = (&r.stored, r.api_key.is_empty()) {
+                notes.push(format!("${v} is not set here — export it before running a prompt"));
+            }
+        }
         Some(k) if unset => notes.push(format!("${k} is not set here — export it before running a prompt")),
         Some(k) => facts.push(format!("key from ${k}")),
         None if done.oauth => facts.push("signed in".into()),
@@ -223,7 +268,10 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
         Some(_) => "krowk".to_string(),
         None => format!("krowk --model {instance}/{}", connect::default_model(kind.tag()).unwrap_or("<model>")),
     };
-    lines.push(crate::output::crumb_line("try it", &try_it, colour));
+    // A stored $VAR that is unset cannot run anything yet.
+    if !matches!(&r.stored, krowk_harness::keys::Stored::Env(_) if r.api_key.is_empty()) {
+        lines.push(crate::output::crumb_line("try it", &try_it, colour));
+    }
     if let Some(cmd) = another {
         lines.push(crate::output::crumb_line("another account", &cmd, colour));
     }
@@ -244,12 +292,12 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let (remove, own) = (ctx.f.remove, ctx.f.sign_out_vendor);
     let done = {
-        let (pa, mut ui) = parts(ctx, true);
+        let (pa, mut ui) = parts(ctx, true)?;
         let target = pa.disconnect_target(args.first().map(String::as_str), &mut ui).map_err(engine)?;
         pa.disconnect(&target, remove, own, &mut ui).map_err(engine)?
     };
     let instance = &done.instance;
-    let config = config::global_path();
+    let config = config_path()?;
     if ctx.format != Format::Human {
         let mut report = json!({ "instance": instance, "kind": done.kind, "removed_definition": done.removed_definition, "cleared_default": done.cleared_default });
         match &done.signed_out {
@@ -266,19 +314,32 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
                 report["signed_out"] = json!("key");
                 report["api_key_env"] = json!(var);
             }
+            SignedOut::StoredKey { var, set } => {
+                report["signed_out"] = json!("stored_key");
+                report["api_key_env"] = json!(var);
+                report["api_key_env_set"] = json!(set);
+            }
             SignedOut::Keyless => report["signed_out"] = json!("nothing"),
         }
         return super::sessions::emit_data(ctx, report, format!("disconnected {instance}"));
     }
     let out = &mut *ctx.io.stdout;
     let _ = match &done.signed_out {
-        SignedOut::Tokens { had: true } => writeln!(out, "disconnected {instance}: its tokens are deleted from {}", credentials_path().display()),
+        SignedOut::Tokens { had: true } => writeln!(out, "disconnected {instance}: its tokens are deleted from {}", credentials_path()?.display()),
         SignedOut::Tokens { had: false } => writeln!(out, "{instance} had no login to delete"),
         SignedOut::Vendor { command, home } => {
             let at = home.as_ref().map(|h| format!(" in {}", h.display())).unwrap_or_default();
             writeln!(out, "disconnected {instance}: `{command}` signed it out{at}")
         }
-        SignedOut::Key { var } => writeln!(out, "{instance} reads its key from ${var}, which krowk never stores — unset it, and take it out of your shell's startup files, to sign it out"),
+        SignedOut::Key { var } => writeln!(out, "{instance} reads its key from ${var}, the environment's and not krowk's to delete — unset it, and take it out of your shell's startup files, to sign it out"),
+        SignedOut::StoredKey { var, set } => {
+            let _ = writeln!(out, "disconnected {instance}: its stored key is deleted from {}", credentials_path()?.display());
+            match var {
+                Some(v) if *set => writeln!(out, "${v} is set too, and is what {instance} reads now — unset it, and take it out of your shell's startup files, to sign it out"),
+                Some(v) => writeln!(out, "it reads ${v} from now on, which is not set here"),
+                None => Ok(()),
+            }
+        }
         SignedOut::Keyless => writeln!(out, "{instance} takes no key — there is nothing to sign out of"),
     };
     if done.removed_definition {
@@ -331,7 +392,7 @@ pub(super) fn remove(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         return Err(fail("bad_argument", "name the instance: `krowk providers remove openai:work` — `krowk providers list` shows them"));
     };
     let gone = {
-        let (pa, _) = parts(ctx, false);
+        let (pa, _) = parts(ctx, false)?;
         pa.remove(&instance).map_err(engine)?
     };
     // A backend account's directory holds the vendor's own login, which is

@@ -3,7 +3,7 @@ stdout:
 {
   "ok": true,
   "data": {
-    "global_path": "<scratch>/home/.config/krowk/config.json",
+    "global_path": "<scratch>/home/.krowk/config.json",
     "repo_path": "<scratch>/work/.krowk/config.json"
   },
   "summary": "no configuration set — uploads use the stored default key",
@@ -46,7 +46,7 @@ stdout:
     "sources": {
       "workspace": "repo config"
     },
-    "global_path": "<scratch>/home/.config/krowk/config.json",
+    "global_path": "<scratch>/home/.krowk/config.json",
     "repo_path": "<scratch>/work/.krowk/config.json"
   },
   "summary": "workspace ws_local — repo config",
@@ -77,9 +77,9 @@ stdout:
   "data": {
     "key": "workspace",
     "value": "ws_global",
-    "path": "<scratch>/home/.config/krowk/config.json"
+    "path": "<scratch>/home/.krowk/config.json"
   },
-  "summary": "workspace = ws_global in <scratch>/home/.config/krowk/config.json",
+  "summary": "workspace = ws_global in <scratch>/home/.krowk/config.json",
   "breadcrumbs": [
     {
       "action": "check the effective configuration",
@@ -99,7 +99,7 @@ stdout:
     "sources": {
       "workspace": "repo config"
     },
-    "global_path": "<scratch>/home/.config/krowk/config.json",
+    "global_path": "<scratch>/home/.krowk/config.json",
     "repo_path": "<scratch>/work/.krowk/config.json"
   },
   "summary": "workspace ws_local — repo config",
@@ -114,9 +114,9 @@ stdout:
 exit: 0
 
 @ls {home}
-.config/
-.config/krowk/
-.config/krowk/config.json 644
+.krowk/
+.krowk/.old-layout-checked 644
+.krowk/config.json 644
 
 $ krowk config unset workspace
 stdout:
@@ -146,7 +146,7 @@ stdout:
     "sources": {
       "workspace": "global config"
     },
-    "global_path": "<scratch>/home/.config/krowk/config.json",
+    "global_path": "<scratch>/home/.krowk/config.json",
     "repo_path": "<scratch>/work/.krowk/config.json"
   },
   "summary": "workspace ws_global — global config",
@@ -166,9 +166,9 @@ stdout:
   "ok": true,
   "data": {
     "key": "workspace",
-    "path": "<scratch>/home/.config/krowk/config.json"
+    "path": "<scratch>/home/.krowk/config.json"
   },
-  "summary": "workspace removed from <scratch>/home/.config/krowk/config.json",
+  "summary": "workspace removed from <scratch>/home/.krowk/config.json",
   "breadcrumbs": [
     {
       "action": "check the effective configuration",
@@ -182,7 +182,7 @@ exit: 0
 $ krowk config show --format human
 stdout:
 nothing set — uploads use the stored default key
-  global    <scratch>/home/.config/krowk/config.json
+  global    <scratch>/home/.krowk/config.json
   repo      <scratch>/work/.krowk/config.json
 exit: 0
 
@@ -207,7 +207,7 @@ stdout:
     "sources": {
       "workspace": "KROWK_WORKSPACE"
     },
-    "global_path": "<scratch>/home/.config/krowk/config.json",
+    "global_path": "<scratch>/home/.krowk/config.json",
     "repo_path": "<scratch>/work/.krowk/config.json"
   },
   "summary": "workspace ws_env — KROWK_WORKSPACE",

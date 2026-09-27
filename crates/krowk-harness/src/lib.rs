@@ -64,6 +64,7 @@ pub mod hooks;
 pub mod host;
 pub mod http;
 pub mod instances;
+pub mod keys;
 pub mod log;
 pub mod native;
 pub mod oauth;

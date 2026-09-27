@@ -76,7 +76,7 @@ impl Sandbox {
     }
 
     fn data(&self) -> PathBuf {
-        self.root.join("home/.local/share/krowk")
+        self.root.join("home/.krowk")
     }
 
     fn events(&self, session: &str) -> Vec<Value> {
@@ -99,7 +99,7 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
     let b = Sandbox::new("instances");
     for (name, email) in [("team", "team@example.com"), ("personal", "me@example.com")] {
         let added = b.json(&["providers", "add", "codex", "--name", name, "--json"], &[("FAKE_CODEX_EMAIL", email)]);
-        let dir = b.data().join("codex").join(format!("codex-{name}"));
+        let dir = b.data().join("accounts").join(format!("codex-{name}"));
         assert_eq!(added["data"]["instance"], format!("codex:{name}"));
         assert_eq!(added["data"]["kind"], "codex-app-server");
         assert_eq!(added["data"]["definition"]["codexHome"], dir.display().to_string());
@@ -114,7 +114,7 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
     let fake = b.fake_log();
     let lines: Vec<&str> = fake.lines().collect();
     for name in ["team", "personal"] {
-        let dir = b.data().join("codex").join(format!("codex-{name}"));
+        let dir = b.data().join("accounts").join(format!("codex-{name}"));
         let at = lines.iter().position(|l| *l == format!("home {}", dir.display())).expect("ran with the instance's CODEX_HOME");
         assert_eq!(lines[at - 1], "argv app-server --listen stdio://");
     }
@@ -131,7 +131,7 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
     let row = |n: &str| rows.iter().find(|r| r["instance"] == n).unwrap_or_else(|| panic!("{n} not listed: {rows:?}")).clone();
     for n in ["codex:team", "codex:personal"] {
         let r = row(n);
-        let home = b.data().join("codex").join(n.replace(':', "-"));
+        let home = b.data().join("accounts").join(n.replace(':', "-"));
         assert_eq!((r["state"].as_str(), r["source"].as_str(), r["wire_api"].as_str()), (Some("ready"), Some(format!("Codex's own login in {} (signed in with ChatGPT)", home.display()).as_str()), Some("codex-app-server")), "{r}");
         assert_eq!(r["binary"], b.root.join("bin/codex").display().to_string());
     }
@@ -153,7 +153,7 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
         let session = out["sessionId"].as_str().unwrap().to_string();
         let events = b.events(&session);
         let backend = events.iter().find(|e| e["type"] == "backend.session").unwrap();
-        let home = b.data().join("codex").join(format!("codex-{name}"));
+        let home = b.data().join("accounts").join(format!("codex-{name}"));
         assert!(backend["transcriptPath"].as_str().unwrap().starts_with(&home.display().to_string()), "{backend}");
         assert_eq!(backend["billing"], "subscription");
         assert!(events.iter().any(|e| e["type"] == "item.completed" && e["item"]["name"] == "mcp__krowk__session_info"), "krowk's tool ran");
@@ -178,8 +178,8 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
 
     // Removing an account leaves Codex's login to Codex.
     let removed = b.json(&["providers", "remove", "codex:personal", "--json"], &[]);
-    assert_eq!(removed["data"]["config_dir_kept"], b.data().join("codex/codex-personal").display().to_string());
-    assert!(b.data().join("codex/codex-personal/fake-login").exists());
+    assert_eq!(removed["data"]["config_dir_kept"], b.data().join("accounts/codex-personal").display().to_string());
+    assert!(b.data().join("accounts/codex-personal/fake-login").exists());
 }
 
 #[test]
@@ -189,7 +189,7 @@ fn r_inst_2_a_codex_login_that_fails_adds_nothing() {
     assert!(!out.status.success());
     let said = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     assert!(said.contains("not_authenticated") && said.contains("krowk connect openai --method subscription --name team"), "{said}");
-    assert!(!b.data().join("codex/codex-team").exists(), "the home it made is gone");
+    assert!(!b.data().join("accounts/codex-team").exists(), "the home it made is gone");
     let listed = b.json(&["providers", "list", "--json"], &[]);
     assert!(!listed["data"]["instances"].as_array().unwrap().iter().any(|r| r["instance"] == "codex:team"), "no definition was written");
     // A router is signed in by its key: no login is run for it.
@@ -313,7 +313,7 @@ fn r_back_3_a_second_ctrl_c_leaves_at_once_and_kills_codexs_process_group() {
 fn r_back_3_a_second_ctrl_c_in_the_tui_during_a_codex_turn_leaves_at_once() {
     let b = Sandbox::new("tui-ctrlc2");
     b.json(&["providers", "add", "codex", "--name", "team", "--json"], &[]);
-    let trusted = b.root.join("home/.config/krowk/trusted.json");
+    let trusted = b.root.join("home/.krowk/trusted.json");
     std::fs::create_dir_all(trusted.parent().unwrap()).unwrap();
     std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
     let cmd = b.command(&["--model", "codex:team/gpt-5.5"], &[("TERM", "xterm-256color"), ("FAKE_CODEX_SCENARIO", &scenario("hang.jsonl"))]);

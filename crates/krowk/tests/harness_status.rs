@@ -75,7 +75,7 @@ impl Sandbox {
     }
 
     fn write_config(&self, v: Value) {
-        let dir = self.home().join(".config/krowk");
+        let dir = self.home().join(".krowk");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("config.json"), v.to_string()).unwrap();
     }
@@ -83,7 +83,7 @@ impl Sandbox {
     /// krowk's provider credentials file, with logins as `providers add
     /// supergrok` would have left them.
     fn write_logins(&self, logins: Value) {
-        let dir = self.home().join(".config/krowk/providers");
+        let dir = self.home().join(".krowk");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("credentials.json"), json!({"version": 1, "instances": logins}).to_string()).unwrap();
     }
@@ -147,7 +147,7 @@ fn status_with_no_config_lists_the_seven_implicit_instances_in_their_states() {
         assert_eq!(r["ready"].as_bool(), Some(r["state"] == "ready"));
         assert_eq!(r["fix"].is_null(), r["state"] == "ready", "a fix exactly when it is not ready: {r}");
     }
-    assert_eq!(row(&rows, "anthropic")["source"], "$ANTHROPIC_API_KEY", "a key is named by its variable");
+    assert_eq!(row(&rows, "anthropic")["source"], "env ANTHROPIC_API_KEY", "a key is named by its variable");
     assert_eq!(row(&rows, "openai")["var"], "OPENAI_API_KEY");
     assert_eq!(row(&rows, "claude")["source"], format!("Claude Code's own login in {} (signed in with a Claude max subscription)", b.home().join(".claude").display()));
     assert_eq!(row(&rows, "codex")["fix"], "sign in with `krowk connect openai --method subscription`, which runs Codex's own login");
@@ -215,9 +215,9 @@ fn no_secret_reaches_status_list_or_doctor_and_a_refreshable_login_is_ready() {
     let rows = instances(&stdout_json(&status)["data"]);
     assert_eq!(rows.len(), 11, "the seven implicit and the four configured");
     assert_eq!(row(&rows, "supergrok:team")["state"], "ready");
-    assert_eq!(row(&rows, "claude:router")["source"], "$OR_KEY, handed to Claude Code");
-    assert_eq!(row(&rows, "codex:router")["source"], "$OR_KEY, handed to Codex");
-    assert_eq!(row(&rows, "anthropic:work")["source"], "$WORK_KEY");
+    assert_eq!(row(&rows, "claude:router")["source"], "env OR_KEY, handed to Claude Code");
+    assert_eq!(row(&rows, "codex:router")["source"], "env OR_KEY, handed to Codex");
+    assert_eq!(row(&rows, "anthropic:work")["source"], "env WORK_KEY");
 
     let list = b.krowk(&["providers", "list", "--json"], &env);
     let listed = instances(&stdout_json(&list)["data"]);
@@ -265,7 +265,7 @@ fn status_asks_vendors_in_krowks_own_directory_so_planted_settings_change_nothin
     let out = b.krowk(&["status", "--json"], &[("TMPDIR", tmp.to_str().unwrap()), ("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
     let rows = instances(&stdout_json(&out)["data"]);
     assert_eq!(row(&rows, "claude")["state"], "not_signed_in", "{rows:?}");
-    let own = b.home().join(".local/share/krowk/readiness");
+    let own = b.home().join(".krowk/readiness");
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(std::fs::metadata(&own).unwrap().permissions().mode() & 0o777, 0o700, "krowk's own directory, closed to others");
 }

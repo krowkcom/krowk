@@ -154,7 +154,7 @@ fn r_inst_7_the_tui_offers_the_next_instance_and_y_continues_there() {
     let limited = mock::serve(|_, _| mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "rate limited"}})) });
     let ok = mock::serve(mock::readme_script);
     let b = Sandbox::new("offer");
-    let config = b.root.join("home/.config/krowk");
+    let config = b.root.join("home/.krowk");
     std::fs::create_dir_all(&config).unwrap();
     let instances = serde_json::json!({"instances": {
         "anthropic:personal": {"kind": "anthropic-api", "apiKeyEnv": "ANTHROPIC_API_KEY", "baseUrl": ok.url},
@@ -698,8 +698,8 @@ fn r_perm_1_a_settings_error_is_named_before_the_trust_question() {
     // rule in the person's krowk config does not parse.
     std::fs::create_dir_all(b.root.join("repo/.claude")).unwrap();
     std::fs::write(b.root.join("repo/.claude/settings.json"), r#"{"permissions": {"allow": ["Bash(npm test)"]}}"#).unwrap();
-    std::fs::create_dir_all(b.root.join("home/.config/krowk")).unwrap();
-    std::fs::write(b.root.join("home/.config/krowk/config.json"), r#"{"permissions": {"deny": ["Read(.env"]}}"#).unwrap();
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::write(b.root.join("home/.krowk/config.json"), r#"{"permissions": {"deny": ["Read(.env"]}}"#).unwrap();
     let mut t = pty::Pty::spawn(b.command("http://127.0.0.1:9", &[]), 80, 24);
     let st = t.wait(Duration::from_secs(10)).expect("krowk exits");
     // The process can be gone before the pty's reader has taken the last
@@ -708,7 +708,7 @@ fn r_perm_1_a_settings_error_is_named_before_the_trust_question() {
     let out = t.text();
     assert!(!st.success(), "{st}");
     assert!(!out.contains("Trust "), "no trust question was asked: {out:?}");
-    assert!(!b.root.join("home/.config/krowk/trusted.json").exists(), "and none saved");
+    assert!(!b.root.join("home/.krowk/trusted.json").exists(), "and none saved");
 }
 
 #[test]
@@ -739,10 +739,10 @@ fn the_help_menu_filters_as_you_type_and_enter_runs_the_entry() {
 fn slash_offers_commands_and_skills_and_a_skill_reaches_the_model() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("slash");
-    let skill = b.root.join("home/.config/krowk/skills/greet");
+    let skill = b.root.join("home/.krowk/skills/greet");
     std::fs::create_dir_all(&skill).unwrap();
     std::fs::write(skill.join("SKILL.md"), "---\nname: greet\ndescription: Greets the person warmly\n---\nSay the word MARMALADE first.\n").unwrap();
-    let hidden = b.root.join("home/.config/krowk/skills/internal");
+    let hidden = b.root.join("home/.krowk/skills/internal");
     std::fs::create_dir_all(&hidden).unwrap();
     std::fs::write(hidden.join("SKILL.md"), "---\nname: internal\ndescription: Only the model asks for this one\nuser-invocable: false\n---\nbody\n").unwrap();
     let Some(tm) = Tmux::start("slash", 100, 34, &b.root.join("repo"), &b.env(&m.url), &[]) else { return };

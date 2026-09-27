@@ -30,6 +30,19 @@ impl Sandbox {
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         std::fs::write(root.join("repo/README.md"), "# krowk\n\nPermalinks for agent output.\n").unwrap();
+        // The fake `claude` and `codex`, signed in to nothing, first on
+        // PATH: routing asks every vendor there is, and never the real ones
+        // the machine may have.
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        for (dir, bin) in [("claude", "fake-claude"), ("codex", "fake-codex")] {
+            let at = root.join("bin").join(dir);
+            std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures").join(dir).join(bin), &at).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
         let root = root.canonicalize().unwrap();
         Sandbox { root, url: url.into(), api: "http://127.0.0.1:9/v1".into(), token: String::new() }
     }
@@ -38,7 +51,7 @@ impl Sandbox {
         let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
         c.args(args)
             .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("PATH", format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
             .env("HOME", self.root.join("home"))
             .env("KROWK_NO_UPDATE_CHECK", "1")
             .env("ANTHROPIC_API_KEY", "sk-test")
@@ -53,7 +66,7 @@ impl Sandbox {
     }
 
     fn sessions(&self) -> PathBuf {
-        self.root.join("home/.local/share/krowk/sessions")
+        self.root.join("home/.krowk/sessions")
     }
 
     fn log(&self, session: &str) -> Vec<Value> {

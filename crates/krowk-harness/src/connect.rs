@@ -27,10 +27,12 @@
 //! or — with nobody there — fails with the flag that would have answered;
 //! the TUI answers in an overlay. No method prints anything itself.
 //!
-//! An API key is read from the environment variable its definition names;
-//! connecting one writes the definition and says which variable. The
-//! `Secret` prompt is where a pasted key will come in when krowk stores
-//! keys; nothing asks it yet.
+//! An API key is read from the environment variable its definition names,
+//! unless one is stored (`crate::keys`): connecting one with `--key-stdin`,
+//! `--key-ref '$VAR'|'!command'`, or at the `Secret` prompt — "paste a key,
+//! or reference one" — stores it in the provider credentials file, beside
+//! the definition, which still names only a variable. A command is run
+//! once before anything is written: one that fails stores nothing.
 //!
 //! **A failed sign-in writes nothing**: no definition, and no directory
 //! left behind of the ones it made. Connecting an instance that exists
@@ -297,6 +299,9 @@ pub struct Options {
     pub client_id: Option<String>,
     pub binary: Option<String>,
     pub config_dir: Option<String>,
+    /// A key to store (`--key-stdin`, `--key-ref`); asked at a terminal
+    /// for a way in by API key when neither it nor `api_key_env` is given.
+    pub key: Option<crate::keys::KeyRef>,
 }
 
 /// One connection to make: a way in, and the instance it makes or renews —
@@ -332,6 +337,9 @@ pub struct Connected {
     pub vendor: Option<VendorLogin>,
     /// `defaultModel`, when this connection set it.
     pub default_model: Option<String>,
+    /// Where a key stored by this connection comes from (`stored`, `stored
+    /// ($VAR)`, `stored (!pass …)`), never the key.
+    pub stored_key: Option<String>,
 }
 
 /// What `disconnect` did.
@@ -343,6 +351,9 @@ pub enum SignedOut {
     Vendor { command: &'static str, home: Option<PathBuf> },
     /// A key krowk only reads from `var`: unsetting it is the person's.
     Key { var: String },
+    /// A stored key, deleted from the credentials file; `var` the variable
+    /// the definition names, read from now on, and whether it is set.
+    StoredKey { var: Option<String>, set: bool },
     /// Nothing to sign out of.
     Keyless,
 }
@@ -431,7 +442,9 @@ impl ProviderAuth<'_> {
 
     /// The instances config.json defines.
     pub fn definitions(&self) -> Result<InstancesConfig, EngineError> {
-        instances::from_config_json(&Value::Object(self.raw_config()?)).map_err(|e| EngineError::new("bad_config", format!("{}: {e}", self.config.display())))
+        let mut cfg = instances::from_config_json(&Value::Object(self.raw_config()?)).map_err(|e| EngineError::new("bad_config", format!("{}: {e}", self.config.display())))?;
+        cfg.keys_from = Some(self.credentials.clone());
+        Ok(cfg)
     }
 
     /// Writes one definition, or takes it away, keeping every other key of
@@ -480,20 +493,19 @@ impl ProviderAuth<'_> {
         result.map_err(|e| unwritable(e.to_string()))
     }
 
-    fn data_dir(&self) -> Result<PathBuf, EngineError> {
-        crate::log::sessions_dir(self.env)
-            .and_then(|d| d.parent().map(Path::to_path_buf))
-            .ok_or_else(|| EngineError::new("no_home", "krowk has no data directory to keep an account in — set HOME or XDG_DATA_HOME"))
+    fn home(&self) -> Result<PathBuf, EngineError> {
+        krowk_api::home::dir(self.env).map_err(|e| EngineError::new(&e.code(), e.fix()))
     }
 
     /// Where a vendor is asked: krowk's own directory, as `krowk status`
     /// asks, never the one krowk runs in.
     fn probe(&self) -> Result<Probe, EngineError> {
-        readiness::neutral_dir(&self.data_dir()?).map(Probe::at).map_err(|e| EngineError::new("data_dir_unwritable", e))
+        readiness::neutral_dir(&self.home()?).map(Probe::at).map_err(|e| EngineError::new("data_dir_unwritable", e))
     }
 
     fn resolve(&self, instance: &str, kind: &InstanceKind) -> Result<Resolved, EngineError> {
-        let reg = Registry::resolve(&InstancesConfig { instances: [(instance.to_string(), kind.clone())].into(), ..Default::default() }, self.env);
+        let cfg = InstancesConfig { instances: [(instance.to_string(), kind.clone())].into(), keys_from: Some(self.credentials.clone()), ..Default::default() };
+        let reg = Registry::resolve(&cfg, self.env);
         reg.get(instance).cloned().map_err(|e| EngineError::new("bad_config", e))
     }
 
@@ -787,13 +799,15 @@ impl ProviderAuth<'_> {
             None => kind,
         };
 
-        // A new named account gets a directory of its own under krowk's
-        // data directory; the unnamed one is the vendor as the person
+        let stored_key = self.key_to_store(&instance, &kind, provider, o, ui)?;
+
+        // A new named account gets a directory of its own in krowk's home,
+        // `accounts/<name>`; the unnamed one is the vendor as the person
         // already uses it.
-        let account = |vendor: &str| -> Result<Option<String>, EngineError> {
+        let account = || -> Result<Option<String>, EngineError> {
             Ok(match renewed || named.is_none() {
                 true => None,
-                false => Some(self.data_dir()?.join(vendor).join(instance.replace(':', "-")).display().to_string()),
+                false => Some(self.home()?.join(krowk_api::home::ACCOUNTS).join(instance.replace(':', "-")).display().to_string()),
             })
         };
         let mut vendor = None;
@@ -801,7 +815,7 @@ impl ProviderAuth<'_> {
             InstanceKind::ClaudeCode { binary, config_dir, env, args, api_key_env, effort } => {
                 let config_dir = match config_dir {
                     Some(d) => Some(d),
-                    None => account("claude")?,
+                    None => account()?,
                 };
                 if !renewed || o.config_dir.is_some() {
                     self.dir_free(&instance, config_dir.as_deref(), &known, ("CLAUDE_CONFIG_DIR", ".claude"))?;
@@ -813,7 +827,7 @@ impl ProviderAuth<'_> {
             InstanceKind::CodexAppServer { binary, codex_home, env, args, api_key_env, effort } => {
                 let codex_home = match codex_home {
                     Some(d) => Some(d),
-                    None => account("codex")?,
+                    None => account()?,
                 };
                 if !renewed || o.config_dir.is_some() {
                     self.dir_free(&instance, codex_home.as_deref(), &known, ("CODEX_HOME", ".codex"))?;
@@ -838,7 +852,19 @@ impl ProviderAuth<'_> {
             })?;
             Store::new(self.credentials.clone()).save(&instance, &stored).map_err(|e| EngineError::new("credentials_unwritable", e.message))?;
         }
-        self.write(&instance, Some(&kind))?;
+        // The key before the definition, so a definition is never there
+        // reading the environment in the moment before its key is; the key
+        // taken away again if the definition cannot be written.
+        let store = Store::new(self.credentials.clone());
+        if let Some(k) = &stored_key {
+            store.save_key(&instance, k).map_err(|e| EngineError::new("credentials_unwritable", e.message))?;
+        }
+        if let Err(e) = self.write(&instance, Some(&kind)) {
+            if stored_key.is_some() {
+                let _ = store.remove(&instance);
+            }
+            return Err(e);
+        }
         readiness::forget(&instance);
         // The first connection is the default: `defaultModel` is set when
         // config.json has none, and replaced only when asked.
@@ -851,7 +877,53 @@ impl ProviderAuth<'_> {
             })?;
         }
         let resolved = self.resolve(&instance, &kind)?;
-        Ok(Connected { instance, definition: kind, resolved, renewed, oauth, vendor, default_model })
+        let stored_key = stored_key.map(|k| k.source());
+        Ok(Connected { instance, definition: kind, resolved, renewed, oauth, vendor, default_model, stored_key })
+    }
+
+    /// The key a way in by API key stores, if any: the one given, else —
+    /// at a terminal, with no `--api-key-env` either — the one pasted or
+    /// referenced at the prompt; Enter alone stores none, and the key is
+    /// read from the environment as before. A command is run now, and one
+    /// that fails stores nothing.
+    fn key_to_store(&self, instance: &str, kind: &InstanceKind, provider: &str, o: &Options, ui: &mut dyn AuthInteraction) -> Result<Option<crate::keys::KeyRef>, EngineError> {
+        let api = matches!(provider, "anthropic" | "openai" | "xai" | "openrouter" | "openai-compatible");
+        // A stored key is used before any variable: naming one while it is
+        // there would print success and change nothing.
+        if api && o.key.is_none() && o.api_key_env.is_some() && self.resolve(instance, kind)?.stored != crate::keys::Stored::No {
+            return Err(bad_flag(format!("{instance} has a stored key, which is used before any variable — `krowk disconnect {instance}` first, then connect it with --api-key-env")));
+        }
+        let key = match &o.key {
+            Some(_) if !api => return Err(bad_flag("--key-stdin and --key-ref store an API key — a subscription signs in by its own login")),
+            Some(k) => k.clone(),
+            None if !api || o.api_key_env.is_some() || !ui.interactive() => return Ok(None),
+            None => {
+                let var = self.resolve(instance, kind)?.api_key_env;
+                let otherwise = if var.is_empty() { "none is sent".to_string() } else { format!("it is read from ${var}") };
+                let message = format!("Paste a key, or reference one ($VAR or !command) — Enter alone and {otherwise}");
+                let said = match ui.prompt(Prompt::Secret { message: &message, flag: "--key-stdin, or --key-ref '$VAR' or '!command'" })? {
+                    Answer::Text(t) => t,
+                    Answer::Choice(_) => return Err(wrong_answer()),
+                };
+                if said.trim().is_empty() {
+                    return Ok(None);
+                }
+                crate::keys::KeyRef::parse(&said).map_err(bad_flag)?
+            }
+        };
+        if let crate::keys::KeyRef::Command(c) = &key {
+            let dir = self.credentials.parent().unwrap_or(Path::new("."));
+            // The command runs in that directory; one this call made is
+            // taken away again if it fails, so a failure writes nothing.
+            let made = made_dir(Some(dir))?;
+            // A person at the terminal can answer a passphrase prompt: the
+            // command runs in the foreground there, and what it gives is
+            // this process's answer from then on.
+            crate::keys::forget();
+            let at = if ui.interactive() { Some(ui) } else { None };
+            crate::keys::run(instance, c, dir, at).map_err(|why| undo(&made, EngineError::new("not_authenticated", format!("{why}, so {instance} was not connected and nothing was written"))))?;
+        }
+        Ok(Some(key))
     }
 
     /// An account's directory is its own: one another definition already
@@ -1005,10 +1077,18 @@ impl ProviderAuth<'_> {
                 }
                 SignedOut::Vendor { command, home: b.home.clone() }
             }
+            // A stored key is deleted; the variable the definition names is
+            // what the instance reads after.
+            (Auth::ApiKey, _) if r.stored != crate::keys::Stored::No => {
+                Store::new(self.credentials.clone()).remove(instance).map_err(|e| EngineError::new("credentials_unwritable", e.message))?;
+                let var = Some(r.api_key_env.clone()).filter(|v| !v.is_empty());
+                SignedOut::StoredKey { set: var.as_ref().is_some_and(|v| !self.env(v).trim().is_empty()), var }
+            }
             (Auth::ApiKey, _) => SignedOut::Key { var: r.api_key_env.clone() },
             _ => SignedOut::Keyless,
         };
         readiness::forget(instance);
+        crate::keys::forget();
         let removed_definition = remove && defs.instances.contains_key(instance);
         let mut cleared_default = None;
         if removed_definition {

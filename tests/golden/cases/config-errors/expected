@@ -39,7 +39,7 @@ stdout:
 {
   "ok": true,
   "data": {
-    "global_path": "<scratch>/home/.config/krowk/config.json"
+    "global_path": "<scratch>/home/.krowk/config.json"
   },
   "summary": "no configuration set — uploads use the stored default key",
   "breadcrumbs": [

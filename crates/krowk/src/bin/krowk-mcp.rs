@@ -41,8 +41,11 @@ fn main() {
         root = env("KROWK_MCP_ROOT");
     }
 
-    let (token, workspace_err) = match krowk::config::load(&root, &env, "") {
-        Err(e) => (String::new(), Some(krowk_api::fail("bad_config", e))),
+    // A home krowk cannot use is no key, and says why, rather than a key
+    // read from around it.
+    let unusable = krowk_api::home::dir(&env).err().filter(|e| e.code() != "no_home");
+    let (token, workspace_err) = match unusable.map(Err).unwrap_or_else(|| krowk::config::load(&root, &env, "").map_err(|e| krowk_api::fail("bad_config", e))) {
+        Err(e) => (String::new(), Some(e)),
         Ok(cfg) => match krowk_api::creds::resolve_token(&env, &cfg.workspace) {
             Ok(t) => (t, None),
             Err(e) => (String::new(), Some(e)),

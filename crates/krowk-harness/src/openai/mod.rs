@@ -214,7 +214,7 @@ impl ModelClient for ResponsesClient {
             match http::send(&build, &cancel, peer).await? {
                 Answer::Streaming(resp) => http::read_stream(resp, stream::Decoder::new(&inst.provider), events, &cancel, &req.model, peer).await,
                 Answer::Refused(resp) => {
-                    Err(http::refused(resp, peer, &req.model, &format!("check {}", inst.api_key_env)).await)
+                    Err(http::refused(resp, peer, &req.model, &crate::keys::auth_fix(inst)).await)
                 }
                 Answer::Interrupted => Ok(ModelResponse { model: req.model.clone(), interrupted: true, ..ModelResponse::default() }),
             }

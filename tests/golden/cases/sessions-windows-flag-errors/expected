@@ -39,7 +39,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "confirmation_required",
-    "fix": "rebuilding deletes <scratch>/home/.local/share/krowk/krowk.db and re-imports every transcript — run `krowk sessions rebuild --yes` to confirm when nobody is at a terminal to ask",
+    "fix": "rebuilding deletes <scratch>/home/.krowk/sessions/krowk.db and re-imports every transcript — run `krowk sessions rebuild --yes` to confirm when nobody is at a terminal to ask",
     "retryable": false
   }
 }

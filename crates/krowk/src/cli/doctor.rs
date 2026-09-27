@@ -26,7 +26,7 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> Result<(), krowk_api::Error> {
     report.insert("workspace".into(), json!(workspace_summary(ctx, &resolved)));
     // Runs are where metadata goes, and they need a key.
     report.insert("runs_available".into(), json!(client.authenticated()));
-    report.insert("credentials".into(), json!(creds::credentials_path().display().to_string()));
+    report.insert("credentials".into(), json!(creds::credentials_text()));
     report.insert("config".into(), json!(config_summary()));
     report.insert("store".into(), store_check(ctx));
     report.insert("pricing".into(), pricing_check(ctx));
@@ -177,7 +177,10 @@ fn workspace_summary(ctx: &Ctx, resolved: &Result<(String, String), krowk_api::E
 
 fn config_summary() -> String {
     let existing = |p: std::path::PathBuf| if p.exists() { p.display().to_string() } else { format!("{} (absent)", p.display()) };
-    let mut parts = vec![format!("global {}", existing(crate::config::global_path()))];
+    let mut parts = vec![match crate::config::global_path() {
+        Ok(p) => format!("global {}", existing(p)),
+        Err(_) => "global (no home directory)".into(),
+    }];
     if let Some(repo) = crate::config::repo_path("") {
         parts.push(format!("repo {}", existing(repo)));
     }

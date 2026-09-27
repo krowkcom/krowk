@@ -816,6 +816,18 @@ stdout:
           "usage": "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"
         },
         {
+          "name": "key-stdin",
+          "type": "bool",
+          "default": "false",
+          "usage": "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"
+        },
+        {
+          "name": "key-ref",
+          "type": "string",
+          "default": "",
+          "usage": "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"
+        },
+        {
           "name": "base-url",
           "type": "string",
           "default": "",
@@ -843,7 +855,7 @@ stdout:
           "name": "config-dir",
           "type": "string",
           "default": "",
-          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one under krowk's data directory for a named account"
+          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"
         }
       ]
     },
@@ -935,7 +947,7 @@ stdout:
               "name": "config-dir",
               "type": "string",
               "default": "",
-              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one under krowk's data directory for a named instance"
+              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"
             }
           ]
         },
@@ -1108,6 +1120,11 @@ stdout:
     {
       "name": "KROWK_NO_UPDATE_CHECK",
       "usage": "1/true/yes/on — never check for or mention new releases"
+    },
+    {
+      "name": "KROWK_HOME",
+      "usage": "Where krowk keeps its files, an absolute path",
+      "default": "~/.krowk"
     }
   ]
 }
@@ -1931,6 +1948,18 @@ stdout:
           "usage": "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"
         },
         {
+          "name": "key-stdin",
+          "type": "bool",
+          "default": "false",
+          "usage": "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"
+        },
+        {
+          "name": "key-ref",
+          "type": "string",
+          "default": "",
+          "usage": "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"
+        },
+        {
           "name": "base-url",
           "type": "string",
           "default": "",
@@ -1958,7 +1987,7 @@ stdout:
           "name": "config-dir",
           "type": "string",
           "default": "",
-          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one under krowk's data directory for a named account"
+          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"
         }
       ]
     },
@@ -2050,7 +2079,7 @@ stdout:
               "name": "config-dir",
               "type": "string",
               "default": "",
-              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one under krowk's data directory for a named instance"
+              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"
             }
           ]
         },
@@ -2223,6 +2252,11 @@ stdout:
     {
       "name": "KROWK_NO_UPDATE_CHECK",
       "usage": "1/true/yes/on — never check for or mention new releases"
+    },
+    {
+      "name": "KROWK_HOME",
+      "usage": "Where krowk keeps its files, an absolute path",
+      "default": "~/.krowk"
     }
   ]
 }
@@ -3060,6 +3094,18 @@ stdout:
           "usage": "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"
         },
         {
+          "name": "key-stdin",
+          "type": "bool",
+          "default": "false",
+          "usage": "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"
+        },
+        {
+          "name": "key-ref",
+          "type": "string",
+          "default": "",
+          "usage": "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"
+        },
+        {
           "name": "base-url",
           "type": "string",
           "default": "",
@@ -3087,7 +3133,7 @@ stdout:
           "name": "config-dir",
           "type": "string",
           "default": "",
-          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one under krowk's data directory for a named account"
+          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"
         }
       ]
     },
@@ -3179,7 +3225,7 @@ stdout:
               "name": "config-dir",
               "type": "string",
               "default": "",
-              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one under krowk's data directory for a named instance"
+              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"
             }
           ]
         },
@@ -3352,6 +3398,11 @@ stdout:
     {
       "name": "KROWK_NO_UPDATE_CHECK",
       "usage": "1/true/yes/on — never check for or mention new releases"
+    },
+    {
+      "name": "KROWK_HOME",
+      "usage": "Where krowk keeps its files, an absolute path",
+      "default": "~/.krowk"
     }
   ]
 }
@@ -4189,6 +4240,18 @@ tty:
           "usage": "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"
         },
         {
+          "name": "key-stdin",
+          "type": "bool",
+          "default": "false",
+          "usage": "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"
+        },
+        {
+          "name": "key-ref",
+          "type": "string",
+          "default": "",
+          "usage": "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"
+        },
+        {
           "name": "base-url",
           "type": "string",
           "default": "",
@@ -4216,7 +4279,7 @@ tty:
           "name": "config-dir",
           "type": "string",
           "default": "",
-          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one under krowk's data directory for a named account"
+          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"
         }
       ]
     },
@@ -4308,7 +4371,7 @@ tty:
               "name": "config-dir",
               "type": "string",
               "default": "",
-              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one under krowk's data directory for a named instance"
+              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"
             }
           ]
         },
@@ -4481,6 +4544,11 @@ tty:
     {
       "name": "KROWK_NO_UPDATE_CHECK",
       "usage": "1/true/yes/on — never check for or mention new releases"
+    },
+    {
+      "name": "KROWK_HOME",
+      "usage": "Where krowk keeps its files, an absolute path",
+      "default": "~/.krowk"
     }
   ]
 }

@@ -1,0 +1,21 @@
+# Everything krowk keeps lands in ~/.krowk, 0700, and nothing under the XDG
+# directories even when they are set. KROWK_HOME moves all of it; a
+# relative one is refused before anything runs.
+@registry
+@fixture harnesses
+@env XDG_CONFIG_HOME={home}/cfg
+@env XDG_DATA_HOME={home}/data
+@env XDG_CACHE_HOME={home}/cache
+krowk auth login --token krowk_sk_test
+krowk config set workspace ws_x --global
+krowk sessions import --from claude --quiet
+@ls {home}/.krowk
+@sh test ! -e {home}/cfg && test ! -e {home}/data && test ! -e {home}/cache && test ! -e {home}/.config/krowk && test ! -e {home}/.local/share/krowk
+@sh [ "$(ls -ld {home}/.krowk | cut -c1-10)" = drwx------ ]
+@env KROWK_HOME={home}/elsewhere
+krowk auth login --token krowk_sk_test
+krowk sessions --quiet
+@ls {home}/elsewhere
+@env KROWK_HOME=relative/home
+krowk sessions --quiet
+krowk doctor

@@ -861,6 +861,11 @@ stdout:
     {
       "name": "KROWK_NO_UPDATE_CHECK",
       "usage": "1/true/yes/on — never check for or mention new releases"
+    },
+    {
+      "name": "KROWK_HOME",
+      "usage": "Where krowk keeps its files, an absolute path",
+      "default": "~/.krowk"
     }
   ]
 }
@@ -1729,6 +1734,11 @@ stdout:
     {
       "name": "KROWK_NO_UPDATE_CHECK",
       "usage": "1/true/yes/on — never check for or mention new releases"
+    },
+    {
+      "name": "KROWK_HOME",
+      "usage": "Where krowk keeps its files, an absolute path",
+      "default": "~/.krowk"
     }
   ]
 }
@@ -2597,6 +2607,11 @@ stdout:
     {
       "name": "KROWK_NO_UPDATE_CHECK",
       "usage": "1/true/yes/on — never check for or mention new releases"
+    },
+    {
+      "name": "KROWK_HOME",
+      "usage": "Where krowk keeps its files, an absolute path",
+      "default": "~/.krowk"
     }
   ]
 }

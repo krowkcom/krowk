@@ -13,6 +13,10 @@ sha2 = "0.11"
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "json"] }
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 
+[target.'cfg(unix)'.dependencies]
+# getuid: a home owned by another user is refused. Already linked by the CLI.
+libc = "0.2"
+
 [dev-dependencies]
 # The stand-in registry, served in-process for the integration tests.
 krowk-devregistry = { path = "../krowk-devregistry" }

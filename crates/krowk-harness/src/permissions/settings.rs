@@ -3,9 +3,9 @@
 //!
 //! | source | file | believed |
 //! |---|---|---|
-//! | krowk, user | `config.json` in krowk's config directory: `permissions`, `hooks` | in full |
+//! | krowk, user | `config.json` in krowk's home: `permissions`, `hooks` | in full |
 //! | Claude Code, user | `settings.json` in Claude's config directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) | in full |
-//! | krowk, remembered | `permissions.json` in krowk's config directory: what a person allowed for a project | in full, for that project |
+//! | krowk, remembered | `permissions.json` in krowk's home: what a person allowed for a project | in full, for that project |
 //! | krowk, project | `<repository>/.krowk/config.json` | trusted repository: in full; otherwise its `deny` and `ask` only |
 //! | Claude Code, project | `.claude/settings.json` and `.claude/settings.local.json`, from the repository's root down to the working directory | the same |
 //!
@@ -22,7 +22,7 @@
 //! `defaultMode` is never `bypassPermissions`: that is the person's to
 //! choose, on the command line or in their own settings. None of these
 //! files is one the model can write: every file tool refuses `.claude`,
-//! `.krowk` and krowk's config directory unless a person approves that one
+//! `.krowk` and krowk's home unless a person approves that one
 //! call, and no allow rule or remembered grant opens them.
 //!
 //! A file that exists and does not parse, or holds a rule that does not,
@@ -58,7 +58,7 @@ pub struct Config {
     /// Claude Code's user config directory (`$CLAUDE_CONFIG_DIR`, else
     /// `~/.claude`): `settings.json`, `CLAUDE.md`, `skills/`.
     pub claude_dir: Option<PathBuf>,
-    /// krowk's config directory: remembered grants live there, and no file
+    /// krowk's home: remembered grants live there, and no file
     /// tool writes into it — its config, trust list and grants decide what
     /// krowk allows.
     pub krowk_dir: Option<PathBuf>,
@@ -88,7 +88,7 @@ impl Config {
     }
 }
 
-/// The remembered project grants, in krowk's config directory.
+/// The remembered project grants, in krowk's home.
 pub const GRANTS_FILE: &str = "permissions.json";
 
 /// Everything the sources say for one working directory.

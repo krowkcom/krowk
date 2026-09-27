@@ -91,7 +91,7 @@ krowk never signs in to a Claude or ChatGPT subscription itself and never reads 
 
 What you see: `❯` before what you asked; the answer as it streams, in light markdown (headings, `•` lists, `code` and fenced blocks coloured), two columns in from both edges and wrapped by krowk inside that padding (drawn by moving the cursor, not with spaces, as Claude Code does); each tool call once, with its outcome — `◆ Read README.md (3 lines)`, `◆ Run cargo test` with the head and tail of its output, `◆ Edit src/main.rs +3/-1` with the removed and added lines on red and green bands, a red `◆` when it failed; thinking collapsed to `◆ Thought for 4.2s`; and `Worked for 12s · 6.2k tokens` when the turn is done. While a turn runs, one line says what it is doing (`⠋ Thinking… 3.2s │ esc to interrupt`). The visual language follows xAI's Grok Build (see THIRD-PARTY-NOTICES).
 
-**Permissions follow Claude Code's.** The modes are `default` (asks before edits and commands), `acceptEdits`, `plan` (changes nothing) and `bypassPermissions`, and the rules are Claude Code's — `permissions.allow`, `ask` and `deny` with `Bash(git:*)`, `Read(./secrets/**)`, `Edit(src/**)`, `WebFetch(domain:…)`, `Mcp(server:tool)` — read from `.claude/settings.json`, `.claude/settings.local.json`, `~/.claude/settings.json`, and the `permissions` key of `~/.config/krowk/config.json` or a repository's `.krowk/config.json`. A deny rule wins in every mode, `bypassPermissions` included. A repository's own allow rules, directories and hooks count once you trust it. When a call needs your say, the TUI shows it over the prompt — `y` once, `s` for the session, `p` for this project, `n` no; `krowk -p` refuses it instead of waiting, and tells the model what would allow it. `AGENTS.md`, `CLAUDE.md` and `.cursor/rules` are read from the repository root down, deeper files winning; Claude-format skills and hooks load as they are. Canon's `engineering/harness.md` (Permissions) has the evaluation order.
+**Permissions follow Claude Code's.** The modes are `default` (asks before edits and commands), `acceptEdits`, `plan` (changes nothing) and `bypassPermissions`, and the rules are Claude Code's — `permissions.allow`, `ask` and `deny` with `Bash(git:*)`, `Read(./secrets/**)`, `Edit(src/**)`, `WebFetch(domain:…)`, `Mcp(server:tool)` — read from `.claude/settings.json`, `.claude/settings.local.json`, `~/.claude/settings.json`, and the `permissions` key of `~/.krowk/config.json` or a repository's `.krowk/config.json`. A deny rule wins in every mode, `bypassPermissions` included. A repository's own allow rules, directories and hooks count once you trust it. When a call needs your say, the TUI shows it over the prompt — `y` once, `s` for the session, `p` for this project, `n` no; `krowk -p` refuses it instead of waiting, and tells the model what would allow it. `AGENTS.md`, `CLAUDE.md` and `.cursor/rules` are read from the repository root down, deeper files winning; Claude-format skills and hooks load as they are. Canon's `engineering/harness.md` (Permissions) has the evaluation order.
 
 Enter sends; Alt-Enter, Ctrl-J or a trailing `\` starts a new line, and ↑/↓ walk the prompt history. Esc or Ctrl-C interrupts the running turn, keeping what arrived; typing while it runs steers it — the model reads it before its next step. `?` on an empty prompt shows the keys, Ctrl-O the session's details (tokens, log path), Ctrl-Y copies the last answer to the clipboard as the model wrote it — no padding, no wrapping, Ctrl-D or `/exit` quits. When the model's API cannot be reached, a persistent **no network connectivity** notice says so within two seconds, and clears when the API answers again; nothing hangs waiting for it.
 
@@ -210,10 +210,11 @@ Tools: `krowk_push`, `krowk_list_artifacts`, `krowk_get_artifact`, `krowk_claim_
 | `KROWK_AGENT` | Override the detected agent name |
 | `KROWK_MODEL` | Name the model doing the work (`gen_ai.request.model`) — harness-agnostic; `ANTHROPIC_MODEL` is also read |
 | `KROWK_NO_UPDATE_CHECK` | `1`/`true` — never check for or mention new releases |
+| `KROWK_HOME` | Where krowk keeps everything (an absolute path; default `~/.krowk`) — for a sandbox or a test |
 
 The agent's status line, under the prompt, reads
 `elvinas/primevise-arch-1 | anthropic/claude-opus-5-5 | $21.47 | [4 tasks] | [3 subagents] | ? help`
-and is configured in `~/.config/krowk/config.json`, under `tui`:
+and is configured in `~/.krowk/config.json`, under `tui`:
 
 ```json
 { "tui": { "statusBar": true, "statusItems": ["device", "model", "cost", "tasks", "subagents", "help"] } }
@@ -226,9 +227,11 @@ and is configured in `~/.config/krowk/config.json`, under `tui`:
 
 On a narrow terminal the items give way one at a time — the device first, then the subagents, the tasks and the cost — and then the model is cut short; `? help` stays.
 
-A key or item the TUI does not know is named above the first prompt, and the rest still applies. Prompt history is kept beside the session logs, in `~/.local/share/krowk/tui-history.jsonl`.
+A key or item the TUI does not know is named above the first prompt, and the rest still applies. Prompt history is kept beside the session logs, in `~/.krowk/sessions/tui-history.jsonl`.
 
-Credentials from `krowk login` live in `~/.config/krowk/credentials.json` (0600), one key per workspace. Which key a command uses resolves in order: `--workspace` → `KROWK_WORKSPACE` → `.krowk/config.json` at the git root → `~/.config/krowk/config.json` → whichever key logged in last. Commit the repo file and everyone who clones the repository — person or agent — uploads to the right workspace without naming it; the file selects among keys already on the machine and never carries one itself.
+Credentials from `krowk login` live in `~/.krowk/credentials.json` (0600), one key per workspace. Which key a command uses resolves in order: `--workspace` → `KROWK_WORKSPACE` → `.krowk/config.json` at the git root → `~/.krowk/config.json` → whichever key logged in last. Commit the repo file and everyone who clones the repository — person or agent — uploads to the right workspace without naming it; the file selects among keys already on the machine and never carries one itself.
+
+Everything krowk keeps is in one private (`0700`) directory, `~/.krowk/`: `config.json` (settings, no secrets), `credentials.json` (0600: registry keys, provider logins, stored API keys), `accounts/<name>/` (a named Claude Code or Codex account's own home), `sessions/` (krowk.db and each session's log), `cache/` and `readiness/`. `KROWK_HOME` moves all of it; the XDG variables are not read. The first run after upgrading from a release that used `~/.config/krowk`, `~/.local/share/krowk` and `~/.cache/krowk` moves those files in, all or nothing (the price cache is fetched again), says so in one line on stderr, and never reads the old places again; an `~/.krowk` that already exists is never merged into, and old files beside it are named once. The agent's file tools never read, search or change `~/.krowk` without asking, and `krowk_push` never publishes anything in it.
 
 ## Development
 

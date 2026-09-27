@@ -73,7 +73,7 @@ impl Sandbox {
     }
 
     fn config_path(&self) -> PathBuf {
-        self.root.join("home/.config/krowk/config.json")
+        self.root.join("home/.krowk/config.json")
     }
 
     fn config(&self) -> Value {
@@ -81,7 +81,7 @@ impl Sandbox {
     }
 
     fn data(&self) -> PathBuf {
-        self.root.join("home/.local/share/krowk")
+        self.root.join("home/.krowk")
     }
 
     fn logins(&self, what: &str) -> usize {
@@ -114,7 +114,7 @@ fn stderr(out: &Output) -> String {
 fn r_inst_2_connect_a_claude_subscription_by_name_into_its_own_directory_and_a_failed_sign_in_writes_nothing() {
     let b = Sandbox::new("claude");
     let c = b.json(&["connect", "anthropic", "--method", "subscription", "--name", "work", "--json"], &[]);
-    let dir = b.data().join("claude/claude-work");
+    let dir = b.data().join("accounts/claude-work");
     assert_eq!((c["data"]["instance"].as_str(), c["data"]["kind"].as_str()), (Some("claude:work"), Some("claude-code")));
     assert_eq!(c["data"]["definition"]["configDir"], dir.display().to_string());
     assert_eq!((c["data"]["signed_in"].as_bool(), c["data"]["renewed"].as_bool()), (Some(true), Some(false)));
@@ -137,7 +137,7 @@ fn r_inst_2_connect_a_claude_subscription_by_name_into_its_own_directory_and_a_f
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
     assert!(stderr(&out).contains("claude auth login") && stderr(&out).contains("krowk connect anthropic --method subscription --name broken"), "{}", stderr(&out));
     assert_eq!(std::fs::read(b.config_path()).unwrap(), before, "config.json is untouched");
-    assert!(!b.data().join("claude/claude-broken").exists());
+    assert!(!b.data().join("accounts/claude-broken").exists());
 }
 
 #[test]
@@ -150,7 +150,7 @@ fn r_inst_2_connecting_again_renews_the_account_and_only_a_name_adds_another() {
     assert_eq!((again["data"]["renewed"].as_bool(), again["data"]["default_model"].is_null()), (Some(true), true));
     assert_eq!(b.logins("argv auth login"), 1);
     // Signed out behind krowk's back, connecting renews the login.
-    std::fs::remove_file(b.data().join("claude/claude-work/fake-login")).unwrap();
+    std::fs::remove_file(b.data().join("accounts/claude-work/fake-login")).unwrap();
     let renewed = b.json(&["connect", "claude:work", "--json"], &[]);
     assert_eq!((renewed["data"]["instance"].as_str(), renewed["data"]["renewed"].as_bool()), (Some("claude:work"), Some(true)));
     assert_eq!(b.logins("argv auth login"), 2);
@@ -253,7 +253,7 @@ fn connect_refuses_a_name_that_would_share_a_login_or_a_key_or_pass_for_another_
     // Nor a name that differs only in case.
     refused(&["connect", "anthropic", "--method", "subscription", "--name", "Work"], "only in case");
     // Nor another account's directory.
-    let taken = b.data().join("claude/claude-work").display().to_string();
+    let taken = b.data().join("accounts/claude-work").display().to_string();
     refused(&["connect", "anthropic", "--method", "subscription", "--name", "other", "--config-dir", &taken], "is claude:work's directory already");
     // Nor another instance's key variable.
     b.json(&["connect", "anthropic", "--method", "api-key", "--name", "my-work", "--json"], &[]);
@@ -309,7 +309,7 @@ fn disconnect_signs_each_kind_out_its_own_way_and_keeps_the_definition_unless_re
     b.json(&["connect", "anthropic", "--method", "subscription", "--name", "work", "--json"], &[]);
     b.json(&["connect", "openai", "--method", "subscription", "--name", "team", "--json"], &[]);
     b.json(&["connect", "anthropic", "--method", "api-key", "--name", "work", "--json"], &[]);
-    let creds = b.root.join("home/.config/krowk/providers");
+    let creds = b.root.join("home/.krowk");
     std::fs::create_dir_all(&creds).unwrap();
     let token = json!({"issuer": "https://auth.x.ai", "clientId": "krowk-test", "tokenEndpoint": "https://auth.x.ai/oauth2/token", "accessToken": "xai-at-sentinel", "obtainedAtMs": 0});
     std::fs::write(creds.join("credentials.json"), json!({"version": 1, "instances": {"supergrok": token}}).to_string()).unwrap();
@@ -324,7 +324,7 @@ fn disconnect_signs_each_kind_out_its_own_way_and_keeps_the_definition_unless_re
     // definition stays and is not signed in.
     let d = b.json(&["disconnect", "claude:work", "--json"], &[]);
     assert_eq!((d["data"]["signed_out"].as_str(), d["data"]["command"].as_str(), d["data"]["removed_definition"].as_bool()), (Some("vendor"), Some("claude auth logout"), Some(false)));
-    assert!(!b.data().join("claude/claude-work/fake-login").exists());
+    assert!(!b.data().join("accounts/claude-work/fake-login").exists());
     assert_eq!(b.state("claude:work"), "not_signed_in");
     let d = b.json(&["disconnect", "codex:team", "--json"], &[]);
     assert_eq!(d["data"]["command"], "codex logout");
@@ -371,7 +371,7 @@ fn connect_at_a_terminal_walks_vendor_method_and_account() {
     let exit = t.wait(wait).expect("krowk connect finished");
     assert!(exit.success(), "{}", t.text());
     assert!(t.text().contains("Connected claude:team") && t.text().contains("try it:"), "{}", t.text());
-    assert!(b.data().join("claude/claude-team/fake-login").exists());
+    assert!(b.data().join("accounts/claude-team/fake-login").exists());
 }
 
 #[test]
@@ -430,9 +430,9 @@ fn a_directory_in_home_is_the_persons_own_login_even_with_claude_config_dir_set_
 fn with_no_home_to_name_it_the_built_in_claude_is_still_the_persons_own_login() {
     let b = Sandbox::new("nohome");
     let mut c = b.command(&["disconnect", "claude"], &[]);
-    // No HOME and no CLAUDE_CONFIG_DIR: Claude Code finds its directory
+    // No HOME (krowk has KROWK_HOME) and no CLAUDE_CONFIG_DIR: Claude Code finds its directory
     // through the password database anyway, so it is still asked about.
-    c.env_remove("HOME").env("XDG_CONFIG_HOME", b.root.join("home/.config")).env("XDG_DATA_HOME", b.root.join("home/.local/share"));
+    c.env_remove("HOME").env("KROWK_HOME", b.root.join("home/.krowk"));
     let out = c.output().unwrap();
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(stderr(&out).contains("signs you out of Claude Code itself, in ~/.claude"), "{}", stderr(&out));
