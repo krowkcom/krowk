@@ -129,6 +129,7 @@ ENVIRONMENT
   KROWK_DEV              1/true/yes/on — same as --dev
   KROWK_AGENT            Agent name to report
   KROWK_NO_UPDATE_CHECK  1/true/yes/on — never check for or mention new releases
+  KROWK_HOME             Where krowk keeps its files, an absolute path (default ~/.krowk)
 
 EXIT CODES
   0  it worked
@@ -184,7 +185,8 @@ config, and finally whichever key logged in last. `krowk config set workspace <n
 pins a repository to a workspace, so every command run inside it — by anyone,
 agent or person — lands there without saying so.
 
-Credentials live in {credentials} (0600).
+Credentials live in {credentials} (0600), and everything else krowk keeps
+beside them in ~/.krowk, or KROWK_HOME.
 Config lives in {config}, and per repository in <git-root>/.krowk/config.json.
 
 LEARN MORE

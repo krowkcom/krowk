@@ -126,14 +126,12 @@ struct StoredKey {
     workspace_name: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// The registry's part of the file, and the rest of it as it was.
+#[derive(Debug, Clone, Default)]
 struct Credentials {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     default: String,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     workspaces: BTreeMap<String, StoredKey>,
     /// The harness's sections, and whatever a later krowk writes: kept.
-    #[serde(flatten)]
     other: Map<String, Value>,
 }
 
@@ -189,20 +187,45 @@ fn read_lenient() -> Credentials {
 /// The registry's keys, from a file that may still be the single-key one
 /// every login wrote before workspaces existed.
 fn parse(path: &Path) -> Result<Credentials, String> {
-    let mut c: Credentials = read(path)?;
-    if c.workspaces.is_empty() && c.other.contains_key("token") {
-        let field = |c: &mut Credentials, k: &str| match c.other.remove(k) {
-            Some(Value::String(s)) => s,
-            _ => String::new(),
-        };
-        let legacy = StoredKey { token: field(&mut c, "token"), key_id: field(&mut c, "key_id"), workspace: field(&mut c, "workspace"), workspace_name: field(&mut c, "workspace_name") };
-        if !legacy.token.is_empty() {
-            let name = if legacy.workspace.is_empty() { DEFAULT_ENTRY.to_string() } else { legacy.workspace.clone() };
-            c.default = name.clone();
-            c.workspaces.insert(name, legacy);
+    let mut other: Map<String, Value> = read(path)?;
+    let mut field = |k: &str| match other.remove(k) {
+        Some(Value::String(s)) => s,
+        _ => String::new(),
+    };
+    let default = field("default");
+    let c = match other.remove("workspaces") {
+        // Never serde's words here either: they would quote a key.
+        Some(w) => Credentials { default, workspaces: serde_json::from_value(w).map_err(|_| format!("{} is not valid (its workspaces are not krowk's)", path.display()))?, other },
+        None if other.contains_key("token") => {
+            let mut field = |k: &str| match other.remove(k) {
+                Some(Value::String(s)) => s,
+                _ => String::new(),
+            };
+            let legacy = StoredKey { token: field("token"), key_id: field("key_id"), workspace: field("workspace"), workspace_name: field("workspace_name") };
+            let mut c = Credentials { default, other, ..Credentials::default() };
+            if !legacy.token.is_empty() {
+                c.default = if legacy.workspace.is_empty() { DEFAULT_ENTRY.to_string() } else { legacy.workspace.clone() };
+                c.workspaces.insert(c.default.clone(), legacy);
+            }
+            c
         }
-    }
+        None => Credentials { default, other, ..Credentials::default() },
+    };
     Ok(c)
+}
+
+impl Credentials {
+    /// The whole file again, the registry's part put back beside the rest.
+    fn into_map(self) -> Map<String, Value> {
+        let mut m = self.other;
+        if !self.default.is_empty() {
+            m.insert("default".into(), Value::String(self.default));
+        }
+        if !self.workspaces.is_empty() {
+            m.insert("workspaces".into(), serde_json::to_value(self.workspaces).expect("keys serialize"));
+        }
+        m
+    }
 }
 
 /// The one change the registry's keys go through: under the file's lock,
@@ -213,7 +236,7 @@ fn change<R>(edit: impl FnOnce(&mut Credentials) -> Result<(R, bool), Error>) ->
     let mut c = parse(&path).map_err(refusing)?;
     let (r, changed) = edit(&mut c)?;
     if changed {
-        write(&path, &c).map_err(|e| fail("cli_error", e))?;
+        write(&path, &c.into_map()).map_err(|e| fail("cli_error", e))?;
     }
     Ok(r)
 }
@@ -221,10 +244,7 @@ fn change<R>(edit: impl FnOnce(&mut Credentials) -> Result<(R, bool), Error>) ->
 /// The legacy shape, normalised, as a JSON object: what the move from an
 /// older krowk's file merges.
 pub fn registry_section(path: &Path) -> Result<Map<String, Value>, String> {
-    match serde_json::to_value(parse(path)?).expect("credentials serialize") {
-        Value::Object(m) => Ok(m),
-        _ => Ok(Map::new()),
-    }
+    Ok(parse(path)?.into_map())
 }
 
 impl Credentials {

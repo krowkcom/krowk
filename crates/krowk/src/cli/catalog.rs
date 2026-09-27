@@ -414,7 +414,7 @@ fn connect_commands() -> Vec<Command> {
                 flag("client-id", STRING, "SuperGrok: the OAuth client id to sign in as, when xAI's server offers no registration"),
                 flag("no-browser", BOOL, "SuperGrok: print the sign-in link instead of opening a browser"),
                 flag("binary", STRING, "A subscription: the claude or codex binary to run; the one on PATH when absent"),
-                flag("config-dir", STRING, "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one under krowk's data directory for a named account"),
+                flag("config-dir", STRING, "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"),
             ],
             ..cmd(
                 "connect",
@@ -454,7 +454,7 @@ fn providers_command() -> Command {
                     flag("device", BOOL, "supergrok, codex: sign in with a code typed into any browser, instead of one opened here"),
                     flag("no-browser", BOOL, "supergrok: print the sign-in link instead of opening a browser"),
                     flag("binary", STRING, "claude, codex: the binary to run; claude or codex on PATH when absent"),
-                    flag("config-dir", STRING, "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one under krowk's data directory for a named instance"),
+                    flag("config-dir", STRING, "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"),
                 ],
                 ..cmd(
                     "add",

@@ -14,7 +14,7 @@
 //! own, since its hooks are someone else's. The home directory and `/` are
 //! never recorded: trusting either would trust every directory without a
 //! `.git` of its own under it (a home kept in git for its dotfiles is the
-//! usual way to get there). The list lives in krowk's config directory as
+//! usual way to get there). The list lives in krowk's home as
 //! `trusted.json`, `0600`, replaced by rename; it is a host's own record and
 //! never syncs. The native engine runs nothing of the repository's, so only
 //! backends consult it.

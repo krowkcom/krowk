@@ -1,6 +1,7 @@
-//! Stored API keys: a key kept in krowk's provider credentials file
-//! (`providers/credentials.json`, the file SuperGrok's tokens are in —
-//! `0600` in a `0700` directory, every write one locked read-modify-write),
+//! Stored API keys: a key kept in krowk's one credentials file
+//! (`credentials.json` in krowk's home, the file SuperGrok's tokens and the
+//! registry's keys are in — `0600` in the `0700` home, every write one
+//! locked read-modify-write),
 //! for an instance that would otherwise read it from an environment
 //! variable. Before this, every key was the environment's (R-INST-5,
 //! R-CRED-1): a person edited a shell's startup file, and nothing could
@@ -32,9 +33,8 @@
 //! (read, never run), a repository's `.krowk/config.json` defines no
 //! instances, and the file's path is set by whoever loads the person's own
 //! config (`InstancesConfig::keys_from`, which no JSON can set). The file
-//! sits in krowk's config directory, which the file tools change only with
-//! a person's say, and the file tools neither read it nor search through it
-//! unasked (`Policy::secrets`).
+//! sits in krowk's home, which the file tools neither read, search nor
+//! change without a person's say (`Policy::secrets`).
 //!
 //! **How a command runs**: `sh -c <command>` (`cmd /C` on Windows) — a shell,
 //! because the person wrote the command, in their own file, to be run as

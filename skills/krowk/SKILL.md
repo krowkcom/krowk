@@ -427,10 +427,13 @@ repository. Then tell the person exactly what was exposed, and rotate it.
 | `KROWK_SESSION` | Session ID recorded as `krowk.session`. Detected otherwise |
 | `KROWK_MODEL` | Model recorded as `gen_ai.request.model`. `ANTHROPIC_MODEL` also read |
 | `KROWK_DEV` | `1`/`true`/`yes`/`on` — same as `--dev`, a local registry |
+| `KROWK_HOME` | Where krowk keeps its files, as an absolute path. Default `~/.krowk` |
 
-A stored key lives at `~/.config/krowk/credentials.json`, mode 0600, written by
-`krowk login`. Never read it out to show a person, and never put a token on
-a command line in a shared shell — `KROWK_TOKEN` in the environment is better.
+A stored key lives at `~/.krowk/credentials.json`, mode 0600, written by
+`krowk login`, in the `0700` directory where krowk keeps everything else too.
+Never read it or anything else in `~/.krowk` out to show a person, never
+push it — `krowk_push` refuses — and never put a token on a command line in
+a shared shell: `KROWK_TOKEN` in the environment is better.
 
 ## Error Handling
 

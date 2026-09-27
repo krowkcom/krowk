@@ -179,7 +179,7 @@ pub(super) fn bad_settings(e: String) -> Error {
 
 /// What the harness reads permission rules, instructions, skills and hooks
 /// from: krowk's own config.json, Claude Code's user directory
-/// (`CLAUDE_CONFIG_DIR`, else `~/.claude`), and krowk's config directory,
+/// (`CLAUDE_CONFIG_DIR`, else `~/.claude`), and krowk's home,
 /// where remembered grants are kept and which no file tool writes.
 pub(super) fn permissions_config(ctx: &Ctx, config: &serde_json::Value, trusted: permissions::settings::Trusted, approvals: bool) -> permissions::Config {
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);

@@ -210,10 +210,11 @@ Tools: `krowk_push`, `krowk_list_artifacts`, `krowk_get_artifact`, `krowk_claim_
 | `KROWK_AGENT` | Override the detected agent name |
 | `KROWK_MODEL` | Name the model doing the work (`gen_ai.request.model`) — harness-agnostic; `ANTHROPIC_MODEL` is also read |
 | `KROWK_NO_UPDATE_CHECK` | `1`/`true` — never check for or mention new releases |
+| `KROWK_HOME` | Where krowk keeps everything (an absolute path; default `~/.krowk`) — for a sandbox or a test |
 
 The agent's status line, under the prompt, reads
 `elvinas/primevise-arch-1 | anthropic/claude-opus-5-5 | $21.47 | [4 tasks] | [3 subagents] | ? help`
-and is configured in `~/.config/krowk/config.json`, under `tui`:
+and is configured in `~/.krowk/config.json`, under `tui`:
 
 ```json
 { "tui": { "statusBar": true, "statusItems": ["device", "model", "cost", "tasks", "subagents", "help"] } }
@@ -226,9 +227,11 @@ and is configured in `~/.config/krowk/config.json`, under `tui`:
 
 On a narrow terminal the items give way one at a time — the device first, then the subagents, the tasks and the cost — and then the model is cut short; `? help` stays.
 
-A key or item the TUI does not know is named above the first prompt, and the rest still applies. Prompt history is kept beside the session logs, in `~/.local/share/krowk/tui-history.jsonl`.
+A key or item the TUI does not know is named above the first prompt, and the rest still applies. Prompt history is kept beside the session logs, in `~/.krowk/sessions/tui-history.jsonl`.
 
-Credentials from `krowk login` live in `~/.config/krowk/credentials.json` (0600), one key per workspace. Which key a command uses resolves in order: `--workspace` → `KROWK_WORKSPACE` → `.krowk/config.json` at the git root → `~/.config/krowk/config.json` → whichever key logged in last. Commit the repo file and everyone who clones the repository — person or agent — uploads to the right workspace without naming it; the file selects among keys already on the machine and never carries one itself.
+Credentials from `krowk login` live in `~/.krowk/credentials.json` (0600), one key per workspace. Which key a command uses resolves in order: `--workspace` → `KROWK_WORKSPACE` → `.krowk/config.json` at the git root → `~/.krowk/config.json` → whichever key logged in last. Commit the repo file and everyone who clones the repository — person or agent — uploads to the right workspace without naming it; the file selects among keys already on the machine and never carries one itself.
+
+Everything krowk keeps is in one private (`0700`) directory, `~/.krowk/`: `config.json` (settings, no secrets), `credentials.json` (0600: registry keys, provider logins, stored API keys), `accounts/<name>/` (a named Claude Code or Codex account's own home), `sessions/` (krowk.db and each session's log), `cache/` and `readiness/`. `KROWK_HOME` moves all of it; the XDG variables are not read. The first run after upgrading from a release that used `~/.config/krowk`, `~/.local/share/krowk` and `~/.cache/krowk` moves those files in, says so in one line on stderr, and never reads the old places again. The agent's file tools never read, search or change `~/.krowk` without asking, and `krowk_push` never publishes anything in it.
 
 ## Development
 
