@@ -882,7 +882,8 @@ fn prompts_held_for_the_route_are_joined_and_come_back_on_a_failed_route_or_ctrl
     assert!(wait_after(&t, at, "held-one", Duration::from_secs(5)) && wait_after(&t, at, "held-two", Duration::from_secs(5)), "both came back: {:?}", t.text());
 
     let b = Sandbox::new("heldctrlc");
-    let mut t = pty::Pty::spawn(subscription_only(&b, false, "3"), 120, 30);
+    // Five seconds to answer: the route is still asking when krowk quits.
+    let mut t = pty::Pty::spawn(subscription_only(&b, false, "5"), 120, 30);
     assert!(t.wait_for("? help", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"wait-for-it\r");
     assert!(t.wait_for("choosing the model", Duration::from_secs(5)).is_some(), "{:?}", t.text());
@@ -890,8 +891,10 @@ fn prompts_held_for_the_route_are_joined_and_come_back_on_a_failed_route_or_ctrl
     t.write(b"\x03");
     assert!(wait_after(&t, at, "not sent — it is back in the prompt", Duration::from_secs(5)), "{:?}", t.text());
     assert!(wait_after(&t, at, "wait-for-it", Duration::from_secs(5)), "{:?}", t.text());
-    assert!(t.wait(Duration::from_millis(500)).is_none(), "Ctrl-C with a prompt waiting quits nothing");
-    // Quitting while the route is still being asked does not wait-for-it.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(t.alive(), "Ctrl-C with a prompt waiting quits nothing");
+    assert!(!t.text().contains("claude/claude-opus-5-5"), "the route is still being asked: {:?}", t.text());
+    // Quitting while the route is still being asked does not wait for it.
     t.write(b"\x03");
     t.write(b"\x03");
     let asked = Instant::now();
