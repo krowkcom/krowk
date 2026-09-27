@@ -44,7 +44,7 @@ impl Sandbox {
         // fail, it prints the key to both streams and exits 1.
         b.install(
             "fake-pass",
-            &format!("#!/bin/sh\necho run >> \"{}\"\nif [ -e \"{}\" ]; then echo \"{SENTINEL}\"; echo \"gpg: {SENTINEL}\" >&2; exit 1; fi\necho \"{SENTINEL}\"\n", b.root.join("pass.log").display(), b.root.join("pass.fail").display()),
+            &format!("#!/bin/sh\necho run >> \"{}\"\nif [ -e \"{}\" ]; then sleep 1; echo \"{SENTINEL}\"; echo \"gpg: {SENTINEL}\" >&2; exit 1; fi\necho \"{SENTINEL}\"\n", b.root.join("pass.log").display(), b.root.join("pass.fail").display()),
         );
         b
     }
@@ -282,7 +282,7 @@ fn r_cred_1_at_a_terminal_a_key_is_pasted_without_echo_and_without_one_the_flags
     // Nobody at a terminal: nothing to paste into, so the key comes from
     // the environment as before — and --key-stdin at a terminal is refused.
     let out = b.krowk(&["connect", "xai", "--method", "api-key", "--format", "human"], &[]);
-    assert!(out.status.success() && printed(&out).contains("its key is read from $XAI_API_KEY"), "{}", printed(&out));
+    assert!(out.status.success() && printed(&out).contains("$XAI_API_KEY is not set here"), "{}", printed(&out));
     assert!(b.stored().get("keys").is_none());
     assert!(!b.krowk(&["connect", "xai", "--key-ref", "sk-plain"], &[]).status.success(), "a key itself is never an argument");
 
@@ -294,7 +294,7 @@ fn r_cred_1_at_a_terminal_a_key_is_pasted_without_echo_and_without_one_the_flags
     t.write(format!("{SENTINEL}\r").as_bytes());
     let exit = t.wait(wait).expect("krowk connect finished");
     assert!(exit.success(), "{}", t.text());
-    assert!(t.text().contains("its key is stored in"), "{}", t.text());
+    assert!(t.text().contains("key stored in krowk's credentials file"), "{}", t.text());
     assert!(!t.text().contains(SENTINEL), "the key was echoed: {}", t.text());
     assert_eq!(b.stored()["keys"]["anthropic"], json!({"literal": SENTINEL}));
 }
@@ -416,8 +416,9 @@ fn r_cred_1_a_command_runs_once_per_process_with_no_terminal_and_bounded_output(
     assert_eq!(b.pass_runs(), 4, "one run per status process, whichever instances share the command");
     assert!(rows[2]["state"] == "unknown" && rows[2]["reason"].as_str().unwrap().contains("with no terminal"), "{}", rows[2]);
     assert!(rows[3]["state"] == "unknown" && rows[3]["reason"].as_str().unwrap().contains("more than 64 KiB"), "{}", rows[3]);
-    // A failure is remembered for the process too: one failing run, however
-    // many instances ask.
+    // A failure is shared with the checks that waited on it (one failing
+    // run for two instances at once) and not kept past them: keys::tests
+    // pins the next call running it again.
     std::fs::write(b.root.join("pass.fail"), "").unwrap();
     let failing = b.row("anthropic", &[]);
     assert_eq!((failing["state"].as_str(), b.pass_runs()), (Some("unknown"), 5), "{failing}");

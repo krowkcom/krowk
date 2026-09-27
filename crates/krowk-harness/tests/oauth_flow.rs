@@ -46,7 +46,7 @@ async fn r_prov_4_a_device_login_is_stored_in_a_credentials_file_created_0600() 
     }
 
     let d = dir("device");
-    let store = Store::new(d.join("krowk").join(oauth::CREDENTIALS_FILE));
+    let store = Store::new(d.join("credentials.json"));
     store.save("supergrok", &stored).unwrap();
     #[cfg(unix)]
     {
@@ -125,7 +125,7 @@ async fn r_prov_4_an_expired_token_is_refreshed_once_across_processes_and_rotati
     let http = krowk_harness::http::client().unwrap();
     let first = oauth::login_device(&http, &login(&auth.mock.url), &mut |_| {}).await.unwrap();
     let d = dir("refresh");
-    let store = Store::new(d.join(oauth::CREDENTIALS_FILE));
+    let store = Store::new(d.join("credentials.json"));
     store.save("supergrok", &first).unwrap();
     // Two sessions (two krowk processes) holding the same login.
     let a = Tokens::open(store.clone(), "supergrok").unwrap();
@@ -160,7 +160,7 @@ fn r_prov_4_r_cred_1_two_processes_refreshing_at_once_make_exactly_one_refresh_b
     let auth = providers::auth_server(3600);
     auth.state.lock().unwrap().refresh_delay_ms = 400;
     let d = dir("race");
-    let store = Store::new(d.join(oauth::CREDENTIALS_FILE));
+    let store = Store::new(d.join("credentials.json"));
     let rt = || tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let http = krowk_harness::http::client().unwrap();
     let mut first = rt().block_on(oauth::login_device(&http, &login(&auth.mock.url), &mut |_| {})).unwrap();
@@ -222,7 +222,7 @@ fn r_prov_4_an_interrupt_while_getting_a_token_stops_the_call_and_keeps_the_logi
 
     let auth = providers::auth_server(3600);
     let d = dir("interrupt");
-    let store = Store::new(d.join(oauth::CREDENTIALS_FILE));
+    let store = Store::new(d.join("credentials.json"));
     let rt = || tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let http = krowk_harness::http::client().unwrap();
     let expire = |store: &Store| {

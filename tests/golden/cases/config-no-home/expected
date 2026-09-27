@@ -3,7 +3,7 @@ stdout:
 {
   "ok": true,
   "data": {
-    "global_path": "/nonexistent/krowk/config.json",
+    "global_path": "(no home directory)",
     "repo_path": "<scratch>/work/.krowk/config.json"
   },
   "summary": "no configuration set — uploads use the stored default key",
@@ -23,7 +23,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "config_unwritable",
-    "fix": "could not write /nonexistent/krowk/config.json: there is no home directory to keep krowk's config in — set HOME (or XDG_CONFIG_HOME) to an absolute path",
+    "fix": "there is no home directory to keep krowk's config in — set HOME (or XDG_CONFIG_HOME) to an absolute path",
     "retryable": false
   }
 }
@@ -37,7 +37,7 @@ stdout:
 {
   "ok": true,
   "data": {
-    "global_path": "/nonexistent/krowk/config.json",
+    "global_path": "(no home directory)",
     "repo_path": "<scratch>/work/.krowk/config.json"
   },
   "summary": "no configuration set — uploads use the stored default key",

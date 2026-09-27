@@ -17,7 +17,6 @@
 //! status` (R-BACK-3).
 
 use super::{auth, Ctx};
-use crate::config;
 use crate::output::Format;
 use krowk_api::{fail, Error};
 use krowk_harness::connect::{self, Answer, AuthInteraction, Connected, MakeDefault, Method, Notice, Options, Prompt, ProviderAuth, Request, SignedOut};
@@ -28,11 +27,21 @@ use serde_json::{json, Value};
 use std::io::Write;
 use std::path::PathBuf;
 
-/// krowk's one credentials file, in its home. Without a home there is none,
-/// and a harness command runs nothing rather than read keys, trust or
-/// commands from anywhere else.
+/// krowk's home, for the harness: without one there is none, and the
+/// harness runs nothing rather than read keys, trust or commands from
+/// anywhere else.
+pub(super) fn krowk_dir() -> Result<PathBuf, Error> {
+    krowk_api::home::get()
+}
+
+/// krowk's one credentials file, in its home.
 pub(super) fn credentials_path() -> Result<PathBuf, Error> {
     krowk_api::creds::credentials_path()
+}
+
+/// config.json, for the harness.
+pub(super) fn config_path() -> Result<PathBuf, Error> {
+    crate::config::global_path()
 }
 
 const PROVIDERS: &[&str] = &["anthropic", "openai", "xai", "openrouter", "openai-compatible", "supergrok", "claude", "codex"];
@@ -54,6 +63,7 @@ struct Terminal<'a> {
     stderr: &'a mut dyn Write,
     interactive: bool,
     open: bool,
+    colour: bool,
 }
 
 impl AuthInteraction for Terminal<'_> {
@@ -76,7 +86,9 @@ impl AuthInteraction for Terminal<'_> {
 
     fn notify(&mut self, notice: Notice<'_>) {
         let _ = match notice {
-            Notice::Info(s) | Notice::Progress(s) => writeln!(self.stderr, "{s}"),
+            // krowk's own words around a vendor's, dimmed so the vendor's
+            // prompts and the result stand out.
+            Notice::Info(s) | Notice::Progress(s) => writeln!(self.stderr, "{}", crate::output::paint(self.colour, crate::output::DIM, s)),
             Notice::AuthUrl { url, message } => {
                 let _ = writeln!(self.stderr, "{message}\n  {}", plain(url));
                 if self.open && auth::open_browser(url) {
@@ -118,11 +130,12 @@ fn options(ctx: &Ctx) -> Result<Options, Error> {
 /// The shared sign-in, over this invocation's config and environment, and
 /// the terminal it asks at — `asks` false for a command that never asks.
 fn parts<'a>(ctx: &'a mut Ctx, asks: bool) -> Result<(ProviderAuth<'a>, Terminal<'a>), Error> {
-    let (config_file, credentials) = (config::global_path()?, credentials_path()?);
     let interactive = asks && super::interactive(ctx) && ctx.io.stdin_tty;
     let open = !ctx.f.no_browser && !auth::headless(ctx);
-    let pa = ProviderAuth { config: config_file, credentials, env: ctx.io.env };
-    Ok((pa, Terminal { stderr: &mut *ctx.io.stderr, interactive, open }))
+    let pa = ProviderAuth { config: config_path()?, credentials: credentials_path()?, env: ctx.io.env };
+    // Its notices go to stderr, so stderr's terminal decides their colour.
+    let colour = ctx.colour && ctx.io.err_tty;
+    Ok((pa, Terminal { stderr: &mut *ctx.io.stderr, interactive, open, colour }))
 }
 
 /// `krowk connect [vendor|instance]`: the vendor, its method and the
@@ -173,7 +186,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 
 /// What a connection made, the same words for `connect` and `add`.
 fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
-    let path = config::global_text();
+    let path = config_path()?;
     let (instance, kind, r) = (&done.instance, &done.definition, &done.resolved);
     let def = serde_json::to_value(kind).expect("a definition serializes");
     let key_env = (r.auth == Auth::ApiKey || !r.api_key_env.is_empty()).then(|| r.api_key_env.clone());
@@ -189,11 +202,11 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
         }
         if let Some(s) = r.stored.source() {
             report["key_source"] = json!(s);
-            report["credentials"] = json!(krowk_api::creds::credentials_text().to_string());
+            report["credentials"] = json!(credentials_path()?.display().to_string());
         }
         if done.oauth {
             report["signed_in"] = json!(true);
-            report["credentials"] = json!(krowk_api::creds::credentials_text().to_string());
+            report["credentials"] = json!(credentials_path()?.display().to_string());
         }
         if verb != "added" {
             report["default_model"] = json!(done.default_model);
@@ -208,42 +221,58 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
         let summary = format!("{verb} {instance}");
         return super::sessions::emit_data(ctx, report, summary);
     }
-    let out = &mut *ctx.io.stdout;
-    let _ = writeln!(out, "{verb} {instance} ({}) {} {}", kind.tag(), if verb == "added" { "to" } else { "in" }, path);
+    // For a person: what happened, in one line; what it is, dimmed; and the
+    // command to try it. Paths and binaries are `--json`'s and `krowk
+    // status`'s — a power user asks for them, nobody needs them to go on.
+    let colour = ctx.colour;
+    let dim = |s: &str| crate::output::paint(colour, crate::output::DIM, s);
+    let mut lines = vec![format!("{} {} {instance}", crate::output::paint(colour, crate::output::GREEN, "✓"), capitalised(verb))];
+    let mut facts: Vec<String> = vec![krowk_harness::instances::kind_label(kind.tag()).to_string()];
+    let mut notes: Vec<String> = Vec::new();
     match &key_env {
-        _ if r.stored.source().is_some() => {
-            let fresh = if done.stored_key.is_some() { "is" } else { "was already" };
-            let _ = writeln!(out, "its key {fresh} {} in {} (0600), and is used before any variable", r.stored.source().unwrap_or_default(), krowk_api::creds::credentials_text());
-        }
-        Some(k) if unset => {
-            let _ = writeln!(out, "its key is read from ${k}, which is not set here — export it before running a prompt");
-        }
-        Some(k) => {
-            let _ = writeln!(out, "its key is read from ${k}");
-        }
-        None if done.oauth => {
-            let _ = writeln!(out, "signed in; the tokens are in {} (0600)", krowk_api::creds::credentials_text());
-        }
+        // A stored key, and where: never the key.
+        _ if r.stored.source().is_some() => facts.push(format!("key {} in krowk's credentials file (0600)", r.stored.source().unwrap_or_default())),
+        Some(k) if unset => notes.push(format!("${k} is not set here — export it before running a prompt")),
+        Some(k) => facts.push(format!("key from ${k}")),
+        None if done.oauth => facts.push("signed in".into()),
         None => {}
     }
-    if let (Some(v), Some(b)) = (&done.vendor, &r.backend) {
-        let (what, var) = if codex { ("Codex", "CODEX_HOME") } else { ("Claude Code", "CLAUDE_CONFIG_DIR") };
-        let dir = b.config_dir.as_ref().map(|d| format!(" with {var}={}", d.display())).unwrap_or_default();
-        let _ = writeln!(out, "runs {what} ({}){dir} — {}", b.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| b.binary.clone()), v.describe);
+    let mut another = None;
+    if let Some(v) = &done.vendor {
+        // The vendor's own account says it better than the kind does — when
+        // there is one: a keyed router runs on its key, not a login.
+        if v.logged_in {
+            facts[0] = plain(&v.describe);
+        }
         if codex && !v.shared.is_empty() {
-            let _ = writeln!(out, "shares your Codex {} (linked, so an edit shows in every account)", v.shared.join(", "));
+            facts.push(format!("shares your Codex {}", v.shared.join(", ")));
         }
         if verb != "added" && v.logged_in && !v.ran && r.api_key_env.is_empty() {
             let (vendor, method) = krowk_harness::instances::kind_connect(kind.tag()).unwrap_or_default();
-            let _ = writeln!(out, "it was signed in already — to sign in as another account, add one: `krowk connect {vendor} --method {method} --name <new>`");
+            notes.push("it was signed in already".into());
+            another = Some(format!("krowk connect {vendor} --method {method} --name <new>"));
         }
     }
-    if let Some(m) = &done.default_model {
-        let _ = writeln!(out, "default model: {m}");
+    if done.default_model.is_some() {
+        facts.push("your default model now".into());
     }
-    let example = connect::default_model(kind.tag()).unwrap_or("<model>");
-    let _ = writeln!(out, "use it with: krowk -p --model {instance}/{example} \"…\"");
+    lines.push(dim(&format!("  {}", facts.join(" · "))));
+    lines.extend(notes.iter().map(|n| dim(&format!("  ! {n}"))));
+    let try_it = match &done.default_model {
+        Some(_) => "krowk".to_string(),
+        None => format!("krowk --model {instance}/{}", connect::default_model(kind.tag()).unwrap_or("<model>")),
+    };
+    lines.push(crate::output::crumb_line("try it", &try_it, colour));
+    if let Some(cmd) = another {
+        lines.push(crate::output::crumb_line("another account", &cmd, colour));
+    }
+    let _ = writeln!(ctx.io.stdout, "{}", lines.join("\n"));
     Ok(())
+}
+
+fn capitalised(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// `krowk disconnect [instance] [--remove]`: signs an instance out the way
@@ -259,7 +288,7 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         pa.disconnect(&target, remove, own, &mut ui).map_err(engine)?
     };
     let instance = &done.instance;
-    let config = config::global_text();
+    let config = config_path()?;
     if ctx.format != Format::Human {
         let mut report = json!({ "instance": instance, "kind": done.kind, "removed_definition": done.removed_definition, "cleared_default": done.cleared_default });
         match &done.signed_out {
@@ -287,7 +316,7 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let out = &mut *ctx.io.stdout;
     let _ = match &done.signed_out {
-        SignedOut::Tokens { had: true } => writeln!(out, "disconnected {instance}: its tokens are deleted from {}", krowk_api::creds::credentials_text()),
+        SignedOut::Tokens { had: true } => writeln!(out, "disconnected {instance}: its tokens are deleted from {}", credentials_path()?.display()),
         SignedOut::Tokens { had: false } => writeln!(out, "{instance} had no login to delete"),
         SignedOut::Vendor { command, home } => {
             let at = home.as_ref().map(|h| format!(" in {}", h.display())).unwrap_or_default();
@@ -295,7 +324,7 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         }
         SignedOut::Key { var } => writeln!(out, "{instance} reads its key from ${var}, the environment's and not krowk's to delete — unset it, and take it out of your shell's startup files, to sign it out"),
         SignedOut::StoredKey { var, set } => {
-            let _ = writeln!(out, "disconnected {instance}: its stored key is deleted from {}", krowk_api::creds::credentials_text());
+            let _ = writeln!(out, "disconnected {instance}: its stored key is deleted from {}", credentials_path()?.display());
             match var {
                 Some(v) if *set => writeln!(out, "${v} is set too, and is what {instance} reads now — unset it, and take it out of your shell's startup files, to sign it out"),
                 Some(v) => writeln!(out, "it reads ${v} from now on, which is not set here"),
@@ -305,7 +334,7 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         SignedOut::Keyless => writeln!(out, "{instance} takes no key — there is nothing to sign out of"),
     };
     if done.removed_definition {
-        let _ = writeln!(out, "its definition is removed from {}", config);
+        let _ = writeln!(out, "its definition is removed from {}", config.display());
     }
     if let Some(m) = &done.cleared_default {
         let _ = writeln!(out, "the default model was {m}, so there is none now — `krowk connect <vendor> --method <method> --default` makes a connection the default");

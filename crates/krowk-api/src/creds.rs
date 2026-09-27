@@ -173,9 +173,9 @@ pub fn credentials_path() -> Result<PathBuf, Error> {
     Ok(crate::home::get()?.join(crate::home::CREDENTIALS))
 }
 
-/// The path, in words, for a message: none when there is no home.
+/// The path, in words, for a message.
 pub fn credentials_text() -> String {
-    credentials_path().map(|p| p.display().to_string()).unwrap_or_default()
+    credentials_path().map(|p| p.display().to_string()).unwrap_or_else(|_| "(no home directory)".into())
 }
 
 fn refusing(cause: String) -> Error {

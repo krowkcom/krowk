@@ -15,9 +15,9 @@
 //! - **`$VAR`** — a reference to a variable of krowk's environment, read
 //!   when the registry is resolved, as a variable the definition names is;
 //! - **`!command`** — a command whose standard output, trimmed, is the key
-//!   (`!pass show anthropic`), run at most once per krowk process: its
-//!   answer — the key, or why there is none — is remembered for the process
-//!   (`run`), and two checks at once wait for one run.
+//!   (`!pass show anthropic`), run once per krowk process when it works:
+//!   its key is kept for the process, two checks at once wait for one run,
+//!   and a failure is theirs alone — the next call runs it again (`run`).
 //!
 //! **Precedence is here and nowhere else** (`apply`): a stored key, then the
 //! variable. A stored key owns its instance — when it cannot be had (its
@@ -58,7 +58,7 @@
 //! when it exited 0 and printed one line.
 //!
 //! **Readiness runs the command** (`readiness::check`, never `local`, which
-//! only reads the remembered answer and never waits), once per process,
+//! only reads a kept key and never waits), once per process,
 //! bounded like a vendor check: `krowk status` saying `ready`
 //! for a key it has not seen, and the turn then failing, is what readiness
 //! exists to prevent, and the command is one the person gave krowk to run.
@@ -214,29 +214,40 @@ pub(crate) fn apply(instances: &mut BTreeMap<String, Resolved>, credentials: &Pa
         (r.stored, r.api_key) = match k {
             KeyRef::Literal(v) => (Stored::Literal, v.trim().to_string()),
             KeyRef::Env(v) => (Stored::Env(v.clone()), env(v).trim().to_string()),
-            KeyRef::Command(c) => (Stored::Command { command: c.clone(), dir: dir.clone() }, ran(c).and_then(Result::ok).unwrap_or_default()),
+            KeyRef::Command(c) => (Stored::Command { command: c.clone(), dir: dir.clone() }, ran(c).unwrap_or_default()),
         };
     }
 }
 
-/// What each command gave in this process, by command: its key, or why
-/// there is none. Each has its own lock, held while the command runs, so
-/// two checks (status's parallel pass, the TUI routing while its first turn
-/// starts) wait for one run — one passphrase prompt — and a failure is
-/// remembered too, so a failing command is not run again on every route
-/// and turn. `forget` clears it (`krowk connect`, `disconnect`).
-type Memo = std::sync::Arc<Mutex<Option<Result<String, String>>>>;
-static RUNS: Mutex<Option<HashMap<String, Memo>>> = Mutex::new(None);
+/// What each command gave in this process, by command. Each has its own
+/// lock, held while the command runs, so two checks at once (status's
+/// parallel pass, the TUI routing while its first turn starts) wait for one
+/// run — one passphrase prompt. A key is kept for the process. A failure
+/// is shared only with the calls that were waiting on that run, and never
+/// kept: the person told to unlock their password manager does so and
+/// tries again, and a remembered failure would refuse every later turn of
+/// a long-lived host (the TUI) for nothing — as readiness never remembers
+/// "not signed in".
+#[derive(Default)]
+struct Memo {
+    /// Runs finished: a waiter that saw fewer before it waited takes the
+    /// answer of the run it waited on, even a failure.
+    runs: std::sync::atomic::AtomicU64,
+    last: Mutex<Option<Result<String, String>>>,
+}
+static RUNS: Mutex<Option<HashMap<String, std::sync::Arc<Memo>>>> = Mutex::new(None);
 
-fn memo(command: &str) -> Memo {
+fn memo(command: &str) -> std::sync::Arc<Memo> {
     RUNS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).entry(command.into()).or_default().clone()
 }
 
-/// What a command already gave in this process — never waiting: a command
-/// still running is `None`, left to `readiness::check`, which may block.
-pub fn ran(command: &str) -> Option<Result<String, String>> {
+/// The key a command already gave in this process — never waiting: a
+/// command still running, or one that failed, is `None`, left to
+/// `readiness::check`, which may block.
+pub fn ran(command: &str) -> Option<String> {
     let m = RUNS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(command)?.clone();
-    m.try_lock().ok().and_then(|g| g.clone())
+    let last = m.last.try_lock().ok()?;
+    last.as_ref().and_then(|r| r.as_ref().ok().cloned())
 }
 
 /// Forgets every command's answer: a connection or a disconnection has just
@@ -271,13 +282,14 @@ pub fn auth_fix(inst: &Resolved) -> String {
 }
 
 /// A stored key that cannot be had, said with what is not done about it.
-pub fn no_fallback(inst: &Resolved, why: &str) -> String {
+fn no_fallback(inst: &Resolved, why: &str) -> String {
     let var = if inst.api_key_env.is_empty() { String::new() } else { format!(" to ${}", inst.api_key_env) };
     format!("{why} — the stored key is {}'s own, so krowk does not fall back{var}; fix it, store another with `{}`, or `krowk disconnect {}` to read the environment again", inst.name, crate::connect::connect_command(&inst.name, inst.kind), inst.name)
 }
 
 /// Runs a key's command (see the module's notes), once per process: a
-/// run already made — or making, in another thread — is its answer. The
+/// key already had, or the run another thread is making, is its answer
+/// (see `Memo`: a failure only for the calls that waited on it). The
 /// error never holds anything it printed.
 ///
 /// `at` is a person's terminal to run it on (`krowk connect` at one): in
@@ -287,13 +299,19 @@ pub fn no_fallback(inst: &Resolved, why: &str) -> String {
 /// at all (its own session, `GPG_TTY` taken away), so one that asks fails
 /// at once instead of drawing a prompt nobody can answer.
 pub fn run(instance: &str, command: &str, dir: &Path, at: Option<&mut dyn crate::connect::AuthInteraction>) -> Result<String, String> {
+    use std::sync::atomic::Ordering;
     let m = memo(command);
-    let mut done = m.lock().unwrap_or_else(|e| e.into_inner());
-    if let (Some(r), None) = (done.as_ref(), &at) {
-        return r.clone();
+    let seen = m.runs.load(Ordering::SeqCst);
+    let mut last = m.last.lock().unwrap_or_else(|e| e.into_inner());
+    match last.as_ref() {
+        Some(Ok(k)) if at.is_none() => return Ok(k.clone()),
+        // Failed while this call waited: that run's answer is this one's.
+        Some(Err(e)) if at.is_none() && m.runs.load(Ordering::SeqCst) > seen => return Err(e.clone()),
+        _ => {}
     }
     let r = run_once(instance, command, dir, at);
-    *done = Some(r.clone());
+    *last = Some(r.clone());
+    m.runs.fetch_add(1, Ordering::SeqCst);
     r
 }
 
@@ -355,6 +373,27 @@ const UNLOCK: &str = ". krowk runs it with no terminal, so if it asks for a pass
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A command that fails (a locked password manager) is not remembered:
+    // unlocked, the next call in the same process (a TUI's next turn) runs
+    // it again and has the key, which is then kept.
+    #[cfg(unix)]
+    #[test]
+    fn r_cred_1_a_failed_command_is_run_again_and_a_key_is_kept() {
+        let d = std::env::temp_dir().join(format!("krowk-keys-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (locked, runs) = (d.join("locked"), d.join("runs"));
+        std::fs::write(&locked, "").unwrap();
+        let cmd = format!("echo run >> {}; [ -e {} ] && exit 1; echo sk-unlocked", runs.display(), locked.display());
+        assert!(run("anthropic", &cmd, &d, None).unwrap_err().contains("stopped"));
+        assert_eq!(ran(&cmd), None, "a failure is not kept");
+        std::fs::remove_file(&locked).unwrap();
+        assert_eq!(run("anthropic", &cmd, &d, None).unwrap(), "sk-unlocked", "fixed, the next call has the key");
+        assert_eq!(run("anthropic", &cmd, &d, None).unwrap(), "sk-unlocked");
+        assert_eq!((ran(&cmd).as_deref(), std::fs::read_to_string(&runs).unwrap().lines().count()), (Some("sk-unlocked"), 2), "the key is kept: no third run");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn r_cred_1_a_reference_is_parsed_and_never_shown_with_its_key() {

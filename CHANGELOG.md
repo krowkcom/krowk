@@ -14,10 +14,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **With `HOME` unset, krowk no longer uses `.krowk` beside you as its config
   directory** — that made a repository's own `.krowk/` its config, trust list
   and credentials. In every build, `krowk config set --global` and `krowk
-  login` now refuse with "set HOME", `doctor` shows the directory as
-  `/nonexistent/krowk` (a path nothing can be read from or written to), and
-  `krowk status`, `-p`, the TUI and `connect` refuse with `no_home`. A
-  relative `XDG_CONFIG_HOME` is ignored, as the XDG spec says.
+  login` now refuse with "set HOME", `doctor` shows "(no home directory)",
+  nothing is read from or written to a config directory, and `krowk
+  status`, `-p`, the TUI and `connect` refuse with `no_home`. A relative
+  `XDG_CONFIG_HOME` is ignored, as the XDG spec says. On Windows, which
+  sets no `HOME`, krowk's home is `%USERPROFILE%`.
 
 - **`krowk status` names a key's variable as `env ANTHROPIC_API_KEY`**, where
   it said `$ANTHROPIC_API_KEY` (and `env ROUTER_KEY, handed to Claude Code`
@@ -172,7 +173,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `--key-stdin` stores a key piped in, and `--key-ref '$VAR'` or
   `--key-ref '!pass show anthropic'` stores a reference — the variable read
   when krowk starts, or the command's output (one line, run once per krowk
-  process, its errors never shown since they may hold the key). The command
+  process once it works — a failure is not kept, so unlocking the password
+  manager and trying again works — its errors never shown since they may
+  hold the key). The command
   runs with no terminal — 30 seconds at most, so a password manager that
   would ask for a passphrase fails at once, saying to unlock it first —
   except when `krowk connect` runs it at a terminal, where you can type the
@@ -233,14 +236,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   terminal, and without one refuses unless given `--sign-out-vendor`.
   The pickers mark them "your own Claude Code login". The definition stays, showing
   `not signed in` in `krowk status`, unless `--remove` — which also clears
-  `defaultModel` when it ran on that instance. With no instance on a
+  `defaultModel` when it ran on that instance (not when a built-in of that
+  name still serves it). With no instance on a
   terminal it asks which; without one it lists them.
 - **`krowk login`, `krowk logout` and `krowk whoami`** are short for your
   krowk account: `krowk auth login`, the new `krowk auth logout` (takes the
   key that resolves here off this machine — the key keeps working until it
   is revoked in the dashboard), and `krowk auth verify`. `krowk auth`
   works as before. `krowk login anthropic` and the like say that a model
-  provider is `krowk connect`, and the account's own errors now say
+  provider is `krowk connect`; `krowk logout` takes no argument, and
+  `krowk logout anthropic` says `krowk disconnect` instead of removing your
+  krowk key; and the account's own errors now say
   `krowk login` and `krowk whoami`.
 
 - **`krowk status` says which providers can run a turn here, and how to

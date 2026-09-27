@@ -70,9 +70,9 @@ pub fn global_path() -> Result<PathBuf, krowk_api::Error> {
     Ok(krowk_api::home::get()?.join(krowk_api::home::CONFIG))
 }
 
-/// The same, in words, for a message: empty without a home.
+/// The same, in words, for a message.
 pub fn global_text() -> String {
-    global_path().map(|p| p.display().to_string()).unwrap_or_default()
+    global_path().map(|p| p.display().to_string()).unwrap_or_else(|_| "(no home directory)".into())
 }
 
 /// <git-root>/.krowk/config.json, when `dir` is inside a checkout. The root is
