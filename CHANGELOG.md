@@ -11,6 +11,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **`krowk status` names a key's variable as `env ANTHROPIC_API_KEY`**, where
+  it said `$ANTHROPIC_API_KEY` (and `env ROUTER_KEY, handed to Claude Code`
+  for a backend's key), so a variable the instance reads and a stored
+  reference to one (`stored ($VAR)`) read apart. A missing key's fix line
+  offers storing one: "set OPENAI_API_KEY, or store a key with `krowk
+  connect openai --method api-key`".
+
 - **Every "sign in with …" now says `krowk connect`**: `krowk status`,
   `providers list`, a refused switch and a failed turn name the connect
   command for that instance (`krowk connect anthropic --method
@@ -148,6 +155,28 @@ the versions are the `v*` tags a release is cut from. Entries land under
   fields pricing never reads.
 
 ### Added
+
+- **An API key can be stored, not only read from the environment.**
+  `krowk connect anthropic --method api-key` (or `openai`, `xai`,
+  `openrouter`, `openai-compatible`) at a terminal asks "Paste a key, or
+  reference one ($VAR or !command)" without echoing it; Enter alone keeps
+  reading the key from its variable, as before. Without a terminal,
+  `--key-stdin` stores a key piped in, and `--key-ref '$VAR'` or
+  `--key-ref '!pass show anthropic'` stores a reference — the variable read
+  when krowk starts, or the command's output (one line, run once per krowk
+  process, 30 seconds at most, its errors never shown since they may hold
+  the key). There is no `--key <value>`: it would be in your shell's
+  history. The key goes in `~/.config/krowk/providers/credentials.json`
+  (0600), the file SuperGrok's login is in; `config.json` still names only
+  a variable. A stored key is used before the variable, and when it cannot
+  be had — its variable unset, its command failing — the instance has no
+  key and says why, rather than falling back to the environment's.
+  `krowk status` says where each key comes from (`stored`, `stored
+  ($VAR)`, `stored (!pass …)`, `env ANTHROPIC_API_KEY`), never the key;
+  `krowk status` runs a stored command to check it, and one that fails is
+  `unknown`. `krowk disconnect` deletes a stored key and says whether the
+  variable is set too. The file tools no longer read or search krowk's
+  credentials files without asking, even inside the working directory.
 
 - **`krowk connect` connects a model provider, by vendor and method**
   (in the `harness` build). `krowk connect anthropic` offers a Claude
