@@ -559,6 +559,12 @@ fn write_styled(out: &mut impl Write, line: &Line<'_>) -> io::Result<()> {
         let style = line.style.patch(span.style);
         let sgr = sgr(style);
         let text: String = span.content.chars().filter(|c| !c.is_control()).collect();
+        // A URL is a hyperlink to itself (OSC 8), which a terminal that
+        // does not know the sequence skips.
+        if crate::look::is_link(span) {
+            write!(out, "\x1b]8;;{text}\x1b\\\x1b[{sgr}m{text}\x1b[0m\x1b]8;;\x1b\\")?;
+            continue;
+        }
         if sgr.is_empty() {
             out.write_all(text.as_bytes())?;
         } else {

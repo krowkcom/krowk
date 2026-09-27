@@ -73,6 +73,29 @@ pub enum Overlay {
     Agents,
     /// The model and instance picker (`/model`).
     Models,
+    /// `/connect` and `/disconnect`, and the first-run card (`App::flow`).
+    Connect,
+}
+
+/// Whether an instance can run a turn, as the pickers mark it: the
+/// readiness check's answer in a word (R-INST-3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mark {
+    Ready,
+    /// Not ready, and which kind of not: `not signed in`, `key not set`.
+    Not(&'static str),
+    /// The check could not tell.
+    Unknown,
+}
+
+impl Mark {
+    pub fn of(r: &krowk_harness::readiness::Readiness) -> Mark {
+        match r {
+            krowk_harness::readiness::Readiness::Ready { .. } => Mark::Ready,
+            krowk_harness::readiness::Readiness::Unknown { .. } => Mark::Unknown,
+            r => Mark::Not(r.label()),
+        }
+    }
 }
 
 /// A subagent of the session, drawn as one line while it runs and
@@ -377,6 +400,11 @@ pub struct App {
     pub pick_at: usize,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
+    /// A `/connect` or `/disconnect` running: its overlay's state.
+    pub flow: Option<crate::connect::Flow>,
+    /// Each instance's readiness as last checked, for the pickers; an
+    /// instance with none is being checked, or not asked yet.
+    pub marks: BTreeMap<String, Mark>,
 }
 
 impl App {
@@ -433,6 +461,8 @@ impl App {
             picks: Vec::new(),
             pick_at: 0,
             help_at: 0,
+            flow: None,
+            marks: BTreeMap::new(),
         }
     }
 
@@ -580,6 +610,60 @@ impl App {
     pub fn notice(&mut self, text: &str) {
         self.gap();
         self.push_wrapped("! ", "  ", text, yellow(), yellow());
+    }
+
+    /// A page to open, from a sign-in: what it is for, dim, and the URL on a
+    /// row of its own as a link (OSC 8) the terminal wraps, so it stays one
+    /// link and copies whole.
+    pub fn link(&mut self, message: &str, url: &str) {
+        self.gap();
+        self.push_wrapped("", "", message, dim(), dim());
+        let url: String = crate::card::clean(url).chars().filter(|c| !c.is_whitespace()).collect();
+        self.pending.push(Line::from(vec![Span::raw("  "), Span::styled(url, look::link())]));
+        self.last_blank = false;
+        self.dirty = true;
+    }
+
+    /// What `/connect` did, as `krowk connect` says it: `✓ Connected
+    /// <instance>`, then what it is and where its key or login comes from,
+    /// dimmed, and what is still the person's to do.
+    pub fn done(&mut self, verb: &str, instance: &str, facts: &[String], notes: &[String]) {
+        self.gap();
+        self.push_wrapped(look::DONE, "  ", &format!("{verb} {instance}"), look::success(), Style::new());
+        self.push_wrapped("  ", "  ", &facts.join(" · "), dim(), dim());
+        for n in notes {
+            self.push_wrapped("  ! ", "    ", n, dim(), dim());
+        }
+    }
+
+    /// What `/disconnect` did, in `krowk disconnect`'s words.
+    pub fn disconnected(&mut self, d: &krowk_harness::connect::Disconnected) {
+        use krowk_harness::connect::SignedOut;
+        let i = &d.instance;
+        let (signed_out, said) = match &d.signed_out {
+            SignedOut::Tokens { had: true } => (true, vec!["its login is deleted from krowk's credentials file".to_string()]),
+            SignedOut::Tokens { had: false } => (false, vec![format!("{i} had no login to delete")]),
+            SignedOut::Vendor { command, home } => (true, vec![format!("`{command}` signed it out{}", home.as_ref().map(|h| format!(" in {}", h.display())).unwrap_or_default())]),
+            SignedOut::Key { var } => (false, vec![format!("{i} reads its key from ${var}, the environment's and not krowk's to delete — unset it, and take it out of your shell's startup files, to sign it out")]),
+            SignedOut::StoredKey { var, set } => {
+                let mut said = vec!["its stored key is deleted from krowk's credentials file".to_string()];
+                match var {
+                    Some(v) if *set => said.push(format!("! ${v} is set too, and is what {i} reads now — unset it to sign it out")),
+                    Some(v) => said.push(format!("it reads ${v} from now on, which is not set here")),
+                    None => {}
+                }
+                (true, said)
+            }
+            SignedOut::Keyless => (false, vec![format!("{i} takes no key — there is nothing to sign out of")]),
+        };
+        self.gap();
+        if signed_out {
+            self.push_wrapped(look::DONE, "  ", &format!("Disconnected {i}"), look::success(), Style::new());
+        }
+        for l in said {
+            let indent = if signed_out { "  " } else { "" };
+            self.push_wrapped(indent, indent, &l, dim(), dim());
+        }
     }
 
     /// A failed request or turn: the headline in the warning colour, which
@@ -1268,6 +1352,7 @@ impl App {
                 rows.push(Line::from(Span::styled(row, yellow().add_modifier(Modifier::BOLD))));
             }
         }
+        let mut flow_caret = None;
         match self.overlay {
             Overlay::None if self.slash_open() => rows.extend(self.slash_overlay(width)),
             Overlay::None => {}
@@ -1279,6 +1364,13 @@ impl App {
                 rows.push(Line::from(Span::styled(clip(hint, width), Style::new().fg(Color::Blue))));
             }
             Overlay::Models => rows.extend(self.models_overlay(width)),
+            Overlay::Connect => {
+                if let Some(f) = &self.flow {
+                    let (overlay, at) = f.rows(width);
+                    flow_caret = at.map(|(x, y)| (x, rows.len() as u16 + y));
+                    rows.extend(overlay);
+                }
+            }
         }
         // The prompt between two rules, scrolled to keep the caret in
         // view: `→ ` before its first row, open at the sides.
@@ -1299,7 +1391,8 @@ impl App {
             rows.push(Line::from(vec![prefix, Span::styled(text, style)]));
         }
         rows.push(Line::from(Span::styled(across, edge)));
-        let caret = (ccol + 2, top + (crow as usize - first) as u16);
+        // A question of `/connect`'s takes the keys, and the caret with them.
+        let caret = flow_caret.unwrap_or((ccol + 2, top + (crow as usize - first) as u16));
         if self.settings.status_bar {
             // A blank row over the status line; the terminal's own edge is
             // the gap under it.
@@ -1500,8 +1593,21 @@ impl App {
                 Some(m) => format!("{}/{m}", p.instance),
                 None => format!("{}/…", p.instance),
             };
-            let text = clip(&format!("{}{name}  {}", if chosen { "❯ " } else { "  " }, p.note), width);
-            out.push(Line::from(Span::styled(text, if chosen { look::accent() } else { Style::new().fg(Color::Blue) })));
+            // Whether it can run here, once its check is back: `…` until then.
+            let (mark, mark_style) = match self.marks.get(&p.instance) {
+                Some(Mark::Ready) => ("  ✓ ready".to_string(), look::success()),
+                Some(Mark::Not(why)) => (format!("  ✗ {why}"), yellow()),
+                Some(Mark::Unknown) => (String::new(), dim()),
+                None => ("  …".to_string(), dim()),
+            };
+            let head = format!("{}{name}  {}", if chosen { "❯ " } else { "  " }, p.note);
+            let style = if chosen { look::accent() } else { Style::new().fg(Color::Blue) };
+            let head = clip(&head, width);
+            let mark = match width - head.width() {
+                0 => String::new(),
+                room => clip(&mark, room),
+            };
+            out.push(Line::from(vec![Span::styled(head, style), Span::styled(mark, mark_style)]));
         }
         out
     }
@@ -1642,7 +1748,8 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
 /// answer, unwrapped, is Ctrl-Y.
 pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    if text.width() <= width.max(1) {
+    // A link is left for the terminal to wrap, so it stays one link.
+    if text.width() <= width.max(1) || line.spans.iter().any(look::is_link) {
         return vec![line];
     }
     let styled: Vec<(char, Style)> = line.spans.iter().flat_map(|s| s.content.chars().map(move |c| (c, s.style))).collect();
@@ -2011,8 +2118,8 @@ mod tests {
         assert_eq!(rows.len(), 3, "only the prompt, in its box: {:?}", text(&rows));
         a.overlay = Overlay::Keys;
         let (rows, caret) = a.view(Instant::now());
-        assert_eq!(rows.len(), 17, "the help menu, a rule and thirteen entries, over the prompt box");
-        assert_eq!(caret, (2, 15), "after the arrow");
+        assert_eq!(rows.len(), 19, "the help menu, a rule and fifteen entries, over the prompt box");
+        assert_eq!(caret, (2, 17), "after the arrow");
     }
 
     #[test]
@@ -2384,6 +2491,13 @@ mod tests {
         assert_eq!(a.pick_at, 1, "enter moves somewhere");
         let rows = text(&a.view(Instant::now()).0).join("\n");
         assert!(rows.contains("❯ openai/gpt-5.4") && rows.contains("claude/…"), "{rows}");
+        // Each row says whether it can run here once its check is back.
+        a.marks.insert("anthropic".into(), Mark::Ready);
+        a.marks.insert("claude".into(), Mark::Not("not signed in"));
+        a.set_width(100);
+        let rows = text(&a.view(Instant::now()).0);
+        let row = |i: &str| rows.iter().find(|r| r.trim_start().trim_start_matches("❯ ").starts_with(&format!("{i}/"))).cloned().unwrap_or_default();
+        assert!(row("anthropic").ends_with("✓ ready") && row("claude").ends_with("✗ not signed in") && row("openai").ends_with('…'), "{rows:?}");
     }
 
     #[test]
