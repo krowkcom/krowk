@@ -54,10 +54,10 @@ AGENT
   status            What's connected, and whether each is ready
   sessions          List and read agent sessions on this machine
   sessions show     Read one session back, with its turns, messages and parts
-  sessions import   Read agent transcripts on this machine into the local store
+  sessions import   Import this machine's agent transcripts
   sessions rebuild  Delete the local store and re-import every transcript
   sessions budget   Check a session against a spend limit
-  sessions sync     Import what changed, and refresh prices
+  sessions sync     Import what changed since the last import, refresh prices
 
 PUBLISH
   push              Upload files, get a link for each
@@ -138,9 +138,10 @@ AGENT FLAGS (krowk, krowk -p)
                               or bypassPermissions, as in Claude Code. Without
                               it, the settings' permissions.defaultMode; a deny
                               rule holds in every mode
-  --toolset <string>          With -p: the tools' preset — claude (str_replace),
-                              gpt (apply_patch) or grok (search_replace). The
-                              model's family picks one when absent
+  --toolset <string>          With -p: the tools' preset — claude
+                              (str_replace), gpt (apply_patch) or grok
+                              (search_replace). The model's family picks one
+                              when absent
   --effort <string>           With -p: how hard the model thinks — none,
                               minimal, low, medium, high, xhigh or max, mapped
                               onto the nearest the model takes. The instance's,

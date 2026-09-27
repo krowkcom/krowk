@@ -103,10 +103,10 @@ ACCOUNT
 OTHER
   sessions          List and read agent sessions on this machine
   sessions show     Read one session back, with its turns, messages and parts
-  sessions import   Read agent transcripts on this machine into the local store
+  sessions import   Import this machine's agent transcripts
   sessions rebuild  Delete the local store and re-import every transcript
   sessions budget   Check a session against a spend limit
-  sessions sync     Import what changed, and refresh prices
+  sessions sync     Import what changed since the last import, refresh prices
   config show       The effective configuration, and which layer set each value
   config set        Write one value into the repo config, or the global one
   config unset      Remove one value from the repo config, or the global one
@@ -190,10 +190,10 @@ FLAGS
                            for the ones that unfurl it themselves, like slack. A
                            tool krowk has not been told about gets the block
   --private                Upload where only this workspace can read it. The
-                           image still embeds — the byte URL is the capability —
-                           but the card opens only for a signed-in member, reads
-                           as not found to everyone else, and unfurls nowhere.
-                           Needs an API key
+                           image still embeds — the byte URL is the capability
+                           — but the card opens only for a signed-in member,
+                           reads as not found to everyone else, and unfurls
+                           nowhere. Needs an API key
   --pull-request <string>  Pull request the work belongs to
   --link <string>          Link this work is about — the issue, the spec, the
                            discussion. An absolute http(s) URL, repeatable up to
@@ -218,7 +218,7 @@ FLAGS
                            Your value wins over a detected one. Metadata is
                            public
 
-Global flags: --workspace --dev --format --json --quiet --jq — `krowk help flags`
+Global flags: --workspace --dev --format --json --quiet --jq — `help flags`
 exit: 0
 
 $ krowk help exit codes --format human

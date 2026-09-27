@@ -667,7 +667,7 @@ stdout:
         {
           "name": "import",
           "usage": "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
-          "summary": "Read agent transcripts on this machine into the local store",
+          "summary": "Import this machine's agent transcripts",
           "flags": [
             {
               "name": "from",
@@ -731,7 +731,7 @@ stdout:
         {
           "name": "sync",
           "usage": "krowk sessions sync [--no-network]",
-          "summary": "Import what changed, and refresh prices",
+          "summary": "Import what changed since the last import, refresh prices",
           "flags": [
             {
               "name": "no-network",
@@ -768,6 +768,14 @@ stdout:
           "name": "command",
           "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
+        }
+      ],
+      "flags": [
+        {
+          "name": "all",
+          "type": "bool",
+          "default": "false",
+          "usage": "List every command and subcommand"
         }
       ]
     },
@@ -1774,7 +1782,7 @@ stdout:
         {
           "name": "import",
           "usage": "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
-          "summary": "Read agent transcripts on this machine into the local store",
+          "summary": "Import this machine's agent transcripts",
           "flags": [
             {
               "name": "from",
@@ -1838,7 +1846,7 @@ stdout:
         {
           "name": "sync",
           "usage": "krowk sessions sync [--no-network]",
-          "summary": "Import what changed, and refresh prices",
+          "summary": "Import what changed since the last import, refresh prices",
           "flags": [
             {
               "name": "no-network",
@@ -1875,6 +1883,14 @@ stdout:
           "name": "command",
           "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
+        }
+      ],
+      "flags": [
+        {
+          "name": "all",
+          "type": "bool",
+          "default": "false",
+          "usage": "List every command and subcommand"
         }
       ]
     },
@@ -2219,10 +2235,10 @@ stdout:
 █▀▀▄
 
 Krowk 0.0.0-golden
-Permalinks for agent output
+A coding agent, and permalinks for its output
 
-  krowk push screenshot.png  Upload a file and get a link — no key needed, lasts a day
-  krowk login --token …      Add a key: uploads keep, group under runs, and stay yours
+  krowk push screenshot.png  Upload a file, get a link — no key, lasts a day
+  krowk login --token …      Add a key: uploads keep, group under runs
   krowk help                 The commands; --all for every one, --json as data
 exit: 0
 
@@ -2895,7 +2911,7 @@ stdout:
         {
           "name": "import",
           "usage": "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
-          "summary": "Read agent transcripts on this machine into the local store",
+          "summary": "Import this machine's agent transcripts",
           "flags": [
             {
               "name": "from",
@@ -2959,7 +2975,7 @@ stdout:
         {
           "name": "sync",
           "usage": "krowk sessions sync [--no-network]",
-          "summary": "Import what changed, and refresh prices",
+          "summary": "Import what changed since the last import, refresh prices",
           "flags": [
             {
               "name": "no-network",
@@ -2996,6 +3012,14 @@ stdout:
           "name": "command",
           "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
+        }
+      ],
+      "flags": [
+        {
+          "name": "all",
+          "type": "bool",
+          "default": "false",
+          "usage": "List every command and subcommand"
         }
       ]
     },
@@ -3340,10 +3364,10 @@ tty:
 █▀▀▄
 
 Krowk 0.0.0-golden
-Permalinks for agent output
+A coding agent, and permalinks for its output
 
-  krowk push screenshot.png  Upload a file and get a link — no key needed, lasts a day
-  krowk login --token …      Add a key: uploads keep, group under runs, and stay yours
+  krowk push screenshot.png  Upload a file, get a link — no key, lasts a day
+  krowk login --token …      Add a key: uploads keep, group under runs
   krowk help                 The commands; --all for every one, --json as data
 exit: 0
 
@@ -4016,7 +4040,7 @@ tty:
         {
           "name": "import",
           "usage": "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
-          "summary": "Read agent transcripts on this machine into the local store",
+          "summary": "Import this machine's agent transcripts",
           "flags": [
             {
               "name": "from",
@@ -4080,7 +4104,7 @@ tty:
         {
           "name": "sync",
           "usage": "krowk sessions sync [--no-network]",
-          "summary": "Import what changed, and refresh prices",
+          "summary": "Import what changed since the last import, refresh prices",
           "flags": [
             {
               "name": "no-network",
@@ -4117,6 +4141,14 @@ tty:
           "name": "command",
           "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
+        }
+      ],
+      "flags": [
+        {
+          "name": "all",
+          "type": "bool",
+          "default": "false",
+          "usage": "List every command and subcommand"
         }
       ]
     },
@@ -4468,10 +4500,10 @@ tty:
 █▀▀▄
 
 Krowk 0.0.0-golden
-Permalinks for agent output
+A coding agent, and permalinks for its output
 
-  krowk push screenshot.png  Upload a file and get a link — no key needed, lasts a day
-  krowk login --token …      Add a key: uploads keep, group under runs, and stay yours
+  krowk push screenshot.png  Upload a file, get a link — no key, lasts a day
+  krowk login --token …      Add a key: uploads keep, group under runs
   krowk help                 The commands; --all for every one, --json as data
 exit: 0
 

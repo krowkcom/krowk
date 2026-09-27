@@ -667,7 +667,7 @@ stdout:
         {
           "name": "import",
           "usage": "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
-          "summary": "Read agent transcripts on this machine into the local store",
+          "summary": "Import this machine's agent transcripts",
           "flags": [
             {
               "name": "from",
@@ -731,7 +731,7 @@ stdout:
         {
           "name": "sync",
           "usage": "krowk sessions sync [--no-network]",
-          "summary": "Import what changed, and refresh prices",
+          "summary": "Import what changed since the last import, refresh prices",
           "flags": [
             {
               "name": "no-network",
@@ -768,6 +768,14 @@ stdout:
           "name": "command",
           "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
+        }
+      ],
+      "flags": [
+        {
+          "name": "all",
+          "type": "bool",
+          "default": "false",
+          "usage": "List every command and subcommand"
         }
       ]
     }
@@ -1527,7 +1535,7 @@ stdout:
         {
           "name": "import",
           "usage": "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
-          "summary": "Read agent transcripts on this machine into the local store",
+          "summary": "Import this machine's agent transcripts",
           "flags": [
             {
               "name": "from",
@@ -1591,7 +1599,7 @@ stdout:
         {
           "name": "sync",
           "usage": "krowk sessions sync [--no-network]",
-          "summary": "Import what changed, and refresh prices",
+          "summary": "Import what changed since the last import, refresh prices",
           "flags": [
             {
               "name": "no-network",
@@ -1628,6 +1636,14 @@ stdout:
           "name": "command",
           "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
+        }
+      ],
+      "flags": [
+        {
+          "name": "all",
+          "type": "bool",
+          "default": "false",
+          "usage": "List every command and subcommand"
         }
       ]
     }
@@ -2387,7 +2403,7 @@ stdout:
         {
           "name": "import",
           "usage": "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
-          "summary": "Read agent transcripts on this machine into the local store",
+          "summary": "Import this machine's agent transcripts",
           "flags": [
             {
               "name": "from",
@@ -2451,7 +2467,7 @@ stdout:
         {
           "name": "sync",
           "usage": "krowk sessions sync [--no-network]",
-          "summary": "Import what changed, and refresh prices",
+          "summary": "Import what changed since the last import, refresh prices",
           "flags": [
             {
               "name": "no-network",
@@ -2488,6 +2504,14 @@ stdout:
           "name": "command",
           "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
+        }
+      ],
+      "flags": [
+        {
+          "name": "all",
+          "type": "bool",
+          "default": "false",
+          "usage": "List every command and subcommand"
         }
       ]
     }

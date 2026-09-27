@@ -200,7 +200,7 @@ stdout:
 {
   "name": "sessions import",
   "usage": "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
-  "summary": "Read agent transcripts on this machine into the local store",
+  "summary": "Import this machine's agent transcripts",
   "flags": [
     {
       "name": "from",
