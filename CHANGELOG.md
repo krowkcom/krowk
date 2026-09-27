@@ -11,6 +11,27 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **A bare `--model` runs on an instance that can run it here, and krowk
+  never guesses between a key and a subscription.** `--model sonnet` (or
+  `gpt-5.5`, `grok-4.7`, a bare `defaultModel`, the TUI's `/model haiku`)
+  used to go to the family's API instance whether it had a key or not, and
+  no model at all to `anthropic/claude-opus-5-5`, so a person with only a
+  Claude subscription failed. Now a bare id runs on the session's own
+  instance, then on the one `defaultModel` names, when that serves it and
+  is ready; else on the one instance ready here that serves it —
+  `claude/sonnet` with only a Claude subscription signed in. With several
+  ready — an Anthropic API key and a Claude subscription — the prompt is
+  refused (`ambiguous_model`, exit 1) with each one named ("Anthropic API
+  key", "Claude subscription") and the `--model <instance>/<id>` that picks
+  it, or `krowk connect <vendor> --default`; with none, `none_ready` (exit
+  3): "no connected instance serves Claude models — run `krowk connect
+  anthropic` … or `krowk connect claude` …", with what each one needs. No
+  model at all is the default model of the one ready instance, refused the
+  same way. Claude Code's aliases go to a Claude Code instance as they are
+  and to the API as the newest model of their family the catalog lists.
+  `<instance>/<model>` is never rerouted. Routing asks each vendor once, in
+  parallel, from the minute-long cache, and never in a repository nobody
+  trusted.
 - **The TUI's status line is one line in one order**:
   `<user>/<host> | <instance>/<model> | $cost | [N tasks] | [N subagents] | ? help`,
   under the prompt box. The task count is the todo list's open items and

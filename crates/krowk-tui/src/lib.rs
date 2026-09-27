@@ -175,9 +175,16 @@ async fn session(opts: Options) -> Outcome {
             Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("session {id} could not be read: {}", e.message())) },
         }
     }
-    // The model shown before the first turn names one: the flag, else the
-    // session's last, else the configured default.
-    let shown = opts.model.clone().or_else(|| app.model.clone()).or_else(|| opts.host.registry.default_model().ok());
+    // The model shown before the first turn names one: the flag (or the
+    // model routed for a new session), else the session's last, else the
+    // configured default when it names its instance — never krowk's own
+    // default on an instance that may not be ready: with none routed,
+    // nothing is shown until a turn says where it runs.
+    let configured = match opts.host.registry.default_model.as_deref().map(|d| opts.host.registry.read_model(d)) {
+        Some(Ok(krowk_harness::instances::Asked::Exact(m))) => Some(m),
+        _ => None,
+    };
+    let shown = opts.model.clone().or_else(|| app.model.clone()).or(configured);
     let target = shown.as_ref().and_then(|m| opts.host.registry.get(&m.instance).ok()).and_then(|i| Target::for_url(&i.base_url, &|k| std::env::var(k).unwrap_or_default()));
     app.model = shown;
     app.device = device::name(&|k| std::env::var(k).unwrap_or_default());
@@ -1097,7 +1104,8 @@ impl<'h> Ui<'h> {
             t if t.starts_with("/model ") => {
                 app.editor.clear();
                 // A bare id stays on the session's instance when that can
-                // run it, else goes to the first one ready here.
+                // run it, else goes to the one instance ready here that
+                // can; with several, the refusal lists them.
                 let current = self.model.clone().or_else(|| app.model.clone());
                 match self.host.registry().read_model(&t["/model ".len()..]) {
                     Ok(asked) => match self.host.route_model(Some(&asked), current.as_ref()).await {

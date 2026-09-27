@@ -42,7 +42,7 @@ use crate::claude::auth as claude_auth;
 use crate::codex::auth as codex_auth;
 use crate::engine::EngineError;
 use crate::catalog::Listed;
-use crate::instances::{Asked, Auth, Backend, Registry, Resolved};
+use crate::instances::{kind_label, Asked, Auth, Backend, Registry, Resolved};
 use crate::oauth;
 use crate::protocol::{ModelRef, WireApi};
 use serde_json::{json, Value};
@@ -287,22 +287,30 @@ pub async fn check_async(inst: &Resolved, credentials: &Path, probe: &Probe) -> 
 
 /// Where a turn runs when it was asked for by a bare id — or, with nothing
 /// asked, on the default (`defaultModel`, routed the same way when it is
-/// bare): the first of `Registry::candidates` that is ready, with the id
-/// spelled as that instance takes it (`Registry::model_on`). An explicit
-/// `<instance>/<model>` comes back as it is, never rerouted and never
-/// checked here — the turn's own readiness check names what is missing.
+/// bare). No instance is ranked above another: any fixed order would
+/// silently send `sonnet` to a pay-per-token key when the person also has
+/// a subscription, or the other way round. So, of the instances that serve
+/// the id (`Registry::candidates`):
 ///
-/// Cheap by construction: a key, a keyless server or an OAuth login is
-/// read without a process, and only the backends ranked above the first
-/// candidate ready that way are asked of their vendor — together, in one
-/// parallel pass (`check_all`), each "signed in" served from the cache for
-/// `CACHE_FOR`. So a machine with a key set spawns nothing to route, and a
-/// Claude subscriber one `claude auth status`. A backend that could not
-/// tell (`unknown`) is taken when nothing is ready, and its turn left to
-/// fail, or not, as the host's own check leaves it; with nothing at all,
-/// the error names every instance that could run it and its fix.
+/// 1. the session's own (`current`), then the one `defaultModel` names —
+///    each when it serves the id and is ready: the person already chose it;
+/// 2. else the one that is ready, when exactly one is;
+/// 3. else, when several are, `ambiguous_model`, listing them with what
+///    each is and the `--model` that picks it; when none is, `none_ready`,
+///    naming each and what connects it.
 ///
-/// `probe` is where the vendors are asked, by the rules of this module:
+/// A vendor that could not tell (`unknown`) counts only when nothing is
+/// ready, as the host's own check leaves such a turn to run. The id is then
+/// spelled as the chosen instance takes it (`Registry::model_on`); with no
+/// id, it is the instance's default model. An explicit `<instance>/<model>`
+/// comes back as it is, never rerouted and never checked here — the turn's
+/// own readiness check names what is missing.
+///
+/// Every candidate is asked once: a key, a keyless server or an OAuth login
+/// without a process, and the backends together in one parallel pass
+/// (`check_all`), each "signed in" served from the cache for `CACHE_FOR` —
+/// none at all when the session's or the default's instance is ready by
+/// its key. `probe` is where the vendors are asked, by this module's rules:
 /// the session's own directory only once its repository is trusted, else
 /// krowk's own (`neutral_dir`) — routing never asks a trust question.
 pub fn route(
@@ -329,44 +337,78 @@ pub fn route(
         Some(Asked::Bare(b)) => Some(b.as_str()),
         None => None,
     };
-    let mut cannot = Vec::new();
-    let mut cands = Vec::new();
-    for inst in reg.candidates(bare, current) {
-        match reg.model_on(inst, bare, listed) {
-            Ok(m) => cands.push((inst, m)),
-            Err(why) => cannot.push(why),
+    let cands = reg.candidates(bare);
+    let default = match reg.default_model.as_deref().map(|d| reg.read_model(d)) {
+        Some(Ok(Asked::Exact(d))) => Some(d.instance),
+        _ => None,
+    };
+    let preferred: Vec<&str> = current.map(|c| c.instance.as_str()).into_iter().chain(default.as_deref()).filter(|p| cands.iter().any(|c| c.name == *p)).collect();
+    let spell = |inst: &Resolved| {
+        reg.model_on(inst, bare, listed).map(|model| ModelRef { instance: inst.name.clone(), model }).map_err(|why| EngineError::new("bad_model", why))
+    };
+    // The preferred instance ready by its key needs no vendor asked.
+    if let Some(inst) = preferred.first().and_then(|p| reg.instances.get(*p))
+        && local(inst, credentials).is_some_and(|r| r.is_ready())
+    {
+        return spell(inst);
+    }
+    let locals: Vec<Option<Readiness>> = cands.iter().map(|i| local(i, credentials)).collect();
+    let ask: Vec<&Resolved> = cands.iter().zip(&locals).filter(|(_, l)| l.is_none()).map(|(i, _)| *i).collect();
+    let mut answers = check_all(&ask, credentials, probe).into_iter();
+    let rows: Vec<(&Resolved, Report)> = cands
+        .iter()
+        .zip(locals)
+        .map(|(i, l)| {
+            let r = match l {
+                Some(r) => report(i, r, credentials),
+                None => answers.next().unwrap_or_else(|| report(i, Readiness::Unknown { reason: "not asked".into() }, credentials)),
+            };
+            (*i, r)
+        })
+        .collect();
+    let ready: Vec<&Resolved> = rows.iter().filter(|(_, r)| r.readiness.is_ready()).map(|(i, _)| *i).collect();
+    if let Some(inst) = preferred.iter().find_map(|p| ready.iter().find(|i| i.name == *p)) {
+        return spell(inst);
+    }
+    let pool: Vec<&Resolved> = if ready.is_empty() { rows.iter().filter(|(_, r)| matches!(r.readiness, Readiness::Unknown { .. })).map(|(i, _)| *i).collect() } else { ready };
+    let what = crate::instances::serving(bare).0;
+    let asked = match bare {
+        Some(b) => format!("{b:?}"),
+        None => "a model (no --model, and config names no defaultModel)".into(),
+    };
+    match pool.as_slice() {
+        [one] => spell(one),
+        [] => {
+            let vendors = crate::instances::serving(bare).1;
+            let run: Vec<String> = vendors.iter().map(|v| format!("`krowk connect {v}` ({})", kind_label(reg.instances.get(*v).map_or("", |i| i.kind)))).collect();
+            let run = match run.split_last() {
+                Some((last, [])) => last.clone(),
+                Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+                None => String::new(),
+            };
+            let needs: Vec<String> = rows.iter().map(|(i, r)| format!("  {}, {} ({}): {}", i.name, kind_label(i.kind), r.readiness.label(), r.fix.clone().unwrap_or_default())).collect();
+            let for_what = if bare.is_some() { format!(" serves {what} (asked for {asked})") } else { " can run a model here (no --model, and config names no defaultModel)".into() };
+            Err(EngineError::new("none_ready", format!("no connected instance{for_what} — run {run}. What each one needs:\n{}", needs.join("\n"))))
+        }
+        several => {
+            let picks: Vec<String> = several
+                .iter()
+                .map(|i| {
+                    let m = reg.model_on(i, bare, listed).unwrap_or_else(|_| "<model>".into());
+                    format!("  {}, {}: --model {}/{m}", i.name, kind_label(i.kind), i.name)
+                })
+                .collect();
+            let first = several[0].name.split(':').next().unwrap_or_default();
+            Err(EngineError::new(
+                "ambiguous_model",
+                format!(
+                    "{} connected instances could run {asked}, and krowk does not choose between them for you — pick one with --model <instance>/<id>:\n{}\nor make one the default with `krowk connect <vendor> --default` (e.g. `krowk connect {first} --default`)",
+                    several.len(),
+                    picks.join("\n")
+                ),
+            ))
         }
     }
-    let locals: Vec<Option<Readiness>> = cands.iter().map(|(i, _)| local(i, credentials)).collect();
-    let first_local = locals.iter().position(|r| r.as_ref().is_some_and(Readiness::is_ready)).unwrap_or(cands.len());
-    let ask: Vec<&Resolved> = cands[..first_local].iter().zip(&locals).filter(|(_, l)| l.is_none()).map(|((i, _), _)| *i).collect();
-    let mut answers = check_all(&ask, credentials, probe).into_iter();
-    let mut rows = Vec::new();
-    for ((inst, model), local) in cands.iter().zip(locals).take(first_local + 1) {
-        let r = match local {
-            Some(r) => report(inst, r, credentials),
-            None => answers.next().unwrap_or_else(|| report(inst, Readiness::Unknown { reason: "not asked".into() }, credentials)),
-        };
-        rows.push((ModelRef { instance: inst.name.clone(), model: model.clone() }, r));
-    }
-    let pick = rows.iter().find(|(_, r)| r.readiness.is_ready()).or_else(|| rows.iter().find(|(_, r)| matches!(r.readiness, Readiness::Unknown { .. })));
-    if let Some((m, _)) = pick {
-        return Ok(m.clone());
-    }
-    let (what, vendors) = crate::instances::serving(bare);
-    let run: Vec<String> = vendors.iter().map(|v| format!("`krowk connect {v}`")).collect();
-    let run = match run.split_last() {
-        Some((last, [])) => last.clone(),
-        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
-        None => String::new(),
-    };
-    let asked = match bare {
-        Some(b) => format!(" (asked for {b:?})"),
-        None => " (no --model, and config names no defaultModel)".into(),
-    };
-    let mut lines: Vec<String> = rows.iter().map(|(m, r)| format!("  {} ({}): {}", m.instance, r.readiness.label(), r.fix.clone().unwrap_or_default())).collect();
-    lines.extend(cannot.into_iter().map(|w| format!("  {w}")));
-    Err(EngineError::new("none_ready", format!("no connected instance serves {what}{asked} — run {run}. What each one needs:\n{}", lines.join("\n"))))
 }
 
 /// A readiness with its source and fix around it: the row every caller

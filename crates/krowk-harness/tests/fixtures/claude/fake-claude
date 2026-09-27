@@ -10,7 +10,7 @@
 #
 # Environment:
 #   FAKE_CLAUDE_SCENARIO  the scenario file (below); a plain answer without one
-#   FAKE_CLAUDE_LOG       where every argv, config dir and line in or out is appended
+#   FAKE_CLAUDE_LOG       where every argv, config dir, working directory and line in or out is appended
 #   FAKE_CLAUDE_SESSION   the session id of a new session
 #   FAKE_CLAUDE_LOGIN     `fail`: `auth login` gives up, as a person closing the browser would
 #   FAKE_CLAUDE_PERMISSION_MODE  the mode init reports, as a settings file
@@ -44,6 +44,7 @@ log() { printf '%s\n' "$*" >>"$LOG"; }
 log "argv $*"
 log "config ${CLAUDE_CONFIG_DIR:-<unset>}"
 log "pid $$"
+log "cwd $PWD"
 
 case "${1:-}" in
 --version)

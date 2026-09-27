@@ -26,7 +26,7 @@ mod mock;
 mod providers;
 
 use krowk_harness::host::{Host, HostConfig};
-use krowk_harness::instances::{InstanceKind, InstancesConfig, Registry, Rollover};
+use krowk_harness::instances::{Asked, InstanceKind, InstancesConfig, Registry, Rollover};
 use krowk_harness::log;
 use krowk_harness::protocol::{
     BudgetLimits, Command, ContextRecord, HandoffKind, Item, LimitState, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchReason, TurnStatus,
@@ -941,4 +941,50 @@ fn readiness_a_vendors_signed_in_is_believed_for_a_minute_and_a_signed_out_asked
     std::fs::write(out_dir.join("fake-login"), "").unwrap();
     switch("claude:out").unwrap();
     assert_eq!(asked("claude-out"), 2);
+}
+
+/// The cwd of every `claude auth status` a fake Claude Code logged.
+fn status_cwds(log: &str) -> Vec<PathBuf> {
+    let lines: Vec<&str> = log.lines().collect();
+    lines.iter().enumerate().filter(|(_, l)| **l == "argv auth status --json").filter_map(|(i, _)| lines[i..].iter().find_map(|l| l.strip_prefix("cwd ")).map(PathBuf::from)).collect()
+}
+
+#[test]
+fn a_bare_model_stays_on_the_sessions_account_goes_to_the_one_ready_instance_and_refuses_to_guess() {
+    let mut w = World::new("routing");
+    let rt = rt();
+    // Only one instance connected: no model at all runs on its default,
+    // asked of the vendor in krowk's own directory for routing and in the
+    // repository, once trusted, for the turn.
+    let all = w.instances.clone();
+    w.instances.retain(|(n, _)| n == "claude:work");
+    let host = w.host();
+    let (r, _) = rt.block_on(run(&host, prompt(None, "hello", None)));
+    assert_eq!((r.status, r.model.to_string()), (TurnStatus::Completed, "claude:work/claude-opus-5-5".to_string()), "{:?}", r.error);
+    let data = log::sessions_dir(&w.env()).unwrap().parent().unwrap().to_path_buf();
+    assert_eq!(status_cwds(&w.fake_log("claude-work")), [data.join("readiness"), w.root.join("repo")], "{}", w.fake_log("claude-work"));
+
+    // The API key, the subscription, a ChatGPT one: several could run it.
+    w.instances = all;
+    let host = w.host();
+    let bare = |m: &str| Asked::Bare(m.into());
+    let route = |m: Option<&Asked>, current: Option<&ModelRef>| rt.block_on(host.route_model(m, current));
+    // The TUI's `/model haiku` on a claude:work session: that account.
+    let on_work = ModelRef { instance: "claude:work".into(), model: "sonnet".into() };
+    assert_eq!(route(Some(&bare("haiku")), Some(&on_work)).unwrap(), ModelRef { instance: "claude:work".into(), model: "haiku".into() });
+    // With no session, a key and a subscription both serve it: refused,
+    // never guessed, each named with what it is and how to pick it.
+    let e = route(Some(&bare("haiku")), None).unwrap_err();
+    assert_eq!(e.code, "ambiguous_model");
+    assert!(e.message.contains("anthropic, Anthropic API key: --model anthropic/<model>") && e.message.contains("claude:work, Claude subscription: --model claude:work/haiku"), "{}", e.message);
+    assert!(e.message.contains("`krowk connect anthropic --default`"), "{}", e.message);
+    assert_eq!(route(Some(&bare("gpt-5.5")), None).unwrap_err().code, "ambiguous_model");
+    let sessions = || std::fs::read_dir(log::sessions_dir(&w.env()).unwrap()).map_or(0, |d| d.count());
+    let before = sessions();
+    let (tx, _rx) = mpsc::channel(64);
+    let e = rt.block_on(host.execute(prompt(None, "hello", None), tx)).unwrap_err();
+    assert_eq!((e.code.as_str(), sessions()), ("ambiguous_model", before), "no model and several ready: the same refusal, before a session exists");
+    // An explicit instance is never rerouted, nor checked by the router.
+    let exact = Asked::Exact(ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() });
+    assert_eq!(route(Some(&exact), None).unwrap().instance, "anthropic");
 }
