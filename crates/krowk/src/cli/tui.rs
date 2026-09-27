@@ -8,7 +8,7 @@ use super::{prompt, sessions, Ctx, Io};
 use crate::output::Format;
 use krowk_api::{fail, Error};
 use krowk_harness::host::HostConfig;
-use krowk_harness::instances::Registry;
+use krowk_harness::instances::{self, Registry};
 use krowk_harness::log;
 use std::sync::Arc;
 
@@ -35,10 +35,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
     let config = prompt::config_json()?;
     let registry = Registry::resolve(&prompt::instances_from(&config)?, ctx.io.env);
     registry.check_rollover().map_err(|e| fail("bad_config", e))?;
-    let model = match ctx.f.model.as_str() {
-        "" => None,
-        m => Some(registry.parse_model(m).map_err(|e| fail("bad_flag", format!("--model: {e}")))?),
-    };
+    let asked = prompt::model_flag(ctx, &registry)?;
     let sessions_dir = log::sessions_dir(ctx.io.env)
         .ok_or_else(|| fail("store_unavailable", "no home directory in environment: set HOME (or XDG_DATA_HOME to an absolute path) so sessions have a place to live"))?;
     let resume = if ctx.f.resume_pick {
@@ -68,9 +65,32 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         krowk_harness::protocol::LogBody::SessionStarted { cwd, .. } => Some(std::path::PathBuf::from(cwd)),
         _ => None,
     });
-    let effective = model.clone().or(session_model).or_else(|| registry.default_model().ok());
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
     let runs_in = session_cwd.clone().unwrap_or_else(|| cwd.clone());
+    // A model that needs no vendor asked is known now: `--model` naming
+    // its instance, the session's own, a `defaultModel` naming its
+    // instance. Any other — a bare `--model`, or none at all — the TUI
+    // routes once its first frame is up (R-PERF-1: nothing before the
+    // prompt waits on a vendor's status check), and asks the trust question
+    // itself when the route lands on a backend.
+    let exact_default = registry.default_model.as_deref().and_then(|d| match registry.read_model(d) {
+        Ok(instances::Asked::Exact(m)) => Some(m),
+        _ => None,
+    });
+    let chosen = match &asked {
+        Some(instances::Asked::Exact(m)) => Some(m.clone()),
+        _ => None,
+    };
+    let (model, route) = match asked {
+        Some(instances::Asked::Exact(m)) => (Some(m), None),
+        Some(bare) => (None, Some(krowk_tui::Route { asked: Some(bare), current: session_model.clone() })),
+        None if session_model.is_some() => (None, None),
+        None => match exact_default {
+            Some(m) => (Some(m), None),
+            None => (None, Some(krowk_tui::Route { asked: None, current: None })),
+        },
+    };
+    let effective = model.clone().or(session_model);
     // What a repository's own settings would widen is asked about with the
     // trust question too; the TUI answers approvals itself (R-PERM-2).
     let probe = prompt::permissions_config(ctx, &config, Arc::new(|_: &std::path::Path| false), true);
@@ -79,7 +99,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
     // now, not after the answer was kept.
     krowk_harness::permissions::settings::load(&probe, &runs_in).map_err(prompt::bad_settings)?;
     let widens = krowk_harness::permissions::settings::widens(&probe, &runs_in);
-    let (trust, trusted) = prompt::tui_trust_gate(effective.as_ref(), &registry, &runs_in, home, widens);
+    let (trust, trusted, trust_ask) = prompt::tui_trust_gate(effective.as_ref(), &registry, &runs_in, home, widens);
     let permissions = prompt::permissions_config(ctx, &config, trusted, true);
     let (permission_mode, mode_notices) = prompt::resolve_mode(flag_mode, &permissions, &runs_in)?;
     let host = HostConfig {
@@ -99,6 +119,9 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         host,
         resume,
         model,
+        chosen,
+        route,
+        trust: Some(trust_ask),
         permission_mode,
         toolset,
         effort,

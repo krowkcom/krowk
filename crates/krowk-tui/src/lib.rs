@@ -39,6 +39,7 @@ use editor::Editor;
 use futures_core::Stream;
 use krowk_harness::engine::EngineError;
 use krowk_harness::host::{Host, HostConfig, Pricer};
+use krowk_harness::instances::Asked;
 use krowk_harness::log;
 use krowk_harness::protocol::{ApprovalDecision, BudgetLimits, Command, Effort, ModelRef, PermissionMode, RunResult, StreamLine, TurnStatus};
 use net::Target;
@@ -48,6 +49,7 @@ use std::future::Future;
 use std::io::Write;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 use term::Term;
 use tokio::sync::mpsc;
@@ -70,6 +72,16 @@ pub struct Options {
     pub resume: Option<String>,
     /// The model for every prompt; the session's own when absent.
     pub model: Option<ModelRef>,
+    /// The model the person named with `--model`: beside the session's
+    /// own, the one a bare `/model` id stays on when it can.
+    pub chosen: Option<ModelRef>,
+    /// A model still to be routed — a bare `--model`, or none at all on a
+    /// session that has none — which the TUI routes itself once its first
+    /// frame is up, so that frame never waits on a vendor's status check.
+    pub route: Option<Route>,
+    /// The trust question for the session's repository, asked in the TUI
+    /// when the model it routed runs on a backend there.
+    pub trust: Option<TrustAsk>,
     pub permission_mode: PermissionMode,
     /// The toolset preset for every prompt; the model's own when absent.
     pub toolset: Option<String>,
@@ -83,6 +95,31 @@ pub struct Options {
     /// Lines shown above the first prompt: config warnings and the like.
     pub notices: Vec<String>,
     pub version: String,
+}
+
+/// What the TUI routes once it is up (`Host::route_model`).
+pub struct Route {
+    /// A bare id; none routes the default.
+    pub asked: Option<Asked>,
+    /// The session's model, whose instance a bare id stays on when it can.
+    pub current: Option<ModelRef>,
+}
+
+/// The trust question for the session's repository, asked in the TUI:
+/// the one the launcher asks before the TUI takes the terminal, for a model
+/// that was only known once routed.
+#[derive(Clone)]
+pub struct TrustAsk {
+    /// The repository's root.
+    pub root: PathBuf,
+    /// Whether it is trusted now.
+    pub trusted: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Why it cannot be trusted for good (the home directory, `/`); then
+    /// nothing is asked.
+    pub refuses: Option<String>,
+    /// Trusts it: for this run, and remembered when it can be — an error
+    /// when it could not be.
+    pub accept: Arc<dyn Fn() -> Option<String> + Send + Sync>,
 }
 
 /// How the TUI ended.
@@ -121,6 +158,12 @@ pub fn run(opts: Options) -> Outcome {
     }));
     let outcome = rt.block_on(session(opts));
     restore_terminal();
+    // A readiness check still running (the person quit while the model was
+    // being routed) is not waited for: its process group, registered while
+    // it runs, is killed here, and its blocking thread is let go with the
+    // runtime instead of holding the exit for up to its deadline.
+    krowk_harness::group::kill_all();
+    rt.shutdown_background();
     outcome
 }
 
@@ -133,6 +176,7 @@ fn restore_terminal() {
 
 type TurnFuture<'a> = Pin<Box<dyn Future<Output = Result<Option<RunResult>, EngineError>> + 'a>>;
 type ProbeFuture = Pin<Box<dyn Future<Output = bool>>>;
+type RouteFuture<'a> = Pin<Box<dyn Future<Output = Result<ModelRef, EngineError>> + 'a>>;
 
 async fn session(opts: Options) -> Outcome {
     let mut stdout = std::io::stdout();
@@ -164,9 +208,14 @@ async fn session(opts: Options) -> Outcome {
     let mut app = App::new(Editor::new(opts.history_file.clone()), inner(size.width), opts.settings.clone(), None, Some(pricer));
     app.log_dir = Some(sessions_dir.display().to_string());
     app.permission_mode = serde_json::to_value(opts.permission_mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+    // Where the session runs: a resumed one where it started.
+    let mut runs_in = opts.host.cwd.clone();
     if let Some(id) = &opts.resume {
         match log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)) {
             Ok(events) => {
+                if let Some(krowk_harness::protocol::LogBody::SessionStarted { cwd, .. }) = events.first().map(|e| &e.body) {
+                    runs_in = PathBuf::from(cwd);
+                }
                 let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
                 app.replay(&log::branch(&events, &head));
                 app.session_id = Some(id.clone());
@@ -175,9 +224,10 @@ async fn session(opts: Options) -> Outcome {
             Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("session {id} could not be read: {}", e.message())) },
         }
     }
-    // The model shown before the first turn names one: the flag, else the
-    // session's last, else the configured default.
-    let shown = opts.model.clone().or_else(|| app.model.clone()).or_else(|| opts.host.registry.default_model().ok());
+    // The model shown before the first turn names one: the one given
+    // (`--model`, or the configured default that names its instance), else
+    // the session's last. One still to be routed is shown once it is.
+    let shown = opts.model.clone().or_else(|| app.model.clone());
     let target = shown.as_ref().and_then(|m| opts.host.registry.get(&m.instance).ok()).and_then(|i| Target::for_url(&i.base_url, &|k| std::env::var(k).unwrap_or_default()));
     app.model = shown;
     app.device = device::name(&|k| std::env::var(k).unwrap_or_default());
@@ -215,7 +265,26 @@ async fn session(opts: Options) -> Outcome {
         Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("the terminal could not be drawn on: {e}")) },
     };
     let host = Host::new(opts.host);
-    let mut ui = Ui { host: &host, model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
+    // Routed now, while the first frame is drawn: the vendors it asks
+    // (a Node start for `claude`) never hold the prompt up.
+    let routing: Option<RouteFuture<'_>> = opts.route.map(|r| {
+        let (host, cwd) = (&host, runs_in.clone());
+        Box::pin(async move { host.route_model(r.asked.as_ref(), r.current.as_ref(), &cwd).await }) as RouteFuture<'_>
+    });
+    let effort_label = effort.clone();
+    let mut ui = Ui {
+        host: &host,
+        model: opts.model,
+        chosen: opts.chosen,
+        routing,
+        model_route: None,
+        held: None,
+        needs_trust: None,
+        trust_shown: None,
+        trust: opts.trust,
+        effort_label,
+        runs_in: runs_in.clone(),
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
@@ -243,6 +312,30 @@ async fn session(opts: Options) -> Outcome {
 struct Ui<'h> {
     host: &'h Host,
     model: Option<ModelRef>,
+    /// The model the person named (`--model`, a `/model` switch): with the
+    /// session's own, what a bare `/model` id stays beside. A routed
+    /// model is not one — it was krowk's pick, not the person's.
+    chosen: Option<ModelRef>,
+    /// The model being routed at start (`Options::route`).
+    routing: Option<RouteFuture<'h>>,
+    /// A `/model <id>` being routed: the loop goes on — keys, signals,
+    /// resizes — while its vendors are asked.
+    model_route: Option<RouteFuture<'h>>,
+    /// Prompts sent before the route, or the trust question after it, was
+    /// settled, joined as steering is: sent once they are.
+    held: Option<String>,
+    /// The routed model runs on a backend in a repository nobody trusted:
+    /// the question to ask, once a prompt is actually sent for it.
+    needs_trust: Option<(ModelRef, String)>,
+    /// When the trust question came up: keys before `APPROVAL_SETTLE` has
+    /// passed were typed ahead, and are no answer.
+    trust_shown: Option<std::time::Instant>,
+    /// The trust question, for a route that lands on a backend.
+    trust: Option<TrustAsk>,
+    /// The effort as the header shows it.
+    effort_label: Option<String>,
+    /// Where the session runs, where a vendor is asked once trusted.
+    runs_in: PathBuf,
     permission_mode: PermissionMode,
     toolset: Option<String>,
     effort: Option<Effort>,
@@ -550,6 +643,27 @@ impl<'h> Ui<'h> {
                         }
                     }
                 }
+                r = finish(&mut self.model_route) => {
+                    self.model_route = None;
+                    match r {
+                        Ok(m) => {
+                            self.switch(app, m).await;
+                            self.release(app);
+                        }
+                        Err(e) => {
+                            app.error(&e.info());
+                            self.unhold(app);
+                        }
+                    }
+                }
+                r = finish(&mut self.routing) => {
+                    self.routing = None;
+                    if self.routed(app, r) && probe.is_none()
+                        && let Some(t) = self.target.clone()
+                    {
+                        probe = Some(Box::pin(async move { net::reachable(&t).await }));
+                    }
+                }
                 ok = finish(&mut probe) => {
                     probe = None;
                     if ok {
@@ -677,6 +791,11 @@ impl<'h> Ui<'h> {
                 app.gap_say(&format!("{}now on {m}{when}", look::SWITCH));
                 self.retarget(&m);
                 self.model = Some(m.clone());
+                self.chosen = Some(m.clone());
+                if self.needs_trust.as_ref().is_some_and(|(n, _)| *n != m) {
+                    self.needs_trust = None;
+                    app.trust_question = None;
+                }
                 if !app.running() {
                     app.model = Some(m);
                 }
@@ -689,7 +808,111 @@ impl<'h> Ui<'h> {
         }
     }
 
+    /// The model routed at start, taken: shown, and followed by the
+    /// connectivity probe. On a backend in a repository nobody has trusted,
+    /// the trust question is kept for when a prompt is sent — asked now
+    /// only if one is already held; nothing else asks it, so a key typed as
+    /// the route lands is never its answer. A prompt held for the route
+    /// goes now, or once the question is answered. True when the probe's
+    /// target changed.
+    fn routed(&mut self, app: &mut App, r: Result<ModelRef, EngineError>) -> bool {
+        let m = match r {
+            Ok(m) => m,
+            Err(e) => {
+                app.error(&e.info());
+                self.unhold(app);
+                return false;
+            }
+        };
+        // A `/model` the person gave in the meantime wins.
+        if self.model.is_some() {
+            return self.release(app);
+        }
+        self.retarget(&m);
+        self.model = Some(m.clone());
+        app.header_model(&m, self.effort_label.as_deref());
+        app.model = Some(m.clone());
+        let backend = self.host.registry().get(&m.instance).ok().filter(|i| i.backend.is_some()).map(|i| i.vendor);
+        if let (Some(vendor), Some(t)) = (backend, &self.trust)
+            && !(t.trusted)()
+        {
+            match &t.refuses {
+                Some(why) => app.notice(&format!("{m} runs {vendor}, which is started only in a trusted repository, and {} cannot be trusted for good — {why}. Run `krowk -p --trust` there for one run, or pick an API model with /model.", home_relative(&t.root))),
+                None => {
+                    let runs = krowk_harness::trust::what_runs(&t.root);
+                    let has = if runs.is_empty() { "Nothing of that kind is there now.".to_string() } else { format!("It has {}.", runs.join(", ")) };
+                    let q = format!("{m} runs {vendor}, which runs a repository's own hooks and MCP servers without asking. {has} Trust {}? y trusts it, n or esc does not", home_relative(&t.root));
+                    self.needs_trust = Some((m, q));
+                    if self.held.is_some() {
+                        self.ask_trust(app);
+                    }
+                    return true;
+                }
+            }
+        }
+        self.release(app);
+        true
+    }
+
+    /// Puts the trust question up, and notes when.
+    fn ask_trust(&mut self, app: &mut App) {
+        if let Some((_, q)) = &self.needs_trust {
+            app.trust_question = Some(q.clone());
+            self.trust_shown = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Whether the trust question stands between a prompt and its turn:
+    /// the model is still the routed backend, and its repository still not
+    /// trusted.
+    fn trust_owed(&self) -> bool {
+        match (&self.needs_trust, &self.trust) {
+            (Some((m, _)), Some(t)) => self.model.as_ref() == Some(m) && !(t.trusted)(),
+            _ => false,
+        }
+    }
+
+    /// Sends the prompts held for the route, if there are any. Always
+    /// false: nothing about the probe changes.
+    fn release(&mut self, app: &mut App) -> bool {
+        if let Some(text) = self.held.take() {
+            self.prompt(app, text);
+        }
+        false
+    }
+
+    /// Puts the prompts held back into the editor, unsent: the route
+    /// failed, the trust question was answered no, or Ctrl-C.
+    fn unhold(&mut self, app: &mut App) {
+        if let Some(text) = self.held.take() {
+            let now = app.editor.text().to_string();
+            app.editor.restore(&if now.trim().is_empty() { text } else { format!("{text}\n\n{now}") });
+        }
+    }
+
+    /// Holds `text` until the model is routed and trusted, beside what is
+    /// held already.
+    fn hold(&mut self, app: &mut App, text: String, why: &str) {
+        app.gap_say(why);
+        self.held = Some(match self.held.take() {
+            Some(h) => format!("{h}\n\n{text}"),
+            None => text,
+        });
+    }
+
     fn prompt(&mut self, app: &mut App, text: String) {
+        // Held until the model is routed and, on a backend, the repository
+        // trusted: the turn would otherwise route it again, or be refused.
+        if self.routing.is_some() || self.model_route.is_some() {
+            return self.hold(app, text, "choosing the model… the prompt goes once it is chosen");
+        }
+        if app.trust_question.is_some() || self.trust_owed() {
+            self.hold(app, text, "the prompt goes once the trust question is answered");
+            if app.trust_question.is_none() {
+                self.ask_trust(app);
+            }
+            return;
+        }
         self.last_prompt = text.clone();
         app.offer = None;
         let (tx, rx) = mpsc::channel(1024);
@@ -848,6 +1071,35 @@ impl<'h> Ui<'h> {
                 _ => {}
             }
         }
+        // The trust question for a routed backend. It is answered by one
+        // key on an empty prompt once it has been up for APPROVAL_SETTLE:
+        // `y` trusts the repository and sends what was held; `n` or Esc
+        // does not, and puts it back in the prompt, to be asked again on
+        // the next send. Any other key — and any key typed ahead, before
+        // the settle or onto text in the prompt — is no answer, and goes to
+        // the prompt as it would.
+        if app.trust_question.is_some() && !ctrl && !alt && app.editor.is_empty() && self.trust_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE) {
+            match k.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    app.trust_question = None;
+                    self.needs_trust = None;
+                    if let Some(t) = &self.trust
+                        && let Some(e) = (t.accept)()
+                    {
+                        app.notice(&e);
+                    }
+                    self.release(app);
+                    return false;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    app.trust_question = None;
+                    app.notice("not trusted, so nothing ran — send the prompt again to be asked again, or pick an API model with /model");
+                    self.unhold(app);
+                    return false;
+                }
+                _ => {}
+            }
+        }
         // A limit's offer (R-INST-7): one keystroke, y, and never taken
         // silently — anything else declines it, and a key that is not an
         // answer still does what it does.
@@ -991,6 +1243,12 @@ impl<'h> Ui<'h> {
                     self.interrupt(app).await;
                 } else if !app.editor.is_empty() {
                     app.editor.clear();
+                } else if self.held.is_some() || app.trust_question.is_some() {
+                    // What is waiting on the route or the trust question
+                    // comes back unsent; a second Ctrl-C then quits.
+                    app.trust_question = None;
+                    self.unhold(app);
+                    app.notice("not sent — it is back in the prompt");
                 } else {
                     app.quit = true;
                 }
@@ -1096,9 +1354,20 @@ impl<'h> Ui<'h> {
             }
             t if t.starts_with("/model ") => {
                 app.editor.clear();
-                match self.host.registry().parse_model(&t["/model ".len()..]) {
-                    Ok(m) => {
-                        self.switch(app, m).await;
+                // A bare id stays on the session's instance when that can
+                // run it, else goes to the one instance ready here that
+                // can; with several, the refusal lists them. The session's
+                // instance is one it ran on, or the person named — never
+                // one routed for it, which would make krowk's pick the
+                // tie-break it refuses to make.
+                let current = self.chosen.clone().or_else(|| app.session_id.as_ref().and(app.model.clone()));
+                let cwd = self.runs_in.clone();
+                // Routed as the loop goes on: its vendors' checks never hold
+                // up keys, signals or a resize.
+                match self.host.registry().read_model(&t["/model ".len()..]) {
+                    Ok(asked) => {
+                        let host = self.host;
+                        self.model_route = Some(Box::pin(async move { host.route_model(Some(&asked), current.as_ref(), &cwd).await }));
                     }
                     Err(e) => app.notice(&format!("/model: {e}")),
                 }

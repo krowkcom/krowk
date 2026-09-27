@@ -10,6 +10,7 @@ use krowk_harness::headless::{self, OutputFormat};
 use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{self, Registry};
 use krowk_harness::log;
+use krowk_harness::readiness;
 use krowk_harness::evidence::{PublishRequest, Publisher};
 use krowk_harness::permissions;
 use krowk_harness::protocol::{BudgetLimits, Effort, PermissionMode, TurnStatus, Usage};
@@ -32,10 +33,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     let config = config_json()?;
     let registry = Registry::resolve(&instances_from(&config)?, ctx.io.env);
     registry.check_rollover().map_err(|e| fail("bad_config", e))?;
-    let model = match ctx.f.model.as_str() {
-        "" => None,
-        m => Some(registry.parse_model(m).map_err(|e| fail("bad_flag", format!("--model: {e}")))?),
-    };
+    let asked = model_flag(ctx, &registry)?;
     let sessions_dir = log::sessions_dir(ctx.io.env)
         .ok_or_else(|| fail("store_unavailable", "no home directory in environment: set HOME (or XDG_DATA_HOME to an absolute path) so sessions have a place to live"))?;
     let resume = match ctx.f.resume.as_str() {
@@ -54,7 +52,6 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
             _ => None,
         })
     });
-    let vendor = vendor_of(model.clone().or(session_model).or_else(|| registry.default_model().ok()).as_ref(), &registry);
     // R-PERM-1: a repository's own allow rules, directories and hooks count
     // once it is trusted — the same list, and the same --trust, as a
     // backend's. Headless, nobody answers an approval: what would be asked
@@ -62,13 +59,20 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
     let store = trust::Store::new(krowk_api::creds::config_dir().join(trust::FILE), home.clone());
     let flag_trust = ctx.f.trust;
-    let permissions = permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| flag_trust || store.trusts(root)), false);
     let session_cwd = resume.as_ref().and_then(|id| log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)).ok()).and_then(|events| {
         events.first().and_then(|e| match &e.body {
             krowk_harness::protocol::LogBody::SessionStarted { cwd, .. } => Some(std::path::PathBuf::from(cwd)),
             _ => None,
         })
     });
+    // A bare --model, or none on a session with no model yet, is routed to
+    // an instance ready here now — before the trust prompt, which names the
+    // vendor it runs.
+    let runs_in = session_cwd.clone().unwrap_or_else(|| cwd.clone());
+    let trusted = flag_trust || store.trusts(&trust::root(&runs_in));
+    let model = route(ctx, &registry, asked.as_ref(), session_model.as_ref(), &runs_in, trusted)?;
+    let vendor = vendor_of(model.clone().or(session_model).as_ref(), &registry);
+    let permissions = permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| flag_trust || store.trusts(root)), false);
     let (permission_mode, notices) = resolve_mode(flag_mode, &permissions, session_cwd.as_deref().unwrap_or(&cwd))?;
     for n in notices {
         let _ = writeln!(ctx.io.stderr, "! {n}");
@@ -111,6 +115,37 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         }
         _ => Ok(()),
     }
+}
+
+/// `--model`, read: an instance and a model, or a bare id to route.
+pub(super) fn model_flag(ctx: &Ctx, registry: &Registry) -> Result<Option<instances::Asked>, Error> {
+    match ctx.f.model.as_str() {
+        "" => Ok(None),
+        m => registry.read_model(m).map(Some).map_err(|e| fail("bad_flag", format!("--model: {e}"))),
+    }
+}
+
+/// The model a turn is asked for, routed (`readiness::route`): `--model`
+/// as given when it names its instance, a bare one on an instance ready
+/// here — the session's own first — and, with no `--model` on a session
+/// that has no model yet, the default. None: the session keeps its model.
+/// The vendors are asked in the session's directory when its repository
+/// is trusted already (`trusted`: `--trust`, or remembered), so the turn's
+/// own check before it starts is answered from the cache; else in krowk's
+/// own directory, and no trust question is asked for routing.
+pub(super) fn route(ctx: &Ctx, registry: &Registry, asked: Option<&instances::Asked>, session_model: Option<&krowk_harness::protocol::ModelRef>, runs_in: &std::path::Path, trusted: bool) -> Result<Option<krowk_harness::protocol::ModelRef>, Error> {
+    if asked.is_none() && session_model.is_some() {
+        return Ok(None);
+    }
+    if let Some(instances::Asked::Exact(m)) = asked {
+        return Ok(Some(m.clone()));
+    }
+    let probe = match runs_in.canonicalize() {
+        Ok(at) if trusted => readiness::Probe::at(at),
+        _ => super::status::neutral_probe(ctx)?,
+    };
+    let listed = agents_config(ctx.io.env).models;
+    readiness::route(registry, asked, session_model, &super::providers::credentials_path(), &probe, &*listed).map(Some).map_err(|e| engine_error(&e.code, &e.message, e.status))
 }
 
 /// `--permission-mode`, when given.
@@ -330,12 +365,15 @@ pub(super) fn ask_trust(store: &trust::Store, root: &std::path::Path, vendor: &s
 /// on (the flag, a resumed session's last, the default), in the directory
 /// it will run in — and the gate then answers from that answer and the
 /// trusted list. A no, or a home directory, is refused when the first
-/// prompt is sent, and the TUI shows why.
+/// prompt is sent, and the TUI shows why. A model known only once the TUI
+/// has routed it is asked about there instead (the returned `TrustAsk`),
+/// and a yes there counts in the gate and the rules the same way.
 ///
 /// A native session is asked the same question when the repository's own
 /// settings would widen what krowk may do there (allow rules, directories,
 /// hooks): the returned `Trusted` is what the permission rules consult.
-pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, registry: &Registry, cwd: &std::path::Path, home: Option<std::path::PathBuf>, widens: bool) -> (trust::Gate, permissions::settings::Trusted) {
+pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, registry: &Registry, cwd: &std::path::Path, home: Option<std::path::PathBuf>, widens: bool) -> (trust::Gate, permissions::settings::Trusted, krowk_tui::TrustAsk) {
+    use std::sync::atomic::{AtomicBool, Ordering};
     let store = trust::Store::new(krowk_api::creds::config_dir().join(trust::FILE), home);
     let backend = model.and_then(|m| registry.get(&m.instance).ok()).is_some_and(|i| i.backend.is_some());
     let asked = trust::root(cwd);
@@ -343,11 +381,23 @@ pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, 
     // The card is drawn on stderr: with that not a terminal it would be a
     // question nobody sees, answered by the next key.
     let seen = std::io::IsTerminal::is_terminal(&std::io::stderr());
-    let accepted = (backend || widens) && seen && !store.trusts(&asked) && store.refuses(&asked).is_none() && ask_trust(&store, &asked, vendor);
-    let (s2, a2) = (store.clone(), asked.clone());
-    let trusted: permissions::settings::Trusted = Arc::new(move |root: &std::path::Path| s2.trusts(root) || (accepted && root == a2));
+    // Yes now, or later in the TUI, when a routed model lands on a backend.
+    let accepted = Arc::new(AtomicBool::new((backend || widens) && seen && !store.trusts(&asked) && store.refuses(&asked).is_none() && ask_trust(&store, &asked, vendor)));
+    let (s2, a2, acc2) = (store.clone(), asked.clone(), accepted.clone());
+    let trusted: permissions::settings::Trusted = Arc::new(move |root: &std::path::Path| s2.trusts(root) || (acc2.load(Ordering::SeqCst) && root == a2));
+    let (s3, a3, acc3) = (store.clone(), asked.clone(), accepted.clone());
+    let (s4, a4, acc4) = (store.clone(), asked.clone(), accepted.clone());
+    let ask = krowk_tui::TrustAsk {
+        root: asked.clone(),
+        trusted: Arc::new(move || s3.trusts(&a3) || acc3.load(Ordering::SeqCst)),
+        refuses: store.refuses(&asked),
+        accept: Arc::new(move || {
+            acc4.store(true, Ordering::SeqCst);
+            s4.trust(&a4).err().map(|e| format!("trusted for this run, but not remembered: {e}"))
+        }),
+    };
     let gate: trust::Gate = Arc::new(move |root: &std::path::Path| {
-        if store.trusts(root) || (accepted && root == asked) {
+        if store.trusts(root) || (accepted.load(Ordering::SeqCst) && root == asked) {
             return Ok(());
         }
         if let Some(why) = store.refuses(root) {
@@ -355,7 +405,7 @@ pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, 
         }
         Err(trust::untrusted(root, "Nothing was run — start krowk again there and answer its trust prompt."))
     });
-    (gate, trusted)
+    (gate, trusted, ask)
 }
 
 /// Prices a model call from the models.dev cache or the embedded snapshot,

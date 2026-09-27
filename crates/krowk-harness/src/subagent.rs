@@ -39,7 +39,7 @@ use crate::catalog::{self, Listed};
 use crate::engine::Events;
 use crate::evidence::Evidence;
 use crate::host::Shared;
-use crate::instances::Registry;
+use crate::instances::{Registry, ALIASES};
 use crate::protocol::{ModelRef, PermissionMode, StreamLine, TurnStatus};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -132,9 +132,6 @@ impl AgentsConfig {
         AgentsConfig { user_dirs: Vec::new(), models: Arc::new(|_| Vec::new()) }
     }
 }
-
-/// Claude Code's model aliases, and the catalog family each names.
-const ALIASES: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
 
 /// The model a subagent runs on. `asked` is the definition's `model`,
 /// `config` the config's `subagents.model`; with neither, the cheaper tier
