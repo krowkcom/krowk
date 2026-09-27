@@ -140,11 +140,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   another kind (`claude`), another account's directory, or another
   instance's key variable (`my-work` and `my_work` would both read
   `$ANTHROPIC_MY_WORK_API_KEY`; name one with `--api-key-env`). A
-  relative `--config-dir` is kept as the absolute directory it means,
-  with any `..` taken out, and a failed sign-in removes only the
-  directory it made — never an account another connection made beside it. Definitions you wrote by hand that share a directory
-  still renew. Connecting
-  an instance that exists renews its login, and `krowk connect claude:work`
+  relative `--config-dir` is kept as the absolute directory it means, with
+  any `..` taken out, and a failed sign-in removes only the directory it
+  made — never an account another connection made beside it. Definitions
+  you wrote by hand that share a directory still renew. Connecting an
+  instance that exists renews its login, and `krowk connect claude:work`
   does it by name. A sign-in that fails writes nothing. **The first
   connection becomes the default model** (`defaultModel` in config.json,
   e.g. `claude:work/claude-opus-5-5`) and says so; later ones leave it

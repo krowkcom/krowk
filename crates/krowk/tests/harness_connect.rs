@@ -405,3 +405,34 @@ fn with_no_home_to_name_it_the_built_in_claude_is_still_the_persons_own_login() 
     assert!(stderr(&out).contains("signs you out of Claude Code itself, in ~/.claude"), "{}", stderr(&out));
     assert_eq!(b.logins("argv auth logout"), 0);
 }
+
+#[test]
+fn a_failed_sign_in_removes_every_parent_it_made_and_stops_at_the_first_it_did_not() {
+    let b = Sandbox::new("walkup");
+    // An empty directory that was there before: removable, so only the
+    // walk's stop keeps it. (krowk's own data directory cannot play this
+    // part: the vendor check makes `readiness` in it first.)
+    let kept = b.root.join("empty");
+    std::fs::create_dir_all(&kept).unwrap();
+    let dir = kept.join("fresh/a/b").display().to_string();
+    let out = b.krowk(&["connect", "anthropic", "--method", "subscription", "--name", "walk", "--config-dir", &dir], &[("FAKE_CLAUDE_LOGIN", "fail")]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(!kept.join("fresh").exists(), "every parent the sign-in made is gone");
+    assert!(kept.is_dir(), "the walk stopped at the outermost one it made");
+}
+
+#[test]
+fn a_hand_written_relative_or_dotdot_config_dir_is_never_made_by_krowk() {
+    let b = Sandbox::new("handwritten");
+    let dots = format!("{}/x/../y", b.root.display());
+    std::fs::create_dir_all(b.config_path().parent().unwrap()).unwrap();
+    std::fs::write(b.config_path(), json!({"instances": {"claude:rel": {"kind": "claude-code", "configDir": "rel/acct"}, "claude:dots": {"kind": "claude-code", "configDir": dots}}}).to_string()).unwrap();
+    for instance in ["claude:rel", "claude:dots"] {
+        let out = b.krowk(&["connect", instance], &[("FAKE_CLAUDE_LOGIN", "fail")]);
+        assert_eq!(out.status.code(), Some(3), "{instance}: {}", stderr(&out));
+    }
+    // Where krowk runs, where the vendor runs, and both readings of `..`.
+    for nothing in [b.root.join("repo/rel"), b.data().join("readiness/rel"), b.root.join("x"), b.root.join("y")] {
+        assert!(!nothing.exists(), "{} was made", nothing.display());
+    }
+}
