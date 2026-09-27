@@ -147,12 +147,44 @@ pub fn own(dir: &Path, m: &std::fs::Metadata) -> Result<(), String> {
 }
 
 /// Whether `p` is the home or inside it, judged by where both really lead
-/// (`..`, symlinks), and regardless of case, as macOS and Windows open them.
+/// (`..`, symlinks, a part that does not exist yet), and regardless of
+/// case, as macOS and Windows open them.
 pub fn holds(home: &Path, p: &Path) -> bool {
     let lower = |q: &Path| PathBuf::from(q.to_string_lossy().to_lowercase());
-    let real = |q: &Path| q.canonicalize().unwrap_or_else(|_| q.to_path_buf());
-    let p = lower(&real(p));
-    p.starts_with(lower(home)) || p.starts_with(lower(&real(home)))
+    let homes = [lower(home), lower(&leads(home))];
+    [lower(&lexical(p)), lower(&leads(p))].iter().any(|q| homes.iter().any(|h| q.starts_with(h)))
+}
+
+/// `.` and `..` taken out by the path's words alone.
+pub fn lexical(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir if out.pop() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Where `p` leads: its nearest part that exists, every symlink followed,
+/// and the rest as written.
+fn leads(p: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = p;
+    loop {
+        if let Ok(real) = at.canonicalize() {
+            return rest.iter().rev().fold(real, |r, n| r.join(n));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(up), Some(name)) => {
+                rest.push(name);
+                at = up;
+            }
+            _ => return lexical(p),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -184,5 +216,52 @@ mod tests {
         assert_eq!(resolve_on(&up, true).unwrap(), PathBuf::from("/Users/ada/.krowk"));
         assert_eq!(resolve_on(&up, false).unwrap_err().code(), "no_home");
         assert_eq!(resolve_on(&env(&[("HOME", "/h"), ("USERPROFILE", "/u")]), true).unwrap(), PathBuf::from("/h/.krowk"));
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("krowk-home-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.canonicalize().unwrap()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_home_is_made_private_and_one_that_is_a_symlink_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch("own");
+        let home = d.join("h");
+        let s = home.display().to_string();
+        let env = move |k: &str| if k == "KROWK_HOME" { s.clone() } else { String::new() };
+        assert_eq!(dir(&env).unwrap(), home);
+        assert_eq!(std::fs::metadata(&home).unwrap().permissions().mode() & 0o777, 0o700);
+        // Loosened by hand: closed again the next time a process looks.
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+        prepare(&home, &env).unwrap();
+        assert_eq!(std::fs::metadata(&home).unwrap().permissions().mode() & 0o777, 0o700);
+        // A symlink in its place leads somewhere else: refused, not followed.
+        let link = d.join("link");
+        std::os::unix::fs::symlink(&home, &link).unwrap();
+        let l = link.display().to_string();
+        let e = dir(&move |k: &str| if k == "KROWK_HOME" { l.clone() } else { String::new() }).unwrap_err();
+        assert!(e.code() == "bad_home" && e.fix().contains("is a symlink"), "{}", e.fix());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_path_is_in_the_home_however_it_is_spelled() {
+        let d = scratch("holds");
+        let home = d.join(".krowk");
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        for inside in [home.join("credentials.json"), home.join("sessions/../credentials.json"), d.join(".KROWK/config.json"), home.clone()] {
+            assert!(holds(&home, &inside), "{}", inside.display());
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&home, d.join("alias")).unwrap();
+            assert!(holds(&home, &d.join("alias/credentials.json")));
+        }
+        assert!(!holds(&home, &d.join("other/credentials.json")));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

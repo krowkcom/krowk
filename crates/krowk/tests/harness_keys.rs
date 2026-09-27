@@ -371,7 +371,8 @@ fn r_cred_1_a_credentials_file_krowk_cannot_read_is_named_without_quoting_it() {
         assert_eq!(row["state"], "unknown", "{row}");
         assert!(row["reason"].as_str().unwrap().contains("credentials.json is not valid (line 1, column"), "{row}");
         let mut outs = vec![b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &[("ANTHROPIC_API_KEY", DECOY)])];
-        for args in [&["status", "--json"][..], &["status"], &["providers", "list", "--json"], &["doctor", "--json"]] {
+        // The registry's commands read the same one file.
+        for args in [&["status", "--json"][..], &["status"], &["providers", "list", "--json"], &["doctor", "--json"], &["whoami"], &["workspaces", "--json"], &["auth", "token"], &["logout"]] {
             outs.push(b.krowk(args, &[]));
         }
         for o in &outs {

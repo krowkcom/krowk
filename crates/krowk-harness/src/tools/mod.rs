@@ -500,17 +500,17 @@ impl Scope {
     /// Whether `p` is, or is inside, one of `secrets` — by where it leads
     /// (`..` taken out by its words, and every symlink followed), against
     /// the secret as named and as it leads, regardless of case: a search
-    /// through `.krowk/../krowk` or a symlinked alias skips it too.
+    /// through `.krowk/../.krowk` or a symlinked alias skips it too.
     pub fn secret(&self, p: &Path) -> bool {
         if self.secrets.is_empty() {
             return false;
         }
         let lower = |p: &Path| PathBuf::from(p.to_string_lossy().to_lowercase());
-        let seen: Vec<PathBuf> = [Some(lexical(p)), real_path(p, 0).ok()].into_iter().flatten().map(|q| lower(&q)).collect();
+        let seen: Vec<PathBuf> = [Some(krowk_api::home::lexical(p)), real_path(p, 0).ok()].into_iter().flatten().map(|q| lower(&q)).collect();
         // The secrets as named and as they lead: `Policy::load` lists both,
         // so a search resolves only the path it is at, once.
         self.secrets.iter().any(|s| {
-            let n = lower(&lexical(s));
+            let n = lower(&krowk_api::home::lexical(s));
             seen.iter().any(|q| q.starts_with(&n))
         })
     }
@@ -542,20 +542,6 @@ impl Scope {
             Reach::Outside(why) => Err(format!("{why}: the file tools reach only inside the working directory and the directories the settings add, unless a person allows it, an allow rule covers it, or krowk runs with `--permission-mode bypassPermissions`")),
         }
     }
-}
-
-/// `.` and `..` taken out of a path by its words alone.
-fn lexical(p: &Path) -> PathBuf {
-    use std::path::Component;
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir if out.pop() => {}
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 /// Where a path leads once every symlink in it is followed, for a path

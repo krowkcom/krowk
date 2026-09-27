@@ -141,11 +141,13 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
         let _ = writeln!(io.stdout, "{VERSION}");
         return exit::OK;
     }
-    // A KROWK_HOME that is not absolute is refused before anything runs:
-    // every file krowk keeps would depend on where it was started. Judged
-    // by the environment alone, so it costs nothing.
-    if let Err(e) = krowk_api::home::resolve(io.env)
-        && e.code() == "bad_home"
+    // A home krowk cannot use — a KROWK_HOME that is not absolute, a
+    // symlink or another user's directory in its place, an older layout
+    // that could not be moved in — is refused before anything runs, rather
+    // than read around. One `lstat` when it is there; none is fine (a
+    // container's anonymous push needs no home).
+    if let Err(e) = krowk_api::home::dir(io.env)
+        && e.code() != "no_home"
     {
         return report(io, &e, format, f.quiet, colour, None);
     }

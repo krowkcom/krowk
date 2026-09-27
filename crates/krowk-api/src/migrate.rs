@@ -199,3 +199,42 @@ fn copy(from: &Path, to: &Path) -> std::io::Result<()> {
     }
     std::fs::set_permissions(to, m.permissions())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn two_krowks_starting_at_once_move_everything_once() {
+        let d = std::env::temp_dir().join(format!("krowk-migrate-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let cfg = d.join(".config/krowk");
+        std::fs::create_dir_all(cfg.join("providers")).unwrap();
+        std::fs::write(cfg.join("config.json"), r#"{"workspace":"ws"}"#).unwrap();
+        std::fs::write(cfg.join("credentials.json"), r#"{"token":"legacy-key","workspace":"ws"}"#).unwrap();
+        std::fs::write(cfg.join("providers/credentials.json"), r#"{"version":1,"keys":{"openai":{"env":"K"}}}"#).unwrap();
+        let home = d.join(".krowk");
+        let h = d.display().to_string();
+        let runs: Vec<_> = (0..2)
+            .map(|_| {
+                let (home, h) = (home.clone(), h.clone());
+                std::thread::spawn(move || {
+                    let env = move |k: &str| if k == "HOME" { h.clone() } else { String::new() };
+                    run(&home, &env)
+                })
+            })
+            .collect();
+        for r in runs {
+            r.join().unwrap().unwrap();
+        }
+        let c: Map<String, Value> = creds::read(&home.join(home::CREDENTIALS)).unwrap();
+        // The single-key file every login wrote before workspaces is normalised.
+        assert_eq!(c["workspaces"]["ws"]["token"], "legacy-key");
+        assert_eq!(c["default"], "ws");
+        assert!(c.get("token").is_none());
+        assert_eq!(c["keys"]["openai"]["env"], "K");
+        assert!(home.join(home::CONFIG).is_file() && !cfg.exists() && !home.with_extension("migrating").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
