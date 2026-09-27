@@ -252,12 +252,13 @@ fn r_cred_1_a_var_and_a_command_reference_resolve_and_one_that_fails_has_no_fall
     assert!(printed(&out).contains("nothing was written") && !printed(&out).contains(SENTINEL), "{}", printed(&out));
     assert!(b.stored()["keys"].get("openrouter").is_none() && b.config()["instances"].get("openrouter").is_none());
     assert_eq!(b.holding(SENTINEL), Vec::<PathBuf>::new());
-    // On a fresh home, not even the credentials directory is left behind.
+    // On a fresh home, nothing is left behind but the home itself.
     let fresh = Sandbox::new("refs-fresh", &m.url);
     std::fs::write(fresh.root.join("pass.fail"), "").unwrap();
     let out = fresh.krowk(&["connect", "openrouter", "--key-ref", "!fake-pass show openrouter"], &[]);
     assert_eq!(out.status.code(), Some(3), "{}", printed(&out));
-    assert!(!fresh.credentials().parent().unwrap().exists(), "providers/ was made by a connection that wrote nothing");
+    let left: Vec<_> = std::fs::read_dir(fresh.credentials().parent().unwrap()).unwrap().flatten().map(|e| e.file_name()).filter(|n| n.to_string_lossy().contains("credentials")).collect();
+    assert!(left.is_empty(), "a connection that wrote nothing left {left:?}");
 }
 
 #[test]

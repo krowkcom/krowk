@@ -439,7 +439,7 @@ fn r_proto_1_steering_an_interrupted_turn_never_read_comes_back_on_its_result() 
 fn r_cred_1_a_stored_keys_command_never_blocks_the_hosts_runtime() {
     let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("keyed")));
     let home = Home::new("keycmd", &m.url);
-    let creds = home.root.join("home/.config/krowk/providers/credentials.json");
+    let creds = home.root.join("home/.krowk/credentials.json");
     std::fs::create_dir_all(creds.parent().unwrap()).unwrap();
     std::fs::write(&creds, serde_json::json!({"version": 1, "keys": {"anthropic": {"command": "sleep 1.5; echo sk-from-command"}}}).to_string()).unwrap();
     let mut cfg = home.config();
