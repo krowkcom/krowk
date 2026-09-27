@@ -252,15 +252,28 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["providers", "remove", ..] => providers::remove(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["status", ..] => status::status(ctx),
-        _ if catalog::catalog(VERSION).leaves().iter().any(|l| p.starts_with(&l.name.split(' ').map(String::from).collect::<Vec<_>>())) => Err(fail(
-            "not_in_build",
-            format!(
-                "`{}` is not in this build — it is the agent build, without `sessions`; install a release, or build with `--features sessions`",
-                clip(p, 2).join(" ")
-            ),
-        )),
+        _ if missing(p) => Err(not_in_build(p)),
         _ => Err(fail("unknown_command", format!("`{}` is not a krowk command — run `krowk --help`", clip(p, 2).join(" ")))),
     }
+}
+
+/// Whether the words name a command the catalog has and this build does
+/// not: `sessions` and `pricing`, in the agent build. Bare or with a
+/// subcommand, typed to run or to `help`.
+fn missing(p: &[String]) -> bool {
+    !cfg!(feature = "sessions") && p.first().is_some_and(|w| w == "sessions" || w == "pricing")
+}
+
+/// A command the catalog names that this build does not have: the agent
+/// build, without `sessions`.
+fn not_in_build(p: &[String]) -> Error {
+    fail(
+        "not_in_build",
+        format!(
+            "`{}` is not in this build — it is the agent build, without `sessions`; install a release, or build with `--features sessions`",
+            clip(p, 2).join(" ")
+        ),
+    )
 }
 
 fn clip(s: &[String], n: usize) -> &[String] {
@@ -269,28 +282,43 @@ fn clip(s: &[String], n: usize) -> &[String] {
 
 fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
     let c = catalog::catalog(VERSION);
+    let human = ctx.format != Format::Json;
     if topic.is_empty() {
-        if ctx.format == Format::Json {
+        if !human {
             return ctx.emit(&output::encode(&c));
         }
-        let text = help::help(
-            &c,
-            &krowk_api::creds::credentials_path().display().to_string(),
-            &crate::config::global_path().display().to_string(),
-        );
+        let text = help::help(&c, ctx.f.all);
         let _ = writeln!(ctx.io.stdout, "{text}");
         return Ok(());
     }
-    let Some(cmd) = c.find(topic) else {
+    if missing(topic) {
+        return Err(not_in_build(topic));
+    }
+    if let Some(cmd) = c.find(topic) {
+        if !human {
+            return ctx.emit(&output::encode(&cmd));
+        }
+        let _ = writeln!(ctx.io.stdout, "{}", help::command_help(&cmd, &c.global_flags[..catalog::CORE_FLAGS]));
+        return Ok(());
+    }
+    let (credentials, config) = (krowk_api::creds::credentials_path(), crate::config::global_path());
+    let files = help::Files { credentials: &credentials.display().to_string(), config: &config.display().to_string() };
+    let page = match topic[0].as_str() {
+        "topics" if topic.len() == 1 => Some(help::topics()),
+        name if topic.len() == 1 => help::topic(name, &c, &files),
+        _ => None,
+    };
+    let Some(page) = page else {
         return Err(fail(
             "unknown_command",
-            format!("`{}` is not a krowk command — run `krowk help` for the list", clip(topic, 2).join(" ")),
+            format!("`{}` is not a krowk command or help topic — run `krowk help` for the list", clip(topic, 2).join(" ")),
         ));
     };
-    if ctx.format == Format::Json {
-        return ctx.emit(&output::encode(&cmd));
+    // A topic is prose, so its JSON is the prose as one string.
+    if !human {
+        return ctx.emit(&output::encode(&page));
     }
-    let _ = writeln!(ctx.io.stdout, "{}", help::command_help(&cmd, &c.global_flags));
+    let _ = writeln!(ctx.io.stdout, "{page}");
     Ok(())
 }
 
@@ -330,6 +358,13 @@ fn filter_has_something_to_read(filtering: bool, f: &Flags, p: &[String]) -> Res
     ))
 }
 
+/// Who takes `--all`: `help` (handled before this check), and `sessions` in
+/// the builds that have it.
+#[cfg(feature = "sessions")]
+const ALL_OWNERS: &str = "`krowk sessions` and `krowk help`";
+#[cfg(not(feature = "sessions"))]
+const ALL_OWNERS: &str = "`krowk help`";
+
 /// Each sessions flag is refused anywhere it does not belong: a flag that
 /// means nothing where it was typed was misunderstood by whoever typed it.
 fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error> {
@@ -346,7 +381,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         ("from", "`krowk sessions import`", import),
         ("harness", "`krowk sessions`", list),
         ("worktree", "`krowk sessions`", list),
-        ("all", "`krowk sessions`", list),
+        ("all", ALL_OWNERS, list),
         ("thinking", "`krowk sessions show`", show),
         ("yes", "`krowk sessions rebuild`", rebuild),
         ("no-network", "`krowk sessions sync`", sync),
