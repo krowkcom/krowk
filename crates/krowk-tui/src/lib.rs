@@ -1660,18 +1660,22 @@ impl<'h> Ui<'h> {
         if app.overlay == Overlay::Connect {
             app.overlay = Overlay::None;
         }
-        // Only a connection or a sign-out that happened changes anything: a
-        // cancelled or failed one leaves the instances, and every session's
-        // running process, as they were. Of those, only the instance it
-        // names has its process replaced.
+        // Only a connection or a sign-out that happened replaces a process,
+        // and only the one of the instance it names: a cancelled or failed
+        // flow leaves every session's running process as it was. The
+        // instances are taken as the files now say either way — a connect
+        // that failed after it wrote its definition or key has still
+        // written them.
         let changed = match &done {
             Ok(connect::Done::Connected(c)) => Some(c.instance.clone()),
             Ok(connect::Done::Disconnected(d)) => Some(d.instance.clone()),
             Err(_) => None,
         };
-        if let (Some(r), Some(changed)) = (registry, &changed) {
+        if let Some(r) = registry {
             app.vendor_instances = r.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
-            self.host.set_registry(r, Some(changed));
+            self.host.set_registry(r, changed.as_deref());
+        }
+        if changed.is_some() {
             // Whatever was marked before may have changed, a check still
             // out included: its answers are dropped with it.
             app.marks.clear();
