@@ -35,7 +35,7 @@ unit = "bytes"
 # new `auth logout` and the words that point a provider at `krowk connect`)
 # adds 7,648 bytes: 3,953,024 (3.77 MiB).
 # Provider auth 06 (the short `krowk --help`: the 217-line overview's prose
-# moved into command pages and topics) takes 1,360 off: 3,951,664.
+# moved into command pages and topics) takes 1,280 off: 3,951,744.
 max = { x86_64-linux = 4_194_304 }
 status = "enforced"
 
