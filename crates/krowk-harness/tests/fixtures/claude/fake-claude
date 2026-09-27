@@ -31,7 +31,13 @@
 #   @grandchild        starts a background `sleep`, as a Bash tool call
 #                      would, and logs its pid; `@grandchild-holding` leaves
 #                      it holding stdout open, as a careless one does
-# The turn ends with the scenario's own `result` line.
+#   @begin             prints `system/init` again, as Claude Code does when
+#                      it begins a turn — one of its own, inside or after
+#                      another
+# The turn ends with the scenario's own `result` line. A section whose first
+# line is `@by-itself` plays as soon as the one before it ends, with no
+# user line from krowk: what Claude Code does between turns, while a
+# background agent runs and when it begins a turn to answer it.
 #
 # `--resume <id>` needs the session's transcript in this config directory
 # (`projects/<cwd slug>/<id>.jsonl`, where each turn's prompt is appended),
@@ -209,9 +215,13 @@ await_interrupt() {
   done
 }
 
+init() {
+  emit '{"type":"system","subtype":"init","cwd":"{{CWD}}","session_id":"{{SESSION}}","tools":["Read","Edit","Bash","mcp__krowk__session_info"],"mcp_servers":[{"name":"krowk","status":"connected","source":"sdk"}],"model":"{{MODEL}}","permissionMode":"'$PMODE'","apiKeySource":"'$SOURCE'","claude_code_version":"2.1.280","capabilities":["interrupt_receipt_v1"]}'
+}
+
 turn() {
   mkdir -p "$(dirname "$TRANSCRIPT")" && printf '%s\n' "$1" >>"$TRANSCRIPT"
-  emit '{"type":"system","subtype":"init","cwd":"{{CWD}}","session_id":"{{SESSION}}","tools":["Read","Edit","Bash","mcp__krowk__session_info"],"mcp_servers":[{"name":"krowk","status":"connected","source":"sdk"}],"model":"{{MODEL}}","permissionMode":"'$PMODE'","apiKeySource":"'$SOURCE'","claude_code_version":"2.1.280","capabilities":["interrupt_receipt_v1"]}'
+  init
   if [ ! -f "$DIR/fake-login" ] && [ "$SOURCE" = none ]; then
     emit '{"type":"assistant","message":{"id":"msg_login","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Not logged in · Please run /login"}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}'
     emit '{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login","session_id":"{{SESSION}}"}'
@@ -222,6 +232,11 @@ turn() {
     emit '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"{{SESSION}}"}'
     return
   fi
+  play
+}
+
+# The scenario's lines up to the next `---`.
+play() {
   while [ $POS -lt ${#LINES[@]} ]; do
     local l="${LINES[$POS]}"
     POS=$((POS + 1))
@@ -241,6 +256,7 @@ turn() {
       fi
       ;;
     '@mode '*) PMODE="${l#@mode }"; log "mode now $PMODE" ;;
+    @begin) init ;;
     @grandchild)
       sleep 300 >/dev/null 2>&1 </dev/null &
       log "grandchild $!"
@@ -257,6 +273,13 @@ turn() {
 while readline; do
   case "$LINE" in
   '{"type":"control_request"'*) control "$LINE" || true ;;
-  '{"type":"user"'*) turn "$LINE" ;;
+  '{"type":"user"'*)
+    turn "$LINE"
+    while [ $POS -lt ${#LINES[@]} ] && [ "${LINES[$POS]}" = @by-itself ]; do
+      POS=$((POS + 1))
+      log "by-itself"
+      play
+    done
+    ;;
   esac
 done

@@ -50,7 +50,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::Duration;
 use term::Term;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::Instant;
 
 /// The shortest time between two frames: 60 per second at most (R-PERF-4),
@@ -215,7 +215,7 @@ async fn session(opts: Options) -> Outcome {
         Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("the terminal could not be drawn on: {e}")) },
     };
     let host = Host::new(opts.host);
-    let mut ui = Ui { host: &host, model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
+    let mut ui = Ui { host: &host, watch: host.watch(), model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
@@ -242,6 +242,9 @@ async fn session(opts: Options) -> Outcome {
 
 struct Ui<'h> {
     host: &'h Host,
+    /// What the host says between turns: a backend's agents, and a turn it
+    /// began by itself, which the TUI runs (`continue`).
+    watch: broadcast::Receiver<StreamLine>,
     model: Option<ModelRef>,
     permission_mode: PermissionMode,
     toolset: Option<String>,
@@ -433,6 +436,18 @@ async fn recv(rx: &mut Option<mpsc::Receiver<StreamLine>>) -> StreamLine {
     }
 }
 
+/// The next frame the host sent between turns; one missed while the loop
+/// was busy is only a list that a later frame repeats whole.
+async fn watched(rx: &mut broadcast::Receiver<StreamLine>) -> StreamLine {
+    loop {
+        match rx.recv().await {
+            Ok(l) => return l,
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
+        }
+    }
+}
+
 async fn finish<F: Future + Unpin>(f: &mut Option<F>) -> F::Output {
     match f {
         Some(f) => f.await,
@@ -503,6 +518,10 @@ impl<'h> Ui<'h> {
                     self.follow(app);
                     self.flush_requests(app).await;
                 }
+                line = watched(&mut self.watch) => {
+                    app.on_line(&line);
+                    self.go_on(app);
+                }
                 r = finish(&mut self.turn) => {
                     self.turn = None;
                     // What the host sent before answering is already queued.
@@ -527,7 +546,11 @@ impl<'h> Ui<'h> {
                         Err(e) => e.code == "network_unreachable",
                     };
                     let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
-                    if let Err(e) = r {
+                    // A `continue` whose turn a prompt already ran is no
+                    // news.
+                    if let Err(e) = r
+                        && e.code != "nothing_pending"
+                    {
                         app.error(&e.info());
                     }
                     if network && probe.is_none() {
@@ -549,6 +572,7 @@ impl<'h> Ui<'h> {
                             app.notice("the steering this turn never read is back in the prompt");
                         }
                     }
+                    self.go_on(app);
                 }
                 ok = finish(&mut probe) => {
                     probe = None;
@@ -695,6 +719,20 @@ impl<'h> Ui<'h> {
         let (tx, rx) = mpsc::channel(1024);
         let cmd = Command::Prompt { session_id: app.session_id.clone(), text, model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
         self.turn = Some(Box::pin(self.host.execute(cmd, tx)));
+        self.rx = Some(rx);
+        app.start_turn(std::time::Instant::now());
+    }
+
+    /// A turn the backend began by itself runs as soon as none of the
+    /// TUI's own does. A prompt sent first runs it ahead of itself, and a
+    /// `continue` left over is then refused quietly (`nothing_pending`).
+    fn go_on(&mut self, app: &mut App) {
+        if self.turn.is_some() || !std::mem::take(&mut app.unprompted) {
+            return;
+        }
+        let Some(session_id) = app.session_id.clone() else { return };
+        let (tx, rx) = mpsc::channel(1024);
+        self.turn = Some(Box::pin(self.host.execute(Command::Continue { session_id, budget: self.budget }, tx)));
         self.rx = Some(rx);
         app.start_turn(std::time::Instant::now());
     }

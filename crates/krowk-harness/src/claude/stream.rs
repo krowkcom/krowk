@@ -19,8 +19,9 @@
 //! own conversation, which Claude Code keeps; the turn logs the `Task` call
 //! and its result. What each of the subagent's calls cost is still the
 //! session's spend, so the usage of its `assistant` messages is reported,
-//! once per message, as `SubagentResponse`. `result` ends the turn, with
-//! Claude Code's own `total_cost_usd` for it.
+//! once per message, as `SubagentResponse` — by a `Meter` the process
+//! keeps, since a background agent's calls go on between turns. `result`
+//! ends the turn, with Claude Code's own `total_cost_usd` for it.
 
 use crate::anthropic::stream::Decoder;
 use crate::engine::{EngineError, EngineEvent};
@@ -57,6 +58,9 @@ pub struct Outcome {
     pub session_id: String,
     /// The HTTP status of an API failure, when Claude Code reports one.
     pub api_status: Option<u16>,
+    /// The result closes a turn Claude Code began by itself (its `origin`,
+    /// e.g. `task-notification`), not the one krowk prompted.
+    pub unprompted: bool,
 }
 
 struct SubagentMessage {
@@ -99,16 +103,8 @@ pub struct Translator {
     held: Vec<EngineEvent>,
     pub init: Option<Init>,
     pub outcome: Option<Outcome>,
-    /// Each subagent message seen, in the order first seen: its model, the
-    /// latest usage Claude Code sent for it, and how much of that has been
-    /// reported. Claude Code sends one `assistant` line per content block,
-    /// each with the message's usage so far, and parallel `Task`s
-    /// interleave theirs, so what is reported is the growth since the last
-    /// report — when another message's line arrives, and at the end — and
-    /// no message is ever counted twice.
-    subagents: Vec<SubagentMessage>,
-    /// The message the last subagent line was for.
-    subagent_at: Option<usize>,
+    /// The subagents' calls: the process's, lent to the turn.
+    pub meter: Meter,
     /// What Claude Code last said of the account's rate limit.
     pub limit: Option<LimitStatus>,
 }
@@ -151,25 +147,8 @@ impl Translator {
     pub fn apply(&mut self, msg: &Value) -> Result<Vec<EngineEvent>, EngineError> {
         let mut out = Vec::new();
         if msg.get("parent_tool_use_id").is_some_and(|p| !p.is_null()) {
-            if str_of(msg, "type") == "assistant"
-                && let Some(m) = msg.get("message")
-                && let Some(u) = m.get("usage")
-            {
-                let id = str_of(m, "id").to_string();
-                let at = match self.subagents.iter().position(|s| s.id == id && !id.is_empty()) {
-                    Some(at) => at,
-                    None => {
-                        self.subagents.push(SubagentMessage { id, model: String::new(), latest: Usage::default(), reported: Usage::default() });
-                        self.subagents.len() - 1
-                    }
-                };
-                if let Some(prev) = self.subagent_at.filter(|p| *p != at) {
-                    self.report_subagent(prev, &mut out);
-                }
-                let sm = &mut self.subagents[at];
-                sm.model = str_of(m, "model").into();
-                sm.latest = usage(u);
-                self.subagent_at = Some(at);
+            if str_of(msg, "type") == "assistant" {
+                self.meter.see(msg, Some(&mut out));
             }
             return Ok(out);
         }
@@ -203,6 +182,7 @@ impl Translator {
                     errors: msg.get("errors").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default(),
                     session_id: str_of(msg, "session_id").into(),
                     api_status: msg.get("api_error_status").and_then(Value::as_u64).and_then(|s| u16::try_from(s).ok()),
+                    unprompted: msg.get("origin").is_some_and(|o| !o.is_null()),
                 });
             }
             // How near the account is to its plan's limit (R-INST-6): shown
@@ -294,15 +274,66 @@ impl Translator {
         self.close_stream(out);
         self.close_whole(out);
         out.append(&mut self.held);
-        for at in 0..self.subagents.len() {
-            self.report_subagent(at, out);
+        self.meter.report_all(out);
+    }
+}
+
+/// What Claude Code's subagents' calls have cost, kept for the process
+/// rather than a turn: a background agent's messages go on between turns
+/// and into the next one, and a message counted in one turn is not counted
+/// again in the next.
+///
+/// Each subagent message seen, in the order first seen: its model, the
+/// latest usage Claude Code sent for it, and how much of that has been
+/// reported. Claude Code sends one `assistant` line per content block, each
+/// with the message's usage so far, and parallel agents interleave theirs,
+/// so what is reported is the growth since the last report — when another
+/// message's line arrives, and at a turn's end — and no message is ever
+/// counted twice.
+#[derive(Default)]
+pub struct Meter {
+    subagents: Vec<SubagentMessage>,
+    /// The message the last subagent line was for.
+    at: Option<usize>,
+}
+
+impl Meter {
+    /// A subagent's `assistant` line. In a turn (`out`) the message before
+    /// it, when it was another, is reported; between turns nothing is —
+    /// there is no turn to log it in — and the next turn reports it.
+    pub fn see(&mut self, msg: &Value, out: Option<&mut Vec<EngineEvent>>) {
+        let Some(m) = msg.get("message") else { return };
+        let Some(u) = m.get("usage") else { return };
+        let id = str_of(m, "id").to_string();
+        let at = match self.subagents.iter().position(|s| s.id == id && !id.is_empty()) {
+            Some(at) => at,
+            None => {
+                self.subagents.push(SubagentMessage { id, model: String::new(), latest: Usage::default(), reported: Usage::default() });
+                self.subagents.len() - 1
+            }
+        };
+        if let Some(out) = out
+            && let Some(prev) = self.at.filter(|p| *p != at)
+        {
+            self.report(prev, out);
         }
-        self.subagent_at = None;
+        let sm = &mut self.subagents[at];
+        sm.model = str_of(m, "model").into();
+        sm.latest = usage(u);
+        self.at = Some(at);
+    }
+
+    /// Reports what every message has grown by since it was last reported.
+    pub fn report_all(&mut self, out: &mut Vec<EngineEvent>) {
+        for at in 0..self.subagents.len() {
+            self.report(at, out);
+        }
+        self.at = None;
     }
 
     /// Reports what a subagent message has grown by since it was last
     /// reported, if anything.
-    fn report_subagent(&mut self, at: usize, out: &mut Vec<EngineEvent>) {
+    fn report(&mut self, at: usize, out: &mut Vec<EngineEvent>) {
         let sm = &mut self.subagents[at];
         let more = growth(&sm.latest, &sm.reported);
         if more == Usage::default() {

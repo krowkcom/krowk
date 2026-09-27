@@ -31,6 +31,21 @@
 //! | `interrupt` | krowk → claude | a `Command::Interrupt`; the turn ends at the next `result` and the process lives on |
 //! | `set_model` | krowk → claude | a turn on another model of the same instance, when `initialize` listed models; otherwise a new process on `--resume` |
 //!
+//! **Between turns** the process is not silent: an agent the model started
+//! with Claude Code's `Agent` tool (`run_in_background`) runs on, asks
+//! `can_use_tool`, and when it finishes Claude Code begins a turn by itself
+//! to answer it — a `system`/`init` with no prompt, whose `result` carries
+//! `origin`. One task reads stdout for the life of the process, and between
+//! turns an idle loop holds it: it answers what Claude Code asks under the
+//! last turn's permissions (nobody is there to be asked), keeps the list of
+//! agents (`system` `task_started`, `task_updated`, `task_notification`,
+//! `background_tasks_changed`), meters their calls, and stops at the first
+//! line of a turn Claude Code began, which then waits — `pending`, and
+//! `turn.unprompted` to the host's watchers — until the host runs it as a
+//! turn of the session (`Command::Continue`). A prompt never ends at such a
+//! turn's `result`: the host runs a waiting one first, and one that begins
+//! after the prompt was sent is folded into the prompt's turn.
+//!
 //! Features are detected, never assumed from a version number: the
 //! capabilities `system`/`init` announces (`interrupt_receipt_v1` — an
 //! interrupt is acknowledged, so an unacknowledged one is given up on
@@ -63,18 +78,20 @@ pub mod auth;
 pub mod stream;
 
 use crate::bridge::{self, BridgeEnv};
-use crate::engine::{cancelled, BoxFuture, Engine, EngineError, EngineEvent, Events, TurnContext, TurnEnd};
+use crate::engine::{cancelled, BoxFuture, Engine, EngineError, EngineEvent, Events, Idle, TurnContext, TurnEnd};
 use crate::instances::{Backend, Resolved};
 use crate::permissions::{self, Access, Call, Gate, Verdict};
-use crate::protocol::{Billing, Effort, Item, ModelRef, PermissionMode, ToolDefinition, WireApi};
+use crate::protocol::{BackendAgent, Billing, Effort, Item, ItemKind, ModelRef, PermissionMode, ToolDefinition, WireApi};
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use stream::{Init, Translator};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use stream::{Init, Meter, Translator};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin};
+use tokio::sync::{mpsc, oneshot};
 
 /// The binary a `claude-code` instance runs when its definition names none.
 pub const BINARY: &str = "claude";
@@ -98,6 +115,24 @@ const STDERR_TAIL: usize = 4096;
 /// What a turn's context record says of the system prompt: it is Claude
 /// Code's, and krowk neither sees nor changes it.
 pub const SYSTEM_NOTE: &str = "(Claude Code's own system prompt: krowk sends none and does not see it)";
+
+/// What the prompt item of a turn Claude Code began by itself starts
+/// with: clients show it as krowk's note, not the person's words.
+pub const UNPROMPTED: &str = "<unprompted>";
+
+/// The prompt item of a turn Claude Code began by itself: why it began.
+pub fn unprompted(reason: &str) -> String {
+    format!("{UNPROMPTED}Claude Code began this turn by itself: {reason}. krowk sent no prompt.</unprompted>")
+}
+
+/// A turn Claude Code began by itself that ended inside a prompted one: the
+/// note the log holds where it ended, before the prompt's own answer.
+pub fn folded(reason: &str) -> String {
+    format!("{UNPROMPTED}What came before this was a turn Claude Code began by itself: {reason}. The prompt's own answer follows.</unprompted>")
+}
+
+/// Why a turn began by itself, when no agent's end says so.
+const BEGAN: &str = "it did not say why";
 
 /// The launch settings a process is bound to. A turn that needs others —
 /// plan mode, another effort, or another model where `set_model` is not
@@ -298,7 +333,55 @@ pub fn environment(b: &Backend) -> (Vec<&'static str>, Vec<(String, String)>) {
 pub struct ClaudeEngine {
     instance: Resolved,
     krowk_version: String,
-    proc: tokio::sync::Mutex<Option<Proc>>,
+    /// The process: a turn's while one runs, the idle loop's between turns.
+    proc: Arc<tokio::sync::Mutex<Option<Proc>>>,
+    /// The idle loop reading the process between turns, and its stop.
+    idle: Mutex<Option<Idling>>,
+    /// Its agents and a turn it began, readable without the process's lock.
+    status: Arc<Status>,
+    /// Where between-turn news goes; none, and nobody is told.
+    tell: Option<Idle>,
+}
+
+struct Idling {
+    stop: oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// What the process is doing that no turn is: the agents it runs, and the
+/// turn it began by itself, waiting (why it began).
+#[derive(Default)]
+struct Status {
+    agents: Mutex<Vec<Tracked>>,
+    pending: Mutex<Option<String>>,
+}
+
+#[derive(Debug, Clone)]
+struct Tracked {
+    agent: BackendAgent,
+    /// Run in the background: it outlives the turn that started it.
+    background: bool,
+}
+
+impl Status {
+    fn agents(&self) -> std::sync::MutexGuard<'_, Vec<Tracked>> {
+        self.agents.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn pending(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The process is gone, and all of it with it: the list, when it had
+    /// any, to report empty.
+    fn clear(&self) -> Option<Vec<BackendAgent>> {
+        *self.pending() = None;
+        let mut a = self.agents();
+        (!a.is_empty()).then(|| {
+            a.clear();
+            Vec::new()
+        })
+    }
 }
 
 impl ClaudeEngine {
@@ -306,11 +389,43 @@ impl ClaudeEngine {
         if instance.backend.is_none() {
             return Err(EngineError::new("bad_config", format!("{} is not a Claude Code instance", instance.name)));
         }
-        Ok(ClaudeEngine { instance, krowk_version: krowk_version.into(), proc: tokio::sync::Mutex::new(None) })
+        Ok(ClaudeEngine { instance, krowk_version: krowk_version.into(), proc: Arc::new(tokio::sync::Mutex::new(None)), idle: Mutex::new(None), status: Arc::default(), tell: None })
+    }
+
+    /// Reports what happens between turns to `tell`.
+    pub fn watched(mut self, tell: Idle) -> ClaudeEngine {
+        self.tell = Some(tell);
+        self
     }
 
     fn backend(&self) -> &Backend {
         self.instance.backend.as_ref().expect("checked in new")
+    }
+
+    /// Stops the idle loop and waits for it to let go of the process.
+    async fn wake(&self) {
+        let idling = self.idle.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(i) = idling {
+            let _ = i.stop.send(());
+            let _ = i.task.await;
+        }
+    }
+
+    /// Hands the process to the idle loop until the next turn.
+    fn rest(&self) {
+        let (stop, rx) = oneshot::channel();
+        let task = tokio::spawn(idle(self.proc.clone(), rx, self.tell.clone()));
+        *self.idle.lock().unwrap_or_else(|e| e.into_inner()) = Some(Idling { stop, task });
+    }
+}
+
+impl Drop for ClaudeEngine {
+    /// The idle loop holds the process too: it goes, so the process is let
+    /// go with the engine's last handle.
+    fn drop(&mut self) {
+        if let Some(i) = self.idle.get_mut().unwrap_or_else(|e| e.into_inner()).take() {
+            i.task.abort();
+        }
     }
 }
 
@@ -325,6 +440,7 @@ impl Engine for ClaudeEngine {
 
     fn run_turn<'a>(&'a self, mut ctx: TurnContext, events: Events) -> BoxFuture<'a, Result<TurnEnd, EngineError>> {
         Box::pin(async move {
+            self.wake().await;
             let mut slot = self.proc.lock().await;
             let want = Launch {
                 model: ctx.model.model.clone(),
@@ -343,6 +459,19 @@ impl Engine for ClaudeEngine {
                 gate: ctx.gate.protecting(self.backend().home.iter().cloned()),
                 evidence: ctx.evidence.clone(),
             };
+            let prompt = match ctx.history.last().map(|h| &h.item) {
+                Some(Item::UserText { text }) => text.clone(),
+                _ => return Err(EngineError::new("empty_prompt", "a backend turn needs the prompt as its last item")),
+            };
+            // A turn Claude Code began runs where it began, whatever the
+            // launch: a new process would not have it.
+            if ctx.unprompted {
+                let Some(p) = slot.as_mut().filter(|p| !p.begun.is_empty()) else {
+                    return Err(EngineError::new("nothing_pending", format!("Claude Code on {} has no turn of its own waiting", self.instance.name)));
+                };
+                let outcome = p.turn(None, &mut ctx, &ask, &events, self.backend(), &self.instance.name).await;
+                return self.settle(slot, outcome, ask, &events).await;
+            }
             // The running process serves this turn when its launch still
             // fits; a model it can switch to in place is switched to.
             let mut resumed = false;
@@ -356,6 +485,11 @@ impl Engine for ClaudeEngine {
                 let fits = p.alive() && mode_fits && p.launch.plan == want.plan && p.launch.effort == want.effort && p.launch.disallowed == want.disallowed;
                 let switched = fits && (p.launch.model == want.model || (p.set_model && p.set_model(&want.model, &ask).await));
                 if !switched && let Some(old) = slot.take() {
+                    // Its agents, and a turn it began, go with it; the
+                    // thread keeps what they did.
+                    if let Some(agents) = self.status.clear() {
+                        let _ = events.send(EngineEvent::BackendAgents { agents }).await;
+                    }
                     old.shutdown().await;
                 }
                 // Kept: it holds the session's thread as far as it has run.
@@ -364,7 +498,7 @@ impl Engine for ClaudeEngine {
             let mut fell_back = None;
             if slot.is_none() {
                 let resume = want.resume.clone();
-                *slot = Some(match Proc::spawn(self.backend(), &ctx.cwd, want.clone(), &ask).await {
+                *slot = Some(match Proc::spawn(self.backend(), &ctx.cwd, want.clone(), &ask, self.status.clone()).await {
                     Ok(p) => {
                         resumed = resume.is_some();
                         p
@@ -375,41 +509,115 @@ impl Engine for ClaudeEngine {
                     // seeded from it (R-SWITCH-4, R-INST-4).
                     Err(e) if resume.is_some() && ctx.handoff.is_some() && e.code != "backend_not_found" => {
                         fell_back = Some(format!("Claude Code on {} could not resume its session {} ({}: {})", self.instance.name, resume.unwrap_or_default(), e.code, e.message));
-                        Proc::spawn(self.backend(), &ctx.cwd, Launch { resume: None, ..want }, &ask).await?
+                        Proc::spawn(self.backend(), &ctx.cwd, Launch { resume: None, ..want }, &ask, self.status.clone()).await?
                     }
                     Err(e) => return Err(e),
                 });
             }
             let p = slot.as_mut().expect("spawned above");
-            let prompt = match ctx.history.last().map(|h| &h.item) {
-                Some(Item::UserText { text }) => text.clone(),
-                _ => return Err(EngineError::new("empty_prompt", "a backend turn needs the prompt as its last item")),
-            };
             // What the thread did not run goes ahead of the prompt, in the
             // same user message (R-SWITCH-2); what was sent is reported.
             let (prompt, handoff) = crate::handoff::Handoff::opening(ctx.handoff.as_ref(), &prompt, resumed, fell_back);
             if let Some(ev) = handoff {
                 let _ = events.send(ev).await;
             }
-            let outcome = p.turn(&prompt, &mut ctx, &ask, &events, self.backend(), &self.instance.name).await;
-            // A process that died, or a turn that failed partway, is not
-            // trusted with the next turn: that one starts clean on --resume.
-            if (outcome.is_err() || !p.alive())
-                && let Some(old) = slot.take()
-            {
-                old.kill().await;
-            }
-            outcome
+            let outcome = p.turn(Some(&prompt), &mut ctx, &ask, &events, self.backend(), &self.instance.name).await;
+            self.settle(slot, outcome, ask, &events).await
         })
     }
 
     fn shutdown(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
+            self.wake().await;
             if let Some(p) = self.proc.lock().await.take() {
                 p.shutdown().await;
             }
         })
     }
+
+    fn pending(&self) -> Option<String> {
+        self.status.pending().clone()
+    }
+
+    fn busy(&self) -> bool {
+        self.status.pending().is_some() || !self.status.agents().is_empty()
+    }
+}
+
+impl ClaudeEngine {
+    /// After a turn: a process that died, or a turn that failed partway, is
+    /// not trusted with the next turn, which starts clean on --resume; one
+    /// that lives on is read between turns, under this turn's permissions.
+    async fn settle(&self, mut slot: tokio::sync::MutexGuard<'_, Option<Proc>>, outcome: Result<TurnEnd, EngineError>, ask: Answers, events: &Events) -> Result<TurnEnd, EngineError> {
+        let Some(p) = slot.as_mut() else { return outcome };
+        if outcome.is_err() || !p.alive() {
+            if let Some(agents) = self.status.clear() {
+                let _ = events.send(EngineEvent::BackendAgents { agents }).await;
+            }
+            if let Some(old) = slot.take() {
+                old.kill().await;
+            }
+            return outcome;
+        }
+        p.answers = Some(Arc::new(ask));
+        drop(slot);
+        self.rest();
+        outcome
+    }
+}
+
+/// Between turns: the process read until the next turn wants it — what
+/// Claude Code asks answered under the last turn's permissions, its agents
+/// kept and metered — or until Claude Code begins a turn by itself, which
+/// then waits for the host.
+async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Receiver<()>, tell: Option<Idle>) {
+    let say = |ev: EngineEvent| {
+        if let Some(t) = &tell {
+            t(ev);
+        }
+    };
+    let mut slot = proc.lock().await;
+    let Some(p) = slot.as_mut().filter(|p| p.begun.is_empty()) else { return };
+    loop {
+        let msg = tokio::select! {
+            biased;
+            _ = &mut stop => return,
+            m = p.out.recv() => m,
+        };
+        let Some(msg) = msg else {
+            // It exited with nobody asking: the next turn starts another.
+            p.exited = true;
+            if let Some(agents) = p.status.clear() {
+                say(EngineEvent::BackendAgents { agents });
+            }
+            return;
+        };
+        match msg["type"].as_str() {
+            Some("control_request") => {
+                let id = msg["request_id"].as_str().unwrap_or_default();
+                let answer = match p.answers.clone() {
+                    Some(ask) => ask.answer(id, &msg["request"], None).await,
+                    None => json!({"type": "control_response", "response": {"subtype": "error", "request_id": id, "error": "krowk has no turn to answer this under"}}),
+                };
+                if p.send(&answer).await.is_err() {
+                    return;
+                }
+            }
+            Some("control_response") => {}
+            _ => {
+                if let Some(agents) = p.track(&msg) {
+                    say(EngineEvent::BackendAgents { agents });
+                }
+                p.idle_line(msg);
+                if !p.begun.is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+    let reason = p.finished.take().unwrap_or_else(|| BEGAN.into());
+    *p.status.pending() = Some(reason.clone());
+    say(EngineEvent::Unprompted { reason });
 }
 
 /// What a control request is answered with: the turn it arrived in.
@@ -488,7 +696,8 @@ impl Answers {
 struct Proc {
     child: Child,
     stdin: Option<ChildStdin>,
-    out: Lines<BufReader<ChildStdout>>,
+    /// Its stdout, a JSON value a line, from the one task that reads it.
+    out: mpsc::Receiver<Value>,
     stderr: Arc<Mutex<String>>,
     binary: String,
     launch: Launch,
@@ -502,6 +711,25 @@ struct Proc {
     mode: String,
     /// The group was stopped and reaped; nothing is left to signal.
     group_done: bool,
+    /// Its agents and a turn it began, shared with the engine.
+    status: Arc<Status>,
+    /// Its subagents' calls, metered across turns.
+    meter: Meter,
+    /// The last turn's permissions: what is asked between turns is
+    /// answered under them.
+    answers: Option<Arc<Answers>>,
+    /// A turn Claude Code began by itself: its lines read so far, `init`
+    /// first. Not empty means it waits.
+    begun: Vec<Value>,
+    /// An `init` read between turns before anything had finished — not a
+    /// turn's start by itself — kept in case what follows is one.
+    held_init: Option<Value>,
+    /// A background agent finished since the last turn: why the turn Claude
+    /// Code begins next begins.
+    finished: Option<String>,
+    /// Background agents `background_tasks_changed` took off the list, for
+    /// the words of their `task_notification`, which comes after it.
+    ended: Vec<BackendAgent>,
 }
 
 /// How long a stopped process group gets between SIGTERM and SIGKILL.
@@ -531,19 +759,17 @@ impl Drop for Proc {
     }
 }
 
-/// The next JSON line, or none at the end of the stream. A line that is not
-/// JSON (a warning a wrapper printed) is skipped.
-async fn next_json(out: &mut Lines<BufReader<ChildStdout>>) -> Option<Value> {
-    loop {
-        match out.next_line().await {
-            Ok(Some(l)) => {
-                if let Ok(v) = serde_json::from_str::<Value>(&l) {
-                    return Some(v);
-                }
-            }
-            _ => return None,
-        }
+/// The next line of a turn: what was read before it began, then stdout.
+async fn next_line(queued: &mut VecDeque<Value>, out: &mut mpsc::Receiver<Value>) -> Option<Value> {
+    match queued.pop_front() {
+        Some(v) => Some(v),
+        None => out.recv().await,
     }
+}
+
+/// Whether a line is of the main conversation, not a subagent's.
+fn main_thread(msg: &Value) -> bool {
+    msg.get("parent_tool_use_id").is_none_or(Value::is_null)
 }
 
 fn tail(s: &str) -> String {
@@ -553,7 +779,7 @@ fn tail(s: &str) -> String {
 }
 
 impl Proc {
-    async fn spawn(b: &Backend, cwd: &Path, launch: Launch, ask: &Answers) -> Result<Proc, EngineError> {
+    async fn spawn(b: &Backend, cwd: &Path, launch: Launch, ask: &Answers, status: Arc<Status>) -> Result<Proc, EngineError> {
         let mut cmd = tokio::process::Command::new(b.path.as_deref().unwrap_or(Path::new(&b.binary)));
         cmd.args(args(&launch, &b.args)).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let (remove, set) = environment(b);
@@ -575,7 +801,21 @@ impl Proc {
         let pid = child.id();
         crate::group::register(pid);
         let stdin = child.stdin.take();
-        let out = BufReader::new(child.stdout.take().expect("piped")).lines();
+        // One reader for the life of the process: between turns too, when
+        // Claude Code goes on without krowk. A line that is not JSON (a
+        // warning a wrapper printed) is skipped; the channel closes at the
+        // end of the stream.
+        let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
+        let (tx, out) = mpsc::channel(64);
+        tokio::spawn(async move {
+            while let Ok(Some(l)) = lines.next_line().await {
+                if let Ok(v) = serde_json::from_str::<Value>(&l)
+                    && tx.send(v).await.is_err()
+                {
+                    break;
+                }
+            }
+        });
         let stderr = Arc::new(Mutex::new(String::new()));
         if let Some(mut err) = child.stderr.take() {
             let keep = stderr.clone();
@@ -594,7 +834,27 @@ impl Proc {
                 }
             });
         }
-        let mut p = Proc { child, stdin, out, stderr, binary: b.binary.clone(), launch, set_model: false, next: 0, exited: false, pid, group_done: false, mode: String::new() };
+        let mut p = Proc {
+            child,
+            stdin,
+            out,
+            stderr,
+            binary: b.binary.clone(),
+            launch,
+            set_model: false,
+            next: 0,
+            exited: false,
+            pid,
+            group_done: false,
+            mode: String::new(),
+            status,
+            meter: Meter::default(),
+            answers: None,
+            begun: Vec::new(),
+            held_init: None,
+            finished: None,
+            ended: Vec::new(),
+        };
         let init = p.request(json!({"subtype": "initialize", "hooks": null}), ask, INITIALIZE_TIMEOUT).await?;
         p.set_model = init.get("models").is_some_and(Value::is_array);
         Ok(p)
@@ -636,7 +896,7 @@ impl Proc {
         self.send(&json!({"type": "control_request", "request_id": id, "request": req})).await?;
         let wait = async {
             loop {
-                let Some(msg) = next_json(&mut self.out).await else { return Err(self.died(&format!("before it answered {subtype}"))) };
+                let Some(msg) = self.out.recv().await else { return Err(self.died(&format!("before it answered {subtype}"))) };
                 match msg["type"].as_str() {
                     Some("control_request") => {
                         let answer = ask.answer(msg["request_id"].as_str().unwrap_or_default(), &msg["request"], None).await;
@@ -649,6 +909,10 @@ impl Proc {
                         }
                         return Ok(r.get("response").cloned().unwrap_or(Value::Null));
                     }
+                    Some("control_response") => {}
+                    // A turn Claude Code began goes on while it answers:
+                    // kept for the turn that reads it.
+                    _ if !self.begun.is_empty() => self.begun.push(msg),
                     _ => {}
                 }
             }
@@ -675,10 +939,34 @@ impl Proc {
         }
     }
 
-    /// Runs one turn: the prompt in, the stream out, until `result`.
-    async fn turn(&mut self, prompt: &str, ctx: &mut TurnContext, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<TurnEnd, EngineError> {
-        self.send(&json!({"type": "user", "message": {"role": "user", "content": prompt}, "parent_tool_use_id": null, "session_id": ""})).await?;
+    /// Runs one turn: the prompt in, the stream out, until `result`. With
+    /// no prompt, the turn Claude Code began by itself, from what was read
+    /// of it between turns.
+    async fn turn(&mut self, prompt: Option<&str>, ctx: &mut TurnContext, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<TurnEnd, EngineError> {
         let mut t = Translator::default();
+        t.meter = std::mem::take(&mut self.meter);
+        let r = self.read_turn(prompt, &mut t, ctx, ask, events, b, instance).await;
+        self.meter = std::mem::take(&mut t.meter);
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn read_turn(&mut self, prompt: Option<&str>, t: &mut Translator, ctx: &mut TurnContext, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<TurnEnd, EngineError> {
+        if let Some(prompt) = prompt {
+            self.send(&json!({"type": "user", "message": {"role": "user", "content": prompt}, "parent_tool_use_id": null, "session_id": ""})).await?;
+        }
+        // A turn Claude Code began is read from where the idle loop left
+        // it. Under a prompt it is the race the host could not see — it
+        // began as the prompt was on its way — and its `result` is not the
+        // prompt's: an `origin` says so, and a binary too old to send one
+        // is taken at its word that one result is owed first.
+        let mut queued: VecDeque<Value> = std::mem::take(&mut self.begun).into();
+        let mut why = self.status.pending().take();
+        let mut owed = u32::from(prompt.is_some() && !queued.is_empty());
+        self.held_init = None;
+        if !queued.is_empty() {
+            self.ended.clear();
+        }
         let mut interrupted = false;
         let mut receipt_required = false;
         let mut receipt: Option<String> = None;
@@ -733,7 +1021,7 @@ impl Proc {
                     let e = self.died("before the turn finished");
                     return if interrupted { Ok(TurnEnd::Interrupted) } else { Err(e) };
                 }
-                msg = next_json(&mut self.out) => {
+                msg = next_line(&mut queued, &mut self.out) => {
                     let Some(msg) = msg else {
                         let mut out = Vec::new();
                         t.finish(&mut out);
@@ -769,6 +1057,9 @@ impl Proc {
                             }
                         }
                         _ => {
+                            if let Some(agents) = self.track(&msg) {
+                                let _ = events.send(EngineEvent::BackendAgents { agents }).await;
+                            }
                             let out = t.apply(&msg)?;
                             forward(events, out).await;
                             if !announced && let Some(init) = t.init.clone() {
@@ -791,6 +1082,16 @@ impl Proc {
                                 announce(events, &init, b, instance).await?;
                             }
                             if let Some(o) = t.outcome.take() {
+                                if prompt.is_some() && (o.unprompted || owed > 0) {
+                                    // Claude Code's own turn ended inside
+                                    // this one: noted, and the prompt's
+                                    // answer read on.
+                                    owed = if o.unprompted { 0 } else { owed - 1 };
+                                    let reason = why.take().or_else(|| self.finished.take()).unwrap_or_else(|| BEGAN.into());
+                                    self.ended.clear();
+                                    note(events, folded(&reason)).await;
+                                    continue;
+                                }
                                 break o;
                             }
                         }
@@ -798,6 +1099,10 @@ impl Proc {
                 }
             }
         };
+        // An agent run in the foreground ends with the turn that ran it.
+        if let Some(agents) = self.drop_foreground() {
+            let _ = events.send(EngineEvent::BackendAgents { agents }).await;
+        }
         if interrupted {
             return Ok(TurnEnd::Interrupted);
         }
@@ -826,6 +1131,99 @@ impl Proc {
             return Err(EngineError::new("not_authenticated", format!("Claude Code is not signed in for the {instance} instance ({said}) — sign in with `{add}`, which runs Claude's own login")).with_status(401));
         }
         Err(EngineError::new("backend_failed", format!("Claude Code could not finish the turn: {said}")).with_status(result.api_status.unwrap_or(0)))
+    }
+
+    /// Keeps the list of agents from Claude Code's `system` lines, and says
+    /// it, whole, when it changed. An agent counts when it is the
+    /// conversation's own (`local_agent`, at the first depth) — not a shell,
+    /// not one a subagent started. It is gone at its `task_notification`,
+    /// at a `task_updated` that finishes it, or — run in the background —
+    /// when `background_tasks_changed` no longer lists it.
+    fn track(&mut self, msg: &Value) -> Option<Vec<BackendAgent>> {
+        if msg["type"] != "system" {
+            return None;
+        }
+        let s = |k: &str| msg.get(k).and_then(Value::as_str).unwrap_or_default();
+        let id = s("task_id");
+        let status = self.status.clone();
+        let mut agents = status.agents();
+        let ids = |a: &[Tracked]| a.iter().map(|t| t.agent.task_id.clone()).collect::<Vec<_>>();
+        let before = ids(&agents);
+        let mut done = None;
+        match s("subtype") {
+            "task_started" => {
+                let own = s("task_type") == "local_agent" && msg["owned_by_subagent"] != true && msg.get("spawn_depth").and_then(Value::as_u64).is_none_or(|d| d <= 1);
+                if own && !id.is_empty() && !agents.iter().any(|t| t.agent.task_id == id) {
+                    let agent = BackendAgent { task_id: id.into(), description: s("description").into(), agent: Some(s("subagent_type").to_string()).filter(|a| !a.is_empty()) };
+                    agents.push(Tracked { agent, background: msg["is_backgrounded"] == true });
+                }
+            }
+            "task_notification" => done = Some(s("status")),
+            "task_updated" => {
+                let st = msg.pointer("/patch/status").and_then(Value::as_str).unwrap_or_default();
+                if !matches!(st, "" | "pending" | "running") {
+                    done = Some(st);
+                }
+            }
+            "background_tasks_changed" => {
+                let listed: Vec<&str> = msg["tasks"].as_array().map(|a| a.iter().filter_map(|t| t["task_id"].as_str()).collect()).unwrap_or_default();
+                let (kept, gone): (Vec<Tracked>, Vec<Tracked>) = agents.drain(..).partition(|t| !t.background || listed.contains(&t.agent.task_id.as_str()));
+                *agents = kept;
+                for t in gone {
+                    self.finished = Some(format!("background agent “{}” finished", t.agent.description));
+                    self.ended.push(t.agent);
+                }
+            }
+            _ => return None,
+        }
+        if let Some(st) = done {
+            let st = if st.is_empty() { "finished" } else { st };
+            let at = agents.iter().position(|t| t.agent.task_id == id);
+            let gone = at.map(|i| agents.remove(i));
+            // Its end in words, for the turn Claude Code begins to answer it.
+            let what = match gone {
+                Some(t) => t.background.then_some(t.agent.description),
+                None => self.ended.iter().find(|a| a.task_id == id).map(|a| a.description.clone()),
+            };
+            if let Some(d) = what {
+                self.finished = Some(format!("background agent “{d}” {st}"));
+            }
+        }
+        (ids(&agents) != before).then(|| agents.iter().map(|t| t.agent.clone()).collect())
+    }
+
+    /// The agents run in the foreground, gone with their turn.
+    fn drop_foreground(&mut self) -> Option<Vec<BackendAgent>> {
+        let mut agents = self.status.agents();
+        let before = agents.len();
+        agents.retain(|t| t.background);
+        (agents.len() != before).then(|| agents.iter().map(|t| t.agent.clone()).collect())
+    }
+
+    /// A line read between turns, after `track`: a subagent's call is
+    /// metered, and a turn Claude Code began by itself is kept, from its
+    /// first line, for the turn that runs it.
+    fn idle_line(&mut self, msg: Value) {
+        if !main_thread(&msg) {
+            if msg["type"] == "assistant" {
+                self.meter.see(&msg, None);
+            }
+            return;
+        }
+        match (msg["type"].as_str().unwrap_or_default(), msg["subtype"].as_str().unwrap_or_default()) {
+            // A turn begins with `init`, and one after an agent finished is
+            // Claude Code answering it. One with nothing finished is kept
+            // aside: Claude Code sends some between turns that no turn
+            // follows.
+            ("system", "init") if self.finished.is_some() => self.begun.push(msg),
+            ("system", "init") => self.held_init = Some(msg),
+            // Whatever began it, the conversation's own lines are a turn.
+            ("stream_event" | "assistant" | "user" | "result", _) => {
+                self.begun.extend(self.held_init.take());
+                self.begun.push(msg);
+            }
+            _ => {}
+        }
     }
 
     /// Stops the whole process group — Claude Code and every shell and
@@ -874,6 +1272,13 @@ async fn forward(events: &Events, out: Vec<EngineEvent>) {
     for ev in out {
         let _ = events.send(ev).await;
     }
+}
+
+/// A note of krowk's in the turn, as a `userText` item.
+async fn note(events: &Events, text: String) {
+    let item_id = krowk_store::new_id();
+    let _ = events.send(EngineEvent::ItemStarted { item_id: item_id.clone(), kind: ItemKind::UserText }).await;
+    let _ = events.send(EngineEvent::ItemCompleted { item_id, item: Item::UserText { text } }).await;
 }
 
 /// The turn's context and the Claude session behind it, from `init`.

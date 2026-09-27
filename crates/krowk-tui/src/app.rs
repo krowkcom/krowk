@@ -15,7 +15,7 @@ use crate::look::{self, SEP};
 use crate::settings::{Item as StatusItem, Settings};
 use krowk_harness::host::Pricer;
 use krowk_harness::protocol::{
-    ApprovalRequest, Billing, Delta, ErrorInfo, HandoffKind, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
+    ApprovalRequest, BackendAgent, Billing, Delta, ErrorInfo, HandoffKind, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
     TurnStatus, Usage,
 };
 use std::collections::BTreeMap;
@@ -355,6 +355,12 @@ pub struct App {
     subs: Vec<Sub>,
     /// The line the Agents overlay has selected.
     pub agent_sel: usize,
+    /// The agents a backend runs by itself (Claude Code's `Agent` tool),
+    /// as it last listed them: counted and listed, never driven from here.
+    backend_agents: Vec<BackendAgent>,
+    /// The backend began a turn by itself (`turn.unprompted`): the client
+    /// runs it with `continue` as soon as no turn of its own runs.
+    pub unprompted: bool,
     /// The todo list, as the log last set it (R-TODO-2).
     todos: Vec<Todo>,
     /// Each instance the session has run on, by name (R-INST-6).
@@ -420,6 +426,8 @@ impl App {
             approval_expanded: false,
             subs: Vec::new(),
             agent_sel: 0,
+            backend_agents: Vec::new(),
+            unprompted: false,
             todos: Vec::new(),
             instances: BTreeMap::new(),
             turn_instance: None,
@@ -732,6 +740,11 @@ impl App {
                 self.on_result(r);
                 self.offer = r.switch_offer.clone();
             }
+            StreamLine::Live(LiveEvent::BackendAgents { agents, .. }) => {
+                self.backend_agents.clone_from(agents);
+                self.dirty = true;
+            }
+            StreamLine::Live(LiveEvent::TurnUnprompted { .. }) => self.unprompted = true,
         }
     }
 
@@ -1040,6 +1053,13 @@ impl App {
                 self.gap();
                 self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled("Reminded the model of its todo list", dim().add_modifier(Modifier::ITALIC))]));
             }
+            // A turn Claude Code began by itself: why, as krowk's note.
+            Item::UserText { text } if text.starts_with(krowk_harness::claude::UNPROMPTED) => {
+                let note = text[krowk_harness::claude::UNPROMPTED.len()..].trim_end_matches("</unprompted>");
+                self.finish_live();
+                self.gap();
+                self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(clean(note.trim()), dim().add_modifier(Modifier::ITALIC))]));
+            }
             // A skill the person asked for, loaded next to the prompt.
             Item::UserText { text } if text.starts_with(krowk_harness::compat::skills::INVOKED) => {
                 let name = text[krowk_harness::compat::skills::INVOKED.len()..].split('"').next().unwrap_or_default();
@@ -1055,9 +1075,15 @@ impl App {
                 self.push_wrapped(look::PROMPT, "  ", text, look::prompt(), bold());
             }
             Item::AssistantText { text } => {
-                if streamed && live {
+                // What streamed is on screen already. A message a backend
+                // sent whole — announced, with no delta after — is not.
+                let unseen = self.live.as_ref().is_some_and(|l| l.id == item_id && !l.committed && l.tail.is_empty());
+                if streamed && live && !unseen {
                     self.finish_live();
                 } else if !text.is_empty() {
+                    if live {
+                        self.answer.push_str(text);
+                    }
                     self.gap();
                     self.fence = false;
                     for l in text.split('\n') {
@@ -1252,7 +1278,20 @@ impl App {
             Overlay::Details => rows.extend(self.details_overlay(width)),
             Overlay::Todos => rows.extend(self.todos_overlay(width)),
             Overlay::Agents => {
-                let hint = if self.subs.is_empty() { "no subagents running · esc closes this" } else { "↑ ↓ select · enter expands · x interrupts that one · esc closes this" };
+                // The backend's own, listed as it reports them: they run in
+                // its process, and are not krowk's to expand or stop.
+                for a in &self.backend_agents {
+                    let line = match &a.agent {
+                        Some(k) => format!("Agent {} · {} · running in Claude Code", a.description, k),
+                        None => format!("Agent {} · running in Claude Code", a.description),
+                    };
+                    rows.push(Line::from(vec![Span::styled(look::TOOL, look::accent()), Span::styled(clip(&clean(&line), width.saturating_sub(2)), dim())]));
+                }
+                let hint = match (self.subs.is_empty(), self.backend_agents.is_empty()) {
+                    (true, true) => "no subagents running · esc closes this",
+                    (true, false) => "Claude Code runs these itself · esc closes this",
+                    _ => "↑ ↓ select · enter expands · x interrupts that one · esc closes this",
+                };
                 rows.push(Line::from(Span::styled(clip(hint, width), Style::new().fg(Color::Blue))));
             }
             Overlay::Models => rows.extend(self.models_overlay(width)),
@@ -1364,8 +1403,10 @@ impl App {
                         parts.push(part(Rank::Tasks, format!("[{}]", plural(open, "task"))));
                     }
                 }
+                // krowk's own and the backend's, one count: both are agents
+                // at work for the session.
                 StatusItem::Subagents => {
-                    let running = self.subs.iter().filter(|s| s.status.is_none()).count() as u32;
+                    let running = (self.subs.iter().filter(|s| s.status.is_none()).count() + self.backend_agents.len()) as u32;
                     if running > 0 {
                         parts.push(part(Rank::Subagents, format!("[{}]", plural(running, "subagent"))));
                     }
@@ -1566,6 +1607,7 @@ fn line_session(line: &StreamLine) -> Option<&str> {
         StreamLine::Live(LiveEvent::Result(r)) => &r.session_id,
         StreamLine::Live(LiveEvent::ApprovalRequested(r)) => &r.session_id,
         StreamLine::Live(LiveEvent::ApprovalResolved { session_id, .. }) => session_id,
+        StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. }) => session_id,
     })
 }
 
@@ -2127,6 +2169,26 @@ mod tests {
         assert_eq!(&t[..4], ["▀▀▀▀▀▀", "▀▀▀▀▀▀", "▀▀▀▀▀▀", ""], "the mark, two units to a cell");
         assert!(t[4].starts_with("Directory: …") && t[4].ends_with("crates") && t[4].chars().count() <= 40, "{:?}", t[4]);
         assert_eq!(t[5..], ["Branch:    main", "Model:     anthropic/claude-x (medium)", ""]);
+    }
+
+    /// R-SUB-3 for a backend's own agents: counted with krowk's, listed
+    /// read-only in the Agents overlay, and cleared when the backend says
+    /// the last one finished.
+    #[test]
+    fn r_sub_3_a_backends_own_agents_are_counted_and_listed_but_not_driven() {
+        let mut a = App::new(Editor::new(None), 100, Settings::default(), Some(ModelRef { instance: "claude".into(), model: "sonnet".into() }), None);
+        let agents = |v: Vec<BackendAgent>| live(LiveEvent::BackendAgents { session_id: "s".into(), agents: v });
+        a.on_line(&agents(vec![BackendAgent { task_id: "a1".into(), description: "survey the repo".into(), agent: Some("general-purpose".into()) }]));
+        assert_eq!(a.status_bar(), "claude/sonnet | $0.00 | [1 subagent] | ? help");
+        a.overlay = Overlay::Agents;
+        let rows = text(&a.view(Instant::now()).0);
+        assert!(rows.iter().any(|r| r.contains("Agent survey the repo · general-purpose · running in Claude Code")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("Claude Code runs these itself")), "nothing to select or interrupt: {rows:?}");
+        assert_eq!(a.agent_count(), 0);
+        a.on_line(&agents(vec![]));
+        assert_eq!(a.status_bar(), "claude/sonnet | $0.00 | ? help");
+        a.on_line(&live(LiveEvent::TurnUnprompted { session_id: "s".into(), reason: "background agent “survey the repo” completed".into() }));
+        assert!(a.unprompted, "the client is told to run it");
     }
 
     fn child_log(session: &str, body: LogBody) -> StreamLine {

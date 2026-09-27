@@ -43,7 +43,7 @@ use crate::budget::Budget;
 use crate::evidence::Evidence;
 use crate::toolset::Preset;
 use crate::catalog::ModelInfo;
-use crate::protocol::{ApprovalDecision, ApprovalRequest, Billing, Delta, Effort, ErrorInfo, HandoffKind, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, Todo, ToolDefinition, Usage, WireApi};
+use crate::protocol::{ApprovalDecision, ApprovalRequest, BackendAgent, Billing, Delta, Effort, ErrorInfo, HandoffKind, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, Todo, ToolDefinition, Usage, WireApi};
 use crate::subagent::{AgentRun, Subagents};
 use std::future::Future;
 use std::path::PathBuf;
@@ -97,7 +97,19 @@ pub enum EngineEvent {
     /// (R-SWITCH-2, R-INST-4): how, and exactly what it was sent. Reported
     /// before the turn's `Context`, so the context record carries it.
     Handoff { how: HandoffKind, from_instance: Option<String>, summarized_turns: u32, recent_turns: u32, fell_back: Option<String>, text: String },
+    /// The agents a backend runs by itself, whole, when the list changed:
+    /// the host sends them on as `backend.agents`.
+    BackendAgents { agents: Vec<BackendAgent> },
+    /// Between turns only, through `Idle`: the backend began a turn by
+    /// itself, and it waits for `Command::Continue` (`turn.unprompted`).
+    Unprompted { reason: String },
 }
+
+/// Where a backend reports what happens between turns, when no turn's
+/// channel is there to take it — its agents, a turn it began by itself.
+/// The host hands one to each backend engine and sends what it is told to
+/// its watchers (`Host::watch`).
+pub type Idle = Arc<dyn Fn(EngineEvent) + Send + Sync>;
 
 /// Where an engine sends its events. Bounded, so a slow client slows the
 /// stream rather than growing a buffer.
@@ -150,6 +162,10 @@ pub struct TurnContext {
     /// turns it did not run (`crate::handoff`). None when there is nothing
     /// it has not seen; the native loop reads the whole branch instead.
     pub handoff: Option<crate::handoff::Handoff>,
+    /// The turn a backend began by itself (`Command::Continue`): nothing is
+    /// sent, and the engine reads the turn already under way. Its prompt
+    /// item is the host's note of why, never the person's words.
+    pub unprompted: bool,
 }
 
 /// The steering a running turn has been sent and not yet taken: a queue
@@ -290,6 +306,17 @@ pub trait Engine: Send + Sync {
     /// before the host goes away. Nothing, for an engine that keeps nothing.
     fn shutdown(&self) -> BoxFuture<'_, ()> {
         Box::pin(async {})
+    }
+    /// A turn the backend began by itself and krowk has not run yet, as
+    /// why it began; none for an engine that never begins one.
+    fn pending(&self) -> Option<String> {
+        None
+    }
+    /// Whether the session still has work under way between turns — a
+    /// backend's own agents, a turn it began — so its process is not let go
+    /// as idle.
+    fn busy(&self) -> bool {
+        false
     }
 }
 
