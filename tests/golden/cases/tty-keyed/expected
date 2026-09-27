@@ -26,6 +26,6 @@ exit: 0
 
 $ @tty krowk workspaces
 tty:
-no keys stored — `krowk auth login` adds one; until then uploads are anonymous and expire
+no keys stored — `krowk login` adds one; until then uploads are anonymous and expire
 exit: 0
 

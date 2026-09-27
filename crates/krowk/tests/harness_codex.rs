@@ -188,7 +188,7 @@ fn r_inst_2_a_codex_login_that_fails_adds_nothing() {
     let out = b.krowk(&["providers", "add", "codex", "--name", "team", "--json"], &[("FAKE_CODEX_LOGIN", "fail")]);
     assert!(!out.status.success());
     let said = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
-    assert!(said.contains("not_authenticated") && said.contains("krowk providers add codex --name team"), "{said}");
+    assert!(said.contains("not_authenticated") && said.contains("krowk connect openai --method subscription --name team"), "{said}");
     assert!(!b.data().join("codex/codex-team").exists(), "the home it made is gone");
     let listed = b.json(&["providers", "list", "--json"], &[]);
     assert!(!listed["data"]["instances"].as_array().unwrap().iter().any(|r| r["instance"] == "codex:team"), "no definition was written");

@@ -126,7 +126,7 @@ fn r_prov_4_a_supergrok_device_login_writes_0600_credentials_and_runs_a_grok_tas
 
     let not_yet = b.krowk(&["-p", "hi", "--model", "supergrok/grok-4.7"], &[]);
     assert!(!not_yet.status.success());
-    assert!(String::from_utf8_lossy(&not_yet.stderr).contains("krowk providers add supergrok"), "{}", String::from_utf8_lossy(&not_yet.stderr));
+    assert!(String::from_utf8_lossy(&not_yet.stderr).contains("krowk connect xai --method subscription"), "{}", String::from_utf8_lossy(&not_yet.stderr));
 
     let out = b.krowk(&["providers", "add", "supergrok", "--device", "--json"], &[]);
     let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned());

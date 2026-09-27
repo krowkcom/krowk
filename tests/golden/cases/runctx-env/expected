@@ -39,7 +39,7 @@ stdout:
   "authenticated": true,
   "token_source": "KROWK_TOKEN",
   "key": "<key_1> (<ws_1>) local",
-  "workspace": "unknown — not recorded at login; `krowk auth verify` asks the registry",
+  "workspace": "unknown — not recorded at login; `krowk whoami` asks the registry",
   "runs_available": true,
   "credentials": "<scratch>/home/.config/krowk/credentials.json",
   "config": "global <scratch>/home/.config/krowk/config.json (absent)",

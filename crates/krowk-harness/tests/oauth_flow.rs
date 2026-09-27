@@ -137,9 +137,9 @@ async fn r_prov_4_an_expired_token_is_refreshed_once_across_processes_and_rotati
     auth.state.lock().unwrap().refresh = "revoked".into();
     let e = a.bearer(&http, true).await.unwrap_err();
     assert_eq!(e.code, "not_authenticated");
-    assert!(e.message.contains("krowk providers add supergrok") && !e.message.contains("xai-rt") && !e.message.contains("xai-at"), "{}", e.message);
+    assert!(e.message.contains("krowk connect xai --method subscription") && !e.message.contains("xai-rt") && !e.message.contains("xai-at"), "{}", e.message);
     // An instance with no login says how to sign in.
-    assert!(Tokens::open(store.clone(), "grok:team").unwrap_err().message.contains("krowk providers add supergrok --name grok:team"));
+    assert!(Tokens::open(store.clone(), "grok:team").unwrap_err().message.contains("krowk connect xai --method subscription --name grok:team"));
     let _ = std::fs::remove_dir_all(&d);
 }
 

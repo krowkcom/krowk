@@ -605,10 +605,10 @@ fn r_switch_4_a_switch_to_a_model_without_credentials_is_refused_and_the_session
     let (tx, _rx) = mpsc::channel(16);
     let e = rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: nologin.clone() }, tx)).unwrap_err();
     assert_eq!(e.code, "not_authenticated");
-    assert!(e.message.contains("sign in with `krowk providers add claude --name nologin`, which runs Claude's own login") && e.message.ends_with("the session stays on anthropic/claude-sonnet-4-6"), "{}", e.message);
+    assert!(e.message.contains("sign in with `krowk connect anthropic --method subscription --name nologin`, which runs Claude's own login") && e.message.ends_with("the session stays on anthropic/claude-sonnet-4-6"), "{}", e.message);
     let (tx, _rx) = mpsc::channel(16);
     let e = rt.block_on(host.execute(prompt(Some(&id), "third", Some(nologin.clone())), tx)).unwrap_err();
-    assert!(e.message.contains("krowk providers add claude --name nologin") && e.message.ends_with("the session stays on anthropic/claude-sonnet-4-6"), "{}", e.message);
+    assert!(e.message.contains("krowk connect anthropic --method subscription --name nologin") && e.message.ends_with("the session stays on anthropic/claude-sonnet-4-6"), "{}", e.message);
     let asked = w.fake_log("claude-nologin");
     assert!(asked.contains("argv auth status --json") && !asked.contains("argv -p"), "status asked, no turn process: {asked}");
     // One that fails only once it runs — a Claude Code login gone stale
@@ -621,7 +621,7 @@ fn r_switch_4_a_switch_to_a_model_without_credentials_is_refused_and_the_session
     assert_eq!(r2.status, TurnStatus::Failed);
     let err = r2.error.unwrap();
     assert_eq!(err.code, "not_authenticated");
-    assert!(err.message.contains("krowk providers add claude --name stale") && err.message.ends_with("the session continues on anthropic/claude-sonnet-4-6"), "{}", err.message);
+    assert!(err.message.contains("krowk connect anthropic --method subscription --name stale") && err.message.ends_with("the session continues on anthropic/claude-sonnet-4-6"), "{}", err.message);
     let back = w.events(&id).into_iter().find_map(|e| match e.body {
         LogBody::ModelSwitched { from, to, reason, .. } => Some((from, to, reason)),
         _ => None,

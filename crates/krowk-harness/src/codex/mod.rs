@@ -1431,7 +1431,7 @@ mod tests {
     fn r_back_3_a_failed_turn_names_a_stale_login_as_one() {
         let e = failure(&json!({"message": "unexpected status 401 Unauthorized: Missing bearer", "codexErrorInfo": "other"}), "codex:team");
         assert_eq!((e.code.as_str(), e.status), ("not_authenticated", 401));
-        assert!(e.message.contains("krowk providers add codex --name team"), "{}", e.message);
+        assert!(e.message.contains("krowk connect openai --method subscription --name team"), "{}", e.message);
         let e = failure(&json!({"message": "slow down", "codexErrorInfo": {"responseStreamDisconnected": {"httpStatusCode": 429}}}), "codex");
         assert_eq!((e.code.as_str(), e.status), ("backend_failed", 429));
         assert_eq!(failure(&json!({"message": "limit", "codexErrorInfo": "usageLimitExceeded"}), "codex").code, "usage_limit");

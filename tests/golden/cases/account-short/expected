@@ -1,0 +1,110 @@
+$ krowk login --token krowk_sk_test
+stdout:
+{
+  "ok": true,
+  "data": {
+    "path": "<scratch>/home/.config/krowk/credentials.json",
+    "confirmed": true,
+    "key_id": "<key_1>",
+    "workspace": "<ws_1>"
+  },
+  "summary": "<key_1> stored, uploads land in <ws_1>",
+  "breadcrumbs": [
+    {
+      "action": "push",
+      "cmd": "krowk push <file>",
+      "description": "the key is stored and accepted, so nothing else is needed before uploading; <file> is the path to upload"
+    }
+  ]
+}
+exit: 0
+
+$ krowk whoami
+stdout:
+{
+  "ok": true,
+  "data": {
+    "key_id": "<key_1>",
+    "name": "local",
+    "workspace": "<ws_1>",
+    "workspace_name": "Local workspace"
+  },
+  "summary": "<key_1> in <ws_1>",
+  "breadcrumbs": [
+    {
+      "action": "push",
+      "cmd": "krowk push <file>",
+      "description": "the key works, so an upload with it lands in that workspace and does not expire; <file> is the path to upload"
+    }
+  ]
+}
+exit: 0
+
+$ krowk logout
+stdout:
+{
+  "ok": true,
+  "data": {
+    "removed": true,
+    "workspace": "<ws_1>",
+    "key_id": "<key_1>",
+    "path": "<scratch>/home/.config/krowk/credentials.json",
+    "stored": [],
+    "shadowed_by_env": false
+  },
+  "summary": "logged out"
+}
+exit: 0
+
+$ krowk whoami
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "not_authenticated",
+    "fix": "no key to verify — run `krowk login --token krowk_sk_...`, or upload anonymously",
+    "retryable": false
+  }
+}
+exit: 3
+
+$ krowk logout
+stdout:
+{
+  "ok": true,
+  "data": {
+    "removed": false,
+    "workspace": "",
+    "key_id": null,
+    "path": "<scratch>/home/.config/krowk/credentials.json",
+    "stored": [],
+    "shadowed_by_env": false
+  },
+  "summary": "no key was stored"
+}
+exit: 0
+
+$ krowk login anthropic
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "unexpected_argument",
+    "fix": "`krowk login` signs in to your krowk account and takes no provider — a model provider is connected with `krowk connect`, in the full build (a release, or `--features harness`)",
+    "retryable": false
+  }
+}
+exit: 1
+
+$ krowk auth login claude:work
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "unexpected_argument",
+    "fix": "`krowk login` signs in to your krowk account and takes no provider — a model provider is connected with `krowk connect`, in the full build (a release, or `--features harness`)",
+    "retryable": false
+  }
+}
+exit: 1
+

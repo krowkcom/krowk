@@ -150,8 +150,8 @@ fn status_with_no_config_lists_the_seven_implicit_instances_in_their_states() {
     assert_eq!(row(&rows, "anthropic")["source"], "$ANTHROPIC_API_KEY", "a key is named by its variable");
     assert_eq!(row(&rows, "openai")["var"], "OPENAI_API_KEY");
     assert_eq!(row(&rows, "claude")["source"], format!("Claude Code's own login in {} (signed in with a Claude max subscription)", b.home().join(".claude").display()));
-    assert_eq!(row(&rows, "codex")["fix"], "sign in with `krowk providers add codex`, which runs Codex's own login");
-    assert_eq!(row(&rows, "supergrok")["fix"], "sign in with `krowk providers add supergrok`");
+    assert_eq!(row(&rows, "codex")["fix"], "sign in with `krowk connect openai --method subscription`, which runs Codex's own login");
+    assert_eq!(row(&rows, "supergrok")["fix"], "sign in with `krowk connect xai --method subscription`");
     assert_eq!(row(&rows, "supergrok")["kind"], "xai-oauth");
     let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(!printed.contains(KEY_SENTINEL) && !printed.contains(TOKEN_SENTINEL), "no secret is printed: {printed}");
@@ -160,7 +160,7 @@ fn status_with_no_config_lists_the_seven_implicit_instances_in_their_states() {
     let out = b.krowk(&["status", "--format", "human"], &[("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
     assert_eq!(out.status.code(), Some(0));
     let table = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(table.lines().any(|l| l.starts_with("supergrok") && l.contains("expired") && l.contains("krowk providers add supergrok")), "{table}");
+    assert!(table.lines().any(|l| l.starts_with("supergrok") && l.contains("expired") && l.contains("krowk connect xai --method subscription")), "{table}");
     assert!(table.ends_with("2 of 7 instances ready\n"), "{table}");
     assert!(!table.contains(KEY_SENTINEL) && !table.contains(TOKEN_SENTINEL));
 
