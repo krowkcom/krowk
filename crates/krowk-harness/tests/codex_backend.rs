@@ -335,17 +335,20 @@ fn r_back_3_codexs_approval_requests_are_answered_by_krowks_modes() {
             host.shutdown().await;
         });
     }
-    // bypassPermissions is Codex's full access, asked about nothing.
-    let _ = std::fs::remove_file(h.log_file());
-    let host = h.host(vec![("codex:team", h.instance(&home, None, &[("FAKE_CODEX_MCP", MCP)]))], trust::allow_all());
-    rt().block_on(async {
-        let (_, r) = run(&host, prompt(None, "go", "codex:team/gpt-5.5", PermissionMode::BypassPermissions)).await;
-        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
-        host.shutdown().await;
-    });
-    let start = lines_of(&h.fake_log(), "in ").into_iter().find(|l| l.contains("thread/start")).unwrap();
-    assert!(start.contains(r#""sandbox":"danger-full-access""#) && start.contains(r#""approvalPolicy":"never""#), "{start}");
-    assert!(!start.contains(r#""config""#) && !h.fake_log().contains("config-read"), "bypassPermissions leaves Codex's MCP servers on: {start}");
+    // bypassPermissions is Codex's full access, asked about nothing; so is
+    // unhinged.
+    for mode in [PermissionMode::BypassPermissions, PermissionMode::Unhinged] {
+        let _ = std::fs::remove_file(h.log_file());
+        let host = h.host(vec![("codex:team", h.instance(&home, None, &[("FAKE_CODEX_MCP", MCP)]))], trust::allow_all());
+        rt().block_on(async {
+            let (_, r) = run(&host, prompt(None, "go", "codex:team/gpt-5.5", mode)).await;
+            assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+            host.shutdown().await;
+        });
+        let start = lines_of(&h.fake_log(), "in ").into_iter().find(|l| l.contains("thread/start")).unwrap();
+        assert!(start.contains(r#""sandbox":"danger-full-access""#) && start.contains(r#""approvalPolicy":"never""#), "{mode:?}: {start}");
+        assert!(!start.contains(r#""config""#) && !h.fake_log().contains("config-read"), "{mode:?} leaves Codex's MCP servers on: {start}");
+    }
 }
 
 #[test]

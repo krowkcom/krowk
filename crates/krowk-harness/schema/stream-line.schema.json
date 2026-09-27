@@ -560,13 +560,14 @@
       ]
     },
     "PermissionMode": {
-      "description": "Claude-Code-compatible permission modes (R-PERM-1): `default` asks\nbefore edits and commands, `acceptEdits` before commands, `plan` changes\nnothing, and `bypassPermissions` asks before nothing — though a deny\nrule still holds in every one (`crate::permissions`).",
+      "description": "Claude-Code-compatible permission modes (R-PERM-1): `default` asks\nbefore edits and commands, `acceptEdits` before commands, `plan` changes\nnothing, and `bypassPermissions` asks before nothing — though a deny\nrule, an ask rule and a hook's ask still hold in each of those. krowk's\nown `unhinged` holds nothing krowk's rules say: every call runs but one a\nhook blocks (`crate::permissions`).",
       "type": "string",
       "enum": [
         "default",
         "acceptEdits",
         "plan",
-        "bypassPermissions"
+        "bypassPermissions",
+        "unhinged"
       ]
     },
     "Effort": {

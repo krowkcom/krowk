@@ -26,12 +26,12 @@
 //! | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, … | codex → krowk | judged by krowk's permission evaluator (`crate::permissions`), as `Bash(<command>)` and `Edit(<files>)` |
 //! | `item/tool/call` | codex → krowk | a call of krowk's own tools, answered by `crate::bridge` |
 //!
-//! **The mode.** Every mode but `bypassPermissions` runs Codex in its
+//! **The mode.** Every mode but `bypassPermissions` and `unhinged` runs Codex in its
 //! `read-only` sandbox with approvals `on-request` and krowk as the
 //! reviewer, so every edit and every command that needs more than reading
 //! is asked about, and krowk's permission evaluator answers it — asking the
-//! person when a client is attached; `bypassPermissions` is
-//! `danger-full-access` with no approvals. The mode
+//! person when a client is attached; `bypassPermissions` and `unhinged`
+//! are `danger-full-access` with no approvals. The mode
 //! is named on `thread/start` and `thread/resume`, so a default in Codex's
 //! config cannot loosen it, and a thread Codex reports in a looser sandbox,
 //! or with another reviewer, is stopped before a turn runs. What Codex's
@@ -171,7 +171,7 @@ pub struct Policy {
 
 pub fn policy(mode: PermissionMode) -> Policy {
     match mode {
-        PermissionMode::BypassPermissions => Policy { approval: "never", sandbox: "danger-full-access" },
+        PermissionMode::BypassPermissions | PermissionMode::Unhinged => Policy { approval: "never", sandbox: "danger-full-access" },
         _ => Policy { approval: "on-request", sandbox: "read-only" },
     }
 }
@@ -456,7 +456,7 @@ impl Engine for CodexEngine {
     fn run_turn<'a>(&'a self, mut ctx: TurnContext, events: Events) -> BoxFuture<'a, Result<TurnEnd, EngineError>> {
         Box::pin(async move {
             let mut slot = self.proc.lock().await;
-            let bypass = ctx.permission_mode == PermissionMode::BypassPermissions;
+            let bypass = ctx.permission_mode.asks_nothing();
             let ask = Answers {
                 session_id: ctx.session_id.clone(),
                 turn_id: ctx.turn_id.clone(),
@@ -671,7 +671,7 @@ struct Proc {
     out: LineReader<BufReader<ChildStdout>>,
     stderr: Arc<Mutex<String>>,
     binary: String,
-    /// Started in `danger-full-access` (krowk's bypassPermissions).
+    /// Started in `danger-full-access` (krowk's bypassPermissions or unhinged).
     bypass: bool,
     next: u64,
     exited: bool,
@@ -969,7 +969,7 @@ impl Proc {
         if let (Some(path), Some(_)) = (path, resume) {
             params["path"] = json!(path);
         }
-        // Outside bypassPermissions no MCP server of the person's or the
+        // Outside bypassPermissions and unhinged no MCP server of the person's or the
         // project's config runs: Codex would start each one — a command —
         // on the thread without asking, as Claude Code's are kept out by
         // --strict-mcp-config. Codex's effective config for this directory
@@ -977,7 +977,7 @@ impl Proc {
         // installed Codex plugin brings may not be listed there, and are
         // not reached by this — still open: the pinned protocol has no
         // thread setting krowk can verify turns a plugin's server off.
-        if ctx.permission_mode != PermissionMode::BypassPermissions {
+        if !ctx.permission_mode.asks_nothing() {
             let config = self.request("config/read", json!({ "cwd": cwd }), ask, INITIALIZE_TIMEOUT).await.map_err(|e| EngineError::new(&e.code, format!("krowk asks Codex which MCP servers its config names, to keep them off, and it did not say: {}", e.message)))?;
             if let Some(off) = mcp_off(&config) {
                 params["config"] = off;
@@ -998,7 +998,7 @@ impl Proc {
                 "backend_permission_mode",
                 format!(
                     "Codex on {instance} opened the thread in its `{sandbox}` sandbox with `{reviewer}` reviewing approvals, looser than krowk's `{}` for this turn, so krowk stopped it before it ran anything — check `sandbox_mode`, `approvals_reviewer` and any managed requirements in its config, and the instance's `args`",
-                    permission_name(ctx.permission_mode)
+                    ctx.permission_mode.name()
                 ),
             ));
         }
@@ -1242,14 +1242,6 @@ impl Proc {
     }
 }
 
-fn permission_name(m: PermissionMode) -> &'static str {
-    PermissionMode::NAMES[match m {
-        PermissionMode::Default => 0,
-        PermissionMode::AcceptEdits => 1,
-        PermissionMode::Plan => 2,
-        PermissionMode::BypassPermissions => 3,
-    }]
-}
 
 #[cfg(test)]
 mod tests {
@@ -1262,6 +1254,7 @@ mod tests {
             assert_eq!(policy(m), Policy { approval: "on-request", sandbox: "read-only" }, "every edit and command beyond reading is asked about");
         }
         assert_eq!(policy(PermissionMode::BypassPermissions), Policy { approval: "never", sandbox: "danger-full-access" });
+        assert_eq!(policy(PermissionMode::Unhinged), policy(PermissionMode::BypassPermissions));
         assert!(sandbox_rank("workspaceWrite") > sandbox_rank("read-only") && sandbox_rank("dangerFullAccess") > sandbox_rank("workspace-write") && sandbox_rank("somethingNew") == sandbox_rank("danger-full-access"));
         let init = initialize_params("1.2.3");
         assert_eq!((init["clientInfo"]["name"].as_str(), init["capabilities"]["experimentalApi"].as_bool()), (Some("krowk"), Some(true)), "krowk as itself");
