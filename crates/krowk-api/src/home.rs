@@ -48,23 +48,43 @@ pub fn resolve(env: Env) -> Result<PathBuf, Error> {
 }
 
 fn resolve_on(env: Env, windows: bool) -> Result<PathBuf, Error> {
+    // `..` taken out first: `HOME=/x/gone/../h` would otherwise miss the
+    // old layout and make `gone/`, and `KROWK_HOME=$HOME/x/..` make the
+    // person's own home krowk's, chmod 0700 and all.
+    let user = user_home(env, windows);
     let own = env("KROWK_HOME");
     if !own.is_empty() {
-        let p = PathBuf::from(&own);
-        if !p.is_absolute() || p.parent().is_none() {
-            return Err(fail("bad_home", format!("KROWK_HOME is {own:?}, which is not an absolute path below the root — set it to one, or unset it for ~/.krowk")));
+        let p = lexical(Path::new(&own));
+        if !Path::new(&own).is_absolute() || p.parent().is_none() || user.as_ref() == Some(&p) {
+            return Err(fail("bad_home", format!("KROWK_HOME is {own:?}, which is not an absolute path below the root and apart from your home directory — set it to one, or unset it for ~/.krowk")));
         }
         return Ok(p);
     }
+    user.map(|u| u.join(".krowk")).ok_or_else(no_home)
+}
+
+/// The user's home directory, `..` taken out: `HOME`, or `USERPROFILE` on
+/// Windows; none unless absolute.
+fn user_home(env: Env, windows: bool) -> Option<PathBuf> {
     let mut user = env("HOME");
     if user.is_empty() && windows {
         user = env("USERPROFILE");
     }
-    let p = PathBuf::from(user);
-    match p.is_absolute() {
-        true => Ok(p.join(".krowk")),
-        false => Err(no_home()),
-    }
+    Some(PathBuf::from(user)).filter(|p| p.is_absolute()).map(|p| lexical(&p))
+}
+
+/// Everything the file tools and `krowk_push` keep away from: the home in
+/// use and the default one (`~/.krowk`, when `KROWK_HOME` names another),
+/// each with the staging directory and lock a move from the old layout
+/// uses beside it.
+pub fn fenced(env: Env) -> Vec<PathBuf> {
+    let homes = [resolve(env).ok(), user_home(env, cfg!(windows)).map(|u| u.join(".krowk"))];
+    homes.into_iter().flatten().flat_map(|h| siblings(&h)).collect()
+}
+
+/// A home, its staging directory and its migration lock.
+pub fn siblings(home: &Path) -> [PathBuf; 3] {
+    [home.to_path_buf(), crate::migrate::staging(home), crate::migrate::lock_path(home)]
 }
 
 /// Homes this process has already checked (and made, or moved into).
@@ -89,37 +109,59 @@ pub fn get() -> Result<PathBuf, Error> {
 }
 
 fn prepare(home: &Path, env: Env) -> Result<(), Error> {
+    // Only the default home inherits an older krowk's files: a KROWK_HOME
+    // is a sandbox, and never takes the person's own.
+    let inherits = env("KROWK_HOME").is_empty();
+    let migrate = || crate::migrate::run(home, env).map_err(|m| fail("migration_failed", m));
     match std::fs::symlink_metadata(home) {
-        Ok(m) => own(home, &m).map_err(|m| fail("bad_home", m)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Only the default home inherits an older krowk's files: a
-            // KROWK_HOME is a sandbox, and never takes the person's own.
-            if env("KROWK_HOME").is_empty() {
-                crate::migrate::run(home, env).map_err(|m| fail("migration_failed", m))?;
+        Ok(m) => {
+            own(home, &m).map_err(|m| fail("bad_home", m))?;
+            // One made by hand, or by a run with nothing to move, next to an
+            // older layout: filled from it. One more `stat` when the home
+            // holds its credentials file, the usual case.
+            if inherits && crate::migrate::unfilled(home) && crate::migrate::pending(home, env) {
+                migrate()?;
             }
-            make(home).map_err(|m| fail("bad_home", m))
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if inherits && crate::migrate::pending(home, env) {
+                migrate()?;
+            }
+            if let Some(parent) = home.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            // A home that cannot be made (a read-only file system) is left
+            // missing: reads find nothing, and a write says why it failed.
+            match make(home) {
+                Err(m) if exists(home) => Err(fail("bad_home", m)),
+                _ => Ok(()),
+            }
         }
         Err(e) => Err(fail("bad_home", format!("{} cannot be read: {e}", home.display()))),
     }
 }
 
-/// Makes `dir` `0700`, and when something is already there, holds it to
-/// `own`. A home that cannot be made (a read-only file system) is left
-/// missing: reads find nothing, and a write says why it failed.
+fn exists(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok()
+}
+
+/// Makes `dir` `0700` in a parent that exists, or holds what is already
+/// there to `own`: looked at first, so one that is there costs one `lstat`.
 pub fn make(dir: &Path) -> Result<(), String> {
-    if let Some(parent) = dir.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    match std::fs::symlink_metadata(dir) {
+        Ok(m) => return own(dir, &m),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{} cannot be read: {e}", dir.display())),
+        Err(_) => {}
     }
     let mut b = std::fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
     match b.create(dir) {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let m = std::fs::symlink_metadata(dir).map_err(|e| format!("{} cannot be read: {e}", dir.display()))?;
-            own(dir, &m)
-        }
-        Err(_) => Ok(()),
+        // Made by another krowk in between: held to the same rules.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => make(dir),
+        Err(e) => Err(format!("{} could not be made: {e}", dir.display())),
     }
 }
 
@@ -206,6 +248,26 @@ mod tests {
         assert_eq!(resolve(&env(&[])).unwrap_err().code(), "no_home");
         let xdg = env(&[("HOME", "/h"), ("XDG_CONFIG_HOME", "/x"), ("XDG_DATA_HOME", "/y")]);
         assert_eq!(resolve(&xdg).unwrap(), PathBuf::from("/h/.krowk"), "XDG is not read");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dot_dot_is_taken_out_before_the_home_is_judged() {
+        assert_eq!(resolve(&env(&[("HOME", "/x/gone/../h")])).unwrap(), PathBuf::from("/x/h/.krowk"));
+        assert_eq!(resolve(&env(&[("HOME", "/h"), ("KROWK_HOME", "/k/sub/..")])).unwrap(), PathBuf::from("/k"));
+        // The person's own home, however spelled, and the root are refused.
+        for own in ["/h/x/..", "/h", "/h/./", "/k/.."] {
+            let e = move |k: &str| match k {
+                "HOME" => "/h".to_string(),
+                "KROWK_HOME" => own.to_string(),
+                _ => String::new(),
+            };
+            assert_eq!(resolve(&e).unwrap_err().code(), "bad_home", "{own}");
+        }
+        let fenced = fenced(&env(&[("HOME", "/h"), ("KROWK_HOME", "/k")]));
+        for p in ["/k", "/k.migrating", "/k.migrate.lock", "/h/.krowk", "/h/.krowk.migrating", "/h/.krowk.migrate.lock"] {
+            assert!(fenced.contains(&PathBuf::from(p)), "{p} in {fenced:?}");
+        }
     }
 
     // Windows sets USERPROFILE and no HOME; elsewhere only HOME counts.

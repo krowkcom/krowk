@@ -93,8 +93,12 @@ impl Policy {
     pub fn load(cfg: &Config, cwd: &Path) -> Result<Policy, String> {
         let loaded = settings::load(cfg, cwd)?;
         let protected: Vec<PathBuf> = cfg.claude_home().into_iter().collect();
-        // The home as named and, when it exists, as it leads (`Scope::secret`).
-        let secrets = cfg.krowk_dir.iter().flat_map(|d| [d.canonicalize().ok(), Some(d.clone())]).flatten().collect();
+        // The home in use and the default one (a KROWK_HOME elsewhere does
+        // not open `~/.krowk`), each with its migration staging directory
+        // and lock (`krowk_api::home::siblings`), as named and, when they
+        // exist, as they lead (`Scope::secret`).
+        let default = cfg.home.as_ref().map(|h| krowk_api::home::lexical(h).join(".krowk"));
+        let secrets = cfg.krowk_dir.iter().chain(default.iter()).flat_map(|d| krowk_api::home::siblings(d)).flat_map(|d| [d.canonicalize().ok(), Some(d)]).flatten().collect();
         Ok(Policy { loaded, cwd: cwd.to_path_buf(), home: cfg.home.clone(), read_dirs: Vec::new(), protected, secrets })
     }
 

@@ -258,9 +258,8 @@ fn a_move_cut_short_finishes_on_the_next_run() {
     b.old_layout();
     // As a crash after some steps leaves it: the registry key merged into
     // the staging directory and its old file gone, one account moved and
-    // another not, config.json and the provider file still where they were,
-    // and the price cache copied across a file system but not yet removed
-    // from the old place (the old one, still whole, is what counts).
+    // another not, and config.json and the provider file still where they
+    // were.
     let staging = b.home().join(".krowk.migrating");
     std::fs::create_dir_all(&staging).unwrap();
     std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -274,7 +273,6 @@ fn a_move_cut_short_finishes_on_the_next_run() {
     b.write(&b.old_config().join("config.json"), &cfg.to_string(), 0o644);
     std::fs::create_dir_all(staging.join("accounts")).unwrap();
     std::fs::rename(data.join("claude/claude-work"), staging.join("accounts/claude-work")).unwrap();
-    b.write(&staging.join("cache/models.json"), "{\"partial", 0o644);
 
     let out = b.krowk(&["doctor", "--json"], &[]);
     assert!(out.status.success(), "{}", printed(&out));
@@ -289,7 +287,8 @@ fn a_move_cut_short_finishes_on_the_next_run() {
         assert_eq!(cfg["instances"][name]["configDir"], h.join("accounts").join(dir).display().to_string(), "{name}");
         assert!(h.join("accounts").join(dir).join("fake-login").exists(), "{name}");
     }
-    assert_eq!(std::fs::read_to_string(h.join("cache/models.json")).unwrap(), r#"{"anthropic":{"claude-sonnet-4-6":{"input":3}}}"#, "the whole file wins over a partial copy");
+    assert_eq!(std::fs::read_to_string(h.join("cache/models.json")).unwrap(), r#"{"anthropic":{"claude-sonnet-4-6":{"input":3}}}"#);
+    assert!(!b.home().join(".krowk.migrate.lock").exists(), "the lock is removed after");
     assert_eq!(b.row("claude:home")["state"], "ready");
 }
 

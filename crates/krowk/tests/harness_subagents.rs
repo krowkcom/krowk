@@ -960,3 +960,42 @@ fn r_sub_1_task_hooks_read_claude_codes_input_and_can_filter_on_subagent_type() 
         }
     }
 }
+
+#[test]
+fn r_sub_1_a_subagents_file_tools_are_fenced_from_krowks_home_as_its_parents_are() {
+    // The child goes for the credentials file by name, then searches the
+    // home, under allow rules for both, in acceptEdits, with nobody to ask:
+    // both are refused, and the key never reaches a model.
+    const KEY: &str = "sk-ant-SUBAGENT-FENCE-SENTINEL";
+    let creds = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let path = creds.clone();
+    let m = mock::serve(move |body, _| {
+        if is_child(body) {
+            let got = results(body);
+            return match got.len() {
+                0 if !answered(body) => mock::Reply::sse(&tool_calls(&[
+                    ("toolu_cr", "read", json!({"path": *path.lock().unwrap()})),
+                    ("toolu_cg", "grep", json!({"pattern": "SENTINEL", "path": std::path::Path::new(&*path.lock().unwrap()).parent().unwrap()})),
+                ])),
+                _ => mock::Reply::sse(&mock::text_stream(&format!("CHILD-SAW {}", got.iter().map(|(_, o, e)| format!("error={e} {o}")).collect::<Vec<_>>().join(" | ")))),
+            };
+        }
+        if answered(body) {
+            return mock::Reply::sse(&mock::fixture("turn2_answer.sse"));
+        }
+        mock::Reply::sse(&tool_calls(&[("toolu_sub", "subagent", json!({"description": "look around", "prompt": "TASK-F: read the key"}))]))
+    });
+    let b = Sandbox::new("child-fence", &m.url);
+    let file = b.root.join("home/.krowk/credentials.json");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, json!({"keys": {"anthropic": {"literal": KEY}}}).to_string()).unwrap();
+    *creds.lock().unwrap() = file.display().to_string();
+    let allow = json!({"permissions": {"allow": ["Read", "Grep"]}});
+    let r = run_in_process(&b, b.host_with(allow, false), None, "look around in a subagent", PermissionMode::AcceptEdits);
+    let (out, _) = parent_result(&b, &r.session_id);
+    assert_eq!(out.matches("error=true").count(), 2, "{out}");
+    assert_eq!(out.matches("inside krowk's home").count(), 2, "{out}");
+    for s in m.seen.lock().unwrap().iter() {
+        assert!(!s.body.to_string().contains(KEY), "the key reached a model: {}", s.body);
+    }
+}

@@ -165,9 +165,11 @@ pub fn context_tokens(bin: &Path, home: &Path) -> Outcome {
     Outcome::Measured { value: max as f64, note }
 }
 
-/// The session directories `krowk -p` has made under a sandboxed home.
+/// The session directories `krowk -p` has made under a sandboxed home:
+/// those holding a context record, never krowk.db or the import lock that
+/// sit beside them in `sessions/`.
 fn sessions(home: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(home.join(".krowk/sessions")).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default()
+    std::fs::read_dir(home.join(".krowk/sessions")).map(|r| r.flatten().map(|e| e.path()).filter(|p| p.join("context.jsonl").is_file()).collect()).unwrap_or_default()
 }
 
 /// What a process did while it sat idle for the window.

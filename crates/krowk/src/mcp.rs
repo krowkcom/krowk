@@ -83,10 +83,11 @@ const SECRET_NAMES: &[&str] = &[
     "credentials.json", ".krowk", "id_rsa", "id_ed25519", "id_ecdsa",
 ];
 
-/// krowk's home, wherever `KROWK_HOME` put it: its keys, logins and
+/// krowk's home, wherever `KROWK_HOME` put it, the default `~/.krowk`, and
+/// a move's staging directory and lock beside each: their keys, logins and
 /// sessions are never published, whatever the path is called.
 fn in_krowk_home(real: &Path) -> bool {
-    krowk_api::home::resolve(&krowk_api::home::process_env).is_ok_and(|h| krowk_api::home::holds(&h, real))
+    krowk_api::home::fenced(&krowk_api::home::process_env).iter().any(|h| krowk_api::home::holds(h, real))
 }
 
 fn secret_component(path: &Path) -> Option<String> {
