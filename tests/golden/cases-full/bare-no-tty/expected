@@ -769,14 +769,6 @@ stdout:
           "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
         }
-      ],
-      "flags": [
-        {
-          "name": "all",
-          "type": "bool",
-          "default": "false",
-          "usage": "List every command and subcommand"
-        }
       ]
     },
     {
@@ -1883,14 +1875,6 @@ stdout:
           "name": "command",
           "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
-        }
-      ],
-      "flags": [
-        {
-          "name": "all",
-          "type": "bool",
-          "default": "false",
-          "usage": "List every command and subcommand"
         }
       ]
     },
@@ -3013,14 +2997,6 @@ stdout:
           "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
         }
-      ],
-      "flags": [
-        {
-          "name": "all",
-          "type": "bool",
-          "default": "false",
-          "usage": "List every command and subcommand"
-        }
       ]
     },
     {
@@ -4141,14 +4117,6 @@ tty:
           "name": "command",
           "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
           "required": false
-        }
-      ],
-      "flags": [
-        {
-          "name": "all",
-          "type": "bool",
-          "default": "false",
-          "usage": "List every command and subcommand"
         }
       ]
     },

@@ -96,14 +96,13 @@ OTHER
   help              This, a command's help, or a topic
 
 krowk help <command>  A command's own flags and explanation
-krowk help flags      The flags every command takes
-krowk help topics     Exit codes, environment, workspaces, links
+krowk help topics     flags, exit codes, environment, workspaces, links
 krowk help --json     The whole surface as data, for tooling
 exit: 0
 
 $ krowk help flags --format human
 stdout:
-krowk help flags — the flags every command takes, and the agent's
+krowk help flags — The flags every command takes
 
 GLOBAL FLAGS
   --workspace <string>  Use this workspace's stored key for this one command —
@@ -120,9 +119,7 @@ GLOBAL FLAGS
   --help, -h            Show the help
   --version, -v         Print the version
 
-AGENT FLAGS
-  Bare `krowk` opens the agent here; `krowk -p "…"` runs one prompt headless.
-
+AGENT FLAGS (krowk, krowk -p)
   --print, -p                 Run the prompt given as the arguments (or on
                               stdin) headless: krowk's own agent answers it,
                               then exits

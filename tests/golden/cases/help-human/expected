@@ -116,8 +116,7 @@ OTHER
   help              This, a command's help, or a topic
 
 krowk help <command>  A command's own flags and explanation
-krowk help flags      The flags every command takes
-krowk help topics     Exit codes, environment, workspaces, links
+krowk help topics     flags, exit codes, environment, workspaces, links
 krowk help --json     The whole surface as data, for tooling
 exit: 0
 
@@ -135,7 +134,7 @@ exit: 0
 
 $ krowk help exit-codes --format human
 stdout:
-krowk help exit-codes — what each exit code means
+krowk help exit-codes — What each exit code means
 
 EXIT CODES
   0  it worked
@@ -159,15 +158,12 @@ exit: 0
 
 $ krowk help exit-codes --json
 stdout:
-{
-  "topic": "exit-codes",
-  "text": "krowk help exit-codes — what each exit code means\n\nEXIT CODES\n  0  it worked\n  1  the command was wrong, or krowk failed on its own — also anything\n     unclassified\n  2  not found — no such artifact or run in this workspace, or no such endpoint\n  3  refused for want of credentials — no key, a key the registry rejects, a\n     browser login somebody denied or that nothing on CI could approve, or no\n     claim token where that is the only authority (a claim token the registry\n     does not recognise is 2, since it answers that as no such record)\n  4  refused by the registry on the request or the state of things — retrying\n     unchanged answers the same; also a session over its `sessions budget`\n  5  rate limited — wait and retry\n  6  the bytes did not move — the registry or object storage could not be\n     reached\n  7  the registry failed on its side, or answered something unreadable — or a\n     login page krowk will not open, which is the same news\n  8  gone — the artifact expired or was taken down, or a browser login lapsed\n     before anybody approved it; no retry brings any of them back"
-}
+"krowk help exit-codes — What each exit code means\n\nEXIT CODES\n  0  it worked\n  1  the command was wrong, or krowk failed on its own — also anything\n     unclassified\n  2  not found — no such artifact or run in this workspace, or no such endpoint\n  3  refused for want of credentials — no key, a key the registry rejects, a\n     browser login somebody denied or that nothing on CI could approve, or no\n     claim token where that is the only authority (a claim token the registry\n     does not recognise is 2, since it answers that as no such record)\n  4  refused by the registry on the request or the state of things — retrying\n     unchanged answers the same; also a session over its `sessions budget`\n  5  rate limited — wait and retry\n  6  the bytes did not move — the registry or object storage could not be\n     reached\n  7  the registry failed on its side, or answered something unreadable — or a\n     login page krowk will not open, which is the same news\n  8  gone — the artifact expired or was taken down, or a browser login lapsed\n     before anybody approved it; no retry brings any of them back"
 exit: 0
 
 $ krowk help push --format human
 stdout:
-krowk push — upload files, get a link for each
+krowk push — Upload files, get a link for each
 
 USAGE
   krowk push <file...> [flags]
