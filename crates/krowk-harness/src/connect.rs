@@ -888,7 +888,12 @@ impl ProviderAuth<'_> {
         if let crate::keys::KeyRef::Command(c) = &key {
             let dir = self.credentials.parent().unwrap_or(Path::new("."));
             private_dir(dir).map_err(|e| EngineError::new("credentials_unwritable", format!("{}: {e}", dir.display())))?;
-            crate::keys::run(instance, c, dir).map_err(|why| EngineError::new("not_authenticated", format!("{why}, so {instance} was not connected and nothing was written")))?;
+            // A person at the terminal can answer a passphrase prompt: the
+            // command runs in the foreground there, and what it gives is
+            // this process's answer from then on.
+            crate::keys::forget();
+            let at = if ui.interactive() { Some(ui) } else { None };
+            crate::keys::run(instance, c, dir, at).map_err(|why| EngineError::new("not_authenticated", format!("{why}, so {instance} was not connected and nothing was written")))?;
         }
         Ok(Some(key))
     }
@@ -1031,6 +1036,7 @@ impl ProviderAuth<'_> {
             _ => SignedOut::Keyless,
         };
         readiness::forget(instance);
+        crate::keys::forget();
         let removed_definition = remove && defs.instances.contains_key(instance);
         let mut cleared_default = None;
         if removed_definition {

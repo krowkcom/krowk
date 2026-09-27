@@ -62,6 +62,9 @@ use std::time::{Duration, Instant};
 pub const VENDOR_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a vendor's "signed in" is believed without asking again.
 pub const CACHE_FOR: Duration = Duration::from_secs(60);
+/// The most of a check's output that is kept, per stream (see
+/// `output_within`).
+pub const OUTPUT_CAP: usize = 64 * 1024;
 /// krowk's own directory for vendor checks outside any repository, under
 /// its data directory.
 pub const NEUTRAL_DIR: &str = "readiness";
@@ -242,7 +245,12 @@ pub fn local(inst: &Resolved, credentials: &Path) -> Option<Readiness> {
     // without spawning anything.
     match &inst.stored {
         Stored::Unreadable(reason) => return Some(Readiness::Unknown { reason: reason.clone() }),
-        Stored::Command { command, .. } if inst.api_key.is_empty() => return keys::ran(command).map(|_| Readiness::Ready { source: expected_source(inst, credentials) }),
+        Stored::Command { command, .. } if inst.api_key.is_empty() => {
+            return keys::ran(command).map(|r| match r {
+                Ok(_) => Readiness::Ready { source: expected_source(inst, credentials) },
+                Err(why) => Readiness::Unknown { reason: keys::no_fallback(inst, &why) },
+            });
+        }
         Stored::Env(v) if inst.api_key.is_empty() => return Some(Readiness::KeyNotSet { var: v.clone() }),
         _ => {}
     }
@@ -579,9 +587,27 @@ fn vendor(inst: &Resolved, b: &Backend, probe: &Probe) -> Readiness {
 /// rather than leaving it to its deadline, whose thread is gone with the
 /// process.
 pub(crate) fn probing(cmd: &mut Command, probe: &Probe) -> std::io::Result<std::process::Child> {
+    probing_as(cmd, probe, false)
+}
+
+/// `probing`, and with `detached` in a session of its own: no controlling
+/// terminal at all, so a command that would ask on `/dev/tty` fails at once
+/// rather than drawing a prompt it can never read. Its session's id is its
+/// process group's, so it is stopped the same way.
+fn probing_as(cmd: &mut Command, probe: &Probe, detached: bool) -> std::io::Result<std::process::Child> {
     cmd.current_dir(&probe.dir);
     #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(cmd, 0);
+    if detached {
+        // SAFETY: setsid is async-signal-safe and touches no memory of the
+        // parent's; it runs in the child between fork and exec.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(cmd, || if libc::setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+        }
+    } else {
+        std::os::unix::process::CommandExt::process_group(cmd, 0);
+    }
+    #[cfg(not(unix))]
+    let _ = detached;
     let child = cmd.spawn()?;
     crate::group::register(Some(child.id()));
     Ok(child)
@@ -618,15 +644,30 @@ fn kill_group(child: &std::process::Child) {
 /// exited: a process it left behind that escaped its group (`setsid`, a
 /// daemonizing credential helper) can hold the pipes open for good, and is
 /// then abandoned with whatever had been read — the check never waits on
-/// it past the deadline.
+/// it past the deadline. Each stream is kept to `OUTPUT_CAP`; stdout past
+/// it stops the command and is an error.
 pub(crate) fn output_within(cmd: &mut Command, probe: &Probe) -> std::io::Result<Option<Output>> {
+    output_as(cmd, probe, false)
+}
+
+/// `output_within`, with no controlling terminal (`probing_as`): a stored
+/// key's command.
+pub(crate) fn output_detached(cmd: &mut Command, probe: &Probe) -> std::io::Result<Option<Output>> {
+    output_as(cmd, probe, true)
+}
+
+fn output_as(cmd: &mut Command, probe: &Probe, detached: bool) -> std::io::Result<Option<Output>> {
     use std::io::Read;
     use std::sync::{mpsc, Arc};
     let within = probe.within;
-    let mut child = probing(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()), probe)?;
+    let mut child = probing_as(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()), probe, detached)?;
     // Each pipe is read into a buffer shared with this thread, and says
     // when it reached its end.
-    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+    // Each stream is kept to OUTPUT_CAP: past it stdout is an overflow the
+    // check fails on, and stderr is read on and dropped — a vendor's answer
+    // and a key are both far smaller, and nothing may grow without bound.
+    let overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let drain = |pipe: Option<Box<dyn Read + Send>>, over: Option<Arc<std::sync::atomic::AtomicBool>>| {
         let buf = Arc::new(Mutex::new(Vec::new()));
         let (done, finished) = mpsc::channel::<()>();
         let into = buf.clone();
@@ -637,15 +678,22 @@ pub(crate) fn output_within(cmd: &mut Command, probe: &Probe) -> std::io::Result
                     if n == 0 {
                         break;
                     }
-                    into.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&chunk[..n]);
+                    let mut b = into.lock().unwrap_or_else(|e| e.into_inner());
+                    if b.len() + n > OUTPUT_CAP {
+                        if let Some(o) = &over {
+                            o.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        continue;
+                    }
+                    b.extend_from_slice(&chunk[..n]);
                 }
             }
             let _ = done.send(());
         });
         (buf, finished)
     };
-    let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-    let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), Some(overflow.clone()));
+    let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>), None);
     let started = Instant::now();
     loop {
         let gone = match exited(&mut child) {
@@ -666,6 +714,10 @@ pub(crate) fn output_within(cmd: &mut Command, probe: &Probe) -> std::io::Result
             crate::group::release(Some(child.id()));
             break;
         }
+        if overflow.load(std::sync::atomic::Ordering::Relaxed) {
+            stop(&mut child);
+            return Err(std::io::Error::other(format!("it printed more than {} KiB", OUTPUT_CAP / 1024)));
+        }
         if started.elapsed() > within {
             stop(&mut child);
             return Ok(None);
@@ -681,7 +733,11 @@ pub(crate) fn output_within(cmd: &mut Command, probe: &Probe) -> std::io::Result
         let _ = finished.recv_timeout(within.saturating_sub(started.elapsed()).max(Duration::from_millis(50)));
         std::mem::take(&mut *buf.lock().unwrap_or_else(|e| e.into_inner()))
     };
-    Ok(Some(Output { status, stdout: take(out), stderr: take(err) }))
+    let (stdout, stderr) = (take(out), take(err));
+    if overflow.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(std::io::Error::other(format!("it printed more than {} KiB", OUTPUT_CAP / 1024)));
+    }
+    Ok(Some(Output { status, stdout, stderr }))
 }
 
 /// Whether the child has exited, without reaping it: its pid stays its own

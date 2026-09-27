@@ -15,7 +15,9 @@
 //! - **`$VAR`** — a reference to a variable of krowk's environment, read
 //!   when the registry is resolved, as a variable the definition names is;
 //! - **`!command`** — a command whose standard output, trimmed, is the key
-//!   (`!pass show anthropic`), run at most once per krowk process.
+//!   (`!pass show anthropic`), run at most once per krowk process: its
+//!   answer — the key, or why there is none — is remembered for the process
+//!   (`run`), and two checks at once wait for one run.
 //!
 //! **Precedence is here and nowhere else** (`apply`): a stored key, then the
 //! variable. A stored key owns its instance — when it cannot be had (its
@@ -39,14 +41,25 @@
 //! they would type it (`pass show x | head -n1`), and nobody else can write
 //! it. It runs in the credentials file's own directory, never a
 //! repository's, so a relative path or a project's configuration cannot
-//! reach it; with stdin closed; in a process group of its own, killed with
-//! everything it started after `COMMAND_TIMEOUT`. Its standard error is
-//! never read into a message — a failing `pass` may print what it was
-//! asked for — and neither is anything it printed when it failed. What it
-//! printed is the key only when it exited 0 and printed one line.
+//! reach it. **With no terminal**, everywhere but one: stdin closed, in a
+//! session of its own (`setsid`, so no controlling terminal — a prompt on
+//! `/dev/tty` fails at once instead of stopping the command until its
+//! timeout) and without `GPG_TTY` (so gpg-agent does not draw a curses
+//! pinentry on the person's screen from under a status check), killed with
+//! everything it started after `COMMAND_TIMEOUT`; the failure says to
+//! unlock the password manager first or use a graphical pinentry. The one
+//! exception is `krowk connect` at a terminal, where the person is there:
+//! the command runs in the foreground, on that terminal, with no timeout,
+//! so they can type its passphrase and the agent's cache is unlocked for
+//! the runs after. Its standard output is kept to 64 KiB (more fails, the
+//! command stopped); its standard error is never read into a message — a
+//! failing `pass` may print what it was asked for — and neither is
+//! anything it printed when it failed. What it printed is the key only
+//! when it exited 0 and printed one line.
 //!
-//! **Readiness runs the command** (`readiness::check`, never `local`), once
-//! per process, bounded like a vendor check: `krowk status` saying `ready`
+//! **Readiness runs the command** (`readiness::check`, never `local`, which
+//! only reads the remembered answer and never waits), once per process,
+//! bounded like a vendor check: `krowk status` saying `ready`
 //! for a key it has not seen, and the turn then failing, is what readiness
 //! exists to prevent, and the command is one the person gave krowk to run.
 //! It runs in parallel with the vendor checks, and a turn in the same
@@ -65,8 +78,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-/// How long a key's command may run: long enough for a password manager
-/// to ask for its passphrase.
+/// How long a key's command may run with no terminal: it cannot ask for a
+/// passphrase there, so this bounds a slow password manager or a network
+/// fetch, not a person typing. At a terminal (`krowk connect`) there is no
+/// limit: the person is there to stop it.
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A stored key, as the credentials file holds it (`keys` in it, by
@@ -126,12 +141,20 @@ impl KeyRef {
     }
 }
 
-/// A command as it may be shown: its first word, then `…` when there is
-/// more — the rest may be an entry's name, or a key written inline.
+/// A command as it may be shown: its program, then `…` when there is more
+/// — the rest may be an entry's name, or a key written inline. Leading
+/// `NAME=value` words (`KEY=sk-… pass …`) are skipped, and a program that
+/// still holds a `=`, or none at all, is shown as `…` alone.
 pub fn short(command: &str) -> String {
-    let mut words = command.split_whitespace();
-    let first: String = words.next().unwrap_or_default().chars().filter(|c| !c.is_control()).collect();
-    if words.next().is_some() { format!("{first} …") } else { first }
+    let assign = |w: &str| w.split_once('=').is_some_and(|(n, _)| n.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+    let mut words = command.split_whitespace().skip_while(|w| assign(w));
+    match words.next() {
+        Some(p) if !p.contains('=') => {
+            let p: String = p.chars().filter(|c| !c.is_control()).collect();
+            if words.next().is_some() { format!("{p} …") } else { p }
+        }
+        _ => "…".into(),
+    }
 }
 
 /// How a resolved instance's key is stored — the reference, never the key.
@@ -191,17 +214,35 @@ pub(crate) fn apply(instances: &mut BTreeMap<String, Resolved>, credentials: &Pa
         (r.stored, r.api_key) = match k {
             KeyRef::Literal(v) => (Stored::Literal, v.trim().to_string()),
             KeyRef::Env(v) => (Stored::Env(v.clone()), env(v).trim().to_string()),
-            KeyRef::Command(c) => (Stored::Command { command: c.clone(), dir: dir.clone() }, ran(c).unwrap_or_default()),
+            KeyRef::Command(c) => (Stored::Command { command: c.clone(), dir: dir.clone() }, ran(c).and_then(Result::ok).unwrap_or_default()),
         };
     }
 }
 
-/// Keys commands printed, by command, for this process.
-static RAN: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+/// What each command gave in this process, by command: its key, or why
+/// there is none. Each has its own lock, held while the command runs, so
+/// two checks (status's parallel pass, the TUI routing while its first turn
+/// starts) wait for one run — one passphrase prompt — and a failure is
+/// remembered too, so a failing command is not run again on every route
+/// and turn. `forget` clears it (`krowk connect`, `disconnect`).
+type Memo = std::sync::Arc<Mutex<Option<Result<String, String>>>>;
+static RUNS: Mutex<Option<HashMap<String, Memo>>> = Mutex::new(None);
 
-/// The key a command already printed in this process.
-pub fn ran(command: &str) -> Option<String> {
-    RAN.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(command).cloned())
+fn memo(command: &str) -> Memo {
+    RUNS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).entry(command.into()).or_default().clone()
+}
+
+/// What a command already gave in this process — never waiting: a command
+/// still running is `None`, left to `readiness::check`, which may block.
+pub fn ran(command: &str) -> Option<Result<String, String>> {
+    let m = RUNS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(command)?.clone();
+    m.try_lock().ok().and_then(|g| g.clone())
+}
+
+/// Forgets every command's answer: a connection or a disconnection has just
+/// changed what the person wants run.
+pub fn forget() {
+    RUNS.lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
 /// The instance with its key in hand: a command's run (once per process),
@@ -210,7 +251,7 @@ pub fn materialise(inst: &Resolved) -> Result<Cow<'_, Resolved>, EngineError> {
     match &inst.stored {
         Stored::Unreadable(why) => Err(EngineError::new("not_authenticated", format!("{why} — so whether {} has a stored key is not known, and krowk does not fall back to ${} for it", inst.name, inst.api_key_env))),
         Stored::Command { command, dir } if inst.api_key.is_empty() => {
-            let key = run(&inst.name, command, dir).map_err(|why| EngineError::new("not_authenticated", no_fallback(inst, &why)))?;
+            let key = run(&inst.name, command, dir, None).map_err(|why| EngineError::new("not_authenticated", no_fallback(inst, &why)))?;
             let mut r = inst.clone();
             r.api_key = key;
             Ok(Cow::Owned(r))
@@ -230,17 +271,33 @@ pub fn auth_fix(inst: &Resolved) -> String {
 }
 
 /// A stored key that cannot be had, said with what is not done about it.
-fn no_fallback(inst: &Resolved, why: &str) -> String {
+pub fn no_fallback(inst: &Resolved, why: &str) -> String {
     let var = if inst.api_key_env.is_empty() { String::new() } else { format!(" to ${}", inst.api_key_env) };
     format!("{why} — the stored key is {}'s own, so krowk does not fall back{var}; fix it, store another with `{}`, or `krowk disconnect {}` to read the environment again", inst.name, crate::connect::connect_command(&inst.name, inst.kind), inst.name)
 }
 
-/// Runs a key's command (see the module's notes) and keeps what it printed
-/// for this process. The error never holds anything it printed.
-pub fn run(instance: &str, command: &str, dir: &Path) -> Result<String, String> {
-    if let Some(k) = ran(command) {
-        return Ok(k);
+/// Runs a key's command (see the module's notes), once per process: a
+/// run already made — or making, in another thread — is its answer. The
+/// error never holds anything it printed.
+///
+/// `at` is a person's terminal to run it on (`krowk connect` at one): in
+/// the foreground there, its prompts and errors theirs to see, so a
+/// password manager can ask for its passphrase — and a run made there is
+/// made again, whatever was remembered. Otherwise it runs with no terminal
+/// at all (its own session, `GPG_TTY` taken away), so one that asks fails
+/// at once instead of drawing a prompt nobody can answer.
+pub fn run(instance: &str, command: &str, dir: &Path, at: Option<&mut dyn crate::connect::AuthInteraction>) -> Result<String, String> {
+    let m = memo(command);
+    let mut done = m.lock().unwrap_or_else(|e| e.into_inner());
+    if let (Some(r), None) = (done.as_ref(), &at) {
+        return r.clone();
     }
+    let r = run_once(instance, command, dir, at);
+    *done = Some(r.clone());
+    r
+}
+
+fn run_once(instance: &str, command: &str, dir: &Path, at: Option<&mut dyn crate::connect::AuthInteraction>) -> Result<String, String> {
     let what = format!("{instance}'s stored key comes from running `{}`, which", short(command));
     #[cfg(unix)]
     let mut cmd = std::process::Command::new("sh");
@@ -250,16 +307,38 @@ pub fn run(instance: &str, command: &str, dir: &Path) -> Result<String, String> 
     let mut cmd = std::process::Command::new("cmd");
     #[cfg(not(unix))]
     cmd.arg("/C").arg(command);
-    let probe = crate::readiness::Probe { dir: dir.to_path_buf(), within: COMMAND_TIMEOUT };
-    let out = match crate::readiness::output_within(&mut cmd, &probe) {
-        Err(e) => return Err(format!("{what} could not start: {e}")),
-        Ok(None) => return Err(format!("{what} did not finish within {} seconds", COMMAND_TIMEOUT.as_secs())),
-        Ok(Some(o)) => o,
+    cmd.current_dir(dir);
+    let (status, stdout) = match at {
+        Some(ui) => {
+            let mut out = Vec::new();
+            let status = ui.terminal(&mut || {
+                use std::io::Read;
+                let mut child = cmd.stdin(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit()).stdout(std::process::Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+                let read = child.stdout.take().map(|o| o.take(crate::readiness::OUTPUT_CAP as u64 + 1).read_to_end(&mut out));
+                if read.is_some_and(|r| r.is_err()) || out.len() > crate::readiness::OUTPUT_CAP {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("it printed more than {} KiB", crate::readiness::OUTPUT_CAP / 1024));
+                }
+                child.wait().map_err(|e| e.to_string())
+            })
+            .map_err(|e| format!("{what} failed: {e}"))?;
+            (status, out)
+        }
+        None => {
+            let probe = crate::readiness::Probe { dir: dir.to_path_buf(), within: COMMAND_TIMEOUT };
+            cmd.env_remove("GPG_TTY");
+            match crate::readiness::output_detached(&mut cmd, &probe) {
+                Err(e) => return Err(format!("{what} failed: {e}")),
+                Ok(None) => return Err(format!("{what} did not finish within {} seconds{UNLOCK}", COMMAND_TIMEOUT.as_secs())),
+                Ok(Some(o)) => (o.status, o.stdout),
+            }
+        }
     };
-    if !out.status.success() {
-        return Err(format!("{what} stopped ({}) — what it printed is not shown, since it may hold the key; run it yourself to see why", out.status));
+    if !status.success() {
+        return Err(format!("{what} stopped ({status}) — what it printed is not shown, since it may hold the key; run it yourself to see why{UNLOCK}"));
     }
-    let key = String::from_utf8(out.stdout).map_err(|_| format!("{what} printed something that is not text"))?;
+    let key = String::from_utf8(stdout).map_err(|_| format!("{what} printed something that is not text"))?;
     let key = key.trim();
     if key.is_empty() {
         return Err(format!("{what} printed nothing"));
@@ -267,9 +346,11 @@ pub fn run(instance: &str, command: &str, dir: &Path) -> Result<String, String> 
     if key.chars().any(char::is_control) {
         return Err(format!("{what} printed more than one line — a key is one line; keep the first with `… | head -n1`"));
     }
-    RAN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(command.into(), key.into());
     Ok(key.into())
 }
+
+/// Said of a command that failed with no terminal: the likeliest reason.
+const UNLOCK: &str = ". krowk runs it with no terminal, so if it asks for a passphrase it cannot — unlock your password manager first (run the command once yourself), or use a graphical pinentry";
 
 #[cfg(test)]
 mod tests {
@@ -288,5 +369,8 @@ mod tests {
         assert_eq!(KeyRef::Command("pass show anthropic".into()).source(), "stored (!pass …)");
         assert_eq!(KeyRef::Command("echo sk-inline".into()).source(), "stored (!echo …)", "a key written into the command stays out");
         assert_eq!(KeyRef::Env("K".into()).source(), "stored ($K)");
+        for (cmd, shown) in [("FOO=sk-x pass show a", "pass …"), ("KEY=sk-x", "…"), ("a=b", "…"), ("pass", "pass"), ("--key=sk-x x", "…")] {
+            assert_eq!(short(cmd), shown, "{cmd}");
+        }
     }
 }
