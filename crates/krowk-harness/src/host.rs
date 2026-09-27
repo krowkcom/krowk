@@ -17,7 +17,7 @@ use crate::agents;
 use crate::engine::{BoxFuture, Engine, EngineError, EngineEvent, Events, HistoryItem, Steers, TurnContext, TurnEnd};
 use crate::subagent::{AgentRun, AgentsConfig, ParentTurn, Spawn, Subagents};
 use crate::evidence::{Evidence, Publisher};
-use crate::instances::{Auth, Registry, Resolved};
+use crate::instances::{Asked, Auth, Registry, Resolved};
 use crate::oauth;
 use crate::openai::ResponsesClient;
 use crate::log::{self, LogError, SessionLog};
@@ -179,6 +179,14 @@ impl Host {
 
     pub fn registry(&self) -> &Registry {
         &self.shared.cfg.registry
+    }
+
+    /// Where a bare model id — or, with none, the default — runs here
+    /// (`readiness::route`), for a client choosing one before it asks for a
+    /// turn or a switch (the TUI's `/model sonnet`). `current` is the
+    /// session's model, whose instance a bare id stays on when it can.
+    pub async fn route_model(&self, asked: Option<&Asked>, current: Option<&ModelRef>) -> Result<ModelRef, EngineError> {
+        self.shared.route_model(asked, current).await
     }
 
     /// Executes one command. A `prompt` streams its events to `out` and
@@ -433,6 +441,24 @@ impl Shared {
         readiness::check_async(instance, creds, &readiness::Probe::at(at)).await.refusal(instance).map_or(Ok(()), Err)
     }
 
+    /// `Host::route_model`, off the runtime's thread: a vendor check blocks
+    /// on a process. Its vendors are asked in krowk's own directory, since
+    /// routing asks no trust question: the turn's own check then asks trust,
+    /// and the vendor again in the repository, before anything runs there.
+    async fn route_model(self: &Arc<Self>, asked: Option<&Asked>, current: Option<&ModelRef>) -> Result<ModelRef, EngineError> {
+        if let Some(Asked::Exact(m)) = asked {
+            return Ok(m.clone());
+        }
+        let probe = self.neutral_probe().map_err(|e| EngineError::new("data_dir_unwritable", e))?;
+        let (me, asked, current) = (self.clone(), asked.cloned(), current.cloned());
+        tokio::task::spawn_blocking(move || {
+            let cfg = &me.cfg;
+            readiness::route(&cfg.registry, asked.as_ref(), current.as_ref(), &cfg.credentials, &probe, &*cfg.agents.models)
+        })
+        .await
+        .unwrap_or_else(|_| Err(EngineError::new("none_ready", "choosing an instance for the model failed — name one as <instance>/<model>")))
+    }
+
     /// Where a vendor is asked outside any repository: krowk's own `0700`
     /// directory beside the sessions (`readiness::neutral_dir`).
     fn neutral_probe(&self) -> Result<readiness::Probe, String> {
@@ -563,7 +589,7 @@ impl Shared {
             Some(m) => m,
             None => match past.model.clone() {
                 Some(m) => m,
-                None => self.cfg.registry.default_model().map_err(|e| EngineError::new("bad_config", e))?,
+                None => self.route_model(None, None).await?,
             },
         };
         let staying = |e: EngineError| match past.model.as_ref().filter(|p| **p != model) {

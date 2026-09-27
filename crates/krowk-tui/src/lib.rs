@@ -1096,10 +1096,16 @@ impl<'h> Ui<'h> {
             }
             t if t.starts_with("/model ") => {
                 app.editor.clear();
-                match self.host.registry().parse_model(&t["/model ".len()..]) {
-                    Ok(m) => {
-                        self.switch(app, m).await;
-                    }
+                // A bare id stays on the session's instance when that can
+                // run it, else goes to the first one ready here.
+                let current = self.model.clone().or_else(|| app.model.clone());
+                match self.host.registry().read_model(&t["/model ".len()..]) {
+                    Ok(asked) => match self.host.route_model(Some(&asked), current.as_ref()).await {
+                        Ok(m) => {
+                            self.switch(app, m).await;
+                        }
+                        Err(e) => app.error(&e.info()),
+                    },
                     Err(e) => app.notice(&format!("/model: {e}")),
                 }
                 return false;

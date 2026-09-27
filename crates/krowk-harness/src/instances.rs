@@ -543,12 +543,12 @@ impl Registry {
         self.instances.values().filter(|i| Some(i.kind) == kind).map(|i| ModelRef { instance: i.name.clone(), model: from.model.clone() }).filter(|m| !skip(m)).collect()
     }
 
-    /// `--model`'s reading: `<instance>/<model>` when the part before the
-    /// first `/` names an instance — a router's model ids have slashes of
-    /// their own. A bare id with no `/` goes to the implicit instance of the
-    /// provider its family names (`gpt-…`, `o3`, `codex-…` to `openai`,
-    /// `grok-…` to `xai`), and anything else to `anthropic`.
-    pub fn parse_model(&self, s: &str) -> Result<ModelRef, String> {
+    /// `--model`'s reading, before any instance is chosen for a bare id:
+    /// `<instance>/<model>` when the part before the first `/` names an
+    /// instance — a router's model ids have slashes of their own — and
+    /// anything else a bare id, which `readiness::route` gives an instance
+    /// that can run it here.
+    pub fn read_model(&self, s: &str) -> Result<Asked, String> {
         let s = s.trim();
         if s.is_empty() {
             return Err("the model is empty — pass `<instance>/<model>` or a model id".into());
@@ -559,17 +559,33 @@ impl Registry {
             if model.is_empty() {
                 return Err(format!("{s:?} names the instance {instance:?} but no model — e.g. {instance}/{DEFAULT_MODEL}"));
             }
-            return Ok(ModelRef { instance: instance.into(), model: model.into() });
+            return Ok(Asked::Exact(ModelRef { instance: instance.into(), model: model.into() }));
         }
-        let by_family = match (s.contains('/'), crate::toolset::family_from_id(s)) {
-            (false, Some("gpt" | "o" | "codex")) => "openai",
-            (false, Some("grok")) => "xai",
-            _ => DEFAULT_INSTANCE,
-        };
-        Ok(ModelRef { instance: by_family.into(), model: s.into() })
+        Ok(Asked::Bare(s.into()))
     }
 
-    /// The configured default, else krowk's.
+    /// `read_model`, a bare id put on the implicit API instance of the
+    /// provider its family names, ready or not (`gpt-…`, `o3`, `codex-…` on
+    /// `openai`, `grok-…` on `xai`, anything else on `anthropic`): where a
+    /// subagent's model goes, since a subagent runs only on krowk's own loop
+    /// and so never on a backend. A turn's model is routed instead.
+    pub fn parse_model(&self, s: &str) -> Result<ModelRef, String> {
+        match self.read_model(s)? {
+            Asked::Exact(m) => Ok(m),
+            Asked::Bare(s) => {
+                let api = match line_of(&s) {
+                    Line::Claude => DEFAULT_INSTANCE,
+                    Line::Openai => "openai",
+                    Line::Grok => "xai",
+                };
+                Ok(ModelRef { instance: api.into(), model: s })
+            }
+        }
+    }
+
+    /// The configured default as it was written, else krowk's own on
+    /// `anthropic`, unrouted: what a client shows before anything is
+    /// asked. A turn's default is `readiness::route`'s.
     pub fn default_model(&self) -> Result<ModelRef, String> {
         match &self.default_model {
             Some(m) => self.parse_model(m).map_err(|e| format!("config defaultModel: {e}")),
@@ -577,11 +593,169 @@ impl Registry {
         }
     }
 
+    /// The instances that could run a bare `model` — with none, the default
+    /// model — best first, whether they are ready or not (that is the
+    /// router's to ask). The order, and why (Canon, "Instances and models"):
+    ///
+    /// 1. the session's own instance (`current`), so `/model haiku` on
+    ///    `claude:work` stays on that account;
+    /// 2. the instance `defaultModel` names, when it names one: the person
+    ///    said which account they use;
+    /// 3. the provider's implicit API instance (`anthropic`, `openai`,
+    ///    `xai`): what a bare id always ran on, so nobody with a key set
+    ///    moves, and ready or not without spawning anything;
+    /// 4. its implicit subscription (`claude`, `codex`, `supergrok`);
+    /// 5. every other instance of a kind that serves it, by name.
+    ///
+    /// Each only when its kind serves the id's line — an Anthropic model on
+    /// `anthropic-api` or `claude-code`, a GPT on `openai-api` or
+    /// `codex-app-server`, a Grok on `xai-api` or `xai-oauth`. With no id,
+    /// Claude's line first (krowk's default is a Claude model, and a GPT key
+    /// exported for another tool should not move a Claude subscriber off
+    /// Claude), then OpenAI's, then xAI's, each in that order.
+    pub fn candidates(&self, model: Option<&str>, current: Option<&ModelRef>) -> Vec<&Resolved> {
+        let lines = match model {
+            Some(m) => vec![line_of(m)],
+            None => vec![Line::Claude, Line::Openai, Line::Grok],
+        };
+        let mut names: Vec<&str> = Vec::new();
+        if model.is_some() {
+            names.extend(current.map(|c| c.instance.as_str()));
+            if let Some(Ok(Asked::Exact(d))) = self.default_model.as_deref().map(|d| self.read_model(d)) {
+                names.push(self.instances.get_key_value(&d.instance).map_or("", |(k, _)| k.as_str()));
+            }
+        }
+        for &line in &lines {
+            let (api, subscription) = line.implicit();
+            names.extend([api, subscription]);
+            names.extend(self.instances.values().filter(|i| line_of_kind(i.kind) == Some(line)).map(|i| i.name.as_str()));
+        }
+        let mut out: Vec<&Resolved> = Vec::new();
+        for name in names {
+            if let Some(i) = self.instances.get(name)
+                && line_of_kind(i.kind).is_some_and(|l| lines.contains(&l))
+                && !out.iter().any(|o| o.name == i.name)
+            {
+                out.push(i);
+            }
+        }
+        out
+    }
+
+    /// A bare id as `inst` takes it: Claude Code takes its aliases
+    /// (`sonnet`, `opus`, `haiku`) and full ids alike; the Messages API
+    /// takes full ids only, so an alias there is the newest model of its
+    /// family the catalog lists (`listed`, by provider). With no id, the
+    /// instance's default model (`default_model_of`). An error says why
+    /// this instance cannot take it.
+    pub fn model_on(&self, inst: &Resolved, model: Option<&str>, listed: &dyn Fn(&str) -> Vec<crate::catalog::Listed>) -> Result<String, String> {
+        let Some(m) = model else {
+            return default_model_of(inst.kind).map(String::from).ok_or_else(|| format!("{} has no default model — name one as {}/<model>", inst.name, inst.name));
+        };
+        let alias = m.to_ascii_lowercase();
+        if !ALIASES.contains(&alias.as_str()) {
+            return Ok(m.into());
+        }
+        if inst.backend.is_some() {
+            return Ok(alias);
+        }
+        let family = format!("claude-{alias}");
+        crate::catalog::newest(&listed(&inst.provider), &family)
+            .ok_or_else(|| format!("{m:?} is Claude Code's alias for the {family} family, which the model catalog does not list for {} — run `krowk pricing refresh`, or name the model as {}/<model>", inst.name, inst.name))
+    }
+
     pub fn get(&self, name: &str) -> Result<&Resolved, String> {
         self.instances.get(name).ok_or_else(|| {
             let known: Vec<&str> = self.instances.keys().map(String::as_str).collect();
             format!("no instance named {name:?} — this host has {}; add one with `krowk providers add`", known.join(", "))
         })
+    }
+}
+
+/// What `--model` (or `defaultModel`) asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Asked {
+    /// `<instance>/<model>`: runs there, never rerouted.
+    Exact(ModelRef),
+    /// A bare id — `sonnet`, `gpt-5.5`, or a router's `x/y` that names no
+    /// instance — whose instance krowk picks.
+    Bare(String),
+}
+
+/// Claude Code's model aliases: on a `claude-code` instance as they are,
+/// on the Messages API the newest model of their family.
+pub const ALIASES: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
+
+/// A provider's line of models, as routing groups instances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Line {
+    Claude,
+    Openai,
+    Grok,
+}
+
+impl Line {
+    /// The line's implicit API instance and its implicit subscription.
+    fn implicit(self) -> (&'static str, &'static str) {
+        match self {
+            Line::Claude => ("anthropic", "claude"),
+            Line::Openai => ("openai", "codex"),
+            Line::Grok => ("xai", "supergrok"),
+        }
+    }
+}
+
+/// The line a bare id belongs to, by its family: `gpt-…`, `o3`, `codex-…`
+/// OpenAI's, `grok-…` xAI's, and anything else — an alias, a Claude id, an
+/// id with a `/` of its own, one no family names — Claude's, as it always
+/// was.
+fn line_of(model: &str) -> Line {
+    match (model.contains('/'), crate::toolset::family_from_id(model)) {
+        (false, Some("gpt" | "o" | "codex")) => Line::Openai,
+        (false, Some("grok")) => Line::Grok,
+        _ => Line::Claude,
+    }
+}
+
+/// The line an instance of `kind` serves. A router or a compatible server
+/// serves whatever it serves, which krowk cannot tell: it is reached by
+/// naming it.
+fn line_of_kind(kind: &str) -> Option<Line> {
+    match kind {
+        "anthropic-api" | "claude-code" => Some(Line::Claude),
+        "openai-api" | "codex-app-server" => Some(Line::Openai),
+        "xai-api" | "xai-oauth" => Some(Line::Grok),
+        _ => None,
+    }
+}
+
+/// What a bare id — with none, any model — is, in the words of a refusal,
+/// and the providers `krowk connect <vendor>` connects to run it: the API
+/// first, then the subscription, as routing ranks them.
+pub fn serving(model: Option<&str>) -> (&'static str, Vec<&'static str>) {
+    let words = |l: Line| match l {
+        Line::Claude => "Claude models",
+        Line::Openai => "OpenAI models",
+        Line::Grok => "Grok models",
+    };
+    match model {
+        Some(m) => {
+            let (api, sub) = line_of(m).implicit();
+            (words(line_of(m)), vec![api, sub])
+        }
+        None => ("any model", [Line::Claude, Line::Openai, Line::Grok].into_iter().flat_map(|l| <[&str; 2]>::from(l.implicit())).collect()),
+    }
+}
+
+/// The model a new session runs on with nothing asked, by the kind of the
+/// instance the router picked.
+pub fn default_model_of(kind: &str) -> Option<&'static str> {
+    match kind {
+        "anthropic-api" | "claude-code" => Some(DEFAULT_MODEL),
+        "openai-api" => Some("gpt-5.4"),
+        "codex-app-server" => Some("gpt-5.5"),
+        "xai-api" | "xai-oauth" => Some("grok-4.7"),
+        _ => None,
     }
 }
 

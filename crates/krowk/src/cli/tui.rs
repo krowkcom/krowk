@@ -35,10 +35,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
     let config = prompt::config_json()?;
     let registry = Registry::resolve(&prompt::instances_from(&config)?, ctx.io.env);
     registry.check_rollover().map_err(|e| fail("bad_config", e))?;
-    let model = match ctx.f.model.as_str() {
-        "" => None,
-        m => Some(registry.parse_model(m).map_err(|e| fail("bad_flag", format!("--model: {e}")))?),
-    };
+    let asked = prompt::model_flag(ctx, &registry)?;
     let sessions_dir = log::sessions_dir(ctx.io.env)
         .ok_or_else(|| fail("store_unavailable", "no home directory in environment: set HOME (or XDG_DATA_HOME to an absolute path) so sessions have a place to live"))?;
     let resume = if ctx.f.resume_pick {
@@ -68,9 +65,19 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         krowk_harness::protocol::LogBody::SessionStarted { cwd, .. } => Some(std::path::PathBuf::from(cwd)),
         _ => None,
     });
-    let effective = model.clone().or(session_model).or_else(|| registry.default_model().ok());
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
     let runs_in = session_cwd.clone().unwrap_or_else(|| cwd.clone());
+    // The model is routed now, so the trust question below names the
+    // vendor it runs. With nothing ready and nothing asked, the TUI still
+    // opens — to say so on the first prompt, and let the person connect
+    // one — but a bare --model that nothing can run is refused here.
+    let known = krowk_harness::trust::Store::new(krowk_api::creds::config_dir().join(krowk_harness::trust::FILE), home.clone()).trusts(&krowk_harness::trust::root(&runs_in));
+    let (model, route_notice) = match prompt::route(ctx, &registry, asked.as_ref(), session_model.as_ref(), &runs_in, known) {
+        Ok(m) => (m, None),
+        Err(e) if asked.is_none() => (None, Some(e.fix())),
+        Err(e) => return Err(e),
+    };
+    let effective = model.clone().or(session_model);
     // What a repository's own settings would widen is asked about with the
     // trust question too; the TUI answers approvals itself (R-PERM-2).
     let probe = prompt::permissions_config(ctx, &config, Arc::new(|_: &std::path::Path| false), true);
@@ -105,7 +112,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         budget,
         settings,
         history_file,
-        notices: notices.into_iter().chain(mode_notices).collect(),
+        notices: notices.into_iter().chain(mode_notices).chain(route_notice).collect(),
         version: super::VERSION.into(),
     });
     // As after `krowk -p`: the log is the session, krowk.db its listing.
