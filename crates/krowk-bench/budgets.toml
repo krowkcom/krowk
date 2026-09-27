@@ -109,7 +109,9 @@ unit = "bytes"
 # instance (no new crate: the router and its refusals, the kind labels),
 # adds 21,856 bytes on the umbrella's 8,181,000: 8,202,856 (7.82 MiB), and
 # its review round 1 (the TUI's own routing and trust question, connect
-# commands) 9,792 more: 8,212,648 (7.83 MiB), 175,960 under this.
+# commands) 9,792 more, and round 2 (the settled trust question, held
+# prompts, /model off the loop, registered check groups) 3,360: 8,216,008
+# (7.84 MiB), 172,600 under this.
 max = { x86_64-linux = 8_388_608 }
 status = "enforced"
 
