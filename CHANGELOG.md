@@ -25,8 +25,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   the global and agent flags are topics: `krowk help topics` lists them,
   `krowk help exit-codes` shows one. A command's page wraps at 80 columns and
   names the global flags in one line instead of listing them. `krowk help
-  --json` keeps its shape, with the short summaries; a topic answers
-  `{"topic", "text"}`.
+  --json` keeps its shape, with the short summaries; a topic's `--json` is
+  its text as one JSON string. Both builds come out a little smaller.
 
 - **Every "sign in with …" now says `krowk connect`**: `krowk status`,
   `providers list`, a refused switch and a failed turn name the connect
