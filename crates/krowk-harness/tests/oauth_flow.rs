@@ -146,9 +146,12 @@ async fn r_prov_4_an_expired_token_is_refreshed_once_across_processes_and_rotati
 /// Two krowk processes whose token expired at once: their refreshes contend
 /// for the store's lock, the loser waits (on its runtime, never blocking it)
 /// and then uses the winner's token — exactly one refresh, so neither spends
-/// a refresh token the other already rotated away.
+/// a refresh token the other already rotated away. A third stores an API
+/// key in the same file meanwhile (R-CRED-1): its write waits for the lock
+/// too, and neither the rotated token nor the key is lost. Each racer opens
+/// the file and its lock on its own descriptor, as separate processes do.
 #[test]
-fn r_prov_4_two_processes_refreshing_at_once_make_exactly_one_refresh() {
+fn r_prov_4_r_cred_1_two_processes_refreshing_at_once_make_exactly_one_refresh_beside_a_key_being_stored() {
     let auth = providers::auth_server(3600);
     auth.state.lock().unwrap().refresh_delay_ms = 400;
     let d = dir("race");
@@ -170,10 +173,19 @@ fn r_prov_4_two_processes_refreshing_at_once_make_exactly_one_refresh() {
             })
         })
         .collect();
+    let keyed = {
+        let store = store.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            store.save_key("anthropic", &krowk_harness::keys::KeyRef::Literal("sk-stored".into())).unwrap();
+        })
+    };
     let got: Vec<String> = racers.into_iter().map(|t| t.join().unwrap()).collect();
+    keyed.join().unwrap();
     assert_eq!(got, ["xai-at-2", "xai-at-2"], "the loser used the winner's token");
     assert_eq!(auth.state.lock().unwrap().refreshes, 1, "exactly one refresh");
     assert_eq!(store.load("supergrok").unwrap().unwrap().refresh_token.as_deref(), Some("xai-rt-2"));
+    assert_eq!(store.keys().unwrap().get("anthropic"), Some(&krowk_harness::keys::KeyRef::Literal("sk-stored".into())), "the key stored meanwhile is kept");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -252,7 +264,7 @@ fn r_prov_4_an_interrupt_while_getting_a_token_stops_the_call_and_keeps_the_logi
             rt().block_on(tokens.bearer(&http, false)).unwrap()
         })
     };
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(100));
     let took = interrupted_call("waiting on the lock");
     assert!(took < Duration::from_millis(1500), "returned {took:?} in, not after the other krowk's refresh");
     assert_eq!(other.join().unwrap(), "xai-at-2");

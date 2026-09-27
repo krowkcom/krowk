@@ -29,6 +29,11 @@
 //! sits. xAI rotates refresh tokens, so a refresh
 //! holds a lock on the file and re-reads it first: two krowk processes
 //! refreshing at once would otherwise each spend the other's token.
+//!
+//! The same file holds stored API keys (`keys`, see `crate::keys`), and
+//! every write to it — a login, a refresh, a key stored or removed — is one
+//! read-modify-write under that one lock (`Store::modify`), so storing a key
+//! in one krowk never drops the token another has just rotated.
 
 use crate::engine::EngineError;
 use serde::{Deserialize, Serialize};
@@ -112,6 +117,9 @@ struct File {
     version: u32,
     #[serde(default)]
     instances: BTreeMap<String, Stored>,
+    /// Stored API keys, by instance.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    keys: BTreeMap<String, crate::keys::KeyRef>,
     /// Whatever a later krowk writes that this one does not know, kept.
     #[serde(flatten)]
     other: serde_json::Map<String, Value>,
@@ -142,31 +150,48 @@ impl Store {
         Ok(self.read()?.instances.remove(instance))
     }
 
-    /// Stores a login, under the store's lock: a login and a refresh in
-    /// another krowk never interleave their read and their write.
-    pub fn save(&self, instance: &str, stored: &Stored) -> Result<(), EngineError> {
+    /// The one way the file changes: under the store's lock, read, edit,
+    /// and written back (by rename) when the edit says it changed something
+    /// — so a login, a refresh and a stored key in two krowks never
+    /// interleave their read and their write.
+    fn modify<R>(&self, edit: impl FnOnce(&mut File) -> (R, bool)) -> Result<R, EngineError> {
         let _lock = self.lock_blocking()?;
-        self.save_locked(instance, stored)
+        self.modify_locked(edit)
     }
 
-    /// `save`, for a caller already holding the lock.
-    fn save_locked(&self, instance: &str, stored: &Stored) -> Result<(), EngineError> {
+    /// `modify`, for a caller already holding the lock.
+    fn modify_locked<R>(&self, edit: impl FnOnce(&mut File) -> (R, bool)) -> Result<R, EngineError> {
         let mut f = self.read()?;
-        f.version = 1;
-        f.instances.insert(instance.into(), stored.clone());
-        self.write(&f)
-    }
-
-    /// Forgets an instance's login, under the store's lock. Whether there
-    /// was one.
-    pub fn remove(&self, instance: &str) -> Result<bool, EngineError> {
-        let _lock = self.lock_blocking()?;
-        let mut f = self.read()?;
-        let had = f.instances.remove(instance).is_some();
-        if had {
+        let (r, changed) = edit(&mut f);
+        if changed {
+            f.version = 1;
             self.write(&f)?;
         }
-        Ok(had)
+        Ok(r)
+    }
+
+    /// Stores a login.
+    pub fn save(&self, instance: &str, stored: &Stored) -> Result<(), EngineError> {
+        self.modify(|f| (f.instances.insert(instance.into(), stored.clone()), true)).map(drop)
+    }
+
+    /// Stores an API key for an instance, replacing the one it had.
+    pub fn save_key(&self, instance: &str, key: &crate::keys::KeyRef) -> Result<(), EngineError> {
+        self.modify(|f| (f.keys.insert(instance.into(), key.clone()), true)).map(drop)
+    }
+
+    /// Forgets an instance's login and its stored key. Whether there was
+    /// either.
+    pub fn remove(&self, instance: &str) -> Result<bool, EngineError> {
+        self.modify(|f| {
+            let had = f.instances.remove(instance).is_some() | f.keys.remove(instance).is_some();
+            (had, had)
+        })
+    }
+
+    /// Every stored API key, by instance.
+    pub fn keys(&self) -> Result<BTreeMap<String, crate::keys::KeyRef>, EngineError> {
+        Ok(self.read()?.keys)
     }
 
     /// Every instance with a login.
@@ -675,7 +700,8 @@ impl Tokens {
         // Memory first: the old refresh token is spent now, and a save that
         // fails must not leave this session holding it.
         *cur = stored_from(&v, &e, &cur.client_id, &cur.scope, Some(refresh))?;
-        self.store.save_locked(&self.instance, &cur)?;
+        let (instance, fresh) = (&self.instance, cur.clone());
+        self.store.modify_locked(|f| (f.instances.insert(instance.clone(), fresh), true))?;
         Ok(Some(cur.access_token.clone()))
     }
 
