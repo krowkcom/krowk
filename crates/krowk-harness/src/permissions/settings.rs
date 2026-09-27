@@ -136,6 +136,10 @@ impl File {
     /// mode (`load` decides); anything else is `default`, said at once.
     fn mode(&self, home: Option<&Path>, config: &str) -> (Option<PermissionMode>, Option<String>) {
         let Some((m, narrows)) = &self.unknown_mode else { return (self.default_mode, None) };
+        if m == "\"unhinged\"" {
+            let why = format!("{} sets defaultMode \"unhinged\", which is krowk's own — Claude Code skips a settings file naming it, deny rules and hooks included — so krowk asks before edits and commands · set permissions.defaultMode in {config} to choose unhinged", tilde(&self.source, home));
+            return (Some(PermissionMode::Default), Some(why));
+        }
         let why = format!("{} sets defaultMode {m}, which krowk doesn't have, so it asks before edits and commands · set permissions.defaultMode in {config} to choose", tilde(&self.source, home));
         (narrows.then_some(PermissionMode::Default), Some(why))
     }
@@ -241,8 +245,16 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
         user.push(read_object(v, &source, &root, &base, home)?);
     }
     if let Some(dir) = cfg.claude_home()
-        && let Some(f) = read_file(&dir.join("settings.json"), &root, cfg.home.as_deref().unwrap_or(&dir), home)?
+        && let Some(mut f) = read_file(&dir.join("settings.json"), &root, cfg.home.as_deref().unwrap_or(&dir), home)?
     {
+        // unhinged is krowk's own, and Claude Code skips a whole settings
+        // file naming a mode it does not know — its deny rules and hooks
+        // with it. So Claude's file never chooses unhinged: it reads as
+        // default, with a notice, and krowk's config.json is where it is set.
+        if f.default_mode == Some(PermissionMode::Unhinged) {
+            f.default_mode = None;
+            f.unknown_mode = Some(("\"unhinged\"".into(), true));
+        }
         user.push(f);
     }
     if let Some(path) = cfg.grants_file() {

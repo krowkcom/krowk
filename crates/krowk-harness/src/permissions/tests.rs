@@ -149,7 +149,15 @@ fn r_perm_1_only_the_person_puts_a_session_in_unhinged() {
     let cfg = Config { trusted: Some(Arc::new(|_: &Path| true)), ..Config::default() };
     assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, None, "a trusted repository's unhinged never counts");
     let cfg = Config { user: Some(json!({"permissions": {"defaultMode": "unhinged"}})), ..cfg };
-    assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, Some(PermissionMode::Unhinged), "the person's own settings choose it");
+    assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, Some(PermissionMode::Unhinged), "krowk's own config chooses it");
+    // Claude Code's user file does not: Claude Code would skip the whole
+    // file, deny rules and hooks included.
+    let claude = d.join("home/.claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(claude.join("settings.json"), json!({"permissions": {"defaultMode": "unhinged"}}).to_string()).unwrap();
+    let p = Policy::load(&Config { claude_dir: Some(claude), home: Some(d.join("home")), trusted: Some(Arc::new(|_: &Path| true)), ..Config::default() }, &d.join("src")).unwrap();
+    assert_eq!(p.loaded.default_mode, Some(PermissionMode::Default));
+    assert!(matches!(p.loaded.notices.as_slice(), [n] if n.starts_with("~/.claude/settings.json sets defaultMode \"unhinged\"") && n.contains("Claude Code skips")), "{:?}", p.loaded.notices);
     // What bypassPermissions still asks about, the refusal points past it,
     // from whichever mode asked.
     let asks = policy(&d, &[(Kind::Ask, "Bash(npm test)"), (Kind::Deny, "Bash(rm:*)")]);

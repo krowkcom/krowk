@@ -19,7 +19,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   you trust the model with everything krowk can reach. Set it for good with
   `"permissions": {"defaultMode": "unhinged"}` in
   `~/.config/krowk/config.json`; a repository's settings can never choose
-  it. What still holds: a `PreToolUse` hook that blocks a call; `publish`
+  it, and neither can `~/.claude/settings.json` (Claude Code would skip that
+  whole file, deny rules and hooks included, so krowk reads it as `default`
+  and says so). What still holds: a `PreToolUse` hook that blocks a call; `publish`
   refusing credential files; on a Claude Code instance, the deny rules in
   Claude Code's own settings files, which Claude Code applies itself; on a
   Codex instance, Codex's own rules (it runs in full access, as under
