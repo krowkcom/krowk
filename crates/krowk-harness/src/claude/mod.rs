@@ -636,6 +636,7 @@ async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Re
             }
         }
     }
+    p.armed = false;
     let reason = p.finished.take().unwrap_or_else(|| BEGAN.into());
     // The mode it runs in is the one the process is in, which krowk
     // accepted: the last turn's, or default once that plan turn's
@@ -752,9 +753,13 @@ struct Proc {
     /// An `init` read between turns before anything had finished — not a
     /// turn's start by itself — kept in case what follows is one.
     held_init: Option<Value>,
-    /// A background agent finished since the last turn: why the turn Claude
-    /// Code begins next begins.
+    /// Why the turn Claude Code begins next begins: the last background
+    /// agent that finished, in words. Kept apart from `armed`, so a prompt
+    /// in between takes away the leave to start a turn, not the words.
     finished: Option<String>,
+    /// A background agent finished since the last prompt: an `init` read
+    /// between turns is Claude Code beginning a turn to answer it.
+    armed: bool,
     /// Background agents `background_tasks_changed` took off the list, for
     /// the words of their `task_notification`, which comes after it.
     ended: Vec<BackendAgent>,
@@ -886,6 +891,7 @@ impl Proc {
             begun: Vec::new(),
             held_init: None,
             finished: None,
+            armed: false,
             ended: Vec::new(),
             backlog: VecDeque::new(),
             origins: false,
@@ -1005,8 +1011,13 @@ impl Proc {
             self.ended.clear();
         }
         // What finished before a prompt either began its turn — waiting, or
-        // folded here — or never will: not why a later one begins.
-        let before = if prompt.is_some() { self.finished.take() } else { None };
+        // folded here — or begins it only after the prompt's answer, which
+        // a stray `init` is not proof of: the leave to start one goes, the
+        // words stay for the turn that does follow.
+        let mut before = if prompt.is_some() { self.finished.take() } else { None };
+        if prompt.is_some() {
+            self.armed = false;
+        }
         let mut interrupted = false;
         let mut receipt_required = false;
         let mut receipt: Option<String> = None;
@@ -1131,7 +1142,9 @@ impl Proc {
                                     // this one: noted, and the prompt's
                                     // answer read on.
                                     owed = if o.unprompted { 0 } else { owed - 1 };
-                                    let reason = why.take().or_else(|| self.finished.take()).or_else(|| before.clone()).unwrap_or_else(|| BEGAN.into());
+                                    let reason = why.take().or_else(|| self.finished.take()).or_else(|| before.take()).unwrap_or_else(|| BEGAN.into());
+                                    before = None;
+                                    self.armed = false;
                                     self.ended.clear();
                                     note(events, folded(&reason)).await;
                                     continue;
@@ -1143,6 +1156,11 @@ impl Proc {
                 }
             }
         };
+        // Words no fold took are the next self-started turn's, unless an
+        // agent finished since.
+        if self.finished.is_none() {
+            self.finished = before;
+        }
         // An agent run in the foreground ends with the turn that ran it.
         if let Some(agents) = self.drop_foreground() {
             let _ = events.send(EngineEvent::BackendAgents { agents }).await;
@@ -1215,6 +1233,7 @@ impl Proc {
                 *agents = kept;
                 for t in gone {
                     self.finished = Some(format!("background agent “{}” finished", t.agent.description));
+                    self.armed = true;
                     self.ended.push(t.agent);
                 }
             }
@@ -1231,6 +1250,7 @@ impl Proc {
             };
             if let Some(d) = what {
                 self.finished = Some(format!("background agent “{d}” {st}"));
+                self.armed = true;
             }
         }
         (ids(&agents) != before).then(|| agents.iter().map(|t| t.agent.clone()).collect())
@@ -1259,7 +1279,7 @@ impl Proc {
             // Claude Code answering it. One with nothing finished is kept
             // aside: Claude Code sends some between turns that no turn
             // follows.
-            ("system", "init") if self.finished.is_some() => self.begun.push(msg),
+            ("system", "init") if self.armed => self.begun.push(msg),
             ("system", "init") => self.held_init = Some(msg),
             // Whatever began it, the conversation's own lines are a turn.
             ("stream_event" | "assistant" | "user" | "result", _) => {

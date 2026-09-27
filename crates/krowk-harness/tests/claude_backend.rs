@@ -926,3 +926,34 @@ fn r_sub_3_background_agents_stopped_with_their_process_are_said_to_have_gone() 
         host.shutdown().await;
     }));
 }
+
+/// The order seen live: the agent finishes while idle, a prompt is sent
+/// and answered, and only then does Claude Code begin its own turn. The
+/// prompt ends at its own answer, and the turn that follows still says
+/// which agent it answers.
+#[test]
+fn r_back_5_a_turn_claude_code_begins_after_a_prompt_still_names_the_agent_it_answers() {
+    let home = Home::new("bg-after");
+    let dir = home.signed_in("cfg-work");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_after_prompt.jsonl")))], trust::allow_all());
+    let mut watch = host.watch();
+    within(Box::pin(async {
+        let (_, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        let first = r.unwrap().unwrap();
+        // The agent's end, read between turns.
+        loop {
+            if let StreamLine::Live(LiveEvent::BackendAgents { agents, .. }) = watch.recv().await.unwrap()
+                && agents.is_empty()
+            {
+                break;
+            }
+        }
+        let (_, r) = run(&host, prompt(Some(&first.session_id), "say second", "claude:work/sonnet", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().result, "second", "the prompt's own answer");
+        let (_, reason) = until_unprompted(&mut watch, &first.session_id).await;
+        assert_eq!(reason, "background agent “survey the repo” completed");
+        let (_, r) = run(&host, continue_turn(&first.session_id)).await;
+        assert_eq!(r.unwrap().unwrap().result, "The agent is done: the repo is small.");
+        host.shutdown().await;
+    }));
+}
