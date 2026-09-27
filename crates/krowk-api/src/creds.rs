@@ -69,16 +69,33 @@ pub fn credentials_path() -> PathBuf {
     config_dir().join("credentials.json")
 }
 
-/// krowk's config directory: $XDG_CONFIG_HOME/krowk, else ~/.config/krowk —
-/// or `.krowk` beside the caller when there is no home at all.
+/// Where krowk's config directory is when there is no home to put it in:
+/// absolute, and nowhere a repository or anyone else can put files — so
+/// nothing is read from it and nothing can be written there.
+pub const NO_HOME: &str = "/nonexistent/krowk";
+
+/// krowk's config directory: $XDG_CONFIG_HOME/krowk, else ~/.config/krowk,
+/// each only when absolute (a relative XDG_CONFIG_HOME is ignored, as the
+/// XDG spec says). None with no home: never a relative path, which would
+/// make a repository's own `.krowk` krowk's config — its keys, its trust
+/// list, its commands.
+pub fn home_config_dir() -> Option<PathBuf> {
+    let abs = |d: PathBuf| Some(d).filter(|d| d.is_absolute());
+    std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()).and_then(|d| abs(PathBuf::from(d))).map(|d| d.join("krowk")).or_else(|| home_dir().and_then(abs).map(|h| h.join(".config").join("krowk")))
+}
+
+/// Refuses to write under `NO_HOME`, saying why, rather than fail on a
+/// directory nobody can make.
+pub fn no_home(p: &Path) -> std::io::Result<()> {
+    match p.starts_with(NO_HOME) {
+        true => Err(std::io::Error::other("there is no home directory to keep krowk's config in — set HOME (or XDG_CONFIG_HOME) to an absolute path")),
+        false => Ok(()),
+    }
+}
+
+/// `home_config_dir`, or `NO_HOME` when there is none.
 pub fn config_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
-        return PathBuf::from(dir).join("krowk");
-    }
-    match home_dir() {
-        Some(home) => home.join(".config").join("krowk"),
-        None => PathBuf::from(".krowk"),
-    }
+    home_config_dir().unwrap_or_else(|| PathBuf::from(NO_HOME))
 }
 
 /// Go's os.UserHomeDir on unix: $HOME, and an error when it is empty.
@@ -101,6 +118,12 @@ fn unreadable_store(path: &Path, cause: &str) -> Error {
     )
 }
 
+/// Where a credentials file stops being JSON krowk reads — never serde's own
+/// words, which quote the value they could not take: a key, as often as not.
+pub fn json_where(e: &serde_json::Error) -> String {
+    format!("not valid JSON krowk can read (line {}, column {})", e.line(), e.column())
+}
+
 fn read_lenient() -> Credentials {
     read_strict().unwrap_or_default()
 }
@@ -113,11 +136,11 @@ fn read_strict() -> Result<Credentials, Error> {
         Err(e) => return Err(unreadable_store(&path, &crate::spec::go_os_error("open", &path_string(&path), &e))),
     };
     let raw: serde_json::Map<String, Value> =
-        serde_json::from_slice(&data).map_err(|e| unreadable_store(&path, &e.to_string()))?;
+        serde_json::from_slice(&data).map_err(|e| unreadable_store(&path, &json_where(&e)))?;
     if !raw.contains_key("workspaces") {
         if raw.contains_key("token") {
             // The single-key file every login wrote before workspaces existed.
-            let legacy: StoredKey = serde_json::from_slice(&data).map_err(|e| unreadable_store(&path, &e.to_string()))?;
+            let legacy: StoredKey = serde_json::from_slice(&data).map_err(|e| unreadable_store(&path, &json_where(&e)))?;
             if legacy.token.is_empty() {
                 return Ok(Credentials::default());
             }
@@ -126,7 +149,7 @@ fn read_strict() -> Result<Credentials, Error> {
         }
         return Ok(Credentials::default());
     }
-    serde_json::from_slice(&data).map_err(|e| unreadable_store(&path, &e.to_string()))
+    serde_json::from_slice(&data).map_err(|e| unreadable_store(&path, &json_where(&e)))
 }
 
 impl Credentials {
@@ -342,6 +365,7 @@ fn write(c: &Credentials) -> Result<String, Error> {
 
 /// MkdirAll with 0700 for what it creates, as the Go build did.
 pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    no_home(dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

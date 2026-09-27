@@ -62,6 +62,13 @@ fn fail(message: impl Into<String>) -> EngineError {
     EngineError::new("oauth_failed", message)
 }
 
+/// Where the file stops being JSON krowk reads — never serde's own words,
+/// which quote the value they could not take: a token or a key. (The same
+/// as `krowk_api::creds::json_where`, which this crate cannot reach.)
+fn json_where(e: &serde_json::Error) -> String {
+    format!("not valid JSON krowk can read (line {}, column {})", e.line(), e.column())
+}
+
 fn now_ms() -> i64 {
     krowk_store::now_ms()
 }
@@ -140,7 +147,7 @@ impl Store {
     /// writing over it would drop every other login in it.
     fn read(&self) -> Result<File, EngineError> {
         match std::fs::read(&self.path) {
-            Ok(raw) => serde_json::from_slice(&raw).map_err(|e| fail(format!("{} is not a credentials file krowk can read ({e}) — refusing to write over it; move it aside and sign in again", self.path.display()))),
+            Ok(raw) => serde_json::from_slice(&raw).map_err(|e| fail(format!("{} is {} — refusing to write over it; move it aside and sign in again", self.path.display(), json_where(&e)))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(File { version: 1, ..File::default() }),
             Err(e) => Err(fail(format!("{} cannot be read: {e}", self.path.display()))),
         }
