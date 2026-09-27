@@ -1008,12 +1008,16 @@ impl App {
                 self.finish_live();
                 self.flush_calls();
                 match status {
+                    // A blank line first: straight under the answer, the
+                    // footer read as the answer's last line.
                     TurnStatus::Completed => {
                         let took = look::duration(Duration::from_millis(*duration_ms));
+                        self.gap();
                         self.push_wrapped("", "", &format!("Worked for {took} · {} tokens", tokens(usage.total())), dim(), dim());
                     }
                     TurnStatus::Interrupted => {
                         let took = look::duration(Duration::from_millis(*duration_ms));
+                        self.gap();
                         self.push_wrapped(look::STOPPED, "  ", &format!("interrupted after {took} — what arrived is kept"), yellow(), yellow());
                     }
                     TurnStatus::Failed => {
@@ -1205,6 +1209,15 @@ impl App {
             };
             let label_style = if t.want_interrupt { red() } else { look::accent() };
             let right = format!(" {}{SEP}esc to interrupt", look::duration(since));
+            // A blank line above, unless there is one already: straight
+            // under streaming text, the spinner read as part of it.
+            let above_blank = match rows.last() {
+                Some(l) => l.width() == 0,
+                None => self.last_blank,
+            };
+            if !above_blank {
+                rows.push(Line::default());
+            }
             rows.push(Line::from(vec![
                 Span::styled(format!("{frame} "), look::accent()),
                 Span::styled(clip(&label, width.saturating_sub(right.width() + 2)), label_style),
@@ -1874,7 +1887,7 @@ mod tests {
             ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 1200, ..Usage::default() }, duration_ms: 1500, error: None, reported_cost_usd: None }),
         ];
         a.replay(&evs.iter().collect::<Vec<_>>());
-        assert_eq!(text(&a.take_pending()), ["❯ hi", "", "◆ Read README.md (2 lines)", "", "It is a CLI.", "Worked for 1.5s · 1.2k tokens"]);
+        assert_eq!(text(&a.take_pending()), ["❯ hi", "", "◆ Read README.md (2 lines)", "", "It is a CLI.", "", "Worked for 1.5s · 1.2k tokens"]);
         assert_eq!(a.model, Some(model), "the session's model is the one shown");
     }
 
