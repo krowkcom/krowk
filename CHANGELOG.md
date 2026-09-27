@@ -11,6 +11,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **Every "sign in with …" now says `krowk connect`**: `krowk status`,
+  `providers list`, a refused switch and a failed turn name the connect
+  command for that instance (`krowk connect anthropic --method
+  subscription --name work`) instead of `krowk providers add claude
+  --name work`. `providers add|list|remove` work as before, on the same
+  sign-in code as `connect` — except that adding an instance that exists
+  no longer resets a key variable you set to the one its name implies.
+  Instances are listed with a plain label beside their names — Claude
+  subscription, Anthropic API key, ChatGPT subscription, SuperGrok, … — in
+  the pickers, and in place of the kind in the `krowk status` and
+  `providers list` tables; `--json` keeps `kind`, and `krowk status --json`
+  rows gain `label`.
+
 - **The TUI's status line is one line in one order**:
   `<user>/<host> | <instance>/<model> | $cost | [N tasks] | [N subagents] | ? help`,
   under the prompt box. The task count is the todo list's open items and
@@ -107,6 +120,44 @@ the versions are the `v*` tags a release is cut from. Entries land under
   fields pricing never reads.
 
 ### Added
+
+- **`krowk connect` connects a model provider, by vendor and method**
+  (in the `harness` build). `krowk connect anthropic` offers a Claude
+  subscription — a Claude Code account, signed in by Claude Code's own
+  `claude auth login` — or an API key; `openai` a ChatGPT subscription
+  (Codex's own `codex login`, or `--method device` for a code typed into
+  any browser) or an API key; `xai` SuperGrok (a browser or a device code)
+  or an API key; `openrouter` and `openai-compatible` an API key. With no
+  vendor on a terminal it asks — vendor, method, then which account: each
+  one there is, with whether it is ready, to reconnect, or a new one by
+  name. Without a terminal nothing is guessed: `--method
+  subscription|api-key` is required where a vendor has more than one, and
+  the error says so. `--name work` adds a second account (`claude:work`,
+  `anthropic:work` — the method picks the prefix, so the two never
+  clash); without it the default-named one is made, or renewed. Connecting
+  an instance that exists renews its login, and `krowk connect claude:work`
+  does it by name. A sign-in that fails writes nothing. **The first
+  connection becomes the default model** (`defaultModel` in config.json,
+  e.g. `claude:work/claude-opus-5-5`) and says so; later ones leave it
+  alone unless given `--default`. krowk still never signs in to a Claude
+  or ChatGPT subscription itself, nor reads those logins: the vendor's own
+  CLI does, and now starts in krowk's own empty directory rather than the
+  repository you run it in, whose settings nobody trusted.
+- **`krowk disconnect <instance>` signs one out, the way it was signed
+  in**: SuperGrok's tokens are deleted from krowk's credentials file, a
+  Claude Code or Codex account runs `claude auth logout` or `codex logout`
+  with its own directory, and an API-key instance names the variable to
+  unset, since krowk never stores the key. The definition stays, showing
+  `not signed in` in `krowk status`, unless `--remove` — which also clears
+  `defaultModel` when it ran on that instance. With no instance on a
+  terminal it asks which; without one it lists them.
+- **`krowk login`, `krowk logout` and `krowk whoami`** are short for your
+  krowk account: `krowk auth login`, the new `krowk auth logout` (takes the
+  key that resolves here off this machine — the key keeps working until it
+  is revoked in the dashboard), and `krowk auth verify`. `krowk auth`
+  works as before. `krowk login anthropic` and the like say that a model
+  provider is `krowk connect`, and the account's own errors now say
+  `krowk login` and `krowk whoami`.
 
 - **`krowk status` says which providers can run a turn here, and how to
   fix the rest** (in the `harness` build). One row per instance — the

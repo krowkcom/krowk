@@ -764,7 +764,7 @@ impl ProviderAuth<'_> {
         }
         let kept = backend.config_dir.as_ref().map(|d| format!(", kept in {}", d.display())).unwrap_or_default();
         ui.notify(Notice::Info(&format!("Signing {instance} in to Claude Code — what follows is Claude's own login (`claude auth login`){kept}:")));
-        let exit = ui.terminal(&mut || claude_auth::login(&backend)).map_err(|e| undo(backend_failed(e)))?;
+        let exit = ui.terminal(&mut || claude_auth::login(&backend, &probe.dir)).map_err(|e| undo(backend_failed(e)))?;
         let status = claude_auth::status(&backend, &probe).map_err(|e| undo(backend_failed(e)))?;
         if !status.logged_in {
             return Err(undo(not_signed_in("claude auth login", exit, instance, kind)));
@@ -800,7 +800,7 @@ impl ProviderAuth<'_> {
         }
         let kept = backend.config_dir.as_ref().map(|d| format!(", kept in {}", d.display())).unwrap_or_default();
         ui.notify(Notice::Info(&format!("Signing {instance} in to Codex — what follows is Codex's own login (`codex login`){kept}:")));
-        let exit = ui.terminal(&mut || codex_auth::login(&backend, device)).map_err(|e| undo(backend_failed(e)))?;
+        let exit = ui.terminal(&mut || codex_auth::login(&backend, device, &probe.dir)).map_err(|e| undo(backend_failed(e)))?;
         let status = codex_auth::signed_in(&backend, &probe).map_err(|e| undo(backend_failed(e)))?;
         if !status.logged_in {
             return Err(undo(not_signed_in("codex login", exit, instance, kind)));

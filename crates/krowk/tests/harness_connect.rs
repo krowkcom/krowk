@@ -122,6 +122,9 @@ fn r_inst_2_connect_a_claude_subscription_by_name_into_its_own_directory_and_a_f
     assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
     assert!(dir.join("fake-login").exists(), "`claude auth login` ran in the account's own directory");
     assert_eq!(b.logins("argv auth login"), 1);
+    // Claude's login starts in krowk's own empty directory, never in the
+    // repository krowk runs in, whose settings nobody trusted.
+    assert_eq!(b.logins(&format!("login-cwd {}", b.data().join("readiness").display())), 1);
     // The first connection is the default model.
     assert_eq!(c["data"]["default_model"], "claude:work/claude-opus-5-5");
     assert_eq!(b.config()["defaultModel"], "claude:work/claude-opus-5-5");

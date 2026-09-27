@@ -69,9 +69,11 @@ pub fn status(b: &Backend, probe: &crate::readiness::Probe) -> Result<Status, St
 /// `claude auth login`, on the person's own terminal: its prompts, its
 /// browser, its answer. krowk sees only how it exited. What it prints goes
 /// to stderr, the terminal either way, so krowk's own answer on stdout stays
-/// one JSON document.
-pub fn login(b: &Backend) -> Result<ExitStatus, String> {
-    command(b, &["auth", "login"]).stdin(Stdio::inherit()).stdout(Stdio::from(std::io::stderr())).stderr(Stdio::inherit()).status().map_err(|e| not_found(b, e))
+/// one JSON document. It starts in `dir` — krowk's own directory, as a
+/// status check does — never in a repository whose `.claude/settings.json`
+/// nobody trusted.
+pub fn login(b: &Backend, dir: &std::path::Path) -> Result<ExitStatus, String> {
+    command(b, &["auth", "login"]).current_dir(dir).stdin(Stdio::inherit()).stdout(Stdio::from(std::io::stderr())).stderr(Stdio::inherit()).status().map_err(|e| not_found(b, e))
 }
 
 /// `claude auth logout`, for this instance's config directory: Claude
