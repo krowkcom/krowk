@@ -151,10 +151,12 @@ pub fn run(home: &Path, env: Env) -> Result<(), String> {
         // A home that was there, empty or nearly, takes the staged entries
         // one by one, never over its own, and its two files last: they are
         // what marks it filled, so a move cut short here resumes.
-        let mut names: Vec<_> = std::fs::read_dir(&staging).map_err(|e| io(&staging, e))?.flatten().map(|e| e.file_name()).collect();
-        names.sort_by_key(|n| [home::CREDENTIALS, home::CONFIG].iter().any(|k| n == k));
-        for n in names {
-            shift(&staging.join(&n), &home.join(&n), false, &mut left)?;
+        let last = [home::CREDENTIALS, home::CONFIG];
+        for e in std::fs::read_dir(&staging).map_err(|e| io(&staging, e))?.flatten().filter(|e| !last.iter().any(|k| e.file_name() == *k)) {
+            shift(&e.path(), &home.join(e.file_name()), false, &mut left)?;
+        }
+        for n in last {
+            shift(&staging.join(n), &home.join(n), false, &mut left)?;
         }
         if std::fs::remove_dir(&staging).is_err() {
             left.push(format!("{} (what could not go in beside what was there)", staging.display()));
