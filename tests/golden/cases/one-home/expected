@@ -72,6 +72,7 @@ stdout:
 exit: 0
 
 @ls {home}/.krowk
+.old-layout-checked 644
 config.json 644
 credentials.json 600
 credentials.lock 600

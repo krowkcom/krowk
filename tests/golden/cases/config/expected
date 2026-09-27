@@ -115,6 +115,7 @@ exit: 0
 
 @ls {home}
 .krowk/
+.krowk/.old-layout-checked 644
 .krowk/config.json 644
 
 $ krowk config unset workspace

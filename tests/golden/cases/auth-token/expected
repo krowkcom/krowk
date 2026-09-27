@@ -71,6 +71,7 @@ exit: 0
 
 @ls {home}
 .krowk/
+.krowk/.old-layout-checked 644
 .krowk/credentials.json 600
 .krowk/credentials.lock 600
 
