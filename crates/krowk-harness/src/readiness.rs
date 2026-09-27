@@ -42,9 +42,10 @@ use crate::claude::auth as claude_auth;
 use crate::codex::auth as codex_auth;
 use crate::connect;
 use crate::engine::EngineError;
-use crate::instances::{Auth, Backend, Resolved};
+use crate::catalog::Listed;
+use crate::instances::{kind_label, Asked, Auth, Backend, Registry, Resolved};
 use crate::oauth;
-use crate::protocol::WireApi;
+use crate::protocol::{ModelRef, WireApi};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -286,6 +287,152 @@ pub async fn check_async(inst: &Resolved, credentials: &Path, probe: &Probe) -> 
     }
 }
 
+/// Where a turn runs when it was asked for by a bare id — or, with nothing
+/// asked, on the default (`defaultModel`, routed the same way when it is
+/// bare). No instance is ranked above another: any fixed order would
+/// silently send `sonnet` to a pay-per-token key when the person also has
+/// a subscription, or the other way round. So, of the instances that serve
+/// the id (`Registry::candidates`):
+///
+/// 1. the session's own (`current`), then the one `defaultModel` names —
+///    each when it serves the id and is ready: the person already chose it;
+/// 2. else the one that is ready, when exactly one is;
+/// 3. else, when several are, `ambiguous_model`, listing them with what
+///    each is and the `--model` that picks it; when none is, `none_ready`,
+///    naming each and what connects it.
+///
+/// A vendor that could not tell (`unknown`) is a candidate like a ready
+/// one — alone it is taken, as the host's own check leaves such a turn to
+/// run; beside another it makes the choice ambiguous. The id is then
+/// spelled as the chosen instance takes it (`Registry::model_on`); with no
+/// id, it is the instance's default model. An explicit `<instance>/<model>`
+/// comes back as it is, never rerouted and never checked here — the turn's
+/// own readiness check names what is missing.
+///
+/// Every candidate is asked once: a key, a keyless server or an OAuth login
+/// without a process, and the backends together in one parallel pass
+/// (`check_all`), each "signed in" served from the cache for `CACHE_FOR` —
+/// none at all when the first preferred instance (the session's, else the
+/// default's) is ready by its key. `probe` is where the vendors are asked, by this module's rules:
+/// the session's own directory only once its repository is trusted, else
+/// krowk's own (`neutral_dir`) — routing never asks a trust question.
+pub fn route(
+    reg: &Registry,
+    asked: Option<&Asked>,
+    current: Option<&ModelRef>,
+    credentials: &Path,
+    probe: &Probe,
+    listed: &dyn Fn(&str) -> Vec<Listed>,
+) -> Result<ModelRef, EngineError> {
+    let configured;
+    let asked = match asked {
+        Some(a) => Some(a),
+        None => match &reg.default_model {
+            Some(d) => {
+                configured = reg.read_model(d).map_err(|e| EngineError::new("bad_config", format!("config defaultModel: {e}")))?;
+                Some(&configured)
+            }
+            None => None,
+        },
+    };
+    let bare = match asked {
+        Some(Asked::Exact(m)) => return Ok(m.clone()),
+        Some(Asked::Bare(b)) => Some(b.as_str()),
+        None => None,
+    };
+    let cands = reg.candidates(bare);
+    let default = match reg.default_model.as_deref().map(|d| reg.read_model(d)) {
+        Some(Ok(Asked::Exact(d))) => Some(d.instance),
+        _ => None,
+    };
+    let preferred: Vec<&str> = current.map(|c| c.instance.as_str()).into_iter().chain(default.as_deref()).filter(|p| cands.iter().any(|c| c.name == *p)).collect();
+    let spell = |inst: &Resolved| {
+        reg.model_on(inst, bare, listed).map(|model| ModelRef { instance: inst.name.clone(), model }).map_err(|why| EngineError::new("bad_model", why))
+    };
+    // The first preferred instance ready by its key needs no vendor asked:
+    // nothing ranked below it could win.
+    if let Some(inst) = preferred.first().and_then(|p| reg.instances.get(*p))
+        && local(inst, credentials).is_some_and(|r| r.is_ready())
+    {
+        return spell(inst);
+    }
+    let locals: Vec<Option<Readiness>> = cands.iter().map(|i| local(i, credentials)).collect();
+    let ask: Vec<&Resolved> = cands.iter().zip(&locals).filter(|(_, l)| l.is_none()).map(|(i, _)| *i).collect();
+    let mut answers = check_all(&ask, credentials, probe).into_iter();
+    let rows: Vec<(&Resolved, Report)> = cands
+        .iter()
+        .zip(locals)
+        .map(|(i, l)| {
+            let r = match l {
+                Some(r) => report(i, r, credentials),
+                None => answers.next().unwrap_or_else(|| report(i, Readiness::Unknown { reason: "not asked".into() }, credentials)),
+            };
+            (*i, r)
+        })
+        .collect();
+    let ready: Vec<&Resolved> = rows.iter().filter(|(_, r)| r.readiness.is_ready()).map(|(i, _)| *i).collect();
+    if let Some(inst) = preferred.iter().find_map(|p| ready.iter().find(|i| i.name == *p)) {
+        return spell(inst);
+    }
+    // One that could not be checked is a candidate beside the ready ones:
+    // a subscription whose check timed out may well be signed in, and a
+    // ready key winning over it would be the guess this rule refuses.
+    let unknown: Vec<&Resolved> = rows.iter().filter(|(_, r)| matches!(r.readiness, Readiness::Unknown { .. })).map(|(i, _)| *i).collect();
+    let pool: Vec<&Resolved> = ready.iter().chain(&unknown).copied().collect();
+    let what = crate::instances::serving(bare).0;
+    let asked = match bare {
+        Some(b) => format!("{b:?}"),
+        None => "a model (no --model, and config names no defaultModel)".into(),
+    };
+    match pool.as_slice() {
+        [one] => spell(one),
+        [] => {
+            let run: Vec<String> = crate::instances::serving(bare)
+                .1
+                .iter()
+                .filter_map(|v| reg.instances.get(*v))
+                .filter_map(|i| suggested(i).map(|c| format!("`{c}` ({})", kind_label(i.kind))))
+                .collect();
+            let run = match run.split_last() {
+                Some((last, [])) => last.clone(),
+                Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+                None => String::new(),
+            };
+            // A router or a compatible server that is ready may serve it:
+            // krowk cannot tell, but the person can name it.
+            let named: Vec<String> = reg
+                .instances
+                .values()
+                .filter(|i| i.backend.is_none() && suggested(i).is_none() && local(i, credentials).is_some_and(|r| r.is_ready()))
+                .map(|i| format!("`--model {}/<id>`", i.name))
+                .collect();
+            let named = if named.is_empty() { String::new() } else { format!(", or name one that may serve it: {}", named.join(", ")) };
+            let needs: Vec<String> = rows.iter().map(|(i, r)| format!("  {}, {} ({}): {}", i.name, kind_label(i.kind), r.readiness.label(), r.fix.clone().unwrap_or_default())).collect();
+            let for_what = if bare.is_some() { format!(" serves {what} (asked for {asked})") } else { " can run a model here (no --model, and config names no defaultModel)".into() };
+            Err(EngineError::new("none_ready", format!("no connected instance{for_what} — run {run}{named}. What each one needs:\n{}", needs.join("\n"))))
+        }
+        several => {
+            let picks: Vec<String> = several
+                .iter()
+                .map(|i| {
+                    let m = reg.model_on(i, bare, listed).unwrap_or_else(|_| "<model>".into());
+                    let unchecked = if unknown.iter().any(|u| u.name == i.name) { " (could not be checked — see `krowk status`)" } else { "" };
+                    format!("  {}, {}: --model {}/{m}{unchecked}", i.name, kind_label(i.kind), i.name)
+                })
+                .collect();
+            let example = several.iter().find_map(|i| suggested(i)).map(|c| format!(" (e.g. `{c} --default`)")).unwrap_or_default();
+            Err(EngineError::new(
+                "ambiguous_model",
+                format!(
+                    "{} connected instances could run {asked}, and krowk does not choose between them for you — pick one with --model <instance>/<id>:\n{}\nor make one the default with `krowk connect <vendor> --default`{example}",
+                    several.len(),
+                    picks.join("\n")
+                ),
+            ))
+        }
+    }
+}
+
 /// A readiness with its source and fix around it: the row every caller
 /// prints or refuses with.
 pub fn report(inst: &Resolved, readiness: Readiness, credentials: &Path) -> Report {
@@ -332,6 +479,14 @@ fn fix(inst: &Resolved, r: &Readiness) -> Option<String> {
         Readiness::NotInstalled => format!("install Claude Code (https://claude.com/claude-code), or name the binary with `{} --binary <path>`", connect::connect_command(&inst.name, inst.kind)),
         Readiness::Unknown { .. } => "see the reason, then run `krowk status` again".into(),
     })
+}
+
+/// The command routing suggests for an instance — `connect::connect_command`,
+/// the one every fix line uses — for a kind `krowk connect` sets up by a
+/// vendor's own method. None for a router or a compatible server, whose
+/// models krowk cannot tell: routing only ever names those.
+fn suggested(i: &Resolved) -> Option<String> {
+    (!matches!(i.kind, "openrouter-api" | "openai-compatible")).then(|| connect::connect_command(&i.name, i.kind))
 }
 
 /// Vendor answers that said "signed in", by instance, and when.
@@ -389,11 +544,19 @@ fn vendor(inst: &Resolved, b: &Backend, probe: &Probe) -> Readiness {
 /// and one it started in turn (`claude.cmd`'s Node) can outlive the check
 /// until it exits by itself — a Job object would close that, and is not
 /// worth a new dependency for a status check.
+///
+/// The group is registered (`group::register`) until the check lets it
+/// go, so a krowk that leaves while a check is still running — the TUI
+/// quit while it routes — kills it on the way out (`group::kill_all`)
+/// rather than leaving it to its deadline, whose thread is gone with the
+/// process.
 pub(crate) fn probing(cmd: &mut Command, probe: &Probe) -> std::io::Result<std::process::Child> {
     cmd.current_dir(&probe.dir);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(cmd, 0);
-    cmd.spawn()
+    let child = cmd.spawn()?;
+    crate::group::register(Some(child.id()));
+    Ok(child)
 }
 
 /// Stops a check's process and everything it started — a Node runtime's
@@ -402,6 +565,8 @@ pub(crate) fn probing(cmd: &mut Command, probe: &Probe) -> std::io::Result<std::
 pub(crate) fn stop(child: &mut std::process::Child) {
     kill_group(child);
     let _ = child.kill();
+    // Released before it is reaped: once reaped, its pid is anyone's.
+    crate::group::release(Some(child.id()));
     let _ = child.wait();
 }
 
@@ -470,6 +635,7 @@ pub(crate) fn output_within(cmd: &mut Command, probe: &Probe) -> std::io::Result
             // in the group, holding the pipes the answer is read from, is
             // stopped before the pid can go to anyone else.
             kill_group(&child);
+            crate::group::release(Some(child.id()));
             break;
         }
         if started.elapsed() > within {

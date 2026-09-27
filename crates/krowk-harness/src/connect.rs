@@ -209,14 +209,10 @@ fn new_instance(provider: &str, name: &str) -> Result<String, EngineError> {
 /// The model a new instance of this kind is set up to run when it becomes
 /// the default: none for a server whose models are its own.
 pub fn default_model(kind: &str) -> Option<&'static str> {
-    Some(match kind {
-        "anthropic-api" | "claude-code" => instances::DEFAULT_MODEL,
-        "openai-api" => "gpt-5.4",
-        "codex-app-server" => "gpt-5.5",
-        "xai-api" | "xai-oauth" => "grok-4.7",
-        "openrouter-api" => "openai/gpt-5.4",
-        _ => return None,
-    })
+    // The router's own defaults, and OpenRouter's, which the router never
+    // picks by itself (it cannot tell what a router serves) but a
+    // connection to it can name.
+    instances::default_model_of(kind).or((kind == "openrouter-api").then_some("openai/gpt-5.4"))
 }
 
 /// Whether a connection makes its instance the default model.

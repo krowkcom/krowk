@@ -26,7 +26,7 @@ mod mock;
 mod providers;
 
 use krowk_harness::host::{Host, HostConfig};
-use krowk_harness::instances::{InstanceKind, InstancesConfig, Registry, Rollover};
+use krowk_harness::instances::{Asked, InstanceKind, InstancesConfig, Registry, Rollover};
 use krowk_harness::log;
 use krowk_harness::protocol::{
     BudgetLimits, Command, ContextRecord, HandoffKind, Item, LimitState, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchReason, TurnStatus,
@@ -143,6 +143,9 @@ struct World {
     rollover: Option<Rollover>,
     order: Vec<String>,
     trust: Option<krowk_harness::trust::Gate>,
+    /// The repository counts as trusted for the repository's own settings
+    /// and for where a router asks a vendor.
+    trusted: bool,
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -166,7 +169,7 @@ impl World {
             std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let root = root.canonicalize().unwrap();
-        let mut w = World { root, anthropic, openai: mock::serve(responses_script), xai: mock::serve(chat_script), instances: Vec::new(), rollover: None, order: Vec::new(), trust: None, _serial: guard };
+        let mut w = World { root, anthropic, openai: mock::serve(responses_script), xai: mock::serve(chat_script), instances: Vec::new(), rollover: None, order: Vec::new(), trust: None, trusted: false, _serial: guard };
         let key = |v: &str| Some(v.to_string());
         w.instances = vec![
             ("anthropic".into(), InstanceKind::AnthropicApi { api_key_env: key("TEST_ANTHROPIC_KEY"), base_url: Some(w.anthropic.url.clone()), thinking: None, max_tokens: None, effort: None }),
@@ -233,7 +236,7 @@ impl World {
             credentials: self.root.join("home/.config/krowk/providers/credentials.json"),
             trust: self.trust.clone().unwrap_or_else(krowk_harness::trust::allow_all),
             publisher: None,
-            permissions: Default::default(),
+            permissions: krowk_harness::permissions::Config { trusted: self.trusted.then(|| Arc::new(|_: &Path| true) as krowk_harness::permissions::settings::Trusted), ..Default::default() },
             agents: krowk_harness::subagent::AgentsConfig::none(),
         })
     }
@@ -941,4 +944,75 @@ fn readiness_a_vendors_signed_in_is_believed_for_a_minute_and_a_signed_out_asked
     std::fs::write(out_dir.join("fake-login"), "").unwrap();
     switch("claude:out").unwrap();
     assert_eq!(asked("claude-out"), 2);
+}
+
+/// The cwd of every `claude auth status` a fake Claude Code logged.
+fn status_cwds(log: &str) -> Vec<PathBuf> {
+    let lines: Vec<&str> = log.lines().collect();
+    lines.iter().enumerate().filter(|(_, l)| **l == "argv auth status --json").filter_map(|(i, _)| lines[i..].iter().find_map(|l| l.strip_prefix("cwd ")).map(PathBuf::from)).collect()
+}
+
+#[test]
+fn a_bare_model_stays_on_the_sessions_account_goes_to_the_one_ready_instance_and_refuses_to_guess() {
+    let mut w = World::new("routing");
+    let rt = rt();
+    // Only one instance connected: no model at all runs on its default,
+    // asked of the vendor in krowk's own directory for routing and in the
+    // repository, once trusted, for the turn.
+    let all = w.instances.clone();
+    w.instances.retain(|(n, _)| n == "claude:work");
+    let host = w.host();
+    let (r, _) = rt.block_on(run(&host, prompt(None, "hello", None)));
+    assert_eq!((r.status, r.model.to_string()), (TurnStatus::Completed, "claude:work/claude-opus-5-5".to_string()), "{:?}", r.error);
+    let data = log::sessions_dir(&w.env()).unwrap().parent().unwrap().to_path_buf();
+    assert_eq!(status_cwds(&w.fake_log("claude-work")), [data.join("readiness"), w.root.join("repo")], "{}", w.fake_log("claude-work"));
+    // Its repository trusted already, the router asks there, and the
+    // turn's own check is the cache's: one check in all.
+    w.trusted = true;
+    let _ = std::fs::remove_file(w.root.join("claude-work.log"));
+    let host = w.host();
+    let (r, _) = rt.block_on(run(&host, prompt(None, "hello again", None)));
+    assert_eq!(r.status, TurnStatus::Completed, "{:?}", r.error);
+    assert!(status_cwds(&w.fake_log("claude-work")).iter().all(|d| *d == w.root.join("repo")), "{}", w.fake_log("claude-work"));
+    w.trusted = false;
+
+    // The API key, the subscription, a ChatGPT one: several could run it.
+    w.instances = all;
+    let host = w.host();
+    let bare = |m: &str| Asked::Bare(m.into());
+    let repo = w.root.join("repo");
+    let route = |m: Option<&Asked>, current: Option<&ModelRef>| rt.block_on(host.route_model(m, current, &repo));
+    // The TUI's `/model haiku` on a claude:work session: that account.
+    let on_work = ModelRef { instance: "claude:work".into(), model: "sonnet".into() };
+    assert_eq!(route(Some(&bare("haiku")), Some(&on_work)).unwrap(), ModelRef { instance: "claude:work".into(), model: "haiku".into() });
+    // With no session, a key and a subscription both serve it: refused,
+    // never guessed, each named with what it is and how to pick it.
+    let e = route(Some(&bare("haiku")), None).unwrap_err();
+    assert_eq!(e.code, "ambiguous_model");
+    assert!(e.message.contains("anthropic, Anthropic API key: --model anthropic/<model>") && e.message.contains("claude:work, Claude subscription: --model claude:work/haiku"), "{}", e.message);
+    assert!(e.message.contains("(e.g. `krowk connect anthropic --method api-key --default`)"), "{}", e.message);
+    // A subscription whose check could not answer is a candidate too: the
+    // key does not win over it by default.
+    w.claude("claude:slow", "claude-slow", None, true);
+    w.instances.retain(|(n, _)| n == "anthropic" || n == "claude:slow");
+    if let Some((_, InstanceKind::ClaudeCode { binary, .. })) = w.instances.iter_mut().find(|(n, _)| n == "claude:slow") {
+        // A `claude` whose status answer krowk cannot read: `unknown`.
+        let broken = w.root.join("bin/claude-broken");
+        std::fs::write(&broken, "#!/bin/sh\necho 'not json'\nexit 3\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o755)).unwrap();
+        *binary = Some(broken.display().to_string());
+    }
+    let host2 = w.host();
+    let e = rt.block_on(host2.route_model(Some(&bare("haiku")), None, &repo)).unwrap_err();
+    assert!(e.code == "ambiguous_model" && e.message.contains("claude:slow, Claude subscription: --model claude:slow/haiku (could not be checked"), "{}", e.message);
+    assert_eq!(route(Some(&bare("gpt-5.5")), None).unwrap_err().code, "ambiguous_model");
+    let sessions = || std::fs::read_dir(log::sessions_dir(&w.env()).unwrap()).map_or(0, |d| d.count());
+    let before = sessions();
+    let (tx, _rx) = mpsc::channel(64);
+    let e = rt.block_on(host.execute(prompt(None, "hello", None), tx)).unwrap_err();
+    assert_eq!((e.code.as_str(), sessions()), ("ambiguous_model", before), "no model and several ready: the same refusal, before a session exists");
+    // An explicit instance is never rerouted, nor checked by the router.
+    let exact = Asked::Exact(ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() });
+    assert_eq!(route(Some(&exact), None).unwrap().instance, "anthropic");
 }
