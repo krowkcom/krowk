@@ -246,9 +246,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   session had nothing ready to run on, the session moves onto it.
   `/disconnect` signs the session's instance, or one picked, out, and asks
   before signing you out of Claude Code or Codex itself. After either, a
-  Claude Code or Codex process already running for the session is not
-  reused: the next turn asks the vendor again and starts a new one, so a
-  sign-out takes effect at once. `/model` marks
+  Claude Code or Codex process already running on the instance it
+  connected or signed out is not reused: the next turn asks the vendor
+  again and starts a new one, so a sign-out takes effect at once. A
+  cancelled or failed one, or one of another instance, keeps it. `/model` marks
   each instance `✓ ready` or what it lacks (`✗ not signed in`), checking
   the vendors in the background so a slow `claude` never holds up a key;
   picking one that is not ready offers `/connect` for it. Both commands are
@@ -269,7 +270,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   would ask for a passphrase fails at once, saying to unlock it first —
   except when `krowk connect` runs it at a terminal, where you can type the
   passphrase. There is no `--key <value>`: it would be in your shell's
-  history. The key goes in `~/.krowk/credentials.json`
+  history. A key, `$VAR` or `!command` over more than one line is refused,
+  so a pasted command never runs as two. The key goes in `~/.krowk/credentials.json`
   (0600), the file SuperGrok's login is in; `config.json` still names only
   a variable. A stored key is used before the variable, and when it cannot
   be had — its variable unset, its command failing — the instance has no

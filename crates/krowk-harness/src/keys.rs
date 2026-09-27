@@ -107,6 +107,11 @@ impl KeyRef {
     /// printable text.
     pub fn parse(s: &str) -> Result<KeyRef, String> {
         let s = s.trim();
+        // One line, whatever it is: a `!command` pasted over two lines would
+        // be two commands to the shell, a `$VAR` no variable's name.
+        if s.chars().any(char::is_control) {
+            return Err("a key or a reference to one is one line, with no control characters".into());
+        }
         if let Some(var) = s.strip_prefix('$') {
             let var = var.strip_prefix('{').and_then(|v| v.strip_suffix('}')).unwrap_or(var);
             let ok = var.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
@@ -373,6 +378,16 @@ const UNLOCK: &str = ". krowk runs it with no terminal, so if it asks for a pass
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A paste over two lines is refused whatever it starts with: a
+    // `!command` would run as two commands.
+    #[test]
+    fn a_reference_or_key_over_two_lines_is_refused() {
+        for s in ["!pass show a\nrm -rf ~", "$ANTHROPIC\r_KEY", "sk-ant-a\nb", "!cmd\x1b[2J"] {
+            assert!(KeyRef::parse(s).is_err(), "{s:?}");
+        }
+        assert_eq!(KeyRef::parse("  !pass show anthropic\n").unwrap(), KeyRef::Command("pass show anthropic".into()), "a trailing line break is trimmed");
+    }
 
     // A command that fails (a locked password manager) is not remembered:
     // unlocked, the next call in the same process (a TUI's next turn) runs
