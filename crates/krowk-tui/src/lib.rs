@@ -70,6 +70,12 @@ pub struct Options {
     pub resume: Option<String>,
     /// The model for every prompt; the session's own when absent.
     pub model: Option<ModelRef>,
+    /// What to show, and whose host the connectivity probe follows, before
+    /// a turn says where it runs, when there is no `model`, session model
+    /// or configured default: where the host will most likely route the
+    /// first prompt (an instance ready by its key). Shown only — the
+    /// prompt goes without a model, and the host routes it.
+    pub likely: Option<ModelRef>,
     pub permission_mode: PermissionMode,
     /// The toolset preset for every prompt; the model's own when absent.
     pub toolset: Option<String>,
@@ -184,7 +190,7 @@ async fn session(opts: Options) -> Outcome {
         Some(Ok(krowk_harness::instances::Asked::Exact(m))) => Some(m),
         _ => None,
     };
-    let shown = opts.model.clone().or_else(|| app.model.clone()).or(configured);
+    let shown = opts.model.clone().or_else(|| app.model.clone()).or(configured).or_else(|| opts.likely.clone());
     let target = shown.as_ref().and_then(|m| opts.host.registry.get(&m.instance).ok()).and_then(|i| Target::for_url(&i.base_url, &|k| std::env::var(k).unwrap_or_default()));
     app.model = shown;
     app.device = device::name(&|k| std::env::var(k).unwrap_or_default());

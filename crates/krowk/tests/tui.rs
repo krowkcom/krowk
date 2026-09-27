@@ -37,13 +37,23 @@ impl Sandbox {
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         std::fs::write(root.join("repo/README.md"), "# krowk\n\nPermalinks for agent output.\n").unwrap();
+        // The fake `claude` and `codex`, signed in to nothing, first on
+        // PATH: a prompt with no model is routed, which asks each vendor
+        // there is, and never the real ones the machine may have.
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        for (dir, bin, to) in [("claude", "fake-claude", "claude"), ("codex", "fake-codex", "codex")] {
+            let at = root.join("bin").join(to);
+            std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures").join(dir).join(bin), &at).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         Sandbox { root: root.canonicalize().unwrap() }
     }
 
     fn env(&self, url: &str) -> Vec<(String, String)> {
         let home = self.root.join("home");
         vec![
-            ("PATH".into(), std::env::var("PATH").unwrap_or_default()),
+            ("PATH".into(), format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default())),
             ("HOME".into(), home.display().to_string()),
             ("TERM".into(), "xterm-256color".into()),
             ("KROWK_NO_UPDATE_CHECK".into(), "1".into()),
@@ -221,6 +231,15 @@ fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() 
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some());
     t.write(b"wait forever\r");
     assert!(t.wait_for("esc to interrupt", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    // The session exists once the prompt is routed and settled — with no
+    // model asked, after the vendors on PATH were asked.
+    let sessions = b.root.join("home/.local/share/krowk/sessions");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while std::fs::read_dir(&sessions).map_or(0, |d| d.count()) == 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // And the TUI has read the line that names it.
+    std::thread::sleep(Duration::from_millis(300));
     t.write(b"\x03\x03");
     let st = t.wait(Duration::from_secs(10)).expect("krowk exits on the second Ctrl-C");
     assert_eq!(st.code(), Some(130), "{st}");

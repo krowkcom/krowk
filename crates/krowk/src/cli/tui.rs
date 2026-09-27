@@ -8,7 +8,7 @@ use super::{prompt, sessions, Ctx, Io};
 use crate::output::Format;
 use krowk_api::{fail, Error};
 use krowk_harness::host::HostConfig;
-use krowk_harness::instances::Registry;
+use krowk_harness::instances::{self, Registry};
 use krowk_harness::log;
 use std::sync::Arc;
 
@@ -72,21 +72,22 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
     // opens — to say so on the first prompt, and let the person connect
     // one — but a bare --model that nothing can run is refused here.
     //
-    // With nothing asked and an API instance ready by its key, routing
-    // waits for the first prompt instead: to tell one ready instance from
-    // several it would ask every installed vendor (a Node start for
-    // `claude`) before the first frame, and its answer cannot be a backend
-    // — the key's instance, or a refusal to guess — so no trust question
-    // hangs on it.
+    // With nothing asked and an instance ready by its key, routing waits
+    // for the first prompt, in the host: to tell one ready instance from
+    // several it asks every installed vendor (a Node start for `claude`),
+    // which the first frame should not wait on, and its answer cannot be a
+    // backend — the key's instance, or a refusal to guess — so no trust
+    // question hangs on it. The key's instance is shown until then.
     let known = krowk_harness::trust::Store::new(krowk_api::creds::config_dir().join(krowk_harness::trust::FILE), home.clone()).trusts(&krowk_harness::trust::root(&runs_in));
     let credentials = super::providers::credentials_path();
-    let later = asked.is_none()
-        && session_model.is_none()
-        && registry.default_model.is_none()
-        && registry.candidates(None).iter().any(|i| i.backend.is_none() && krowk_harness::readiness::local(i, &credentials).is_some_and(|r| r.is_ready()));
-    let (model, route_notice) = match later {
-        true => (None, None),
-        false => match prompt::route(ctx, &registry, asked.as_ref(), session_model.as_ref(), &runs_in, known) {
+    let nothing_asked = asked.is_none() && session_model.is_none() && registry.default_model.is_none();
+    let likely = nothing_asked
+        .then(|| registry.candidates(None).into_iter().find(|i| i.backend.is_none() && krowk_harness::readiness::local(i, &credentials).is_some_and(|r| r.is_ready())))
+        .flatten()
+        .and_then(|i| instances::default_model_of(i.kind).map(|m| krowk_harness::protocol::ModelRef { instance: i.name.clone(), model: m.into() }));
+    let (model, route_notice) = match likely {
+        Some(_) => (None, None),
+        None => match prompt::route(ctx, &registry, asked.as_ref(), session_model.as_ref(), &runs_in, known) {
             Ok(m) => (m, None),
             Err(e) if asked.is_none() => (None, Some(e.fix())),
             Err(e) => return Err(e),
@@ -121,6 +122,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         host,
         resume,
         model,
+        likely,
         permission_mode,
         toolset,
         effort,
