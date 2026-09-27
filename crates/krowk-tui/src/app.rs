@@ -1164,6 +1164,10 @@ impl App {
                 if streamed && live && arrived {
                     self.finish_live();
                 } else if !text.is_empty() {
+                    // Live, it is this turn's answer, for Ctrl-Y.
+                    if live {
+                        self.answer.push_str(text);
+                    }
                     self.gap();
                     self.fence = false;
                     for l in text.split('\n') {
@@ -2005,6 +2009,16 @@ mod tests {
         a.on_line(&delta("i", "rd"));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "first line\nsecond\nthird".into() } }));
         assert_eq!(text(&a.take_pending()), ["third"], "the tail, and nothing twice");
+    }
+
+    #[test]
+    fn an_answer_sent_whole_with_no_delta_is_shown_and_copied() {
+        let mut a = app();
+        a.start_turn(Instant::now());
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "i".into(), item: ItemKind::AssistantText }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "ok\nall done".into() } }));
+        assert_eq!(text(&a.take_pending()), ["ok", "all done"]);
+        assert_eq!(a.answer, "ok\nall done", "what Ctrl-Y copies");
     }
 
     #[test]

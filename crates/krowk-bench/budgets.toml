@@ -135,6 +135,9 @@ unit = "bytes"
 # readiness marks in `/model`, the host's instances replaced after a
 # connection, OSC 8 links), adds 58,432 bytes: 8,437,768 (8.05 MiB). Raised
 # 8.00 -> 8.25 MiB by 04 — the growth is its code — leaving 212,984 bytes.
+# Its review round 1 (SIGINT kept from krowk while a login has the
+# terminal, a backend not reused after a connection, the overlay's keys)
+# adds 1,696: 8,439,464, 211,288 under this.
 max = { x86_64-linux = 8_650_752 }
 status = "enforced"
 

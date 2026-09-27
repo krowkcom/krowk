@@ -158,8 +158,15 @@ pub fn run(opts: Options) -> Outcome {
         return Outcome { session_id: None, abandoned: false, error: Some(format!("the terminal could not be put in raw mode: {e}")) };
     }
     let hook = std::panic::take_hook();
+    // A panic ends the TUI when it aborts the process (the release profile)
+    // or is the TUI's own thread's; one on another thread that unwinds — a
+    // sign-in's, a readiness check's — is that thread's alone, and the TUI
+    // goes on with the terminal as it had it.
+    let tui_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
-        restore_terminal();
+        if cfg!(panic = "abort") || std::thread::current().id() == tui_thread {
+            restore_terminal();
+        }
         hook(info);
     }));
     let outcome = rt.block_on(session(opts));
@@ -390,26 +397,44 @@ struct Ui<'h> {
     presence: presence::Presence,
 }
 
-/// SIGTERM and SIGHUP as one stream, registered once. Either asks the TUI
-/// to stop the way Ctrl-D does: the running turn is interrupted and its end
-/// waited for, the terminal restored, the session recorded; a second one
-/// does not wait. Nothing on Windows, where neither is sent.
-struct Hangups {
+/// Two signals as one stream, registered once for the TUI's life.
+///
+/// SIGTERM and SIGHUP (`Signals::hangups`) ask the TUI to stop the way
+/// Ctrl-D does: the running turn is interrupted and its end waited for, the
+/// terminal restored, the session recorded; a second one does not wait.
+///
+/// SIGINT and SIGQUIT (`Signals::interrupts`) reach krowk only while it has
+/// given the terminal up — raw mode off — to a vendor's login or a key's
+/// command: Ctrl-C there is the person's to that command, and must not end
+/// krowk with it. A handler, not an ignore, so the command, which starts
+/// with every handled signal back at its default, still stops on it.
+/// Nothing on Windows, where none of them is sent this way.
+struct Signals {
     #[cfg(unix)]
-    term: Option<tokio::signal::unix::Signal>,
+    a: Option<tokio::signal::unix::Signal>,
     #[cfg(unix)]
-    hup: Option<tokio::signal::unix::Signal>,
+    b: Option<tokio::signal::unix::Signal>,
 }
 
-impl Hangups {
-    fn new() -> Hangups {
+impl Signals {
+    fn hangups() -> Signals {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            Hangups { term: signal(SignalKind::terminate()).ok(), hup: signal(SignalKind::hangup()).ok() }
+            Signals { a: signal(SignalKind::terminate()).ok(), b: signal(SignalKind::hangup()).ok() }
         }
         #[cfg(not(unix))]
-        Hangups {}
+        Signals {}
+    }
+
+    fn interrupts() -> Signals {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            Signals { a: signal(SignalKind::interrupt()).ok(), b: signal(SignalKind::quit()).ok() }
+        }
+        #[cfg(not(unix))]
+        Signals {}
     }
 
     async fn recv(&mut self) {
@@ -425,8 +450,8 @@ impl Hangups {
                 }
             }
             tokio::select! {
-                _ = one(&mut self.term) => {}
-                _ = one(&mut self.hup) => {}
+                _ = one(&mut self.a) => {}
+                _ = one(&mut self.b) => {}
             }
         }
         #[cfg(not(unix))]
@@ -598,7 +623,8 @@ impl<'h> Ui<'h> {
         let mut last_activity = Instant::now();
         let mut stall_quiet_until: Option<Instant> = None;
         let mut quitting = false;
-        let mut hangups = Hangups::new();
+        let mut hangups = Signals::hangups();
+        let mut interrupts = Signals::interrupts();
         self.draw(app, term)?;
         last_frame.replace(Instant::now());
         // A model known at start needs nothing routed; whether anything
@@ -616,6 +642,12 @@ impl<'h> Ui<'h> {
             let wake = [frame_at, tick_at, stall_at, retry_at, probe_at].into_iter().flatten().min();
             tokio::select! {
                 biased;
+                // Ctrl-C or Ctrl-\ on the terminal a vendor's login has: that
+                // command's, not krowk's (with the TUI's own terminal raw,
+                // they arrive as keys instead). One can land a moment after
+                // the terminal is back, so none stops the TUI; SIGTERM and
+                // SIGHUP are what ask it to from outside.
+                _ = interrupts.recv() => {}
                 _ = hangups.recv() => {
                     if !app.running() || quitting {
                         self.abandoned = app.running();
@@ -1034,10 +1066,17 @@ impl<'h> Ui<'h> {
             Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::Char('z') && k.modifiers.contains(KeyModifiers::CONTROL) => self.suspend(app, term)?,
             Event::Key(k) if k.kind != KeyEventKind::Release => return Ok(self.on_key(app, k, quitting).await),
             Event::Paste(s) => {
-                // A key pasted at `/connect`'s question is its answer, and
-                // never reaches the prompt or its history.
-                if !(app.overlay == Overlay::Connect && app.flow.as_mut().is_some_and(|f| f.type_str(&s))) {
-                    app.editor.insert_str(&s);
+                // With `/connect`'s overlay up, a paste is its question's
+                // answer or nothing: a key pasted early, before the question
+                // is up or while it is a pick, never reaches the prompt, a
+                // turn or the history.
+                match app.flow.as_mut().filter(|_| app.overlay == Overlay::Connect) {
+                    Some(f) => {
+                        if f.settled(APPROVAL_SETTLE) {
+                            f.type_str(&s);
+                        }
+                    }
+                    None => app.editor.insert_str(&s),
                 }
                 app.touch();
             }
@@ -1152,27 +1191,30 @@ impl<'h> Ui<'h> {
             && let Some(f) = app.flow.as_mut()
         {
             let typing = f.typing();
+            // A key already on its way when the question came up — the
+            // person was typing — answers nothing.
+            let settled = f.settled(APPROVAL_SETTLE);
             match k.code {
                 KeyCode::Esc => {
                     f.answer(None);
                     app.overlay = Overlay::None;
-                    return false;
                 }
                 KeyCode::Char('c') if ctrl => {
                     f.answer(None);
                     app.overlay = Overlay::None;
-                    return false;
                 }
+                KeyCode::Char('d') if ctrl => return self.on_prompt_key(app, k, quitting).await,
                 KeyCode::Up if !typing => f.step(-1),
                 KeyCode::Down if !typing => f.step(1),
-                KeyCode::Enter if f.ask.is_some() => f.enter(),
+                KeyCode::Enter if settled => f.enter(),
                 KeyCode::Backspace if typing => f.backspace(),
                 KeyCode::Char('u') if ctrl && typing => f.clear_input(),
-                KeyCode::Char(c) if typing && !ctrl && !alt => {
+                KeyCode::Char(c) if typing && settled && !ctrl && !alt => {
                     f.type_str(c.encode_utf8(&mut [0; 4]));
                 }
-                _ if typing => {}
-                _ => return self.on_prompt_key(app, k, quitting).await,
+                // Nothing else: while the overlay is up, nothing typed
+                // reaches the prompt, and Enter never sends it.
+                _ => {}
             }
             return false;
         }
@@ -1478,6 +1520,9 @@ impl<'h> Ui<'h> {
         };
         if self.auth.is_some() {
             app.overlay = Overlay::Connect;
+            if let Some(f) = app.flow.as_mut() {
+                f.shown();
+            }
             return;
         }
         if app.running() {
@@ -1524,8 +1569,14 @@ impl<'h> Ui<'h> {
             Msg::Ask { ask, reply } => match app.flow.as_mut() {
                 Some(f) => {
                     f.asked(ask, reply);
-                    // A question needs the overlay, hidden or not.
-                    app.overlay = Overlay::Connect;
+                    // Up, the overlay shows it. Hidden, or with another
+                    // overlay open, it waits to be opened: taking the keys
+                    // mid-prompt would make what is being typed its answer.
+                    if app.overlay == Overlay::Connect {
+                        f.shown();
+                    } else {
+                        app.notice("/connect is waiting for an answer — /connect opens it");
+                    }
                 }
                 None => {
                     let _ = reply.send(None);
@@ -1581,9 +1632,14 @@ impl<'h> Ui<'h> {
     /// session had nothing ready to run on, or this is the first connection
     /// (it became the default) — the session moved onto it.
     fn finished(&mut self, app: &mut App, done: Result<connect::Done, EngineError>, registry: Option<krowk_harness::instances::Registry>) {
+        // Whether the session had nothing to run on: its instance marked not
+        // ready, or — never marked — not ready by what needs no process.
         let stuck = match &self.model {
             None => true,
-            Some(m) => matches!(app.marks.get(&m.instance), Some(Mark::Not(_))),
+            Some(m) => match app.marks.get(&m.instance) {
+                Some(mark) => matches!(mark, Mark::Not(_)),
+                None => self.host.registry().get(&m.instance).ok().and_then(|i| krowk_harness::readiness::local(i, &self.credentials)).is_some_and(|r| matches!(Mark::of(&r), Mark::Not(_))),
+            },
         };
         let first_run = std::mem::take(&mut self.first_run);
         app.flow = None;
@@ -1594,8 +1650,10 @@ impl<'h> Ui<'h> {
             app.vendor_instances = r.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
             self.host.set_registry(r);
         }
-        // Whatever was marked before may have changed.
+        // Whatever was marked before may have changed, a check still out
+        // included: its answers are dropped with it.
         app.marks.clear();
+        self.checks = None;
         match done {
             Ok(connect::Done::Connected(c)) => {
                 let s = c.summary(false);
@@ -1645,8 +1703,10 @@ impl<'h> Ui<'h> {
                 Some(r) => {
                     app.marks.insert(i.name.clone(), Mark::of(&r));
                 }
-                None if !app.marks.contains_key(&i.name) => ask.push(i.clone()),
-                None => {}
+                // A vendor is asked again each time: a sign-in elsewhere
+                // shows at the next open (its "signed in" is the readiness
+                // cache's for a minute), the last answer shown meanwhile.
+                None => ask.push(i.clone()),
             }
         }
         if ask.is_empty() || self.checks.is_some() {

@@ -235,14 +235,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Claude or ChatGPT subscription is still signed in by the vendor's own
   `claude auth login` or `codex login`: the TUI gives that command the
   terminal, as Ctrl-Z would, and takes it back after, redrawn at whatever
-  size the window is by then. A SuperGrok sign-in's page (a link) and
-  device code, and a pasted API key, stay in the TUI; the key is shown as
-  bullets and never reaches the screen, the prompt's history or
-  config.json. The result reads as `krowk connect`'s (`✓ Connected
+  size the window is by then; Ctrl-C there stops that login, not krowk. A
+  SuperGrok sign-in's page (a link) and device code, and a pasted API key,
+  stay in the TUI; the key is shown as bullets and never reaches the
+  screen, the prompt's history or config.json — while the overlay is up,
+  nothing typed or pasted reaches the prompt, and a question that comes up
+  while it is hidden waits for `/connect` to open it rather than taking
+  what is being typed. The result reads as `krowk connect`'s (`✓ Connected
   claude`, then what it is), and when it is the first connection, or the
   session had nothing ready to run on, the session moves onto it.
   `/disconnect` signs the session's instance, or one picked, out, and asks
-  before signing you out of Claude Code or Codex itself. `/model` marks
+  before signing you out of Claude Code or Codex itself. After either, a
+  Claude Code or Codex process already running for the session is not
+  reused: the next turn asks the vendor again and starts a new one, so a
+  sign-out takes effect at once. `/model` marks
   each instance `✓ ready` or what it lacks (`✗ not signed in`), checking
   the vendors in the background so a slow `claude` never holds up a key;
   picking one that is not ready offers `/connect` for it. Both commands are
@@ -857,7 +863,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **An answer a backend sends whole is shown in the TUI.** A Claude Code
   turn whose text arrived as one message, with no streamed pieces (an older
   `claude`, or one that drops its partial messages), ran and was logged but
-  showed nothing between the prompt and `Worked for`.
+  showed nothing between the prompt and `Worked for`, and Ctrl-Y copied
+  nothing of it.
 
 - **A Claude Code `defaultMode` krowk does not run no longer refuses every
   prompt.** `"defaultMode": "auto"` in `~/.claude/settings.json` (or any

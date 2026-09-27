@@ -154,6 +154,9 @@ pub struct Flow {
     /// An option a pick starts on: `/disconnect` alone starts on the
     /// session's instance.
     pub prefer: Option<String>,
+    /// When the question up now was first shown: keys before a moment
+    /// has passed were typed ahead, and answer nothing.
+    shown_at: Option<std::time::Instant>,
 }
 
 pub struct Asking {
@@ -170,7 +173,20 @@ pub enum Kind {
 
 impl Flow {
     pub fn new(title: &'static str, intro: Vec<String>, prefer: Option<String>) -> Flow {
-        Flow { title, intro, ask: None, busy: "checking what is connected…".into(), prefer }
+        Flow { title, intro, ask: None, busy: "checking what is connected…".into(), prefer, shown_at: None }
+    }
+
+    /// The question up now is on screen, from now.
+    pub fn shown(&mut self) {
+        if self.ask.is_some() {
+            self.shown_at = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Whether a question is on screen and has been for `settle`: only then
+    /// does a key answer it.
+    pub fn settled(&self, settle: std::time::Duration) -> bool {
+        self.ask.is_some() && self.shown_at.is_some_and(|t| t.elapsed() >= settle)
     }
 
     /// A question arrived: shown, a pick starting on the preferred option.
@@ -183,6 +199,7 @@ impl Flow {
             Ask::Text { message, secret } => (message, Kind::Text { input: String::new(), secret }),
         };
         self.ask = Some(Asking { message: kind.0, kind: kind.1, reply });
+        self.shown_at = None;
     }
 
     /// Answers the question up now, or cancels it (`None`).
@@ -210,9 +227,16 @@ impl Flow {
     }
 
     /// Text typed or pasted into a text question; true when it took it.
-    /// Line breaks are no part of a key or a name.
+    /// A secret keeps what was pasted as it was, line breaks and all, for
+    /// the sign-in to refuse as `krowk connect` does ("a key is one line");
+    /// joined up it would be another key. A name or a URL keeps no control
+    /// character.
     pub fn type_str(&mut self, s: &str) -> bool {
         match &mut self.ask {
+            Some(Asking { kind: Kind::Text { input, secret: true }, .. }) => {
+                input.push_str(s);
+                true
+            }
             Some(Asking { kind: Kind::Text { input, .. }, .. }) => {
                 input.extend(s.chars().filter(|c| !c.is_control()));
                 true
@@ -318,7 +342,7 @@ mod tests {
         assert!(!shown.contains("secret") && !shown.contains("123") && shown.contains("•••"), "{shown}");
         assert_eq!(caret.map(|c| c.1), Some(2), "the caret on the input row");
         f.enter();
-        assert!(matches!(answer.recv().unwrap(), Some(Answer::Text(t)) if t == "sk-ant-secret-123"));
+        assert!(matches!(answer.recv().unwrap(), Some(Answer::Text(t)) if t == "sk-ant-secret\n-123"), "kept as pasted, for the sign-in to refuse");
     }
 
     #[test]
