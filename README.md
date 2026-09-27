@@ -230,6 +230,7 @@ Credentials from `krowk auth login` live in `~/.config/krowk/credentials.json` (
 ```bash
 make check          # clippy, the unit tests and every golden case
 make build          # → target/release/krowk (the full build) and krowk-mcp
+make dev            # a fast build of the same, linked into ~/.cargo/bin; rerun after an edit
 make mock           # a local stand-in registry — then run any command with --dev
 make golden-update  # re-record tests/golden/cases after an intended output change
 make bench          # hold the release builds to the performance and size budgets
