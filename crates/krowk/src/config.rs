@@ -125,6 +125,7 @@ fn rewrite(path: &Path, edit: impl FnOnce(&mut Map<String, Value>)) -> Result<()
 }
 
 fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    krowk_api::creds::no_home(path)?;
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".config-{}.json", std::process::id()));

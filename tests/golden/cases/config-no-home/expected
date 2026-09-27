@@ -3,7 +3,7 @@ stdout:
 {
   "ok": true,
   "data": {
-    "global_path": ".krowk/config.json",
+    "global_path": "/nonexistent/krowk/config.json",
     "repo_path": "<scratch>/work/.krowk/config.json"
   },
   "summary": "no configuration set — uploads use the stored default key",
@@ -18,43 +18,29 @@ stdout:
 exit: 0
 
 $ krowk config set workspace ws_x --global
-stdout:
+stderr:
 {
-  "ok": true,
-  "data": {
-    "key": "workspace",
-    "value": "ws_x",
-    "path": ".krowk/config.json"
-  },
-  "summary": "workspace = ws_x in .krowk/config.json",
-  "breadcrumbs": [
-    {
-      "action": "check the effective configuration",
-      "cmd": "krowk config show",
-      "description": "reports what actually resolves here, which layer wins, and why"
-    }
-  ]
+  "ok": false,
+  "error": {
+    "error": "config_unwritable",
+    "fix": "could not write /nonexistent/krowk/config.json: there is no home directory to keep krowk's config in — set HOME (or XDG_CONFIG_HOME) to an absolute path",
+    "retryable": false
+  }
 }
-exit: 0
+exit: 1
 
 @ls {work}
 .git/
-.krowk/
-.krowk/config.json 644
 
 $ krowk config show
 stdout:
 {
   "ok": true,
   "data": {
-    "workspace": "ws_x",
-    "sources": {
-      "workspace": "repo config"
-    },
-    "global_path": ".krowk/config.json",
+    "global_path": "/nonexistent/krowk/config.json",
     "repo_path": "<scratch>/work/.krowk/config.json"
   },
-  "summary": "workspace ws_x — repo config",
+  "summary": "no configuration set — uploads use the stored default key",
   "breadcrumbs": [
     {
       "action": "set the workspace",
@@ -70,12 +56,9 @@ stdout:
 {
   "ok": true,
   "data": {
-    "stored": [],
-    "resolved": "ws_x",
-    "source": "repo config",
-    "key_missing": true
+    "stored": []
   },
-  "summary": "ws_x resolves here (repo config) but holds no key — every upload fails until `krowk login`",
+  "summary": "no keys stored — uploads are anonymous",
   "breadcrumbs": [
     {
       "action": "log in",

@@ -197,7 +197,7 @@ fn state_path(ctx: &Ctx) -> PathBuf {
     }
     match krowk_api::creds::home_dir() {
         Some(home) => home.join(".config").join("krowk").join("update-check.json"),
-        None => PathBuf::from(".krowk").join("update-check.json"),
+        None => PathBuf::from(krowk_api::creds::NO_HOME).join("update-check.json"),
     }
 }
 

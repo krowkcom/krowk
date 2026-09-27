@@ -34,6 +34,16 @@ pub(super) fn credentials_path() -> PathBuf {
     krowk_api::creds::config_dir().join(oauth::CREDENTIALS_FILE)
 }
 
+/// Every harness command's first check: krowk has a config directory of
+/// its own. Without a home it has none, and runs nothing rather than read
+/// keys, trust or commands from anywhere else.
+pub(super) fn need_home() -> Result<(), Error> {
+    match krowk_api::creds::home_config_dir() {
+        Some(_) => Ok(()),
+        None => Err(fail("no_home", "krowk has no config directory to keep its keys and settings in — set HOME (or XDG_CONFIG_HOME) to an absolute path")),
+    }
+}
+
 const PROVIDERS: &[&str] = &["anthropic", "openai", "xai", "openrouter", "openai-compatible", "supergrok", "claude", "codex"];
 
 fn engine(e: EngineError) -> Error {
@@ -97,7 +107,10 @@ fn options(ctx: &Ctx) -> Result<Options, Error> {
         (true, None) => {
             use std::io::Read;
             let mut raw = String::new();
-            std::io::stdin().take(64 * 1024).read_to_string(&mut raw).map_err(|e| fail("bad_flag", format!("--key-stdin: {e}")))?;
+            std::io::stdin().take(64 * 1024 + 1).read_to_string(&mut raw).map_err(|e| fail("bad_flag", format!("--key-stdin: {e}")))?;
+            if raw.len() > 64 * 1024 {
+                return Err(fail("bad_flag", "--key-stdin: more than 64 KiB was piped in, which is no key"));
+            }
             // Piped in, it is the key itself, whatever it starts with.
             Some(KeyRef::literal(&raw).map_err(|e| format!("--key-stdin: {e}")))
         }
@@ -113,11 +126,12 @@ fn options(ctx: &Ctx) -> Result<Options, Error> {
 
 /// The shared sign-in, over this invocation's config and environment, and
 /// the terminal it asks at — `asks` false for a command that never asks.
-fn parts<'a>(ctx: &'a mut Ctx, asks: bool) -> (ProviderAuth<'a>, Terminal<'a>) {
+fn parts<'a>(ctx: &'a mut Ctx, asks: bool) -> Result<(ProviderAuth<'a>, Terminal<'a>), Error> {
+    need_home()?;
     let interactive = asks && super::interactive(ctx) && ctx.io.stdin_tty;
     let open = !ctx.f.no_browser && !auth::headless(ctx);
     let pa = ProviderAuth { config: config::global_path(), credentials: credentials_path(), env: ctx.io.env };
-    (pa, Terminal { stderr: &mut *ctx.io.stderr, interactive, open })
+    Ok((pa, Terminal { stderr: &mut *ctx.io.stderr, interactive, open }))
 }
 
 /// `krowk connect [vendor|instance]`: the vendor, its method and the
@@ -134,7 +148,7 @@ pub(super) fn connect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let opts = options(ctx)?;
     let make_default = ctx.f.default;
     let done = {
-        let (pa, mut ui) = parts(ctx, true);
+        let (pa, mut ui) = parts(ctx, true)?;
         let mut req = pa.request(args.first().map(String::as_str), method, opts, &mut ui).map_err(engine)?;
         if make_default {
             req.default = MakeDefault::Always;
@@ -160,7 +174,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let opts = options(ctx)?;
     let done = {
-        let (pa, mut ui) = parts(ctx, false);
+        let (pa, mut ui) = parts(ctx, false)?;
         pa.connect(&Request { method: way, instance: None, options: opts, default: MakeDefault::Never }, &mut ui).map_err(engine)?
     };
     report(ctx, &done, "added")
@@ -249,7 +263,7 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let (remove, own) = (ctx.f.remove, ctx.f.sign_out_vendor);
     let done = {
-        let (pa, mut ui) = parts(ctx, true);
+        let (pa, mut ui) = parts(ctx, true)?;
         let target = pa.disconnect_target(args.first().map(String::as_str), &mut ui).map_err(engine)?;
         pa.disconnect(&target, remove, own, &mut ui).map_err(engine)?
     };
@@ -349,7 +363,7 @@ pub(super) fn remove(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         return Err(fail("bad_argument", "name the instance: `krowk providers remove openai:work` — `krowk providers list` shows them"));
     };
     let gone = {
-        let (pa, _) = parts(ctx, false);
+        let (pa, _) = parts(ctx, false)?;
         pa.remove(&instance).map_err(engine)?
     };
     // A backend account's directory holds the vendor's own login, which is

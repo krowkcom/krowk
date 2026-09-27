@@ -11,8 +11,8 @@ stdout:
   "key": "none — uploads will be anonymous",
   "workspace": "none — uploads will be anonymous",
   "runs_available": false,
-  "credentials": ".krowk/credentials.json",
-  "config": "global .krowk/config.json (absent)",
+  "credentials": "/nonexistent/krowk/credentials.json",
+  "config": "global /nonexistent/krowk/config.json (absent)",
   "store": {
     "name": "store",
     "status": "fail",
