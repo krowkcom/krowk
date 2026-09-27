@@ -34,6 +34,8 @@ unit = "bytes"
 # Provider auth 02 (no new crate: `krowk login`, `logout` and `whoami`, the
 # new `auth logout` and the words that point a provider at `krowk connect`)
 # adds 7,648 bytes: 3,953,024 (3.77 MiB).
+# Provider auth 06 (the short `krowk --help`: the 217-line overview's prose
+# moved into command pages and topics) takes 2,176 off: 3,950,848.
 max = { x86_64-linux = 4_194_304 }
 status = "enforced"
 
@@ -123,6 +125,8 @@ unit = "bytes"
 # top of the umbrella's 8,181,000 before 05: 8,270,344 (7.89 MiB).
 # With 05 merged in (one connect command, one label table kept): 8,303,816
 # (7.92 MiB), leaving 84,792 bytes.
+# Provider auth 06 (the short `krowk --help`, with `help --all`, topics and
+# each command's own prose) takes 1,376 off: 8,302,440.
 max = { x86_64-linux = 8_388_608 }
 status = "enforced"
 
