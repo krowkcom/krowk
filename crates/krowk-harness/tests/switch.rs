@@ -996,7 +996,12 @@ fn a_bare_model_stays_on_the_sessions_account_goes_to_the_one_ready_instance_and
     w.claude("claude:slow", "claude-slow", None, true);
     w.instances.retain(|(n, _)| n == "anthropic" || n == "claude:slow");
     if let Some((_, InstanceKind::ClaudeCode { binary, .. })) = w.instances.iter_mut().find(|(n, _)| n == "claude:slow") {
-        *binary = Some("/bin/false".into());
+        // A `claude` whose status answer krowk cannot read: `unknown`.
+        let broken = w.root.join("bin/claude-broken");
+        std::fs::write(&broken, "#!/bin/sh\necho 'not json'\nexit 3\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o755)).unwrap();
+        *binary = Some(broken.display().to_string());
     }
     let host2 = w.host();
     let e = rt.block_on(host2.route_model(Some(&bare("haiku")), None, &repo)).unwrap_err();

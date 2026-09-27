@@ -773,18 +773,51 @@ fn slash_offers_commands_and_skills_and_a_skill_reaches_the_model() {
     assert!(first.contains("/greet the team") && first.contains("MARMALADE"), "the prompt and the skill's body: {first}");
 }
 
-/// R-PERF-1 with no key: the only instance is a Claude subscription whose
-/// status check takes three seconds. The first frame does not wait for it;
-/// the TUI routes once it is up, then asks the trust question itself —
-/// the model was not known before it took the terminal — and a prompt sent
-/// meanwhile goes once it is answered.
-#[test]
-fn with_no_key_the_first_frame_never_waits_on_a_vendor_and_the_routed_backend_asks_trust_in_the_tui() {
-    let b = Sandbox::new("nokey");
+/// Whether `needle` is in what the TUI wrote after byte `from`, within
+/// `timeout`.
+fn wait_after(t: &pty::Pty, from: usize, needle: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if String::from_utf8_lossy(&t.output()[from..]).contains(needle) {
+            return true;
+        }
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The trust question's own words, which only it says.
+const TRUST_ASKED: &str = "n or esc does not";
+
+/// A sandbox with only a signed-in Claude subscription — no key unless
+/// `key` — whose status check takes `delay` seconds, logging to fake.log.
+fn subscription_only(b: &Sandbox, key: bool, delay: &str) -> Command {
     std::fs::create_dir_all(b.root.join("home/.claude")).unwrap();
     std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
     let mut c = b.command("http://127.0.0.1:9", &[]);
-    c.env_remove("ANTHROPIC_API_KEY").env("FAKE_CLAUDE_STATUS_DELAY", "3").env("FAKE_CLAUDE_LOG", b.root.join("fake.log"));
+    if !key {
+        c.env_remove("ANTHROPIC_API_KEY");
+    }
+    c.env("FAKE_CLAUDE_STATUS_DELAY", delay).env("FAKE_CLAUDE_LOG", b.root.join("fake.log"));
+    c
+}
+
+fn fake_turns(b: &Sandbox) -> String {
+    std::fs::read_to_string(b.root.join("fake.log")).unwrap_or_default().lines().filter(|l| l.starts_with("argv -p")).collect::<Vec<_>>().join("\n")
+}
+
+/// R-PERF-1 with no key: the only instance is a Claude subscription whose
+/// status check takes three seconds. The first frame does not wait for it;
+/// the TUI routes once it is up, then asks the trust question itself —
+/// the model was not known before it took the terminal — for the prompt
+/// sent meanwhile. Keys typed ahead as the question comes up are no
+/// answer; `y` on an empty prompt, once it has settled, is.
+#[test]
+fn with_no_key_the_first_frame_never_waits_on_a_vendor_and_the_routed_backend_asks_trust_in_the_tui() {
+    let b = Sandbox::new("nokey");
+    let c = subscription_only(&b, false, "3");
     let started = Instant::now();
     let mut t = pty::Pty::spawn(c, 100, 30);
     assert!(t.wait_for("? help", Duration::from_secs(10)).is_some(), "{:?}", t.text());
@@ -792,16 +825,78 @@ fn with_no_key_the_first_frame_never_waits_on_a_vendor_and_the_routed_backend_as
     assert!(first < Duration::from_millis(2500), "the first frame waited {first:?} on a vendor's status check");
     assert!(!t.text().contains("claude/claude-opus-5-5"), "not routed yet: {:?}", t.text());
     t.write(b"hello there\r");
-    assert!(t.wait_for("[y/N]", Duration::from_secs(15)).is_some(), "no trust question: {:?}", t.text());
+    assert!(t.wait_for(TRUST_ASKED, Duration::from_secs(15)).is_some(), "no trust question: {:?}", t.text());
     assert!(t.text().contains("claude/claude-opus-5-5 runs Claude Code"), "{:?}", t.text());
-    let fake = || std::fs::read_to_string(b.root.join("fake.log")).unwrap_or_default();
-    assert!(!fake().contains("argv -p"), "nothing ran before the answer: {}", fake());
+    // Typed ahead as it came up: "yes" lands in the prompt, and trusts
+    // nothing — not then, nor once the question has settled.
+    t.write(b"yes");
+    std::thread::sleep(Duration::from_millis(800));
+    t.write(b"y");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(fake_turns(&b).is_empty(), "typed-ahead keys answered the trust question: {}", fake_turns(&b));
+    // Ctrl-C clears what was typed; then `y` on the empty prompt answers.
+    t.write(b"\x03");
+    std::thread::sleep(Duration::from_millis(100));
     t.write(b"y");
     let deadline = Instant::now() + Duration::from_secs(15);
-    while !fake().contains("argv -p") && Instant::now() < deadline {
+    while fake_turns(&b).is_empty() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(fake().contains("--model claude-opus-5-5"), "the held prompt ran on the routed backend once trusted: {}", fake());
+    assert!(fake_turns(&b).contains("--model claude-opus-5-5"), "the held prompt ran on the routed backend once trusted: {}", fake_turns(&b));
+}
+
+/// The route landing asks nothing by itself; the question comes with a
+/// send, `n` puts the prompt back unsent, and the next send asks again.
+#[test]
+fn trust_is_asked_on_send_and_a_no_puts_the_prompt_back_to_be_asked_again() {
+    let b = Sandbox::new("trustno");
+    let mut t = pty::Pty::spawn(subscription_only(&b, false, "0"), 100, 30);
+    assert!(t.wait_for("claude/claude-opus-5-5 |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(!t.text().contains(TRUST_ASKED), "asked before anything was sent: {:?}", t.text());
+    t.write(b"first-try\r");
+    assert!(t.wait_for(TRUST_ASKED, Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    std::thread::sleep(Duration::from_millis(600));
+    let at = t.output().len();
+    t.write(b"n");
+    assert!(wait_after(&t, at, "not trusted, so nothing ran", Duration::from_secs(5)), "{:?}", t.text());
+    assert!(wait_after(&t, at, "first-try", Duration::from_secs(5)), "the prompt is back in the editor: {:?}", String::from_utf8_lossy(&t.output()[at..]));
+    let at = t.output().len();
+    t.write(b"\r");
+    assert!(wait_after(&t, at, TRUST_ASKED, Duration::from_secs(5)), "asked again on the next send: {:?}", t.text());
+    assert!(fake_turns(&b).is_empty(), "nothing ran: {}", fake_turns(&b));
+}
+
+/// Prompts sent while the route is pending are all kept, joined; a route
+/// that fails puts them back unsent, and so does Ctrl-C while they wait —
+/// which quits nothing.
+#[test]
+fn prompts_held_for_the_route_are_joined_and_come_back_on_a_failed_route_or_ctrl_c() {
+    // A key and a subscription: the route is ambiguous, after two seconds.
+    let b = Sandbox::new("held");
+    let mut t = pty::Pty::spawn(subscription_only(&b, true, "2"), 120, 30);
+    assert!(t.wait_for("? help", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"held-one\r");
+    t.write(b"held-two\r");
+    let at = t.output().len();
+    assert!(wait_after(&t, at, "(ambiguous_model)", Duration::from_secs(15)), "{:?}", t.text());
+    assert!(wait_after(&t, at, "held-one", Duration::from_secs(5)) && wait_after(&t, at, "held-two", Duration::from_secs(5)), "both came back: {:?}", t.text());
+
+    let b = Sandbox::new("heldctrlc");
+    let mut t = pty::Pty::spawn(subscription_only(&b, false, "3"), 120, 30);
+    assert!(t.wait_for("? help", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"wait-for-it\r");
+    assert!(t.wait_for("choosing the model", Duration::from_secs(5)).is_some(), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\x03");
+    assert!(wait_after(&t, at, "not sent — it is back in the prompt", Duration::from_secs(5)), "{:?}", t.text());
+    assert!(wait_after(&t, at, "wait-for-it", Duration::from_secs(5)), "{:?}", t.text());
+    assert!(t.wait(Duration::from_millis(500)).is_none(), "Ctrl-C with a prompt waiting quits nothing");
+    // Quitting while the route is still being asked does not wait-for-it.
+    t.write(b"\x03");
+    t.write(b"\x03");
+    let asked = Instant::now();
+    assert!(t.wait(Duration::from_secs(10)).is_some(), "krowk quits");
+    assert!(asked.elapsed() < Duration::from_secs(2), "quitting waited {:?} for the route", asked.elapsed());
 }
 
 /// With an API key and a signed-in Claude subscription, nothing the TUI

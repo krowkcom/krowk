@@ -158,6 +158,12 @@ pub fn run(opts: Options) -> Outcome {
     }));
     let outcome = rt.block_on(session(opts));
     restore_terminal();
+    // A readiness check still running (the person quit while the model was
+    // being routed) is not waited for: its process group, registered while
+    // it runs, is killed here, and its blocking thread is let go with the
+    // runtime instead of holding the exit for up to its deadline.
+    krowk_harness::group::kill_all();
+    rt.shutdown_background();
     outcome
 }
 
@@ -271,7 +277,10 @@ async fn session(opts: Options) -> Outcome {
         model: opts.model,
         chosen: opts.chosen,
         routing,
+        model_route: None,
         held: None,
+        needs_trust: None,
+        trust_shown: None,
         trust: opts.trust,
         effort_label,
         runs_in: runs_in.clone(),
@@ -309,9 +318,18 @@ struct Ui<'h> {
     chosen: Option<ModelRef>,
     /// The model being routed at start (`Options::route`).
     routing: Option<RouteFuture<'h>>,
-    /// A prompt sent before the route, or the trust question after it,
-    /// was settled: sent once they are.
+    /// A `/model <id>` being routed: the loop goes on — keys, signals,
+    /// resizes — while its vendors are asked.
+    model_route: Option<RouteFuture<'h>>,
+    /// Prompts sent before the route, or the trust question after it, was
+    /// settled, joined as steering is: sent once they are.
     held: Option<String>,
+    /// The routed model runs on a backend in a repository nobody trusted:
+    /// the question to ask, once a prompt is actually sent for it.
+    needs_trust: Option<(ModelRef, String)>,
+    /// When the trust question came up: keys before `APPROVAL_SETTLE` has
+    /// passed were typed ahead, and are no answer.
+    trust_shown: Option<std::time::Instant>,
     /// The trust question, for a route that lands on a backend.
     trust: Option<TrustAsk>,
     /// The effort as the header shows it.
@@ -625,6 +643,19 @@ impl<'h> Ui<'h> {
                         }
                     }
                 }
+                r = finish(&mut self.model_route) => {
+                    self.model_route = None;
+                    match r {
+                        Ok(m) => {
+                            self.switch(app, m).await;
+                            self.release(app);
+                        }
+                        Err(e) => {
+                            app.error(&e.info());
+                            self.unhold(app);
+                        }
+                    }
+                }
                 r = finish(&mut self.routing) => {
                     self.routing = None;
                     if self.routed(app, r) && probe.is_none()
@@ -761,6 +792,10 @@ impl<'h> Ui<'h> {
                 self.retarget(&m);
                 self.model = Some(m.clone());
                 self.chosen = Some(m.clone());
+                if self.needs_trust.as_ref().is_some_and(|(n, _)| *n != m) {
+                    self.needs_trust = None;
+                    app.trust_question = None;
+                }
                 if !app.running() {
                     app.model = Some(m);
                 }
@@ -773,19 +808,19 @@ impl<'h> Ui<'h> {
         }
     }
 
-    /// The model routed at start, taken: shown, followed by the
-    /// connectivity probe, and — on a backend in a repository nobody has
-    /// trusted — the trust question asked. A prompt held for it goes now,
-    /// or once the question is answered. True when the probe's target
-    /// changed.
+    /// The model routed at start, taken: shown, and followed by the
+    /// connectivity probe. On a backend in a repository nobody has trusted,
+    /// the trust question is kept for when a prompt is sent — asked now
+    /// only if one is already held; nothing else asks it, so a key typed as
+    /// the route lands is never its answer. A prompt held for the route
+    /// goes now, or once the question is answered. True when the probe's
+    /// target changed.
     fn routed(&mut self, app: &mut App, r: Result<ModelRef, EngineError>) -> bool {
         let m = match r {
             Ok(m) => m,
             Err(e) => {
                 app.error(&e.info());
-                if let Some(text) = self.held.take() {
-                    app.editor.restore(&text);
-                }
+                self.unhold(app);
                 return false;
             }
         };
@@ -806,7 +841,11 @@ impl<'h> Ui<'h> {
                 None => {
                     let runs = krowk_harness::trust::what_runs(&t.root);
                     let has = if runs.is_empty() { "Nothing of that kind is there now.".to_string() } else { format!("It has {}.", runs.join(", ")) };
-                    app.trust_question = Some(format!("{m} runs {vendor}, which runs a repository's own hooks and MCP servers without asking. {has} Trust {}? [y/N]", home_relative(&t.root)));
+                    let q = format!("{m} runs {vendor}, which runs a repository's own hooks and MCP servers without asking. {has} Trust {}? y trusts it, n or esc does not", home_relative(&t.root));
+                    self.needs_trust = Some((m, q));
+                    if self.held.is_some() {
+                        self.ask_trust(app);
+                    }
                     return true;
                 }
             }
@@ -815,8 +854,26 @@ impl<'h> Ui<'h> {
         true
     }
 
-    /// Sends a prompt held for the route, if there is one. Always false:
-    /// nothing about the probe changes.
+    /// Puts the trust question up, and notes when.
+    fn ask_trust(&mut self, app: &mut App) {
+        if let Some((_, q)) = &self.needs_trust {
+            app.trust_question = Some(q.clone());
+            self.trust_shown = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Whether the trust question stands between a prompt and its turn:
+    /// the model is still the routed backend, and its repository still not
+    /// trusted.
+    fn trust_owed(&self) -> bool {
+        match (&self.needs_trust, &self.trust) {
+            (Some((m, _)), Some(t)) => self.model.as_ref() == Some(m) && !(t.trusted)(),
+            _ => false,
+        }
+    }
+
+    /// Sends the prompts held for the route, if there are any. Always
+    /// false: nothing about the probe changes.
     fn release(&mut self, app: &mut App) -> bool {
         if let Some(text) = self.held.take() {
             self.prompt(app, text);
@@ -824,12 +881,36 @@ impl<'h> Ui<'h> {
         false
     }
 
+    /// Puts the prompts held back into the editor, unsent: the route
+    /// failed, the trust question was answered no, or Ctrl-C.
+    fn unhold(&mut self, app: &mut App) {
+        if let Some(text) = self.held.take() {
+            let now = app.editor.text().to_string();
+            app.editor.restore(&if now.trim().is_empty() { text } else { format!("{text}\n\n{now}") });
+        }
+    }
+
+    /// Holds `text` until the model is routed and trusted, beside what is
+    /// held already.
+    fn hold(&mut self, app: &mut App, text: String, why: &str) {
+        app.gap_say(why);
+        self.held = Some(match self.held.take() {
+            Some(h) => format!("{h}\n\n{text}"),
+            None => text,
+        });
+    }
+
     fn prompt(&mut self, app: &mut App, text: String) {
         // Held until the model is routed and, on a backend, the repository
         // trusted: the turn would otherwise route it again, or be refused.
-        if self.routing.is_some() || app.trust_question.is_some() {
-            app.gap_say(if self.routing.is_some() { "choosing the model… the prompt goes once it is chosen" } else { "the prompt goes once the trust question is answered" });
-            self.held = Some(text);
+        if self.routing.is_some() || self.model_route.is_some() {
+            return self.hold(app, text, "choosing the model… the prompt goes once it is chosen");
+        }
+        if app.trust_question.is_some() || self.trust_owed() {
+            self.hold(app, text, "the prompt goes once the trust question is answered");
+            if app.trust_question.is_none() {
+                self.ask_trust(app);
+            }
             return;
         }
         self.last_prompt = text.clone();
@@ -990,28 +1071,34 @@ impl<'h> Ui<'h> {
                 _ => {}
             }
         }
-        // The trust question for a routed backend: y trusts the repository
-        // and sends what was held; anything else leaves it untrusted, and
-        // what was held back in the prompt.
-        if app.trust_question.is_some() && !ctrl {
-            app.trust_question = None;
+        // The trust question for a routed backend. It is answered by one
+        // key on an empty prompt once it has been up for APPROVAL_SETTLE:
+        // `y` trusts the repository and sends what was held; `n` or Esc
+        // does not, and puts it back in the prompt, to be asked again on
+        // the next send. Any other key — and any key typed ahead, before
+        // the settle or onto text in the prompt — is no answer, and goes to
+        // the prompt as it would.
+        if app.trust_question.is_some() && !ctrl && !alt && app.editor.is_empty() && self.trust_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE) {
             match k.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    app.trust_question = None;
+                    self.needs_trust = None;
                     if let Some(t) = &self.trust
                         && let Some(e) = (t.accept)()
                     {
                         app.notice(&e);
                     }
                     self.release(app);
+                    return false;
                 }
-                _ => {
-                    app.notice("not trusted: nothing runs there — pick an API model with /model, or start krowk again and trust it");
-                    if let Some(text) = self.held.take() {
-                        app.editor.restore(&text);
-                    }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    app.trust_question = None;
+                    app.notice("not trusted, so nothing ran — send the prompt again to be asked again, or pick an API model with /model");
+                    self.unhold(app);
+                    return false;
                 }
+                _ => {}
             }
-            return false;
         }
         // A limit's offer (R-INST-7): one keystroke, y, and never taken
         // silently — anything else declines it, and a key that is not an
@@ -1156,6 +1243,12 @@ impl<'h> Ui<'h> {
                     self.interrupt(app).await;
                 } else if !app.editor.is_empty() {
                     app.editor.clear();
+                } else if self.held.is_some() || app.trust_question.is_some() {
+                    // What is waiting on the route or the trust question
+                    // comes back unsent; a second Ctrl-C then quits.
+                    app.trust_question = None;
+                    self.unhold(app);
+                    app.notice("not sent — it is back in the prompt");
                 } else {
                     app.quit = true;
                 }
@@ -1269,13 +1362,13 @@ impl<'h> Ui<'h> {
                 // tie-break it refuses to make.
                 let current = self.chosen.clone().or_else(|| app.session_id.as_ref().and(app.model.clone()));
                 let cwd = self.runs_in.clone();
+                // Routed as the loop goes on: its vendors' checks never hold
+                // up keys, signals or a resize.
                 match self.host.registry().read_model(&t["/model ".len()..]) {
-                    Ok(asked) => match self.host.route_model(Some(&asked), current.as_ref(), &cwd).await {
-                        Ok(m) => {
-                            self.switch(app, m).await;
-                        }
-                        Err(e) => app.error(&e.info()),
-                    },
+                    Ok(asked) => {
+                        let host = self.host;
+                        self.model_route = Some(Box::pin(async move { host.route_model(Some(&asked), current.as_ref(), &cwd).await }));
+                    }
                     Err(e) => app.notice(&format!("/model: {e}")),
                 }
                 return false;

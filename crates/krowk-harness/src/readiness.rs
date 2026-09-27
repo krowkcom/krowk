@@ -538,11 +538,19 @@ fn vendor(inst: &Resolved, b: &Backend, probe: &Probe) -> Readiness {
 /// and one it started in turn (`claude.cmd`'s Node) can outlive the check
 /// until it exits by itself — a Job object would close that, and is not
 /// worth a new dependency for a status check.
+///
+/// The group is registered (`group::register`) until the check lets it
+/// go, so a krowk that leaves while a check is still running — the TUI
+/// quit while it routes — kills it on the way out (`group::kill_all`)
+/// rather than leaving it to its deadline, whose thread is gone with the
+/// process.
 pub(crate) fn probing(cmd: &mut Command, probe: &Probe) -> std::io::Result<std::process::Child> {
     cmd.current_dir(&probe.dir);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(cmd, 0);
-    cmd.spawn()
+    let child = cmd.spawn()?;
+    crate::group::register(Some(child.id()));
+    Ok(child)
 }
 
 /// Stops a check's process and everything it started — a Node runtime's
@@ -551,6 +559,8 @@ pub(crate) fn probing(cmd: &mut Command, probe: &Probe) -> std::io::Result<std::
 pub(crate) fn stop(child: &mut std::process::Child) {
     kill_group(child);
     let _ = child.kill();
+    // Released before it is reaped: once reaped, its pid is anyone's.
+    crate::group::release(Some(child.id()));
     let _ = child.wait();
 }
 
@@ -619,6 +629,7 @@ pub(crate) fn output_within(cmd: &mut Command, probe: &Probe) -> std::io::Result
             // in the group, holding the pipes the answer is read from, is
             // stopped before the pid can go to anyone else.
             kill_group(&child);
+            crate::group::release(Some(child.id()));
             break;
         }
         if started.elapsed() > within {

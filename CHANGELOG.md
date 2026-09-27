@@ -35,7 +35,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   trusted. The TUI routes once its first frame is up, so its prompt never
   waits on a vendor's status check, and when the model it routes runs on
   Claude Code or Codex in a repository not yet trusted it asks the trust
-  question itself, holding a prompt sent meanwhile until it is answered.
+  question itself when a prompt is sent, holding it until it is answered:
+  `y` or `n` (Esc) on an empty prompt, once the question has been up for
+  400 ms — keys typed ahead go to the prompt and answer nothing. A no, a
+  refused route or Ctrl-C puts the held prompts back in the editor.
 - **The TUI's status line is one line in one order**:
   `<user>/<host> | <instance>/<model> | $cost | [N tasks] | [N subagents] | ? help`,
   under the prompt box. The task count is the todo list's open items and
