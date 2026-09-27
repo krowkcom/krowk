@@ -111,8 +111,8 @@ unit = "bytes"
 # Ticket 02, `krowk connect` and `disconnect` (no new crate: the sign-in
 # moved into the harness behind ProviderAuth and AuthInteraction, the
 # vendor, method and account pickers, the default model, each kind's
-# sign-out), adds 72,800 bytes on top of main's 8,181,000: 8,253,800
-# (7.87 MiB), leaving 134,808 bytes.
+# sign-out), adds 72,736 bytes on top of main's 8,181,000: 8,253,736
+# (7.87 MiB), leaving 134,872 bytes.
 max = { x86_64-linux = 8_388_608 }
 status = "enforced"
 
