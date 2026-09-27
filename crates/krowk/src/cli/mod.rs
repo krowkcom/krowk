@@ -252,9 +252,16 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["providers", "remove", ..] => providers::remove(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["status", ..] => status::status(ctx),
-        _ if catalog::catalog(VERSION).leaves().iter().any(|l| p.starts_with(&l.name.split(' ').map(String::from).collect::<Vec<_>>())) => Err(not_in_build(p)),
+        _ if missing(p) => Err(not_in_build(p)),
         _ => Err(fail("unknown_command", format!("`{}` is not a krowk command — run `krowk --help`", clip(p, 2).join(" ")))),
     }
+}
+
+/// Whether the words name a command the catalog has and this build does
+/// not: `sessions` and `pricing`, in the agent build. Bare or with a
+/// subcommand, typed to run or to `help`.
+fn missing(p: &[String]) -> bool {
+    !cfg!(feature = "sessions") && p.first().is_some_and(|w| w == "sessions" || w == "pricing")
 }
 
 /// A command the catalog names that this build does not have: the agent
@@ -284,7 +291,7 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
         let _ = writeln!(ctx.io.stdout, "{text}");
         return Ok(());
     }
-    if !cfg!(feature = "sessions") && matches!(topic[0].as_str(), "sessions" | "pricing") {
+    if missing(topic) {
         return Err(not_in_build(topic));
     }
     if let Some(cmd) = c.find(topic) {
@@ -351,6 +358,13 @@ fn filter_has_something_to_read(filtering: bool, f: &Flags, p: &[String]) -> Res
     ))
 }
 
+/// Who takes `--all`: `help` (handled before this check), and `sessions` in
+/// the builds that have it.
+#[cfg(feature = "sessions")]
+const ALL_OWNERS: &str = "`krowk sessions` and `krowk help`";
+#[cfg(not(feature = "sessions"))]
+const ALL_OWNERS: &str = "`krowk help`";
+
 /// Each sessions flag is refused anywhere it does not belong: a flag that
 /// means nothing where it was typed was misunderstood by whoever typed it.
 fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error> {
@@ -367,7 +381,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         ("from", "`krowk sessions import`", import),
         ("harness", "`krowk sessions`", list),
         ("worktree", "`krowk sessions`", list),
-        ("all", "`krowk sessions`", list),
+        ("all", ALL_OWNERS, list),
         ("thinking", "`krowk sessions show`", show),
         ("yes", "`krowk sessions rebuild`", rebuild),
         ("no-network", "`krowk sessions sync`", sync),

@@ -212,11 +212,11 @@ fn row(out: &mut String, indent: &str, width: usize, label: &str, text: &str) {
 /// rest `hang` columns in.
 fn wrap(out: &mut String, first: &str, hang: usize, text: &str) {
     out.push_str(first);
-    let mut used = first.len();
+    let mut used = first.chars().count();
     let mut fresh = true;
     for word in text.split(' ') {
-        // Bytes, which never count fewer than the columns a word takes.
-        if !fresh && used + 1 + word.len() > COLUMNS {
+        let wide = word.chars().count();
+        if !fresh && used + 1 + wide > COLUMNS {
             out.push('\n');
             for _ in 0..hang {
                 out.push(' ');
@@ -229,7 +229,7 @@ fn wrap(out: &mut String, first: &str, hang: usize, text: &str) {
             used += 1;
         }
         out.push_str(word);
-        used += word.len();
+        used += wide;
         fresh = false;
     }
     out.push('\n');
