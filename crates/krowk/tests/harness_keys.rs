@@ -416,6 +416,12 @@ fn r_cred_1_a_command_runs_once_per_process_with_no_terminal_and_bounded_output(
     assert_eq!(b.pass_runs(), 4, "one run per status process, whichever instances share the command");
     assert!(rows[2]["state"] == "unknown" && rows[2]["reason"].as_str().unwrap().contains("with no terminal"), "{}", rows[2]);
     assert!(rows[3]["state"] == "unknown" && rows[3]["reason"].as_str().unwrap().contains("more than 64 KiB"), "{}", rows[3]);
+    // A failure is remembered for the process too: one failing run, however
+    // many instances ask.
+    std::fs::write(b.root.join("pass.fail"), "").unwrap();
+    let failing = b.row("anthropic", &[]);
+    assert_eq!((failing["state"].as_str(), b.pass_runs()), (Some("unknown"), 5), "{failing}");
+    std::fs::remove_file(b.root.join("pass.fail")).unwrap();
 
     // `krowk status` at a terminal too: the command still has none, so it
     // fails at once rather than stop on a read it can never make.

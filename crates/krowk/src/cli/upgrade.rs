@@ -190,15 +190,9 @@ fn write_binary(r: &mut impl Read, dest: &Path) -> std::io::Result<()> {
     result
 }
 
-fn state_path(ctx: &Ctx) -> PathBuf {
-    let xdg = ctx.env("XDG_CONFIG_HOME");
-    if !xdg.is_empty() {
-        return PathBuf::from(xdg).join("krowk").join("update-check.json");
-    }
-    match krowk_api::creds::home_dir() {
-        Some(home) => home.join(".config").join("krowk").join("update-check.json"),
-        None => PathBuf::from(krowk_api::creds::NO_HOME).join("update-check.json"),
-    }
+fn state_path(_ctx: &Ctx) -> PathBuf {
+    // krowk's config directory, never a relative one (`creds::config_dir`).
+    krowk_api::creds::config_dir().join("update-check.json")
 }
 
 fn write_state(ctx: &Ctx, state: &Value) {

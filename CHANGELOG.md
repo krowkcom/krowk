@@ -11,6 +11,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **With `HOME` unset, krowk no longer uses `.krowk` beside you as its config
+  directory** — that made a repository's own `.krowk/` its config, trust list
+  and credentials. In every build, `krowk config set --global` and `krowk
+  login` now refuse with "set HOME", `doctor` shows the directory as
+  `/nonexistent/krowk` (a path nothing can be read from or written to), and
+  `krowk status`, `-p`, the TUI and `connect` refuse with `no_home`. A
+  relative `XDG_CONFIG_HOME` is ignored, as the XDG spec says.
+
 - **`krowk status` names a key's variable as `env ANTHROPIC_API_KEY`**, where
   it said `$ANTHROPIC_API_KEY` (and `env ROUTER_KEY, handed to Claude Code`
   for a backend's key), so a variable the instance reads and a stored
@@ -182,10 +190,6 @@ the versions are the `v*` tags a release is cut from. Entries land under
   credentials files without asking, even inside the working directory, by
   whatever path leads there.
 
-- **krowk no longer uses a relative `.krowk` as its config directory when
-  `HOME` is unset**, which made a repository's own `.krowk/` its config and
-  credentials. `krowk status`, `-p`, the TUI and `connect` now refuse with
-  "set HOME"; a relative `XDG_CONFIG_HOME` is ignored.
 
 - **`krowk connect` connects a model provider, by vendor and method**
   (in the `harness` build). `krowk connect anthropic` offers a Claude

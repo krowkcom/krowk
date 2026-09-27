@@ -441,7 +441,7 @@ impl Scope {
             roots.extend(self.read_roots.iter().map(|d| canon(d)));
         }
         let inside = roots.iter().any(|r| real.starts_with(r));
-        if self.secret(p) || self.secret(&real) {
+        if self.secret(p) {
             return Reach::Fenced(format!("{} holds krowk's API keys and logins, which the tools read or change only with a person's say", p.display()));
         }
         if edit && let Some(why) = self.fence(p, &real, &root) {
@@ -507,9 +507,11 @@ impl Scope {
         }
         let lower = |p: &Path| PathBuf::from(p.to_string_lossy().to_lowercase());
         let seen: Vec<PathBuf> = [Some(lexical(p)), real_path(p, 0).ok()].into_iter().flatten().map(|q| lower(&q)).collect();
+        // The secrets as named and as they lead: `Policy::load` lists both,
+        // so a search resolves only the path it is at, once.
         self.secrets.iter().any(|s| {
-            let named = [lower(&lexical(s)), lower(&s.canonicalize().unwrap_or_else(|_| s.clone()))];
-            seen.iter().any(|q| named.iter().any(|n| q.starts_with(n)))
+            let n = lower(&lexical(s));
+            seen.iter().any(|q| q.starts_with(&n))
         })
     }
 

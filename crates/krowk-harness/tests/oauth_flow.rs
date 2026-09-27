@@ -73,12 +73,15 @@ async fn r_prov_4_a_browser_login_uses_pkce_and_a_loopback_redirect() {
     let http = krowk_harness::http::client().unwrap();
     let page = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let seen_page = page.clone();
+    // The browser's thread says when it has the page: the login can end
+    // before that thread stores it.
+    let (browsed, has_page) = std::sync::mpsc::channel();
     let mut opened = String::new();
     let l = Login { client_id: Some("krowk-test".into()), ..login(&auth.mock.url) };
     let stored = oauth::login_pkce(&http, &l, &mut |url: &str| {
         opened = url.to_string();
         let url = url.to_string();
-        let page = seen_page.clone();
+        let (page, browsed) = (seen_page.clone(), browsed.clone());
         std::thread::spawn(move || {
             // A probe with the wrong state first: ignored, the login waits on.
             let port = url.split("redirect_uri=http%3A%2F%2F127.0.0.1%3A").nth(1).unwrap().split("%2F").next().unwrap().to_string();
@@ -89,11 +92,13 @@ async fn r_prov_4_a_browser_login_uses_pkce_and_a_loopback_redirect() {
             let _ = probe.read_to_string(&mut answer);
             assert!(answer.starts_with("HTTP/1.1 400"), "{answer}");
             *page.lock().unwrap() = providers::browse(&url);
+            let _ = browsed.send(());
         });
     })
     .await
     .unwrap();
     assert_eq!(stored.access_token, "xai-at-1");
+    has_page.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
     assert!(page.lock().unwrap().contains("krowk is signed in"));
     for want in ["response_type=code", "client_id=krowk-test", "code_challenge_method=S256", "code_challenge=", "state=", "scope=openid+offline_access"] {
         assert!(opened.contains(want), "{want} in {opened}");

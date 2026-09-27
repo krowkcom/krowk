@@ -94,7 +94,8 @@ impl Policy {
         let loaded = settings::load(cfg, cwd)?;
         let mut protected: Vec<PathBuf> = cfg.krowk_dir.iter().cloned().collect();
         protected.extend(cfg.claude_home());
-        let secrets = cfg.krowk_dir.iter().flat_map(|d| [d.join("providers"), d.join("credentials.json")]).collect();
+        // Each as named and, when it exists, as it leads (`Scope::secret`).
+        let secrets = cfg.krowk_dir.iter().flat_map(|d| [d.join("providers"), d.join("credentials.json")]).flat_map(|s| [s.canonicalize().ok(), Some(s)]).flatten().collect();
         Ok(Policy { loaded, cwd: cwd.to_path_buf(), home: cfg.home.clone(), read_dirs: Vec::new(), protected, secrets })
     }
 
