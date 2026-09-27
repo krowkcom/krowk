@@ -152,10 +152,13 @@ fn r_perm_1_only_the_person_puts_a_session_in_unhinged() {
     assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, Some(PermissionMode::Unhinged), "the person's own settings choose it");
     // What bypassPermissions still asks about, the refusal points past it,
     // from whichever mode asked.
-    let asks = policy(&d, &[(Kind::Ask, "Bash(npm test)")]);
+    let asks = policy(&d, &[(Kind::Ask, "Bash(npm test)"), (Kind::Deny, "Bash(rm:*)")]);
     for m in [PermissionMode::Default, PermissionMode::BypassPermissions] {
-        let why = gate(&asks, m).nobody_to_ask(&bash("npm test"), None, "Bash `npm test`", "the rule asks first", &[]);
-        assert!(why.contains("--permission-mode unhinged"), "{m:?}: {why}");
+        for cmd in ["npm test", "$(printf ls)"] {
+            let Verdict::Ask { reason, remember } = gate(&asks, m).verdict(&bash(cmd), None) else { panic!("{cmd} in {m:?} is asked about") };
+            let why = gate(&asks, m).nobody_to_ask(&bash(cmd), None, cmd, &reason, &remember);
+            assert!(why.contains("--permission-mode unhinged") && !why.contains("allow rule"), "{cmd} in {m:?}, where no allow rule helps: {why}");
+        }
         let why = gate(&policy(&d, &[]), m).nobody_to_ask(&bash("ls"), Some(hooks::Decision::Ask), "Bash `ls`", "a hook asks", &[]);
         assert!(why.contains("--permission-mode unhinged"), "{m:?}, a hook's ask: {why}");
     }

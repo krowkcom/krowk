@@ -26,7 +26,7 @@
 //! | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, … | codex → krowk | judged by krowk's permission evaluator (`crate::permissions`), as `Bash(<command>)` and `Edit(<files>)` |
 //! | `item/tool/call` | codex → krowk | a call of krowk's own tools, answered by `crate::bridge` |
 //!
-//! **The mode.** Every mode but `bypassPermissions` runs Codex in its
+//! **The mode.** Every mode but `bypassPermissions` and `unhinged` runs Codex in its
 //! `read-only` sandbox with approvals `on-request` and krowk as the
 //! reviewer, so every edit and every command that needs more than reading
 //! is asked about, and krowk's permission evaluator answers it — asking the
@@ -671,7 +671,7 @@ struct Proc {
     out: LineReader<BufReader<ChildStdout>>,
     stderr: Arc<Mutex<String>>,
     binary: String,
-    /// Started in `danger-full-access` (krowk's bypassPermissions).
+    /// Started in `danger-full-access` (krowk's bypassPermissions or unhinged).
     bypass: bool,
     next: u64,
     exited: bool,
