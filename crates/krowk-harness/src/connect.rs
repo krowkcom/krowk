@@ -927,35 +927,31 @@ impl ProviderAuth<'_> {
         absolute_home(instance, &backend)?;
         let probe = self.probe()?;
         let made = made_dir(backend.config_dir.as_deref())?;
-        let undo = |e: EngineError| undo(&made, e);
+        // A home that was there is linked like any other — Codex is asked
+        // with the person's own config, as a turn and `krowk status` ask it —
+        // and a failed sign-in takes away the links it added, and only those.
+        let before = backend.config_dir.as_deref().filter(|_| made.is_none()).map(entries);
+        let undo = |e: EngineError| {
+            if let (Some(dir), Some(before)) = (backend.config_dir.as_deref(), &before) {
+                unlink_new(dir, before);
+            }
+            undo(&made, e)
+        };
         // The person's own Codex home: what a new account's home shares.
         let own = Some(self.env("CODEX_HOME")).filter(|d| !d.trim().is_empty()).map(PathBuf::from).or_else(|| Some(self.env("HOME")).filter(|h| !h.trim().is_empty()).map(|h| PathBuf::from(h).join(".codex")));
-        let share = || match (&backend.config_dir, &own) {
-            (Some(dir), Some(own)) => codex::share(dir, own).map_err(|e| EngineError::new("config_unwritable", format!("link {} into {}: {e}", own.display(), dir.display()))),
-            _ => Ok(Vec::new()),
+        let shared = match (&backend.config_dir, &own) {
+            (Some(dir), Some(own)) => codex::share(dir, own).map_err(|e| undo(EngineError::new("config_unwritable", format!("link {} into {}: {e}", own.display(), dir.display()))))?,
+            _ => Vec::new(),
         };
-        // Links go into a home this made at once, since a failure takes the
-        // whole of it away; into one that was there, only once the sign-in
-        // worked, so a failed one leaves it as it was.
-        let mut shared = if made.is_some() { share().map_err(undo)? } else { Vec::new() };
-        // Asking Codex links a home too (`codex_auth::account`, as before
-        // any process): not one that was there, until the sign-in worked.
-        let asking = if made.is_some() { backend.clone() } else { instances::Backend { shared_home: None, ..backend.clone() } };
-        let status = codex_auth::signed_in(&asking, &probe).map_err(|e| undo(backend_failed(e)))?;
+        let status = codex_auth::signed_in(&backend, &probe).map_err(|e| undo(backend_failed(e)))?;
         if status.logged_in || backend.key.is_some() {
-            if made.is_none() {
-                shared = share()?;
-            }
             return Ok(VendorLogin { logged_in: status.logged_in, describe: status.describe(), ran: false, shared });
         }
         ui.notify(Notice::Info(&format!("Signing in to Codex as {instance} — Codex's own login follows.")));
-        let exit = ui.terminal(&mut || codex_auth::login(&asking, device, &probe.dir)).map_err(|e| undo(backend_failed(e)))?;
-        let status = codex_auth::signed_in(&asking, &probe).map_err(|e| undo(backend_failed(e)))?;
+        let exit = ui.terminal(&mut || codex_auth::login(&backend, device, &probe.dir)).map_err(|e| undo(backend_failed(e)))?;
+        let status = codex_auth::signed_in(&backend, &probe).map_err(|e| undo(backend_failed(e)))?;
         if !status.logged_in {
             return Err(undo(not_signed_in("codex login", exit, instance, kind)));
-        }
-        if made.is_none() {
-            shared = share()?;
         }
         Ok(VendorLogin { logged_in: true, describe: status.describe(), ran: true, shared })
     }
@@ -1082,6 +1078,28 @@ fn pick(vendor: Vendor, method: Option<Method>, ui: &mut dyn AuthInteraction) ->
 struct Made {
     leaf: PathBuf,
     top: PathBuf,
+}
+
+/// What a Codex home holds where `codex::share` links: its own entries and
+/// those of its `skills`.
+fn entries(dir: &Path) -> std::collections::HashSet<PathBuf> {
+    let list = |d: &Path| std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).collect::<Vec<_>>();
+    list(dir).into_iter().chain(list(&dir.join("skills"))).collect()
+}
+
+/// Takes away the links a failed sign-in added to a home that was there:
+/// every symlink not in `before`, and a `skills` directory it made, once
+/// empty. Nothing else — a file Codex wrote is Codex's.
+fn unlink_new(dir: &Path, before: &std::collections::HashSet<PathBuf>) {
+    let mut now: Vec<PathBuf> = entries(dir).into_iter().filter(|p| !before.contains(p)).collect();
+    now.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    for p in now {
+        if p.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+            let _ = std::fs::remove_file(&p);
+        } else if p == dir.join("skills") {
+            let _ = std::fs::remove_dir(&p);
+        }
+    }
 }
 
 /// A vendor's login and sign-out run in krowk's own directory, so a
