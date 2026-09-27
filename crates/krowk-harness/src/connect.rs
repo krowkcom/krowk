@@ -505,7 +505,9 @@ impl ProviderAuth<'_> {
     /// a Claude Code or Codex instance with no directory of its own (or one
     /// naming the vendor's default) signs in and out in the directory
     /// every other tool on the machine uses — `~/.claude`, `~/.codex`.
-    /// None for a named account, or a keyed one, which runs no login.
+    /// None for a named account, or a keyed one, which runs no login. With
+    /// no directory of its own, always some: the one the environment names,
+    /// else `~/.claude` in words when there is no HOME to find it in.
     pub fn own_home(&self, r: &Resolved) -> Option<PathBuf> {
         let b = r.backend.as_ref().filter(|b| b.key.is_none())?;
         let (var, dot) = if r.kind == "codex-app-server" { ("CODEX_HOME", ".codex") } else { ("CLAUDE_CONFIG_DIR", ".claude") };
@@ -514,8 +516,11 @@ impl ProviderAuth<'_> {
         // for every tool started without that variable.
         let from_var = Some(self.env(var)).filter(|d| !d.trim().is_empty()).map(PathBuf::from);
         let in_home = Some(self.env("HOME")).filter(|h| !h.trim().is_empty()).map(|h| PathBuf::from(h).join(dot));
+        let named = if r.kind == "codex-app-server" { "~/.codex" } else { "~/.claude" };
         match &b.config_dir {
-            None => from_var.or(in_home),
+            // No directory of its own is always the person's own: with no
+            // HOME to name it, the vendor finds it anyway.
+            None => Some(from_var.or(in_home).unwrap_or_else(|| PathBuf::from(named))),
             Some(d) => [from_var, in_home].into_iter().flatten().find(|own| same_dir(d, own)),
         }
     }
@@ -1023,18 +1028,23 @@ fn pick(vendor: Vendor, method: Option<Method>, ui: &mut dyn AuthInteraction) ->
     Ok(offered[choose(ui, &format!("How do you connect {}?", vendor.id()), &labels, &flag)?])
 }
 
+/// What a sign-in made: the account's directory, and the outermost of its
+/// parents that was missing and made with it.
+struct Made {
+    leaf: PathBuf,
+    top: PathBuf,
+}
+
 /// The directory a sign-in makes, when it is new — taken away again if the
-/// sign-in fails.
-/// The directory a failed sign-in takes away again is the outermost one it
-/// made, and nothing above it: `a/new/deeper` makes `new`, and only `new`
-/// goes. The path is lexically normal (`normalised`) by then, so no `..`
-/// can lead the removal into a directory that was there before.
-fn made_dir(dir: Option<&Path>) -> Result<Option<PathBuf>, EngineError> {
-    let Some(d) = dir.filter(|d| d.symlink_metadata().is_err()) else { return Ok(None) };
-    let d = normalised(d);
-    let first = d.ancestors().take_while(|a| a.symlink_metadata().is_err()).last().map(Path::to_path_buf);
-    private_dir(&d).map_err(|e| EngineError::new("config_unwritable", format!("create {}: {e}", d.display())))?;
-    Ok(first)
+/// sign-in fails. Only a path that is absolute and lexically normal is made
+/// here — what `connect` writes, `--config-dir` included; a hand-written
+/// relative or `..` one is left for the vendor to make, from the path it is
+/// given, rather than made here somewhere else.
+fn made_dir(dir: Option<&Path>) -> Result<Option<Made>, EngineError> {
+    let Some(d) = dir.filter(|d| d.is_absolute() && normalised(d) == *d && d.symlink_metadata().is_err()) else { return Ok(None) };
+    let top = d.ancestors().take_while(|a| a.symlink_metadata().is_err()).last().unwrap_or(d).to_path_buf();
+    private_dir(d).map_err(|e| EngineError::new("config_unwritable", format!("create {}: {e}", d.display())))?;
+    Ok(Some(Made { leaf: d.to_path_buf(), top }))
 }
 
 /// `.` and `..` taken out of a path by its words alone, as a person reads
@@ -1088,9 +1098,19 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn undo(made: &Option<PathBuf>, e: EngineError) -> EngineError {
-    if let Some(dir) = made {
-        let _ = std::fs::remove_dir_all(dir);
+/// Takes away what a failed sign-in made: the account's own directory,
+/// whole, then each parent it made, only while it is empty — another
+/// connection may have put its own account beside this one meanwhile.
+fn undo(made: &Option<Made>, e: EngineError) -> EngineError {
+    if let Some(m) = made {
+        let _ = std::fs::remove_dir_all(&m.leaf);
+        if m.leaf != m.top {
+            for up in m.leaf.ancestors().skip(1) {
+                if std::fs::remove_dir(up).is_err() || up == m.top {
+                    break;
+                }
+            }
+        }
     }
     e
 }

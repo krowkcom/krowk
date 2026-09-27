@@ -179,3 +179,47 @@ fn signing_out_the_persons_own_claude_login_is_asked_first_and_no_keeps_it() {
     pa.disconnect("claude:work", false, false, &mut ui).unwrap();
     assert!(ui.asked.is_empty());
 }
+
+/// A front end during whose vendor login another connection finishes an
+/// account beside this one.
+struct Meanwhile(Box<dyn FnMut()>);
+
+impl AuthInteraction for Meanwhile {
+    fn interactive(&self) -> bool {
+        false
+    }
+    fn prompt(&mut self, _: Prompt<'_>) -> Result<Answer, EngineError> {
+        unreachable!("nothing is asked")
+    }
+    fn notify(&mut self, _: Notice<'_>) {}
+    fn terminal(&mut self, run: &mut dyn FnMut() -> Result<ExitStatus, String>) -> Result<ExitStatus, String> {
+        (self.0)();
+        run()
+    }
+}
+
+#[test]
+fn a_failed_sign_in_leaves_the_account_another_connection_made_beside_it_under_a_new_parent() {
+    let b = Sandbox::new("beside");
+    // A `claude` whose login gives up, as a person closing the browser would.
+    let fake = b.root.join("bin/claude");
+    std::fs::rename(&fake, b.root.join("bin/fake-claude")).unwrap();
+    std::fs::write(&fake, format!("#!/bin/sh\nFAKE_CLAUDE_LOGIN=fail exec {} \"$@\"\n", b.root.join("bin/fake-claude").display())).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let env = b.env();
+    let pa = auth(&b, &env);
+    let parent = b.root.join("home/.local/share/krowk/claude");
+    assert!(!parent.exists(), "the accounts' parent is new");
+    let other = parent.join("claude-b");
+    let finished = other.clone();
+    let mut ui = Meanwhile(Box::new(move || {
+        std::fs::create_dir_all(&finished).unwrap();
+        std::fs::write(finished.join("fake-login"), "").unwrap();
+    }));
+    let req = pa.request(Some("anthropic"), Some(Method::Subscription), Options { name: Some("fail".into()), ..Options::default() }, &mut ui).unwrap();
+    let e = pa.connect(&req, &mut ui).err().expect("the login gives up");
+    assert_eq!(e.code, "not_authenticated");
+    assert!(!parent.join("claude-fail").exists(), "its own directory is gone");
+    assert!(other.join("fake-login").exists(), "the other connection's account is not");
+}
