@@ -856,6 +856,12 @@ stdout:
           "type": "bool",
           "default": "false",
           "usage": "Remove its definition too; without it the instance stays, not signed in"
+        },
+        {
+          "name": "sign-out-vendor",
+          "type": "bool",
+          "default": "false",
+          "usage": "The built-in claude or codex: yes, sign me out of Claude Code or Codex itself (~/.claude, ~/.codex), for every tool. Asked at a terminal; required without one"
         }
       ]
     },
@@ -1957,6 +1963,12 @@ stdout:
           "type": "bool",
           "default": "false",
           "usage": "Remove its definition too; without it the instance stays, not signed in"
+        },
+        {
+          "name": "sign-out-vendor",
+          "type": "bool",
+          "default": "false",
+          "usage": "The built-in claude or codex: yes, sign me out of Claude Code or Codex itself (~/.claude, ~/.codex), for every tool. Asked at a terminal; required without one"
         }
       ]
     },
@@ -3072,6 +3084,12 @@ stdout:
           "type": "bool",
           "default": "false",
           "usage": "Remove its definition too; without it the instance stays, not signed in"
+        },
+        {
+          "name": "sign-out-vendor",
+          "type": "bool",
+          "default": "false",
+          "usage": "The built-in claude or codex: yes, sign me out of Claude Code or Codex itself (~/.claude, ~/.codex), for every tool. Asked at a terminal; required without one"
         }
       ]
     },
@@ -4187,6 +4205,12 @@ tty:
           "type": "bool",
           "default": "false",
           "usage": "Remove its definition too; without it the instance stays, not signed in"
+        },
+        {
+          "name": "sign-out-vendor",
+          "type": "bool",
+          "default": "false",
+          "usage": "The built-in claude or codex: yes, sign me out of Claude Code or Codex itself (~/.claude, ~/.codex), for every tool. Asked at a terminal; required without one"
         }
       ]
     },
