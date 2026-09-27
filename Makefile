@@ -2,7 +2,7 @@
 # A checkout and a release should not disagree about what version this is.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 
-.PHONY: build test lint check install mock clean dist release-check golden golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps bench
+.PHONY: build test lint check install dev mock clean dist release-check golden golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps bench
 
 build: ## Build target/release/krowk (the full build) and krowk-mcp
 	KROWK_VERSION=$(VERSION) cargo build --release -p krowk --features harness
@@ -57,6 +57,18 @@ codex-schema-update: ## Re-pin the codex app-server schema from the Codex instal
 
 install: ## Install krowk and krowk-mcp into ~/.cargo/bin
 	KROWK_VERSION=$(VERSION) cargo install --locked --path crates/krowk --features harness
+
+# `krowk` on the PATH as a link into this checkout's target/quick, so every
+# later `make dev` (or `cargo build --profile quick -p krowk --features
+# harness`) is live at once, with no copy. The links follow the checkout
+# `make dev` last ran in; `make install` puts real copies back.
+DEV_BIN_DIR ?= $(HOME)/.cargo/bin
+
+dev: ## Fast build, linked into ~/.cargo/bin: the latest krowk from this checkout
+	KROWK_VERSION=$(VERSION) cargo build --profile quick -p krowk --features harness
+	mkdir -p "$(DEV_BIN_DIR)"
+	for b in krowk krowk-mcp; do ln -sfn "$(CURDIR)/target/quick/$$b" "$(DEV_BIN_DIR)/$$b"; done
+	@echo "$(DEV_BIN_DIR)/krowk -> $(CURDIR)/target/quick/krowk"
 
 mock: ## Local stand-in for api.krowk.com on :8787
 	cargo run --release -p krowk-devregistry --bin devregistry

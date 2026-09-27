@@ -1,5 +1,6 @@
 //! Claude-Code-compatible permissions (R-PERM-1, R-PERM-2): the modes
-//! `default`, `acceptEdits`, `plan` and `bypassPermissions`, the rules of
+//! `default`, `acceptEdits`, `plan` and `bypassPermissions`, krowk's own
+//! `unhinged`, the rules of
 //! `permissions.allow`, `ask` and `deny` in Claude Code's syntax (`rules`),
 //! the places they are read from (`settings`), grants remembered for a
 //! session or a project, and approval requests any client can answer.
@@ -8,6 +9,11 @@
 //! tools, and what a backend (Claude Code's `can_use_tool`, Codex's
 //! approval requests) asks. The order, for a call:
 //!
+//! 0. **`unhinged` allows it**, and none of what follows is read: no deny
+//!    rule, no fence, no ask rule, no hook's ask. The person chose to trust
+//!    the model with everything this process can reach. A `PreToolUse`
+//!    hook still runs, and a hook that blocks still blocks: a hook is the
+//!    person's own program, not a rule.
 //! 1. **A deny rule that matches denies it**, in every mode —
 //!    `bypassPermissions` too. Deny always wins.
 //! 2. What needs no permission (krowk's own bridged tools) runs.
@@ -289,6 +295,11 @@ impl Gate {
         &self.0.policy
     }
 
+    /// The same gate in another mode.
+    fn in_mode(&self, mode: PermissionMode) -> Gate {
+        Gate(Arc::new(Inner { policy: self.0.policy.clone(), mode, grants: self.0.grants.clone(), approvals: None, grants_file: None, session_id: self.0.session_id.clone(), turn_id: self.0.turn_id.clone() }))
+    }
+
     /// The same gate, with more directories no file tool changes unasked: a
     /// backend instance's own config directory.
     pub fn protecting(&self, dirs: impl IntoIterator<Item = PathBuf>) -> Gate {
@@ -304,7 +315,7 @@ impl Gate {
     pub fn scope(&self, opens: Opens) -> Scope {
         let mut s = self.0.policy.scope(opens);
         let me = self.clone();
-        if self.0.policy.loaded.rules.iter().any(|(k, _)| *k == Kind::Deny) {
+        if self.0.mode != PermissionMode::Unhinged && self.0.policy.loaded.rules.iter().any(|(k, _)| *k == Kind::Deny) {
             s.hidden = Hidden(Some(Arc::new(move |p: &Path| me.denies_read(p))));
         }
         s
@@ -365,6 +376,9 @@ impl Gate {
 
     /// The evaluator itself (see the module's notes for the order).
     pub fn verdict(&self, call: &Call, hook: Option<hooks::Decision>) -> Verdict {
+        if self.0.mode == PermissionMode::Unhinged {
+            return Verdict::Allow(Opens { outside: true, fences: true });
+        }
         let p = &self.0.policy;
         let at = p.places();
         let what = summary(call);
@@ -449,7 +463,7 @@ impl Gate {
             Verdict::Ask { reason, remember } => (reason, remember),
         };
         let what = summary(call);
-        let Some(approvals) = &self.0.approvals else { return Err(self.nobody_to_ask(call, &what, &reason, &remember)) };
+        let Some(approvals) = &self.0.approvals else { return Err(self.nobody_to_ask(call, hook, &what, &reason, &remember)) };
         let request_id = krowk_store::new_id();
         let answer = approvals.wait(&request_id, &self.0.session_id);
         let req = ApprovalRequest {
@@ -499,21 +513,27 @@ impl Gate {
 
     /// The refusal for a call that would be asked about when nobody can
     /// answer: what it needed, and what would allow it.
-    fn nobody_to_ask(&self, call: &Call, what: &str, reason: &str, remember: &[String]) -> String {
+    fn nobody_to_ask(&self, call: &Call, hook: Option<hooks::Decision>, what: &str, reason: &str, remember: &[String]) -> String {
         // A session tool is asked about only by an ask rule or a hook, which
-        // no mode and no allow rule gets past.
+        // no allow rule and no mode but unhinged gets past.
         if call.access == Access::Session {
-            return format!("{what} needs approval — {reason} — and nobody is here to give it: this session cannot ask. Run it where someone can answer (bare `krowk`), or remove what asks.");
+            return format!("{what} needs approval — {reason} — and nobody is here to give it: this session cannot ask. Run it where someone can answer (bare `krowk`), remove what asks, or rerun with `--permission-mode unhinged`.");
         }
+        // What bypassPermissions would still ask about — an ask rule, a
+        // hook's ask, a line a deny rule could not see into — only unhinged
+        // runs.
+        let past_bypass = matches!(self.in_mode(PermissionMode::BypassPermissions).verdict(call, hook), Verdict::Ask { .. });
         let at = self.0.policy.places();
         let untrusted = self.0.policy.loaded.ignored_allow.iter().find(|r| rules::matches(r, call, &at, true));
         let (outside, fenced) = self.reach(call);
         let mode = match &call.access {
+            _ if past_bypass => "unhinged",
             Access::Edit(_) | Access::Publish(_) if outside.is_empty() && fenced.is_none() => "acceptEdits",
             _ => "bypassPermissions",
         };
-        let rule = remember.first().map(|r| format!("an allow rule such as `{r}` in `permissions.allow` of .claude/settings.json or krowk's config.json, or ")).unwrap_or_default();
-        let hint = match untrusted {
+        // No allow rule gets past what only unhinged runs.
+        let rule = remember.first().filter(|_| !past_bypass).map(|r| format!("an allow rule such as `{r}` in `permissions.allow` of .claude/settings.json or krowk's config.json, or ")).unwrap_or_default();
+        let hint = match untrusted.filter(|_| !past_bypass) {
             Some(r) => format!(" ({} allows it with `{}`, but a repository's own allow rules apply only once it is trusted — run krowk there once on a terminal and answer its trust question, or pass --trust.)", r.source, r.text),
             None => String::new(),
         };

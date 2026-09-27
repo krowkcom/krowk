@@ -40,6 +40,8 @@ fn letter(v: &Verdict) -> char {
     }
 }
 
+/// The modes a rule holds in; `unhinged`, which none holds, has its own
+/// test.
 const MODES: [PermissionMode; 4] = [PermissionMode::Default, PermissionMode::AcceptEdits, PermissionMode::Plan, PermissionMode::BypassPermissions];
 
 #[test]
@@ -105,6 +107,75 @@ fn r_perm_1_a_repository_that_denies_bash_rm_blocks_it_in_every_mode_bypass_incl
 }
 
 #[test]
+fn r_perm_1_unhinged_runs_everything_and_no_rule_fence_or_hooks_ask_holds_it() {
+    let d = repo("unhinged");
+    let p = policy(&d, &[(Kind::Deny, "Bash"), (Kind::Deny, "Read(.env)"), (Kind::Deny, "Edit"), (Kind::Ask, "WebFetch"), (Kind::Deny, "mcp__gh"), (Kind::Deny, "Task")]);
+    let calls = [
+        bash("rm -rf build"),
+        bash("$(printf rm) -rf x"),
+        read(d.join(".env")),
+        edit(d.join("src/a.rs")),
+        edit(d.join(".git/hooks/pre-commit")),
+        edit(d.join(".claude/settings.json")),
+        edit(PathBuf::from("/etc/hosts")),
+        Call { tool: "WebFetch".into(), access: Access::Fetch("https://docs.rs/x".into()), subject: None },
+        Call { tool: "mcp__gh__issue".into(), access: Access::Mcp { server: "gh".into(), tool: "issue".into() }, subject: None },
+        Call { tool: "Task".into(), access: Access::Session, subject: Some("reviewer".into()) },
+    ];
+    let g = gate(&p, PermissionMode::Unhinged);
+    for call in &calls {
+        for hook in [None, Some(hooks::Decision::Ask)] {
+            assert_eq!(g.verdict(call, hook), Verdict::Allow(Opens { outside: true, fences: true }), "{call:?} with the hook saying {hook:?}");
+        }
+    }
+    assert!(g.scope(Opens::default()).hidden.0.is_none(), "a search skips nothing a deny rule would have hidden");
+    assert_eq!(letter(&gate(&p, PermissionMode::BypassPermissions).verdict(&bash("ls"), None)), 'N', "the same rules still hold under bypassPermissions");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn r_perm_1_every_mode_reads_back_as_it_is_written() {
+    for n in PermissionMode::NAMES {
+        let m = PermissionMode::parse(n).unwrap();
+        assert_eq!((m.name(), serde_json::to_value(m).unwrap()), (n, json!(n)));
+    }
+}
+
+#[test]
+fn r_perm_1_only_the_person_puts_a_session_in_unhinged() {
+    let d = repo("unhinged-mode");
+    std::fs::create_dir_all(d.join(".claude")).unwrap();
+    std::fs::write(d.join(".claude/settings.json"), json!({"permissions": {"defaultMode": "unhinged"}}).to_string()).unwrap();
+    let cfg = Config { trusted: Some(Arc::new(|_: &Path| true)), ..Config::default() };
+    assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, None, "a trusted repository's unhinged never counts");
+    let cfg = Config { user: Some(json!({"permissions": {"defaultMode": "unhinged"}})), ..cfg };
+    assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, Some(PermissionMode::Unhinged), "krowk's own config chooses it");
+    // Claude Code's user file does not: Claude Code would skip the whole
+    // file, deny rules and hooks included.
+    let claude = d.join("home/.claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(claude.join("settings.json"), json!({"permissions": {"defaultMode": "unhinged"}}).to_string()).unwrap();
+    let p = Policy::load(&Config { claude_dir: Some(claude), home: Some(d.join("home")), trusted: Some(Arc::new(|_: &Path| true)), ..Config::default() }, &d.join("src")).unwrap();
+    assert_eq!(p.loaded.default_mode, Some(PermissionMode::Default));
+    assert!(matches!(p.loaded.notices.as_slice(), [n] if n.starts_with("~/.claude/settings.json sets defaultMode \"unhinged\"") && n.contains("Claude Code skips")), "{:?}", p.loaded.notices);
+    // What bypassPermissions still asks about, the refusal points past it,
+    // from whichever mode asked.
+    let asks = policy(&d, &[(Kind::Ask, "Bash(npm test)"), (Kind::Deny, "Bash(rm:*)")]);
+    for m in [PermissionMode::Default, PermissionMode::BypassPermissions] {
+        for cmd in ["npm test", "$(printf ls)"] {
+            let Verdict::Ask { reason, remember } = gate(&asks, m).verdict(&bash(cmd), None) else { panic!("{cmd} in {m:?} is asked about") };
+            let why = gate(&asks, m).nobody_to_ask(&bash(cmd), None, cmd, &reason, &remember);
+            assert!(why.contains("--permission-mode unhinged") && !why.contains("allow rule"), "{cmd} in {m:?}, where no allow rule helps: {why}");
+        }
+        let why = gate(&policy(&d, &[]), m).nobody_to_ask(&bash("ls"), Some(hooks::Decision::Ask), "Bash `ls`", "a hook asks", &[]);
+        assert!(why.contains("--permission-mode unhinged"), "{m:?}, a hook's ask: {why}");
+    }
+    let why = gate(&policy(&d, &[]), PermissionMode::Default).nobody_to_ask(&bash("npm test"), None, "Bash `npm test`", "it runs a command", &[]);
+    assert!(why.contains("--permission-mode bypassPermissions"), "what bypassPermissions runs, it is still pointed at: {why}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn r_perm_1_plan_mode_refuses_writes_whatever_the_rules_allow() {
     let d = repo("plan");
     let p = policy(&d, &[(Kind::Allow, "Edit"), (Kind::Allow, "Bash"), (Kind::Allow, "mcp__gh")]);
@@ -141,7 +212,7 @@ fn r_perm_1_an_untrusted_repository_narrows_but_never_widens() {
     assert_eq!(letter(&g.verdict(&bash("curl https://x"), None)), '?', "its allow rule is not taken");
     assert_eq!(letter(&g.verdict(&read(d.join("src/.env")), None)), 'N', "its deny rule is");
     assert_eq!(letter(&g.verdict(&read(d.join("src/secrets/k")), None)), '?', "and its ask rule");
-    let why = g.nobody_to_ask(&bash("curl https://x"), "Bash `curl https://x`", "it runs a command", &[]);
+    let why = g.nobody_to_ask(&bash("curl https://x"), None, "Bash `curl https://x`", "it runs a command", &[]);
     assert!(why.contains("apply only once it is trusted") && why.contains("Bash(curl:*)"), "the refusal says why the repository's rule did not count: {why}");
 
     let cfg = Config { trusted: Some(Arc::new(|_: &Path| true)), ..Config::default() };
