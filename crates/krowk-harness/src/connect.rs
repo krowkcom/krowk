@@ -570,7 +570,7 @@ impl ProviderAuth<'_> {
         let reg = Registry::resolve(&self.definitions()?, self.env);
         let names: Vec<&str> = reg.instances.keys().map(String::as_str).collect();
         if !ui.interactive() {
-            return Err(EngineError::new("bad_argument", format!("name the instance to disconnect, e.g. `krowk disconnect claude:work` — this host has {}", names.join(", "))));
+            return Err(EngineError::new("bad_argument", format!("nobody is at a terminal to pick which instance to disconnect, and this host has {} — name one: `krowk disconnect <instance>`", names.join(", "))));
         }
         let labels: Vec<String> = reg.instances.values().map(|r| format!("{} ({})", r.name, instances::kind_label(r.kind))).collect();
         let options: Vec<&str> = labels.iter().map(String::as_str).collect();
@@ -592,7 +592,7 @@ impl ProviderAuth<'_> {
             (Some(i), _, _) => i.clone(),
             (None, Some(n), _) if n.contains(':') => n.clone(),
             (None, Some(n), "openai-compatible") => n.clone(),
-            (None, None, "openai-compatible") => ask_text(ui, "Name this server's instance — the part of --model before the model id, e.g. local", "--name, e.g. --name local")?,
+            (None, None, "openai-compatible") => ask_text(ui, "Name this server's instance (the part of --model before the model id), e.g. local", "--name, e.g. --name local")?,
             (None, Some(n), p) => format!("{p}:{n}"),
             (None, None, p) => p.to_string(),
         };
@@ -894,7 +894,7 @@ fn pick(vendor: Vendor, method: Option<Method>, ui: &mut dyn AuthInteraction) ->
     }
     let labels = offered.iter().map(|m| m.label).collect::<Vec<_>>();
     let flag = format!("--method {}", ids.join("|"));
-    Ok(offered[choose(ui, &format!("Connect {} how?", vendor.label()), &labels, &flag)?])
+    Ok(offered[choose(ui, &format!("How do you connect {}?", vendor.id()), &labels, &flag)?])
 }
 
 /// The directory a sign-in makes, when it is new — taken away again if the

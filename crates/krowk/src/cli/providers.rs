@@ -60,7 +60,7 @@ impl AuthInteraction for Terminal<'_> {
     fn prompt(&mut self, prompt: Prompt<'_>) -> Result<Answer, EngineError> {
         let (Prompt::Text { message, flag } | Prompt::Secret { message, flag } | Prompt::Select { message, flag, .. }) = &prompt;
         if !self.interactive {
-            return Err(EngineError::new("bad_argument", format!("{} — nobody is at a terminal to ask, so pass {flag}", message.trim_end_matches('?'))));
+            return Err(EngineError::new("bad_argument", format!("nobody is at a terminal to ask “{message}” — pass {flag}")));
         }
         let cancelled = |_| EngineError::new("selection_cancelled", "nothing was chosen and nothing was changed");
         match prompt {

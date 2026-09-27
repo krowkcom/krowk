@@ -90,7 +90,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unexpected_argument",
-    "fix": "`krowk login` signs in to your krowk account and takes no provider — a model provider is connected with `krowk connect`, in the full build (a release, or `--features harness`)",
+    "fix": "`login` is your krowk account and takes no provider — model providers are connected in the full build (a release, or `--features harness`), with its connect command",
     "retryable": false
   }
 }
@@ -102,7 +102,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unexpected_argument",
-    "fix": "`krowk login` signs in to your krowk account and takes no provider — a model provider is connected with `krowk connect`, in the full build (a release, or `--features harness`)",
+    "fix": "`login` is your krowk account and takes no provider — model providers are connected in the full build (a release, or `--features harness`), with its connect command",
     "retryable": false
   }
 }

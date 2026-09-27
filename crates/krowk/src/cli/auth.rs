@@ -33,7 +33,7 @@ fn connect_hint(word: &str) -> String {
     if cfg!(feature = "harness") {
         format!("to connect a model provider, run `krowk connect {word}`")
     } else {
-        "a model provider is connected with `krowk connect`, in the full build (a release, or `--features harness`)".into()
+        "model providers are connected in the full build (a release, or `--features harness`), with its connect command".into()
     }
 }
 
@@ -51,7 +51,7 @@ pub(crate) fn login(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         if PROVIDER_WORDS.contains(&word.as_str()) || PROVIDER_WORDS.iter().any(|p| word.starts_with(&format!("{p}:"))) {
             return Err(fail(
                 "unexpected_argument",
-                format!("`krowk login` signs in to your krowk account and takes no provider — {}", connect_hint(first.trim())),
+                format!("`login` is your krowk account and takes no provider — {}", connect_hint(first.trim())),
             ));
         }
         return Err(fail(
