@@ -135,9 +135,11 @@ AGENT FLAGS (krowk, krowk -p)
                               sessionId a result names, or its krowk.db id
   --permission-mode <string> (default default)
                               With -p and the agent: default, acceptEdits, plan
-                              or bypassPermissions, as in Claude Code. Without
-                              it, the settings' permissions.defaultMode; a deny
-                              rule holds in every mode
+                              or bypassPermissions, as in Claude Code, or
+                              unhinged, which asks about nothing: no krowk deny
+                              rule, ask rule or protected directory holds.
+                              Without it, the settings' permissions.defaultMode;
+                              in every other mode a deny rule holds
   --toolset <string>          With -p: the tools' preset — claude (str_replace),
                               gpt (apply_patch) or grok (search_replace). The
                               model's family picks one when absent

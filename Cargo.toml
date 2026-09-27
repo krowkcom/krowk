@@ -35,3 +35,15 @@ strip = true
 inherits = "release"
 lto = false
 codegen-units = 16
+
+# `make dev`, the build a person runs while working on krowk: release code
+# without the LTO pass and the single codegen unit that make a release
+# rebuild take about a minute. An edit rebuilds in seconds. Nothing ships
+# with it; sizes and timings are the release profile's (`make bench`).
+[profile.quick]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 256
+incremental = true
+strip = false

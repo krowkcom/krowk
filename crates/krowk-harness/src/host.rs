@@ -14,7 +14,7 @@ use crate::catalog::ModelInfo;
 use crate::chat::{ChatClient, Credential};
 use crate::budget::Budget;
 use crate::agents;
-use crate::engine::{BoxFuture, Engine, EngineError, EngineEvent, Events, HistoryItem, Steers, TurnContext, TurnEnd};
+use crate::engine::{BoxFuture, Engine, EngineError, EngineEvent, Events, HistoryItem, Idle, Steers, TurnContext, TurnEnd};
 use crate::subagent::{AgentRun, AgentsConfig, ParentTurn, Spawn, Subagents};
 use crate::evidence::{Evidence, Publisher};
 use crate::instances::{Asked, Auth, Registry, Resolved};
@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tokio::sync::{mpsc, watch, Semaphore};
+use tokio::sync::{broadcast, mpsc, watch, Semaphore};
 
 /// Prices a model call: (provider, model, usage) to USD, or none when the
 /// model has no price. Supplied by the caller, which owns the price cache.
@@ -107,6 +107,8 @@ pub(crate) struct Shared {
     /// The sessions this host has run a turn of: a session's first turn
     /// here is its SessionStart.
     started: Mutex<std::collections::HashSet<String>>,
+    /// What the backends say between turns, to whoever watches (`watch`).
+    watch: broadcast::Sender<StreamLine>,
 }
 
 struct Running {
@@ -178,8 +180,17 @@ impl Host {
                 approvals: permissions::Approvals::default(),
                 grants: Mutex::new(HashMap::new()),
                 started: Mutex::new(std::collections::HashSet::new()),
+                watch: broadcast::channel(64).0,
             }),
         }
+    }
+
+    /// The frames sent while no turn of their session runs — a backend's
+    /// agents (`backend.agents`), and a turn it began by itself
+    /// (`turn.unprompted`), which `continue` runs. A client that stays
+    /// open between turns, as the TUI does, subscribes once.
+    pub fn watch(&self) -> broadcast::Receiver<StreamLine> {
+        self.shared.watch.subscribe()
     }
 
     /// Keeps an idle session's backend process this long instead of
@@ -283,6 +294,7 @@ impl Host {
                 Ok(None)
             }
             Command::SwitchModel { session_id, model } => shared.switch_model(session_id.as_deref(), model, out).await.map(|()| None),
+            Command::Continue { session_id, budget } => shared.unprompted(&session_id, budget.unwrap_or_default(), &out, true).await.map(Some),
             Command::Fork { .. } => Err(EngineError::new("not_implemented", "this command is part of the protocol but not served by this build yet")),
         }
     }
@@ -337,6 +349,8 @@ struct TurnPlan {
     rolling: Option<Rolling>,
     /// The instances this prompt has tried already.
     tried: Vec<String>,
+    /// The turn a backend began by itself (`continue`).
+    unprompted: bool,
 }
 
 /// The parent turn a subagent's spend is reported to.
@@ -359,13 +373,14 @@ impl Shared {
     }
 
     /// Lets go of every backend process idle for longer than the host keeps
-    /// one, except a session's with a turn running. Swept when a prompt
-    /// arrives, so an idle host costs nothing to keep tidy.
+    /// one, except a session's with a turn running, or with work of the
+    /// backend's own under way — agents it runs, a turn it began. Swept
+    /// when a prompt arrives, so an idle host costs nothing to keep tidy.
     async fn evict_idle(&self) {
         let running: Vec<String> = self.running.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
         let idle: Vec<Arc<dyn Engine>> = {
             let mut backends = self.backends.lock().unwrap_or_else(|e| e.into_inner());
-            let stale: Vec<String> = backends.iter().filter(|(id, b)| b.used.elapsed() >= self.backend_idle && !running.contains(id)).map(|(id, _)| id.clone()).collect();
+            let stale: Vec<String> = backends.iter().filter(|(id, b)| b.used.elapsed() >= self.backend_idle && !running.contains(id) && !b.engine.busy()).map(|(id, _)| id.clone()).collect();
             stale.iter().filter_map(|id| backends.remove(id)).map(|b| b.engine).collect()
         };
         for e in idle {
@@ -389,10 +404,42 @@ impl Shared {
         // (its drop kills it).
         let e: Arc<dyn Engine> = match instance.wire_api {
             WireApi::CodexAppServer => Arc::new(CodexEngine::new(instance.clone(), &self.cfg.krowk_version)?),
-            _ => Arc::new(ClaudeEngine::new(instance.clone(), &self.cfg.krowk_version)?),
+            _ => Arc::new(ClaudeEngine::new(instance.clone(), &self.cfg.krowk_version)?.watched(self.teller(session_id))),
         };
         backends.insert(session_id.to_string(), Backend { instance: instance.name.clone(), engine: e.clone(), used: Instant::now(), generation });
         Ok(e)
+    }
+
+    /// Where a session's backend says what happens between turns: to the
+    /// host's watchers, as frames of that session.
+    fn teller(&self, session_id: &str) -> Idle {
+        let (watch, session_id) = (self.watch.clone(), session_id.to_string());
+        Arc::new(move |ev| {
+            let live = match ev {
+                EngineEvent::BackendAgents { agents } => LiveEvent::BackendAgents { session_id: session_id.clone(), agents },
+                EngineEvent::Unprompted { reason } => LiveEvent::TurnUnprompted { session_id: session_id.clone(), reason },
+                // No turn to name: the frame's turn id is empty.
+                EngineEvent::Notice { text } => LiveEvent::Notice { session_id: session_id.clone(), turn_id: String::new(), text },
+                _ => return,
+            };
+            let _ = watch.send(StreamLine::Live(live));
+        })
+    }
+
+    /// `continue`: the turn a session's backend began by itself, run as a
+    /// turn of the session — its prompt item the host's note of why — on
+    /// the model and effort of the session's last turn on that instance, in
+    /// the mode its process is in (`Pending::mode`), else that turn's. Ahead of
+    /// a prompt it is not announced: the prompt's `result` is the one its
+    /// client waits for.
+    async fn unprompted(self: &Arc<Self>, session_id: &str, limits: BudgetLimits, out: &mpsc::Sender<StreamLine>, announce: bool) -> Result<RunResult, EngineError> {
+        let waiting = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).and_then(|b| b.engine.pending().map(|r| (b.instance.clone(), r)));
+        let Some((instance, pending)) = waiting else {
+            return Err(EngineError::new("nothing_pending", format!("session {session_id} has no turn its backend began by itself waiting — send a prompt instead")));
+        };
+        let mut plan = self.settle(Some(session_id), crate::claude::unprompted(&pending.reason), None, PermissionMode::Default, None, None, limits, out, &[], None, Some((&instance, pending.mode))).await?;
+        plan.announce = announce;
+        self.turn(plan, out.clone()).await.map(|(r, _)| r)
     }
 
     /// A `prompt`: one turn — and, with `rollover` at `auto`, another on the
@@ -414,13 +461,19 @@ impl Shared {
         limits: BudgetLimits,
         out: mpsc::Sender<StreamLine>,
     ) -> Result<RunResult, EngineError> {
+        // A turn the session's backend began by itself, and nobody has run,
+        // goes first as a turn of its own: the prompt must not end at its
+        // answer. Whatever became of it, the prompt runs.
+        if let Some(id) = session_id {
+            let _ = self.unprompted(id, limits, &out, false).await;
+        }
         let mut session = session_id.map(String::from);
         let mut model = model;
         let mut tried: Vec<String> = Vec::new();
         let mut rolling: Option<Rolling> = None;
         let mut limited: Option<RunResult> = None;
         loop {
-            let r = match self.settle(session.as_deref(), text.clone(), model.clone(), permission_mode, toolset, effort, limits, &out, &tried, rolling.clone()).await {
+            let r = match self.settle(session.as_deref(), text.clone(), model.clone(), permission_mode, toolset, effort, limits, &out, &tried, rolling.clone(), None).await {
                 Ok(plan) => self.turn(plan, out.clone()).await,
                 Err(e) => Err(e),
             };
@@ -641,6 +694,7 @@ impl Shared {
         out: &mpsc::Sender<StreamLine>,
         tried: &[String],
         rolling: Option<Rolling>,
+        unprompted: Option<(&str, Option<PermissionMode>)>,
     ) -> Result<TurnPlan, EngineError> {
         let started = Instant::now();
         self.evict_idle().await;
@@ -660,6 +714,18 @@ impl Shared {
         };
         let past = opened.as_ref().map(|(log, events)| replay(&log::branch(events, log.head().unwrap_or_default()))).unwrap_or_default();
         let cwd = past.cwd.clone().unwrap_or_else(|| self.cfg.cwd.clone());
+        // A turn a backend began runs where the session's last turn on that
+        // instance ran, on its model and effort, whatever came since; in the
+        // mode its process is in, else that turn's.
+        let (model, permission_mode, effort) = match unprompted {
+            Some((instance, mode)) => {
+                let Some((m, asked, effort)) = past.last_on.iter().find(|(m, ..)| m.instance == instance).cloned() else {
+                    return Err(EngineError::new("nothing_pending", format!("session {} never ran on {instance}", session_id.unwrap_or_default())));
+                };
+                (Some(m), mode.unwrap_or(asked), effort)
+            }
+            None => (model, permission_mode, effort),
+        };
         let model = match model {
             Some(m) => m,
             None => match past.model.clone() {
@@ -721,6 +787,7 @@ impl Shared {
         // vendor copied over — and what to tell it of the turns it did not
         // run (`handoff`). The native loop reads the whole branch.
         let (backend_session, handoff) = match &instance.backend {
+            Some(_) if unprompted.is_some() => (None, None),
             Some(b) => self.carry_over(&past, &instance, b, &text),
             None => (None, None),
         };
@@ -762,6 +829,7 @@ impl Shared {
             here,
             rolling,
             tried: tried.to_vec(),
+            unprompted: unprompted.is_some(),
         };
         Ok(plan)
     }
@@ -825,6 +893,7 @@ impl Shared {
             here: Registration::new(self.clone()),
             rolling: None,
             tried: Vec::new(),
+            unprompted: false,
         };
         // Boxed: a subagent's turn is a turn of this host, inside the
         // parent's.
@@ -949,6 +1018,7 @@ impl Shared {
             subagents,
             agent: plan.agent.clone(),
             handoff: plan.handoff.take(),
+            unprompted: plan.unprompted,
         };
         let mut tally = Tally::default();
         // A backend's calls are the vendor's to make: its turn is not begun
@@ -1280,6 +1350,9 @@ struct Past {
     run: Option<String>,
     /// For a subagent: the session that started it.
     parent: Option<String>,
+    /// Each instance's last turn: its model, mode and effort, which a turn
+    /// a backend on it began runs with.
+    last_on: Vec<(ModelRef, PermissionMode, Option<Effort>)>,
 }
 
 /// The last `backend.session` of a branch, and the instance it ran on.
@@ -1318,8 +1391,10 @@ fn replay(branch: &[&LogEvent]) -> Past {
                 past.cwd = Some(PathBuf::from(cwd));
                 past.parent = parent_session_id.clone();
             }
-            LogBody::TurnStarted { model, .. } => {
+            LogBody::TurnStarted { model, permission_mode, effort, .. } => {
                 past.model = Some(model.clone());
+                past.last_on.retain(|(m, ..)| m.instance != model.instance);
+                past.last_on.push((model.clone(), *permission_mode, *effort));
                 past.turns.push(TurnSpan { model: model.clone(), items: past.items.len()..past.items.len() });
                 reached = false;
                 answered = false;
@@ -1563,6 +1638,11 @@ impl Writer<'_> {
             EngineEvent::Limits(limit) => {
                 self.live(LiveEvent::Limits { session_id: session_id.into(), turn_id, instance: model.instance.clone(), limit }).await;
             }
+            EngineEvent::BackendAgents { agents } => {
+                self.live(LiveEvent::BackendAgents { session_id: session_id.into(), agents }).await;
+            }
+            // Said between turns only, through the backend's `Idle`.
+            EngineEvent::Unprompted { .. } => {}
             EngineEvent::Handoff { how, from_instance, summarized_turns, recent_turns, fell_back, text } => {
                 self.log(LogBody::BackendHandoff { turn_id, how, from_instance, summarized_turns, recent_turns, fell_back }).await?;
                 if !text.is_empty() {

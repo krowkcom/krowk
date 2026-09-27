@@ -3,7 +3,9 @@
 //! recorded stream-json; no real login anywhere): two accounts signed in
 //! through Claude's own flow, each running a session; a tool-using turn
 //! that lands in the log and in `krowk sessions`; Ctrl-C mid-turn and a
-//! resume; and the trust prompt's headless refusal.
+//! resume; the trust prompt's headless refusal; and in the TUI, a
+//! background agent Claude Code runs, counted, and the turn it begins by
+//! itself when the agent finishes, run without a prompt.
 
 #![cfg(all(feature = "harness", unix))]
 
@@ -411,4 +413,41 @@ fn r_back_1_a_second_ctrl_c_leaves_at_once_and_kills_claude_codes_process_group(
     let st = t.wait(std::time::Duration::from_secs(5)).expect("the TUI leaves on the second Ctrl-C, not after Claude Code");
     assert_eq!(st.code(), Some(130), "{st}");
     assert!(gone(server) && gone(grandchild), "Claude Code's group outlived the TUI");
+}
+
+/// R-SUB-3 for Claude Code's own agents, in the TUI: one the model runs in
+/// the background is counted in the status bar while the session is idle,
+/// the turn Claude Code begins when it finishes runs with nobody typing —
+/// shown as krowk's note, not a prompt — and the count clears.
+#[test]
+fn r_sub_3_the_tui_counts_a_background_agent_and_runs_the_turn_claude_code_begins() {
+    let b = Sandbox::new("tui-bg");
+    b.json(&["providers", "add", "claude", "--json"], &[]);
+    let trusted = b.root.join("home/.krowk/trusted.json");
+    std::fs::create_dir_all(trusted.parent().unwrap()).unwrap();
+    std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
+    let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color"), ("FAKE_CLAUDE_SCENARIO", &scenario("background_agent.jsonl"))]);
+    let mut t = pty::Pty::spawn(cmd, 200, 30);
+    let secs = std::time::Duration::from_secs;
+    assert!(t.wait_for("anything", secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"survey the repo in the background\r");
+    assert!(t.wait_for("[1 subagent]", secs(10)).is_some(), "the agent is counted: {:?}", t.text());
+    assert!(t.wait_for("Claude Code began this turn by itself: background agent “survey the repo” completed", secs(10)).is_some(), "shown as krowk's note: {:?}", t.text());
+    assert!(t.wait_for("The agent is done: the repo is small.", secs(10)).is_some(), "the turn ran with nobody typing: {:?}", t.text());
+    assert_eq!(b.fake_log().matches("in {\"type\":\"user\"").count(), 1, "and without a prompt");
+    // A resize redraws the whole live region: the status bar as it is now.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let mark = t.output().len();
+    t.resize(180, 30);
+    let redrawn = (0..200).find_map(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let now = String::from_utf8_lossy(&t.output()[mark..]).into_owned();
+        now.contains("? help").then_some(now)
+    });
+    let redrawn = redrawn.expect("the status bar redrawn");
+    assert!(!redrawn.contains("subagent"), "the count cleared: {redrawn:?}");
+    t.write(b"\x04");
+    let st = t.wait(secs(10)).expect("krowk exits on Ctrl-D");
+    assert!(st.success(), "{st}");
+    assert_eq!(b.fake_log().lines().last(), Some("eof"), "Claude Code let go cleanly");
 }

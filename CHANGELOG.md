@@ -9,6 +9,25 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **`--permission-mode unhinged` runs everything the agent asks to**, with
+  no approval: krowk's deny and ask rules, a hook's `ask`, and the protected
+  directories (`.git`, `.claude`, `.codex`, `.krowk`, krowk's own config) no
+  longer hold anything back. `bypassPermissions` still stops at a deny rule
+  and still asks where an ask rule or a hook says so; `unhinged` is for when
+  you trust the model with everything krowk can reach. Set it for good with
+  `"permissions": {"defaultMode": "unhinged"}` in
+  `~/.krowk/config.json`; a repository's settings can never choose
+  it, and neither can `~/.claude/settings.json` (Claude Code would skip that
+  whole file, deny rules and hooks included, so krowk reads it as `default`
+  and says so). What still holds: a `PreToolUse` hook that blocks a call; `publish`
+  refusing credential files; on a Claude Code instance, the deny rules in
+  Claude Code's own settings files, which Claude Code applies itself; on a
+  Codex instance, Codex's own rules (it runs in full access, as under
+  `bypassPermissions`). A refusal that only `unhinged` gets past now says
+  so.
+
 ### Changed
 
 - **`krowk --help` fits on one screen**: about 40 lines at 80 columns, where
@@ -376,6 +395,31 @@ the versions are the `v*` tags a release is cut from. Entries land under
   a directory of krowk's own, where such an account shows `not signed
   in`.
 
+- **Claude Code's background agents are followed between turns, and the
+  turn Claude Code begins for them no longer answers your next prompt.**
+  An agent the model starts with Claude Code's `Agent` tool
+  (`run_in_background`) is counted in the TUI's `[N subagents]` and listed,
+  read-only, in the Agents overlay (Ctrl-G) until it finishes; what it asks
+  while no turn runs is answered under your last turn's permissions. If
+  Claude Code is let go while it runs — the session moved to another
+  account — krowk says the agents stopped. When it finishes, Claude Code begins a turn by itself to
+  answer it: the TUI now runs that turn at once — in the mode Claude Code
+  is in, default after a plan you approved — and shows it as Claude
+  Code's (`Claude Code began this turn by itself: background agent “…”
+  completed`), and it is logged as a turn of the session, the agent's calls
+  counted once toward the cost and the budget (by that next turn: what an
+  agent spends between turns is held to `--max-usd` only then). Before, that turn's output
+  sat unread, and your next prompt ended at its answer — the wrong one. A
+  prompt that arrives first runs it ahead of itself, and one Claude Code
+  begins as a prompt is on its way is read inside that prompt's turn,
+  which still ends at its own answer. An idle session's Claude Code is not
+  let go while an agent runs. `krowk -p` does not wait for background
+  agents, and says on stderr which ones stop with the run. For clients:
+  the `backend.agents` and `turn.unprompted` frames, the `continue`
+  command (refused `nothing_pending` when nothing waits), and
+  `Host::watch` for what is sent between turns. The TUI also shows a
+  backend's answer that arrives whole rather than streamed, which it used
+  to leave out.
 - **Switch model, instance or engine at any time, without losing the
   thread.** In the TUI, `/model` opens a picker of the models the session
   has run on and every instance you have, and `/model <instance>/<model>`

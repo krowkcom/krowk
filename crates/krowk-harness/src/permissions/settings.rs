@@ -19,11 +19,12 @@
 //! ask rule — always applies, and what widens — an allow rule, a directory
 //! outside the repository, a `defaultMode`, a hook, which is a command —
 //! applies only once the repository is trusted. Even then a repository's
-//! `defaultMode` is never `bypassPermissions`: that is the person's to
-//! choose, on the command line or in their own settings. None of these
-//! files is one the model can write: every file tool refuses `.claude`,
-//! `.krowk` and krowk's home unless a person approves that one
-//! call, and no allow rule or remembered grant opens them.
+//! `defaultMode` is never `bypassPermissions` or `unhinged`: that is the
+//! person's to choose, on the command line or in their own settings. None
+//! of these files is one the model can write: every file tool refuses
+//! `.claude`, `.krowk` and krowk's home unless a person approves that one
+//! call (or runs unhinged), and no allow rule or remembered grant opens
+//! them.
 //!
 //! A file that exists and does not parse, or holds a rule that does not,
 //! stops the turn with its name: a deny rule silently dropped is a rule
@@ -135,6 +136,10 @@ impl File {
     /// mode (`load` decides); anything else is `default`, said at once.
     fn mode(&self, home: Option<&Path>, config: &str) -> (Option<PermissionMode>, Option<String>) {
         let Some((m, narrows)) = &self.unknown_mode else { return (self.default_mode, None) };
+        if m == "\"unhinged\"" {
+            let why = format!("{} sets defaultMode \"unhinged\", which is krowk's own — Claude Code skips a settings file naming it, deny rules and hooks included — so krowk asks before edits and commands · set permissions.defaultMode in {config} to choose unhinged", tilde(&self.source, home));
+            return (Some(PermissionMode::Default), Some(why));
+        }
         let why = format!("{} sets defaultMode {m}, which krowk doesn't have, so it asks before edits and commands · set permissions.defaultMode in {config} to choose", tilde(&self.source, home));
         (narrows.then_some(PermissionMode::Default), Some(why))
     }
@@ -240,8 +245,16 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
         user.push(read_object(v, &source, &root, &base, home)?);
     }
     if let Some(dir) = cfg.claude_home()
-        && let Some(f) = read_file(&dir.join("settings.json"), &root, cfg.home.as_deref().unwrap_or(&dir), home)?
+        && let Some(mut f) = read_file(&dir.join("settings.json"), &root, cfg.home.as_deref().unwrap_or(&dir), home)?
     {
+        // unhinged is krowk's own, and Claude Code skips a whole settings
+        // file naming a mode it does not know — its deny rules and hooks
+        // with it. So Claude's file never chooses unhinged: it reads as
+        // default, with a notice, and krowk's config.json is where it is set.
+        if f.default_mode == Some(PermissionMode::Unhinged) {
+            f.default_mode = None;
+            f.unknown_mode = Some(("\"unhinged\"".into(), true));
+        }
         user.push(f);
     }
     if let Some(path) = cfg.grants_file() {
@@ -289,12 +302,13 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
         let widens = f.rules.iter().any(|(k, _)| *k == Kind::Allow) || !f.dirs.is_empty() || f.default_mode.is_some() || !f.hooks.is_empty();
         out.widens |= widens;
         if trusted {
-            // A repository never puts the person in bypassPermissions.
+            // A repository never puts the person in bypassPermissions, nor
+            // unhinged.
             let (mode, notice) = f.mode(home, &config);
-            said(mode.filter(|m| *m != PermissionMode::BypassPermissions), notice);
+            said(mode.filter(|m| !m.asks_nothing()), notice);
             out.rules.extend(f.rules);
             out.dirs.extend(f.dirs);
-            out.default_mode = mode.filter(|m| *m != PermissionMode::BypassPermissions).or(out.default_mode);
+            out.default_mode = mode.filter(|m| !m.asks_nothing()).or(out.default_mode);
             out.hooks.extend(f.hooks);
         } else {
             for (k, r) in f.rules {

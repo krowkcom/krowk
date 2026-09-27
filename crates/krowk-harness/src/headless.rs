@@ -8,6 +8,10 @@
 //! - `stream-json` prints every line of the stream as it happens: the
 //!   logged events exactly as the log has them, the live
 //!   `item.started`/`item.delta` frames, and the `result` last.
+//!
+//! One prompt is the whole run: an agent a backend runs in the background
+//! (Claude Code's `Agent` tool) is not waited for, and stops with the run —
+//! stderr says so.
 
 use crate::engine::EngineError;
 use crate::host::{Host, HostConfig};
@@ -84,6 +88,8 @@ async fn drive(host: Host, opts: Options, stdout: &mut dyn Write) -> Outcome {
     // Asked for and not yet accepted: the turn may not be running yet (the
     // session is still being opened), so it is asked again until it is.
     let mut want_interrupt = false;
+    // The backend's own agents, as it last listed them.
+    let mut agents = Vec::new();
     loop {
         let retry = async {
             if want_interrupt {
@@ -97,6 +103,11 @@ async fn drive(host: Host, opts: Options, stdout: &mut dyn Write) -> Outcome {
             Some(line) = rx.recv() => {
                 if session_id.is_none() {
                     session_id = Some(line_session(&line).to_string());
+                }
+                if let StreamLine::Live(LiveEvent::BackendAgents { session_id: s, agents: a }) = &line
+                    && session_id.as_deref() == Some(s.as_str())
+                {
+                    agents.clone_from(a);
                 }
                 // A notice is the person's alone (a claim token is a secret):
                 // the terminal's stderr, never stdout, which a program reads.
@@ -133,6 +144,11 @@ async fn drive(host: Host, opts: Options, stdout: &mut dyn Write) -> Outcome {
             }
         }
     }
+    if !agents.is_empty() {
+        let names: Vec<String> = agents.iter().map(|a: &crate::protocol::BackendAgent| format!("“{}”", a.description.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>())).collect();
+        let (what, verbs) = if agents.len() == 1 { ("background agent", "is still running, and stops") } else { ("background agents", "are still running, and stop") };
+        let _ = writeln!(std::io::stderr(), "! Claude Code's {what} {} {verbs} with this run: krowk -p does not wait for background agents", names.join(", "));
+    }
     // A backend's process is let go before the answer is reported, so its
     // transcript is whole when krowk exits.
     host.shutdown().await;
@@ -161,6 +177,7 @@ fn line_session(line: &StreamLine) -> &str {
         StreamLine::Log(ev) => &ev.session_id,
         StreamLine::Live(LiveEvent::ItemStarted { session_id, .. } | LiveEvent::ItemDelta { session_id, .. }) => session_id,
         StreamLine::Live(LiveEvent::Cost { session_id, .. } | LiveEvent::Notice { session_id, .. } | LiveEvent::Limits { session_id, .. }) => session_id,
+        StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. }) => session_id,
         StreamLine::Live(LiveEvent::ApprovalRequested(r)) => &r.session_id,
         StreamLine::Live(LiveEvent::ApprovalResolved { session_id, .. }) => session_id,
         StreamLine::Live(LiveEvent::Result(r)) => &r.session_id,

@@ -232,7 +232,9 @@ pub struct ErrorInfo {
 /// Claude-Code-compatible permission modes (R-PERM-1): `default` asks
 /// before edits and commands, `acceptEdits` before commands, `plan` changes
 /// nothing, and `bypassPermissions` asks before nothing — though a deny
-/// rule still holds in every one (`crate::permissions`).
+/// rule, an ask rule and a hook's ask still hold in each of those. krowk's
+/// own `unhinged` holds nothing krowk's rules say: every call runs but one a
+/// hook blocks (`crate::permissions`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
@@ -241,10 +243,29 @@ pub enum PermissionMode {
     AcceptEdits,
     Plan,
     BypassPermissions,
+    Unhinged,
 }
 
 impl PermissionMode {
-    pub const NAMES: [&'static str; 4] = ["default", "acceptEdits", "plan", "bypassPermissions"];
+    pub const NAMES: [&'static str; 5] = ["default", "acceptEdits", "plan", "bypassPermissions", "unhinged"];
+
+    /// The mode as it is written: on the command line, in settings, on the
+    /// wire.
+    pub fn name(self) -> &'static str {
+        match self {
+            PermissionMode::Default => "default",
+            PermissionMode::AcceptEdits => "acceptEdits",
+            PermissionMode::Plan => "plan",
+            PermissionMode::BypassPermissions => "bypassPermissions",
+            PermissionMode::Unhinged => "unhinged",
+        }
+    }
+
+    /// Whether the mode asks a person before nothing: a backend runs in
+    /// its loosest setting, and krowk's evaluator answers what it asks.
+    pub fn asks_nothing(self) -> bool {
+        matches!(self, PermissionMode::BypassPermissions | PermissionMode::Unhinged)
+    }
 
     pub fn parse(s: &str) -> Option<PermissionMode> {
         Some(match s {
@@ -252,6 +273,7 @@ impl PermissionMode {
             "acceptEdits" => PermissionMode::AcceptEdits,
             "plan" => PermissionMode::Plan,
             "bypassPermissions" => PermissionMode::BypassPermissions,
+            "unhinged" => PermissionMode::Unhinged,
             _ => return None,
         })
     }
@@ -304,7 +326,7 @@ pub struct ApprovalRequest {
 }
 
 /// What a client asks of the engine. `prompt`, `interrupt`, `steer`,
-/// `approve` and `switchModel` are served today; the rest are typed now so
+/// `approve`, `switchModel` and `continue` are served today; the rest are typed now so
 /// every client is written against the whole vocabulary, and are refused
 /// with `not_implemented` until their tickets land.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -357,6 +379,16 @@ pub enum Command {
     /// Branch the session at an event: the new branch's first event names
     /// it as its parent.
     Fork { session_id: String, from_event_id: String },
+    /// Run the turn a backend began by itself (`turn.unprompted`) — Claude
+    /// Code answering a background agent that finished — as a turn of the
+    /// session, logged like any other. Refused with `nothing_pending` when
+    /// no such turn is waiting. A `prompt` that arrives first runs it ahead
+    /// of itself, so no prompt ever ends at that turn's answer.
+    Continue {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<BudgetLimits>,
+    },
 }
 
 /// What a session may spend, counted over the session and every subagent
@@ -688,7 +720,8 @@ pub enum LiveEvent {
     /// Something for the person at the client and nobody else: an
     /// anonymous upload's claim command, whose token is a secret. Never
     /// logged, never in what a model reads; `krowk -p` prints it on stderr
-    /// and leaves it out of `stream-json`.
+    /// and leaves it out of `stream-json`. One sent between turns (a
+    /// backend let go with its agents) has an empty `turnId`.
     #[serde(rename = "notice")]
     Notice { session_id: String, turn_id: String, text: String },
     /// How close an instance is to its rate or usage limit, whenever its
@@ -705,6 +738,38 @@ pub enum LiveEvent {
     /// How a `prompt` came out: the last thing a headless run prints.
     #[serde(rename = "result")]
     Result(RunResult),
+    /// The agents a backend runs by itself for the session (Claude Code's
+    /// `Agent` tool, often in the background), whole, each time the list
+    /// changes — during a turn and between turns alike. Between turns it
+    /// reaches a host's watchers (`Host::watch`) rather than a turn's
+    /// stream. Empty when the last one has finished.
+    #[serde(rename = "backend.agents")]
+    BackendAgents { session_id: String, agents: Vec<BackendAgent> },
+    /// A backend began a turn nobody prompted — Claude Code answering a
+    /// background agent that finished — and it waits for `continue`. Sent
+    /// to a host's watchers, between turns.
+    #[serde(rename = "turn.unprompted")]
+    TurnUnprompted {
+        session_id: String,
+        /// What it answers, in words: `background agent “x” completed`.
+        reason: String,
+    },
+}
+
+/// One agent a backend runs by itself: it is the vendor's, with its own
+/// conversation, and krowk only reports it (its spend is metered as
+/// `subagent.response`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendAgent {
+    /// The vendor's id for it, e.g. Claude Code's `task_id`.
+    pub task_id: String,
+    /// The few words the model gave it.
+    pub description: String,
+    /// The agent definition it runs (Claude Code's `subagent_type`), when
+    /// named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// The outcome of one `prompt`, with what it cost.

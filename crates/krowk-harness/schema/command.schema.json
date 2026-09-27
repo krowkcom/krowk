@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Command",
-  "description": "What a client asks of the engine. `prompt`, `interrupt`, `steer`,\n`approve` and `switchModel` are served today; the rest are typed now so\nevery client is written against the whole vocabulary, and are refused\nwith `not_implemented` until their tickets land.",
+  "description": "What a client asks of the engine. `prompt`, `interrupt`, `steer`,\n`approve`, `switchModel` and `continue` are served today; the rest are typed now so\nevery client is written against the whole vocabulary, and are refused\nwith `not_implemented` until their tickets land.",
   "oneOf": [
     {
       "description": "Start a turn: in `sessionId` when given, else in a new session.",
@@ -176,6 +176,33 @@
         "sessionId",
         "fromEventId"
       ]
+    },
+    {
+      "description": "Run the turn a backend began by itself (`turn.unprompted`) — Claude\nCode answering a background agent that finished — as a turn of the\nsession, logged like any other. Refused with `nothing_pending` when\nno such turn is waiting. A `prompt` that arrives first runs it ahead\nof itself, so no prompt ever ends at that turn's answer.",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "budget": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BudgetLimits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "continue"
+        }
+      },
+      "required": [
+        "type",
+        "sessionId"
+      ]
     }
   ],
   "$defs": {
@@ -198,13 +225,14 @@
       ]
     },
     "PermissionMode": {
-      "description": "Claude-Code-compatible permission modes (R-PERM-1): `default` asks\nbefore edits and commands, `acceptEdits` before commands, `plan` changes\nnothing, and `bypassPermissions` asks before nothing — though a deny\nrule still holds in every one (`crate::permissions`).",
+      "description": "Claude-Code-compatible permission modes (R-PERM-1): `default` asks\nbefore edits and commands, `acceptEdits` before commands, `plan` changes\nnothing, and `bypassPermissions` asks before nothing — though a deny\nrule, an ask rule and a hook's ask still hold in each of those. krowk's\nown `unhinged` holds nothing krowk's rules say: every call runs but one a\nhook blocks (`crate::permissions`).",
       "type": "string",
       "enum": [
         "default",
         "acceptEdits",
         "plan",
-        "bypassPermissions"
+        "bypassPermissions",
+        "unhinged"
       ]
     },
     "Effort": {

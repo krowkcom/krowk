@@ -434,12 +434,7 @@ struct Hooked<'a> {
 
 impl<'a> Hooked<'a> {
     fn new(ctx: &'a TurnContext, events: &'a Events) -> Hooked<'a> {
-        let mode = crate::protocol::PermissionMode::NAMES[match ctx.permission_mode {
-            crate::protocol::PermissionMode::Default => 0,
-            crate::protocol::PermissionMode::AcceptEdits => 1,
-            crate::protocol::PermissionMode::Plan => 2,
-            crate::protocol::PermissionMode::BypassPermissions => 3,
-        }];
+        let mode = ctx.permission_mode.name();
         Hooked { ctx, events, mode, stop: std::sync::Mutex::new(None) }
     }
 
