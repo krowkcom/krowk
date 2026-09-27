@@ -808,6 +808,18 @@ stdout:
           "usage": "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"
         },
         {
+          "name": "key-stdin",
+          "type": "bool",
+          "default": "false",
+          "usage": "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"
+        },
+        {
+          "name": "key-ref",
+          "type": "string",
+          "default": "",
+          "usage": "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"
+        },
+        {
           "name": "base-url",
           "type": "string",
           "default": "",
@@ -842,7 +854,7 @@ stdout:
     {
       "name": "disconnect",
       "usage": "krowk disconnect [instance] [--remove]",
-      "summary": "Sign an instance out: SuperGrok's tokens deleted, a subscription's own logout run, an API key's variable named",
+      "summary": "Sign an instance out: SuperGrok's tokens deleted, a subscription's own logout run, a stored API key deleted, an environment key's variable named",
       "args": [
         {
           "name": "instance",
@@ -1915,6 +1927,18 @@ stdout:
           "usage": "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"
         },
         {
+          "name": "key-stdin",
+          "type": "bool",
+          "default": "false",
+          "usage": "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"
+        },
+        {
+          "name": "key-ref",
+          "type": "string",
+          "default": "",
+          "usage": "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"
+        },
+        {
           "name": "base-url",
           "type": "string",
           "default": "",
@@ -1949,7 +1973,7 @@ stdout:
     {
       "name": "disconnect",
       "usage": "krowk disconnect [instance] [--remove]",
-      "summary": "Sign an instance out: SuperGrok's tokens deleted, a subscription's own logout run, an API key's variable named",
+      "summary": "Sign an instance out: SuperGrok's tokens deleted, a subscription's own logout run, a stored API key deleted, an environment key's variable named",
       "args": [
         {
           "name": "instance",
@@ -3036,6 +3060,18 @@ stdout:
           "usage": "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"
         },
         {
+          "name": "key-stdin",
+          "type": "bool",
+          "default": "false",
+          "usage": "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"
+        },
+        {
+          "name": "key-ref",
+          "type": "string",
+          "default": "",
+          "usage": "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"
+        },
+        {
           "name": "base-url",
           "type": "string",
           "default": "",
@@ -3070,7 +3106,7 @@ stdout:
     {
       "name": "disconnect",
       "usage": "krowk disconnect [instance] [--remove]",
-      "summary": "Sign an instance out: SuperGrok's tokens deleted, a subscription's own logout run, an API key's variable named",
+      "summary": "Sign an instance out: SuperGrok's tokens deleted, a subscription's own logout run, a stored API key deleted, an environment key's variable named",
       "args": [
         {
           "name": "instance",
@@ -4157,6 +4193,18 @@ tty:
           "usage": "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"
         },
         {
+          "name": "key-stdin",
+          "type": "bool",
+          "default": "false",
+          "usage": "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"
+        },
+        {
+          "name": "key-ref",
+          "type": "string",
+          "default": "",
+          "usage": "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"
+        },
+        {
           "name": "base-url",
           "type": "string",
           "default": "",
@@ -4191,7 +4239,7 @@ tty:
     {
       "name": "disconnect",
       "usage": "krowk disconnect [instance] [--remove]",
-      "summary": "Sign an instance out: SuperGrok's tokens deleted, a subscription's own logout run, an API key's variable named",
+      "summary": "Sign an instance out: SuperGrok's tokens deleted, a subscription's own logout run, a stored API key deleted, an environment key's variable named",
       "args": [
         {
           "name": "instance",

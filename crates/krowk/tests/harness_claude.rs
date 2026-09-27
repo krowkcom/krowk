@@ -283,7 +283,7 @@ fn r_inst_1_providers_add_claude_with_a_router_hands_it_the_named_key_and_nothin
 
     let listed = b.json(&["providers", "list", "--json"], &[("ROUTER_KEY", "sk-or-live")]);
     let row = listed["data"]["instances"].as_array().unwrap().iter().find(|r| r["instance"] == "claude:router").unwrap().clone();
-    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("$ROUTER_KEY, handed to Claude Code")));
+    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("env ROUTER_KEY, handed to Claude Code")));
 
     // The ambient native key is exported too, and must not reach Claude Code.
     let env = [("ROUTER_KEY", "sk-or-live"), ("ANTHROPIC_API_KEY", "sk-ant-api-ambient"), ("ANTHROPIC_AUTH_TOKEN", "ambient-token")];

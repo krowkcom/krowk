@@ -147,7 +147,7 @@ fn status_with_no_config_lists_the_seven_implicit_instances_in_their_states() {
         assert_eq!(r["ready"].as_bool(), Some(r["state"] == "ready"));
         assert_eq!(r["fix"].is_null(), r["state"] == "ready", "a fix exactly when it is not ready: {r}");
     }
-    assert_eq!(row(&rows, "anthropic")["source"], "$ANTHROPIC_API_KEY", "a key is named by its variable");
+    assert_eq!(row(&rows, "anthropic")["source"], "env ANTHROPIC_API_KEY", "a key is named by its variable");
     assert_eq!(row(&rows, "openai")["var"], "OPENAI_API_KEY");
     assert_eq!(row(&rows, "claude")["source"], format!("Claude Code's own login in {} (signed in with a Claude max subscription)", b.home().join(".claude").display()));
     assert_eq!(row(&rows, "codex")["fix"], "sign in with `krowk connect openai --method subscription`, which runs Codex's own login");
@@ -215,9 +215,9 @@ fn no_secret_reaches_status_list_or_doctor_and_a_refreshable_login_is_ready() {
     let rows = instances(&stdout_json(&status)["data"]);
     assert_eq!(rows.len(), 11, "the seven implicit and the four configured");
     assert_eq!(row(&rows, "supergrok:team")["state"], "ready");
-    assert_eq!(row(&rows, "claude:router")["source"], "$OR_KEY, handed to Claude Code");
-    assert_eq!(row(&rows, "codex:router")["source"], "$OR_KEY, handed to Codex");
-    assert_eq!(row(&rows, "anthropic:work")["source"], "$WORK_KEY");
+    assert_eq!(row(&rows, "claude:router")["source"], "env OR_KEY, handed to Claude Code");
+    assert_eq!(row(&rows, "codex:router")["source"], "env OR_KEY, handed to Codex");
+    assert_eq!(row(&rows, "anthropic:work")["source"], "env WORK_KEY");
 
     let list = b.krowk(&["providers", "list", "--json"], &env);
     let listed = instances(&stdout_json(&list)["data"]);

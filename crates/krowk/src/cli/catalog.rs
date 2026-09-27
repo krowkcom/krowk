@@ -408,6 +408,8 @@ fn connect_commands() -> Vec<Command> {
                 flag("name", STRING, "Name a second account <provider>:<name> — claude:work, anthropic:work; the default-named one (claude, anthropic) when absent"),
                 flag("default", BOOL, "Make it the default model even when config.json names one already; the first connection is the default by itself"),
                 flag("api-key-env", STRING, "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"),
+                flag("key-stdin", BOOL, "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"),
+                flag("key-ref", STRING, "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"),
                 flag("base-url", STRING, "Where the API is, for a gateway, a router or a local server — asked for openai-compatible"),
                 flag("client-id", STRING, "SuperGrok: the OAuth client id to sign in as, when xAI's server offers no registration"),
                 flag("no-browser", BOOL, "SuperGrok: print the sign-in link instead of opening a browser"),
@@ -429,7 +431,7 @@ fn connect_commands() -> Vec<Command> {
             ..cmd(
                 "disconnect",
                 "krowk disconnect [instance] [--remove]",
-                "Sign an instance out: SuperGrok's tokens deleted, a subscription's own logout run, an API key's variable named",
+                "Sign an instance out: SuperGrok's tokens deleted, a subscription's own logout run, a stored API key deleted, an environment key's variable named",
             )
         },
     ]

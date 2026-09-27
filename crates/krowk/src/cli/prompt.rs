@@ -275,8 +275,12 @@ pub(super) fn load_instances() -> Result<instances::InstancesConfig, Error> {
     instances_from(&config_json()?)
 }
 
+/// The person's own config's instances, with their stored keys: the one
+/// place the CLI names the credentials file keys are read from.
 pub(super) fn instances_from(v: &serde_json::Value) -> Result<instances::InstancesConfig, Error> {
-    instances::from_config_json(v).map_err(|e| fail("bad_config", format!("{}: {e}", crate::config::global_path().display())))
+    let mut cfg = instances::from_config_json(v).map_err(|e| fail("bad_config", format!("{}: {e}", crate::config::global_path().display())))?;
+    cfg.keys_from = Some(super::providers::credentials_path());
+    Ok(cfg)
 }
 
 /// The global config.json as JSON, or an empty object when there is none.

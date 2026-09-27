@@ -10,7 +10,7 @@
 //!
 //! ```json
 //! {"ready": 1, "instances": [{"instance": "anthropic", "kind": "anthropic-api",
-//!   "state": "ready", "ready": true, "source": "$ANTHROPIC_API_KEY",
+//!   "state": "ready", "ready": true, "source": "env ANTHROPIC_API_KEY",
 //!   "fix": null, "var": null, "reason": null}, …]}
 //! ```
 //!

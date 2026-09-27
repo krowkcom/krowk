@@ -8,7 +8,9 @@
 //! terminal it asks and tells through, and the words of each result.
 //!
 //! A definition names the variable its key is read from and never holds the
-//! key, so config.json stays something that can sync between hosts. A
+//! key, so config.json stays something that can sync between hosts; a key
+//! pasted, piped (`--key-stdin`) or referenced (`--key-ref`) is stored in
+//! the provider credentials file instead (`krowk_harness::keys`). A
 //! Claude Code login is Claude Code's: krowk asks `claude auth status`
 //! whether there is one and never reads it (R-BACK-2); a Codex login is
 //! Codex's, asked of `codex app-server`'s `account/read`, or `codex login
@@ -21,6 +23,7 @@ use krowk_api::{fail, Error};
 use krowk_harness::connect::{self, Answer, AuthInteraction, Connected, MakeDefault, Method, Notice, Options, Prompt, ProviderAuth, Request, SignedOut};
 use krowk_harness::engine::EngineError;
 use krowk_harness::instances::{kind_label, Auth};
+use krowk_harness::keys::KeyRef;
 use krowk_harness::oauth;
 use serde_json::{json, Value};
 use std::io::Write;
@@ -86,9 +89,26 @@ impl AuthInteraction for Terminal<'_> {
     }
 }
 
-fn options(ctx: &Ctx) -> Options {
+fn options(ctx: &Ctx) -> Result<Options, Error> {
     let o = |s: &str| Some(s.trim().to_string()).filter(|s| !s.is_empty());
-    Options { name: o(&ctx.f.name), api_key_env: o(&ctx.f.api_key_env), base_url: o(&ctx.f.base_url), client_id: o(&ctx.f.client_id), binary: o(&ctx.f.binary), config_dir: o(&ctx.f.config_dir) }
+    let key = match (ctx.f.key_stdin, o(&ctx.f.key_ref)) {
+        (true, Some(_)) => return Err(fail("bad_flag", "--key-stdin and --key-ref each give the key — pass one")),
+        (true, None) if ctx.io.stdin_tty => return Err(fail("bad_flag", "--key-stdin reads a key piped in — at a terminal leave it out and paste the key at the prompt, which does not echo it")),
+        (true, None) => {
+            use std::io::Read;
+            let mut raw = String::new();
+            std::io::stdin().take(64 * 1024).read_to_string(&mut raw).map_err(|e| fail("bad_flag", format!("--key-stdin: {e}")))?;
+            // Piped in, it is the key itself, whatever it starts with.
+            Some(KeyRef::literal(&raw).map_err(|e| format!("--key-stdin: {e}")))
+        }
+        (false, Some(r)) => Some(match KeyRef::parse(&r) {
+            Ok(KeyRef::Literal(_)) => Err("--key-ref takes '$VAR' or '!command' — a key itself goes in with --key-stdin, or at the prompt".to_string()),
+            k => k,
+        }),
+        (false, None) => None,
+    };
+    let key = key.transpose().map_err(|e| fail("bad_flag", e))?;
+    Ok(Options { name: o(&ctx.f.name), api_key_env: o(&ctx.f.api_key_env), base_url: o(&ctx.f.base_url), client_id: o(&ctx.f.client_id), binary: o(&ctx.f.binary), config_dir: o(&ctx.f.config_dir), key })
 }
 
 /// The shared sign-in, over this invocation's config and environment, and
@@ -111,7 +131,7 @@ pub(super) fn connect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         "" => None,
         m => Some(Method::parse(m).ok_or_else(|| fail("bad_flag", format!("--method {m:?} is not a way in — subscription, device or api-key")))?),
     };
-    let opts = options(ctx);
+    let opts = options(ctx)?;
     let make_default = ctx.f.default;
     let done = {
         let (pa, mut ui) = parts(ctx, true);
@@ -138,7 +158,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if provider == "openai-compatible" && ctx.f.base_url.trim().is_empty() {
         return Err(fail("bad_flag", "openai-compatible needs --base-url, e.g. http://127.0.0.1:11434/v1"));
     }
-    let opts = options(ctx);
+    let opts = options(ctx)?;
     let done = {
         let (pa, mut ui) = parts(ctx, false);
         pa.connect(&Request { method: way, instance: None, options: opts, default: MakeDefault::Never }, &mut ui).map_err(engine)?
@@ -162,6 +182,10 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
         if let Some(k) = &key_env {
             report["api_key_env"] = json!(k);
         }
+        if let Some(s) = r.stored.source() {
+            report["key_source"] = json!(s);
+            report["credentials"] = json!(credentials_path().display().to_string());
+        }
         if done.oauth {
             report["signed_in"] = json!(true);
             report["credentials"] = json!(credentials_path().display().to_string());
@@ -182,6 +206,10 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
     let out = &mut *ctx.io.stdout;
     let _ = writeln!(out, "{verb} {instance} ({}) {} {}", kind.tag(), if verb == "added" { "to" } else { "in" }, path.display());
     match &key_env {
+        _ if r.stored.source().is_some() => {
+            let fresh = if done.stored_key.is_some() { "is" } else { "was already" };
+            let _ = writeln!(out, "its key {fresh} {} in {} (0600), and is used before any variable", r.stored.source().unwrap_or_default(), credentials_path().display());
+        }
         Some(k) if unset => {
             let _ = writeln!(out, "its key is read from ${k}, which is not set here — export it before running a prompt");
         }
@@ -243,6 +271,11 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
                 report["signed_out"] = json!("key");
                 report["api_key_env"] = json!(var);
             }
+            SignedOut::StoredKey { var, set } => {
+                report["signed_out"] = json!("stored_key");
+                report["api_key_env"] = json!(var);
+                report["api_key_env_set"] = json!(set);
+            }
             SignedOut::Keyless => report["signed_out"] = json!("nothing"),
         }
         return super::sessions::emit_data(ctx, report, format!("disconnected {instance}"));
@@ -255,7 +288,15 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             let at = home.as_ref().map(|h| format!(" in {}", h.display())).unwrap_or_default();
             writeln!(out, "disconnected {instance}: `{command}` signed it out{at}")
         }
-        SignedOut::Key { var } => writeln!(out, "{instance} reads its key from ${var}, which krowk never stores — unset it, and take it out of your shell's startup files, to sign it out"),
+        SignedOut::Key { var } => writeln!(out, "{instance} reads its key from ${var}, the environment's and not krowk's to delete — unset it, and take it out of your shell's startup files, to sign it out"),
+        SignedOut::StoredKey { var, set } => {
+            let _ = writeln!(out, "disconnected {instance}: its stored key is deleted from {}", credentials_path().display());
+            match var {
+                Some(v) if *set => writeln!(out, "${v} is set too, and is what {instance} reads now — unset it, and take it out of your shell's startup files, to sign it out"),
+                Some(v) => writeln!(out, "it reads ${v} from now on, which is not set here"),
+                None => Ok(()),
+            }
+        }
         SignedOut::Keyless => writeln!(out, "{instance} takes no key — there is nothing to sign out of"),
     };
     if done.removed_definition {

@@ -12,8 +12,8 @@ stderr:
           "label": "Anthropic API key",
           "state": "key_not_set",
           "ready": false,
-          "source": "$ANTHROPIC_API_KEY",
-          "fix": "set ANTHROPIC_API_KEY (krowk reads the key from the environment, never from a file)",
+          "source": "env ANTHROPIC_API_KEY",
+          "fix": "set ANTHROPIC_API_KEY, or store a key with `krowk connect anthropic --method api-key`",
           "var": "ANTHROPIC_API_KEY",
           "reason": null
         },
@@ -45,8 +45,8 @@ stderr:
           "label": "OpenAI API key",
           "state": "key_not_set",
           "ready": false,
-          "source": "$OPENAI_API_KEY",
-          "fix": "set OPENAI_API_KEY (krowk reads the key from the environment, never from a file)",
+          "source": "env OPENAI_API_KEY",
+          "fix": "set OPENAI_API_KEY, or store a key with `krowk connect openai --method api-key`",
           "var": "OPENAI_API_KEY",
           "reason": null
         },
@@ -56,8 +56,8 @@ stderr:
           "label": "OpenRouter",
           "state": "key_not_set",
           "ready": false,
-          "source": "$OPENROUTER_API_KEY",
-          "fix": "set OPENROUTER_API_KEY (krowk reads the key from the environment, never from a file)",
+          "source": "env OPENROUTER_API_KEY",
+          "fix": "set OPENROUTER_API_KEY, or store a key with `krowk connect openrouter`",
           "var": "OPENROUTER_API_KEY",
           "reason": null
         },
@@ -78,8 +78,8 @@ stderr:
           "label": "xAI API key",
           "state": "key_not_set",
           "ready": false,
-          "source": "$XAI_API_KEY",
-          "fix": "set XAI_API_KEY (krowk reads the key from the environment, never from a file)",
+          "source": "env XAI_API_KEY",
+          "fix": "set XAI_API_KEY, or store a key with `krowk connect xai --method api-key`",
           "var": "XAI_API_KEY",
           "reason": null
         }
@@ -106,8 +106,8 @@ stderr:
           "label": "Anthropic API key",
           "state": "key_not_set",
           "ready": false,
-          "source": "$ANTHROPIC_API_KEY",
-          "fix": "set ANTHROPIC_API_KEY (krowk reads the key from the environment, never from a file)",
+          "source": "env ANTHROPIC_API_KEY",
+          "fix": "set ANTHROPIC_API_KEY, or store a key with `krowk connect anthropic --method api-key`",
           "var": "ANTHROPIC_API_KEY",
           "reason": null
         },
@@ -139,8 +139,8 @@ stderr:
           "label": "OpenAI API key",
           "state": "key_not_set",
           "ready": false,
-          "source": "$OPENAI_API_KEY",
-          "fix": "set OPENAI_API_KEY (krowk reads the key from the environment, never from a file)",
+          "source": "env OPENAI_API_KEY",
+          "fix": "set OPENAI_API_KEY, or store a key with `krowk connect openai --method api-key`",
           "var": "OPENAI_API_KEY",
           "reason": null
         },
@@ -150,8 +150,8 @@ stderr:
           "label": "OpenRouter",
           "state": "key_not_set",
           "ready": false,
-          "source": "$OPENROUTER_API_KEY",
-          "fix": "set OPENROUTER_API_KEY (krowk reads the key from the environment, never from a file)",
+          "source": "env OPENROUTER_API_KEY",
+          "fix": "set OPENROUTER_API_KEY, or store a key with `krowk connect openrouter`",
           "var": "OPENROUTER_API_KEY",
           "reason": null
         },
@@ -172,8 +172,8 @@ stderr:
           "label": "xAI API key",
           "state": "key_not_set",
           "ready": false,
-          "source": "$XAI_API_KEY",
-          "fix": "set XAI_API_KEY (krowk reads the key from the environment, never from a file)",
+          "source": "env XAI_API_KEY",
+          "fix": "set XAI_API_KEY, or store a key with `krowk connect xai --method api-key`",
           "var": "XAI_API_KEY",
           "reason": null
         }
@@ -199,7 +199,7 @@ stdout:
         "label": "Anthropic API key",
         "state": "ready",
         "ready": true,
-        "source": "$ANTHROPIC_API_KEY",
+        "source": "env ANTHROPIC_API_KEY",
         "fix": null,
         "var": null,
         "reason": null
@@ -232,8 +232,8 @@ stdout:
         "label": "OpenAI API key",
         "state": "key_not_set",
         "ready": false,
-        "source": "$OPENAI_API_KEY",
-        "fix": "set OPENAI_API_KEY (krowk reads the key from the environment, never from a file)",
+        "source": "env OPENAI_API_KEY",
+        "fix": "set OPENAI_API_KEY, or store a key with `krowk connect openai --method api-key`",
         "var": "OPENAI_API_KEY",
         "reason": null
       },
@@ -243,8 +243,8 @@ stdout:
         "label": "OpenRouter",
         "state": "key_not_set",
         "ready": false,
-        "source": "$OPENROUTER_API_KEY",
-        "fix": "set OPENROUTER_API_KEY (krowk reads the key from the environment, never from a file)",
+        "source": "env OPENROUTER_API_KEY",
+        "fix": "set OPENROUTER_API_KEY, or store a key with `krowk connect openrouter`",
         "var": "OPENROUTER_API_KEY",
         "reason": null
       },
@@ -265,8 +265,8 @@ stdout:
         "label": "xAI API key",
         "state": "key_not_set",
         "ready": false,
-        "source": "$XAI_API_KEY",
-        "fix": "set XAI_API_KEY (krowk reads the key from the environment, never from a file)",
+        "source": "env XAI_API_KEY",
+        "fix": "set XAI_API_KEY, or store a key with `krowk connect xai --method api-key`",
         "var": "XAI_API_KEY",
         "reason": null
       }
@@ -278,24 +278,24 @@ exit: 0
 
 $ krowk status --format human
 stdout:
-anthropic   Anthropic API key     ready          $ANTHROPIC_API_KEY
+anthropic   Anthropic API key     ready          env ANTHROPIC_API_KEY
 claude      Claude subscription   not installed  Claude Code's own login in <scratch>/home/.claude  — install Claude Code (https://claude.com/claude-code), or name the binary with `krowk connect anthropic --method subscription --binary <path>`
 codex       ChatGPT subscription  not installed  Codex's own login in <scratch>/home/.codex  — install Codex (https://developers.openai.com/codex), or name the binary with `krowk connect openai --method subscription --binary <path>`
-openai      OpenAI API key        key not set    $OPENAI_API_KEY  — set OPENAI_API_KEY (krowk reads the key from the environment, never from a file)
-openrouter  OpenRouter            key not set    $OPENROUTER_API_KEY  — set OPENROUTER_API_KEY (krowk reads the key from the environment, never from a file)
+openai      OpenAI API key        key not set    env OPENAI_API_KEY  — set OPENAI_API_KEY, or store a key with `krowk connect openai --method api-key`
+openrouter  OpenRouter            key not set    env OPENROUTER_API_KEY  — set OPENROUTER_API_KEY, or store a key with `krowk connect openrouter`
 supergrok   SuperGrok             not signed in  OAuth login in <scratch>/home/.config/krowk/providers/credentials.json  — sign in with `krowk connect xai --method subscription`
-xai         xAI API key           key not set    $XAI_API_KEY  — set XAI_API_KEY (krowk reads the key from the environment, never from a file)
+xai         xAI API key           key not set    env XAI_API_KEY  — set XAI_API_KEY, or store a key with `krowk connect xai --method api-key`
 1 of 7 instances ready
 exit: 0
 
 $ krowk providers list --format human
 stdout:
-anthropic   Anthropic API key     ready          https://api.anthropic.com  ($ANTHROPIC_API_KEY)
+anthropic   Anthropic API key     ready          https://api.anthropic.com  (env ANTHROPIC_API_KEY)
 claude      Claude subscription   not installed  claude  (Claude Code's own login in <scratch>/home/.claude)
 codex       ChatGPT subscription  not installed  codex  (Codex's own login in <scratch>/home/.codex)
-openai      OpenAI API key        key not set    https://api.openai.com/v1  ($OPENAI_API_KEY)
-openrouter  OpenRouter            key not set    https://openrouter.ai/api/v1  ($OPENROUTER_API_KEY)
+openai      OpenAI API key        key not set    https://api.openai.com/v1  (env OPENAI_API_KEY)
+openrouter  OpenRouter            key not set    https://openrouter.ai/api/v1  (env OPENROUTER_API_KEY)
 supergrok   SuperGrok             not signed in  https://api.x.ai/v1  (OAuth login in <scratch>/home/.config/krowk/providers/credentials.json)
-xai         xAI API key           key not set    https://api.x.ai/v1  ($XAI_API_KEY)
+xai         xAI API key           key not set    https://api.x.ai/v1  (env XAI_API_KEY)
 exit: 0
 
