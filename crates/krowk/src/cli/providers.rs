@@ -100,7 +100,8 @@ fn parts<'a>(ctx: &'a mut Ctx, asks: bool) -> (ProviderAuth<'a>, Terminal<'a>) {
     let interactive = asks && super::interactive(ctx) && ctx.io.stdin_tty;
     let open = !ctx.f.no_browser && !auth::headless(ctx);
     let pa = ProviderAuth { config: config::global_path(), credentials: credentials_path(), env: ctx.io.env };
-    let colour = ctx.colour;
+    // Its notices go to stderr, so stderr's terminal decides their colour.
+    let colour = ctx.colour && ctx.io.err_tty;
     (pa, Terminal { stderr: &mut *ctx.io.stderr, interactive, open, colour })
 }
 
@@ -199,8 +200,11 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
     }
     let mut another = None;
     if let Some(v) = &done.vendor {
-        // The vendor's own account says it better than the kind does.
-        facts[0] = v.describe.clone();
+        // The vendor's own account says it better than the kind does — when
+        // there is one: a keyed router runs on its key, not a login.
+        if v.logged_in {
+            facts[0] = plain(&v.describe);
+        }
         if codex && !v.shared.is_empty() {
             facts.push(format!("shares your Codex {}", v.shared.join(", ")));
         }
