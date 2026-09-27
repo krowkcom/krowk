@@ -21,12 +21,28 @@
 
 use crate::creds::{self, Env};
 use crate::home;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// The journal of renames, in the staging directory and then the home.
+/// The journal of renames, in the staging directory and then the home:
+/// each a source and a destination, each ended by a NUL, which no path
+/// holds.
 const JOURNAL: &str = ".moves";
+
+fn bytes(p: &Path) -> Vec<u8> {
+    #[cfg(unix)]
+    return std::os::unix::ffi::OsStrExt::as_bytes(p.as_os_str()).to_vec();
+    #[cfg(not(unix))]
+    return p.to_string_lossy().into_owned().into_bytes();
+}
+
+fn path(b: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    return PathBuf::from(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b));
+    #[cfg(not(unix))]
+    return PathBuf::from(String::from_utf8_lossy(b).into_owned());
+}
 
 /// `$XDG_<var>/krowk` when absolute, else `<user>/<fallback>/krowk`: where
 /// an older krowk kept its files, and the variable that put it there.
@@ -179,7 +195,8 @@ pub fn run(home: &Path, env: Env) -> Result<(), String> {
                 std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
             }
             // Written down before it is made, so a crash can be undone.
-            writeln!(journal, "{}", json!([from, to])).and_then(|()| journal.sync_data()).map_err(|e| io(&staging, e))?;
+            let record = [bytes(from), vec![0], bytes(&to), vec![0]].concat();
+            journal.write_all(&record).and_then(|()| journal.sync_data()).map_err(|e| io(&staging, e))?;
             match fault() {
                 Some(true) => return Ok(false),
                 Some(false) => return Err(format!("{} could not be moved (a test's fault)", from.display())),
@@ -258,9 +275,12 @@ fn cross_device(from: &Path, to: &Path, home: &Path, data: &Path, var: Option<&s
 /// Every rename the journal records, undone in reverse, and the staging
 /// directory removed — which by then holds only what was written into it.
 fn undo(staging: &Path) -> Result<(), String> {
-    let journal = std::fs::read_to_string(staging.join(JOURNAL)).unwrap_or_default();
-    // A last line cut short by a crash was never renamed: it is skipped.
-    let moves: Vec<(PathBuf, PathBuf)> = journal.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let journal = std::fs::read(staging.join(JOURNAL)).unwrap_or_default();
+    // A last record cut short by a crash was never renamed: it is skipped.
+    // What follows the last NUL is part of a record, or nothing.
+    let mut parts: Vec<&[u8]> = journal.split(|b| *b == 0).collect();
+    parts.pop();
+    let moves: Vec<(PathBuf, PathBuf)> = parts.chunks_exact(2).map(|c| (path(c[0]), path(c[1]))).collect();
     for (from, to) in moves.iter().rev() {
         if exists(to) && !exists(from) {
             if let Some(parent) = from.parent() {
@@ -299,6 +319,7 @@ fn repoint(config: &mut Map<String, Value>, data: &Path, home: &Path, plan: &[(P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     #[cfg(unix)]

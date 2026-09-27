@@ -264,7 +264,9 @@ fn a_move_cut_short_is_undone_and_made_whole_on_the_next_run() {
     std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700)).unwrap();
     b.write(&staging.join("credentials.json"), r#"{"default":"ws_mig"}"#, 0o600);
     let (from, to) = (b.old_data().join("claude/claude-work"), staging.join("accounts/claude-work"));
-    b.write(&staging.join(".moves"), &format!("{}\n", json!([from, to])), 0o600);
+    // Its journal record, a source and a destination, each NUL-ended, and
+    // a record cut short after it, never renamed.
+    b.write(&staging.join(".moves"), &format!("{}\0{}\0{}\0{}", from.display(), to.display(), b.old_data().display(), staging.join("acc").display()), 0o600);
     std::fs::rename(&from, &to).unwrap();
 
     let out = b.krowk(&["doctor", "--json"], &[]);

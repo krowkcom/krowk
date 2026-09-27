@@ -23,14 +23,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
   krowk you run after upgrading moves the old files in — one line on
   stderr, `krowk: moved krowk's files to ~/.krowk`, keeping each file's
   permissions and pointing a named account's `configDir` or `codexHome` in
-  `config.json` at where it went — and never reads the old places again. A
-  move cut short (a crash, a full disk) finishes on the next run, and an
-  empty `~/.krowk` made by hand is filled the same way. What a rename cannot
-  move — an entry on another file system, or a name the move already
-  filled — stays where it was and is named in that line, with the `mv` that
-  finishes it. An old key file krowk cannot read stops the move, naming the
-  file with a line and column only, until it is fixed or moved aside. `XDG_CONFIG_HOME`,
-  `XDG_DATA_HOME` and `XDG_CACHE_HOME` no longer move anything; set
+  `config.json` at where it went — and never reads the old places again.
+  The price cache is not moved; it is fetched again. The move is all or
+  nothing: a crash part way is undone by the next run, which then makes the
+  whole move, and when anything cannot be moved (another file system, two
+  files with one name, a permission) everything is put back and krowk
+  refuses with `migration_failed`, saying what to do by hand — or to set
+  `KROWK_HOME` to start a new home. A `~/.krowk` that already exists is
+  never merged into: old files beside it are named once, on stderr, for you
+  to move or delete. An old key file krowk cannot read stops the move,
+  naming the file with a line and column only, until it is fixed or moved
+  aside. `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` no longer
+  move anything; set
   `KROWK_HOME` (an absolute path; a relative one is refused) to keep all of
   it somewhere else — a sandbox, a test — and nothing is moved into it. A
   `~/.krowk` that is a symlink, or another user's, is refused rather than

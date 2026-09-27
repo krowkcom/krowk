@@ -95,9 +95,10 @@ pub fn siblings(home: &Path) -> [PathBuf; 3] {
 /// Homes this process has already checked (and made, or moved into).
 static READY: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
-/// The home, checked once per process: one `lstat` when it is there. When
-/// it is not, the files an older krowk kept under the XDG directories are
-/// moved in first (`crate::migrate`), and it is made `0700`.
+/// The home, checked once per process: one `lstat` when it is there, and
+/// for the default home one `stat` of its old-layout marker. When it is
+/// not, the files an older krowk kept under the XDG directories are moved
+/// in first, all or nothing (`crate::migrate`), and it is made `0700`.
 pub fn dir(env: Env) -> Result<PathBuf, Error> {
     let home = resolve(env)?;
     let mut ready = READY.lock().unwrap_or_else(|e| e.into_inner());
