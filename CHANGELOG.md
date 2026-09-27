@@ -236,14 +236,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   terminal, and without one refuses unless given `--sign-out-vendor`.
   The pickers mark them "your own Claude Code login". The definition stays, showing
   `not signed in` in `krowk status`, unless `--remove` — which also clears
-  `defaultModel` when it ran on that instance. With no instance on a
+  `defaultModel` when it ran on that instance (not when a built-in of that
+  name still serves it). With no instance on a
   terminal it asks which; without one it lists them.
 - **`krowk login`, `krowk logout` and `krowk whoami`** are short for your
   krowk account: `krowk auth login`, the new `krowk auth logout` (takes the
   key that resolves here off this machine — the key keeps working until it
   is revoked in the dashboard), and `krowk auth verify`. `krowk auth`
   works as before. `krowk login anthropic` and the like say that a model
-  provider is `krowk connect`, and the account's own errors now say
+  provider is `krowk connect`; `krowk logout` takes no argument, and
+  `krowk logout anthropic` says `krowk disconnect` instead of removing your
+  krowk key; and the account's own errors now say
   `krowk login` and `krowk whoami`.
 
 - **`krowk status` says which providers can run a turn here, and how to

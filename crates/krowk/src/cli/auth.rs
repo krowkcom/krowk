@@ -362,7 +362,23 @@ pub(crate) fn token(ctx: &mut Ctx) -> Result<(), Error> {
 /// repository's, the default. The key itself keeps working until it is
 /// revoked in the dashboard, which is said, since "logged out" could be
 /// read as "revoked".
-pub(crate) fn logout(ctx: &mut Ctx) -> Result<(), Error> {
+pub(crate) fn logout(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    // An argument is refused before anything is removed: `krowk logout
+    // anthropic` meant a provider, and the krowk key it would otherwise
+    // take cannot be shown again.
+    if let Some(first) = args.first() {
+        let word = first.trim().to_ascii_lowercase();
+        let fix = if PROVIDER_WORDS.contains(&word.as_str()) || PROVIDER_WORDS.iter().any(|p| word.starts_with(&format!("{p}:"))) {
+            if cfg!(feature = "harness") {
+                format!("`logout` is your krowk account and takes no provider — to disconnect a model provider, run `krowk disconnect {}`", first.trim())
+            } else {
+                "`logout` is your krowk account and takes no provider — model providers are disconnected in the full build (a release, or `--features harness`), with its disconnect command".into()
+            }
+        } else {
+            format!("`krowk logout` takes no arguments, and got `{}` — nothing was removed", args[..args.len().min(2)].join(" "))
+        };
+        return Err(fail("unexpected_argument", fix));
+    }
     let (ws, _) = resolve_workspace(ctx)?;
     let gone = creds::forget_credentials(&ws).map_err(|e| {
         fail("credentials_unwritable", format!("could not write {}: {}", creds::shown(&creds::credentials_path()), e.fix()))

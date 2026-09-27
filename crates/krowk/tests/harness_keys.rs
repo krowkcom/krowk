@@ -282,7 +282,7 @@ fn r_cred_1_at_a_terminal_a_key_is_pasted_without_echo_and_without_one_the_flags
     // Nobody at a terminal: nothing to paste into, so the key comes from
     // the environment as before — and --key-stdin at a terminal is refused.
     let out = b.krowk(&["connect", "xai", "--method", "api-key", "--format", "human"], &[]);
-    assert!(out.status.success() && printed(&out).contains("its key is read from $XAI_API_KEY"), "{}", printed(&out));
+    assert!(out.status.success() && printed(&out).contains("$XAI_API_KEY is not set here"), "{}", printed(&out));
     assert!(b.stored().get("keys").is_none());
     assert!(!b.krowk(&["connect", "xai", "--key-ref", "sk-plain"], &[]).status.success(), "a key itself is never an argument");
 
@@ -294,7 +294,7 @@ fn r_cred_1_at_a_terminal_a_key_is_pasted_without_echo_and_without_one_the_flags
     t.write(format!("{SENTINEL}\r").as_bytes());
     let exit = t.wait(wait).expect("krowk connect finished");
     assert!(exit.success(), "{}", t.text());
-    assert!(t.text().contains("its key is stored in"), "{}", t.text());
+    assert!(t.text().contains("key stored in krowk's credentials file"), "{}", t.text());
     assert!(!t.text().contains(SENTINEL), "the key was echoed: {}", t.text());
     assert_eq!(b.stored()["keys"]["anthropic"], json!({"literal": SENTINEL}));
 }
