@@ -868,3 +868,61 @@ fn r_back_1_a_process_with_a_background_agent_is_not_let_go_as_idle() {
         host.shutdown().await;
     }));
 }
+
+/// A plan turn whose ExitPlanMode was approved leaves Claude Code in
+/// default: the turn it then begins by itself runs in that mode, which
+/// krowk accepted, and is not stopped as looser than the plan asked for —
+/// nor are the process and its agents killed for it.
+#[test]
+fn r_back_1_the_turn_claude_code_begins_after_an_approved_plan_runs_in_default() {
+    let home = Home::new("bg-plan");
+    let dir = home.signed_in("cfg-work");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_plan.jsonl")))], trust::allow_all());
+    let mut watch = host.watch();
+    within(Box::pin(async {
+        let (_, r) = run(&host, prompt(None, "plan it, and survey the repo in the background", "claude:work/sonnet", PermissionMode::Plan)).await;
+        let first = r.unwrap().unwrap();
+        assert_eq!(first.status, TurnStatus::Completed, "{:?}", first.error);
+        let _ = until_unprompted(&mut watch, &first.session_id).await;
+        let (_, r) = run(&host, continue_turn(&first.session_id)).await;
+        let second = r.unwrap().unwrap();
+        assert_eq!((second.status, second.result.as_str()), (TurnStatus::Completed, "The agent is done: the repo is small."), "{:?}", second.error);
+        let modes: Vec<PermissionMode> = home.events(&first.session_id).iter().filter_map(|e| match &e.body {
+            LogBody::TurnStarted { permission_mode, .. } => Some(*permission_mode),
+            _ => None,
+        }).collect();
+        assert_eq!(modes, [PermissionMode::Plan, PermissionMode::Default], "the mode the process was in, which krowk accepted");
+        host.shutdown().await;
+    }));
+    assert_eq!(processes(&home.fake_log()), 1, "never restarted");
+}
+
+/// A session moved to another instance lets its old Claude Code go, and
+/// the background agents it ran with it: the watchers are told the list is
+/// empty, and why, so no client goes on counting them.
+#[test]
+fn r_sub_3_background_agents_stopped_with_their_process_are_said_to_have_gone() {
+    let home = Home::new("bg-switch");
+    let dir = home.signed_in("cfg-work");
+    let other = home.signed_in("cfg-other");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_agent.jsonl"))), ("claude:other", home.instance(&other, None))], trust::allow_all());
+    let mut watch = host.watch();
+    within(Box::pin(async {
+        let (_, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        let a = r.unwrap().unwrap();
+        // While its agent runs, the session moves to the other account.
+        let (_, r) = run(&host, prompt(Some(&a.session_id), "go on over there", "claude:other/sonnet", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        let mut said = Vec::new();
+        let notice = loop {
+            match watch.recv().await.unwrap() {
+                StreamLine::Live(LiveEvent::Notice { session_id, text, .. }) if session_id == a.session_id => break text,
+                l @ StreamLine::Live(LiveEvent::BackendAgents { .. }) => said.extend(agents_said(&[l])),
+                _ => {}
+            }
+        };
+        assert_eq!(said, [Vec::<String>::new()], "the list, emptied");
+        assert!(notice.contains("claude:work") && notice.contains("background agents it ran stopped"), "{notice}");
+        host.shutdown().await;
+    }));
+}

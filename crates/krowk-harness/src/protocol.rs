@@ -698,7 +698,8 @@ pub enum LiveEvent {
     /// Something for the person at the client and nobody else: an
     /// anonymous upload's claim command, whose token is a secret. Never
     /// logged, never in what a model reads; `krowk -p` prints it on stderr
-    /// and leaves it out of `stream-json`.
+    /// and leaves it out of `stream-json`. One sent between turns (a
+    /// backend let go with its agents) has an empty `turnId`.
     #[serde(rename = "notice")]
     Notice { session_id: String, turn_id: String, text: String },
     /// How close an instance is to its rate or usage limit, whenever its

@@ -113,12 +113,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   An agent the model starts with Claude Code's `Agent` tool
   (`run_in_background`) is counted in the TUI's `[N subagents]` and listed,
   read-only, in the Agents overlay (Ctrl-G) until it finishes; what it asks
-  while no turn runs is answered under your last turn's permissions, never
-  left hanging. When it finishes, Claude Code begins a turn by itself to
-  answer it: the TUI now runs that turn at once and shows it as Claude
+  while no turn runs is answered under your last turn's permissions. If
+  Claude Code is let go while it runs — the session moved to another
+  account — krowk says the agents stopped. When it finishes, Claude Code begins a turn by itself to
+  answer it: the TUI now runs that turn at once — in the mode Claude Code
+  is in, default after a plan you approved — and shows it as Claude
   Code's (`Claude Code began this turn by itself: background agent “…”
   completed`), and it is logged as a turn of the session, the agent's calls
-  counted once toward the cost and the budget. Before, that turn's output
+  counted once toward the cost and the budget (by that next turn: what an
+  agent spends between turns is held to `--max-usd` only then). Before, that turn's output
   sat unread, and your next prompt ended at its answer — the wrong one. A
   prompt that arrives first runs it ahead of itself, and one Claude Code
   begins as a prompt is on its way is read inside that prompt's turn,

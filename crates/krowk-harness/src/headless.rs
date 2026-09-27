@@ -145,7 +145,7 @@ async fn drive(host: Host, opts: Options, stdout: &mut dyn Write) -> Outcome {
         }
     }
     if !agents.is_empty() {
-        let names: Vec<String> = agents.iter().map(|a: &crate::protocol::BackendAgent| format!("“{}”", a.description)).collect();
+        let names: Vec<String> = agents.iter().map(|a: &crate::protocol::BackendAgent| format!("“{}”", a.description.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>())).collect();
         let (what, verbs) = if agents.len() == 1 { ("background agent", "is still running, and stops") } else { ("background agents", "are still running, and stop") };
         let _ = writeln!(std::io::stderr(), "! Claude Code's {what} {} {verbs} with this run: krowk -p does not wait for background agents", names.join(", "));
     }

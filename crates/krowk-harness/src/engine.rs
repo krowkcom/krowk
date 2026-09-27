@@ -105,6 +105,17 @@ pub enum EngineEvent {
     Unprompted { reason: String },
 }
 
+/// A turn a backend began by itself, waiting for `Command::Continue`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pending {
+    /// Why it began, in words: `background agent “x” completed`.
+    pub reason: String,
+    /// The mode its process is in, which krowk accepted: the last turn's,
+    /// or default after that plan turn's `ExitPlanMode` was approved. The
+    /// turn runs in it — never looser than what was asked but for that.
+    pub mode: Option<PermissionMode>,
+}
+
 /// Where a backend reports what happens between turns, when no turn's
 /// channel is there to take it — its agents, a turn it began by itself.
 /// The host hands one to each backend engine and sends what it is told to
@@ -307,9 +318,9 @@ pub trait Engine: Send + Sync {
     fn shutdown(&self) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
-    /// A turn the backend began by itself and krowk has not run yet, as
-    /// why it began; none for an engine that never begins one.
-    fn pending(&self) -> Option<String> {
+    /// A turn the backend began by itself and krowk has not run yet; none
+    /// for an engine that never begins one.
+    fn pending(&self) -> Option<Pending> {
         None
     }
     /// Whether the session still has work under way between turns — a

@@ -102,9 +102,11 @@ unit = "bytes"
 # reader and its idle loop, agent tracking and the meter moved onto the
 # process, `continue` and the unprompted turn, `backend.agents` and
 # `turn.unprompted`, `Host::watch`, the TUI's count, overlay and
-# auto-continue), which adds 51,136 bytes: 8,163,880 (7.79 MiB), 37,416
-# over 7.75 MiB. Raised 7.75 -> 8.00 MiB for it — no crate is added, the
-# growth is its code — leaving 224,728 bytes.
+# auto-continue) adds 51,136 bytes, and its review round (the unprompted
+# turn's mode, agents said gone with their process, the meter on the
+# engine) 9,088 more: 8,172,968 (7.79 MiB), 46,504 over 7.75 MiB. Raised
+# 7.75 -> 8.00 MiB for it — no crate is added, the growth is its code —
+# leaving 215,640 bytes.
 max = { x86_64-linux = 8_388_608 }
 status = "enforced"
 

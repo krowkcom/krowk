@@ -1058,7 +1058,7 @@ impl App {
                 let note = text[krowk_harness::claude::UNPROMPTED.len()..].trim_end_matches("</unprompted>");
                 self.finish_live();
                 self.gap();
-                self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(clean(note.trim()), dim().add_modifier(Modifier::ITALIC))]));
+                self.push_wrapped(look::TOOL, "  ", &flat(note.trim()), dim(), dim().add_modifier(Modifier::ITALIC));
             }
             // A skill the person asked for, loaded next to the prompt.
             Item::UserText { text } if text.starts_with(krowk_harness::compat::skills::INVOKED) => {

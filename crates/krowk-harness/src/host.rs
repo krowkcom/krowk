@@ -346,6 +346,8 @@ impl Shared {
             let live = match ev {
                 EngineEvent::BackendAgents { agents } => LiveEvent::BackendAgents { session_id: session_id.clone(), agents },
                 EngineEvent::Unprompted { reason } => LiveEvent::TurnUnprompted { session_id: session_id.clone(), reason },
+                // No turn to name: the frame's turn id is empty.
+                EngineEvent::Notice { text } => LiveEvent::Notice { session_id: session_id.clone(), turn_id: String::new(), text },
                 _ => return,
             };
             let _ = watch.send(StreamLine::Live(live));
@@ -354,15 +356,16 @@ impl Shared {
 
     /// `continue`: the turn a session's backend began by itself, run as a
     /// turn of the session — its prompt item the host's note of why — on
-    /// the model its last turn there ran on, in that turn's mode. Ahead of
+    /// the model and effort of the session's last turn on that instance, in
+    /// the mode its process is in (`Pending::mode`), else that turn's. Ahead of
     /// a prompt it is not announced: the prompt's `result` is the one its
     /// client waits for.
     async fn unprompted(self: &Arc<Self>, session_id: &str, limits: BudgetLimits, out: &mpsc::Sender<StreamLine>, announce: bool) -> Result<RunResult, EngineError> {
         let waiting = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).and_then(|b| b.engine.pending().map(|r| (b.instance.clone(), r)));
-        let Some((instance, reason)) = waiting else {
+        let Some((instance, pending)) = waiting else {
             return Err(EngineError::new("nothing_pending", format!("session {session_id} has no turn its backend began by itself waiting — send a prompt instead")));
         };
-        let mut plan = self.settle(Some(session_id), crate::claude::unprompted(&reason), None, PermissionMode::Default, None, None, limits, out, &[], None, Some(&instance)).await?;
+        let mut plan = self.settle(Some(session_id), crate::claude::unprompted(&pending.reason), None, PermissionMode::Default, None, None, limits, out, &[], None, Some((&instance, pending.mode))).await?;
         plan.announce = announce;
         self.turn(plan, out.clone()).await.map(|(r, _)| r)
     }
@@ -544,7 +547,7 @@ impl Shared {
         out: &mpsc::Sender<StreamLine>,
         tried: &[String],
         rolling: Option<Rolling>,
-        unprompted: Option<&str>,
+        unprompted: Option<(&str, Option<PermissionMode>)>,
     ) -> Result<TurnPlan, EngineError> {
         let started = Instant::now();
         self.evict_idle().await;
@@ -564,12 +567,14 @@ impl Shared {
         };
         let past = opened.as_ref().map(|(log, events)| replay(&log::branch(events, log.head().unwrap_or_default()))).unwrap_or_default();
         // A turn a backend began runs where the session's last turn on that
-        // instance ran, in its mode and effort, whatever came since.
+        // instance ran, on its model and effort, whatever came since; in the
+        // mode its process is in, else that turn's.
         let (model, permission_mode, effort) = match unprompted {
-            Some(instance) => {
-                let last = past.turns.iter().rev().find(|t| t.model.instance == instance).map(|t| t.model.clone());
-                let m = last.ok_or_else(|| EngineError::new("nothing_pending", format!("session {} never ran on {instance}", session_id.unwrap_or_default())))?;
-                (Some(m), past.permission_mode.unwrap_or(permission_mode), past.effort)
+            Some((instance, mode)) => {
+                let Some((m, asked, effort)) = past.last_on.iter().find(|(m, ..)| m.instance == instance).cloned() else {
+                    return Err(EngineError::new("nothing_pending", format!("session {} never ran on {instance}", session_id.unwrap_or_default())));
+                };
+                (Some(m), mode.unwrap_or(asked), effort)
             }
             None => (model, permission_mode, effort),
         };
@@ -1185,9 +1190,9 @@ struct Past {
     run: Option<String>,
     /// For a subagent: the session that started it.
     parent: Option<String>,
-    /// The last turn's mode and effort: a turn a backend began runs in them.
-    permission_mode: Option<PermissionMode>,
-    effort: Option<Effort>,
+    /// Each instance's last turn: its model, mode and effort, which a turn
+    /// a backend on it began runs with.
+    last_on: Vec<(ModelRef, PermissionMode, Option<Effort>)>,
 }
 
 /// The last `backend.session` of a branch, and the instance it ran on.
@@ -1228,8 +1233,8 @@ fn replay(branch: &[&LogEvent]) -> Past {
             }
             LogBody::TurnStarted { model, permission_mode, effort, .. } => {
                 past.model = Some(model.clone());
-                past.permission_mode = Some(*permission_mode);
-                past.effort = *effort;
+                past.last_on.retain(|(m, ..)| m.instance != model.instance);
+                past.last_on.push((model.clone(), *permission_mode, *effort));
                 past.turns.push(TurnSpan { model: model.clone(), items: past.items.len()..past.items.len() });
                 reached = false;
                 answered = false;

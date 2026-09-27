@@ -981,7 +981,7 @@
           ]
         },
         {
-          "description": "Something for the person at the client and nobody else: an\nanonymous upload's claim command, whose token is a secret. Never\nlogged, never in what a model reads; `krowk -p` prints it on stderr\nand leaves it out of `stream-json`.",
+          "description": "Something for the person at the client and nobody else: an\nanonymous upload's claim command, whose token is a secret. Never\nlogged, never in what a model reads; `krowk -p` prints it on stderr\nand leaves it out of `stream-json`. One sent between turns (a\nbackend let go with its agents) has an empty `turnId`.",
           "type": "object",
           "properties": {
             "sessionId": {
