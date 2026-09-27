@@ -322,6 +322,25 @@ impl InstanceKind {
     }
 }
 
+/// The vendor and method `krowk connect` makes a kind with — `claude-code`
+/// is `anthropic` by `subscription` — for a fix line in the one form every
+/// one of them takes: `krowk connect anthropic --method subscription --name
+/// work`. `connect::METHODS` holds the same pairs, and a test holds the two
+/// to each other.
+pub fn kind_connect(tag: &str) -> Option<(&'static str, &'static str)> {
+    Some(match tag {
+        "anthropic-api" => ("anthropic", "api-key"),
+        "claude-code" => ("anthropic", "subscription"),
+        "openai-api" => ("openai", "api-key"),
+        "codex-app-server" => ("openai", "subscription"),
+        "xai-api" => ("xai", "api-key"),
+        "xai-oauth" => ("xai", "subscription"),
+        "openrouter-api" => ("openrouter", "api-key"),
+        "openai-compatible" => ("openai-compatible", "api-key"),
+        _ => return None,
+    })
+}
+
 /// `InstanceKind::label`, by the `kind` tag a resolved instance carries.
 pub fn kind_label(tag: &str) -> &'static str {
     match tag {

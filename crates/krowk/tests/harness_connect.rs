@@ -194,9 +194,73 @@ fn connect_without_a_terminal_needs_the_method_when_there_is_a_choice_and_the_ve
     let said = String::from_utf8_lossy(&out.stdout);
     assert!(said.contains("$OPENROUTER_TEAM_API_KEY, which is not set here"), "{said}");
 
-    // An account word is not a vendor to `krowk login`, and says where to go.
-    let out = b.krowk(&["login", "anthropic"], &[]);
-    assert!(stderr(&out).contains("krowk connect anthropic"), "{}", stderr(&out));
+    // An account word is not a vendor to `krowk login`, and says where to
+    // go in the vendor, method and name form every fix line takes.
+    for (word, want) in [
+        ("anthropic", "krowk connect anthropic --method subscription"),
+        ("chatgpt", "krowk connect openai --method subscription"),
+        ("grok", "krowk connect xai --method subscription"),
+        ("claude:work", "krowk connect anthropic --method subscription --name work"),
+    ] {
+        let out = b.krowk(&["login", word], &[]);
+        assert!(stderr(&out).contains(&format!("`{want}`")), "{word}: {}", stderr(&out));
+    }
+}
+
+#[test]
+fn disconnecting_your_own_claude_login_says_so_and_is_refused_without_a_terminal_unless_asked_for() {
+    let b = Sandbox::new("own");
+    // The person's own Claude Code, signed in, in the sandbox's ~/.claude.
+    std::fs::create_dir_all(b.root.join("home/.claude")).unwrap();
+    std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
+    let out = b.krowk(&["connect", "anthropic", "--method", "subscription", "--format", "human"], &[]);
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains("signed in already") && said.contains("`krowk connect anthropic --method subscription --name <new>`") && !said.contains("disconnect"), "{said}");
+
+    let out = b.krowk(&["disconnect", "claude"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("signs you out of Claude Code itself") && stderr(&out).contains("--sign-out-vendor"), "{}", stderr(&out));
+    assert!(b.root.join("home/.claude/fake-login").exists(), "nothing was signed out");
+    assert_eq!(b.logins("argv auth logout"), 0);
+
+    let d = b.json(&["disconnect", "claude", "--sign-out-vendor", "--json"], &[]);
+    assert_eq!(d["data"]["command"], "claude auth logout");
+    assert!(!b.root.join("home/.claude/fake-login").exists());
+}
+
+#[test]
+fn connect_refuses_a_name_that_would_share_a_login_or_a_key_or_pass_for_another_kind() {
+    let b = Sandbox::new("names");
+    b.json(&["connect", "anthropic", "--method", "subscription", "--name", "work", "--json"], &[]);
+    let refused = |args: &[&str], why: &str| {
+        let out = b.krowk(args, &[]);
+        assert!(!out.status.success(), "{args:?} was taken");
+        assert!(stderr(&out).contains(why), "{args:?}: {}", stderr(&out));
+    };
+    // `a:b` and `a-b` would be one directory.
+    refused(&["connect", "anthropic", "--method", "subscription", "--name", "claude:a:b"], "holds no `:`");
+    // A whole name keeps its method's prefix.
+    refused(&["connect", "anthropic", "--method", "api-key", "--name", "codex:x"], "is not a anthropic name");
+    // A built-in of another kind is not taken over.
+    refused(&["connect", "openai-compatible", "--name", "claude", "--base-url", "http://127.0.0.1:1/v1"], "claude is already claude-code");
+    // Nor a name that differs only in case.
+    refused(&["connect", "anthropic", "--method", "subscription", "--name", "Work"], "only in case");
+    // Nor another account's directory.
+    let taken = b.data().join("claude/claude-work").display().to_string();
+    refused(&["connect", "anthropic", "--method", "subscription", "--name", "other", "--config-dir", &taken], "is claude:work's directory already");
+    // Nor another instance's key variable.
+    b.json(&["connect", "anthropic", "--method", "api-key", "--name", "my-work", "--json"], &[]);
+    refused(&["connect", "anthropic", "--method", "api-key", "--name", "my_work"], "--api-key-env");
+    let cfg = b.config();
+    let names: Vec<&String> = cfg["instances"].as_object().unwrap().keys().collect();
+    assert_eq!(names.len(), 2, "nothing refused was written: {names:?}");
+
+    // A relative --config-dir is the directory it means where krowk runs,
+    // kept absolute, and the login lands there.
+    let c = b.json(&["connect", "anthropic", "--method", "subscription", "--name", "rel", "--config-dir", "accounts/rel", "--json"], &[]);
+    let dir = b.root.join("repo/accounts/rel");
+    assert_eq!(c["data"]["definition"]["configDir"], dir.display().to_string());
+    assert!(dir.join("fake-login").exists());
 }
 
 #[test]
@@ -260,7 +324,7 @@ fn connect_at_a_terminal_walks_vendor_method_and_account() {
     assert!(t.wait_for("+ new account", wait).is_some(), "the accounts: {}", t.text());
     let text = t.text();
     assert!(text.contains("claude:work (Claude subscription) — ready, reconnect"), "{text}");
-    assert!(text.contains("claude (Claude subscription) — not signed in, reconnect"), "{text}");
+    assert!(text.contains("claude (Claude subscription, your own Claude Code login) — not signed in, reconnect"), "{text}");
     t.write(b"\x1b[B\x1b[B\r");
     assert!(t.wait_for("Name the new account", wait).is_some(), "{}", t.text());
     t.write(b"team\r");

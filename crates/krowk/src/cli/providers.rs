@@ -201,7 +201,8 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
             let _ = writeln!(out, "shares your Codex {} (linked, so an edit shows in every account)", v.shared.join(", "));
         }
         if verb != "added" && v.logged_in && !v.ran && r.api_key_env.is_empty() {
-            let _ = writeln!(out, "it was signed in already — `krowk disconnect {instance}` first to sign in as another account");
+            let (vendor, method) = krowk_harness::instances::kind_connect(kind.tag()).unwrap_or_default();
+            let _ = writeln!(out, "it was signed in already — to sign in as another account, add one: `krowk connect {vendor} --method {method} --name <new>`");
         }
     }
     if let Some(m) = &done.default_model {
@@ -218,11 +219,11 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if args.len() > 1 {
         return Err(fail("unexpected_argument", format!("`krowk disconnect` takes one instance, and got `{}`", args.join(" "))));
     }
-    let remove = ctx.f.remove;
+    let (remove, own) = (ctx.f.remove, ctx.f.sign_out_vendor);
     let done = {
         let (pa, mut ui) = parts(ctx, true);
         let target = pa.disconnect_target(args.first().map(String::as_str), &mut ui).map_err(engine)?;
-        pa.disconnect(&target, remove).map_err(engine)?
+        pa.disconnect(&target, remove, own, &mut ui).map_err(engine)?
     };
     let instance = &done.instance;
     let config = config::global_path();
@@ -261,7 +262,7 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         let _ = writeln!(out, "its definition is removed from {}", config.display());
     }
     if let Some(m) = &done.cleared_default {
-        let _ = writeln!(out, "the default model was {m}, so there is none now — `krowk connect --default` sets one");
+        let _ = writeln!(out, "the default model was {m}, so there is none now — `krowk connect <vendor> --method <method> --default` makes a connection the default");
     }
     Ok(())
 }

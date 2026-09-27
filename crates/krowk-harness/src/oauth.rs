@@ -568,8 +568,8 @@ async fn callback(listener: &tokio::net::TcpListener, state: &str) -> Result<Str
 }
 
 /// The command that signs an instance in: `krowk connect xai --method
-/// subscription`, with `--name work` for `supergrok:work` and any other
-/// name given whole (`--name grok:team`).
+/// subscription`, with `--name work` for `supergrok:work`, and `krowk
+/// connect grok:team` for a name no `--name` spells.
 pub fn login_command(instance: &str) -> String {
     crate::connect::connect_command(instance, "xai-oauth")
 }
@@ -584,6 +584,11 @@ pub enum Step<'a> {
 
 /// Signs in, from blocking code: `krowk connect xai`,
 /// which starts a runtime of its own for it, as `krowk -p` does.
+///
+/// It builds a runtime of its own and blocks until the browser answers, the
+/// device code is entered, or `LOGIN_TIMEOUT` passes: nothing cancels it
+/// sooner. A front end that must stay responsive meanwhile (the TUI's
+/// `/connect`) runs it off its own thread and needs a cancel added here.
 pub fn sign_in(login: &Login, device: bool, tell: &mut dyn FnMut(Step<'_>)) -> Result<Stored, EngineError> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -700,6 +705,6 @@ mod tests {
         assert!(!s.fresh(1) && Stored { expires_at_ms: None, ..s.clone() }.fresh(1));
         assert_eq!(login_command("supergrok"), "krowk connect xai --method subscription");
         assert_eq!(login_command("supergrok:work"), "krowk connect xai --method subscription --name work");
-        assert_eq!(login_command("grok:team"), "krowk connect xai --method subscription --name grok:team");
+        assert_eq!(login_command("grok:team"), "krowk connect grok:team");
     }
 }

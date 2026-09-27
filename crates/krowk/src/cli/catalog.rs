@@ -422,7 +422,10 @@ fn connect_commands() -> Vec<Command> {
         },
         Command {
             args: vec![arg("instance", "The instance to sign out, e.g. claude:work — a person at a terminal may omit it and pick", false)],
-            flags: vec![flag("remove", BOOL, "Remove its definition too; without it the instance stays, not signed in")],
+            flags: vec![
+                flag("remove", BOOL, "Remove its definition too; without it the instance stays, not signed in"),
+                flag("sign-out-vendor", BOOL, "The built-in claude or codex: yes, sign me out of Claude Code or Codex itself (~/.claude, ~/.codex), for every tool. Asked at a terminal; required without one"),
+            ],
             ..cmd(
                 "disconnect",
                 "krowk disconnect [instance] [--remove]",

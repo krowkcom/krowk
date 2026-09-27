@@ -171,18 +171,39 @@ fn by_kind(kind: &str) -> Option<&'static MethodInfo> {
 
 /// The command that connects an instance, or renews its login, for a fix
 /// line: `krowk connect <vendor> [--method M] [--name N]` — the method
-/// only when the vendor has more than one — or `krowk connect <instance>`
-/// for one whose name no `--name` spells.
+/// only when the vendor has more than one (`instances::kind_connect`) — or
+/// `krowk connect <instance>` for one whose name no `--name` spells (a
+/// hand-written `grok:team`).
 pub fn connect_command(instance: &str, kind: &str) -> String {
-    let Some(m) = by_kind(kind) else { return format!("krowk connect {instance}") };
-    let method = if m.vendor.methods().len() > 1 { format!(" --method {}", m.method.id()) } else { String::new() };
+    let (Some(m), Some((vendor, method))) = (by_kind(kind), instances::kind_connect(kind)) else { return format!("krowk connect {instance}") };
+    let method = if m.vendor.methods().len() > 1 { format!(" --method {method}") } else { String::new() };
     let name = match instance.strip_prefix(m.provider).and_then(|r| r.strip_prefix(':')) {
         _ if instance == m.provider => String::new(),
         Some(n) if !n.contains(':') => format!(" --name {n}"),
-        _ if instance.contains(':') || m.provider == "openai-compatible" => format!(" --name {instance}"),
+        _ if m.provider == "openai-compatible" && !instance.contains(':') => format!(" --name {instance}"),
         _ => return format!("krowk connect {instance}"),
     };
-    format!("krowk connect {}{method}{name}", m.vendor.id())
+    format!("krowk connect {vendor}{method}{name}")
+}
+
+/// A new instance's whole name from `--name`: `<provider>:<name>`, or the
+/// name alone for a compatible server, which has no provider of its own. A
+/// name with a `:` must be that same whole name — `claude:work` for a
+/// subscription — so it can never pass for another method's instance, and
+/// the part after the prefix holds no `:` of its own: an account's
+/// directory is made from it, and `a:b` and `a-b` would make the same one.
+fn new_instance(provider: &str, name: &str) -> Result<String, EngineError> {
+    check_name(name)?;
+    let rest = match name.split_once(':') {
+        None => name,
+        Some((pre, rest)) if pre == provider && provider != "openai-compatible" => rest,
+        Some(_) if provider == "openai-compatible" => return Err(bad_flag(format!("{name:?} cannot name a server: its name is the whole instance name, so no `:`"))),
+        Some(_) => return Err(bad_flag(format!("{name:?} is not a {provider} name — give --name the part after `{provider}:`, e.g. --name work"))),
+    };
+    if rest.is_empty() || rest.contains(':') {
+        return Err(bad_flag(format!("{name:?} cannot name an account: the part after `{provider}:` holds no `:`")));
+    }
+    Ok(if provider == "openai-compatible" { rest.to_string() } else { format!("{provider}:{rest}") })
 }
 
 /// The model a new instance of this kind is set up to run when it becomes
@@ -438,7 +459,10 @@ impl ProviderAuth<'_> {
     }
 
     /// Read, edit, write back by rename: every key the edit does not touch
-    /// is kept as it was.
+    /// is kept as it was. The same as `krowk::config::edit` in the CLI crate,
+    /// which this crate cannot reach (the CLI depends on it, and its config
+    /// module is in the lean build, which links no harness); a change to one
+    /// is a change to the other.
     fn edit(&self, edit: impl FnOnce(&mut Map<String, Value>)) -> Result<(), EngineError> {
         let unwritable = |e: String| EngineError::new("config_unwritable", format!("{}: {e}", self.config.display()));
         let mut raw = self.raw_config()?;
@@ -475,6 +499,33 @@ impl ProviderAuth<'_> {
     fn resolve(&self, instance: &str, kind: &InstanceKind) -> Result<Resolved, EngineError> {
         let reg = Registry::resolve(&InstancesConfig { instances: [(instance.to_string(), kind.clone())].into(), ..Default::default() }, self.env);
         reg.get(instance).cloned().map_err(|e| EngineError::new("bad_config", e))
+    }
+
+    /// The person's own vendor login this instance runs on, when it does:
+    /// a Claude Code or Codex instance with no directory of its own (or one
+    /// naming the vendor's default) signs in and out in the directory
+    /// every other tool on the machine uses — `~/.claude`, `~/.codex`.
+    /// None for a named account, or a keyed one, which runs no login.
+    pub fn own_home(&self, r: &Resolved) -> Option<PathBuf> {
+        let b = r.backend.as_ref().filter(|b| b.key.is_none())?;
+        let (var, dot) = if r.kind == "codex-app-server" { ("CODEX_HOME", ".codex") } else { ("CLAUDE_CONFIG_DIR", ".claude") };
+        let default = Some(self.env(var)).filter(|d| !d.trim().is_empty()).map(PathBuf::from).or_else(|| Some(self.env("HOME")).filter(|h| !h.trim().is_empty()).map(|h| PathBuf::from(h).join(dot)))?;
+        let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        match &b.config_dir {
+            None => Some(default),
+            Some(d) if canon(d) == canon(&default) => Some(default),
+            Some(_) => None,
+        }
+    }
+
+    /// What a picker calls an instance: its kind in plain words, and that
+    /// it is the person's own login where it is.
+    fn label(&self, r: &Resolved) -> String {
+        match (self.own_home(r), r.kind) {
+            (Some(_), "codex-app-server") => format!("{}, your own Codex login", instances::kind_label(r.kind)),
+            (Some(_), _) => format!("{}, your own Claude Code login", instances::kind_label(r.kind)),
+            (None, k) => instances::kind_label(k).to_string(),
+        }
     }
 
     /// Whether an instance can run a turn here — the readiness check.
@@ -521,7 +572,7 @@ impl ProviderAuth<'_> {
             ));
         };
         if options.name.is_some() {
-            return Err(bad_flag(format!("{instance} is already the instance's whole name — drop --name, or connect a vendor with it: `krowk connect {} --name …`", way.vendor.id())));
+            return Err(bad_flag(format!("{instance} is already the instance's whole name — drop --name, or add an account: `krowk connect {} --method {} --name <new>`", way.vendor.id(), way.method.id())));
         }
         // The device code is the one other way into the same account.
         let way = match method {
@@ -544,7 +595,7 @@ impl ProviderAuth<'_> {
             return Ok(None);
         }
         let reports = readiness::check_all(&mine, &self.credentials, &self.probe()?);
-        let mut labels: Vec<String> = reports.iter().map(|r| format!("{} ({}) — {}, reconnect", r.instance, instances::kind_label(r.kind), r.readiness.label())).collect();
+        let mut labels: Vec<String> = reports.iter().zip(&mine).map(|(r, i)| format!("{} ({}) — {}, reconnect", r.instance, self.label(i), r.readiness.label())).collect();
         labels.push("+ new account…".into());
         let options: Vec<&str> = labels.iter().map(String::as_str).collect();
         let at = choose(ui, "Which account?", &options, "--name")?;
@@ -552,11 +603,9 @@ impl ProviderAuth<'_> {
             return Ok(Some(r.instance.clone()));
         }
         let name = ask_text(ui, "Name the new account, e.g. work", "--name, e.g. --name work")?;
-        check_name(&name)?;
-        let instance = if name.contains(':') || way.provider == "openai-compatible" { name } else { format!("{}:{name}", way.provider) };
-        check_name(&instance)?;
-        if reg.instances.contains_key(&instance) {
-            return Err(bad_flag(format!("{instance} is connected already — pick it to reconnect it, or give the new account another name")));
+        let instance = new_instance(way.provider, &name)?;
+        if let Some(k) = reg.instances.keys().find(|k| k.to_lowercase() == instance.to_lowercase()) {
+            return Err(bad_flag(format!("{k} is connected already — pick it to reconnect it, or give the new account another name")));
         }
         Ok(Some(instance))
     }
@@ -572,7 +621,7 @@ impl ProviderAuth<'_> {
         if !ui.interactive() {
             return Err(EngineError::new("bad_argument", format!("nobody is at a terminal to pick which instance to disconnect, and this host has {} — name one: `krowk disconnect <instance>`", names.join(", "))));
         }
-        let labels: Vec<String> = reg.instances.values().map(|r| format!("{} ({})", r.name, instances::kind_label(r.kind))).collect();
+        let labels: Vec<String> = reg.instances.values().map(|r| format!("{} ({})", r.name, self.label(r))).collect();
         let options: Vec<&str> = labels.iter().map(String::as_str).collect();
         Ok(names[choose(ui, "Disconnect which instance?", &options, "the instance, e.g. `krowk disconnect claude:work`")?].to_string())
     }
@@ -584,25 +633,47 @@ impl ProviderAuth<'_> {
         let o = &req.options;
         let provider = way.provider;
         let name = clean(&o.name);
-        if let Some(n) = &name {
-            check_name(n)?;
-        }
-        // A name with a `:` is an instance's whole name, as a fix line spells it.
         let instance = match (&req.instance, &name, provider) {
             (Some(i), _, _) => i.clone(),
-            (None, Some(n), _) if n.contains(':') => n.clone(),
-            (None, Some(n), "openai-compatible") => n.clone(),
-            (None, None, "openai-compatible") => ask_text(ui, "Name this server's instance (the part of --model before the model id), e.g. local", "--name, e.g. --name local")?,
-            (None, Some(n), p) => format!("{p}:{n}"),
+            (None, Some(n), p) => new_instance(p, n)?,
+            (None, None, "openai-compatible") => new_instance(provider, &ask_text(ui, "Name this server's instance (the part of --model before the model id), e.g. local", "--name, e.g. --name local")?)?,
             (None, None, p) => p.to_string(),
         };
         check_name(&instance)?;
         let backend = matches!(provider, "claude" | "codex");
+        // A directory given relative to where krowk runs is kept as the
+        // absolute one it means: the vendor's login runs elsewhere, and a
+        // turn resolves a definition's path against its own project.
+        let config_dir = match clean(&o.config_dir) {
+            Some(d) => Some(std::path::absolute(&d).map_err(|e| bad_flag(format!("--config-dir {d}: {e}")))?.display().to_string()),
+            None => None,
+        };
         if !backend && (o.binary.is_some() || o.config_dir.is_some()) {
             return Err(bad_flag("`--binary` and `--config-dir` describe a Claude Code or Codex account — `krowk connect anthropic --method subscription --name work --config-dir …`, or openai"));
         }
         let existing = self.definitions()?;
         let renewed = existing.instances.contains_key(&instance);
+        // Every instance there is, built in or defined: a new one never
+        // takes a built-in's name for another kind, nor one that differs from
+        // an existing name only in case — the directories made from the two
+        // are one directory on a disk that ignores case.
+        let known = Registry::resolve(&existing, self.env);
+        match known.instances.get(&instance) {
+            Some(r) if r.kind != way.kind => {
+                return Err(EngineError::new("instance_exists", format!("{instance} is already {} ({}) — give this one another --name", r.kind, instances::kind_label(r.kind))));
+            }
+            Some(_) => {}
+            None => {
+                if req.instance.is_some() {
+                    // `krowk connect claude:work` of one not made yet.
+                    let rest = instance.strip_prefix(provider).and_then(|r| r.strip_prefix(':')).unwrap_or(&instance);
+                    new_instance(provider, rest)?;
+                }
+                if let Some(k) = known.instances.keys().find(|k| k.to_lowercase() == instance.to_lowercase()) {
+                    return Err(bad_flag(format!("{instance} differs from {k}, which is there already, only in case — reconnect {k}, or give this one another --name")));
+                }
+            }
+        }
         // The name after the provider: what a new profile's variable and
         // directory are made from.
         let named = instance.strip_prefix(provider).and_then(|r| r.strip_prefix(':')).map(String::from).or_else(|| (instance != provider).then(|| instance.clone()));
@@ -614,6 +685,14 @@ impl ProviderAuth<'_> {
             (Some(n), p) => Some(format!("{}_{}_API_KEY", env_part(p), env_part(n))),
             (None, _) => None,
         });
+        // A derived variable is one name for `my-work`, `my_work` and
+        // `MY_WORK`: two instances would share a key by accident.
+        if clean(&o.api_key_env).is_none()
+            && let Some(var) = &key_env
+            && let Some(other) = known.instances.values().find(|r| r.name != instance && r.api_key_env == *var)
+        {
+            return Err(bad_flag(format!("{instance} would read its key from ${var}, which {} reads already — name another with --api-key-env", other.name)));
+        }
         let base_url = clean(&o.base_url);
         let base_url = match (provider, base_url) {
             ("openai-compatible", None) if !existing.instances.contains_key(&instance) => Some(ask_text(ui, "The server's base URL, e.g. http://127.0.0.1:11434/v1", "--base-url, e.g. --base-url http://127.0.0.1:11434/v1")?).filter(|u| !u.is_empty()),
@@ -642,7 +721,7 @@ impl ProviderAuth<'_> {
             // environment.
             "claude" => InstanceKind::ClaudeCode {
                 binary: clean(&o.binary),
-                config_dir: clean(&o.config_dir),
+                config_dir: config_dir.clone(),
                 env: base_url.clone().map(|u| [("ANTHROPIC_BASE_URL".to_string(), u)].into()).unwrap_or_default(),
                 args: Vec::new(),
                 api_key_env: key_env,
@@ -654,7 +733,7 @@ impl ProviderAuth<'_> {
             // the key to the process under the same name.
             "codex" => InstanceKind::CodexAppServer {
                 binary: clean(&o.binary),
-                codex_home: clean(&o.config_dir),
+                codex_home: config_dir.clone(),
                 env: base_url.clone().map(|u| [("OPENAI_BASE_URL".to_string(), u)].into()).unwrap_or_default(),
                 args: Vec::new(),
                 api_key_env: key_env,
@@ -698,6 +777,7 @@ impl ProviderAuth<'_> {
                     Some(d) => Some(d),
                     None => account("claude")?,
                 };
+                self.dir_free(&instance, config_dir.as_deref(), &existing)?;
                 let kind = InstanceKind::ClaudeCode { binary, config_dir, env, args, api_key_env, effort };
                 vendor = Some(self.sign_in_claude(&instance, &kind, ui)?);
                 kind
@@ -707,6 +787,7 @@ impl ProviderAuth<'_> {
                     Some(d) => Some(d),
                     None => account("codex")?,
                 };
+                self.dir_free(&instance, codex_home.as_deref(), &existing)?;
                 let kind = InstanceKind::CodexAppServer { binary, codex_home, env, args, api_key_env, effort };
                 vendor = Some(self.sign_in_codex(&instance, &kind, way.method == Method::Device, ui)?);
                 kind
@@ -741,6 +822,25 @@ impl ProviderAuth<'_> {
         }
         let resolved = self.resolve(&instance, &kind)?;
         Ok(Connected { instance, definition: kind, resolved, renewed, oauth, vendor, default_model })
+    }
+
+    /// An account's directory is its own: one another definition already
+    /// signs in in — by the same path, or one differing only in case —
+    /// would share that login.
+    fn dir_free(&self, instance: &str, dir: Option<&str>, defs: &InstancesConfig) -> Result<(), EngineError> {
+        let Some(dir) = dir else { return Ok(()) };
+        let same = |d: &str| Path::new(d).display().to_string().trim_end_matches('/').to_lowercase() == dir.trim_end_matches('/').to_lowercase();
+        let taken = defs.instances.iter().find(|(n, k)| {
+            *n != instance
+                && match k {
+                    InstanceKind::ClaudeCode { config_dir: Some(d), .. } | InstanceKind::CodexAppServer { codex_home: Some(d), .. } => same(d),
+                    _ => false,
+                }
+        });
+        match taken {
+            Some((other, _)) => Err(bad_flag(format!("{dir} is {other}'s directory already — one login cannot be two accounts; give this one another --name or --config-dir"))),
+            None => Ok(()),
+        }
     }
 
     /// R-INST-2: a Claude Code account is signed in by Claude Code. Its
@@ -815,7 +915,15 @@ impl ProviderAuth<'_> {
     /// environment's, which krowk only reads, so the variable is named. The
     /// definition stays unless `remove`, and is taken away only once the
     /// sign-out worked.
-    pub fn disconnect(&self, instance: &str, remove: bool) -> Result<Disconnected, EngineError> {
+    ///
+    /// **The person's own vendor login is not krowk's to sign out of
+    /// quietly.** The built-in `claude` and `codex` run on `~/.claude` and
+    /// `~/.codex`, which Claude Code and Codex themselves, and every other
+    /// tool on the machine, use: signing them out there signs the person
+    /// out everywhere. So it is said plainly and asked at a terminal, and
+    /// without one refused unless `own_login` (`--sign-out-vendor`) says
+    /// that is what is wanted.
+    pub fn disconnect(&self, instance: &str, remove: bool, own_login: bool, ui: &mut dyn AuthInteraction) -> Result<Disconnected, EngineError> {
         let defs = self.definitions()?;
         let reg = Registry::resolve(&defs, self.env);
         let r = reg.instances.get(instance).ok_or_else(|| EngineError::new("no_instance", format!("no instance named {instance} — `krowk status` lists them")))?;
@@ -827,6 +935,17 @@ impl ProviderAuth<'_> {
                 let (command, var) = if codex { ("codex logout", "CODEX_HOME") } else { ("claude auth logout", "CLAUDE_CONFIG_DIR") };
                 if b.path.is_none() {
                     return Err(EngineError::new("backend_not_found", format!("{} was not found, so `{command}` cannot run for {instance}", b.binary)));
+                }
+                if let Some(home) = self.own_home(r).filter(|_| !own_login) {
+                    let who = if codex { "Codex" } else { "Claude Code" };
+                    let warning = format!("disconnecting {instance} signs you out of {who} itself, in {}, for every tool that uses it", home.display());
+                    if !ui.interactive() {
+                        return Err(EngineError::new("confirmation_required", format!("{warning} — pass --sign-out-vendor to do that, or `krowk disconnect {instance} --remove --sign-out-vendor`")));
+                    }
+                    let options = ["No — keep that login", "Yes — sign me out of it"];
+                    if choose(ui, &format!("{}. Go on?", capitalised(&warning)), &options, "--sign-out-vendor")? != 1 {
+                        return Err(EngineError::new("selection_cancelled", format!("nothing was signed out — {instance} is as it was")));
+                    }
                 }
                 let probe = self.probe()?;
                 let exit = if codex { codex_auth::logout(b, &probe) } else { claude_auth::logout(b, &probe) }.map_err(backend_failed)?;
@@ -882,6 +1001,11 @@ impl ProviderAuth<'_> {
     }
 }
 
+fn capitalised(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+}
+
 /// The way in, given or asked: a vendor with one way in takes it.
 fn pick(vendor: Vendor, method: Option<Method>, ui: &mut dyn AuthInteraction) -> Result<&'static MethodInfo, EngineError> {
     let offered = vendor.methods();
@@ -935,13 +1059,30 @@ mod tests {
             ("claude:work", "claude-code", "krowk connect anthropic --method subscription --name work"),
             ("codex:team", "codex-app-server", "krowk connect openai --method subscription --name team"),
             ("supergrok", "xai-oauth", "krowk connect xai --method subscription"),
-            ("grok:team", "xai-oauth", "krowk connect xai --method subscription --name grok:team"),
+            ("grok:team", "xai-oauth", "krowk connect grok:team"),
             ("anthropic:work", "anthropic-api", "krowk connect anthropic --method api-key --name work"),
             ("openrouter", "openrouter-api", "krowk connect openrouter"),
             ("local", "openai-compatible", "krowk connect openai-compatible --name local"),
             ("mywork", "claude-code", "krowk connect mywork"),
         ] {
             assert_eq!(connect_command(instance, kind), want, "{instance}");
+        }
+    }
+
+    #[test]
+    fn every_way_in_is_the_vendor_and_method_its_kind_names() {
+        for m in METHODS.iter().filter(|m| m.method != Method::Device) {
+            assert_eq!(instances::kind_connect(m.kind), Some((m.vendor.id(), m.method.id())), "{}", m.kind);
+        }
+    }
+
+    #[test]
+    fn a_new_name_keeps_its_method_prefix_and_no_colon_of_its_own() {
+        assert_eq!(new_instance("claude", "work").unwrap(), "claude:work");
+        assert_eq!(new_instance("claude", "claude:work").unwrap(), "claude:work");
+        assert_eq!(new_instance("openai-compatible", "local").unwrap(), "local");
+        for (p, n) in [("claude", "claude:a:b"), ("anthropic", "codex:x"), ("openai-compatible", "claude:x"), ("claude", "a/b"), ("claude", "..")] {
+            assert!(new_instance(p, n).is_err(), "{p} {n}");
         }
     }
 }

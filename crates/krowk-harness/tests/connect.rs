@@ -74,14 +74,16 @@ impl Sandbox {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let root = root.canonicalize().unwrap();
-        // claude:work, signed in; the built-in `claude` is not: it is only
-        // asked `auth status`, which the fake answers from a marker no real
-        // directory holds, and nothing here signs it in.
+        // claude:work, signed in; `claude` is not. `claude` names the
+        // sandbox's ~/.claude, Claude Code's default there, so it is the
+        // person's own login — and the fake, which reads CLAUDE_CONFIG_DIR,
+        // never looks at the real home of whoever runs the tests.
         let work = root.join("accounts/work");
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("fake-login"), "").unwrap();
         std::fs::create_dir_all(root.join("home/.claude")).unwrap();
-        let config = json!({"instances": {"claude:work": {"kind": "claude-code", "configDir": work.display().to_string()}}});
+        let own = root.join("home/.claude").display().to_string();
+        let config = json!({"instances": {"claude:work": {"kind": "claude-code", "configDir": work.display().to_string()}, "claude": {"kind": "claude-code", "configDir": own}}});
         std::fs::write(root.join("home/.config/krowk/config.json"), config.to_string()).unwrap();
         Sandbox { root }
     }
@@ -116,7 +118,7 @@ fn r_inst_2_the_account_picker_lists_each_account_with_its_readiness_and_a_new_o
     let req = pa.request(Some("anthropic"), None, Options::default(), &mut ui).unwrap();
     assert_eq!(ui.asked[0].1, ["Claude subscription (Pro, Max, Team) — Claude Code's own login", "Anthropic API key"]);
     assert_eq!(ui.asked[1].0, "Which account?");
-    assert_eq!(ui.asked[1].1, ["claude (Claude subscription) — not signed in, reconnect", "claude:work (Claude subscription) — ready, reconnect", "+ new account…"]);
+    assert_eq!(ui.asked[1].1, ["claude (Claude subscription, your own Claude Code login) — not signed in, reconnect", "claude:work (Claude subscription) — ready, reconnect", "+ new account…"]);
     assert_eq!(req.instance.as_deref(), Some("claude:team"));
 
     let done = pa.connect(&req, &mut ui).unwrap();
@@ -155,4 +157,25 @@ fn with_nobody_to_ask_a_choice_is_an_error_that_names_the_flag_and_a_given_metho
     // Disconnecting is never a guess either.
     let e = pa.disconnect_target(None, &mut ui).expect_err("no instance, nobody to ask");
     assert!(e.message.contains("claude:work") && e.message.contains("supergrok"), "{}", e.message);
+}
+
+#[test]
+fn signing_out_the_persons_own_claude_login_is_asked_first_and_no_keeps_it() {
+    let b = Sandbox::new("own");
+    let env = b.env();
+    let pa = auth(&b, &env);
+    let own = b.root.join("home/.claude/fake-login");
+    std::fs::write(&own, "").unwrap();
+    let mut ui = Script::new(true, vec![Answer::Choice(0)]);
+    let e = pa.disconnect("claude", false, false, &mut ui).err().expect("no keeps it");
+    assert_eq!(e.code, "selection_cancelled");
+    assert!(ui.asked[0].0.contains("signs you out of Claude Code itself") && ui.asked[0].0.contains(".claude"), "{:?}", ui.asked);
+    assert!(own.exists());
+    let mut ui = Script::new(true, vec![Answer::Choice(1)]);
+    pa.disconnect("claude", false, false, &mut ui).unwrap();
+    assert!(!own.exists(), "yes signs it out");
+    // A named account is its own, and is not asked about.
+    let mut ui = Script::new(true, Vec::new());
+    pa.disconnect("claude:work", false, false, &mut ui).unwrap();
+    assert!(ui.asked.is_empty());
 }

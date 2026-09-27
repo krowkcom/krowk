@@ -28,10 +28,23 @@ const PROVIDER_WORDS: &[&str] =
     &["anthropic", "claude", "openai", "chatgpt", "codex", "gpt", "xai", "grok", "supergrok", "openrouter", "openai-compatible"];
 
 /// Where a model provider is connected, in the words of an error that
-/// points there.
+/// points there: the vendor and method a word means, in the one form every
+/// fix line takes — `krowk connect anthropic --method subscription --name
+/// work` — the name kept from `claude:work`.
 fn connect_hint(word: &str) -> String {
     if cfg!(feature = "harness") {
-        format!("to connect a model provider, run `krowk connect {word}`")
+        let (what, name) = match word.split_once(':') {
+            Some((w, n)) => (w.to_ascii_lowercase(), format!(" --name {n}")),
+            None => (word.to_ascii_lowercase(), String::new()),
+        };
+        let way = match what.as_str() {
+            "anthropic" | "claude" => "anthropic --method subscription",
+            "openai" | "chatgpt" | "codex" | "gpt" => "openai --method subscription",
+            "xai" | "grok" | "supergrok" => "xai --method subscription",
+            "openrouter" => "openrouter",
+            _ => return "to connect a model provider, run `krowk connect openai-compatible --name <name> --base-url <url>`".into(),
+        };
+        format!("to connect a model provider, run `krowk connect {way}{name}`")
     } else {
         "model providers are connected in the full build (a release, or `--features harness`), with its connect command".into()
     }

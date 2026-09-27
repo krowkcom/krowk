@@ -91,6 +91,8 @@ pub struct Flags {
     pub default: bool,
     #[cfg(feature = "harness")]
     pub remove: bool,
+    #[cfg(feature = "harness")]
+    pub sign_out_vendor: bool,
     /// Which flags were typed, by canonical name — a different question from
     /// what they carry: `--jq "$UNSET"` was given and is empty.
     pub given: BTreeSet<String>,
@@ -280,6 +282,8 @@ impl Flags {
                     "default" => &mut self.default,
                     #[cfg(feature = "harness")]
                     "remove" => &mut self.remove,
+                    #[cfg(feature = "harness")]
+                    "sign-out-vendor" => &mut self.sign_out_vendor,
                     other => unreachable!("catalog flag {other} has no field"),
                 } = b;
             }

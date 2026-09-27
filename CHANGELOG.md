@@ -134,7 +134,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   subscription|api-key` is required where a vendor has more than one, and
   the error says so. `--name work` adds a second account (`claude:work`,
   `anthropic:work` — the method picks the prefix, so the two never
-  clash); without it the default-named one is made, or renewed. Connecting
+  clash); without it the default-named one is made, or renewed. A new
+  name keeps its method's prefix, holds no `:` after it, and is refused
+  when it differs from one there only in case, would take a built-in of
+  another kind (`claude`), another account's directory, or another
+  instance's key variable (`my-work` and `my_work` would both read
+  `$ANTHROPIC_MY_WORK_API_KEY`; name one with `--api-key-env`). A
+  relative `--config-dir` is kept as the absolute directory it means. Connecting
   an instance that exists renews its login, and `krowk connect claude:work`
   does it by name. A sign-in that fails writes nothing. **The first
   connection becomes the default model** (`defaultModel` in config.json,
@@ -147,7 +153,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   in**: SuperGrok's tokens are deleted from krowk's credentials file, a
   Claude Code or Codex account runs `claude auth logout` or `codex logout`
   with its own directory, and an API-key instance names the variable to
-  unset, since krowk never stores the key. The definition stays, showing
+  unset, since krowk never stores the key. **The built-in `claude` and
+  `codex` are your own Claude Code and Codex login** (`~/.claude`,
+  `~/.codex`), and signing them out signs you out of Claude Code or Codex
+  itself, for every tool: `krowk disconnect` says so and asks at a
+  terminal, and without one refuses unless given `--sign-out-vendor`.
+  The pickers mark them "your own Claude Code login". The definition stays, showing
   `not signed in` in `krowk status`, unless `--remove` — which also clears
   `defaultModel` when it ran on that instance. With no instance on a
   terminal it asks which; without one it lists them.
