@@ -66,8 +66,8 @@ DEV_BIN_DIR ?= $(HOME)/.cargo/bin
 
 dev: ## Fast build, linked into ~/.cargo/bin: the latest krowk from this checkout
 	KROWK_VERSION=$(VERSION) cargo build --profile quick -p krowk --features harness
-	mkdir -p $(DEV_BIN_DIR)
-	for b in krowk krowk-mcp; do ln -sfn $(CURDIR)/target/quick/$$b $(DEV_BIN_DIR)/$$b; done
+	mkdir -p "$(DEV_BIN_DIR)"
+	for b in krowk krowk-mcp; do ln -sfn "$(CURDIR)/target/quick/$$b" "$(DEV_BIN_DIR)/$$b"; done
 	@echo "$(DEV_BIN_DIR)/krowk -> $(CURDIR)/target/quick/krowk"
 
 mock: ## Local stand-in for api.krowk.com on :8787
