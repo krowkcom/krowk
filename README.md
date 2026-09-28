@@ -2,14 +2,54 @@
 
 # Krowk
 
-Permalinks for agent output. Push a screenshot, get a URL that unfurls in GitHub, Slack, Basecamp and Linear — with the run metadata attached.
+A coding agent for your terminal, with a permalink for everything it produces.
 
 <a href="https://github.com/krowkcom/krowk/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/krowkcom/krowk?color=1a1a19"></a>
 <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-1a1a19"></a>
 
 ---
 
-Krowk is built for power users who run coding agents all day and want to see what those agents produce. As well as permalinks, the CLI includes a terminal coding agent and a local store of every agent session on your machine. It assumes you're comfortable in a terminal, with git and with configuration files.
+Krowk is an agent harness built for power users who run coding agents all day. It runs Claude, GPT, Grok or any OpenAI-compatible model, using your existing subscription or an API key. It follows Claude Code's permissions, skills and hooks, keeps track of every agent session on your machine, and publishes screenshots, diffs and logs as links that unfurl in GitHub, Slack, Linear and Basecamp. It assumes you're comfortable in a terminal, with git and with configuration files.
+
+```bash
+krowk connect            # sign in with a Claude, ChatGPT or SuperGrok subscription, or an API key
+krowk                    # open the agent
+krowk -p "fix the build" # run one prompt headless (--output-format json)
+krowk --resume           # continue an earlier session
+```
+
+## Install
+
+```bash
+curl -fsSL https://krowk.com/install | bash
+npx @krowk/cli
+cargo install --locked --git https://github.com/krowkcom/krowk --features harness krowk
+```
+
+Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a workstation the installer gives you the **full build**, which includes the agent. In CI and containers it gives you the **lean build**, which only publishes. Pass `--full` or `--lean` to choose (`curl … | bash -s -- --full`).
+
+## The agent
+
+- **Inline, not full-screen.** The agent draws at the bottom of your terminal and leaves everything else in your normal scrollback, so output can be scrolled, copied and searched, including over SSH and in tmux.
+- **Tools.** It can read, write, edit, run bash, grep, glob and publish. It also keeps a todo list and runs subagents in parallel, each with its own context and a cheaper model.
+- **Compatible with Claude Code.** It uses the same permission modes, `allow`/`ask`/`deny` rules and settings files. It reads `AGENTS.md`, `CLAUDE.md` and `.cursor/rules`, and loads Claude-format skills, hooks and `.claude/agents` without changes. It adds an `unhinged` mode that never asks.
+- **Multiple accounts.** You can connect several accounts per provider and rename them in `/connect`. A second account is added with `--name work`.
+- **Cost limits.** `--max-usd` and `--max-tokens` stop a session before it goes over a limit, subagents included.
+
+In the prompt, `/` lists the commands and `?` shows the keys.
+
+## Sessions
+
+The full build keeps a local store of your agent sessions, whether they came from krowk, Claude Code, Cursor or opencode.
+
+| Command | What it does |
+| --- | --- |
+| `krowk sessions` | List every session on this machine, newest first |
+| `krowk sessions show <id>` | Read a session back, turn by turn |
+| `krowk sessions import` / `sync` | Import transcripts and reconcile usage |
+| `krowk sessions budget <id> --max-usd 5` | Exit 4 when a session costs more than the limit, for use in a hook |
+
+## Publishing
 
 ```bash
 krowk push screenshot.png --pull-request="https://github.com/acme/storefront/pull/412"
@@ -20,54 +60,18 @@ krowk push screenshot.png --pull-request="https://github.com/acme/storefront/pul
   412 KB · run run_8Kd2wq
 ```
 
-- **Built for agents.** Output is JSON when piped, `krowk help --json` describes every command, and each result includes the follow-up commands to run next.
-- **No setup needed.** You can push without a key. Anonymous uploads last 24 hours and can be claimed into a workspace.
-- **Context attached.** The repo, commit, branch, PR, session and agent are detected from git and CI.
-- **Small and fast.** A single Rust binary, with a lean build for CI and agent containers.
-
-## Install
-
-```bash
-curl -fsSL https://krowk.com/install | bash   # also installs the agent skill
-npx @krowk/cli push screenshot.png            # npm
-cargo install --locked --git https://github.com/krowkcom/krowk --features harness krowk
-```
-
-Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). The installer gives a workstation the **full build**, which includes the agent and the session store. CI and containers get the **lean build**, which only handles push, runs and uploads. Pass `--full` or `--lean` to choose (`curl … | bash -s -- --full`).
-
-## Usage
+Each link shows a card with the repo, commit, branch, PR, session and agent, all detected from git and CI. You can push without a key: anonymous uploads last 24 hours and can be claimed into a workspace with `krowk claim`.
 
 | Command | What it does |
 | --- | --- |
 | `krowk push <file...>` | Upload files and print a link for each |
-| `krowk runs start` / `finish` / `list` / `show` | Group uploads under a run |
-| `krowk uploads list` / `show` / `attach` / `delete` | Manage uploads |
-| `krowk claim <artifact> <token>` | Keep an anonymous upload past its 24h expiry |
-| `krowk login` / `logout` / `whoami` | Sign in to your workspace (`--token` for CI) |
-| `krowk config set workspace <ws>` | Pin a repository (or `--global`, the machine) to a workspace |
-| `krowk sessions` | Browse, import and sync Claude Code, Cursor and opencode sessions |
-| `krowk sessions budget <id> --max-usd 5` | Exit 4 when a session costs more than the limit, for use in hooks |
-| `krowk doctor` / `upgrade` | Check your setup, or upgrade to the latest release |
+| `krowk runs` / `uploads` | Group, list, attach and delete uploads |
+| `krowk login` / `whoami` | Sign in to a workspace (`--token` for CI) |
+| `krowk config set workspace <ws>` | Pin a repository to a workspace |
 
-Useful `push` flags include `--run`, `--title`, `--caption`, `--link`, `--private` (visible only to your workspace), `--metadata key=value`, and `--destination github|slack|linear|…`, which prints the paste format that tool expects. Run `krowk help` for the full list.
+Useful `push` flags include `--private`, `--caption`, `--link`, `--metadata key=value`, and `--destination github|slack|linear|…`, which prints the paste format that tool expects. Metadata is public, so never put a secret in it.
 
-## The agent
-
-In the full build, running `krowk` with no arguments opens an inline coding agent in your terminal. It has no alternate screen, so its output stays in your normal scrollback.
-
-```bash
-krowk connect            # Claude or ChatGPT subscription, SuperGrok, or an API key
-krowk                    # open the agent
-krowk -p "fix the build" # one prompt, headless (--output-format json)
-krowk --resume           # continue a session
-```
-
-- Tools for reading, writing, editing, bash, grep and glob, plus `publish`, which pushes an artifact to krowk. It also keeps a todo list and can run parallel subagents.
-- Permissions work the same way as Claude Code's: the same modes, the same `allow`/`ask`/`deny` rules and the same settings files. There is also an `unhinged` mode that asks about nothing.
-- It reads `AGENTS.md`, `CLAUDE.md`, `.cursor/rules`, Claude-format skills, hooks and `.claude/agents`.
-- Type `/` in the prompt to list commands and `?` to see the keys.
-
-## GitHub Action
+In CI, the repository doubles as a GitHub Action:
 
 ```yaml
 - uses: krowkcom/krowk@v0
@@ -77,34 +81,25 @@ krowk --resume           # continue a session
     token: ${{ secrets.KROWK_TOKEN }}
 ```
 
-The action provides `urls`, `markdown` (ready to post as a PR comment), `run-slug` and `json` as outputs. The links also appear in the job summary.
+It outputs `urls`, `markdown` (ready to post as a PR comment), `run-slug` and `json`, and adds the links to the job summary.
 
-## For AI agents
+## Using krowk from other agents
 
-- [`skills/krowk/SKILL.md`](skills/krowk/SKILL.md) teaches an agent how to use krowk. The installer adds it to `~/.claude/skills`.
-- `--json` returns a single envelope shape for every command, and `--jq '<expr>'` filters it without needing jq installed: `URL=$(krowk push shot.png --jq '.data.artifacts[0].url')`.
+- [`skills/krowk/SKILL.md`](skills/krowk/SKILL.md) teaches another agent how to use krowk. The installer adds it to `~/.claude/skills`.
+- Output is JSON when piped. `krowk help --json` describes every command, and `--jq` filters the output without needing jq installed: `URL=$(krowk push shot.png --jq '.data.artifacts[0].url')`.
+- `krowk-mcp` serves the same features over MCP stdio: `claude mcp add krowk -- krowk-mcp`.
 - Exit codes: `0` ok · `1` bad command · `2` not found · `3` needs credentials · `4` refused · `5` rate limited · `6` transfer failed · `7` server error · `8` gone.
-- A claim token is a one-shot secret. Never post it anywhere public.
-
-For agents that can't run shell commands, `krowk-mcp` is included in the same install and serves the same client over MCP stdio:
-
-```bash
-claude mcp add krowk -- krowk-mcp
-```
 
 ## Configuration
 
-Everything krowk keeps is in `~/.krowk/` (move it with `KROWK_HOME`). Settings go in `config.json` and keys in `credentials.json`. A repository can commit `.krowk/config.json` to pin a workspace.
+Everything krowk keeps is in `~/.krowk/` (move it with `KROWK_HOME`): settings in `config.json`, keys in `credentials.json`, and sessions in `sessions/`. A repository can commit `.krowk/config.json` to pin a workspace or add permission rules.
 
 | Variable | Purpose |
 | --- | --- |
 | `KROWK_TOKEN` | API token (takes precedence over stored credentials) |
 | `KROWK_WORKSPACE` | Which stored workspace key to use |
 | `KROWK_API_URL` | Point at a self-hosted registry |
-| `KROWK_AGENT` / `KROWK_MODEL` | Override the detected agent or model |
 | `KROWK_NO_UPDATE_CHECK` | `1` disables release checks |
-
-Metadata attached to an upload is public, so never put a secret in it.
 
 ## Development
 
