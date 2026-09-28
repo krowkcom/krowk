@@ -1535,7 +1535,6 @@ impl<'h> Ui<'h> {
                             help::Action::Settings => self.open_settings(app),
                             help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
                             help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
-                            help::Action::Rename => self.open_flow(app, connect::Job::Rename(None, None), false),
                             help::Action::Sessions => self.open_resume(app),
                             help::Action::Todos => app.overlay = Overlay::Todos,
                             help::Action::Agents => app.overlay = Overlay::Agents,
@@ -1841,7 +1840,6 @@ impl<'h> Ui<'h> {
             connect::Job::Connect(_) => ("Connect a provider", None),
             // Alone, it starts on the session's instance.
             connect::Job::Disconnect(t) => ("Disconnect", t.is_none().then(|| self.model.as_ref().map(|m| m.instance.clone())).flatten()),
-            connect::Job::Rename(t, _) => ("Rename an instance", t.is_none().then(|| self.model.as_ref().map(|m| m.instance.clone())).flatten()),
         };
         let intro = match first_run {
             true => vec![
@@ -1987,7 +1985,7 @@ impl<'h> Ui<'h> {
                 let s = c.summary(false);
                 let mut notes = s.notes;
                 if s.signed_in_already {
-                    notes.push("another account is added by name: /connect, then + new account".into());
+                    notes.push("another account is added by name: /connect, then + Add account".into());
                 }
                 app.done(if c.renewed { "Renewed" } else { "Connected" }, &c.instance, &s.facts, &notes);
                 match krowk_harness::connect::default_model(c.definition.tag()) {
@@ -2161,22 +2159,6 @@ impl<'h> Ui<'h> {
                 match PermissionMode::parse(name) {
                     Some(m) => self.set_mode(app, m),
                     None => app.notice(&format!("/mode: {name} is not a permission mode — one of {}", PermissionMode::NAMES.join(", "))),
-                }
-                return false;
-            }
-            "/rename" => {
-                app.editor.clear();
-                self.open_flow(app, connect::Job::Rename(None, None), false);
-                return false;
-            }
-            t if t.starts_with("/rename ") => {
-                app.editor.clear();
-                let mut words = t["/rename ".len()..].split_whitespace().map(String::from);
-                let (target, new) = (words.next(), words.next());
-                if words.next().is_some() {
-                    app.notice("/rename takes an instance and its whole new name — /rename claude:work claude:personal");
-                } else {
-                    self.open_flow(app, connect::Job::Rename(target, new), false);
                 }
                 return false;
             }

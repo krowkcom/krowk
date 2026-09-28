@@ -746,8 +746,8 @@ fn a_session_process_is_not_reused_once_its_instance_is_replaced() {
     assert!(fake.contains(&format!("resume {VENDOR_SESSION}")), "{fake}");
 }
 
-/// Renamed while a session's process is up — `/rename claude:work
-/// claude:personal` — it is the same account: the process goes on under
+/// Renamed while a session's process is up — `krowk providers rename
+/// claude:work claude:personal`, or from `/connect` — it is the same account: the process goes on under
 /// the new name, and a turn naming the old one runs there too.
 #[test]
 fn a_renamed_instance_keeps_its_session_process() {

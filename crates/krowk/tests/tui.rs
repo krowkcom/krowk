@@ -1366,9 +1366,9 @@ fn a_key_pasted_in_connect_is_never_shown_and_the_prompt_runs_on_it() {
     assert!(!config.contains("4242"), "the key is in config.json: {config}");
 }
 
-/// `/rename` picks the session's instance, asks its new name, and the
-/// session goes on on it: the next prompt runs there, and config.json has
-/// it under the new name.
+/// `/connect`'s account picker renames an account — the one with a name
+/// of its own, asked nothing more — and the session goes on on it: the
+/// next prompt runs there, and config.json has it under the new name.
 #[test]
 fn rename_in_the_tui_moves_the_session_onto_the_new_name() {
     let m = mock::serve(mock::readme_script);
@@ -1383,11 +1383,21 @@ fn rename_in_the_tui_moves_the_session_onto_the_new_name() {
     t.write(b"read README.md and summarise it in one line\r");
     assert!(says(&t, at, "anywhere.", Duration::from_secs(15)), "no answer: {:?}", t.text());
     let at = t.output().len();
-    t.write(b"/rename\r");
-    assert!(says(&t, at, "Rename which instance?", Duration::from_secs(10)), "{:?}", t.text());
-    let at = t.output().len();
+    t.write(b"/connect\r");
+    assert!(says(&t, at, "Connect which provider?", Duration::from_secs(10)), "{:?}", t.text());
     settle();
+    let at = t.output().len();
+    // Anthropic, then its API key.
     t.write(b"\r");
+    assert!(says(&t, at, "How do you connect", Duration::from_secs(5)), "{:?}", t.text());
+    settle();
+    let at = t.output().len();
+    t.write(b"\x1b[B\r");
+    assert!(says(&t, at, "Rename an account", Duration::from_secs(10)), "{:?}", t.text());
+    settle();
+    let at = t.output().len();
+    // Past `anthropic`, `anthropic:work` and "+ Add account…".
+    t.write(b"\x1b[B\x1b[B\x1b[B\r");
     assert!(says(&t, at, "New name for anthropic:work", Duration::from_secs(5)), "{:?}", t.text());
     settle();
     let at = t.output().len();

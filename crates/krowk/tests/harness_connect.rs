@@ -364,7 +364,7 @@ fn connect_at_a_terminal_walks_vendor_method_and_account() {
     assert!(t.wait_for("Claude subscription (Pro, Max, Team)", wait).is_some(), "the methods: {}", t.text());
     t.write(b"\r");
     // The accounts there are, each with its readiness, and a new one.
-    assert!(t.wait_for("+ new account", wait).is_some(), "the accounts: {}", t.text());
+    assert!(t.wait_for("+ Add account", wait).is_some(), "the accounts: {}", t.text());
     let text = t.text();
     assert!(text.contains("claude:work (Claude subscription) — ready, reconnect"), "{text}");
     assert!(text.contains("claude (Claude subscription, your own Claude Code login) — not signed in, reconnect"), "{text}");
