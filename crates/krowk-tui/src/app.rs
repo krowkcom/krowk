@@ -1768,9 +1768,8 @@ impl App {
         for (i, name) in PermissionMode::NAMES.iter().enumerate() {
             let chosen = i == self.mode_at;
             let now = if *name == self.permission_mode { "  now" } else { "" };
-            let head = format!("{}{name:<18}{}{now}", if chosen { "❯ " } else { "  " }, mode_says(name));
             let style = if chosen { look::accent() } else { Style::new().fg(Color::Blue) };
-            out.push(Line::from(Span::styled(clip(&head, width), style)));
+            out.extend(described(&format!("{}{name:<16}", if chosen { "❯ " } else { "  " }), &format!("{}{now}", mode_says(name)), width, style));
         }
         out
     }
@@ -1779,15 +1778,13 @@ impl App {
         let mode = self.default_mode.as_deref().unwrap_or("default");
         let says = if PermissionMode::parse(mode).is_some() { mode_says(mode) } else { "not a mode krowk runs" };
         let mode = clean(mode);
-        let row = |at: usize, head: String| {
+        let row = |at: usize, head: String, says: &str| {
             let chosen = at == self.setting_at;
             let style = if chosen { look::accent() } else { Style::new().fg(Color::Blue) };
-            Line::from(Span::styled(clip(&format!("{}{head}", if chosen { "❯ " } else { "  " }), width), style))
+            described(&format!("{}{head}", if chosen { "❯ " } else { "  " }), says, width, style)
         };
-        let mut out = vec![
-            Line::from(Span::styled(clip("settings, saved to config.json — ↑ ↓ choose · ← → change · esc closes", width), dim())),
-            row(0, format!("Default permission mode  ‹ {mode} ›  {says}")),
-        ];
+        let mut out = vec![Line::from(Span::styled(clip("settings — ↑ ↓ choose · ← → change and save · esc closes", width), dim()))];
+        out.extend(row(0, format!("Default permission mode  ‹ {mode} ›"), says));
         if let Some((runs, claude)) = &self.default_mode_overridden {
             let why = format!("  a new session here starts in {} — {claude} or this repository's settings set it, and come after config.json", runs.name());
             out.extend(wrap(&why, width).into_iter().map(|l| Line::from(Span::styled(l, yellow()))));
@@ -1797,7 +1794,7 @@ impl App {
             ContentWidth::Prose => format!("at most {} columns", ContentWidth::PROSE),
             ContentWidth::FullWidth => "the terminal's whole width".into(),
         };
-        out.push(row(1, format!("Content width            ‹ {} ›  {says}", cw.name())));
+        out.extend(row(1, format!("Content width            ‹ {} ›", cw.name()), &says));
         out
     }
 
@@ -1936,6 +1933,18 @@ impl App {
             self.dirty = true;
         }
     }
+}
+
+/// A menu row and what it does, on one line where they fit; where not —
+/// prose's 65 columns — what it does wraps under it, indented.
+fn described(head: &str, says: &str, width: usize, style: Style) -> Vec<Line<'static>> {
+    let one = format!("{head}  {says}");
+    if one.width() <= width {
+        return vec![Line::from(Span::styled(one, style))];
+    }
+    let mut rows = vec![Line::from(Span::styled(clip(head.trim_end(), width), style))];
+    rows.extend(wrap(says, width.saturating_sub(4).max(1)).into_iter().map(|l| Line::from(Span::styled(format!("    {l}"), style))));
+    rows
 }
 
 /// What a permission mode lets run without asking, in a line.
@@ -2893,6 +2902,12 @@ mod tests {
         a.setting_at = 1;
         let rows = text(&a.view(Instant::now()).0).join("\n");
         assert!(rows.contains("❯ Content width") && rows.contains("‹ prose ›") && rows.contains("  Default permission mode"), "{rows}");
+        assert!(rows.contains("asks before edits and commands") && rows.contains("at most 65 columns"), "what each value does, whole: {rows}");
+        a.open_mode_picker();
+        let rows = text(&a.view(Instant::now()).0);
+        assert!(rows.iter().all(|r| r.width() <= 65), "{rows:?}");
+        assert!(rows.join("\n").contains("deny and ask rules still hold"), "the mode picker's too: {rows:?}");
+        assert!(rows.iter().any(|r| r.starts_with("❯ default") || r.starts_with("  default  ")), "{rows:?}");
     }
 
     #[test]
