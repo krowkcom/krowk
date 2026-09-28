@@ -206,6 +206,29 @@ impl SessionLog {
     }
 }
 
+impl SessionLog {
+    /// `sync` at a turn's end, on the blocking pool, not waited for: the
+    /// turn's result goes out as it did while the sync runs. It syncs the
+    /// files through descriptors of its own, so the session's lock goes
+    /// with this log as before and the next turn is never refused as busy
+    /// while it runs; a sync that fails is said on stderr, since the turn it
+    /// would have failed has ended.
+    pub fn sync_behind(&self) {
+        let (e, c, id) = (self.dir.join(EVENTS_FILE), self.dir.join(CONTEXT_FILE), self.session_id.clone());
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            if let Err(err) = self.sync() {
+                eprintln!("session {id}: {}", err.message());
+            }
+            return;
+        };
+        drop(rt.spawn_blocking(move || {
+            if let Err(err) = File::open(&e).and_then(|f| f.sync_data()).and_then(|()| File::open(&c)).and_then(|f| f.sync_data()) {
+                eprintln!("session {id}: the log could not be synced: {err}");
+            }
+        }));
+    }
+}
+
 /// Runs `f` on the blocking pool.
 async fn off<T: Send + 'static>(f: impl FnOnce() -> Result<T, LogError> + Send + 'static) -> Result<T, LogError> {
     tokio::task::spawn_blocking(f).await.map_err(|e| LogError::Io(format!("the session log's writer failed: {e}")))?

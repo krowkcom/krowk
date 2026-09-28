@@ -1124,7 +1124,10 @@ impl Shared {
                 next = None;
             }
         }
-        plan.log.sync_off().await.map_err(log_failure)?;
+        // Off the daemon's thread, and not waited for: awaited here, the
+        // gap it opens between `turn.completed` and `result` exposes a
+        // scrollback race in the TUI (r_tui_1_a_10k_token_answer…).
+        plan.log.sync_behind();
         let result = RunResult {
             session_id,
             turn_id,
@@ -1616,7 +1619,9 @@ impl Writer<'_> {
                     tools,
                     handoff: self.handoff.take(),
                 };
-                self.log.record_context_off(&rec).await.map_err(log_failure)?;
+                // A page-cache write like the event appends, and kept here for
+                // the same TUI race (see `Writer::log`).
+                self.log.record_context(&rec).map_err(log_failure)?;
             }
             EngineEvent::ItemStarted { item_id, kind } => {
                 self.live(LiveEvent::ItemStarted { session_id: session_id.into(), turn_id, item_id, item: kind }).await;
