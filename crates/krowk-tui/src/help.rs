@@ -7,6 +7,7 @@ pub enum Action {
     /// Nothing to run: the entry only tells.
     Tell,
     Model,
+    Mode,
     Connect,
     Disconnect,
     Todos,
@@ -36,6 +37,7 @@ pub const ENTRIES: &[Entry] = &[
     e("History", "Bring back an earlier prompt", "↑ ↓", Action::Tell),
     e("Commands", "Type / for commands and skills", "/", Action::Tell),
     e("Model", "Switch model or instance", "/model", Action::Model),
+    e("Mode", "Switch permission mode", "/mode", Action::Mode),
     e("Connect", "Connect a provider, or renew a login", "/connect", Action::Connect),
     e("Disconnect", "Sign an instance out", "/disconnect", Action::Disconnect),
     e("Todos", "The task list for this session", "ctrl-t", Action::Todos),
@@ -65,14 +67,23 @@ pub struct Slash {
     pub skill: bool,
 }
 
-/// krowk's own commands, as `/` lists them. `/quit` works too, unlisted.
+/// krowk's own commands, as `/` lists them. `UNLISTED` work too.
 pub const COMMANDS: &[(&str, &str)] = &[
     ("model", "Switch model or instance"),
+    ("mode", "Switch permission mode — default, acceptEdits, plan, bypassPermissions, unhinged"),
     ("connect", "Connect a provider — a subscription or an API key"),
     ("disconnect", "Sign an instance out"),
     ("help", "Keys and what they do"),
     ("exit", "Leave krowk"),
 ];
+
+/// Commands that run but `/` does not list: other names for listed ones.
+pub const UNLISTED: &[&str] = &["quit", "permission-mode"];
+
+/// Whether `typed` (the prompt, `/` and all) is one of `UNLISTED`.
+pub fn unlisted(typed: &str) -> bool {
+    UNLISTED.contains(&typed.trim().trim_start_matches('/'))
+}
 
 /// The commands and skills `typed` (the prompt, `/` and all) finds,
 /// fuzzily, as Grok Build's menu does: ranked by how well the name
@@ -94,11 +105,13 @@ pub fn slash(typed: &str, skills: &[(String, String)]) -> Vec<Slash> {
     let mut matcher = Matcher::new(Config::DEFAULT);
     let mut buf = Vec::new();
     let mut score = |s: &str| pattern.score(Utf32Str::new(s, &mut buf), &mut matcher);
-    // Name hits outrank every description hit; ties keep the list's order.
+    // The name typed whole outranks every other hit — `/mode` is not
+    // `/model` — and name hits every description hit; ties keep the
+    // list's order.
     let mut ranked: Vec<(u32, usize)> = all
         .iter()
         .enumerate()
-        .filter_map(|(i, s)| score(&s.name).map(|n| (n + (1 << 20), i)).or_else(|| score(&s.description).map(|d| (d, i))))
+        .filter_map(|(i, s)| score(&s.name).map(|n| (n + (1 << 20) + (u32::from(s.name.eq_ignore_ascii_case(q)) << 21), i)).or_else(|| score(&s.description).map(|d| (d, i))))
         .collect();
     ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     ranked.into_iter().map(|(_, i)| all[i].clone()).collect()

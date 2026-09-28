@@ -80,6 +80,7 @@ In the full build, bare `krowk` on a terminal opens krowk's own agent: an inline
 | `krowk disconnect <instance>` | Sign one out — SuperGrok's tokens deleted, a subscription's own logout run, an API key's variable named — keeping its definition unless `--remove` |
 | `krowk` | Open the agent (`--model <instance>/<model>`, `--permission-mode`) |
 | `/connect`, `/disconnect` | The same, inside the agent: the vendor, the way in and the account picked in an overlay, a pasted key shown as bullets; a subscription's own login gets the terminal and gives it back. With nothing ready to run a model, the agent opens on "Connect a provider"; `/model` marks each instance ready or not |
+| `/mode`, `/permission-mode` | Switch the running session's permission mode from a picker, or name it (`/mode plan`); the next prompt runs in it, and nothing is saved |
 | `krowk --resume` / `--resume <id>` | Continue a krowk session — picked from a list, or named |
 | `krowk -p "…"` | One prompt, headless (`--output-format text\|json\|stream-json`, `--resume`, `--model`) |
 | `krowk -p "…" --max-usd 0.50` | Stop the session before the model call that would take it, subagents included, past a metered limit (`--max-tokens N`; the TUI takes both) — exits 4 like `krowk sessions budget` |

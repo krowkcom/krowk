@@ -185,6 +185,54 @@ fn r_inst_7_the_tui_offers_the_next_instance_and_y_continues_there() {
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
 }
 
+/// `/mode` picks the permission mode the session's next turn runs in, and
+/// `/permission-mode <name>` names one; a name that is not a mode is refused.
+#[test]
+fn the_mode_picker_sets_the_mode_the_next_turn_runs_in() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("mode");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &["--model", "anthropic/claude-sonnet-4-6"]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"/permission-mode nope\r");
+    assert!(t.wait_for("nope is not a permission mode", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    // The bare alias opens the picker, as `/mode` does: its header, drawn
+    // after each is sent.
+    let picker = |t: &pty::Pty, from: usize| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if String::from_utf8_lossy(&t.output()[from..]).contains("or /mode <name>") {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        false
+    };
+    let from = t.output().len();
+    t.write(b"/permission-mode\r");
+    assert!(picker(&t, from), "{:?}", t.text());
+    t.write(b"\x1b");
+    std::thread::sleep(Duration::from_millis(300));
+    let from = t.output().len();
+    t.write(b"/mode\r");
+    assert!(picker(&t, from), "{:?}", t.text());
+    // From default, two rows down is plan.
+    t.write(b"\x1b[B");
+    t.write(b"\x1b[B");
+    t.write(b"\r");
+    assert!(t.wait_for("permission mode plan", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"read README.md and summarise it\r");
+    assert!(t.wait_for("anywhere.", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let logs = walk(&b.root.join("home"));
+    assert!(logs.iter().any(|p| std::fs::read_to_string(p).is_ok_and(|s| s.contains("\"turn.started\"") && s.contains("\"permissionMode\":\"plan\""))), "no turn ran in plan: {logs:?}");
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries.flatten().flat_map(|e| if e.path().is_dir() { walk(&e.path()) } else { vec![e.path()] }).collect()
+}
+
 /// A provider that takes the request and never answers: a turn that waits.
 fn silent_provider() -> String {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
