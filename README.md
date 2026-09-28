@@ -2,12 +2,14 @@
 
 # Krowk
 
-Permalinks for agent output. Push a screenshot, diff or log and get a URL that unfurls in GitHub, Slack, Linear and Basecamp, with the run metadata attached. The CLI also includes a terminal coding agent and a local store of every agent session on your machine.
+Permalinks for agent output. Push a screenshot, get a URL that unfurls in GitHub, Slack, Basecamp and Linear — with the run metadata attached.
 
 <a href="https://github.com/krowkcom/krowk/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/krowkcom/krowk?color=1a1a19"></a>
 <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-1a1a19"></a>
 
 ---
+
+Krowk is built for power users who run coding agents all day and want to see what those agents produce. As well as permalinks, the CLI includes a terminal coding agent and a local store of every agent session on your machine. It assumes you're comfortable in a terminal, with git and with configuration files.
 
 ```bash
 krowk push screenshot.png --pull-request="https://github.com/acme/storefront/pull/412"
