@@ -2,8 +2,10 @@
 //! screen, and everything finished written above it into the terminal's own
 //! scrollback (R-TUI-1). No alternate screen, no mouse capture: what a phone
 //! terminal, tmux or an SSH session does not understand is never sent
-//! (R-TUI-3). The one keyboard protocol request, KEYS_PUSH, is ignored by a
-//! terminal without it and only adds a key there that the rest never had.
+//! (R-TUI-3). The one exception is KEYS_PUSH, the keyboard protocol level
+//! that tells shift-enter from enter: a terminal without it ignores it, and
+//! one with it sends Ctrl, Alt and Esc keys in its own encoding, which
+//! crossterm reads.
 //!
 //! Three rules keep scrollback exact:
 //!
@@ -80,9 +82,11 @@ pub const TITLE_RESTORE: &[u8] = b"\x1b[23;2t";
 /// The kitty keyboard protocol's first level (disambiguate), pushed on
 /// the terminal's stack when the TUI takes the terminal and popped when it
 /// gives it up: shift-enter then arrives apart from enter. Only that level:
-/// text is still sent as text, and no key releases.
-pub const KEYS_PUSH: &[u8] = b"\x1b[>1u";
-pub const KEYS_POP: &[u8] = b"\x1b[<u";
+/// text is still sent as text, and no key releases. Each is bracketed by
+/// DECSC/DECRC: a terminal that reads a bare CSI u as restore-cursor (st)
+/// restores the position just saved, and the cursor stays where it was.
+pub const KEYS_PUSH: &[u8] = b"\x1b7\x1b[>1u\x1b8";
+pub const KEYS_POP: &[u8] = b"\x1b7\x1b[<u\x1b8";
 /// Autowrap off and on again (DECAWM), around the live region's cells.
 const AUTOWRAP_OFF: &[u8] = b"\x1b[?7l";
 const AUTOWRAP_ON: &[u8] = b"\x1b[?7h";

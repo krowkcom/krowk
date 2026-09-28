@@ -1115,7 +1115,7 @@ impl<'h> Ui<'h> {
     async fn on_event<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, ev: Event, quitting: &mut bool) -> std::io::Result<bool> {
         match ev {
             Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::Char('z') && k.modifiers.contains(KeyModifiers::CONTROL) => self.suspend(app, term)?,
-            Event::Key(k) if k.kind != KeyEventKind::Release => return Ok(self.on_key(app, k, quitting).await),
+            Event::Key(k) if k.kind != KeyEventKind::Release => return Ok(self.on_key(app, legacy(k), quitting).await),
             Event::Paste(s) => {
                 // With `/connect`'s overlay up, a paste is its question's
                 // answer or nothing: a key pasted early, before the question
@@ -1291,8 +1291,8 @@ impl<'h> Ui<'h> {
     /// commands'.
     async fn on_prompt_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        // Shift-enter is alt-enter: a new line, past the menus as alt-enter
-        // goes. Only a terminal that took KEYS_PUSH tells the two enters apart.
+        // Shift-enter is alt-enter: a new line wherever alt-enter makes one.
+        // Only a terminal that took KEYS_PUSH tells the two enters apart.
         let alt = k.modifiers.contains(KeyModifiers::ALT) || (k.code == KeyCode::Enter && k.modifiers.contains(KeyModifiers::SHIFT));
         // The Agents overlay takes the keys that move through it: select a
         // subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3).
@@ -1953,6 +1953,23 @@ impl<'h> Ui<'h> {
     }
 }
 
+/// A key as a terminal without KEYS_PUSH sends it. The protocol reports
+/// the control keys that used to arrive as a C0 byte — Ctrl-[ (Esc), Ctrl-M
+/// (Enter), Ctrl-I (Tab) — and Ctrl-Enter as keys of their own, which the
+/// bindings here never had.
+fn legacy(k: KeyEvent) -> KeyEvent {
+    if !k.modifiers.contains(KeyModifiers::CONTROL) {
+        return k;
+    }
+    let code = match k.code {
+        KeyCode::Char('[') => KeyCode::Esc,
+        KeyCode::Char('m') | KeyCode::Enter => KeyCode::Enter,
+        KeyCode::Char('i') => KeyCode::Tab,
+        _ => return k,
+    };
+    KeyEvent { code, modifiers: k.modifiers - KeyModifiers::CONTROL, ..k }
+}
+
 /// Ctrl-Y: the last answer to the clipboard, on the next frame.
 fn copy(app: &mut App) {
     if app.answer.trim().is_empty() {
@@ -1975,6 +1992,18 @@ mod tests {
             assert!(next > now, "at {ms} ms the next tick is in the future");
             assert!(next - now <= tick, "at {ms} ms it is at most one frame away");
         }
+    }
+
+    #[test]
+    fn a_control_key_the_keyboard_protocol_reports_apart_is_read_as_before() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let key = |code, modifiers| super::legacy(KeyEvent::new(code, modifiers));
+        assert_eq!(key(KeyCode::Char('['), KeyModifiers::CONTROL), KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(key(KeyCode::Char('m'), KeyModifiers::CONTROL), KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(key(KeyCode::Char('i'), KeyModifiers::CONTROL), KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(key(KeyCode::Enter, KeyModifiers::CONTROL), KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(key(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT), KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT), "still a new line");
+        assert_eq!(key(KeyCode::Char('j'), KeyModifiers::CONTROL), KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
     }
 
     #[test]

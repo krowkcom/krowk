@@ -106,6 +106,7 @@ fn r_pkg_1_r_tui_3_bare_krowk_on_a_terminal_opens_the_prompt_with_only_portable_
     // The one keyboard protocol level, for shift-enter: pushed once, and
     // popped after it.
     assert_eq!(out.matches("\x1b[>1u").count(), 1, "{out:?}");
+    assert_eq!(out.matches("\x1b[<u").count(), 1, "{out:?}");
     assert!(out.rfind("\x1b[<u") > out.find("\x1b[>1u"), "the keyboard protocol was never popped: {out:?}");
     // R-TUI-1: every frame is bracketed, and brackets pair up.
     let (begins, ends) = (t.frames().len(), t.frame_ends().len());
@@ -290,6 +291,7 @@ fn sigterm_and_sighup_restore_the_terminal_and_record_the_session() {
         let out = t.text();
         assert!(out.contains("krowk --resume "), "{name}: the resume line: {out:?}");
         assert!(out.ends_with("\x1b[?2004l\x1b[?25h"), "{name}: bracketed paste off and the cursor back, last: {out:?}");
+        assert!(out.matches("\x1b[>1u").count() == 1 && out.matches("\x1b[<u").count() == 1, "{name}: the keyboard protocol pushed and popped once: {out:?}");
         assert_eq!(krowk_sessions(&b, &m.url), 1, "{name}: the session is in krowk.db");
     }
 }
@@ -314,6 +316,7 @@ fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() 
     assert_eq!(st.code(), Some(130), "{st}");
     let out = t.text();
     assert!(out.contains("krowk --resume ") && out.ends_with("\x1b[?2004l\x1b[?25h"), "{out:?}");
+    assert!(out.matches("\x1b[>1u").count() == 1 && out.matches("\x1b[<u").count() == 1, "the keyboard protocol pushed and popped once: {out:?}");
     assert_eq!(krowk_sessions(&b, &url), 1, "the session is in krowk.db");
 }
 
