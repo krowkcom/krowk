@@ -1785,14 +1785,11 @@ impl<'h> Ui<'h> {
             }
             _ => {}
         }
-        if let Some(old) = app.session_id.clone().filter(|old| !self.left.contains(old)) {
-            self.left.push(old);
-        }
+        self.leave(app);
         app.forget_session();
         app.model = None;
         app.gap_say(&format!("continuing session {id}"));
         replay(app, id, &events, &self.host.registry());
-        self.last_prompt.clear();
         // Its own model from here, not the one the last session was on; one
         // that never ran a turn goes on with the model the next prompt had.
         self.chosen = None;
@@ -1810,16 +1807,27 @@ impl<'h> Ui<'h> {
 
     /// `/new`: a fresh session in place of the one shown, on the same
     /// model, on a cleared screen; the next prompt starts it. The one left
-    /// can be continued with `/sessions`.
+    /// can be continued with `/sessions`. A new session runs where krowk
+    /// started, not where a session resumed at start was begun.
     fn new_session(&mut self, app: &mut App) {
         if !self.can_resume(app) {
             return;
         }
+        self.leave(app);
+        if self.runs_in != self.started_in {
+            self.runs_in = self.started_in.clone();
+            app.branch = pr::branch(&self.runs_in);
+        }
+        app.start_over(&home_relative(&self.runs_in), self.effort_label.as_deref());
+    }
+
+    /// The session shown, left for another: kept to be listed on the way
+    /// out, and its last prompt no longer the title's.
+    fn leave(&mut self, app: &App) {
         if let Some(old) = app.session_id.clone().filter(|old| !self.left.contains(old)) {
             self.left.push(old);
         }
         self.last_prompt.clear();
-        app.start_over(&home_relative(&self.runs_in), self.effort_label.as_deref());
     }
 
     /// Whether another session may take the one shown's place now: not
@@ -2192,6 +2200,10 @@ impl<'h> Ui<'h> {
             "/sessions" => {
                 app.editor.clear();
                 self.open_resume(app);
+                return false;
+            }
+            t if t.starts_with("/new ") => {
+                app.notice("/new takes nothing after it — send the prompt once the new session is up");
                 return false;
             }
             t if t.starts_with("/sessions ") => {

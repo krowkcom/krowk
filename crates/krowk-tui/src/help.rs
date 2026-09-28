@@ -34,6 +34,7 @@ const fn e(title: &'static str, description: &'static str, keys: &'static str, a
 
 pub const ENTRIES: &[Entry] = &[
     e("Send", "Send the prompt", "enter", Action::Tell),
+    e("New session", "Start over in a fresh session", "/new · /clear", Action::New),
     e("New line", "Start a new line without sending", "shift-enter · alt-enter · ctrl-j", Action::Tell),
     e("Steer", "Type while a turn runs to redirect it", "type + enter", Action::Tell),
     e("Interrupt", "Stop the running turn", "esc · ctrl-c", Action::Interrupt),
@@ -44,7 +45,6 @@ pub const ENTRIES: &[Entry] = &[
     e("Settings", "The default permission mode and content width, saved", "/settings · /config", Action::Settings),
     e("Connect", "Connect a provider, renew a login or rename an account", "/connect", Action::Connect),
     e("Disconnect", "Sign an instance out", "/disconnect", Action::Disconnect),
-    e("New session", "Start over in a fresh session", "/new · /clear", Action::New),
     e("Earlier sessions", "Continue one started here", "/sessions · /resume", Action::Sessions),
     e("Todos", "The task list for this session", "ctrl-t", Action::Todos),
     e("Subagents", "See, expand or stop subagents", "ctrl-g", Action::Agents),

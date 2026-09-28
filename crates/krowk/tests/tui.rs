@@ -360,6 +360,9 @@ fn new_starts_a_fresh_session_and_keeps_the_one_left() {
     let b = Sandbox::new("new");
     let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 120, 30);
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    // Words after it are refused, never sent as a prompt.
+    t.write(b"/clear and start over\r");
+    assert!(t.wait_for("/new takes nothing after it", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"read README.md and summarise it\r");
     assert!(t.wait_for("tokens", Duration::from_secs(20)).is_some(), "{:?}", t.text());
     let from = t.output().len();
@@ -371,7 +374,7 @@ fn new_starts_a_fresh_session_and_keeps_the_one_left() {
     t.write(b"\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let seen = m.seen.lock().unwrap();
-    assert!(!seen.iter().any(|s| s.body["messages"].to_string().contains("/clear")), "the command went to the model");
+    assert!(!seen.iter().any(|s| s.body["messages"].to_string().contains("/clear") || s.body["messages"].to_string().contains("start over")), "the command went to the model");
     assert!(!seen.iter().any(|s| { let b = s.body["messages"].to_string(); b.contains("read README.md and summarise it") && b.contains("summarise the README again") }), "the earlier turn was sent to the new session");
     drop(seen);
     assert_eq!(krowk_sessions(&b, &m.url), 2, "krowk.db lists the session left too");
@@ -679,6 +682,7 @@ fn new_clears_the_screen_and_scrollback_down_to_the_header() {
     let history = tm.wait_still(|s| !s.contains("tokens") && s.contains("Directory:"), Duration::from_secs(10)).unwrap_or_else(|| tm.history());
     assert!(!history.contains("summarise it"), "the earlier session is gone, scrollback too:\n{history}");
     assert_eq!(history.matches("Directory:").count(), 1, "one header:\n{history}");
+    assert!(history.lines().count() <= 30, "nothing in scrollback, not even blank rows:\n{history}");
     assert!(history.lines().find(|l| !l.trim().is_empty()).is_some_and(|l| l.contains('▀')), "the header opens the screen:\n{history}");
 }
 
