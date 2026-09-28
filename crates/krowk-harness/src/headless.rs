@@ -64,14 +64,65 @@ pub struct Outcome {
 /// Runs the prompt to its end on a runtime of its own: the rest of krowk is
 /// blocking, and this is the one place it waits on async work.
 pub fn run(cfg: HostConfig, opts: Options, stdout: &mut dyn Write) -> Outcome {
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let rt = match runtime() {
         Ok(rt) => rt,
-        Err(e) => return Outcome { session_id: None, result: None, error: Some(EngineError::new("runtime_unavailable", format!("the async runtime could not start: {e}"))) },
+        Err(e) => return Outcome { session_id: None, result: None, error: Some(e) },
     };
-    rt.block_on(drive(Host::new(cfg), opts, stdout))
+    rt.block_on(drive(&Host::new(cfg), opts, stdout))
 }
 
-async fn drive(host: Host, opts: Options, stdout: &mut dyn Write) -> Outcome {
+fn runtime() -> Result<tokio::runtime::Runtime, EngineError> {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| EngineError::new("runtime_unavailable", format!("the async runtime could not start: {e}")))
+}
+
+/// `krowk -p --daemon`: the same run, sent to the host daemon — started
+/// first when none is up (`daemon::ensure`, with `spawn`) — so the turn is
+/// the daemon's and survives this process. What it prints is what the
+/// in-process run prints.
+#[cfg(unix)]
+pub fn run_on_daemon(env: &dyn Fn(&str) -> String, cwd: &std::path::Path, version: &str, spawn: &dyn Fn() -> Result<(), String>, opts: Options, stdout: &mut dyn Write) -> Outcome {
+    let rt = match runtime() {
+        Ok(rt) => rt,
+        Err(e) => return Outcome { session_id: None, result: None, error: Some(e) },
+    };
+    rt.block_on(async {
+        match crate::daemon::ensure(env, cwd, version, spawn).await {
+            Ok(client) => drive(&client, opts, stdout).await,
+            Err(e) => Outcome { session_id: None, result: None, error: Some(e) },
+        }
+    })
+}
+
+/// What a headless run sends its commands to: the in-process `Host`, or the
+/// daemon's socket (`daemon::client::Client`). The same two calls either
+/// way, which is the point of the protocol.
+pub trait Transport {
+    fn execute(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> impl std::future::Future<Output = Result<Option<RunResult>, EngineError>>;
+    /// Lets the transport's backend processes go: the in-process host's.
+    /// The daemon's are the daemon's, and stay.
+    fn shutdown(&self) -> impl std::future::Future<Output = ()>;
+}
+
+impl Transport for Host {
+    fn execute(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> impl std::future::Future<Output = Result<Option<RunResult>, EngineError>> {
+        Host::execute(self, cmd, out)
+    }
+
+    fn shutdown(&self) -> impl std::future::Future<Output = ()> {
+        Host::shutdown(self)
+    }
+}
+
+#[cfg(unix)]
+impl Transport for crate::daemon::client::Client {
+    fn execute(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> impl std::future::Future<Output = Result<Option<RunResult>, EngineError>> {
+        crate::daemon::client::Client::execute(self, cmd, out)
+    }
+
+    async fn shutdown(&self) {}
+}
+
+async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> Outcome {
     let format = opts.format;
     let (tx, mut rx) = mpsc::channel::<StreamLine>(1024);
     // A resumed session's id is known up front; a new one's arrives with
@@ -102,12 +153,20 @@ async fn drive(host: Host, opts: Options, stdout: &mut dyn Write) -> Outcome {
             biased;
             Some(line) = rx.recv() => {
                 if session_id.is_none() {
-                    session_id = Some(line_session(&line).to_string());
+                    session_id = Some(line.session_id().to_string());
                 }
                 if let StreamLine::Live(LiveEvent::BackendAgents { session_id: s, agents: a }) = &line
                     && session_id.as_deref() == Some(s.as_str())
                 {
                     agents.clone_from(a);
+                }
+                // Only a daemon's host asks (it serves the TUI too): nobody
+                // is here to answer, so the call is refused as the
+                // in-process run refuses it.
+                if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = &line {
+                    let _ = writeln!(std::io::stderr(), "! {} needs approval, which krowk -p cannot ask for — refused; allow it with a permission rule or --permission-mode", r.summary);
+                    let (atx, _arx) = mpsc::channel(1);
+                    let _ = host.execute(Command::Approve { session_id: r.session_id.clone(), request_id: r.request_id.clone(), decision: crate::protocol::ApprovalDecision::Deny }, atx).await;
                 }
                 // A notice is the person's alone (a claim token is a secret):
                 // the terminal's stderr, never stdout, which a program reads.
@@ -169,18 +228,6 @@ async fn drive(host: Host, opts: Options, stdout: &mut dyn Write) -> Outcome {
         }
         Ok(None) => Outcome { session_id, result: None, error: None },
         Err(e) => Outcome { session_id, result: None, error: Some(e) },
-    }
-}
-
-fn line_session(line: &StreamLine) -> &str {
-    match line {
-        StreamLine::Log(ev) => &ev.session_id,
-        StreamLine::Live(LiveEvent::ItemStarted { session_id, .. } | LiveEvent::ItemDelta { session_id, .. }) => session_id,
-        StreamLine::Live(LiveEvent::Cost { session_id, .. } | LiveEvent::Notice { session_id, .. } | LiveEvent::Limits { session_id, .. }) => session_id,
-        StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. }) => session_id,
-        StreamLine::Live(LiveEvent::ApprovalRequested(r)) => &r.session_id,
-        StreamLine::Live(LiveEvent::ApprovalResolved { session_id, .. }) => session_id,
-        StreamLine::Live(LiveEvent::Result(r)) => &r.session_id,
     }
 }
 

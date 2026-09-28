@@ -5,7 +5,7 @@
 //! pass CI. `make schema` rewrites them.
 
 use crate::instances::InstancesConfig;
-use crate::protocol::{Command, ContextRecord, LogEvent, StreamLine};
+use crate::protocol::{ClientFrame, Command, ContextRecord, LogEvent, ServerFrame, StreamLine};
 
 /// Every schema file, by name, rendered as it is checked in.
 pub fn files() -> Vec<(&'static str, String)> {
@@ -16,5 +16,8 @@ pub fn files() -> Vec<(&'static str, String)> {
         ("log-event.schema.json", render(schemars::schema_for!(LogEvent))),
         ("context-record.schema.json", render(schemars::schema_for!(ContextRecord))),
         ("instances.schema.json", render(schemars::schema_for!(InstancesConfig))),
+        // The host daemon's socket: what wraps a command and a stream line.
+        ("client-frame.schema.json", render(schemars::schema_for!(ClientFrame))),
+        ("server-frame.schema.json", render(schemars::schema_for!(ServerFrame))),
     ]
 }
