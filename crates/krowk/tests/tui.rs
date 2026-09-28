@@ -133,6 +133,29 @@ fn shift_enter_starts_a_new_line_and_enter_sends_both() {
 }
 
 #[test]
+fn ctrl_z_pops_the_keyboard_protocol_for_the_shell_and_pushes_it_again_on_the_way_back() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("ctrlzkeys");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 80, 24);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "no prompt: {:?}", t.text());
+    // Ctrl-Z. krowk leads its own session here, an orphaned process group,
+    // so the kernel drops the SIGTSTP it raises and it takes the terminal
+    // back at once: the whole give-up and take-back, with no shell.
+    t.write(b"\x1a");
+    let back = || t.text().matches("\x1b[>1u").count() == 2;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !back() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let out = t.text();
+    let keys: std::collections::BTreeMap<usize, &str> = out.match_indices("\x1b[>1u").chain(out.match_indices("\x1b[<u")).collect();
+    let keys: Vec<&str> = keys.into_values().collect();
+    assert_eq!(keys, ["\x1b[>1u", "\x1b[<u", "\x1b[>1u", "\x1b[<u"], "pushed, popped for the shell, pushed on the way back, popped on quit");
+}
+
+#[test]
 fn r_perf_4_a_500_token_a_second_stream_redraws_at_most_60_times_a_second() {
     // ~1,500 tokens, one delta every 2 ms: three seconds of streaming.
     let body = mock::text_stream(&mock::numbered_lines(125));

@@ -1955,14 +1955,14 @@ impl<'h> Ui<'h> {
 
 /// A key as a terminal without KEYS_PUSH sends it. The protocol reports
 /// the control keys that used to arrive as a C0 byte — Ctrl-[ (Esc), Ctrl-M
-/// (Enter), Ctrl-I (Tab) — and Ctrl-Enter as keys of their own, which the
-/// bindings here never had.
+/// (Enter), Ctrl-I (Tab) — and Ctrl-Enter and Ctrl-Esc as keys of their
+/// own, which the bindings here never had.
 fn legacy(k: KeyEvent) -> KeyEvent {
     if !k.modifiers.contains(KeyModifiers::CONTROL) {
         return k;
     }
     let code = match k.code {
-        KeyCode::Char('[') => KeyCode::Esc,
+        KeyCode::Char('[') | KeyCode::Esc => KeyCode::Esc,
         KeyCode::Char('m') | KeyCode::Enter => KeyCode::Enter,
         KeyCode::Char('i') => KeyCode::Tab,
         _ => return k,
@@ -2001,6 +2001,7 @@ mod tests {
         assert_eq!(key(KeyCode::Char('['), KeyModifiers::CONTROL), KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(key(KeyCode::Char('m'), KeyModifiers::CONTROL), KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(key(KeyCode::Char('i'), KeyModifiers::CONTROL), KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(key(KeyCode::Esc, KeyModifiers::CONTROL), KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(key(KeyCode::Enter, KeyModifiers::CONTROL), KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(key(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT), KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT), "still a new line");
         assert_eq!(key(KeyCode::Char('j'), KeyModifiers::CONTROL), KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
