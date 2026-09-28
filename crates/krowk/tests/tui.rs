@@ -1459,14 +1459,15 @@ fn model_marks_readiness_in_the_background_and_offers_connect_and_disconnect_ask
     tm.keys(&["/model", "Enter"]);
     assert!(tm.wait_for("switch to", Duration::from_secs(5)).is_some(), "{}", tm.screen());
     let row = |s: &str, name: &str| s.lines().find(|l| l.trim_start().trim_start_matches("❯ ").starts_with(&format!("{name}/"))).unwrap_or_default().to_string();
-    let screen = tm.screen();
-    assert!(row(&screen, "claude").ends_with('…'), "claude is still being asked: {screen}");
+    // The header can be drawn a frame before the rows under it.
+    let screen = tm.wait_still(|s| !row(s, "claude").is_empty(), Duration::from_secs(5)).unwrap_or_else(|| tm.screen());
+    assert!(row(&screen, "claude").contains(" … "), "claude is still being asked: {screen}");
     assert!(row(&screen, "anthropic").contains("✓ ready") && row(&screen, "openai").contains("✗ key not set"), "a key is marked at once: {screen}");
     // The arrows answer while `claude` is still being asked.
     tm.keys(&["Down"]);
     let moved = |s: &str| s.lines().any(|l| l.trim_start().starts_with("❯ codex/"));
     assert!(tm.wait_still(moved, Duration::from_secs(1)).is_some() || moved(&tm.screen()), "a key waited on a vendor check: {}", tm.screen());
-    assert!(row(&tm.screen(), "claude").ends_with('…'), "and it was still being asked: {}", tm.screen());
+    assert!(row(&tm.screen(), "claude").contains(" … "), "and it was still being asked: {}", tm.screen());
     let marked = |s: &str| row(s, "claude").contains("✗ not signed in");
     tm.wait_still(marked, Duration::from_secs(15)).unwrap_or_else(|| panic!("claude marked once its check is back: {}", tm.screen()));
     // A pick that is not ready offers /connect for it.
