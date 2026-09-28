@@ -174,7 +174,19 @@ unit = "bytes"
 # a running session, per-session streams in the client, reload, settled,
 # `krowk host stop`), adds 78,912 bytes: 9,089,320 (8.67 MiB), 85,720
 # under this.
-max = { x86_64-linux = 9_175_040 }
+# Ticket 14, the daemon's WebSocket transport and bounded queues, starts
+# from the umbrella at 9,110,984 and measures 9,410,184 (8.97 MiB): 299,200
+# more, 235,144 over 8.75 MiB. Two new crates pay most of it: ruzstd, the
+# batches' compression (about 81 KB of symbols), and tokio-tungstenite's
+# server handshake and framing with sha1 and futures-sink (about 51 KB);
+# the rest is the code — the envelope and its writer, the outboxes, the
+# bounded replay and catching a client up from its cursor. zstd (libzstd
+# through zstd-sys) was the alternative, not measured: it links the whole C
+# library and needs a C cross-compiler for every release target. A
+# hand-written RFC 6455 would save the 51 KB and cost a parser of our own
+# on a listening socket.
+# Raised 8.75 -> 9.00 MiB by ticket 14, leaving 26,960 bytes.
+max = { x86_64-linux = 9_437_184 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---

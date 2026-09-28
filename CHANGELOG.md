@@ -11,6 +11,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The host daemon can serve its sessions over a WebSocket on this
+  machine**, the transport other devices will reach it through once the
+  relay lands. It is off unless `KROWK_HOST_WS` or `host.websocket` in
+  `config.json` names a loopback address (`127.0.0.1:7788`; port `0` picks
+  one, and `krowk host status` shows it); anything but loopback is
+  refused. A client proves it is you with the token in `host.token` beside
+  the daemon's socket, which is new each time the daemon starts. The
+  frames are the unix socket's, sent in compressed batches.
 - **The TUI's sessions now run in the host daemon, so closing the
   terminal no longer ends them.** Bare `krowk` starts the daemon if none is
   running and runs every turn there. When the window closes mid-reply, the
@@ -1086,6 +1094,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A terminal suspended while it follows a long session no longer grows
+  the host daemon's memory.** The daemon keeps a few megabytes for each
+  client that stops reading, then drops what it held and, once the client
+  reads again, sends what it missed from where it stopped — nothing twice,
+  nothing lost. `krowk host status --json` counts the bytes waiting for
+  clients and how often one was caught up.
 - **Closing a menu no longer leaves blank rows in the conversation or under
   the prompt.** Once the conversation reached scrollback, a menu, picker or
   approval that opened and closed moved what was above the prompt down to

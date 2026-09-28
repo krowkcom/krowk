@@ -97,7 +97,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
     let service = service::path(service::Platform::here(), ctx.io.env).ok().filter(|p| p.is_file());
     let status: Option<HostStatus> = daemon::status(ctx.io.env, super::VERSION).map_err(engine)?;
     let data = match &status {
-        Some(s) => json!({ "running": true, "socket": s.socket, "pid": s.pid, "version": s.krowk_version, "stale": s.krowk_version != super::VERSION, "uptimeMs": s.uptime_ms, "clients": s.clients.saturating_sub(1), "idleExitMs": s.idle_exit_ms, "websocket": s.websocket, "sessions": s.sessions, "service": service }),
+        Some(s) => json!({ "running": true, "socket": s.socket, "pid": s.pid, "version": s.krowk_version, "stale": s.krowk_version != super::VERSION, "uptimeMs": s.uptime_ms, "clients": s.clients.saturating_sub(1), "idleExitMs": s.idle_exit_ms, "websocket": s.websocket, "queuedBytes": s.queued_bytes, "caughtUp": s.caught_up, "sessions": s.sessions, "service": service }),
         None => json!({ "running": false, "socket": socket, "service": service }),
     };
     if ctx.format != Format::Human {
