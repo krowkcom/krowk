@@ -765,6 +765,11 @@ impl App {
         for i in [self.model.as_mut().map(|m| &mut m.instance), self.switched.as_mut().map(|m| &mut m.instance), self.turn_instance.as_mut(), self.billing.as_mut().map(|(i, _)| i)].into_iter().flatten().chain(offer) {
             on(i);
         }
+        // Two old names of one instance: an offer never stays on the
+        // instance at its limit (`Registry::rollover_candidates`).
+        if self.offer.as_ref().is_some_and(|o| o.from.instance == o.to.instance) {
+            self.offer = None;
+        }
         let mut used = Vec::new();
         for mut m in std::mem::take(&mut self.used) {
             on(&mut m.instance);
@@ -3187,7 +3192,7 @@ mod tests {
         a.renamed("claude:b", "claude:c");
         assert_eq!(a.model, Some(m("claude:c")));
         assert_eq!(a.used, [m("claude:c")], "one instance, once");
-        assert_eq!(a.offer.as_ref().map(|o| (o.from.instance.as_str(), o.to.instance.as_str())), Some(("claude:c", "claude:c")), "an offer never names a name that is gone");
+        assert!(a.offer.is_none(), "an offer from an instance to itself is no offer");
         let u = &a.instances["claude:c"];
         assert_eq!((a.instances.len(), u.turns, u.tokens), (1, 5, 20), "both old names' usage, added up");
     }

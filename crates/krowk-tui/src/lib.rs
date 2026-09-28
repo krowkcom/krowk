@@ -1967,6 +1967,7 @@ impl<'h> Ui<'h> {
             Ok(connect::Done::Renamed(r)) => Some(r.from.clone()),
             Err(_) => None,
         };
+        let reread = registry.is_some();
         if let Some(r) = registry {
             app.vendor_instances = r.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
             match &done {
@@ -2002,7 +2003,13 @@ impl<'h> Ui<'h> {
             Ok(connect::Done::Disconnected(d)) => app.disconnected(&d),
             Ok(connect::Done::Renamed(r)) => {
                 app.done("Renamed", &format!("{} to {}", r.from, r.to), &[], &r.notes());
-                self.renamed(app, &r.from, &r.to);
+                // Only once the host has the new name: until then the old
+                // one is the one it runs.
+                if reread {
+                    self.renamed(app, &r.from, &r.to);
+                } else {
+                    app.notice(&format!("config.json could not be read again — restart krowk to run on {}", r.to));
+                }
             }
             Err(e) if e.code == "selection_cancelled" => app.gap_say(if first_run { "nothing connected — /connect when you are ready" } else { &e.message }),
             Err(e) => app.error(&e.info()),

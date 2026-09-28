@@ -250,7 +250,9 @@ impl Host {
         let mut all = self.shared.instances.write().unwrap_or_else(|e| e.into_inner());
         let was = all.generation(from);
         let now = was.max(all.generation(to)) + 1;
-        all.changed.remove(from);
+        // Both names move on, never back: a process left on the old name is
+        // never taken for another instance that has that name later.
+        all.changed.insert(from.to_string(), was + 1);
         all.changed.insert(to.to_string(), now);
         all.registry = Arc::new(registry);
         for b in self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).values_mut() {
