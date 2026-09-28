@@ -65,6 +65,13 @@ pub fn warning() -> Style {
     Style::new().fg(Color::Yellow)
 }
 
+/// A tool call's `◆` while it runs; once its result is back the glyph goes
+/// to the ink. The yellow slot, which spalvos — the palette this is tuned
+/// on — fills with its orange.
+pub fn running() -> Style {
+    Style::new().fg(Color::Yellow)
+}
+
 /// What a tool call acts on — a path, a command, a pattern: the ink washed,
 /// not a colour, which is kept for what needs the eye.
 pub fn path() -> Style {

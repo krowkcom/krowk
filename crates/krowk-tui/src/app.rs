@@ -312,6 +312,41 @@ pub struct Turn {
     pub prompt_seen: bool,
 }
 
+/// The most tool blocks a repeated run is counted over (`App::hold`).
+const GROUP: usize = 3;
+
+/// The finished tool blocks not yet in scrollback: a run made `times`
+/// (and `next` of its blocks into once more), then those after it that
+/// could still start one.
+#[derive(Default)]
+struct Held {
+    /// Where among the lines owed to scrollback the held blocks stand.
+    at: usize,
+    unit: Vec<Vec<Line<'static>>>,
+    times: usize,
+    next: usize,
+    tail: Vec<Vec<Line<'static>>>,
+}
+
+impl Held {
+    /// The run, each of its calls counted: `◆ Run ls ×2`.
+    fn run_lines(&self) -> Vec<Line<'static>> {
+        let mut out = Vec::new();
+        for block in &self.unit {
+            let mut block = block.clone();
+            block[0].spans.push(Span::styled(format!(" ×{}", self.times), dim()));
+            out.extend(block);
+        }
+        out
+    }
+
+    fn lines(&self) -> Vec<Line<'static>> {
+        let mut out = self.run_lines();
+        out.extend(self.unit[..self.next].iter().chain(&self.tail).flatten().cloned());
+        out
+    }
+}
+
 pub struct App {
     pub editor: Editor,
     pending: Vec<Line<'static>>,
@@ -324,6 +359,9 @@ pub struct App {
     /// Whether what was pushed last is a tool call's block: the next call
     /// stacks under it, with no blank line between.
     after_tool: bool,
+    /// The tool blocks at the end of the stack, kept out of scrollback while
+    /// the next call could still repeat them (`hold`).
+    held: Held,
     live: Option<Live>,
     pub turn: Option<Turn>,
     pub session_id: Option<String>,
@@ -458,6 +496,7 @@ impl App {
             room: width.max(1),
             last_blank: true,
             after_tool: false,
+            held: Held::default(),
             live: None,
             turn: None,
             session_id: None,
@@ -549,6 +588,10 @@ impl App {
     /// The lines owed to scrollback, oldest first, each wrapped to the
     /// width.
     pub fn take_pending(&mut self) -> Vec<Line<'static>> {
+        if self.pending.len() > self.held.at {
+            self.release();
+        }
+        self.held.at = 0;
         let width = usize::from(self.width);
         std::mem::take(&mut self.pending).into_iter().flat_map(|l| wrap_line(l, width)).collect()
     }
@@ -813,7 +856,7 @@ impl App {
         let mut head = vec![Span::styled(look::TOOL, if is_error { red() } else { dim() }), Span::raw(verb.clone())];
         if !arg.is_empty() {
             head.push(Span::raw(" "));
-            head.push(Span::styled(clip(&arg, width.saturating_sub(verb.width() + 14)), look::path()));
+            head.push(Span::styled(clip(&arg, width.saturating_sub(verb.width() + 18)), look::path()));
         }
         match (&edit, name, is_error) {
             (_, _, true) => head.push(Span::styled(" (failed)", red())),
@@ -825,7 +868,7 @@ impl App {
             (None, "bash", _) if lines.len() > 1 => head.push(Span::styled(format!(" ({} lines)", lines.len()), dim())),
             _ => {}
         }
-        self.push_line(Line::from(head));
+        let mut block = vec![Line::from(head)];
         let body_width = width.saturating_sub(look::BRANCH.width());
         let mut body: Vec<Span<'static>> = Vec::new();
         if is_error {
@@ -842,18 +885,68 @@ impl App {
             // Its last line is most often its verdict; the rest is the log.
             body.extend(lines.iter().rev().find(|l| !l.trim().is_empty()).map(|l| Span::styled(clip(l, body_width), dim())));
         }
-        self.tree(body);
-        self.after_tool = true;
+        block.extend(branches(body));
+        self.hold(block);
     }
 
-    /// `rows` under the line just pushed, each on a branch: `├─ ` and, on
-    /// the last, `└─ `.
+    /// `rows` under the line just pushed, each on a branch (`branches`).
     fn tree(&mut self, rows: Vec<Span<'static>>) {
-        let n = rows.len();
-        for (i, row) in rows.into_iter().enumerate() {
-            let branch = if i + 1 == n { look::LAST_BRANCH } else { look::BRANCH };
-            self.push_line(Line::from(vec![Span::styled(branch, look::border()), row]));
+        for line in branches(rows) {
+            self.push_line(line);
         }
+    }
+
+    /// A finished tool block, held back from scrollback while the calls
+    /// after it could still repeat it: a block, or a run of up to `GROUP`
+    /// blocks, made again straight after is not shown twice but counted —
+    /// `◆ Run cargo check ×3`. Only blocks shown the same are one: a call
+    /// made again that came back otherwise is its own line. What is held is
+    /// in the live region, where the stack it ends goes on; the first line
+    /// pushed after it lets it go to scrollback (`take_pending`).
+    fn hold(&mut self, block: Vec<Line<'static>>) {
+        if self.pending.len() > self.held.at {
+            self.release();
+        }
+        self.after_tool = true;
+        self.last_blank = false;
+        self.dirty = true;
+        let h = &mut self.held;
+        if h.times > 1 {
+            if h.unit[h.next] == block {
+                h.next += 1;
+                if h.next == h.unit.len() {
+                    h.times += 1;
+                    h.next = 0;
+                }
+                return;
+            }
+            // The run is over; the start of a repeat it broke off in could
+            // be the start of another.
+            self.pending.extend(h.run_lines());
+            h.tail = h.unit.drain(..h.next).collect();
+            h.unit.clear();
+            h.times = 0;
+            h.next = 0;
+        }
+        h.tail.push(block);
+        let n = h.tail.len();
+        if let Some(p) = (1..=GROUP).find(|&p| n >= 2 * p && h.tail[n - 2 * p..n - p] == h.tail[n - p..]) {
+            h.unit = h.tail.split_off(n - p);
+            h.tail.truncate(n - 2 * p);
+            h.times = 2;
+        }
+        // What is too far back to be part of a repeat goes out.
+        let keep = if h.times > 1 { 0 } else { 2 * GROUP - 1 };
+        let over = h.tail.len().saturating_sub(keep);
+        self.pending.extend(h.tail.drain(..over).flatten());
+        h.at = self.pending.len();
+    }
+
+    /// What is held goes to scrollback, where it stands among what is owed.
+    fn release(&mut self) {
+        let at = self.held.at.min(self.pending.len());
+        let lines = std::mem::take(&mut self.held).lines();
+        self.pending.splice(at..at, lines);
     }
 
     fn push_line(&mut self, line: Line<'static>) {
@@ -863,11 +956,13 @@ impl App {
         self.dirty = true;
     }
 
-    /// Calls still waiting when a turn ends are shown as they stand.
+    /// Calls still waiting when a turn ends are shown as they stand, and
+    /// what is held goes to scrollback: nothing is counted across turns.
     fn flush_calls(&mut self) {
         for c in std::mem::take(&mut self.calls) {
             self.commit_tool(&c.name, &c.input, "no result — the turn stopped first", true);
         }
+        self.release();
     }
 
     // ---- the protocol --------------------------------------------------------
@@ -1376,6 +1471,7 @@ impl App {
         for ev in branch {
             self.on_log(ev, false);
         }
+        self.release();
     }
 
     // ---- the live region -------------------------------------------------------
@@ -1383,7 +1479,7 @@ impl App {
     /// The live region's rows, and where the caret goes among them.
     pub fn view(&self, now: Instant) -> (Vec<Line<'static>>, (u16, u16)) {
         let width = usize::from(self.width.max(1));
-        let mut rows: Vec<Line<'static>> = Vec::new();
+        let mut rows: Vec<Line<'static>> = self.held.lines().into_iter().flat_map(|l| wrap_line(l, width)).collect();
         if let Some(live) = &self.live {
             match &live.kind {
                 LiveKind::Text if !live.tail.is_empty() => {
@@ -1398,7 +1494,7 @@ impl App {
                         rows.push(Line::from(Span::styled(clip(&format!("  {tail}"), width), dim().add_modifier(Modifier::ITALIC))));
                     }
                 }
-                LiveKind::Call(name) => rows.push(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(clip(name, width.saturating_sub(2)), dim())])),
+                LiveKind::Call(name) => rows.push(Line::from(vec![Span::styled(look::TOOL, look::running()),Span::styled(clip(name, width.saturating_sub(2)), dim())])),
                 LiveKind::Result => {}
             }
         }
@@ -1407,7 +1503,7 @@ impl App {
         for c in self.calls.iter().filter(|c| c.name != "subagent") {
             let (verb, arg) = look::tool_title(&c.name, &c.input);
             let text = clip(&format!("{verb} {arg}"), width.saturating_sub(2));
-            rows.push(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(text, dim())]));
+            rows.push(Line::from(vec![Span::styled(look::TOOL, look::running()), Span::styled(text, dim())]));
         }
         // Each subagent, one line: live status, tokens and cost (R-SUB-3).
         let frame_at = |since: Duration| look::SPINNER[(since.as_millis() / look::SPIN_FRAME.as_millis()) as usize % look::SPINNER.len()];
@@ -2022,6 +2118,19 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
 /// breaks its text, each piece keeping its style. krowk wraps what it
 /// prints itself so every row keeps the left padding; a copy of the whole
 /// answer, unwrapped, is Ctrl-Y.
+/// `rows`, each on a branch as a file tree draws a directory's entries:
+/// `├─ ` and, on the last, `└─ `.
+fn branches(rows: Vec<Span<'static>>) -> Vec<Line<'static>> {
+    let n = rows.len();
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let branch = if i + 1 == n { look::LAST_BRANCH } else { look::BRANCH };
+            Line::from(vec![Span::styled(branch, look::border()), row])
+        })
+        .collect()
+}
+
 pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     // A link is left for the terminal to wrap, so it stays one link.
@@ -2297,6 +2406,57 @@ mod tests {
     }
 
     #[test]
+    fn a_running_tool_is_orange_and_greys_once_it_is_back() {
+        let mut a = app();
+        a.start_turn(Instant::now());
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "1".into(), item: Item::ToolCall { call_id: "c".into(), name: "read".into(), input: serde_json::json!({"path": "README.md"}) } }));
+        let (rows, _) = a.view(Instant::now());
+        let row = rows.iter().find(|r| r.spans.first().is_some_and(|s| s.content == look::TOOL)).expect("the call is live");
+        assert_eq!(row.spans[0].style, look::running());
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "2".into(), item: Item::ToolResult { call_id: "c".into(), output: "# krowk\n".into(), is_error: false } }));
+        let (rows, _) = a.view(Instant::now());
+        let row = rows.iter().find(|r| r.spans.first().is_some_and(|s| s.content == look::TOOL)).expect("the call is held");
+        assert_eq!(row.spans[0].style, dim());
+    }
+
+    #[test]
+    fn a_call_made_again_straight_after_is_counted_not_shown_twice() {
+        let mut a = app();
+        let run = |a: &mut App, cmd: &str, out: &str| a.commit_tool("bash", &serde_json::json!({"command": cmd}), out, false);
+        let held = |a: &App| text(&a.view(Instant::now()).0).into_iter().take_while(|r| !r.starts_with('─')).collect::<Vec<_>>();
+        run(&mut a, "git status", "clean");
+        run(&mut a, "git status", "clean");
+        assert!(a.take_pending().is_empty(), "held while it could be made again");
+        assert_eq!(held(&a), ["◆ Run git status ×2", "└─ clean"]);
+        run(&mut a, "git status", "clean");
+        assert_eq!(held(&a), ["◆ Run git status ×3", "└─ clean"]);
+        // A call that came back otherwise is its own.
+        run(&mut a, "git status", "dirty");
+        a.push_md("Done.");
+        assert_eq!(text(&a.take_pending()), ["◆ Run git status ×3", "└─ clean", "◆ Run git status", "└─ dirty", "Done."]);
+    }
+
+    #[test]
+    fn a_run_of_calls_made_again_is_counted_as_one() {
+        let mut a = app();
+        let run = |a: &mut App, cmd: &str| a.commit_tool("bash", &serde_json::json!({"command": cmd}), "ok", false);
+        for cmd in ["cargo fmt", "cargo build", "cargo test", "cargo build", "cargo test", "cargo build", "cargo test", "cargo build"] {
+            run(&mut a, cmd);
+        }
+        a.flush_calls();
+        assert_eq!(
+            text(&a.take_pending()),
+            ["◆ Run cargo fmt", "└─ ok", "◆ Run cargo build ×3", "└─ ok", "◆ Run cargo test ×3", "└─ ok", "◆ Run cargo build", "└─ ok"],
+            "the start of a repeat it broke off in is shown as it is"
+        );
+        // Calls that never repeat go out as the stack grows.
+        for i in 0..8 {
+            run(&mut a, &format!("echo {i}"));
+        }
+        assert_eq!(text(&a.take_pending()).len(), 2 * (8 - (2 * GROUP - 1)));
+    }
+
+    #[test]
     fn an_answer_sent_whole_with_no_delta_is_shown_and_copied() {
         let mut a = app();
         a.start_turn(Instant::now());
@@ -2353,24 +2513,29 @@ mod tests {
     #[test]
     fn what_a_tool_call_brought_back_hangs_under_it_as_a_tree() {
         let mut a = app();
+        let out = |a: &mut App| {
+            a.release();
+            text(&a.take_pending())
+        };
         a.commit_tool("bash", &serde_json::json!({"command": "cargo test"}), "one\ntwo\nthree\nfour\nfive\nsix\nseven", false);
-        let t = text(&a.take_pending());
+        let t = out(&mut a);
         assert_eq!(t, ["◆ Run cargo test (7 lines)", "└─ seven"], "a command shows its last line: {t:?}");
         a.commit_tool("read", &serde_json::json!({"path": "gone.md"}), "no such file", true);
-        let t = text(&a.take_pending());
+        let t = out(&mut a);
         assert_eq!(t, ["◆ Read gone.md (failed)", "└─ no such file"], "a call after a call stacks under it: {t:?}");
         a.push_md("Next.");
         a.commit_tool("Bash", &serde_json::json!({"command": "ls"}), "a\nb\n\n", false);
-        let t = text(&a.take_pending());
+        let t = out(&mut a);
         assert_eq!(t, ["Next.", "", "◆ Run ls (3 lines)", "└─ b"], "Claude Code's Bash is krowk's: {t:?}");
         a.commit_tool("bash", &serde_json::json!({"command": "true"}), "", false);
-        assert_eq!(text(&a.take_pending()), ["◆ Run true"]);
+        assert_eq!(out(&mut a), ["◆ Run true"]);
     }
 
     #[test]
     fn what_a_tool_acts_on_is_washed_ink_not_a_colour() {
         let mut a = app();
         a.commit_tool("read", &serde_json::json!({"path": "src/app.rs"}), "x", false);
+        a.release();
         let head = a.take_pending().remove(0);
         let path = head.spans.iter().find(|s| s.content == "src/app.rs").unwrap();
         assert_eq!(path.style, look::path());

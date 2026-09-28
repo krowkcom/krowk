@@ -869,13 +869,15 @@ impl<'h> Ui<'h> {
         {
             self.resize(app, term, w, h)?;
         }
+        // Scrollback's lines first: what they let go of (held tool blocks)
+        // is then not in the live region too.
+        let lines = app.take_pending();
         let (mut rows, mut caret) = app.view(std::time::Instant::now());
         // A live region taller than the terminal keeps its bottom: the
         // prompt and the status bar, over whatever is streaming.
         let skip = rows.len().saturating_sub(usize::from(term.size().height));
         rows.drain(..skip);
         caret.1 = caret.1.saturating_sub(skip as u16);
-        let lines = app.take_pending();
         let state = if !app.approvals.is_empty() {
             presence::State::Blocked
         } else if app.running() {
@@ -898,6 +900,7 @@ impl<'h> Ui<'h> {
                 format!("sent the last answer to the clipboard ({} lines)", text.lines().count())
             });
         }
+        term.steady(app.running())?;
         term.frame(&lines, &rows, caret)
     }
 

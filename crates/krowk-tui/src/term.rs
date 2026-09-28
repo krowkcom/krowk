@@ -126,6 +126,20 @@ impl FrameBuf {
         std::mem::take(&mut b.bytes)
     }
 
+    /// Where the queue stands: its length, and the row it leaves the cursor
+    /// on, to go back to (`rewind`).
+    fn mark(&self) -> (usize, u16) {
+        let b = self.0.borrow();
+        (b.bytes.len(), b.row)
+    }
+
+    /// What was queued since `mark`, dropped.
+    fn rewind(&self, (len, row): (usize, u16)) {
+        let mut b = self.0.borrow_mut();
+        b.bytes.truncate(len);
+        b.row = row;
+    }
+
     /// What is queued, dropped: the cursor is where what was sent left it.
     fn discard(&self) {
         let mut b = self.0.borrow_mut();
@@ -187,6 +201,11 @@ pub struct Back {
     buf: FrameBuf,
     size: Size,
     cursor: Position,
+    /// Whether the last draw changed a cell.
+    drew: bool,
+    /// Whether the cursor was last shown: ratatui shows it every frame,
+    /// and a terminal restarts its blink on every byte it is sent.
+    shown: bool,
 }
 
 impl Backend for Back {
@@ -200,6 +219,7 @@ impl Backend for Back {
         let mut last: Option<Position> = None;
         let mut style = None;
         for (x, y, cell) in content {
+            self.drew = true;
             if !matches!(last, Some(p) if x == p.x + 1 && y == p.y) {
                 self.buf.goto(x, y)?;
             }
@@ -228,10 +248,14 @@ impl Backend for Back {
     }
 
     fn hide_cursor(&mut self) -> io::Result<()> {
+        self.shown = false;
         self.inner.hide_cursor()
     }
 
     fn show_cursor(&mut self) -> io::Result<()> {
+        if std::mem::replace(&mut self.shown, true) {
+            return Ok(());
+        }
         self.inner.show_cursor()
     }
 
@@ -312,7 +336,14 @@ pub struct Term<W: Write> {
     /// The left ones are moved over, never written — as Claude Code does —
     /// so a terminal that copies only what was written leaves them out.
     pub pad: u16,
+    /// Whether the cursor's blink is held off (`steady`).
+    steady: bool,
 }
+
+/// The cursor's blink off (DEC private mode 12), and the cursor the
+/// terminal is set up with (DECSCUSR 0) — its own shape and blink, back.
+const BLINK_OFF: &[u8] = b"\x1b[?12l";
+const CURSOR_DEFAULT: &[u8] = b"\x1b[0 q";
 
 impl<W: Write> Term<W> {
     /// A viewport `height` rows tall at the bottom of the screen. `top` is
@@ -330,7 +361,7 @@ impl<W: Write> Term<W> {
         out.write_all(&buf.take())?;
         out.flush()?;
         let terminal = build(&buf, size, top, height)?;
-        Ok(Term { terminal, buf, out, size, height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, whole, blank_top })
+        Ok(Term { terminal, buf, out, size, height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, whole, blank_top, steady: false })
     }
 
     pub fn width(&self) -> u16 {
@@ -464,7 +495,13 @@ impl<W: Write> Term<W> {
     /// One frame: `lines` into scrollback, then the live region redrawn as
     /// `rows` with the cursor at `caret` (column, row), all as one
     /// synchronized write.
+    ///
+    /// A frame that changes nothing on screen sends nothing: a terminal
+    /// restarts the cursor's blink on whatever it is sent (Ghostty, at most
+    /// every 500ms), so a no-op frame would only break the blink up.
     pub fn frame(&mut self, lines: &[Line<'static>], rows: &[Line<'static>], caret: (u16, u16)) -> io::Result<()> {
+        let mark = self.buf.mark();
+        let before = (self.height, self.caret_row, self.caret_col);
         let width = self.size.width;
         let height = (rows.len() as u16).clamp(1, self.size.height.max(1));
         if lines.is_empty() {
@@ -482,6 +519,7 @@ impl<W: Write> Term<W> {
         // at the last column rather than wrapped onto the next row, or off
         // the bottom one, which would scroll the screen under the cursor.
         self.buf.clone().write_all(AUTOWRAP_OFF)?;
+        self.terminal.backend_mut().drew = false;
         let drawn = self.terminal.draw(|f| {
             let area = f.area();
             for (i, row) in rows.iter().enumerate().take(usize::from(area.height)) {
@@ -498,7 +536,21 @@ impl<W: Write> Term<W> {
             self.caret_col = x;
         }
         self.drawn_width = width;
+        if lines.is_empty() && !self.terminal.backend_mut().drew && before == (self.height, self.caret_row, self.caret_col) {
+            self.buf.rewind(mark);
+        }
         self.flush()
+    }
+
+    /// Holds the cursor's blink off, or gives the terminal's own cursor
+    /// back. While a turn runs the region is redrawn every spinner frame,
+    /// and a terminal that restarts the blink on output shows it as a
+    /// flicker rather than a blink; held steady, it is a plain block.
+    pub fn steady(&mut self, on: bool) -> io::Result<()> {
+        if std::mem::replace(&mut self.steady, on) != on {
+            self.buf.clone().write_all(if on { BLINK_OFF } else { CURSOR_DEFAULT })?;
+        }
+        Ok(())
     }
 
     /// `lines` printed from the viewport's top down, over it, and a
@@ -578,6 +630,9 @@ impl<W: Write> Term<W> {
         self.buf.goto(0, top)?;
         w.queue(Clear(CtClear::FromCursorDown))?;
         w.queue(crossterm::cursor::Show)?;
+        if std::mem::take(&mut self.steady) {
+            w.write_all(CURSOR_DEFAULT)?;
+        }
         w.write_all(TITLE_RESTORE)?;
         self.flush()
     }
@@ -733,7 +788,7 @@ fn build(buf: &FrameBuf, size: Size, top: u16, height: u16) -> io::Result<Termin
     // ratatui reserves the viewport's rows by printing newlines from the
     // cursor, so the real cursor has to be at the top first.
     buf.goto(0, top)?;
-    let back = Back { inner: CrosstermBackend::new(buf.clone()), buf: buf.clone(), size, cursor: Position { x: 0, y: top } };
+    let back = Back { inner: CrosstermBackend::new(buf.clone()), buf: buf.clone(), size, cursor: Position { x: 0, y: top }, drew: false, shown: false };
     Terminal::with_options(back, TerminalOptions { viewport: Viewport::Inline(height) })
 }
 
@@ -772,6 +827,38 @@ mod tests {
         let absolute = out.split("\x1b[").skip(1).any(|seq| seq.find(|c: char| c.is_ascii_alphabetic()).is_some_and(|end| matches!(&seq[end..=end], "H" | "f" | "d" | "r")));
         assert!(!absolute, "an absolute move: {out:?}");
         assert!(out.contains("one\r\ntwo\r\n") && out.contains("three\r\n"), "{out:?}");
+    }
+
+    #[test]
+    fn a_frame_that_changes_nothing_sends_nothing_and_the_cursor_is_shown_once() {
+        let mut t = Term::new(Vec::new(), Size { width: 40, height: 10 }, 0, 3).unwrap();
+        let rows = |s: &str| vec![Line::from(s.to_string()), Line::from("› hi"), Line::default()];
+        t.frame(&[], &rows("⠋ Working"), (4, 1)).unwrap();
+        let (sent, frames) = (t.out.len(), t.frames);
+        t.frame(&[], &rows("⠋ Working"), (4, 1)).unwrap();
+        assert_eq!((t.out.len(), t.frames), (sent, frames), "{:?}", String::from_utf8_lossy(&t.out[sent..]));
+        t.frame(&[], &rows("⠙ Working"), (4, 1)).unwrap();
+        let spin = String::from_utf8_lossy(&t.out[sent..]).into_owned();
+        assert!(spin.contains('⠙') && !spin.contains("\x1b[?25h"), "only the cell, the cursor already shown: {spin:?}");
+        t.frame(&[], &rows("⠙ Working"), (3, 1)).unwrap();
+        assert!(t.frames > frames + 1, "a caret that moved is a change");
+    }
+
+    #[test]
+    fn the_blink_is_held_off_only_while_asked_and_the_terminal_s_cursor_comes_back() {
+        let mut t = Term::new(Vec::new(), Size { width: 40, height: 10 }, 0, 3).unwrap();
+        let rows = [Line::from("› hi")];
+        t.steady(true).unwrap();
+        t.frame(&[], &rows, (4, 0)).unwrap();
+        t.steady(true).unwrap();
+        t.frame(&[], &rows, (4, 0)).unwrap();
+        t.steady(false).unwrap();
+        t.frame(&[], &rows, (4, 0)).unwrap();
+        t.steady(true).unwrap();
+        t.finish().unwrap();
+        let out = String::from_utf8_lossy(&t.out).into_owned();
+        assert_eq!(out.matches("\x1b[?12l").count(), 2, "{out:?}");
+        assert_eq!(out.matches("\x1b[0 q").count(), 2, "once let go, once on the way out: {out:?}");
     }
 
     /// A 90-wide overlay row, the prompt with the caret at column 50, and a
