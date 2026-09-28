@@ -313,7 +313,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, left: Vec::new(), last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
@@ -335,8 +335,8 @@ async fn session(opts: Options) -> Outcome {
         let _ = write!(out, "\x1b[2mresume this session with: krowk --resume {id}\x1b[0m\r\n");
     }
     let _ = out.flush();
-    ui.left.retain(|id| app.session_id.as_ref() != Some(id));
-    Outcome { session_id: app.session_id.clone(), left: ui.left, error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
+    app.left.retain(|id| app.session_id.as_ref() != Some(id));
+    Outcome { session_id: app.session_id.clone(), left: std::mem::take(&mut app.left), error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
 }
 
 struct Ui<'h> {
@@ -414,8 +414,6 @@ struct Ui<'h> {
     rx: Option<mpsc::Receiver<StreamLine>>,
     /// Set to leave now, without the running turn's end.
     abandoned: bool,
-    /// The sessions `/sessions` moved away from, oldest first.
-    left: Vec<String>,
     /// The last prompt sent: what a yes to a limit's offer sends again on
     /// the instance it moves to (R-INST-7).
     last_prompt: String,
@@ -900,6 +898,9 @@ impl<'h> Ui<'h> {
         };
         if let Some(title) = self.presence.update(state, &self.last_prompt) {
             term.title(&title)?;
+        }
+        if std::mem::take(&mut app.wipe) {
+            term.wipe()?;
         }
         if std::mem::take(&mut app.copy) {
             // What was shown, not what was sent: no escape or bidi control
@@ -1548,6 +1549,7 @@ impl<'h> Ui<'h> {
                             help::Action::Settings => self.open_settings(app),
                             help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
                             help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
+                            help::Action::New => self.new_session(app),
                             help::Action::Sessions => self.open_resume(app),
                             help::Action::Todos => app.overlay = Overlay::Todos,
                             help::Action::Agents => app.overlay = Overlay::Agents,
@@ -1787,29 +1789,71 @@ impl<'h> Ui<'h> {
             }
             _ => {}
         }
-        if let Some(old) = app.session_id.clone().filter(|old| !self.left.contains(old)) {
-            self.left.push(old);
-        }
+        self.leave(app);
         app.forget_session();
         app.model = None;
         app.gap_say(&format!("continuing session {id}"));
         replay(app, id, &events, &self.host.registry());
         // Where that session's agent was at work, not this one's.
         self.look_for_pr(app);
-        self.last_prompt.clear();
         // Its own model from here, not the one the last session was on; one
         // that never ran a turn goes on with the model the next prompt had.
         self.chosen = None;
+        let m = app.model.clone();
+        self.settle_on(app, m);
+        if let Some(m) = self.model.clone() {
+            self.owe_trust(app, &m);
+        }
+    }
+
+    /// `/new`: a fresh session in place of the one shown, on the same
+    /// model, on a cleared screen; the next prompt starts it. The one left
+    /// can be continued with `/sessions`. Not after a resume at start of a
+    /// session begun elsewhere: the trust and settings were that
+    /// directory's, and a new session would run here.
+    fn new_session(&mut self, app: &mut App) {
+        if !krowk_harness::connect::same_dir(&self.runs_in, &self.started_in) {
+            return app.notice(&format!("this krowk runs a session of {} — start krowk again for a new one", home_relative(&self.runs_in)));
+        }
+        if !self.can_resume(app) {
+            return;
+        }
+        self.leave(app);
+        // The one the next prompt goes to, else the one shown — the
+        // resumed session's at start — rather than one routed afresh.
+        let m = self.model.clone().or_else(|| app.model.clone());
+        self.settle_on(app, m);
+        app.branch = pr::branch(&self.runs_in);
+        app.start_over(&home_relative(&self.runs_in), self.effort_label.as_deref());
+        // A lookup under way was for where the session left worked.
+        self.pr = None;
+        self.look_for_pr(app);
+        if let Some(m) = self.model.clone() {
+            self.owe_trust(app, &m);
+        }
+    }
+
+    /// Session `m`'s model, where there is one, as the next prompt's and
+    /// the one shown; with none, the next prompt's stays. The trust
+    /// question owed for the last one is let go: the caller asks it again
+    /// for this one (`owe_trust`) once the screen is its own.
+    fn settle_on(&mut self, app: &mut App, m: Option<ModelRef>) {
         self.needs_trust = None;
         app.trust_question = None;
-        if let Some(m) = app.model.clone() {
+        if let Some(m) = m {
             self.retarget(&m);
             self.model = Some(m);
         }
         app.model = self.model.clone();
-        if let Some(m) = self.model.clone() {
-            self.owe_trust(app, &m);
+    }
+
+    /// The session shown, left for another: kept to be listed on the way
+    /// out, and its last prompt no longer the title's.
+    fn leave(&mut self, app: &mut App) {
+        if let Some(old) = app.session_id.clone().filter(|old| !app.left.contains(old)) {
+            app.left.push(old);
         }
+        self.last_prompt.clear();
     }
 
     /// Whether another session may take the one shown's place now: not
@@ -2184,9 +2228,19 @@ impl<'h> Ui<'h> {
                 self.open_settings(app);
                 return false;
             }
+            "/new" => {
+                app.editor.clear();
+                self.new_session(app);
+                return false;
+            }
             "/sessions" => {
                 app.editor.clear();
                 self.open_resume(app);
+                return false;
+            }
+            t if t.split_whitespace().next().map(help::canonical).as_deref() == Some("/new") => {
+                app.editor.clear();
+                app.notice("/new takes nothing after it — send the prompt once the new session is up");
                 return false;
             }
             t if t.starts_with("/sessions ") => {

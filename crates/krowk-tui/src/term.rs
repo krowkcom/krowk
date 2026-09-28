@@ -32,6 +32,8 @@
 //!   one. The terminal keeps the cursor on the caret through a resize, so a
 //!   frame that moves up and down from it still starts at the region's top
 //!   and still leaves the cursor on the caret, whichever size it is read at.
+//!   The one exception is `wipe` (`/new`), which clears the screen and its
+//!   scrollback from the home position: both mean the same at any size.
 //!   Its cells are drawn with autowrap off, so a row wider than the screen
 //!   it is read at is cut rather than pushed onto the next row. What is left:
 //!   such a row above the caret, cut, is measured after the resize as if the
@@ -626,6 +628,19 @@ impl<W: Write> Term<W> {
         Ok(())
     }
 
+    /// Clears the screen and its scrollback (`ESC [3J`, where the terminal
+    /// has it) and starts the live region afresh on the top row: the lines
+    /// the next frame prints go from there down, scrolling nothing into the
+    /// history just cleared, and the region then drops to the bottom with
+    /// them above it, as on a screen `new` opened on.
+    pub fn wipe(&mut self) -> io::Result<()> {
+        self.buf.clone().write_all(b"\x1b[H\x1b[2J\x1b[3J")?;
+        self.buf.set_row(0);
+        self.whole = true;
+        self.blank_top = 0;
+        self.rebuild(0, self.height)
+    }
+
     /// Clears the live region and leaves the cursor at its top, at the
     /// start of a line, so the shell prompt that follows lands right under
     /// the conversation.
@@ -817,6 +832,27 @@ mod tests {
         let text = String::from_utf8_lossy(&out);
         assert!(text.starts_with("\x1b[?2026h") && text.ends_with("\x1b[?2026l"), "{text:?}");
         assert!(!text.contains("\x1b[2J"), "the screen is never cleared whole: {text:?}");
+    }
+
+    #[test]
+    fn a_wipe_prints_from_the_top_of_the_cleared_screen_and_scrolls_nothing() {
+        let (w, h) = (40, 10);
+        let mut t = Term::new(Vec::new(), Size { width: w, height: h }, 0, 3).unwrap();
+        let many: Vec<Line<'static>> = (0..30).map(|i| Line::from(format!("line {i}"))).collect();
+        let rows = [Line::from("› hi"), Line::default(), Line::default()];
+        t.frame(&many, &rows, (4, 0)).unwrap();
+        assert!(!t.whole, "the session is partly in scrollback");
+        let start = t.out.len();
+        t.wipe().unwrap();
+        t.frame(&[Line::from("logo"), Line::from("Directory: ~")], &rows, (4, 0)).unwrap();
+        let out = String::from_utf8_lossy(&t.out[start..]).into_owned();
+        assert_eq!(frames(&t.out[start..]), 1, "the wipe goes with the frame: {out:?}");
+        assert!(out.contains("\x1b[H\x1b[2J\x1b[3J"), "{out:?}");
+        let after = &out[out.find("\x1b[3J").unwrap()..];
+        assert!(after.find("logo").unwrap() < after.find("Directory").unwrap());
+        assert!(t.whole, "all of the new session on screen");
+        assert_eq!(t.top(), h - 3, "the region at the bottom");
+        assert_eq!(t.blank_top, h - 3 - 2, "the rows above the header blank, none scrolled away");
     }
 
     #[test]

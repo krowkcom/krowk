@@ -351,6 +351,79 @@ fn resume_continues_an_earlier_session_from_the_slash_menu() {
     assert_eq!(krowk_sessions(&b, &m.url), 2, "krowk.db lists the session left too");
 }
 
+/// `/new` (here by its alias, `/clear`) leaves the session shown for a
+/// fresh one: the next prompt goes without the earlier turns, and both
+/// sessions are kept.
+#[test]
+fn new_starts_a_fresh_session_and_keeps_the_one_left() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("new");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    // Words after it are refused, never sent as a prompt.
+    t.write(b"/clear kumquat\r");
+    assert!(t.wait_for("/new takes nothing after it", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"read README.md and summarise it\r");
+    assert!(t.wait_for("tokens", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    let from = t.output().len();
+    t.write(b"/clear\r");
+    assert!(wait_after(&t, from, "Directory:", Duration::from_secs(10)), "the header again: {:?}", t.text());
+    let from = t.output().len();
+    t.write(b"summarise the README again\r");
+    assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let seen = m.seen.lock().unwrap();
+    assert!(!seen.iter().any(|s| s.body["messages"].to_string().contains("/clear") || s.body["messages"].to_string().contains("kumquat")), "the command went to the model");
+    assert!(!seen.iter().any(|s| { let b = s.body["messages"].to_string(); b.contains("read README.md and summarise it") && b.contains("summarise the README again") }), "the earlier turn was sent to the new session");
+    drop(seen);
+    assert_eq!(krowk_sessions(&b, &m.url), 2, "krowk.db lists the session left too");
+}
+
+/// After `krowk --resume`, `/new` keeps to the directory the session was
+/// resumed for: one begun elsewhere is refused, its trust and settings
+/// being that directory's; one begun here is left for a fresh session.
+#[test]
+fn new_after_a_resume_at_start_keeps_to_the_directory() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("new-resume");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"read README.md and summarise it\r");
+    assert!(t.wait_for("tokens", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let out = t.text();
+    let at = out.find("krowk --resume ").expect("the resume line") + "krowk --resume ".len();
+    let id = out[at..at + 36].to_string();
+
+    let elsewhere = b.root.join("elsewhere");
+    std::fs::create_dir_all(elsewhere.join(".git")).unwrap();
+    let mut c = b.command(&m.url, &["--resume", &id]);
+    c.current_dir(&elsewhere);
+    let mut t = pty::Pty::spawn(c, 120, 30);
+    assert!(t.wait_for(&format!("resumed session {id}"), Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"/new\r");
+    assert!(t.wait_for("for a new one", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+
+    let mut t = pty::Pty::spawn(b.command(&m.url, &["--resume", &id]), 120, 30);
+    assert!(t.wait_for(&format!("resumed session {id}"), Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    let from = t.output().len();
+    t.write(b"/new\r");
+    assert!(wait_after(&t, from, "Model:", Duration::from_secs(10)), "the header names the model: {:?}", t.text());
+    let from = t.output().len();
+    t.write(b"summarise the README again\r");
+    assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let seen = m.seen.lock().unwrap();
+    let last = seen.iter().rev().find(|s| s.body["messages"].to_string().contains("summarise the README again")).expect("the prompt was sent");
+    assert!(!last.body["messages"].to_string().contains("read README.md and summarise it"), "the resumed turns went to the new session");
+    assert_eq!(last.body["model"], seen[0].body["model"], "on the model the resumed session was on");
+}
+
 /// `/config` (or `/settings`) cycles the default permission mode and saves
 /// it to config.json, and the next session starts in it; ↓ chooses the
 /// content width, saved the same way.
@@ -637,6 +710,24 @@ fn r_tui_1_a_10k_token_answer_lands_in_tmux_scrollback_exactly_once() {
     // The prompt line is in scrollback once too, and the live region is not.
     assert_eq!(history.matches("❯ write it all out").count(), 1, "{history}");
     assert_eq!(history.matches("esc to interrupt").count(), 0, "a live row leaked into scrollback");
+}
+
+/// `/new`, as `/clear` in Claude Code: the screen and its scrollback are
+/// cleared, and the header is all there is, the prompt under it.
+#[test]
+fn new_clears_the_screen_and_scrollback_down_to_the_header() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("new-screen");
+    let Some(tm) = Tmux::start("new-screen", 100, 30, &b.root.join("repo"), &b.env(&m.url), &[]) else { return };
+    assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["read README.md and summarise it", "Enter"]);
+    assert!(tm.wait_for("tokens", Duration::from_secs(20)).is_some(), "{}", tm.screen());
+    tm.keys(&["/new", "Enter"]);
+    let history = tm.wait_still(|s| !s.contains("tokens") && s.contains("Directory:"), Duration::from_secs(10)).unwrap_or_else(|| panic!("no clean header screen after /new:\n{}", tm.history()));
+    assert!(!history.contains("summarise it"), "the earlier session is gone, scrollback too:\n{history}");
+    assert_eq!(history.matches("Directory:").count(), 1, "one header:\n{history}");
+    assert!(history.lines().count() <= 30, "nothing in scrollback, not even blank rows:\n{history}");
+    assert!(history.lines().find(|l| !l.trim().is_empty()).is_some_and(|l| l.contains('▀')), "the header opens the screen:\n{history}");
 }
 
 #[test]

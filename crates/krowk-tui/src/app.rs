@@ -515,6 +515,11 @@ pub struct App {
     pub answer: String,
     /// Set by Ctrl-Y; the next frame puts `answer` on the clipboard.
     pub copy: bool,
+    /// The sessions left for another (`/new`, `/sessions`), oldest first.
+    pub left: Vec<String>,
+    /// Set by `/new`; the next frame clears the screen and its scrollback
+    /// before it prints what is owed.
+    pub wipe: bool,
     /// A word under the prompt until the next key: "copied".
     pub flash: Option<String>,
     /// When the approval shown now came up: keys typed in the moment
@@ -624,6 +629,8 @@ impl App {
             approvals: Vec::new(),
             answer: String::new(),
             copy: false,
+            left: Vec::new(),
+            wipe: false,
             flash: None,
             approval_shown: None,
             approval_expanded: false,
@@ -1084,9 +1091,20 @@ impl App {
         // anonymous publish), and a subagent's approval request is answered
         // like the session's own (under the subagent's session id), so both
         // are shown as any other.
+        let anyones = matches!(line, StreamLine::Live(LiveEvent::Notice { .. } | LiveEvent::ApprovalRequested(_) | LiveEvent::ApprovalResolved { .. }));
+        // Nor is a session left for another (`/new`, `/sessions`), a
+        // background task of it done, or one of its subagents: a fresh
+        // session with no turn yet would otherwise be taken for it.
+        if let Some(sid) = line_session(line)
+            && self.session_id.as_deref() != Some(sid)
+            && (self.left.iter().any(|l| l == sid) || (self.session_id.is_none() && self.turn.is_none() && !self.left.is_empty()))
+            && !anyones
+        {
+            return;
+        }
         if let Some(sid) = line_session(line)
             && self.session_id.as_deref().is_some_and(|s| s != sid)
-            && !matches!(line, StreamLine::Live(LiveEvent::Notice { .. } | LiveEvent::ApprovalRequested(_) | LiveEvent::ApprovalResolved { .. }))
+            && !anyones
         {
             self.on_sub_line(sid, line);
             return;
@@ -2085,6 +2103,20 @@ impl App {
         self.dirty = true;
     }
 
+    /// A fresh session in place of the one shown, as `/clear` does in
+    /// Claude Code: the screen and its scrollback cleared, and the header
+    /// printed again on an empty screen.
+    pub fn start_over(&mut self, cwd: &str, effort: Option<&str>) {
+        self.forget_session();
+        self.pending.clear();
+        self.held = Held::default();
+        self.overlay = Overlay::None;
+        self.flash = None;
+        self.wipe = true;
+        let branch = self.branch.clone();
+        self.header(cwd, &branch, effort);
+    }
+
     /// Opens the mode picker on the mode the next prompt runs in.
     pub fn open_mode_picker(&mut self) {
         self.mode_at = PermissionMode::NAMES.iter().position(|n| *n == self.permission_mode).unwrap_or(0);
@@ -2751,6 +2783,25 @@ mod tests {
         let evs = [ev("1", thinking("")), ev("2", thinking("Checking.")), ev("3", Item::AssistantText { text: "Done.".into() })];
         a.replay(&evs.iter().collect::<Vec<_>>());
         assert_eq!(text(&a.take_pending()), ["Done."]);
+    }
+
+    #[test]
+    fn a_session_left_for_a_new_one_is_not_taken_for_it() {
+        let mut a = app();
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-y".into() };
+        let started = |sid: &str| StreamLine::Log(LogEvent { id: "e".into(), parent_id: None, session_id: sid.into(), time_ms: 0, body: LogBody::TurnStarted { turn_id: "t".into(), model: model.clone(), provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None } });
+        a.left.push("old".into());
+        a.start_over("~", None);
+        a.take_pending();
+        a.on_line(&started("old"));
+        assert_eq!(a.session_id, None, "the session left");
+        a.on_line(&started("its-subagent"));
+        assert_eq!(a.session_id, None, "one of its subagents, before the new session's first turn");
+        a.on_line(&live(LiveEvent::Notice { session_id: "old".into(), turn_id: "t".into(), text: "done in the background".into() }));
+        assert!(text(&a.take_pending()).iter().any(|l| l.contains("done in the background")), "a notice is the person's whoever sent it");
+        a.start_turn(std::time::Instant::now());
+        a.on_line(&started("new"));
+        assert_eq!(a.session_id.as_deref(), Some("new"), "the new session's first turn");
     }
 
     #[test]
@@ -3480,6 +3531,7 @@ mod tests {
         assert!(a.session_id.is_none() && a.turns == 0 && a.used.is_empty() && a.todos.is_empty() && a.instances.is_empty());
         assert_eq!(a.model, Some(m), "shown until the next session's replay names its own");
         assert_eq!(help::canonical("/resume"), "/sessions");
+        assert_eq!(help::canonical("/clear"), "/new");
         assert!(help::unlisted("/resume"));
         assert_eq!(help::slash("/sessions", &[]).first().map(|s| s.name.as_str()), Some("sessions"));
     }
