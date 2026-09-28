@@ -65,7 +65,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   pattern) is dimmed, where they were green, bold and cyan; the bullet
   still turns red when a call fails. Calls one after another stack with no
   blank line between them, and a command shows how many lines it printed
-  and its last one, where it showed the first two and the last three.
+  and its last one, where it showed the first two and the last three. An
+  edit's count of lines added and removed reads `+9 -3`, where it was
+  `+9/-3`.
 - **The TUI names the skill a call loads**: `Skill: basecamp`, where it
   showed a bare `skill`, for krowk's own skills and Claude Code's alike. A
   tool krowk has no name of its own for reads as words, `ListAgents` as

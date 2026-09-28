@@ -766,7 +766,7 @@ impl App {
             (_, _, true) => head.push(Span::styled(" (failed)", red())),
             (Some((del, add)), _, _) => {
                 head.push(Span::styled(format!(" +{}", add.len()), look::success()));
-                head.push(Span::styled(format!("/-{}", del.len()), red()));
+                head.push(Span::styled(format!(" -{}", del.len()), red()));
             }
             (None, "read" | "grep" | "glob" | "write", _) => head.push(Span::styled(format!(" ({} lines)", lines.len()), dim())),
             (None, "bash", _) if lines.len() > 1 => head.push(Span::styled(format!(" ({} lines)", lines.len()), dim())),
