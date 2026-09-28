@@ -60,6 +60,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **Tool calls in the TUI are quieter**: a call's bullet and name are the
+  terminal's own text colour and what it acts on (a path, a command, a
+  pattern) is dimmed, where they were green, bold and cyan; the bullet
+  still turns red when a call fails. Calls one after another stack with no
+  blank line between them, and a command shows how many lines it printed
+  and its last one, where it showed the first two and the last three.
 - **The TUI names the skill a call loads**: `Skill: basecamp`, where it
   showed a bare `skill`, for krowk's own skills and Claude Code's alike. A
   tool krowk has no name of its own for reads as words, `ListAgents` as
