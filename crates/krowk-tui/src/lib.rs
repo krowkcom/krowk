@@ -2203,6 +2203,7 @@ impl<'h> Ui<'h> {
                 return false;
             }
             t if t.starts_with("/new ") => {
+                app.editor.clear();
                 app.notice("/new takes nothing after it — send the prompt once the new session is up");
                 return false;
             }
