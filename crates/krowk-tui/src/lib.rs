@@ -1350,7 +1350,8 @@ impl<'h> Ui<'h> {
         // the prompt — a space there would be a change saved. A key typed
         // ahead, before it was up to be seen, changes nothing.
         if app.overlay == Overlay::Settings && !(ctrl && k.code == KeyCode::Char('d')) {
-            let settled = self.settings_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE);
+            // A key held down changes it once, not once a repeat.
+            let settled = k.kind != KeyEventKind::Repeat && self.settings_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE);
             match k.code {
                 KeyCode::Esc => app.overlay = Overlay::None,
                 KeyCode::Char('c') if ctrl => app.overlay = Overlay::None,
@@ -1935,12 +1936,12 @@ impl<'h> Ui<'h> {
     /// connectivity probe is owed first — the notice is up and the person
     /// is trying again.
     async fn submit(&mut self, app: &mut App) -> bool {
-        let text = app.editor.text().trim().to_string();
+        let text = help::canonical(app.editor.text().trim());
         if text.is_empty() {
             return false;
         }
         match text.as_str() {
-            "/exit" | "/quit" => {
+            "/exit" => {
                 app.editor.clear();
                 app.quit = true;
                 return false;
@@ -1955,17 +1956,17 @@ impl<'h> Ui<'h> {
                 self.open_models(app);
                 return false;
             }
-            "/settings" | "/config" => {
+            "/settings" => {
                 app.editor.clear();
                 self.open_settings(app);
                 return false;
             }
-            "/mode" | "/permission-mode" => {
+            "/mode" => {
                 app.editor.clear();
                 app.open_mode_picker();
                 return false;
             }
-            t if t.starts_with("/mode ") || t.starts_with("/permission-mode ") => {
+            t if t.starts_with("/mode ") => {
                 app.editor.clear();
                 let name = t.split_once(' ').unwrap_or_default().1.trim();
                 match PermissionMode::parse(name) {

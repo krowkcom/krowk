@@ -1693,7 +1693,7 @@ impl App {
         let says = if PermissionMode::parse(mode).is_some() { mode_says(mode) } else { "not a mode krowk runs, so it runs as default" };
         let mut out = vec![
             Line::from(Span::styled(clip("settings — enter or space changes · esc closes · saved to config.json for the next session", width), dim())),
-            Line::from(Span::styled(clip(&format!("❯ Default permission mode  {mode:<18}{says}"), width), look::accent())),
+            Line::from(Span::styled(clip(&format!("❯ Default permission mode  {mode:<17} {says}"), width), look::accent())),
         ];
         if let Some((runs, claude)) = &self.default_mode_overridden {
             let why = format!("  a new session here starts in {} — {claude} or this repository's settings set it, and come after config.json", runs.name());
@@ -2660,6 +2660,10 @@ mod tests {
         assert_eq!(help::slash("/quit", &skills).first().map(|s| s.name.as_str()), Some("exit"));
         assert_eq!(help::slash("/permission-mode", &skills).first().map(|s| s.name.as_str()), Some("mode"));
         assert_eq!(help::slash("/update-config", &skills).first().map(|s| s.name.as_str()), Some("update-config"), "a skill's own name still finds it");
+        assert_eq!(help::canonical("/config"), "/settings");
+        assert_eq!(help::canonical("/permission-mode plan"), "/mode plan");
+        assert_eq!(help::canonical("/quit"), "/exit");
+        assert_eq!(help::canonical("/configure it"), "/configure it", "only a whole alias");
     }
 
     #[test]

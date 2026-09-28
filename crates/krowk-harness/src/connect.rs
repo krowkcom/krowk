@@ -1269,7 +1269,8 @@ pub fn read_config(path: &Path) -> Result<Map<String, Value>, String> {
 
 /// Writes config.json whole, by rename, never in place: how `/connect`
 /// writes its definitions and the TUI's `/settings` what it sets. The
-/// file's mode is kept (0644 for a new one). Each write has its own
+/// file's mode is kept (0644 for a new one) but never writable by anyone
+/// else: config.json says what runs unasked. Each write has its own
 /// temporary file, so a `/connect` on its thread and `/settings` never
 /// share one.
 pub fn write_config(path: &Path, raw: &Map<String, Value>) -> std::io::Result<()> {
@@ -1284,7 +1285,7 @@ pub fn write_config(path: &Path, raw: &Map<String, Value>) -> std::io::Result<()
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(path).map_or(0o644, |m| m.permissions().mode() & 0o7777);
+            let mode = std::fs::metadata(path).map_or(0o644, |m| m.permissions().mode() & 0o755);
             std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
         }
         std::fs::File::open(&tmp)?.sync_all()?;
@@ -1391,6 +1392,24 @@ mod tests {
         ] {
             assert_eq!(connect_command(instance, kind), want, "{instance}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_json_keeps_its_mode_but_nobody_else_may_write_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("krowk-write-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.json");
+        let mode = || std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        write_config(&path, &Map::new()).unwrap();
+        assert_eq!(mode(), 0o644, "a new one");
+        for (was, is) in [(0o600, 0o600), (0o666, 0o644), (0o620, 0o600)] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(was)).unwrap();
+            write_config(&path, &Map::new()).unwrap();
+            assert_eq!(mode(), is, "{was:o}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

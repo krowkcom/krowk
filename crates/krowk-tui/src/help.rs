@@ -74,6 +74,17 @@ pub struct Slash {
 /// name only looks like it.
 pub const ALIASES: &[(&str, &str)] = &[("quit", "exit"), ("permission-mode", "mode"), ("config", "settings")];
 
+/// A command typed with an alias, as the command it names: `/config` is
+/// `/settings`, `/permission-mode plan` is `/mode plan`. Anything else is
+/// as it was.
+pub fn canonical(typed: &str) -> String {
+    let (word, rest) = typed.split_once(' ').map_or((typed, None), |(w, r)| (w, Some(r)));
+    match ALIASES.iter().find(|(a, _)| word.strip_prefix('/') == Some(a)) {
+        Some((_, c)) => rest.map_or(format!("/{c}"), |r| format!("/{c} {r}")),
+        None => typed.to_string(),
+    }
+}
+
 /// krowk's own commands, as `/` lists them.
 pub const COMMANDS: &[(&str, &str)] = &[
     ("model", "Switch model or instance"),
