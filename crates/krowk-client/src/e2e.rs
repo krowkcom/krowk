@@ -10,8 +10,10 @@
 //!   other suite. The recovery phrase is this key, as words (`phrase`).
 //! - A **session key**: 32 random bytes per session, wrapped under the
 //!   account key with XChaCha20-Poly1305. Session content — batches and
-//!   chunks — is sealed under it, a fresh random 24-byte nonce per message,
-//!   the message's frame header as associated data.
+//!   frames — is sealed under it by a `Sealer` and opened by an `Opener`: a
+//!   fresh random 24-byte nonce per message, and as associated data the
+//!   frame header with the session, the direction, the receiver's epoch and
+//!   a per-direction counter the opener holds to strictly increasing.
 //!
 //! Every wrapped key is a versioned blob: its first byte is the format
 //! version and its second the suite, both authenticated, so a later format
@@ -76,6 +78,13 @@ fn err(s: impl Into<String>) -> Error {
     Error(s.into())
 }
 
+/// A blob from a later krowk: the one refusal that says more than "does not
+/// open", since only the version byte is looked at to say it. A version
+/// below this krowk's is not a format that ever existed, and does not open.
+fn newer(what: &str, v: u8) -> Error {
+    err(format!("the wrapped {what} key is format {v}, newer than this krowk reads — upgrade krowk"))
+}
+
 /// Random bytes from the operating system. A machine that cannot give them
 /// cannot make a key, and nothing krowk could do instead would be safe.
 pub fn random<const N: usize>() -> [u8; N] {
@@ -96,7 +105,8 @@ pub fn hex(b: &[u8]) -> String {
 }
 
 pub fn unhex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
+    // Hex digits only: `from_str_radix` alone would take a sign ("+f").
+    if !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
@@ -255,7 +265,7 @@ pub fn unwrap_account_key(blob: &[u8], key: KeyId, device: &DeviceKey) -> Result
     let refused = || err("the wrapped account key does not open with this device's key: it was changed, or was wrapped for another device or account");
     if blob.len() != WRAPPED_ACCOUNT_KEY || blob[0] != BLOB_V1 || blob[1] != SUITE_HPKE_X25519_SHA256_CHACHA20POLY1305 {
         return Err(match blob.first() {
-            Some(&v) if v != BLOB_V1 => err(format!("the wrapped account key is format {v}, which this krowk does not read — upgrade krowk")),
+            Some(&v) if v > BLOB_V1 => newer("account", v),
             _ => refused(),
         });
     }
@@ -292,7 +302,10 @@ pub fn wrap_session_key(session_key: &SessionKey, session: &[u8; 16], account: &
 pub fn unwrap_session_key(blob: &[u8], session: &[u8; 16], account: &AccountKey) -> Result<SessionKey, Error> {
     let refused = || err("the wrapped session key does not open with this account key: it was changed, or belongs to another session or account");
     if blob.len() != WRAPPED_SESSION_KEY || blob[0] != BLOB_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
-        return Err(refused());
+        return Err(match blob.first() {
+            Some(&v) if v > BLOB_V1 => newer("session", v),
+            _ => refused(),
+        });
     }
     let nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
     let aad = [&blob[..2], session].concat();
@@ -302,25 +315,117 @@ pub fn unwrap_session_key(blob: &[u8], session: &[u8; 16], account: &AccountKey)
     out.map_err(|_| refused())
 }
 
-/// Session content sealed under its session key: a random 24-byte nonce,
-/// then the ciphertext and tag. `header` is the associated data — the
-/// message's 28-byte frame header, `enc` set to `ENC_XCHACHA20_POLY1305` —
-/// so a sealed payload moved under another header (another session,
-/// another seq, another kind) does not open. XChaCha's nonce is long
-/// enough to draw at random for every message with no counter kept.
-pub fn seal(key: &SessionKey, header: &[u8], plaintext: &[u8]) -> Vec<u8> {
-    let nonce: [u8; NONCE] = random();
-    let sealed = cipher(&key.0).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: header }).expect("sealing cannot fail below XChaCha20's 256 GiB message limit");
-    [&nonce[..], &sealed].concat()
+/// Which way a sealed message travels. Each direction of a session is its
+/// own counter chain, so a message cannot be reflected back at its sender.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// From the host holding the session's lease to a client: batches.
+    HostToClient = 1,
+    /// From a client to that host: frames (prompts, commands, approvals).
+    ClientToHost = 2,
 }
 
-pub fn open(key: &SessionKey, header: &[u8], sealed: &[u8]) -> Result<Vec<u8>, Error> {
-    let refused = || err("the payload does not open with this session's key: it was changed, or belongs to another frame or session");
-    if sealed.len() < NONCE + TAG {
-        return Err(refused());
+/// The frame header's length: `enc` is its byte 3.
+pub const HEADER: usize = 28;
+/// A sealed payload: counter (8, big-endian), nonce (24), ciphertext, tag.
+pub const SEALED_OVERHEAD: usize = 8 + NONCE + TAG;
+
+/// What the content AEAD binds besides the frame header: the header alone
+/// repeats (seq 0 on a batch with no line, session and seq 0 on a client's
+/// frame), and a header that repeats binds no position. This names the
+/// session, the direction, the receiver's epoch for this chain and the
+/// message's place in it, so the associated data of every message sealed
+/// under one session key is unique.
+fn frame_aad(header: &[u8; HEADER], session: &[u8; 16], direction: Direction, epoch: &[u8; 16], counter: u64) -> Vec<u8> {
+    [&b"krowk/frame/v1"[..], header, session, &[direction as u8], epoch, &counter.to_be_bytes()].concat()
+}
+
+fn check_header(header: &[u8; HEADER]) -> Result<(), Error> {
+    if header[3] != ENC_XCHACHA20_POLY1305 {
+        return Err(err(format!("a sealed frame's header says enc {}, not {ENC_XCHACHA20_POLY1305}: set it before sealing", header[3])));
     }
-    let nonce: [u8; NONCE] = sealed[..NONCE].try_into().expect("24 bytes");
-    cipher(&key.0).decrypt(&XNonce::from(nonce), Payload { msg: &sealed[NONCE..], aad: header }).map_err(|_| refused())
+    Ok(())
+}
+
+/// The sending end of one direction of one session's messages: seals each
+/// under the session key with the next counter, 0 first. `epoch` is the
+/// receiver's (`Opener::epoch`), sent to the sender in the clear when the
+/// connection opens, so a message recorded on one connection opens on no
+/// other — the receiver picked a fresh one.
+pub struct Sealer {
+    key: SessionKey,
+    session: [u8; 16],
+    direction: Direction,
+    epoch: [u8; 16],
+    next: u64,
+}
+
+impl Sealer {
+    pub fn new(key: &SessionKey, session: [u8; 16], direction: Direction, epoch: [u8; 16]) -> Sealer {
+        Sealer { key: key.clone(), session, direction, epoch, next: 0 }
+    }
+
+    /// `counter ‖ nonce ‖ ciphertext + tag`. The header's `enc` must be
+    /// `ENC_XCHACHA20_POLY1305`. The nonce is 24 random bytes; the counter
+    /// orders messages, never feeds the nonce.
+    pub fn seal(&mut self, header: &[u8; HEADER], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        check_header(header)?;
+        let counter = self.next;
+        self.next = self.next.checked_add(1).ok_or_else(|| err("a session's message counter ran out; start a new connection"))?;
+        let nonce: [u8; NONCE] = random();
+        let aad = frame_aad(header, &self.session, self.direction, &self.epoch, counter);
+        let sealed = cipher(&self.key.0).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).map_err(|_| err("the payload is too large to seal"))?;
+        Ok([&counter.to_be_bytes()[..], &nonce, &sealed].concat())
+    }
+}
+
+/// The receiving end of one direction of one session's messages: opens
+/// only what was sealed for this session, direction and epoch, and only a
+/// counter strictly greater than the last one opened — a replay, a
+/// reordering or a message from another chain is refused. A gap (a counter
+/// that skips) opens: the transport may legitimately drop and catch a
+/// client up from its cursor, and `last` says where it now is.
+pub struct Opener {
+    key: SessionKey,
+    session: [u8; 16],
+    direction: Direction,
+    epoch: [u8; 16],
+    last: Option<u64>,
+}
+
+impl Opener {
+    /// A new chain with a fresh random epoch, which the peer's `Sealer`
+    /// must be given.
+    pub fn new(key: &SessionKey, session: [u8; 16], direction: Direction) -> Opener {
+        Opener { key: key.clone(), session, direction, epoch: random(), last: None }
+    }
+
+    pub fn epoch(&self) -> [u8; 16] {
+        self.epoch
+    }
+
+    /// The counter of the last message opened.
+    pub fn last(&self) -> Option<u64> {
+        self.last
+    }
+
+    pub fn open(&mut self, header: &[u8; HEADER], sealed: &[u8]) -> Result<Vec<u8>, Error> {
+        check_header(header)?;
+        let refused = || err("the payload does not open with this session's key: it was changed, or belongs to another frame, direction, connection or session");
+        if sealed.len() < SEALED_OVERHEAD {
+            return Err(refused());
+        }
+        let counter = u64::from_be_bytes(sealed[..8].try_into().expect("eight bytes"));
+        if self.last.is_some_and(|last| counter <= last) {
+            return Err(err(format!("message {counter} arrived after message {}: a replay or a reordering, refused", self.last.unwrap_or_default())));
+        }
+        let nonce: [u8; NONCE] = sealed[8..8 + NONCE].try_into().expect("24 bytes");
+        let aad = frame_aad(header, &self.session, self.direction, &self.epoch, counter);
+        let plain = cipher(&self.key.0).decrypt(&XNonce::from(nonce), Payload { msg: &sealed[8 + NONCE..], aad: &aad }).map_err(|_| refused())?;
+        // Only an authentic message moves the chain on.
+        self.last = Some(counter);
+        Ok(plain)
+    }
 }
 
 #[cfg(test)]
@@ -330,8 +435,18 @@ mod tests {
     const SESSION: [u8; 16] = *b"0123456789abcdef";
 
     /// A 28-byte header as the WebSocket transport lays it out, `enc` set.
-    fn header(seq: u64) -> Vec<u8> {
-        [&[1u8, 1, 0, ENC_XCHACHA20_POLY1305][..], &SESSION, &seq.to_be_bytes()].concat()
+    fn header(seq: u64) -> [u8; HEADER] {
+        [&[1u8, 1, 0, ENC_XCHACHA20_POLY1305][..], &SESSION, &seq.to_be_bytes()].concat().try_into().unwrap()
+    }
+
+    /// The header every control-only batch shares: seq 0.
+    fn repeated() -> [u8; HEADER] {
+        header(0)
+    }
+
+    fn pair(key: &SessionKey, d: Direction) -> (Sealer, Opener) {
+        let o = Opener::new(key, SESSION, d);
+        (Sealer::new(key, SESSION, d, o.epoch()), o)
     }
 
     fn flip(b: &[u8], i: usize) -> Vec<u8> {
@@ -371,7 +486,9 @@ mod tests {
         }
         assert!(unwrap_account_key(&blob[..blob.len() - 1], account.id(), &device).is_err());
         let later = [&[2u8][..], &blob[1..]].concat();
-        assert!(unwrap_account_key(&later, account.id(), &device).unwrap_err().0.contains("format 2"));
+        assert!(unwrap_account_key(&later, account.id(), &device).unwrap_err().0.contains("format 2, newer"));
+        let never = [&[0u8][..], &blob[1..]].concat();
+        assert!(!unwrap_account_key(&never, account.id(), &device).unwrap_err().0.contains("upgrade"));
     }
 
     #[test]
@@ -385,6 +502,8 @@ mod tests {
             assert!(unwrap_session_key(&flip(&blob, i), &SESSION, &account).is_err(), "byte {i} changed and it still opened");
         }
         assert!(unwrap_session_key(&blob, b"another-session!", &account).is_err(), "it opened for another session");
+        let later = [&[2u8][..], &blob[1..]].concat();
+        assert!(unwrap_session_key(&later, &SESSION, &account).unwrap_err().0.contains("format 2, newer"));
         assert!(unwrap_session_key(&blob, &SESSION, &AccountKey::generate()).is_err(), "another account key opened it");
     }
 
@@ -392,18 +511,68 @@ mod tests {
     fn r_e2e_2_content_is_bound_to_its_frame_header() {
         let key = SessionKey::generate();
         let text = br#"{"type":"delta","text":"hello"}"#;
-        let sealed = seal(&key, &header(7), text);
-        assert_eq!(sealed.len(), NONCE + text.len() + TAG);
-        assert_eq!(open(&key, &header(7), &sealed).unwrap(), text);
-        // A nonce is drawn per message: the same text twice is two ciphertexts.
-        assert_ne!(seal(&key, &header(7), text), sealed);
-        assert!(open(&key, &header(8), &sealed).is_err(), "replayed under another seq");
-        assert!(open(&key, &flip(&header(7), 5), &sealed).is_err(), "moved to another session");
+        let (mut tx, mut rx) = pair(&key, Direction::HostToClient);
+        let sealed = tx.seal(&header(7), text).unwrap();
+        assert_eq!(sealed.len(), SEALED_OVERHEAD + text.len());
+        // Under another header it does not open (and a failed open does
+        // not move the chain on).
+        let mut other = Opener { epoch: rx.epoch(), ..Opener::new(&key, SESSION, Direction::HostToClient) };
+        assert!(other.open(&header(8), &sealed).is_err(), "moved to another seq");
+        let mut moved = header(7);
+        moved[5] ^= 1;
+        assert!(other.open(&moved, &sealed).is_err(), "moved to another session's header");
         for i in 0..sealed.len() {
-            assert!(open(&key, &header(7), &flip(&sealed, i)).is_err(), "byte {i} changed and it still opened");
+            assert!(other.open(&header(7), &flip(&sealed, i)).is_err(), "byte {i} changed and it still opened");
         }
-        assert!(open(&SessionKey::generate(), &header(7), &sealed).is_err());
-        assert!(open(&key, &header(7), &sealed[..NONCE + TAG - 1]).is_err());
+        assert_eq!(rx.open(&header(7), &sealed).unwrap(), text);
+        assert!(Opener::new(&SessionKey::generate(), SESSION, Direction::HostToClient).open(&header(7), &sealed).is_err());
+        assert!(rx.open(&header(7), &sealed[..SEALED_OVERHEAD - 1]).is_err());
+    }
+
+    /// The review's attack: headers repeat (every control-only batch, every
+    /// client frame), so the header alone binds no position. The counter,
+    /// direction and receiver's epoch do.
+    #[test]
+    fn r_e2e_2_a_replayed_reordered_or_reflected_message_is_refused() {
+        let key = SessionKey::generate();
+        let (mut tx, mut rx) = pair(&key, Direction::ClientToHost);
+        let approve = tx.seal(&repeated(), b"approve").unwrap();
+        let deny = tx.seal(&repeated(), b"deny").unwrap();
+        // Reordered: the second first, then the first is refused.
+        assert_eq!(rx.open(&repeated(), &deny).unwrap(), b"deny");
+        assert!(rx.open(&repeated(), &approve).unwrap_err().0.contains("replay or a reordering"));
+        // Replayed: the same message twice.
+        let again = tx.seal(&repeated(), b"execute").unwrap();
+        assert_eq!(rx.open(&repeated(), &again).unwrap(), b"execute");
+        assert!(rx.open(&repeated(), &again).is_err());
+        assert_eq!(rx.last(), Some(2));
+        // A gap opens, and says where the chain is.
+        tx.seal(&repeated(), b"dropped").unwrap();
+        assert_eq!(rx.open(&repeated(), &tx.seal(&repeated(), b"after").unwrap()).unwrap(), b"after");
+        assert_eq!(rx.last(), Some(4));
+
+        // Reflected: a host-to-client message fed to the client-to-host
+        // opener (same key, same session, same epoch, fresh counter).
+        let mut back = Sealer::new(&key, SESSION, Direction::HostToClient, rx.epoch());
+        back.next = 9;
+        assert!(rx.open(&repeated(), &back.seal(&repeated(), b"x").unwrap()).is_err(), "the other direction opened");
+        // Another connection: a recording of this one opens on no new opener.
+        let mut next_conn = Opener::new(&key, SESSION, Direction::ClientToHost);
+        assert!(next_conn.open(&repeated(), &approve).is_err(), "replayed across connections");
+        // Another session under the same key.
+        let mut elsewhere = Opener { epoch: rx.epoch(), ..Opener::new(&key, *b"another-session!", Direction::ClientToHost) };
+        assert!(elsewhere.open(&repeated(), &approve).is_err());
+    }
+
+    #[test]
+    fn r_e2e_2_a_header_without_the_enc_byte_is_refused() {
+        let key = SessionKey::generate();
+        let (mut tx, mut rx) = pair(&key, Direction::HostToClient);
+        let mut plain = header(1);
+        plain[3] = 0;
+        assert!(tx.seal(&plain, b"x").unwrap_err().0.contains("enc 0"));
+        let sealed = tx.seal(&header(1), b"x").unwrap();
+        assert!(rx.open(&plain, &sealed).is_err());
     }
 
     #[test]
@@ -411,7 +580,7 @@ mod tests {
         // 0 is "none" in the header (daemon::ws::ENC_NONE); this is the
         // first value the transport was told to wait for.
         assert_eq!(ENC_XCHACHA20_POLY1305, 1);
-        assert_eq!(header(0).len(), 28);
+        assert_eq!(header(0)[3], ENC_XCHACHA20_POLY1305);
     }
 
     #[test]
@@ -427,5 +596,6 @@ mod tests {
         assert_eq!(unhex(&hex(&[0, 1, 0xab, 0xff])).unwrap(), vec![0, 1, 0xab, 0xff]);
         assert!(unhex("abc").is_none());
         assert!(unhex("zz").is_none());
+        assert!(unhex("+f+f").is_none(), "a sign is not a hex digit");
     }
 }

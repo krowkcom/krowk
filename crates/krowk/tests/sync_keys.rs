@@ -111,6 +111,21 @@ fn r_e2e_4_the_phrase_from_sync_init_restores_the_account_key_on_a_fresh_home() 
     assert_eq!(restored["data"]["recovered"], true);
     assert_ne!(restored["data"]["device"], made["data"]["device"], "a new home is a new device");
 
+    // `init` showed the key id beside the words, to compare with `recover`'s.
+    assert!(text.contains(&format!("Key id {account}")), "{text}");
+
+    // A valid phrase for another key (a typo that passed the checksum) is
+    // restored, and the right one entered next replaces it.
+    let retry = r.join("retry");
+    std::fs::create_dir_all(&retry).unwrap();
+    let other_key = format!("{} art", ["abandon"; 23].join(" "));
+    let out = piped(&retry, &["sync", "recover", "--json"], &other_key);
+    let wrong_id = serde_json::from_slice::<Value>(&out.stdout).unwrap()["data"]["account_key"].clone();
+    assert_ne!(wrong_id, account.as_str());
+    let out = piped(&retry, &["sync", "recover", "--json"], &phrase);
+    let fixed: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+    assert_eq!((&fixed["data"]["account_key"], &fixed["data"]["replaced"]), (&Value::from(account.as_str()), &wrong_id));
+
     // For a person, the result is its sentence, not the JSON envelope.
     let third = r.join("third");
     std::fs::create_dir_all(&third).unwrap();

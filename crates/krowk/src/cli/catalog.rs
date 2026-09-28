@@ -746,8 +746,11 @@ with `claude auth login` or `codex login`).",
         #[cfg(feature = "harness")]
         "sync" => "\
 Sessions are encrypted on this machine before they leave it. `init` shows the
-account key as 24 words once; `recover` takes them on a new machine. Nothing
-syncs yet: the keys are kept in krowk's home, 0600.",
+account key as 24 words once, with its key id; `recover` takes them on a new
+machine and shows the id it restored. Type them at its prompt, or pipe them
+from a file (`krowk sync recover < phrase.txt`) — never `echo`, which keeps
+them in your shell history. Nothing syncs yet: the keys are kept in krowk's
+home, 0600.",
         #[cfg(feature = "harness")]
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle

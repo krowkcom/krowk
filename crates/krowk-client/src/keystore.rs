@@ -36,9 +36,16 @@ struct AccountFile {
     /// The account key's id, hex: which key the phrase must restore.
     #[serde(default)]
     key_id: String,
-    /// The device it is wrapped to, hex; a check, not a secret.
+    /// The device it is wrapped to, hex; a check, not a secret, compared
+    /// with this device's key when the file is read.
     #[serde(default)]
     device_id: String,
+    /// `init` or `recover`: how the key came to this home. A key a phrase
+    /// restored may be replaced by another phrase (the first was mistyped
+    /// into a valid one); a key `init` made may not, since this file and
+    /// the phrase written down may be its only copies.
+    #[serde(default)]
+    origin: String,
     /// `e2e::wrap_account_key`'s blob, hex.
     #[serde(default)]
     wrapped: String,
@@ -129,6 +136,9 @@ impl Keystore {
         let f: AccountFile = krowk_api::creds::read(&path)?;
         let id = self.parse_id(&f)?;
         let device = self.device()?.ok_or_else(|| format!("{} is here but this device's key ({}) is not, so it cannot be opened — run `krowk sync recover` with the recovery phrase", path.display(), self.device_path().display()))?;
+        if f.device_id != device.id().to_string() {
+            return Err(format!("{} was wrapped for device {}, not this device ({}) — run `krowk sync recover` with the recovery phrase", path.display(), f.device_id, device.id()));
+        }
         let blob = e2e::unhex(&f.wrapped).ok_or_else(|| format!("{} is not valid", path.display()))?;
         e2e::unwrap_account_key(&blob, id, &device).map(Some).map_err(|e| format!("{}: {e}", path.display()))
     }
@@ -146,29 +156,36 @@ impl Keystore {
         let (device, device_created) = self.device_or_create()?;
         let account = AccountKey::generate();
         confirm(&account)?;
-        self.save(&device, &account)?;
+        self.save(&device, &account, "init")?;
         Ok(Setup { device, device_created, account })
     }
 
     /// A fresh machine: the account key from its recovery phrase, wrapped
-    /// to this device (made now if it has no key). Refused when this home
-    /// already holds a different account key; the same one is a no-op.
-    pub fn recover(&self, account: AccountKey) -> Result<Setup, String> {
+    /// to this device (made now if it has no key). A different account key
+    /// already here is replaced only when a phrase put it here too — the
+    /// retry after a word typed wrong — and refused when `init` made it.
+    /// `replaced` names the key a retry replaced.
+    pub fn recover(&self, account: AccountKey) -> Result<(Setup, Option<KeyId>), String> {
         krowk_api::home::make(&self.home)?;
         let _lock = krowk_api::creds::lock(&self.account_path())?;
+        let mut replaced = None;
         if let Some(id) = self.account_id()?
             && id != account.id()
         {
-            return Err(format!("this home already holds another account key ({id}) — recovering into it would lose that one; use a fresh krowk home, or move {} aside", self.account_path().display()));
+            let f: AccountFile = krowk_api::creds::read(&self.account_path())?;
+            if f.origin != "recover" {
+                return Err(format!("this home already holds account key {id}, made here by `krowk sync init` — recovering another into it would lose that one; use a fresh krowk home, or move {} aside", self.account_path().display()));
+            }
+            replaced = Some(id);
         }
         let (device, device_created) = self.device_or_create()?;
-        self.save(&device, &account)?;
-        Ok(Setup { device, device_created, account })
+        self.save(&device, &account, "recover")?;
+        Ok((Setup { device, device_created, account }, replaced))
     }
 
-    fn save(&self, device: &DeviceKey, account: &AccountKey) -> Result<(), String> {
+    fn save(&self, device: &DeviceKey, account: &AccountKey, origin: &str) -> Result<(), String> {
         let wrapped = e2e::wrap_account_key(account, &device.public()).map_err(|e| e.0)?;
-        let file = AccountFile { version: 1, key_id: account.id().to_string(), device_id: device.id().to_string(), wrapped: e2e::hex(&wrapped) };
+        let file = AccountFile { version: 1, key_id: account.id().to_string(), device_id: device.id().to_string(), wrapped: e2e::hex(&wrapped), origin: origin.into() };
         krowk_api::creds::write(&self.account_path(), &file)
     }
 }

@@ -6,9 +6,11 @@
 //! exactly the key every session was wrapped under.
 //!
 //! The checksum is 8 bits: a mistyped word that is still a list word gets
-//! through one time in 256, and is then caught as a phrase for another
-//! account (its key id matches nothing). A word not on the list is caught
-//! every time.
+//! through one time in 256, as a valid phrase for another key. Nothing
+//! local can tell — until the registry holds the account's key id (ticket
+//! 16) — so `krowk sync init` shows the key id beside the phrase and
+//! `recover` shows the id it restored, for the person to compare. A word
+//! not on the list is caught every time.
 //!
 //! The phrase is never written to disk or to a log: the caller shows it and
 //! drops it, and every copy here is wiped when dropped.

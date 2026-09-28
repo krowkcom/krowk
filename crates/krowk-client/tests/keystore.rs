@@ -37,7 +37,8 @@ fn r_e2e_4_a_recovery_phrase_restores_the_account_key_on_a_fresh_home() {
 
     // A fresh home, with nothing but the words.
     assert!(second.account().unwrap().is_none());
-    let restored = second.recover(phrase::decode(&words).unwrap()).unwrap();
+    let (restored, replaced) = second.recover(phrase::decode(&words).unwrap()).unwrap();
+    assert_eq!(replaced, None);
     assert!(restored.device_created);
     assert_ne!(restored.device.id(), setup.device.id(), "the second home is its own device");
     assert_eq!(restored.account, setup.account, "the identical account key");
@@ -46,6 +47,12 @@ fn r_e2e_4_a_recovery_phrase_restores_the_account_key_on_a_fresh_home() {
 
     // Each home's wrapped key opens with its own device key only.
     std::fs::copy(first.account_path(), second.account_path()).unwrap();
+    assert!(second.account().unwrap_err().contains("was wrapped for device"));
+    // And with the stored device id edited to match, the HPKE binding
+    // still refuses it.
+    let mut edited: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(second.account_path()).unwrap()).unwrap();
+    edited["device_id"] = restored.device.id().to_string().into();
+    std::fs::write(second.account_path(), edited.to_string()).unwrap();
     assert!(second.account().unwrap_err().contains("does not open"));
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -73,10 +80,25 @@ fn r_e2e_3_recovering_another_account_into_a_home_is_refused() {
     let root = scratch("other");
     let store = Keystore::new(&root.join("home"));
     let setup = store.init(|_| Ok(())).unwrap();
-    assert!(store.recover(AccountKey::generate()).unwrap_err().contains("another account key"));
+    assert!(store.recover(AccountKey::generate()).unwrap_err().contains("made here by `krowk sync init`"));
     // The same account again is fine, and changes nothing that matters.
     store.recover(setup.account.clone()).unwrap();
     assert_eq!(store.account().unwrap().unwrap(), setup.account);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A phrase mistyped into a valid one (1 in 256) restores the wrong key;
+/// entering the right phrase next replaces it, since a phrase put it there.
+#[test]
+fn r_e2e_4_a_recover_is_retried_with_the_right_phrase() {
+    let root = scratch("retry");
+    let store = Keystore::new(&root.join("home"));
+    let (wrong, right) = (AccountKey::generate(), AccountKey::generate());
+    let (first, _) = store.recover(wrong.clone()).unwrap();
+    let (second, replaced) = store.recover(right.clone()).unwrap();
+    assert_eq!(replaced, Some(wrong.id()));
+    assert_eq!(second.device.id(), first.device.id());
+    assert_eq!(store.account().unwrap().unwrap(), right);
     let _ = std::fs::remove_dir_all(&root);
 }
 
