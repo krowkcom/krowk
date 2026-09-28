@@ -5,9 +5,10 @@
 //! ```
 //!
 //! - `contentWidth` — `prose` (the default) lays out what is above the
-//!   prompt at most 80 columns wide, however wide the terminal; a narrower one still gets all of its width.
-//!   `full-width` takes the terminal's whole width. The prompt and the
-//!   status line take the whole width either way.
+//!   prompt at most 80 columns wide, however wide the terminal; a narrower
+//!   one still gets all of its width. `full-width` takes the terminal's
+//!   whole width. The prompt and the status line take the whole width
+//!   either way.
 //! - `statusBar` — false hides the status line under the prompt. The "no
 //!   network connectivity" notice is not part of it and shows regardless
 //!   (R-OFF-1).
