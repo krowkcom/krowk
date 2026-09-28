@@ -1,7 +1,7 @@
-//! The pull request of the branch checked out, for the status line: asked
-//! of `gh` at start and again after every turn, since a turn is what opens,
-//! merges or readies one. No `gh`, no sign-in, no branch or no pull request
-//! all read as none.
+//! The branch checked out and its pull request, for the status line: read
+//! at start and again after every turn, since a turn is what switches
+//! branches and opens, merges or readies a pull request. No `gh`, no
+//! sign-in, no branch or no pull request all read as no pull request.
 
 use serde_json::Value;
 use std::path::Path;
@@ -38,15 +38,17 @@ pub fn branch(dir: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// The pull request of the branch checked out in `dir`, as `gh` knows it.
-/// Blocking: run it off the loop.
-pub fn look(dir: &Path) -> Option<Pr> {
+/// The branch checked out in `dir`, and its pull request as `gh` knows it
+/// when `pr` asks for it. Blocking: run it off the loop.
+pub fn look(dir: &Path, pr: bool) -> (String, Option<Pr>) {
     let branch = branch(dir);
-    if branch.is_empty() {
-        return None;
-    }
+    let found = if pr && !branch.is_empty() { of(dir, &branch) } else { None };
+    (branch, found)
+}
+
+fn of(dir: &Path, branch: &str) -> Option<Pr> {
     let out = Command::new("gh")
-        .args(["pr", "view", &branch, "--json", "number,state,isDraft,url"])
+        .args(["pr", "view", branch, "--json", "number,state,isDraft,url"])
         .current_dir(dir)
         .env("GH_PROMPT_DISABLED", "1")
         .env("NO_COLOR", "1")

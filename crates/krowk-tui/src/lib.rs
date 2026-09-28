@@ -11,7 +11,7 @@
 //! - `look` — glyphs, colours, the spinner and the light markdown.
 //! - `settings` — the status line's configuration (R-TUI-2).
 //! - `device` — the `<user>/<host>` the status line opens with, read once.
-//! - `pr` — the branch's pull request the status line links to, from `gh`.
+//! - `pr` — the branch and its pull request, for the status line's second row.
 //! - `net` — the connectivity probe behind the offline notice (R-OFF-1).
 //! - `connect` — `/connect` and `/disconnect`: the harness's sign-in, asked
 //!   through an overlay, and the first-run card.
@@ -199,7 +199,7 @@ type TurnFuture<'a> = Pin<Box<dyn Future<Output = Result<Option<RunResult>, Engi
 type ProbeFuture = Pin<Box<dyn Future<Output = bool>>>;
 type RouteFuture<'a> = Pin<Box<dyn Future<Output = Result<ModelRef, EngineError>> + 'a>>;
 type ChecksFuture = Pin<Box<dyn Future<Output = Vec<krowk_harness::readiness::Report>>>>;
-type PrFuture = Pin<Box<dyn Future<Output = Option<pr::Pr>>>>;
+type PrFuture = Pin<Box<dyn Future<Output = (String, Option<pr::Pr>)>>>;
 
 async fn session(opts: Options) -> Outcome {
     let mut stdout = std::io::stdout();
@@ -256,6 +256,7 @@ async fn session(opts: Options) -> Outcome {
     let branch = pr::branch(&opts.host.cwd);
     let effort = opts.effort.and_then(|e| serde_json::to_value(e).ok()).and_then(|v| v.as_str().map(String::from));
     app.header(&home_relative(&opts.host.cwd), &branch, effort.as_deref());
+    app.branch = branch;
     for n in &opts.notices {
         app.note(n);
     }
@@ -360,7 +361,7 @@ struct Ui<'h> {
     /// The vendors' readiness checks behind the pickers' marks, off the
     /// runtime's thread: slow ones never hold up a key.
     checks: Option<ChecksFuture>,
-    /// The branch's pull request, being asked of `gh`.
+    /// The branch checked out and its pull request, being read.
     pr: Option<PrFuture>,
     /// The flow running is the first-run card's.
     first_run: bool,
@@ -784,9 +785,10 @@ impl<'h> Ui<'h> {
                     }
                 }
                 m = recv_auth(&mut self.auth) => self.on_auth(app, term, m)?,
-                found = finish(&mut self.pr) => {
+                (branch, found) = finish(&mut self.pr) => {
                     self.pr = None;
-                    if app.pr != found {
+                    if app.branch != branch || app.pr != found {
+                        app.branch = branch;
                         app.pr = found;
                         app.touch();
                     }
@@ -2090,21 +2092,24 @@ impl<'h> Ui<'h> {
         }
     }
 
+    /// Reads the branch checked out and asks `gh` for its pull request,
+    /// off the loop, unless that is under way already or the status line
+    /// shows neither.
+    fn look_for_pr(&mut self, app: &App) {
+        let shown = |i| app.settings.status_bar && app.settings.status_items.contains(&i);
+        let (branch, pr) = (shown(settings::Item::Branch), shown(settings::Item::Pr));
+        if self.pr.is_some() || !(branch || pr) {
+            return;
+        }
+        let dir = self.runs_in.clone();
+        self.pr = Some(Box::pin(async move { tokio::task::spawn_blocking(move || pr::look(&dir, pr)).await.unwrap_or_default() }));
+    }
+
     /// At start, with the model known: whether anything here can run a
     /// model at all. Ready by a key, a login in krowk's own file or a
     /// server that takes none, it can, and no vendor is asked; with none of
     /// those, the vendors are asked behind the first frame, and none of
     /// them ready opens the first-run card.
-    /// Asks `gh` for the branch's pull request, off the loop, unless it is
-    /// being asked already or the status line would not show it.
-    fn look_for_pr(&mut self, app: &App) {
-        if self.pr.is_some() || !app.settings.status_bar || !app.settings.status_items.contains(&settings::Item::Pr) {
-            return;
-        }
-        let dir = self.runs_in.clone();
-        self.pr = Some(Box::pin(async move { tokio::task::spawn_blocking(move || pr::look(&dir)).await.ok().flatten() }));
-    }
-
     fn startup_sweep(&mut self, app: &mut App) {
         let reg = self.host.registry();
         if reg.instances.values().filter_map(|i| krowk_harness::readiness::local(i, &self.credentials)).any(|r| !matches!(Mark::of(&r), Mark::Not(_))) {
