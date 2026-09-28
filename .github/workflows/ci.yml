@@ -36,7 +36,13 @@ jobs:
           rustup toolchain install 1.97 --profile minimal --component clippy
           rustup default 1.97
 
-      - uses: Swatinem/rust-cache@v2
+      # The same shared build cache mise.toml turns on locally, wrapping plain
+      # cargo. It keys on the rustc on PATH, so it comes after the toolchain.
+      # Pushes to main publish to the GitHub Actions cache; pull requests only
+      # restore from it. The version moves with the one in mise.toml.
+      - uses: jdx/mr-boxington-action@v1
+        with:
+          version: 1.19.0
 
       # The opencode fixture is built from SQL at case time.
       - name: Ensure sqlite3
