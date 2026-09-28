@@ -1,9 +1,9 @@
 //! The prompt: a multi-line editor with readline's keys and a history.
 //!
 //! Enter sends; Shift-Enter, Alt-Enter, Ctrl-J, or a backslash before Enter
-//! starts a new line instead (Shift-Enter only where the terminal took the
-//! keyboard protocol push; elsewhere, and on every phone keyboard, it is
-//! Enter). A paste arrives whole, newlines
+//! starts a new line instead (Shift-Enter on Windows and where the terminal
+//! took the keyboard protocol push; elsewhere, and on every phone keyboard,
+//! it is Enter). A paste arrives whole, newlines
 //! and all, through bracketed paste. Up and Down move between lines, and
 //! past the first or last line walk the history.
 //!
