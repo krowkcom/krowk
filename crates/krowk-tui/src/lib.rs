@@ -953,6 +953,7 @@ impl<'h> Ui<'h> {
         match krowk_harness::connect::read_config(&paths.config) {
             Ok(raw) => {
                 self.show_settings(app, &raw);
+                app.setting_at = 0;
                 app.overlay = Overlay::Settings;
                 self.settings_shown = Some(std::time::Instant::now());
             }
@@ -968,19 +969,29 @@ impl<'h> Ui<'h> {
         app.touch();
     }
 
-    /// The default permission mode one along `settings::DEFAULT_MODES`,
-    /// saved at once; at the end, nothing. The session keeps the mode it
-    /// runs in: `/mode` changes that.
-    fn step_default_mode(&mut self, app: &mut App, by: isize) {
+    /// The chosen setting one along its values, saved at once; at the end,
+    /// nothing. The default permission mode leaves the session in the mode
+    /// it runs in — `/mode` changes that — and the content width applies
+    /// from the next frame.
+    fn step_setting(&mut self, app: &mut App, by: isize) {
         let Some(paths) = &self.paths else { return };
-        let Some(m) = settings::step_default(app.default_mode.as_deref(), by) else { return };
+        let width = if app.setting_at == 1 { app.content_width().step(by) } else { None };
+        let mode = if app.setting_at == 0 { settings::step_default(app.default_mode.as_deref(), by) } else { None };
+        if width.is_none() && mode.is_none() {
+            return;
+        }
         // A `/connect` writes config.json too, from its own thread: one at
         // a time, so neither loses what the other wrote.
         if self.auth.is_some() {
             app.flash = Some("a /connect is running — change settings once it is done".into());
             return;
         }
-        match settings::set_default_mode(&paths.config, m) {
+        let saved = match (mode, width) {
+            (Some(m), _) => settings::set_default_mode(&paths.config, m),
+            (_, Some(w)) => settings::set_content_width(&paths.config, w).inspect(|_| app.set_content_width(w)),
+            _ => return,
+        };
+        match saved {
             Ok(raw) => self.show_settings(app, &raw),
             Err(e) => {
                 app.overlay = Overlay::None;
@@ -1360,9 +1371,9 @@ impl<'h> Ui<'h> {
         // Only a terminal that took KEYS_PUSH tells the two enters apart.
         let alt = k.modifiers.contains(KeyModifiers::ALT) || (k.code == KeyCode::Enter && k.modifiers.contains(KeyModifiers::SHIFT));
         // Settings takes every key while it is open, ahead of the trust
-        // question and a limit's offer, which are no one's answer here: ←
-        // and → choose the one setting there is, enter, esc or Ctrl-C close
-        // it, Ctrl-D still leaves krowk, and nothing reaches the prompt.
+        // question and a limit's offer, which are no one's answer here: ↑
+        // and ↓ choose a setting, ← and → change it, enter, esc or Ctrl-C
+        // close it, Ctrl-D still leaves krowk, and nothing reaches the prompt.
         // Choosing goes one way and stops at the end, so a key held down,
         // whose repeats most terminals send as presses, chooses the same
         // value again; and a key typed ahead, before it was up to be seen,
@@ -1373,7 +1384,9 @@ impl<'h> Ui<'h> {
                 KeyCode::Esc => app.overlay = Overlay::None,
                 KeyCode::Char('c') if ctrl => app.overlay = Overlay::None,
                 KeyCode::Enter if settled && !ctrl && !alt => app.overlay = Overlay::None,
-                KeyCode::Left | KeyCode::Right if settled && !ctrl && !alt => self.step_default_mode(app, if k.code == KeyCode::Left { -1 } else { 1 }),
+                KeyCode::Up if !ctrl && !alt => app.setting_at = 0,
+                KeyCode::Down if !ctrl && !alt => app.setting_at = 1,
+                KeyCode::Left | KeyCode::Right if settled && !ctrl && !alt => self.step_setting(app, if k.code == KeyCode::Left { -1 } else { 1 }),
                 _ => {}
             }
             app.touch();
@@ -1840,7 +1853,11 @@ impl<'h> Ui<'h> {
         };
         if let Some(r) = registry {
             app.vendor_instances = r.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
-            self.host.set_registry(*r, changed.as_deref());
+            match &done {
+                // The same instance, renamed: its backend process goes on.
+                Ok(connect::Done::Renamed(n)) => self.host.set_registry_renamed(*r, &n.from, &n.to),
+                _ => self.host.set_registry(*r, changed.as_deref()),
+            }
         }
         if changed.is_some() {
             // Whatever was marked before may have changed, a check still

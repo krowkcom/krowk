@@ -65,6 +65,13 @@ impl Sandbox {
         ]
     }
 
+    /// config.json laying out at the terminal's whole width, for a test
+    /// that reads rows wider than `prose`'s 65 columns.
+    fn full_width(&self) {
+        std::fs::create_dir_all(self.root.join("home/.krowk")).unwrap();
+        std::fs::write(self.root.join("home/.krowk/config.json"), r#"{"tui": {"contentWidth": "full-width"}}"#).unwrap();
+    }
+
     fn command(&self, url: &str, args: &[&str]) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
         c.args(args).env_clear().envs(self.env(url)).current_dir(self.root.join("repo"));
@@ -235,6 +242,7 @@ fn r_inst_7_the_tui_offers_the_next_instance_and_y_continues_there() {
 fn the_mode_picker_sets_the_mode_the_next_turn_runs_in() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("mode");
+    b.full_width();
     let mut t = pty::Pty::spawn(b.command(&m.url, &["--model", "anthropic/claude-sonnet-4-6"]), 120, 30);
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"/permission-mode nope\r");
@@ -273,7 +281,8 @@ fn the_mode_picker_sets_the_mode_the_next_turn_runs_in() {
 }
 
 /// `/config` (or `/settings`) cycles the default permission mode and saves
-/// it to config.json, and the next session starts in it.
+/// it to config.json, and the next session starts in it; ↓ chooses the
+/// content width, saved the same way.
 #[test]
 fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     let m = mock::serve(mock::readme_script);
@@ -298,6 +307,15 @@ fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     }
     assert_eq!(saved().as_deref(), Some("unhinged"), "{:?}", t.text());
     assert!(!t.text().contains("zq"), "typed into the prompt: {:?}", t.text());
+    // ↓ chooses the content width, → makes it the terminal's whole width.
+    let width = || std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["tui"]["contentWidth"].as_str().map(String::from));
+    t.write(b"\x1b[B\x1b[C");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while width().as_deref() != Some("full-width") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(width().as_deref(), Some("full-width"), "{:?}", t.text());
+    assert_eq!(saved().as_deref(), Some("unhinged"), "the mode stays as chosen");
     t.write(b"\x1b");
     std::thread::sleep(Duration::from_millis(100));
     t.write(b"\x04");
@@ -1058,6 +1076,7 @@ fn with_no_key_the_first_frame_never_waits_on_a_vendor_and_the_routed_backend_as
 #[test]
 fn trust_is_asked_on_send_and_a_no_puts_the_prompt_back_to_be_asked_again() {
     let b = Sandbox::new("trustno");
+    b.full_width();
     let mut t = pty::Pty::spawn(subscription_only(&b, false, "0"), 100, 30);
     assert!(t.wait_for("claude/claude-opus-5-5 |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     assert!(!t.text().contains(TRUST_ASKED), "asked before anything was sent: {:?}", t.text());
@@ -1189,6 +1208,7 @@ fn fresh_command(b: &Sandbox, url: &str) -> Command {
 #[test]
 fn the_first_run_card_connects_a_claude_subscription_and_the_prompt_runs_on_it() {
     let b = Sandbox::new("firstrun");
+    b.full_width();
     let mut t = pty::Pty::spawn(fresh_command(&b, "http://127.0.0.1:9"), 110, 34);
     assert!(says(&t, 0, "Nothing here can run a model yet", Duration::from_secs(15)), "no first-run card: {:?}", t.text());
     assert!(!t.text().contains("none_ready"), "the failure is not shown, the card is: {:?}", t.text());
@@ -1427,6 +1447,7 @@ fn settle() {
 #[test]
 fn ctrl_c_during_a_vendor_login_stops_the_login_and_krowk_takes_the_terminal_back() {
     let b = Sandbox::new("loginctrlc");
+    b.full_width();
     let mut t = pty::Pty::spawn(fresh_command(&b, "http://127.0.0.1:9"), 110, 34);
     for question in ["Connect which provider?", "How do you connect anthropic?", "not signed in, reconnect"] {
         assert!(says(&t, 0, question, Duration::from_secs(15)), "{question}: {:?}", t.text());

@@ -1,9 +1,13 @@
 //! The TUI's part of krowk's config.json, under `"tui"` (R-TUI-2):
 //!
 //! ```json
-//! { "tui": { "statusBar": true, "statusItems": ["device", "model", "cost", "tasks", "subagents", "help"] } }
+//! { "tui": { "contentWidth": "prose", "statusBar": true, "statusItems": ["device", "model", "cost", "tasks", "subagents", "help"] } }
 //! ```
 //!
+//! - `contentWidth` — `prose` (the default) lays everything out at most 65
+//!   columns wide, Tailwind's `max-w-prose` (`65ch`), however wide the
+//!   terminal; a narrower one still gets all of its width. `full-width`
+//!   takes the terminal's whole width.
 //! - `statusBar` — false hides the status line under the prompt. The "no
 //!   network connectivity" notice is not part of it and shows regardless
 //!   (R-OFF-1).
@@ -21,10 +25,11 @@
 //! taken and ignored — offline shows by itself, and the session's id is in
 //! the details overlay.
 //!
-//! `/settings` (or `/config`) sets what lives outside `"tui"`: for now
-//! `permissions.defaultMode`, `default` or `unhinged` chosen with ← and →, which
-//! the next session starts in (`--permission-mode` and a trusted
-//! repository's own `defaultMode` still come first).
+//! `/settings` (or `/config`) sets, chosen with ↑ and ↓ and changed with ←
+//! and →, `permissions.defaultMode` — `default` or `unhinged`, which the next
+//! session starts in (`--permission-mode` and a trusted repository's own
+//! `defaultMode` still come first) — and `tui.contentWidth`, which applies
+//! at once.
 //!
 //! The overlays are toggled from the keyboard rather than configured: `?` on
 //! an empty prompt for the keys, Ctrl-O for the session's details, Ctrl-T
@@ -71,15 +76,58 @@ impl Item {
     }
 }
 
+/// How wide the TUI lays out, inside its padding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContentWidth {
+    /// At most `PROSE` columns.
+    #[default]
+    Prose,
+    /// The terminal's whole width.
+    FullWidth,
+}
+
+impl ContentWidth {
+    /// In the order `/settings` steps through them.
+    pub const ALL: [(&'static str, ContentWidth); 2] = [("prose", ContentWidth::Prose), ("full-width", ContentWidth::FullWidth)];
+
+    /// Tailwind's `max-w-prose`, `65ch`: 65 columns of a monospace font.
+    pub const PROSE: u16 = 65;
+
+    pub fn name(self) -> &'static str {
+        ContentWidth::ALL.iter().find(|(_, w)| *w == self).map_or("prose", |(n, _)| n)
+    }
+
+    fn parse(s: &str) -> Option<ContentWidth> {
+        ContentWidth::ALL.iter().find(|(n, _)| *n == s).map(|(_, w)| *w)
+    }
+
+    /// The width to lay out in, given `room`: a maximum, never more than
+    /// there is.
+    pub fn of(self, room: u16) -> u16 {
+        match self {
+            ContentWidth::Prose => room.min(ContentWidth::PROSE),
+            ContentWidth::FullWidth => room,
+        }
+    }
+
+    /// The width `by` along `ALL` from this one, and none past either end:
+    /// the same key again chooses nothing new.
+    pub fn step(self, by: isize) -> Option<ContentWidth> {
+        let at = ContentWidth::ALL.iter().position(|(_, w)| *w == self).unwrap_or(0);
+        at.checked_add_signed(by).and_then(|i| ContentWidth::ALL.get(i)).map(|(_, w)| *w)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
+    pub content_width: ContentWidth,
     pub status_bar: bool,
     pub status_items: Vec<Item>,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { status_bar: true, status_items: Item::ALL.iter().map(|(_, i)| *i).collect() }
+        Settings { content_width: ContentWidth::default(), status_bar: true, status_items: Item::ALL.iter().map(|(_, i)| *i).collect() }
     }
 }
 
@@ -94,6 +142,13 @@ pub fn from_config(raw: &Value) -> (Settings, Vec<String>) {
         warnings.push("config \"tui\" must be an object — using the defaults".into());
         return (s, warnings);
     };
+    match tui.get("contentWidth") {
+        None => {}
+        Some(v) => match v.as_str().and_then(ContentWidth::parse) {
+            Some(w) => s.content_width = w,
+            None => warnings.push(format!("config tui.contentWidth: {v} is not a width — prose or full-width")),
+        },
+    }
     match tui.get("statusBar") {
         None => {}
         Some(Value::Bool(b)) => s.status_bar = *b,
@@ -117,8 +172,8 @@ pub fn from_config(raw: &Value) -> (Settings, Vec<String>) {
         Some(_) => warnings.push("config tui.statusItems must be a list of item names".into()),
     }
     for key in tui.keys() {
-        if !matches!(key.as_str(), "statusBar" | "statusItems") {
-            warnings.push(format!("config tui.{key} is not a setting — the TUI reads statusBar and statusItems"));
+        if !matches!(key.as_str(), "contentWidth" | "statusBar" | "statusItems") {
+            warnings.push(format!("config tui.{key} is not a setting — the TUI reads contentWidth, statusBar and statusItems"));
         }
     }
     (s, warnings)
@@ -153,6 +208,18 @@ pub fn set_default_mode(config: &Path, m: PermissionMode) -> Result<Map<String, 
         return Err(format!("\"permissions\" in {} is not an object — fix it by hand", config.display()));
     };
     permissions.insert("defaultMode".into(), Value::String(m.name().into()));
+    krowk_harness::connect::write_config(config, &raw).map_err(|e| format!("{}: {e}", config.display()))?;
+    Ok(raw)
+}
+
+/// Writes `tui.contentWidth`, keeping every other key as it was.
+pub fn set_content_width(config: &Path, w: ContentWidth) -> Result<Map<String, Value>, String> {
+    let mut raw = krowk_harness::connect::read_config(config)?;
+    let tui = raw.entry("tui").or_insert_with(|| Value::Object(Map::new()));
+    let Some(tui) = tui.as_object_mut() else {
+        return Err(format!("\"tui\" in {} is not an object — fix it by hand", config.display()));
+    };
+    tui.insert("contentWidth".into(), Value::String(w.name().into()));
     krowk_harness::connect::write_config(config, &raw).map_err(|e| format!("{}: {e}", config.display()))?;
     Ok(raw)
 }
@@ -204,7 +271,10 @@ mod tests {
         assert_eq!(krowk_harness::connect::read_config(&config).unwrap(), written);
         let raw: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
         assert_eq!(raw, json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"], "defaultMode": "unhinged"}}));
-        std::fs::write(&config, json!({"permissions": true}).to_string()).unwrap();
+        let written = set_content_width(&config, ContentWidth::FullWidth).unwrap();
+        assert_eq!(Value::Object(written), json!({"tui": {"statusBar": false, "contentWidth": "full-width"}, "permissions": {"allow": ["Bash(ls)"], "defaultMode": "unhinged"}}));
+        std::fs::write(&config, json!({"permissions": true, "tui": []}).to_string()).unwrap();
+        assert!(set_content_width(&config, ContentWidth::Prose).is_err(), "a tui that is no object is not overwritten");
         assert!(set_default_mode(&config, PermissionMode::Default).is_err(), "a permissions that is no object is not overwritten");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -238,6 +308,21 @@ mod tests {
         let (s, w) = from_config(&json!({"tui": {"statusBar": "yes", "colour": 1}}));
         assert!(s.status_bar, "a malformed value leaves the default");
         assert_eq!(w.len(), 2, "{w:?}");
+    }
+
+    #[test]
+    fn the_content_width_is_a_maximum_prose_by_default() {
+        assert_eq!(Settings::default().content_width, ContentWidth::Prose);
+        assert_eq!(ContentWidth::Prose.of(200), 65, "Tailwind's max-w-prose");
+        assert_eq!(ContentWidth::Prose.of(40), 40, "a narrower terminal keeps all of its width");
+        assert_eq!(ContentWidth::FullWidth.of(200), 200);
+        assert_eq!(from_config(&json!({"tui": {"contentWidth": "full-width"}})).0.content_width, ContentWidth::FullWidth);
+        let (s, w) = from_config(&json!({"tui": {"contentWidth": "wide"}}));
+        assert_eq!(s.content_width, ContentWidth::Prose, "a malformed value leaves the default");
+        assert!(w.len() == 1 && w[0].contains("\"wide\"") && w[0].contains("full-width"), "{w:?}");
+        assert_eq!(ContentWidth::Prose.step(1), Some(ContentWidth::FullWidth));
+        assert_eq!(ContentWidth::FullWidth.step(1), None, "held →: nothing past full-width");
+        assert_eq!(ContentWidth::Prose.step(-1), None);
     }
 
     #[test]

@@ -12,7 +12,7 @@
 use crate::editor::Editor;
 use crate::help;
 use crate::look::{self, SEP};
-use crate::settings::{Item as StatusItem, Settings};
+use crate::settings::{ContentWidth, Item as StatusItem, Settings};
 use krowk_harness::host::Pricer;
 use krowk_harness::protocol::{
     ApprovalRequest, BackendAgent, Billing, Delta, ErrorInfo, HandoffKind, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
@@ -308,7 +308,10 @@ pub struct Turn {
 pub struct App {
     pub editor: Editor,
     pending: Vec<Line<'static>>,
+    /// The width laid out in: `room`, at most `settings.content_width`'s.
     width: u16,
+    /// The width there is, inside the padding.
+    room: u16,
     last_blank: bool,
     /// Whether what was pushed last is a tool call's block: the next call
     /// stacks under it, with no blank line between.
@@ -428,6 +431,9 @@ pub struct App {
     /// read after config.json sets another, and Claude Code's user settings
     /// file as the person would find it.
     pub default_mode_overridden: Option<(PermissionMode, String)>,
+    /// `/settings`' chosen row: 0 the default permission mode, 1 the
+    /// content width.
+    pub setting_at: usize,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
     /// A `/connect` or `/disconnect` running: its overlay's state.
@@ -442,7 +448,8 @@ impl App {
         App {
             editor,
             pending: Vec::new(),
-            width,
+            width: settings.content_width.of(width.max(1)),
+            room: width.max(1),
             last_blank: true,
             after_tool: false,
             live: None,
@@ -497,15 +504,30 @@ impl App {
             mode_at: 0,
             default_mode: None,
             default_mode_overridden: None,
+            setting_at: 0,
             help_at: 0,
             flow: None,
             marks: BTreeMap::new(),
         }
     }
 
+    /// `w` is the room there is; what is laid out takes as much of it as
+    /// the content width allows.
     pub fn set_width(&mut self, w: u16) {
-        self.width = w.max(1);
+        self.room = w.max(1);
+        self.width = self.settings.content_width.of(self.room);
         self.dirty = true;
+    }
+
+    pub fn content_width(&self) -> ContentWidth {
+        self.settings.content_width
+    }
+
+    /// Lays out at `w` from here on. What is already in scrollback keeps
+    /// the width it was printed at.
+    pub fn set_content_width(&mut self, w: ContentWidth) {
+        self.settings.content_width = w;
+        self.set_width(self.room);
     }
 
     pub fn touch(&mut self) {
@@ -695,15 +717,17 @@ impl App {
     }
 
     /// An instance goes by `to` now: what the session holds of `from` —
-    /// its model, the models it ran on, each instance's usage — is `to`'s,
-    /// so the picker and the details never offer a name that is gone.
+    /// its model, the models it ran on, an offer or a switch still to act
+    /// on, each instance's usage — is `to`'s, so nothing offers or runs a
+    /// name that is gone.
     pub fn renamed(&mut self, from: &str, to: &str) {
         let on = |i: &mut String| {
             if i == from {
                 *i = to.to_string();
             }
         };
-        for i in [self.model.as_mut().map(|m| &mut m.instance), self.turn_instance.as_mut(), self.billing.as_mut().map(|(i, _)| i)].into_iter().flatten() {
+        let offer = self.offer.as_mut().map(|o| [&mut o.from.instance, &mut o.to.instance]).into_iter().flatten();
+        for i in [self.model.as_mut().map(|m| &mut m.instance), self.switched.as_mut().map(|m| &mut m.instance), self.turn_instance.as_mut(), self.billing.as_mut().map(|(i, _)| i)].into_iter().flatten().chain(offer) {
             on(i);
         }
         let mut used = Vec::new();
@@ -714,8 +738,21 @@ impl App {
             }
         }
         self.used = used;
+        // Two old names of one instance are one instance's usage, added up.
         if let Some(u) = self.instances.remove(from) {
-            self.instances.entry(to.to_string()).or_insert(u);
+            match self.instances.get_mut(to) {
+                Some(t) => {
+                    t.turns += u.turns;
+                    t.tokens += u.tokens;
+                    t.cost += u.cost;
+                    t.unpriced |= u.unpriced;
+                    t.limit = t.limit.take().or(u.limit);
+                    t.live_turn = t.live_turn.take().or(u.live_turn);
+                }
+                None => {
+                    self.instances.insert(to.to_string(), u);
+                }
+            }
         }
     }
 
@@ -1756,14 +1793,25 @@ impl App {
         let mode = self.default_mode.as_deref().unwrap_or("default");
         let says = if PermissionMode::parse(mode).is_some() { mode_says(mode) } else { "not a mode krowk runs" };
         let mode = clean(mode);
+        let row = |at: usize, head: String| {
+            let chosen = at == self.setting_at;
+            let style = if chosen { look::accent() } else { Style::new().fg(Color::Blue) };
+            Line::from(Span::styled(clip(&format!("{}{head}", if chosen { "❯ " } else { "  " }), width), style))
+        };
         let mut out = vec![
-            Line::from(Span::styled(clip("settings — ← → change · enter or esc closes · saved to config.json for the next session", width), dim())),
-            Line::from(Span::styled(clip(&format!("❯ Default permission mode  ‹ {mode} ›  {says}"), width), look::accent())),
+            Line::from(Span::styled(clip("settings, saved to config.json — ↑ ↓ choose · ← → change · esc closes", width), dim())),
+            row(0, format!("Default permission mode  ‹ {mode} ›  {says}")),
         ];
         if let Some((runs, claude)) = &self.default_mode_overridden {
             let why = format!("  a new session here starts in {} — {claude} or this repository's settings set it, and come after config.json", runs.name());
             out.extend(wrap(&why, width).into_iter().map(|l| Line::from(Span::styled(l, yellow()))));
         }
+        let cw = self.settings.content_width;
+        let says = match cw {
+            ContentWidth::Prose => format!("at most {} columns", ContentWidth::PROSE),
+            ContentWidth::FullWidth => "the terminal's whole width".into(),
+        };
+        out.push(row(1, format!("Content width            ‹ {} ›  {says}", cw.name())));
         out
     }
 
@@ -2142,8 +2190,10 @@ mod tests {
     use super::*;
     use krowk_harness::protocol::{PermissionMode, WireApi};
 
+    /// Full width: most tests here lay out at a width they set.
     fn app() -> App {
-        App::new(Editor::new(None), 40, Settings::default(), Some(ModelRef { instance: "anthropic".into(), model: "claude-x".into() }), None)
+        let settings = Settings { content_width: ContentWidth::FullWidth, ..Settings::default() };
+        App::new(Editor::new(None), 40, settings, Some(ModelRef { instance: "anthropic".into(), model: "claude-x".into() }), None)
     }
 
     fn text(lines: &[Line]) -> Vec<String> {
@@ -2294,7 +2344,7 @@ mod tests {
     #[test]
     fn r_budget_2_the_status_bar_shows_the_hosts_live_cost_and_the_result_is_not_added_twice() {
         let mut a = app();
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost] };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost], content_width: ContentWidth::FullWidth };
         let cost = |usd: Option<f64>| live(LiveEvent::Cost { session_id: "s".into(), turn_id: "t".into(), cost_usd: usd, turn_cost_usd: usd, generated_tokens: 10 });
         // A resumed session's earlier turns and its subagents are in the
         // host's figure, so it replaces what the TUI had.
@@ -2328,7 +2378,7 @@ mod tests {
 
     #[test]
     fn r_inst_3_the_session_details_say_whether_each_instance_runs_on_a_subscription() {
-        let mut a = App::new(Editor::new(None), 100, Settings { status_bar: true, status_items: vec![StatusItem::Model] }, Some(ModelRef { instance: "codex:team".into(), model: "gpt-5.5".into() }), None);
+        let mut a = App::new(Editor::new(None), 100, Settings { status_bar: true, status_items: vec![StatusItem::Model], ..Settings::default() }, Some(ModelRef { instance: "codex:team".into(), model: "gpt-5.5".into() }), None);
         a.vendor_instances = vec!["codex:team".into(), "codex:personal".into()];
         a.overlay = Overlay::Details;
         let details = |a: &App| text(&a.view(Instant::now()).0).join("\n");
@@ -2354,9 +2404,9 @@ mod tests {
         let mut a = app();
         a.device = Some("elvinas/primevise-arch-1".into());
         assert_eq!(a.status_bar(), "elvinas/primevise-arch-1 | anthropic/claude-x | $0.00 | ? help", "the template, nothing to count yet");
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Help, StatusItem::Cost, StatusItem::Model] };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Help, StatusItem::Cost, StatusItem::Model], content_width: ContentWidth::FullWidth };
         assert_eq!(a.status_bar(), "$0.00 | anthropic/claude-x | ? help", "in the order given, the help last");
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost] };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost], content_width: ContentWidth::FullWidth };
         assert_eq!(a.status_bar(), "$0.00");
         a.settings.status_bar = false;
         let (rows, _) = a.view(Instant::now());
@@ -2508,7 +2558,7 @@ mod tests {
     /// the last one finished.
     #[test]
     fn r_sub_3_a_backends_own_agents_are_counted_and_listed_but_not_driven() {
-        let mut a = App::new(Editor::new(None), 100, Settings::default(), Some(ModelRef { instance: "claude".into(), model: "sonnet".into() }), None);
+        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, Some(ModelRef { instance: "claude".into(), model: "sonnet".into() }), None);
         let agents = |v: Vec<BackendAgent>| live(LiveEvent::BackendAgents { session_id: "s".into(), agents: v });
         a.on_line(&agents(vec![BackendAgent { task_id: "a1".into(), description: "survey the repo".into(), agent: Some("general-purpose".into()) }]));
         assert_eq!(a.status_bar(), "claude/sonnet | $0.00 | [1 subagent] | ? help");
@@ -2529,7 +2579,7 @@ mod tests {
 
     #[test]
     fn r_sub_3_each_subagent_is_one_live_line_with_status_tokens_and_cost() {
-        let mut a = App::new(Editor::new(None), 100, Settings::default(), Some(ModelRef { instance: "anthropic".into(), model: "claude-x".into() }), None);
+        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, Some(ModelRef { instance: "anthropic".into(), model: "claude-x".into() }), None);
         a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
         a.start_turn(Instant::now());
         let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
@@ -2574,7 +2624,7 @@ mod tests {
     #[test]
     fn r_todo_3_the_todo_list_is_an_optional_overlay_and_a_reminder_is_krowks() {
         let mut a = app();
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Tasks] };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Tasks], content_width: ContentWidth::FullWidth };
         assert_eq!(a.status_bar(), "", "no list, no item");
         let todo = |c: &str, s| Todo { content: c.into(), status: s };
         a.on_line(&log(LogBody::TodosUpdated { turn_id: "t".into(), todos: vec![todo("read", TodoStatus::Completed), todo("fix", TodoStatus::InProgress), todo("test", TodoStatus::Pending)] }));
@@ -2692,7 +2742,7 @@ mod tests {
     fn r_inst_6_usage_and_limits_are_shown_per_instance() {
         let mut a = app();
         a.set_width(160);
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Model] };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Model], content_width: ContentWidth::FullWidth };
         let usage = Usage { input_tokens: 1000, output_tokens: 200, ..Usage::default() };
         let response = |model: &str| LogBody::ResponseCompleted { turn_id: "t".into(), response_id: None, model: model.into(), usage, stop_reason: None, item_ids: Vec::new() };
         let done = LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage, duration_ms: 1, error: None, reported_cost_usd: None };
@@ -2776,6 +2826,26 @@ mod tests {
     }
 
     #[test]
+    fn prose_lays_out_at_most_65_columns_and_full_width_takes_the_terminal() {
+        let mut a = App::new(Editor::new(None), 200, Settings::default(), None, None);
+        a.say(&"word ".repeat(40), dim());
+        let lines = a.take_pending();
+        assert!(lines.len() > 1 && lines.iter().all(|l| l.width() <= 65), "{:?}", text(&lines));
+        assert!(text(&a.view(Instant::now()).0).iter().all(|r| r.width() <= 65), "the live region too");
+        a.set_width(30);
+        assert_eq!(a.width, 30, "a narrower terminal keeps all of its width");
+        a.set_width(200);
+        a.set_content_width(ContentWidth::FullWidth);
+        assert_eq!(a.width, 200);
+        a.set_content_width(ContentWidth::Prose);
+        assert_eq!(a.width, 65, "and back, from the width there is");
+        a.overlay = Overlay::Settings;
+        a.setting_at = 1;
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(rows.contains("❯ Content width") && rows.contains("‹ prose ›") && rows.contains("  Default permission mode"), "{rows}");
+    }
+
+    #[test]
     fn settings_shows_the_saved_default_and_what_overrides_it() {
         let mut a = app();
         a.width = 120;
@@ -2830,5 +2900,24 @@ mod tests {
         assert_eq!(wrap("abcdefghijkl", 5), ["abcde", "fghij", "kl"]);
         assert_eq!(wrap("", 5), [""]);
         assert_eq!(clip("hello world", 6), "hello…");
+    }
+
+    #[test]
+    fn a_rename_moves_the_session_onto_the_new_name_and_adds_up_its_usage() {
+        let mut a = app();
+        let m = |i: &str| ModelRef { instance: i.into(), model: "claude-x".into() };
+        a.model = Some(m("claude:a"));
+        a.used = vec![m("claude:a"), m("claude:b")];
+        a.offer = Some(SwitchOffer { from: m("claude:b"), to: m("claude:a"), resets_at_ms: None });
+        for (i, turns) in [("claude:a", 2), ("claude:b", 3)] {
+            a.instances.insert(i.into(), InstanceUsage { turns, tokens: 10, ..Default::default() });
+        }
+        a.renamed("claude:a", "claude:c");
+        a.renamed("claude:b", "claude:c");
+        assert_eq!(a.model, Some(m("claude:c")));
+        assert_eq!(a.used, [m("claude:c")], "one instance, once");
+        assert_eq!(a.offer.as_ref().map(|o| (o.from.instance.as_str(), o.to.instance.as_str())), Some(("claude:c", "claude:c")), "an offer never names a name that is gone");
+        let u = &a.instances["claude:c"];
+        assert_eq!((a.instances.len(), u.turns, u.tokens), (1, 5, 20), "both old names' usage, added up");
     }
 }

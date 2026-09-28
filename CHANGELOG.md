@@ -11,6 +11,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A content width for the TUI**: `tui.contentWidth` in config.json is
+  `prose`, at most 65 columns — Tailwind's `max-w-prose` — or
+  `full-width`, the terminal's whole width. It is a maximum: a terminal
+  narrower than 65 columns still gets all of its width. `/settings` now
+  has two rows, chosen with ↑ and ↓; the content width applies as soon as
+  it is changed, to what is printed from then on. The default is `prose`,
+  so a wide terminal now reads in a column of 65; set `full-width` for
+  the old layout.
 - **Connected instances can be renamed**: `krowk providers rename
   claude:work claude:personal` on the command line, or `/rename` in the
   TUI, which picks the instance and asks its new name with the provider's

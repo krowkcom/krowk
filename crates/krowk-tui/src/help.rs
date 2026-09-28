@@ -40,7 +40,7 @@ pub const ENTRIES: &[Entry] = &[
     e("Commands", "Type / for commands and skills", "/", Action::Tell),
     e("Model", "Switch model or instance", "/model", Action::Model),
     e("Mode", "Switch permission mode", "/mode", Action::Mode),
-    e("Settings", "The default permission mode, saved", "/settings · /config", Action::Settings),
+    e("Settings", "The default permission mode and content width, saved", "/settings · /config", Action::Settings),
     e("Connect", "Connect a provider, or renew a login", "/connect", Action::Connect),
     e("Disconnect", "Sign an instance out", "/disconnect", Action::Disconnect),
     e("Rename", "Give an instance a new name", "/rename", Action::Rename),
@@ -90,7 +90,7 @@ pub fn canonical(typed: &str) -> String {
 pub const COMMANDS: &[(&str, &str)] = &[
     ("model", "Switch model or instance"),
     ("mode", "Switch permission mode — default, acceptEdits, plan, bypassPermissions, unhinged"),
-    ("settings", "Settings saved to config.json — the default permission mode"),
+    ("settings", "Settings saved to config.json — the default permission mode and content width"),
     ("connect", "Connect a provider — a subscription or an API key"),
     ("disconnect", "Sign an instance out"),
     ("rename", "Rename an instance — /rename claude:work claude:personal"),

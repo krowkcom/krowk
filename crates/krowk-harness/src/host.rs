@@ -241,6 +241,26 @@ impl Host {
         }
     }
 
+    /// Replaces the instances after `from` was renamed `to`: the same
+    /// instance under another name, so a backend process up on it — agents
+    /// of its own running, a turn it began waiting — goes on as `to`'s,
+    /// never replaced. One left from an instance that had the name `to`
+    /// before is not reused.
+    pub fn set_registry_renamed(&self, registry: Registry, from: &str, to: &str) {
+        let mut all = self.shared.instances.write().unwrap_or_else(|e| e.into_inner());
+        let was = all.generation(from);
+        let now = was.max(all.generation(to)) + 1;
+        all.changed.remove(from);
+        all.changed.insert(to.to_string(), now);
+        all.registry = Arc::new(registry);
+        for b in self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).values_mut() {
+            if b.instance == from && b.generation == was {
+                b.instance = to.to_string();
+                b.generation = now;
+            }
+        }
+    }
+
     /// Where a bare model id — or, with none, the default — runs here
     /// (`readiness::route`), for a client choosing one before it asks for a
     /// turn or a switch (the TUI's `/model sonnet`). `current` is the
@@ -601,6 +621,8 @@ impl Shared {
     /// `switchModel`: checked, then logged — now, or when the running turn
     /// is over — so the session's next turn runs there.
     async fn switch_model(self: &Arc<Self>, session_id: Option<&str>, model: ModelRef, out: mpsc::Sender<StreamLine>) -> Result<(), EngineError> {
+        // A name since renamed is the instance it became.
+        let model = self.registry().current_model(&model);
         let Some(id) = session_id else {
             return self.check_model(&model, &self.cfg.cwd, None).await;
         };
@@ -719,12 +741,15 @@ impl Shared {
         // mode its process is in, else that turn's.
         let (model, permission_mode, effort) = match unprompted {
             Some((instance, mode)) => {
+                // Replayed on the names instances have now: so is this one.
+                let instance = self.registry().current(instance);
                 let Some((m, asked, effort)) = past.last_on.iter().find(|(m, ..)| m.instance == instance).cloned() else {
                     return Err(EngineError::new("nothing_pending", format!("session {} never ran on {instance}", session_id.unwrap_or_default())));
                 };
                 (Some(m), mode.unwrap_or(asked), effort)
             }
-            None => (model, permission_mode, effort),
+            // A name since renamed, from any client, is the instance it became.
+            None => (model.map(|m| self.registry().current_model(&m)), permission_mode, effort),
         };
         let model = match model {
             Some(m) => m,

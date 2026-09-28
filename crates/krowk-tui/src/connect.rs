@@ -37,7 +37,7 @@ pub enum Job {
     /// The instance named, else one picked.
     Disconnect(Option<String>),
     /// The instance named, else one picked, and its new name, else asked
-    /// (`/rename claude:work personal`).
+    /// (`/rename claude:work claude:personal`).
     Rename(Option<String>, Option<String>),
 }
 

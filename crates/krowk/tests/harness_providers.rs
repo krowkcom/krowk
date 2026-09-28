@@ -176,6 +176,21 @@ fn a_renamed_instance_keeps_its_key_its_default_and_its_sessions() {
     assert!(out.status.success());
     let out = b.krowk(&["providers", "rename", "openai:job", "openai:other", "--json"], &[]);
     assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("instance_exists"), "{}", String::from_utf8_lossy(&out.stderr));
+    // A built-in is refused before its new name would be asked.
+    let out = b.krowk(&["providers", "rename", "claude", "--json"], &[]);
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("built_in"), "{}", String::from_utf8_lossy(&out.stderr));
+    // An old name still leads to its instance: nothing else may take it,
+    // but the instance may take it back.
+    for args in [vec!["connect", "openai", "--method", "api-key", "--name", "work", "--api-key-env", "X", "--json"], vec!["providers", "rename", "openai:other", "openai:work", "--json"]] {
+        let out = b.krowk(&args, &[]);
+        assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("sessions that ran on it resume there"), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    b.ok(&["providers", "rename", "openai:job", "openai:work", "--json"], &[]);
+    assert_eq!(b.config()["renamed"], json!({"openai:job": "openai:work"}));
+    // Removed, its old names lead nowhere, and are anyone's to take.
+    b.ok(&["providers", "remove", "openai:work", "--json"], &[]);
+    assert_eq!(b.config()["renamed"], json!({}));
+    b.ok(&["providers", "rename", "openai:other", "openai:job", "--json"], &[]);
 }
 
 #[test]
