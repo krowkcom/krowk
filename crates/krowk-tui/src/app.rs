@@ -413,6 +413,9 @@ pub struct App {
     /// `permissions.defaultMode` as config.json has it, for `/settings`;
     /// none when it names nothing.
     pub default_mode: Option<String>,
+    /// The mode a new session here starts in instead, when a settings file
+    /// read after config.json sets another.
+    pub default_mode_overridden: Option<PermissionMode>,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
     /// A `/connect` or `/disconnect` running: its overlay's state.
@@ -479,6 +482,7 @@ impl App {
             pick_at: 0,
             mode_at: 0,
             default_mode: None,
+            default_mode_overridden: None,
             help_at: 0,
             flow: None,
             marks: BTreeMap::new(),
@@ -1685,10 +1689,16 @@ impl App {
 
     fn settings_overlay(&self, width: usize) -> Vec<Line<'static>> {
         let mode = self.default_mode.as_deref().unwrap_or("default");
-        vec![
+        let says = if PermissionMode::parse(mode).is_some() { mode_says(mode) } else { "not a mode krowk runs, so it runs as default" };
+        let mut out = vec![
             Line::from(Span::styled(clip("settings — enter or space changes · esc closes · saved to config.json for the next session", width), dim())),
-            Line::from(Span::styled(clip(&format!("❯ Default permission mode  {mode:<10}{}", mode_says(mode)), width), look::accent())),
-        ]
+            Line::from(Span::styled(clip(&format!("❯ Default permission mode  {mode:<18}{says}"), width), look::accent())),
+        ];
+        if let Some(runs) = self.default_mode_overridden {
+            let why = format!("  a new session here starts in {} — ~/.claude/settings.json or this repository's settings set it, and come after config.json", runs.name());
+            out.extend(wrap(&why, width).into_iter().map(|l| Line::from(Span::styled(l, yellow()))));
+        }
+        out
     }
 
     /// Opens the mode picker on the session's mode.
@@ -2640,6 +2650,29 @@ mod tests {
         let rows = text(&a.view(Instant::now()).0);
         let row = |i: &str| rows.iter().find(|r| r.trim_start().trim_start_matches("❯ ").starts_with(&format!("{i}/"))).cloned().unwrap_or_default();
         assert!(row("anthropic").ends_with("✓ ready") && row("claude").ends_with("✗ not signed in") && row("openai").ends_with('…'), "{rows:?}");
+    }
+
+    #[test]
+    fn an_alias_typed_whole_runs_its_command_before_any_skill() {
+        let skills = [("update-config".to_string(), "Configure things".to_string()), ("quitter".to_string(), "Leaves".to_string())];
+        assert_eq!(help::slash("/config", &skills).first().map(|s| s.name.as_str()), Some("settings"));
+        assert_eq!(help::slash("/quit", &skills).first().map(|s| s.name.as_str()), Some("exit"));
+        assert_eq!(help::slash("/permission-mode", &skills).first().map(|s| s.name.as_str()), Some("mode"));
+        assert_eq!(help::slash("/update-config", &skills).first().map(|s| s.name.as_str()), Some("update-config"), "a skill's own name still finds it");
+    }
+
+    #[test]
+    fn settings_shows_the_saved_default_and_what_overrides_it() {
+        let mut a = app();
+        a.width = 120;
+        a.default_mode = Some("acceptEdits".into());
+        a.overlay = Overlay::Settings;
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(rows.contains("acceptEdits") && rows.contains("  asks before commands"), "the mode and what it does, apart: {rows}");
+        a.default_mode = Some("dontAsk".into());
+        a.default_mode_overridden = Some(PermissionMode::Plan);
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(rows.contains("runs as default") && rows.contains("starts in plan"), "{rows}");
     }
 
     #[test]

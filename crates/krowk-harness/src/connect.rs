@@ -489,12 +489,7 @@ impl ProviderAuth<'_> {
     }
 
     fn raw_config(&self) -> Result<Map<String, Value>, EngineError> {
-        let bad = |m: String| EngineError::new("bad_config", m);
-        match std::fs::read(&self.config) {
-            Ok(raw) => serde_json::from_slice(&raw).map_err(|e| bad(format!("{} is not valid JSON: {e}", self.config.display()))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
-            Err(e) => Err(bad(format!("reading {}: {e}", self.config.display()))),
-        }
+        read_config(&self.config).map_err(|m| EngineError::new("bad_config", m))
     }
 
     /// The instances config.json defines.
@@ -1263,17 +1258,36 @@ fn made_dir(dir: Option<&Path>) -> Result<Option<Made>, EngineError> {
     }
 }
 
+/// config.json as a JSON object; none yet is an empty one.
+pub fn read_config(path: &Path) -> Result<Map<String, Value>, String> {
+    match std::fs::read(path) {
+        Ok(raw) => serde_json::from_slice(&raw).map_err(|e| format!("{} is not valid JSON: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(e) => Err(format!("reading {}: {e}", path.display())),
+    }
+}
+
 /// Writes config.json whole, by rename, never in place: how `/connect`
-/// writes its definitions and the TUI's `/settings` what it sets.
+/// writes its definitions and the TUI's `/settings` what it sets. A
+/// symlinked config.json is written where it points, and a file's mode is
+/// kept (0644 for a new one). Each write has its own temporary file, so a
+/// `/connect` on its thread and `/settings` never share one.
 pub fn write_config(path: &Path, raw: &Map<String, Value>) -> std::io::Result<()> {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let data = serde_json::to_string_pretty(raw).expect("config serializes") + "\n";
+    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let dir = path.parent().unwrap_or(Path::new("."));
-    let tmp = dir.join(format!(".config-{}-harness.json", std::process::id()));
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".config-{}-{n}.json", std::process::id()));
     let result = (|| {
         std::fs::create_dir_all(dir)?;
         std::fs::write(&tmp, data.as_bytes())?;
         #[cfg(unix)]
-        std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(path).map_or(0o644, |m| m.permissions().mode() & 0o7777);
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+        }
         std::fs::File::open(&tmp)?.sync_all()?;
         std::fs::rename(&tmp, path)
     })();

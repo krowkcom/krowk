@@ -128,11 +128,15 @@ pub fn from_config(raw: &Value) -> (Settings, Vec<String>) {
 /// and the one that asks about nothing.
 pub const DEFAULT_MODES: [PermissionMode; 2] = [PermissionMode::Default, PermissionMode::Unhinged];
 
-/// `permissions.defaultMode` in krowk's config.json as written — none when
+/// krowk's config.json as it is now.
+pub fn read(config: &Path) -> Result<Map<String, Value>, String> {
+    krowk_harness::connect::read_config(config)
+}
+
+/// `permissions.defaultMode` in a read config.json as written — none when
 /// it names nothing, which runs as `default`.
-pub fn default_mode(config: &Path) -> Result<Option<String>, String> {
-    let raw = read(config)?;
-    Ok(raw.get("permissions").and_then(|p| p.get("defaultMode")).and_then(Value::as_str).map(String::from))
+pub fn default_mode(raw: &Map<String, Value>) -> Option<String> {
+    raw.get("permissions").and_then(|p| p.get("defaultMode")).and_then(Value::as_str).map(String::from)
 }
 
 /// The mode after `now` in `DEFAULT_MODES` (none is `default`); the first
@@ -143,23 +147,28 @@ pub fn next_default(now: Option<&str>) -> PermissionMode {
     at.map_or(DEFAULT_MODES[0], |i| DEFAULT_MODES[(i + 1) % DEFAULT_MODES.len()])
 }
 
-/// Writes `permissions.defaultMode`, keeping every other key as it was.
-pub fn set_default_mode(config: &Path, m: PermissionMode) -> Result<(), String> {
+/// Writes `permissions.defaultMode`, keeping every other key as it was:
+/// config.json as written.
+pub fn set_default_mode(config: &Path, m: PermissionMode) -> Result<Map<String, Value>, String> {
     let mut raw = read(config)?;
     let permissions = raw.entry("permissions").or_insert_with(|| Value::Object(Map::new()));
     let Some(permissions) = permissions.as_object_mut() else {
         return Err(format!("\"permissions\" in {} is not an object — fix it by hand", config.display()));
     };
     permissions.insert("defaultMode".into(), Value::String(m.name().into()));
-    krowk_harness::connect::write_config(config, &raw).map_err(|e| format!("{}: {e}", config.display()))
+    krowk_harness::connect::write_config(config, &raw).map_err(|e| format!("{}: {e}", config.display()))?;
+    Ok(raw)
 }
 
-fn read(config: &Path) -> Result<Map<String, Value>, String> {
-    match std::fs::read(config) {
-        Ok(raw) => serde_json::from_slice(&raw).map_err(|e| format!("{} is not valid JSON: {e}", config.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
-        Err(e) => Err(format!("reading {}: {e}", config.display())),
-    }
+/// The mode a session started in `cwd` would run in with `raw` as krowk's
+/// config.json, when a file read after it — `~/.claude/settings.json`, a
+/// trusted repository's — sets another; none when config.json's is the
+/// one, or the settings do not load (starting says why).
+pub fn overridden(cfg: &krowk_harness::permissions::Config, raw: &Map<String, Value>, cwd: &Path) -> Option<PermissionMode> {
+    let cfg = krowk_harness::permissions::Config { user: Some(Value::Object(raw.clone())), ..cfg.clone() };
+    let runs = krowk_harness::permissions::settings::load(&cfg, cwd).ok()?.default_mode.unwrap_or_default();
+    let saved = default_mode(raw).and_then(|m| PermissionMode::parse(&m)).unwrap_or_default();
+    (runs != saved).then_some(runs)
 }
 
 #[cfg(test)]
@@ -172,18 +181,34 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("krowk-tui-settings-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let config = dir.join("config.json");
-        assert_eq!(default_mode(&config), Ok(None), "no file names nothing");
+        assert_eq!(read(&config).map(|r| default_mode(&r)), Ok(None), "no file names nothing");
         assert_eq!(next_default(None), PermissionMode::Unhinged, "unset runs as default, so the next is unhinged");
         assert_eq!(next_default(Some("unhinged")), PermissionMode::Default);
         assert_eq!(next_default(Some("acceptEdits")), PermissionMode::Default, "a mode outside the cycle goes to its start");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&config, json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"]}}).to_string()).unwrap();
-        set_default_mode(&config, PermissionMode::Unhinged).unwrap();
-        assert_eq!(default_mode(&config), Ok(Some("unhinged".into())));
+        let written = set_default_mode(&config, PermissionMode::Unhinged).unwrap();
+        assert_eq!(default_mode(&written).as_deref(), Some("unhinged"));
+        assert_eq!(read(&config).unwrap(), written);
         let raw: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
         assert_eq!(raw, json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"], "defaultMode": "unhinged"}}));
         std::fs::write(&config, json!({"permissions": true}).to_string()).unwrap();
         assert!(set_default_mode(&config, PermissionMode::Default).is_err(), "a permissions that is no object is not overwritten");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_names_the_mode_a_file_read_after_config_json_puts_a_session_in() {
+        let dir = std::env::temp_dir().join(format!("krowk-tui-settings-over-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let claude = dir.join("claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let cfg = krowk_harness::permissions::Config { home: Some(dir.clone()), claude_dir: Some(claude.clone()), ..Default::default() };
+        let raw = |m: &str| json!({"permissions": {"defaultMode": m}}).as_object().unwrap().clone();
+        assert_eq!(overridden(&cfg, &raw("unhinged"), &dir), None, "nothing else sets one");
+        std::fs::write(claude.join("settings.json"), json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
+        assert_eq!(overridden(&cfg, &raw("unhinged"), &dir), Some(PermissionMode::AcceptEdits), "Claude's user file comes after config.json");
+        assert_eq!(overridden(&cfg, &raw("acceptEdits"), &dir), None, "the same mode overrides nothing");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

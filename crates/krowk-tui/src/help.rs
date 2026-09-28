@@ -69,8 +69,12 @@ pub struct Slash {
     pub skill: bool,
 }
 
-/// krowk's own commands, as `/` lists them. `/quit`, `/permission-mode`
-/// and `/config` work too, unlisted.
+/// Names krowk's commands answer to too, unlisted: typed whole, the `/`
+/// menu puts the command first, so enter runs it — never a skill whose
+/// name only looks like it.
+pub const ALIASES: &[(&str, &str)] = &[("quit", "exit"), ("permission-mode", "mode"), ("config", "settings")];
+
+/// krowk's own commands, as `/` lists them.
 pub const COMMANDS: &[(&str, &str)] = &[
     ("model", "Switch model or instance"),
     ("mode", "Switch permission mode — default, acceptEdits, plan, bypassPermissions, unhinged"),
@@ -101,13 +105,17 @@ pub fn slash(typed: &str, skills: &[(String, String)]) -> Vec<Slash> {
     let mut matcher = Matcher::new(Config::DEFAULT);
     let mut buf = Vec::new();
     let mut score = |s: &str| pattern.score(Utf32Str::new(s, &mut buf), &mut matcher);
-    // The name typed whole outranks every other hit — `/mode` is not
-    // `/model` — and name hits every description hit; ties keep the
-    // list's order.
+    // The name typed whole, or an alias of it, outranks every other hit —
+    // `/mode` is not `/model` — and name hits every description hit; ties
+    // keep the list's order.
+    let whole = |s: &Slash| s.name.eq_ignore_ascii_case(q) || (!s.skill && ALIASES.iter().any(|(a, c)| a.eq_ignore_ascii_case(q) && *c == s.name));
     let mut ranked: Vec<(u32, usize)> = all
         .iter()
         .enumerate()
-        .filter_map(|(i, s)| score(&s.name).map(|n| (n + (1 << 20) + (u32::from(s.name.eq_ignore_ascii_case(q)) << 21), i)).or_else(|| score(&s.description).map(|d| (d, i))))
+        .filter_map(|(i, s)| {
+            let hit = score(&s.name).map(|n| n + (1 << 20)).or_else(|| score(&s.description));
+            if whole(s) { Some((hit.unwrap_or(0) + (1 << 21), i)) } else { hit.map(|h| (h, i)) }
+        })
         .collect();
     ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     ranked.into_iter().map(|(_, i)| all[i].clone()).collect()

@@ -220,8 +220,11 @@ fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"/config\r");
     assert!(t.wait_for("Default permission mode", Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    t.write(b" ");
+    // What is typed while it is open never reaches the prompt: only the
+    // space changes the setting.
+    t.write(b"zq ");
     assert!(t.wait_for("unhinged", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(!t.text().contains("zq"), "typed into the prompt: {:?}", t.text());
     t.write(b"\x1b");
     t.write(b"\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));

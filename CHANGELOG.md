@@ -22,7 +22,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   enter or space switches it between `default` and `unhinged`, written to
   `permissions.defaultMode` at once, every other key kept as it was. The
   next session starts in it; the running one keeps its mode, which `/mode`
-  changes.
+  changes. When `~/.claude/settings.json` or a trusted repository's settings
+  set another mode, which come after config.json, the overlay says which one
+  a new session starts in instead. `/config`, `/quit` and `/permission-mode`
+  typed whole now always run the command, never a skill with a similar name.
 - **`--permission-mode unhinged` runs everything the agent asks to**, with
   no approval: krowk's deny and ask rules, a hook's `ask`, and the protected
   directories (`.git`, `.claude`, `.codex`, `.krowk`, krowk's own config) no

@@ -279,6 +279,7 @@ async fn session(opts: Options) -> Outcome {
         Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("the terminal could not be drawn on: {e}")) },
     };
     let credentials = opts.host.credentials.clone();
+    let permissions_cfg = opts.host.permissions.clone();
     let host = Host::new(opts.host);
     // Routed now, while the first frame is drawn: the vendors it asks
     // (a Node start for `claude`) never hold the prompt up.
@@ -290,6 +291,7 @@ async fn session(opts: Options) -> Outcome {
     let paths = opts.config.clone().map(|config| connect::Paths { config, credentials: credentials.clone() });
     let mut ui = Ui {
         paths,
+        permissions_cfg,
         credentials,
         data_dir: sessions_dir.parent().map(PathBuf::from),
         auth: None,
@@ -346,6 +348,9 @@ struct Ui<'h> {
     /// A `/connect` or `/disconnect` running on its own thread: what it
     /// asks and tells, and its end.
     auth: Option<mpsc::UnboundedReceiver<connect::Msg>>,
+    /// What the harness reads permission settings from: for `/settings`,
+    /// which file's `defaultMode` a new session would start in.
+    permissions_cfg: krowk_harness::permissions::Config,
     /// The terminal is a vendor login's (`claude auth login`) until it
     /// says it is done: nothing is drawn meanwhile.
     suspended: bool,
@@ -930,26 +935,36 @@ impl<'h> Ui<'h> {
             app.notice("/settings: no config.json to save to — krowk has no home directory");
             return;
         };
-        match settings::default_mode(&paths.config) {
-            Ok(m) => {
-                app.default_mode = m;
+        match settings::read(&paths.config) {
+            Ok(raw) => {
+                self.show_settings(app, &raw);
                 app.overlay = Overlay::Settings;
-                app.touch();
             }
             Err(e) => app.notice(&format!("/settings: {e}")),
         }
+    }
+
+    /// config.json's settings as the overlay shows them, and what a file
+    /// read after it overrides.
+    fn show_settings(&self, app: &mut App, raw: &serde_json::Map<String, serde_json::Value>) {
+        app.default_mode = settings::default_mode(raw);
+        app.default_mode_overridden = settings::overridden(&self.permissions_cfg, raw, &self.runs_in);
+        app.touch();
     }
 
     /// The default permission mode to the next in the cycle, saved at once.
     /// The session keeps the mode it runs in: `/mode` changes that.
     fn cycle_default_mode(&mut self, app: &mut App) {
         let Some(paths) = &self.paths else { return };
+        // A `/connect` writes config.json too, from its own thread: one at
+        // a time, so neither loses what the other wrote.
+        if self.auth.is_some() {
+            app.flash = Some("a /connect is running — change settings once it is done".into());
+            return;
+        }
         let m = settings::next_default(app.default_mode.as_deref());
         match settings::set_default_mode(&paths.config, m) {
-            Ok(()) => {
-                app.default_mode = Some(m.name().into());
-                app.touch();
-            }
+            Ok(raw) => self.show_settings(app, &raw),
             Err(e) => {
                 app.overlay = Overlay::None;
                 app.notice(&format!("/settings: {e}"));
@@ -1496,9 +1511,13 @@ impl<'h> Ui<'h> {
                 _ => {}
             }
         }
-        // Settings: enter, space or the arrows change the one there is.
-        if app.overlay == Overlay::Settings && !ctrl && !alt && matches!(k.code, KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right) {
-            self.cycle_default_mode(app);
+        // Settings: enter, space or the arrows change the one there is, and
+        // nothing typed reaches the prompt — a space there would be a change
+        // saved. Esc closes it.
+        if app.overlay == Overlay::Settings && !ctrl && !alt && k.code != KeyCode::Esc {
+            if matches!(k.code, KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right) {
+                self.cycle_default_mode(app);
+            }
             return false;
         }
         // The model picker takes the arrows and enter while it is open.
