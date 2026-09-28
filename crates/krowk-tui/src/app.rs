@@ -465,6 +465,9 @@ pub struct App {
     pub offline: Option<String>,
     /// `<user>/<host>`, read once at start, for the status line.
     pub device: Option<String>,
+    /// Where the agent is at work: the branch and pull request are read
+    /// there.
+    pub follow: crate::pr::Follow,
     /// The branch checked out, as last read.
     pub branch: String,
     /// The branch's pull request, as `gh` last said.
@@ -598,6 +601,7 @@ impl App {
             turns: 0,
             offline: None,
             device: None,
+            follow: crate::pr::Follow::default(),
             branch: String::new(),
             pr: None,
             overlay: Overlay::None,
@@ -1340,8 +1344,9 @@ impl App {
     /// when nothing streamed first.
     pub fn on_log(&mut self, ev: &LogEvent, live: bool) {
         match &ev.body {
-            LogBody::SessionStarted { .. } => {
+            LogBody::SessionStarted { cwd, .. } => {
                 self.session_id = Some(ev.session_id.clone());
+                self.follow.runs_in = Some(cwd.into());
             }
             LogBody::BackendSession { billing, .. } => {
                 if let (Some(b), Some(m)) = (billing, &self.model) {
@@ -1350,6 +1355,7 @@ impl App {
                 }
             }
             LogBody::TurnStarted { model, provider, .. } => {
+                self.follow.turn_started();
                 self.session_id = Some(ev.session_id.clone());
                 self.model = Some(model.clone());
                 self.instances.entry(model.instance.clone()).or_default().turns += 1;
@@ -1523,6 +1529,7 @@ impl App {
                 if streamed {
                     self.live = None;
                 }
+                self.follow.call(name, input);
                 self.calls.push(Call { call_id: call_id.clone(), name: name.clone(), input: input.clone() });
             }
             Item::ToolResult { call_id, output, is_error } => {
@@ -2069,6 +2076,7 @@ impl App {
         self.backend_agents.clear();
         self.unprompted = false;
         self.todos.clear();
+        self.follow = crate::pr::Follow::default();
         self.instances.clear();
         self.turn_instance = None;
         self.offer = None;
@@ -2620,6 +2628,24 @@ mod tests {
         a.on_line(&delta("i", "rd"));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "first line\nsecond\nthird".into() } }));
         assert_eq!(text(&a.take_pending()), ["third"], "the tail, and nothing twice");
+    }
+
+    #[test]
+    fn the_status_line_follows_the_agent_to_where_it_works() {
+        // This checkout: a repository, as the session's directory would be.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = root.canonicalize().unwrap();
+        let mut a = app();
+        let call = |a: &mut App, name: &str, input: serde_json::Value| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::ToolCall { call_id: "c".into(), name: name.into(), input } }));
+        a.on_line(&log(LogBody::SessionStarted { cwd: root.display().to_string(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        call(&mut a, "read", serde_json::json!({"path": "README.md"}));
+        assert_eq!(a.follow.works_in, None, "where the session runs, until the agent says otherwise");
+        call(&mut a, "Bash", serde_json::json!({"command": "cd crates/krowk-tui && cargo test"}));
+        assert_eq!(a.follow.works_in, Some(root.join("crates/krowk-tui")));
+        call(&mut a, "Bash", serde_json::json!({"command": "git status"}));
+        assert_eq!(a.follow.works_in, Some(root.join("crates/krowk-tui")), "a command that does not say keeps it");
+        a.forget_session();
+        assert_eq!(a.follow.works_in, None, "a new session starts where it runs");
     }
 
     #[test]

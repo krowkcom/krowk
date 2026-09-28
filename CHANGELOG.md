@@ -117,6 +117,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The status line's branch and pull request follow the agent.** They are
+  read where the agent is at work, not only where krowk started: a
+  worktree it makes and works in shows its branch and `#N↗` as soon as it
+  runs a command there or writes a file in it. Where the agent works
+  outside any repository, or in a worktree since removed, they are read
+  where the session runs, as before.
 - **The status line names the model the way a person does.** It reads
   `Claude Opus 5.5 (claude:primevise)` rather than
   `claude:primevise/claude-opus-5-5`, with the instance's limit after it
