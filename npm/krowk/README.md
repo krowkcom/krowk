@@ -1,7 +1,18 @@
 # @krowk/cli
 
-Permalinks for agent output. Push a screenshot, get a URL that unfurls in
-GitHub, Slack, Basecamp and Linear with the run metadata attached.
+A coding agent for your terminal, with a permalink for everything it produces.
+It runs Claude, GPT, Grok or any OpenAI-compatible model on your existing
+subscription or an API key, follows Claude Code's permissions, skills and
+hooks, and publishes screenshots, diffs and logs as links that unfurl in
+GitHub, Slack, Linear and Basecamp.
+
+```bash
+npx @krowk/cli connect     # sign in to a provider
+npx @krowk/cli             # open the agent here
+npx @krowk/cli -p "fix the build"
+```
+
+Publishing works on its own too, with no account:
 
 ```bash
 npx @krowk/cli push screenshot.png \
@@ -15,8 +26,8 @@ npx @krowk/cli push screenshot.png \
 
 ## What this package is
 
-A launcher. krowk itself is a single static Go binary with no runtime and no
-dependencies; this package exists because the website says `npx @krowk/cli push`
+A launcher. krowk itself is a single static Rust binary with no runtime and no
+dependencies — this package carries the full build, the agent included; this package exists because the website says `npx @krowk/cli push`
 and some people are already in Node.
 
 The binary it installs is still called `krowk`, and npx runs a package's only bin
@@ -33,13 +44,13 @@ If Node is not already in the picture, skip it. The binary is the primary
 channel:
 
 ```bash
-cargo install --locked --git https://github.com/krowkcom/krowk --features sessions krowk
+cargo install --locked --git https://github.com/krowkcom/krowk --features harness krowk
 # or grab an archive from https://github.com/krowkcom/krowk/releases/latest
 ```
 
 ## Documentation
 
-Commands, flags, output formats, MCP, and what the CLI refuses to upload and
-why: <https://github.com/krowkcom/krowk>.
+The agent, commands, flags, output formats, MCP, and what the CLI refuses to
+upload and why: <https://github.com/krowkcom/krowk>.
 
 MIT.

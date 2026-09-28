@@ -44,7 +44,7 @@ function locate() {
       "Built for: " + Object.keys(PACKAGES).sort().join(", ") + ".",
       "Everywhere else, build it yourself with Rust (rustup.rs):",
       "",
-      "  cargo install --locked --git https://github.com/krowkcom/krowk --features sessions krowk",
+      "  cargo install --locked --git https://github.com/krowkcom/krowk --features harness krowk",
     ]);
   }
 
