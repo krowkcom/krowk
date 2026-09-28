@@ -69,9 +69,8 @@ pub struct Slash {
     pub skill: bool,
 }
 
-/// Names krowk's commands answer to too, unlisted: typed whole, the `/`
-/// menu puts the command first, so enter runs it — never a skill whose
-/// name only looks like it.
+/// Names krowk's commands answer to too, unlisted: `/config` runs
+/// `/settings`, whatever a skill is called.
 pub const ALIASES: &[(&str, &str)] = &[("quit", "exit"), ("permission-mode", "mode"), ("config", "settings")];
 
 /// A command typed with an alias, as the command it names: `/config` is
@@ -85,7 +84,7 @@ pub fn canonical(typed: &str) -> String {
     }
 }
 
-/// krowk's own commands, as `/` lists them.
+/// krowk's own commands, as `/` lists them. `ALIASES` work too.
 pub const COMMANDS: &[(&str, &str)] = &[
     ("model", "Switch model or instance"),
     ("mode", "Switch permission mode — default, acceptEdits, plan, bypassPermissions, unhinged"),
@@ -95,6 +94,13 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("help", "Keys and what they do"),
     ("exit", "Leave krowk"),
 ];
+
+/// Whether `typed` (the prompt, `/` and all) is one of `ALIASES`, whole:
+/// enter in the `/` menu runs it as typed.
+pub fn unlisted(typed: &str) -> bool {
+    let typed = typed.trim().trim_start_matches('/');
+    ALIASES.iter().any(|(a, _)| *a == typed)
+}
 
 /// The commands and skills `typed` (the prompt, `/` and all) finds,
 /// fuzzily, as Grok Build's menu does: ranked by how well the name
@@ -116,24 +122,13 @@ pub fn slash(typed: &str, skills: &[(String, String)]) -> Vec<Slash> {
     let mut matcher = Matcher::new(Config::DEFAULT);
     let mut buf = Vec::new();
     let mut score = |s: &str| pattern.score(Utf32Str::new(s, &mut buf), &mut matcher);
-    // The name typed whole, or an alias of it, outranks every other hit —
-    // `/mode` is not `/model` — and name hits every description hit; ties
-    // keep the list's order.
-    // An alias is read as typed, as `canonical` reads it for enter.
-    let alias = |s: &Slash| !s.skill && ALIASES.iter().any(|(a, c)| *a == q && *c == s.name);
+    // The name typed whole outranks every other hit — `/mode` is not
+    // `/model` — and name hits every description hit; ties keep the
+    // list's order.
     let mut ranked: Vec<(u32, usize)> = all
         .iter()
         .enumerate()
-        .filter_map(|(i, s)| {
-            let hit = score(&s.name).map(|n| n + (1 << 20)).or_else(|| score(&s.description));
-            // An alias outranks even a skill of the same name, as enter
-            // with the menu closed runs the command.
-            match (alias(s), s.name.eq_ignore_ascii_case(q)) {
-                (true, _) => Some((hit.unwrap_or(0) + (1 << 22), i)),
-                (false, true) => Some((hit.unwrap_or(0) + (1 << 21), i)),
-                (false, false) => hit.map(|h| (h, i)),
-            }
-        })
+        .filter_map(|(i, s)| score(&s.name).map(|n| (n + (1 << 20) + (u32::from(s.name.eq_ignore_ascii_case(q)) << 21), i)).or_else(|| score(&s.description).map(|d| (d, i))))
         .collect();
     ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     ranked.into_iter().map(|(_, i)| all[i].clone()).collect()

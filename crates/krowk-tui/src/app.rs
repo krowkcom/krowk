@@ -334,6 +334,9 @@ pub struct App {
     pub steers: Vec<String>,
     /// Steering typed before the turn could take it; sent when it can.
     pub unsent_steers: Vec<String>,
+    /// The mode the next prompt runs in, as the client sends it: the
+    /// picker's `now` and the details overlay. Never a `turn.started`'s —
+    /// a resumed session's last turn, or one a backend began, ran in its own.
     pub permission_mode: String,
     pub log_dir: Option<String>,
     pub quit: bool,
@@ -345,8 +348,13 @@ pub struct App {
     calls: Vec<Call>,
     /// Whether the answer being shown has a fenced code block open.
     fence: bool,
-    /// When the reasoning streaming now began.
+    /// When the thinking streaming now, or held in `thought`, began.
     thinking_since: Option<Instant>,
+    /// Thinking done and not yet shown, with how long it took. A model
+    /// thinks in more than one block back to back (Claude Code sends a
+    /// signed empty one, then the text): they are one "Thought", shown
+    /// before whatever comes next.
+    thought: Option<Option<Duration>>,
     /// What a backend reported its session is billed to, and on which
     /// instance (R-INST-3).
     billing: Option<(String, Billing)>,
@@ -457,6 +465,7 @@ impl App {
             calls: Vec::new(),
             fence: false,
             thinking_since: None,
+            thought: None,
             billing: None,
             vendor_instances: Vec::new(),
             skills: Vec::new(),
@@ -589,8 +598,22 @@ impl App {
         self.dirty = true;
     }
 
+    /// Thinking held back, into scrollback as one line, before whatever
+    /// else is shown.
+    fn flush_thought(&mut self) {
+        let Some(took) = self.thought.take() else { return };
+        // Thinking streaming now keeps its clock: it is a thought of its own.
+        if !self.live.as_ref().is_some_and(|l| l.kind == LiveKind::Reasoning) {
+            self.thinking_since = None;
+        }
+        let took = took.map(|t| format!(" for {}", look::duration(t))).unwrap_or_default();
+        self.gap();
+        self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(format!("Thought{took}"), dim().add_modifier(Modifier::ITALIC))]));
+    }
+
     /// A blank line before a new block, unless there is one already.
     fn gap(&mut self) {
+        self.flush_thought();
         if !self.last_blank {
             self.pending.push(Line::default());
             self.last_blank = true;
@@ -598,6 +621,7 @@ impl App {
     }
 
     fn push_wrapped(&mut self, first: &str, rest: &str, text: &str, prefix_style: Style, style: Style) {
+        self.flush_thought();
         // Unprefixed text — the answer itself, most of scrollback — stays
         // one line here and is wrapped with everything else on its way out
         // (`take_pending`). Prefixed items wrap here, under their hanging
@@ -700,6 +724,7 @@ impl App {
 
     /// One line of an answer, in light markdown, wrapped on its way out.
     fn push_md(&mut self, text: &str) {
+        self.flush_thought();
         let line = look::markdown_line(&clean(text), &mut self.fence);
         self.last_blank = line.width() == 0;
         self.pending.push(line);
@@ -768,6 +793,7 @@ impl App {
     }
 
     fn push_line(&mut self, line: Line<'static>) {
+        self.flush_thought();
         self.last_blank = line.width() == 0;
         self.pending.push(line);
         self.dirty = true;
@@ -808,14 +834,20 @@ impl App {
                         self.fence = false;
                         LiveKind::Text
                     }
+                    // More thinking straight after some is the same thought.
                     ItemKind::Reasoning => {
-                        self.thinking_since = Some(Instant::now());
+                        if self.thought.is_none() || self.thinking_since.is_none() {
+                            self.thinking_since = Some(Instant::now());
+                        }
                         LiveKind::Reasoning
                     }
                     ItemKind::ToolCall { name, .. } => LiveKind::Call(name.clone()),
                     ItemKind::ToolResult { .. } => LiveKind::Result,
                     ItemKind::UserText => return,
                 };
+                if kind != LiveKind::Reasoning {
+                    self.flush_thought();
+                }
                 // The turn's answer is all its text, the parts between
                 // tool calls a paragraph apart.
                 if kind == LiveKind::Text && !self.answer.is_empty() && !self.answer.ends_with("\n\n") {
@@ -1056,7 +1088,7 @@ impl App {
                     self.dirty = true;
                 }
             }
-            LogBody::TurnStarted { model, provider, permission_mode, .. } => {
+            LogBody::TurnStarted { model, provider, .. } => {
                 self.session_id = Some(ev.session_id.clone());
                 self.model = Some(model.clone());
                 self.instances.entry(model.instance.clone()).or_default().turns += 1;
@@ -1065,7 +1097,6 @@ impl App {
                     self.used.push(model.clone());
                 }
                 self.replay_model = Some((provider.clone(), model.model.clone()));
-                self.permission_mode = serde_json::to_value(permission_mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                 if let Some(t) = &mut self.turn {
                     t.prompt_seen = true;
                 }
@@ -1217,17 +1248,13 @@ impl App {
                 }
                 self.live = None;
             }
-            // Thinking is shown collapsed, as how long it took.
+            // Thinking is shown collapsed, as how long it took — held until
+            // something else comes, so that blocks back to back are one.
             Item::Reasoning { .. } => {
                 if streamed {
                     self.live = None;
                 }
-                let took = if live { self.thinking_since.take().map(|t| format!(" for {}", look::duration(t.elapsed()))) } else { None };
-                self.gap();
-                self.push_line(Line::from(vec![
-                    Span::styled(look::TOOL, dim()),
-                    Span::styled(format!("Thought{}", took.unwrap_or_default()), dim().add_modifier(Modifier::ITALIC)),
-                ]));
+                self.thought = Some(if live { self.thinking_since.map(|t| t.elapsed()) } else { None });
             }
             Item::ToolCall { call_id, name, input } => {
                 if streamed {
@@ -1703,7 +1730,7 @@ impl App {
         out
     }
 
-    /// Opens the mode picker on the session's mode.
+    /// Opens the mode picker on the mode the next prompt runs in.
     pub fn open_mode_picker(&mut self) {
         self.mode_at = PermissionMode::NAMES.iter().position(|n| *n == self.permission_mode).unwrap_or(0);
         self.overlay = Overlay::Modes;
@@ -2122,6 +2149,38 @@ mod tests {
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "ok\nall done".into() } }));
         assert_eq!(text(&a.take_pending()), ["ok", "all done"]);
         assert_eq!(a.answer, "ok\nall done", "what Ctrl-Y copies");
+    }
+
+    #[test]
+    fn thinking_in_blocks_back_to_back_is_one_thought() {
+        let mut a = app();
+        a.start_turn(Instant::now());
+        let thinking = |text: &str| Item::Reasoning { text: text.into(), blob: None };
+        // Claude Code's way: a signed empty block, then the text, with
+        // nothing between them.
+        for (id, t) in [("r1", ""), ("r2", "Checking the config first.")] {
+            a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: id.into(), item: ItemKind::Reasoning }));
+            a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: thinking(t) }));
+        }
+        assert!(a.take_pending().is_empty(), "held while more thinking may come");
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "i".into(), item: ItemKind::AssistantText }));
+        let t = text(&a.take_pending());
+        assert_eq!(t.len(), 1, "one line for both blocks: {t:?}");
+        assert!(t[0].starts_with("◆ Thought for "), "{t:?}");
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "Done.".into() } }));
+        // Thinking after the answer is a thought of its own.
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r3".into(), item: thinking("") }));
+        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None }));
+        let t = text(&a.take_pending());
+        assert_eq!(t.iter().filter(|l| l.starts_with("◆ Thought")).count(), 1, "{t:?}");
+        assert_eq!(t.last().map(String::as_str), Some("Worked for 1.0s · 0 tokens"), "{t:?}");
+
+        // Replayed, the same: one, with no time to say.
+        let mut a = app();
+        let ev = |id: &str, item| LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item } };
+        let evs = [ev("1", thinking("")), ev("2", thinking("Checking.")), ev("3", Item::AssistantText { text: "Done.".into() })];
+        a.replay(&evs.iter().collect::<Vec<_>>());
+        assert_eq!(text(&a.take_pending()), ["◆ Thought", "", "Done."]);
     }
 
     #[test]
@@ -2656,11 +2715,9 @@ mod tests {
 
     #[test]
     fn an_alias_typed_whole_runs_its_command_before_any_skill() {
-        let skills = [("update-config".to_string(), "Configure things".to_string()), ("quitter".to_string(), "Leaves".to_string()), ("config".to_string(), "A skill named the alias".to_string())];
-        assert_eq!(help::slash("/config", &skills).first().map(|s| s.name.as_str()), Some("settings"));
-        assert_eq!(help::slash("/quit", &skills).first().map(|s| s.name.as_str()), Some("exit"));
-        assert_eq!(help::slash("/permission-mode", &skills).first().map(|s| s.name.as_str()), Some("mode"));
-        assert_eq!(help::slash("/update-config", &skills).first().map(|s| s.name.as_str()), Some("update-config"), "a skill's own name still finds it");
+        // Enter in the `/` menu runs an alias as typed, and submit reads it
+        // as the command it names.
+        assert!(help::unlisted("/config") && !help::unlisted("/configure"));
         assert_eq!(help::canonical("/config"), "/settings");
         assert_eq!(help::canonical("/permission-mode plan"), "/mode plan");
         assert_eq!(help::canonical("/quit"), "/exit");
@@ -2688,16 +2745,21 @@ mod tests {
     fn the_mode_picker_opens_on_the_sessions_mode_and_lists_every_mode() {
         let mut a = app();
         a.permission_mode = "plan".into();
+        // A turn that ran in another mode — a resumed session's last, one a
+        // backend began — is not what the next prompt runs in.
+        a.on_line(&log(LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: "anthropic".into(), model: "claude-x".into() }, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::BypassPermissions, effort: None }));
         a.open_mode_picker();
         assert_eq!((a.overlay, a.mode_at), (Overlay::Modes, 2));
         let rows = text(&a.view(Instant::now()).0).join("\n");
         for name in PermissionMode::NAMES {
             assert!(rows.contains(name), "{name} in {rows}");
         }
-        assert!(rows.contains("❯ plan") && rows.contains("now"), "{rows}");
+        let marked: Vec<&str> = rows.lines().filter(|r| r.ends_with("now")).collect();
+        assert!(marked.len() == 1 && marked[0].starts_with("❯ plan"), "{rows}");
         // `/perm` finds it by its description; `/mode` by its name, first.
         assert_eq!(help::slash("/mode", &[]).first().map(|s| s.name.as_str()), Some("mode"));
         assert!(help::slash("/perm", &[]).iter().any(|s| s.name == "mode"));
+        assert!(help::unlisted("/permission-mode") && help::unlisted("/quit") && !help::unlisted("/mode") && !help::unlisted("/permission-mode plan"));
     }
 
     #[test]

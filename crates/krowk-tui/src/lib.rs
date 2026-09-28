@@ -984,11 +984,12 @@ impl<'h> Ui<'h> {
     }
 
     /// Every prompt from here on runs in `m`. A turn already running keeps
-    /// the mode it started in: its gate was built with it.
+    /// the mode it started in, its gate built with it; so does a turn a
+    /// backend begins by itself, in the mode its process is in.
     fn set_mode(&mut self, app: &mut App, m: PermissionMode) {
         self.permission_mode = m;
         app.permission_mode = m.name().into();
-        let when = if app.running() { " from the next turn" } else { "" };
+        let when = if app.running() { " once this turn is over" } else { "" };
         app.gap_say(&format!("permission mode {}{when}", m.name()));
     }
 
@@ -1459,6 +1460,8 @@ impl<'h> Ui<'h> {
                     app.slash_closed = true;
                     return false;
                 }
+                // An unlisted command runs as typed.
+                KeyCode::Enter if app.slash_at == 0 && help::unlisted(app.editor.text()) => return self.submit(app).await,
                 KeyCode::Tab | KeyCode::Enter => {
                     let Some(s) = found.get(app.slash_at.min(found.len().saturating_sub(1))) else { return false };
                     app.editor.clear();
@@ -1524,7 +1527,7 @@ impl<'h> Ui<'h> {
             }
         }
         // So does the mode picker.
-        if app.overlay == Overlay::Modes && !ctrl {
+        if app.overlay == Overlay::Modes && !ctrl && !alt {
             match k.code {
                 KeyCode::Up => {
                     app.mode_at = app.mode_at.saturating_sub(1);
