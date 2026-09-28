@@ -39,20 +39,25 @@ stdout:
   "authenticated": true,
   "token_source": "KROWK_TOKEN",
   "key": "<key_1> (<ws_1>) local",
-  "workspace": "unknown — not recorded at login; `krowk auth verify` asks the registry",
+  "workspace": "unknown — not recorded at login; `krowk whoami` asks the registry",
   "runs_available": true,
-  "credentials": "<scratch>/home/.config/krowk/credentials.json",
-  "config": "global <scratch>/home/.config/krowk/config.json (absent)",
+  "credentials": "<scratch>/home/.krowk/credentials.json",
+  "config": "global <scratch>/home/.krowk/config.json (absent)",
   "store": {
     "name": "store",
     "status": "pass",
-    "message": "healthy (<scratch>/home/.local/share/krowk/krowk.db, schema v1, wal)"
+    "message": "healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"
   },
   "pricing": {
     "name": "pricing",
     "status": "warn",
     "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
     "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+  },
+  "providers": {
+    "name": "providers",
+    "status": "skip",
+    "message": "this build runs no model"
   },
   "context": {
     "vcs.repository.name": "krowkcom/golden",

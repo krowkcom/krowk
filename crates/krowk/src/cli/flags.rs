@@ -83,6 +83,22 @@ pub struct Flags {
     pub binary: String,
     #[cfg(feature = "harness")]
     pub config_dir: String,
+    /// `connect`: the way in, and whether it becomes the default model;
+    /// `disconnect`: whether the definition goes too.
+    #[cfg(feature = "harness")]
+    pub method: String,
+    #[cfg(feature = "harness")]
+    pub default: bool,
+    #[cfg(feature = "harness")]
+    pub remove: bool,
+    #[cfg(feature = "harness")]
+    pub sign_out_vendor: bool,
+    /// `connect`: a key to store, read from stdin, or referenced (`$VAR`,
+    /// `!command`) — never the key itself as an argument.
+    #[cfg(feature = "harness")]
+    pub key_stdin: bool,
+    #[cfg(feature = "harness")]
+    pub key_ref: String,
     /// Which flags were typed, by canonical name — a different question from
     /// what they carry: `--jq "$UNSET"` was given and is empty.
     pub given: BTreeSet<String>,
@@ -244,6 +260,10 @@ impl Flags {
             "binary" => text(&mut self.binary),
             #[cfg(feature = "harness")]
             "config-dir" => text(&mut self.config_dir),
+            #[cfg(feature = "harness")]
+            "method" => text(&mut self.method),
+            #[cfg(feature = "harness")]
+            "key-ref" => text(&mut self.key_ref),
             _ => {
                 let b = parse_bool(name, v)?;
                 *match name {
@@ -266,6 +286,14 @@ impl Flags {
                     "device" => &mut self.device,
                     #[cfg(feature = "harness")]
                     "trust" => &mut self.trust,
+                    #[cfg(feature = "harness")]
+                    "default" => &mut self.default,
+                    #[cfg(feature = "harness")]
+                    "remove" => &mut self.remove,
+                    #[cfg(feature = "harness")]
+                    "sign-out-vendor" => &mut self.sign_out_vendor,
+                    #[cfg(feature = "harness")]
+                    "key-stdin" => &mut self.key_stdin,
                     other => unreachable!("catalog flag {other} has no field"),
                 } = b;
             }

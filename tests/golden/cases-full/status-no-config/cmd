@@ -1,0 +1,11 @@
+# `krowk status` with no config: the seven implicit instances, none ready
+# (no key, no login, no claude or codex on this PATH), exit 3 with the rows
+# as the failure's details; then a key, which makes one ready, exit 0. The
+# `--json` rows are the documented shape: every key on every row. The key
+# is a sentinel that must appear nowhere below.
+krowk status
+krowk status --json
+@env ANTHROPIC_API_KEY=sk-ant-golden-SENTINEL-do-not-print
+krowk status --json
+krowk status --format human
+krowk providers list --format human

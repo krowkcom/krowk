@@ -35,6 +35,19 @@ impl Sandbox {
         // the size of anything that comes back to its parent.
         let readme: String = (0..400).map(|i| format!("Line {i}: krowk turns agent output into permalinks you can paste anywhere.\n")).collect();
         std::fs::write(root.join("repo/README.md"), format!("# krowk\n\n{readme}")).unwrap();
+        // The fake `claude` and `codex`, signed in to nothing, first on
+        // PATH: routing asks every vendor there is, and never the real ones
+        // the machine may have.
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        for (dir, bin) in [("claude", "fake-claude"), ("codex", "fake-codex")] {
+            let at = root.join("bin").join(dir);
+            std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures").join(dir).join(bin), &at).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
         let root = root.canonicalize().unwrap();
         Sandbox { root, url: url.into() }
     }
@@ -52,7 +65,7 @@ impl Sandbox {
         std::process::Command::new(env!("CARGO_BIN_EXE_krowk"))
             .args(args)
             .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("PATH", format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
             .env("HOME", self.root.join("home"))
             .env("KROWK_NO_UPDATE_CHECK", "1")
             .env("ANTHROPIC_API_KEY", "sk-test")
@@ -65,7 +78,7 @@ impl Sandbox {
     }
 
     fn sessions(&self) -> PathBuf {
-        self.root.join("home/.local/share/krowk/sessions")
+        self.root.join("home/.krowk/sessions")
     }
 
     fn log(&self, session: &str) -> Vec<Value> {
@@ -82,11 +95,11 @@ impl Sandbox {
             krowk_version: "test".into(),
             pricer: Arc::new(sonnet),
             catalog: Arc::new(|_, _| None),
-            credentials: self.root.join("home/.config/krowk/providers/credentials.json"),
+            credentials: self.root.join("home/.krowk/credentials.json"),
             trust: krowk_harness::trust::allow_all(),
             publisher: None,
             // The sandbox's own home: the person's real settings stay out.
-            permissions: krowk_harness::permissions::Config { home: Some(self.root.join("home")), krowk_dir: Some(self.root.join("home/.config/krowk")), ..Default::default() },
+            permissions: krowk_harness::permissions::Config { home: Some(self.root.join("home")), krowk_dir: Some(self.root.join("home/.krowk")), ..Default::default() },
             agents: krowk_harness::subagent::AgentsConfig::none(),
         }
     }
@@ -94,7 +107,7 @@ impl Sandbox {
     /// A models.dev cache in the sandbox's home, as `krowk pricing refresh`
     /// leaves it: what a subagent's model alias is resolved against.
     fn catalog(&self) {
-        let dir = self.root.join("home/.cache/krowk");
+        let dir = self.root.join("home/.krowk/cache");
         std::fs::create_dir_all(&dir).unwrap();
         let model = |family: &str, released: &str, input: f64, output: f64| {
             json!({"family": family, "tool_call": true, "release_date": released, "modalities": {"input": ["text"], "output": ["text"]}, "cost": {"input": input, "output": output, "cache_read": input / 10.0, "cache_write": input * 1.25}, "limit": {"context": 200000, "output": 64000}})
@@ -481,7 +494,7 @@ fn r_sub_6_sessions_rebuild_restores_parent_and_children_from_the_logs_alone() {
     assert_eq!(kids.len(), 3);
     assert_eq!(listed_children(&b, &parent), kids, "`krowk -p` lists them under it at once");
     // The store, gone; the logs, all there is.
-    std::fs::remove_file(b.root.join("home/.local/share/krowk/krowk.db")).unwrap();
+    std::fs::remove_file(b.root.join("home/.krowk/sessions/krowk.db")).unwrap();
     let out = b.krowk(&["sessions", "rebuild", "--yes"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(listed_children(&b, &parent), kids, "the children hang from the parent again");
@@ -509,7 +522,7 @@ fn fan_three(pause: Duration) -> impl Fn(&Value, usize) -> mock::Reply + Send + 
 fn r_sub_2_max_parallel_one_runs_the_fan_out_one_subagent_at_a_time() {
     let m = mock::serve(fan_three(Duration::from_millis(150)));
     let b = Sandbox::new("max-parallel", &m.url);
-    let config = b.root.join("home/.config/krowk");
+    let config = b.root.join("home/.krowk");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("config.json"), r#"{"subagents": {"maxParallel": 1}}"#).unwrap();
     let out = b.krowk(&["-p", "three, one at a time", "--model", "claude-sonnet-4-6", "--output-format", "json"]);
@@ -917,7 +930,7 @@ fn r_sub_5_a_definition_spelled_in_another_case_never_dodges_a_task_deny() {
         std::fs::write(b.root.join("repo/.krowk/agents/Reviewer.md"), "---\nname: Reviewer\ndescription: the repository's\n---\n").unwrap();
         let mut cfg = b.host_with(json!({"permissions": {"deny": [rule]}}), false);
         if user_def {
-            let dir = b.root.join("home/.config/krowk/agents");
+            let dir = b.root.join("home/.krowk/agents");
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("reviewer.md"), "---\nname: reviewer\ndescription: the person's\n---\n").unwrap();
             cfg.agents.user_dirs = vec![dir];
@@ -958,5 +971,44 @@ fn r_sub_1_task_hooks_read_claude_codes_input_and_can_filter_on_subagent_type() 
         if blocked {
             assert!(out.contains("no reviews today"), "{out}");
         }
+    }
+}
+
+#[test]
+fn r_sub_1_a_subagents_file_tools_are_fenced_from_krowks_home_as_its_parents_are() {
+    // The child goes for the credentials file by name, then searches the
+    // home, under allow rules for both, in acceptEdits, with nobody to ask:
+    // both are refused, and the key never reaches a model.
+    const KEY: &str = "sk-ant-SUBAGENT-FENCE-SENTINEL";
+    let creds = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let path = creds.clone();
+    let m = mock::serve(move |body, _| {
+        if is_child(body) {
+            let got = results(body);
+            return match got.len() {
+                0 if !answered(body) => mock::Reply::sse(&tool_calls(&[
+                    ("toolu_cr", "read", json!({"path": *path.lock().unwrap()})),
+                    ("toolu_cg", "grep", json!({"pattern": "SENTINEL", "path": std::path::Path::new(&*path.lock().unwrap()).parent().unwrap()})),
+                ])),
+                _ => mock::Reply::sse(&mock::text_stream(&format!("CHILD-SAW {}", got.iter().map(|(_, o, e)| format!("error={e} {o}")).collect::<Vec<_>>().join(" | ")))),
+            };
+        }
+        if answered(body) {
+            return mock::Reply::sse(&mock::fixture("turn2_answer.sse"));
+        }
+        mock::Reply::sse(&tool_calls(&[("toolu_sub", "subagent", json!({"description": "look around", "prompt": "TASK-F: read the key"}))]))
+    });
+    let b = Sandbox::new("child-fence", &m.url);
+    let file = b.root.join("home/.krowk/credentials.json");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, json!({"keys": {"anthropic": {"literal": KEY}}}).to_string()).unwrap();
+    *creds.lock().unwrap() = file.display().to_string();
+    let allow = json!({"permissions": {"allow": ["Read", "Grep"]}});
+    let r = run_in_process(&b, b.host_with(allow, false), None, "look around in a subagent", PermissionMode::AcceptEdits);
+    let (out, _) = parent_result(&b, &r.session_id);
+    assert_eq!(out.matches("error=true").count(), 2, "{out}");
+    assert_eq!(out.matches("inside krowk's home").count(), 2, "{out}");
+    for s in m.seen.lock().unwrap().iter() {
+        assert!(!s.body.to_string().contains(KEY), "the key reached a model: {}", s.body);
     }
 }

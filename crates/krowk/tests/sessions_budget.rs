@@ -54,7 +54,7 @@ fn a_runaway_reasoning_run_trips_the_guard_on_metered_tokens() {
     // answers current — it never passes on what was there before.
     let more = format!("{}\n", assistant("a3", "msg_3", 100, 0));
     std::fs::OpenOptions::new().append(true).open(dir.join(format!("{SID}.jsonl"))).unwrap().write_all(more.as_bytes()).unwrap();
-    let lock = std::fs::OpenOptions::new().read(true).write(true).open(h.join(".local/share/krowk/import.lock")).unwrap();
+    let lock = std::fs::OpenOptions::new().read(true).write(true).open(h.join(".krowk/sessions/import.lock")).unwrap();
     lock.try_lock().unwrap();
     let holder = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(800));
@@ -87,7 +87,7 @@ fn a_runaway_reasoning_run_trips_the_guard_on_metered_tokens() {
 fn dollars_reach_the_guard_unrounded_through_the_store() {
     let home = Scratch::new("precision");
     let h = &home.0;
-    let ledger = h.join(".local/share/krowk/ledger");
+    let ledger = h.join(".krowk/ledger");
     std::fs::create_dir_all(&ledger).unwrap();
     // Three Zen deepseek calls, priced from their tokens: 24.08 + 58.94 + 40.264 µ$.
     std::fs::write(
@@ -101,7 +101,7 @@ fn dollars_reach_the_guard_unrounded_through_the_store() {
         .join("\n"),
     )
     .unwrap();
-    let cache = h.join(".cache/krowk");
+    let cache = h.join(".krowk/cache");
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(cache.join("models.json"), r#"{"opencode":{"models":{"deepseek-v4-flash":{"cost":{"input":0.14,"output":0.28,"cache_read":0.028}}}}}"#).unwrap();
     assert_eq!(run(h, &["sessions", "import", "--from", "ledger", "--json"]).0, 0);

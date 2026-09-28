@@ -36,7 +36,9 @@
 //! - `log` — the append-only JSONL session log and its layout on disk.
 //! - `project` — the log as a `krowk_import::Source`, so krowk.db lists
 //!   native sessions beside imported ones.
-//! - `instances` — the named provider instances in krowk's config.
+//! - `instances` — the named provider instances in krowk's config;
+//!   `readiness` — whether each can run a turn here, and what fixes it;
+//!   `connect` — connecting one and signing it out, for the CLI and the TUI.
 //! - `headless` — `krowk -p`.
 //!
 //! Canon `engineering/harness.md` describes all of it for readers who will
@@ -51,6 +53,7 @@ pub mod chat;
 pub mod claude;
 pub mod codex;
 pub mod compat;
+pub mod connect;
 pub mod effort;
 pub mod engine;
 pub mod evidence;
@@ -61,6 +64,7 @@ pub mod hooks;
 pub mod host;
 pub mod http;
 pub mod instances;
+pub mod keys;
 pub mod log;
 pub mod native;
 pub mod oauth;
@@ -68,6 +72,7 @@ pub mod openai;
 pub mod permissions;
 pub mod project;
 pub mod protocol;
+pub mod readiness;
 pub mod schema;
 pub mod subagent;
 pub mod sse;

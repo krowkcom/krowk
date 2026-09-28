@@ -14,7 +14,7 @@
 //! own, since its hooks are someone else's. The home directory and `/` are
 //! never recorded: trusting either would trust every directory without a
 //! `.git` of its own under it (a home kept in git for its dotfiles is the
-//! usual way to get there). The list lives in krowk's config directory as
+//! usual way to get there). The list lives in krowk's home as
 //! `trusted.json`, `0600`, replaced by rename; it is a host's own record and
 //! never syncs. The native engine runs nothing of the repository's, so only
 //! backends consult it.
@@ -101,21 +101,23 @@ pub fn unrecordable(root: &Path, home: Option<&Path>) -> Option<String> {
 /// The trusted-directories file.
 #[derive(Debug, Clone)]
 pub struct Store {
-    path: PathBuf,
+    /// None without a home: nothing is trusted, and nothing remembered.
+    path: Option<PathBuf>,
     home: Option<PathBuf>,
 }
 
 impl Store {
     /// The file, and the home directory it will never record.
-    pub fn new(path: PathBuf, home: Option<PathBuf>) -> Store {
+    pub fn new(path: Option<PathBuf>, home: Option<PathBuf>) -> Store {
         Store { path, home }
     }
 
     fn read(&self) -> Result<Listed, String> {
-        match std::fs::read(&self.path) {
-            Ok(raw) => serde_json::from_slice(&raw).map_err(|e| format!("{} is not valid JSON: {e}", self.path.display())),
+        let Some(path) = &self.path else { return Ok(Listed::default()) };
+        match std::fs::read(path) {
+            Ok(raw) => serde_json::from_slice(&raw).map_err(|e| format!("{} is not valid JSON: {e}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Listed::default()),
-            Err(e) => Err(format!("reading {}: {e}", self.path.display())),
+            Err(e) => Err(format!("reading {}: {e}", path.display())),
         }
     }
 
@@ -144,16 +146,17 @@ impl Store {
         }
         listed.directories.push(root);
         listed.directories.sort();
-        let dir = self.path.parent().ok_or_else(|| format!("{} has no directory", self.path.display()))?;
+        let path = self.path.as_ref().ok_or("there is no home directory to remember it in — set HOME, or KROWK_HOME to an absolute path")?;
+        let dir = path.parent().ok_or_else(|| format!("{} has no directory", path.display()))?;
         crate::log::private_dir(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-        let tmp = self.path.with_extension("json.tmp");
+        let tmp = path.with_extension("json.tmp");
         let mut o = std::fs::OpenOptions::new();
         o.write(true).create(true).truncate(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
         let body = serde_json::to_vec_pretty(&listed).expect("the list serializes");
         std::io::Write::write_all(&mut o.open(&tmp).map_err(|e| format!("write {}: {e}", tmp.display()))?, &body).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| format!("replace {}: {e}", self.path.display()))
+        std::fs::rename(&tmp, path).map_err(|e| format!("replace {}: {e}", path.display()))
     }
 }
 
@@ -183,7 +186,7 @@ mod tests {
         std::fs::create_dir_all(home.join(".git")).unwrap();
         std::fs::create_dir_all(home.join("notes")).unwrap();
         let home = home.canonicalize().unwrap();
-        let store = Store::new(base.join("config/trusted.json"), Some(home.clone()));
+        let store = Store::new(Some(base.join("config/trusted.json")), Some(home.clone()));
         assert!(!store.trusts(&repo));
         store.trust(&repo).unwrap();
         store.trust(&repo).unwrap();

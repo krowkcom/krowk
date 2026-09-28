@@ -50,7 +50,10 @@ impl Home {
         std::fs::create_dir_all(root.join("bin")).unwrap();
         // The fake, installed as `claude`, executable whatever git kept.
         let bin = root.join("bin/claude");
-        std::fs::copy(fixture("fake-claude"), &bin).unwrap();
+        // Linked, not copied: a copy is a file open for writing that a test
+        // forking beside it can inherit, and running it then fails with
+        // "Text file busy" (ETXTBSY) — read as a vendor that could not be checked.
+        std::os::unix::fs::symlink(fixture("fake-claude"), &bin).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         Home { root: root.canonicalize().unwrap(), _serial: guard }
@@ -105,7 +108,7 @@ impl Home {
             krowk_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
-            credentials: self.root.join("home/.config/krowk/providers/credentials.json"),
+            credentials: self.root.join("home/.krowk/credentials.json"),
             trust: gate,
             publisher,
             permissions: Default::default(),
@@ -358,11 +361,14 @@ fn a_missing_login_or_binary_is_named_with_its_fix() {
     let dir = home.root.join("cfg-nobody");
     std::fs::create_dir_all(&dir).unwrap();
     let host = home.host(vec![("claude:personal", home.instance(&dir, None))], trust::allow_all());
-    let r = rt().block_on(async { run(&host, prompt(None, "hello", "claude:personal/sonnet", PermissionMode::Default)).await.1 }).unwrap().unwrap();
-    assert_eq!(r.status, TurnStatus::Failed);
-    let e = r.error.unwrap();
+    // The readiness check asks `claude auth status` first: refused before
+    // a session or a Claude process exists, with the fix.
+    let e = rt().block_on(async { run(&host, prompt(None, "hello", "claude:personal/sonnet", PermissionMode::Default)).await.1 }).unwrap_err();
     assert_eq!(e.code, "not_authenticated");
-    assert!(e.message.contains("krowk providers add claude --name personal") && e.message.contains("Claude's own login"), "{}", e.message);
+    assert!(e.message.contains("krowk connect anthropic --method subscription --name personal") && e.message.contains("Claude's own login"), "{}", e.message);
+    assert_eq!(processes(&home.fake_log()), 0, "no turn process was started");
+    assert!(home.fake_log().contains("argv auth status --json"), "{}", home.fake_log());
+    assert!(log::list(&log::sessions_dir(&home.env()).unwrap()).unwrap_or_default().is_empty(), "a refusal leaves no session behind");
 
     let missing = InstanceKind::ClaudeCode { binary: Some(home.root.join("bin/nope").display().to_string()), config_dir: None, env: BTreeMap::new(), args: Vec::new(), api_key_env: None, effort: None };
     let host = home.host(vec![("claude:gone", missing)], trust::allow_all());
@@ -694,6 +700,50 @@ fn r_budget_1_claude_codes_subagent_calls_count_toward_the_budget() {
 /// does not finish in 30 s: a turn that never ends is a test failure.
 fn within<F: std::future::Future>(f: F) -> F::Output {
     rt().block_on(async { tokio::time::timeout(std::time::Duration::from_secs(30), f).await.expect("finished within 30 s") })
+}
+
+/// Its instance changed while a session's process is up — the TUI's
+/// `/disconnect` or `/connect` of it — the process is not taken at its
+/// word: the next turn asks the vendor again, and a sign-out since is
+/// refused rather than run on the old, still signed-in process. Instances
+/// read again with nothing changed (a cancelled `/connect`), or another
+/// instance changed, keep it.
+#[test]
+fn a_session_process_is_not_reused_once_its_instance_is_replaced() {
+    let home = Home::new("replaced");
+    let dir = home.signed_in("cfg");
+    let inst = || vec![("claude:work", home.instance(&dir, None))];
+    let host = home.host(inst(), trust::allow_all());
+    rt().block_on(async {
+        let (_, r) = run(&host, prompt(None, "hello", "claude:work/sonnet", PermissionMode::Default)).await;
+        let sid = r.unwrap().unwrap().session_id;
+        let (_, r) = run(&host, prompt(Some(&sid), "again", "claude:work/sonnet", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        assert_eq!(processes(&home.fake_log()), 1, "one process serves the session");
+        let cfg = InstancesConfig { instances: inst().into_iter().map(|(n, k)| (n.to_string(), k)).collect(), ..Default::default() };
+        // Nothing changed, then another instance: the process is kept.
+        host.set_registry(Registry::resolve(&cfg, &home.env()), None);
+        host.set_registry(Registry::resolve(&cfg, &home.env()), Some("openai"));
+        let (_, r) = run(&host, prompt(Some(&sid), "still", "claude:work/sonnet", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        assert_eq!(processes(&home.fake_log()), 1, "the same process, after a change to nothing of its own");
+        // Signed out, as `/disconnect claude:work` does, and the instances
+        // read again.
+        std::fs::remove_file(dir.join("fake-login")).unwrap();
+        krowk_harness::readiness::forget("claude:work");
+        host.set_registry(Registry::resolve(&cfg, &home.env()), Some("claude:work"));
+        let e = run(&host, prompt(Some(&sid), "after", "claude:work/sonnet", PermissionMode::Default)).await.1.unwrap_err();
+        assert_eq!(e.code, "not_authenticated", "{}", e.message);
+        // Signed in again: a new process, on the vendor's resume.
+        home.signed_in("cfg");
+        host.set_registry(Registry::resolve(&cfg, &home.env()), Some("claude:work"));
+        let (_, r) = run(&host, prompt(Some(&sid), "back", "claude:work/sonnet", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        host.shutdown().await;
+    });
+    let fake = home.fake_log();
+    assert_eq!(processes(&fake), 2, "{fake}");
+    assert!(fake.contains(&format!("resume {VENDOR_SESSION}")), "{fake}");
 }
 
 /// Every `backend.agents` list a stream carried, as the agents' words.

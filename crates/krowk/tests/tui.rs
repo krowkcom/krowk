@@ -37,13 +37,26 @@ impl Sandbox {
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         std::fs::write(root.join("repo/README.md"), "# krowk\n\nPermalinks for agent output.\n").unwrap();
+        // The fake `claude` and `codex`, signed in to nothing, first on
+        // PATH: a prompt with no model is routed, which asks each vendor
+        // there is, and never the real ones the machine may have.
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        for (dir, bin, to) in [("claude", "fake-claude", "claude"), ("codex", "fake-codex", "codex")] {
+            let at = root.join("bin").join(to);
+            // Linked, not copied: a copy is a file open for writing that a test
+            // forking beside it can inherit, and running it then fails with
+            // "Text file busy" (ETXTBSY) — read as a vendor that could not be checked.
+            std::os::unix::fs::symlink(Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures").join(dir).join(bin), &at).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         Sandbox { root: root.canonicalize().unwrap() }
     }
 
     fn env(&self, url: &str) -> Vec<(String, String)> {
         let home = self.root.join("home");
         vec![
-            ("PATH".into(), std::env::var("PATH").unwrap_or_default()),
+            ("PATH".into(), format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default())),
             ("HOME".into(), home.display().to_string()),
             ("TERM".into(), "xterm-256color".into()),
             ("KROWK_NO_UPDATE_CHECK".into(), "1".into()),
@@ -144,7 +157,7 @@ fn r_inst_7_the_tui_offers_the_next_instance_and_y_continues_there() {
     let limited = mock::serve(|_, _| mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "rate limited"}})) });
     let ok = mock::serve(mock::readme_script);
     let b = Sandbox::new("offer");
-    let config = b.root.join("home/.config/krowk");
+    let config = b.root.join("home/.krowk");
     std::fs::create_dir_all(&config).unwrap();
     let instances = serde_json::json!({"instances": {
         "anthropic:personal": {"kind": "anthropic-api", "apiKeyEnv": "ANTHROPIC_API_KEY", "baseUrl": ok.url},
@@ -218,7 +231,9 @@ fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() 
     let url = silent_provider();
     let b = Sandbox::new("ctrlc2");
     let mut t = pty::Pty::spawn(b.command(&url, &[]), 80, 24);
-    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some());
+    // With no model asked, the TUI routes one once it is up: the key's
+    // instance, named in the status line once chosen.
+    assert!(t.wait_for("anthropic/claude-opus-5-5 |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"wait forever\r");
     assert!(t.wait_for("esc to interrupt", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     // The prompt drawn back as the log's `❯` line: the turn has started,
@@ -691,8 +706,8 @@ fn r_perm_1_a_settings_error_is_named_before_the_trust_question() {
     // rule in the person's krowk config does not parse.
     std::fs::create_dir_all(b.root.join("repo/.claude")).unwrap();
     std::fs::write(b.root.join("repo/.claude/settings.json"), r#"{"permissions": {"allow": ["Bash(npm test)"]}}"#).unwrap();
-    std::fs::create_dir_all(b.root.join("home/.config/krowk")).unwrap();
-    std::fs::write(b.root.join("home/.config/krowk/config.json"), r#"{"permissions": {"deny": ["Read(.env"]}}"#).unwrap();
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::write(b.root.join("home/.krowk/config.json"), r#"{"permissions": {"deny": ["Read(.env"]}}"#).unwrap();
     let mut t = pty::Pty::spawn(b.command("http://127.0.0.1:9", &[]), 80, 24);
     let st = t.wait(Duration::from_secs(10)).expect("krowk exits");
     // The process can be gone before the pty's reader has taken the last
@@ -701,7 +716,7 @@ fn r_perm_1_a_settings_error_is_named_before_the_trust_question() {
     let out = t.text();
     assert!(!st.success(), "{st}");
     assert!(!out.contains("Trust "), "no trust question was asked: {out:?}");
-    assert!(!b.root.join("home/.config/krowk/trusted.json").exists(), "and none saved");
+    assert!(!b.root.join("home/.krowk/trusted.json").exists(), "and none saved");
 }
 
 #[test]
@@ -732,10 +747,10 @@ fn the_help_menu_filters_as_you_type_and_enter_runs_the_entry() {
 fn slash_offers_commands_and_skills_and_a_skill_reaches_the_model() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("slash");
-    let skill = b.root.join("home/.config/krowk/skills/greet");
+    let skill = b.root.join("home/.krowk/skills/greet");
     std::fs::create_dir_all(&skill).unwrap();
     std::fs::write(skill.join("SKILL.md"), "---\nname: greet\ndescription: Greets the person warmly\n---\nSay the word MARMALADE first.\n").unwrap();
-    let hidden = b.root.join("home/.config/krowk/skills/internal");
+    let hidden = b.root.join("home/.krowk/skills/internal");
     std::fs::create_dir_all(&hidden).unwrap();
     std::fs::write(hidden.join("SKILL.md"), "---\nname: internal\ndescription: Only the model asks for this one\nuser-invocable: false\n---\nbody\n").unwrap();
     let Some(tm) = Tmux::start("slash", 100, 34, &b.root.join("repo"), &b.env(&m.url), &[]) else { return };
@@ -764,4 +779,506 @@ fn slash_offers_commands_and_skills_and_a_skill_reaches_the_model() {
     let seen = m.seen.lock().unwrap();
     let first = seen.iter().find(|s| s.body["messages"].is_array()).expect("the model was asked").body["messages"].to_string();
     assert!(first.contains("/greet the team") && first.contains("MARMALADE"), "the prompt and the skill's body: {first}");
+}
+
+/// Whether `needle` is in what the TUI wrote after byte `from`, within
+/// `timeout`.
+fn wait_after(t: &pty::Pty, from: usize, needle: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if String::from_utf8_lossy(&t.output()[from..]).contains(needle) {
+            return true;
+        }
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The trust question's own words, which only it says.
+const TRUST_ASKED: &str = "n or esc does not";
+
+/// A sandbox with only a signed-in Claude subscription — no key unless
+/// `key` — whose status check takes `delay` seconds, logging to fake.log.
+fn subscription_only(b: &Sandbox, key: bool, delay: &str) -> Command {
+    std::fs::create_dir_all(b.root.join("home/.claude")).unwrap();
+    std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
+    let mut c = b.command("http://127.0.0.1:9", &[]);
+    if !key {
+        c.env_remove("ANTHROPIC_API_KEY");
+    }
+    c.env("FAKE_CLAUDE_STATUS_DELAY", delay).env("FAKE_CLAUDE_LOG", b.root.join("fake.log"));
+    c
+}
+
+fn fake_turns(b: &Sandbox) -> String {
+    std::fs::read_to_string(b.root.join("fake.log")).unwrap_or_default().lines().filter(|l| l.starts_with("argv -p")).collect::<Vec<_>>().join("\n")
+}
+
+/// R-PERF-1 with no key: the only instance is a Claude subscription whose
+/// status check takes three seconds. The first frame does not wait for it;
+/// the TUI routes once it is up, then asks the trust question itself —
+/// the model was not known before it took the terminal — for the prompt
+/// sent meanwhile. Keys typed ahead as the question comes up are no
+/// answer; `y` on an empty prompt, once it has settled, is.
+#[test]
+fn with_no_key_the_first_frame_never_waits_on_a_vendor_and_the_routed_backend_asks_trust_in_the_tui() {
+    let b = Sandbox::new("nokey");
+    let c = subscription_only(&b, false, "3");
+    let started = Instant::now();
+    let mut t = pty::Pty::spawn(c, 100, 30);
+    assert!(t.wait_for("? help", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    let first = started.elapsed();
+    assert!(first < Duration::from_millis(2500), "the first frame waited {first:?} on a vendor's status check");
+    assert!(!t.text().contains("claude/claude-opus-5-5"), "not routed yet: {:?}", t.text());
+    t.write(b"hello there\r");
+    assert!(t.wait_for(TRUST_ASKED, Duration::from_secs(15)).is_some(), "no trust question: {:?}", t.text());
+    assert!(t.text().contains("claude/claude-opus-5-5 runs Claude Code"), "{:?}", t.text());
+    // Typed ahead as it came up: "yes" lands in the prompt, and trusts
+    // nothing — not then, nor once the question has settled.
+    t.write(b"yes");
+    std::thread::sleep(Duration::from_millis(800));
+    t.write(b"y");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(fake_turns(&b).is_empty(), "typed-ahead keys answered the trust question: {}", fake_turns(&b));
+    // Ctrl-C clears what was typed; then `y` on the empty prompt answers.
+    t.write(b"\x03");
+    std::thread::sleep(Duration::from_millis(100));
+    t.write(b"y");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while fake_turns(&b).is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(fake_turns(&b).contains("--model claude-opus-5-5"), "the held prompt ran on the routed backend once trusted: {}", fake_turns(&b));
+}
+
+/// The route landing asks nothing by itself; the question comes with a
+/// send, `n` puts the prompt back unsent, and the next send asks again.
+#[test]
+fn trust_is_asked_on_send_and_a_no_puts_the_prompt_back_to_be_asked_again() {
+    let b = Sandbox::new("trustno");
+    let mut t = pty::Pty::spawn(subscription_only(&b, false, "0"), 100, 30);
+    assert!(t.wait_for("claude/claude-opus-5-5 |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(!t.text().contains(TRUST_ASKED), "asked before anything was sent: {:?}", t.text());
+    t.write(b"first-try\r");
+    assert!(t.wait_for(TRUST_ASKED, Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    std::thread::sleep(Duration::from_millis(600));
+    let at = t.output().len();
+    t.write(b"n");
+    assert!(wait_after(&t, at, "not trusted, so nothing ran", Duration::from_secs(5)), "{:?}", t.text());
+    assert!(wait_after(&t, at, "first-try", Duration::from_secs(5)), "the prompt is back in the editor: {:?}", String::from_utf8_lossy(&t.output()[at..]));
+    let at = t.output().len();
+    t.write(b"\r");
+    assert!(wait_after(&t, at, TRUST_ASKED, Duration::from_secs(5)), "asked again on the next send: {:?}", t.text());
+    assert!(fake_turns(&b).is_empty(), "nothing ran: {}", fake_turns(&b));
+}
+
+/// Prompts sent while the route is pending are all kept, joined; a route
+/// that fails puts them back unsent, and so does Ctrl-C while they wait —
+/// which quits nothing.
+#[test]
+fn prompts_held_for_the_route_are_joined_and_come_back_on_a_failed_route_or_ctrl_c() {
+    // A key and a subscription: the route is ambiguous, after two seconds.
+    let b = Sandbox::new("held");
+    let mut t = pty::Pty::spawn(subscription_only(&b, true, "2"), 120, 30);
+    assert!(t.wait_for("? help", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"held-one\r");
+    t.write(b"held-two\r");
+    let at = t.output().len();
+    assert!(wait_after(&t, at, "(ambiguous_model)", Duration::from_secs(15)), "{:?}", t.text());
+    assert!(wait_after(&t, at, "held-one", Duration::from_secs(5)) && wait_after(&t, at, "held-two", Duration::from_secs(5)), "both came back: {:?}", t.text());
+
+    let b = Sandbox::new("heldctrlc");
+    // Five seconds to answer: the route is still asking when krowk quits.
+    let mut t = pty::Pty::spawn(subscription_only(&b, false, "5"), 120, 30);
+    assert!(t.wait_for("? help", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"wait-for-it\r");
+    assert!(t.wait_for("choosing the model", Duration::from_secs(5)).is_some(), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\x03");
+    assert!(wait_after(&t, at, "not sent — it is back in the prompt", Duration::from_secs(5)), "{:?}", t.text());
+    assert!(wait_after(&t, at, "wait-for-it", Duration::from_secs(5)), "{:?}", t.text());
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(t.alive(), "Ctrl-C with a prompt waiting quits nothing");
+    assert!(!t.text().contains("claude/claude-opus-5-5"), "the route is still being asked: {:?}", t.text());
+    // Quitting while the route is still being asked does not wait for it.
+    t.write(b"\x03");
+    t.write(b"\x03");
+    let asked = Instant::now();
+    assert!(t.wait(Duration::from_secs(10)).is_some(), "krowk quits");
+    assert!(asked.elapsed() < Duration::from_secs(2), "quitting waited {:?} for the route", asked.elapsed());
+}
+
+/// With an API key and a signed-in Claude subscription, nothing the TUI
+/// routed for itself counts as the session's instance: no model at start
+/// and `/model sonnet` are both refused as ambiguous, never sent to the
+/// key.
+#[test]
+fn with_a_key_and_a_subscription_model_sonnet_is_refused_as_ambiguous_in_the_tui() {
+    let b = Sandbox::new("ambiguous");
+    std::fs::create_dir_all(b.root.join("home/.claude")).unwrap();
+    std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
+    let mut t = pty::Pty::spawn(b.command("http://127.0.0.1:9", &[]), 120, 30);
+    assert!(t.wait_for("(ambiguous_model)", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    t.write(b"/model sonnet\r");
+    assert!(t.wait_for("could run \"sonnet\"", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    let text = t.text();
+    assert!(text.contains("claude, Claude subscription: --model claude/sonnet") && !text.contains("now on anthropic"), "{text:?}");
+}
+
+// ---- /connect, /disconnect and the first-run card ------------------------------
+
+/// What the TUI wrote after byte `from`, as words: a blank cell is skipped,
+/// not written — the next word starts with a move to its column — so each
+/// such move reads as the space it stands for, and styles as nothing.
+fn words(t: &pty::Pty, from: usize) -> String {
+    let raw = String::from_utf8_lossy(&t.output()[from..]).into_owned();
+    let mut out = String::new();
+    let mut rest = raw.as_str();
+    while let Some(i) = rest.find('\x1b') {
+        out.push_str(&rest[..i].replace('\r', ""));
+        let seq = &rest[i + 1..];
+        let end = if let Some(csi) = seq.strip_prefix('[') { csi.find(|c: char| c.is_ascii_alphabetic()).map(|e| e + 2) } else { Some(1) };
+        let Some(end) = end.filter(|e| *e <= seq.len()) else { break };
+        if seq[..end].ends_with('C') && rest[..i].ends_with('\r') {
+            out.push(' ');
+        }
+        rest = &seq[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether `needle`, as words, is in what the TUI wrote after `from`,
+/// within `timeout`.
+fn says(t: &pty::Pty, from: usize, needle: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if words(t, from).contains(needle) {
+            return true;
+        }
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+/// No key, no config, and a `claude` signed in to nothing: nothing here
+/// can run a model. `FAKE_CLAUDE_LOGIN=ask` makes its login wait for a line
+/// on the terminal, as the real one waits on a person.
+fn fresh(b: &Sandbox, url: &str) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = b.env(url).into_iter().filter(|(k, _)| k != "ANTHROPIC_API_KEY").collect();
+    env.push(("FAKE_CLAUDE_LOG".into(), b.root.join("fake.log").display().to_string()));
+    env.push(("FAKE_CLAUDE_LOGIN".into(), "ask".into()));
+    env
+}
+
+fn fresh_command(b: &Sandbox, url: &str) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+    c.env_clear().envs(fresh(b, url)).current_dir(b.root.join("repo"));
+    c
+}
+
+/// The first run: with nothing ready, the TUI opens "Connect a provider"
+/// instead of letting the first prompt fail. Claude subscription, the
+/// built-in account: Claude Code's own login runs on the real terminal —
+/// the TUI gave it up, so the Enter typed reaches the vendor, not the
+/// prompt — and once it is signed in the session is on it and a prompt
+/// runs there.
+#[test]
+fn the_first_run_card_connects_a_claude_subscription_and_the_prompt_runs_on_it() {
+    let b = Sandbox::new("firstrun");
+    let mut t = pty::Pty::spawn(fresh_command(&b, "http://127.0.0.1:9"), 110, 34);
+    assert!(says(&t, 0, "Nothing here can run a model yet", Duration::from_secs(15)), "no first-run card: {:?}", t.text());
+    assert!(!t.text().contains("none_ready"), "the failure is not shown, the card is: {:?}", t.text());
+    assert!(says(&t, 0, "Connect which provider?", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    settle();
+    t.write(b"\r");
+    assert!(says(&t, at, "How do you connect anthropic?", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    settle();
+    t.write(b"\r");
+    assert!(says(&t, at, "not signed in, reconnect", Duration::from_secs(10)), "the account, with its readiness: {:?}", t.text());
+    let at = t.output().len();
+    settle();
+    t.write(b"\r");
+    assert!(says(&t, at, "Press Enter to sign in to Claude", Duration::from_secs(10)), "the vendor's login never ran: {:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\r");
+    assert!(says(&t, at, "Connected claude", Duration::from_secs(10)), "{:?}", t.text());
+    assert!(says(&t, 0, "now on claude/claude-opus-5-5", Duration::from_secs(5)), "{:?}", t.text());
+    let log = std::fs::read_to_string(b.root.join("fake.log")).unwrap_or_default();
+    assert!(log.lines().any(|l| l == "login-read "), "the Enter went to the vendor's login: {log}");
+    let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap()).unwrap();
+    assert_eq!(config["defaultModel"], "claude/claude-opus-5-5", "{config}");
+    // The prompt: the trust question for the repository, then the turn.
+    let at = t.output().len();
+    t.write(b"hello there\r");
+    assert!(says(&t, at, TRUST_ASKED, Duration::from_secs(10)), "{:?}", t.text());
+    std::thread::sleep(Duration::from_millis(600));
+    let at = t.output().len();
+    t.write(b"y");
+    assert!(says(&t, at, "Worked for", Duration::from_secs(15)), "the prompt did not run: {:?}", t.text());
+    assert!(fake_turns(&b).contains("--model claude-opus-5-5"), "{}", fake_turns(&b));
+    // A /connect cancelled at its first pick changes nothing: the next turn
+    // runs on the same Claude process.
+    let at = t.output().len();
+    t.write(b"/connect\r");
+    assert!(says(&t, at, "Connect which provider?", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\x1b");
+    assert!(says(&t, at, "nothing was chosen", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"once more\r");
+    assert!(says(&t, at, "Worked for", Duration::from_secs(15)), "{:?}", t.text());
+    assert_eq!(fake_turns(&b).lines().count(), 1, "one Claude process for both turns: {}", fake_turns(&b));
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+}
+
+/// A key pasted at `/connect`'s question is stored, never drawn back — not
+/// in the overlay, not in scrollback, not in the prompt's history — and the
+/// next prompt runs on it against the stand-in API.
+#[test]
+fn a_key_pasted_in_connect_is_never_shown_and_the_prompt_runs_on_it() {
+    const KEY: &str = "sk-ant-pasted-4242-secret";
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("pastekey");
+    let mut t = pty::Pty::spawn(fresh_command(&b, &m.url), 110, 34);
+    assert!(says(&t, 0, "Nothing here can run a model yet", Duration::from_secs(15)), "{:?}", t.text());
+    assert!(says(&t, 0, "Connect which provider?", Duration::from_secs(5)), "{:?}", t.text());
+    // Put away, the card says how to come back.
+    let at = t.output().len();
+    t.write(b"\x1b");
+    assert!(says(&t, at, "/connect when you are ready", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"/connect\r");
+    assert!(says(&t, at, "Connect which provider?", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    settle();
+    t.write(b"\r");
+    assert!(says(&t, at, "How do you connect anthropic?", Duration::from_secs(5)), "{:?}", t.text());
+    t.write(b"\x1b[B");
+    std::thread::sleep(Duration::from_millis(150));
+    let at = t.output().len();
+    settle();
+    t.write(b"\r");
+    assert!(says(&t, at, "key not set, reconnect", Duration::from_secs(10)), "{:?}", t.text());
+    let at = t.output().len();
+    settle();
+    t.write(b"\r");
+    assert!(says(&t, at, "Paste a key", Duration::from_secs(10)), "{:?}", t.text());
+    let at = t.output().len();
+    settle();
+    t.write(format!("\x1b[200~{KEY}\x1b[201~").as_bytes());
+    assert!(says(&t, at, "•••••••••••••••••••••••••", Duration::from_secs(5)), "one bullet a character: {:?}", t.text());
+    let at = t.output().len();
+    settle();
+    t.write(b"\r");
+    assert!(says(&t, at, "Connected anthropic", Duration::from_secs(10)), "{:?}", t.text());
+    assert!(says(&t, 0, "in krowk's credentials file", Duration::from_secs(5)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"read README.md and summarise it in one line\r");
+    assert!(says(&t, at, "anywhere.", Duration::from_secs(15)), "no answer: {:?}", t.text());
+    let sent = m.seen.lock().unwrap().iter().filter_map(|s| s.header("x-api-key").map(String::from)).collect::<Vec<_>>();
+    assert!(!sent.is_empty() && sent.iter().all(|k| k == KEY), "the stored key went to the API: {sent:?}");
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    assert!(!t.text().contains(KEY) && !t.text().contains("4242"), "the key was drawn");
+    let history = std::fs::read_to_string(b.root.join("home/.krowk/sessions/tui-history.jsonl")).unwrap_or_default();
+    assert!(!history.contains("4242"), "the key is in the prompt's history: {history}");
+    let config = std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap();
+    assert!(!config.contains("4242"), "the key is in config.json: {config}");
+}
+
+/// A vendor's login has the terminal while it runs: the TUI clears its
+/// live region first and draws nothing meanwhile, and takes the terminal
+/// back after — at the size it is by then — with nothing of the old
+/// region left in scrollback.
+#[test]
+fn a_suspended_vendor_login_gives_the_terminal_back_whole_after_a_resize() {
+    let b = Sandbox::new("suspend");
+    let Some(tm) = Tmux::start("suspend", 100, 30, &b.root.join("repo"), &fresh(&b, "http://127.0.0.1:9"), &[]) else { return };
+    assert!(tm.wait_for("Connect which provider?", Duration::from_secs(15)).is_some(), "{}", tm.screen());
+    settle();
+    tm.keys(&["Enter"]);
+    assert!(tm.wait_for("How do you connect", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    settle();
+    tm.keys(&["Enter"]);
+    assert!(tm.wait_for("Which account?", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    settle();
+    tm.keys(&["Enter"]);
+    assert!(tm.wait_for("Press Enter to sign in to Claude", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    let during = tm.screen();
+    for live in ["Plan, search, build anything", "Connect a provider", "? help"] {
+        assert!(!during.contains(live), "the live region was left on screen for the vendor: {live:?}\n{during}");
+    }
+    tm.tmux(&["resize-window", "-t", "t", "-x", "72", "-y", "24"]);
+    std::thread::sleep(Duration::from_millis(300));
+    tm.keys(&["Enter"]);
+    let back = |s: &str| s.contains("now on claude/claude-opus-5-5") && s.contains("→ Plan, search, build anything");
+    let history = tm.wait_still(back, Duration::from_secs(15)).unwrap_or_else(|| panic!("never back:\n{}", tm.screen()));
+    assert_eq!(history.matches("Press Enter to sign in to Claude").count(), 1, "{history}");
+    for gone in ["Connect a provider", "Nothing here can run a model yet", "Which account?"] {
+        assert!(!history.contains(gone), "the old live region was left in scrollback: {gone:?}\n{history}");
+    }
+    assert_eq!(history.matches("? help").count(), 1, "one status line:\n{history}");
+    let rules = history.lines().filter(|l| l.trim().len() > 3 && l.trim().chars().all(|c| c == '─')).count();
+    assert_eq!(rules, 2, "one prompt box, drawn at the new width:\n{history}");
+    let screen = tm.screen();
+    assert!(screen.lines().all(|l| l.chars().count() <= 72), "{screen}");
+}
+
+/// `/model` marks each instance ready or not, from checks that never hold
+/// a key up — a vendor whose status takes three seconds leaves the picker
+/// moving meanwhile — and a pick that is not ready offers `/connect` for
+/// it instead of a switch. `/disconnect` of the built-in `claude` asks
+/// before signing the person out of Claude Code itself.
+#[test]
+fn model_marks_readiness_in_the_background_and_offers_connect_and_disconnect_asks_first() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("marks");
+    let mut env = b.env(&m.url);
+    env.push(("FAKE_CLAUDE_STATUS_DELAY".into(), "3".into()));
+    let Some(tm) = Tmux::start("marks", 110, 34, &b.root.join("repo"), &env, &["--model", "anthropic/claude-sonnet-4-6"]) else { return };
+    assert!(tm.wait_for("? help", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["/model", "Enter"]);
+    assert!(tm.wait_for("switch to", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    let row = |s: &str, name: &str| s.lines().find(|l| l.trim_start().trim_start_matches("❯ ").starts_with(&format!("{name}/"))).unwrap_or_default().to_string();
+    let screen = tm.screen();
+    assert!(row(&screen, "claude").ends_with('…'), "claude is still being asked: {screen}");
+    assert!(row(&screen, "anthropic").contains("✓ ready") && row(&screen, "openai").contains("✗ key not set"), "a key is marked at once: {screen}");
+    // The arrows answer while `claude` is still being asked.
+    tm.keys(&["Down"]);
+    let moved = |s: &str| s.lines().any(|l| l.trim_start().starts_with("❯ codex/"));
+    assert!(tm.wait_still(moved, Duration::from_secs(1)).is_some() || moved(&tm.screen()), "a key waited on a vendor check: {}", tm.screen());
+    assert!(row(&tm.screen(), "claude").ends_with('…'), "and it was still being asked: {}", tm.screen());
+    let marked = |s: &str| row(s, "claude").contains("✗ not signed in");
+    tm.wait_still(marked, Duration::from_secs(15)).unwrap_or_else(|| panic!("claude marked once its check is back: {}", tm.screen()));
+    // A pick that is not ready offers /connect for it.
+    tm.keys(&["Up", "Enter"]);
+    assert!(tm.wait_for("not signed in — enter connects it", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    assert!(tm.wait_for("→ /connect claude", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    tm.keys(&["C-c"]);
+    std::thread::sleep(Duration::from_millis(200));
+    // /disconnect of the built-in asks before it signs the person out of
+    // Claude Code itself, and no keeps the login.
+    std::fs::create_dir_all(b.root.join("home/.claude")).unwrap();
+    std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
+    tm.keys(&["/disconnect claude", "Enter"]);
+    assert!(tm.wait_for("signs you out of Claude Code itself", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    assert!(tm.wait_for("❯ No — keep that login", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    settle();
+    tm.keys(&["Enter"]);
+    assert!(tm.wait_for("nothing was signed out", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    assert!(b.root.join("home/.claude/fake-login").exists(), "the person's own login is kept");
+}
+
+/// Longer than the moment a `/connect` question takes no key in (the
+/// approval's settle): a key sent sooner was typed ahead, and is dropped.
+fn settle() {
+    std::thread::sleep(Duration::from_millis(500));
+}
+
+/// Ctrl-C on the terminal a vendor's login has is that login's: it stops
+/// the login, not krowk, which takes the terminal back and says the
+/// connection was not made.
+#[test]
+fn ctrl_c_during_a_vendor_login_stops_the_login_and_krowk_takes_the_terminal_back() {
+    let b = Sandbox::new("loginctrlc");
+    let mut t = pty::Pty::spawn(fresh_command(&b, "http://127.0.0.1:9"), 110, 34);
+    for question in ["Connect which provider?", "How do you connect anthropic?", "not signed in, reconnect"] {
+        assert!(says(&t, 0, question, Duration::from_secs(15)), "{question}: {:?}", t.text());
+        settle();
+        let at = t.output().len();
+        t.write(b"\r");
+        if question.starts_with("not signed") {
+            assert!(says(&t, at, "Press Enter to sign in to Claude", Duration::from_secs(10)), "{:?}", t.text());
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let at = t.output().len();
+    t.write(b"\x03");
+    assert!(says(&t, at, "was not connected", Duration::from_secs(10)), "the failed login is said: {:?}", String::from_utf8_lossy(&t.output()[at..]));
+    assert!(says(&t, at, "? help", Duration::from_secs(5)), "the TUI is drawn again: {:?}", String::from_utf8_lossy(&t.output()[at..]));
+    assert!(t.alive(), "Ctrl-C ended krowk with the login");
+    assert!(!b.root.join("home/.krowk/config.json").exists() || !std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap().contains("claude"), "nothing was written");
+    // Raw again: Ctrl-D is a key, and quits cleanly.
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+}
+
+/// While `/connect`'s overlay is up, what is typed or pasted is its
+/// question's answer or nothing: a key pasted before the question is up,
+/// or at a pick, never reaches the prompt, a turn or the history, and
+/// Enter never sends the prompt.
+#[test]
+fn nothing_typed_or_pasted_at_the_connect_overlay_reaches_the_prompt() {
+    const KEY: &str = "sk-ant-early-7777-secret";
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("leak");
+    // Each vendor check takes two seconds: the overlay is busy meanwhile.
+    let mut c = fresh_command(&b, &m.url);
+    c.env("FAKE_CLAUDE_STATUS_DELAY", "2");
+    let mut t = pty::Pty::spawn(c, 110, 34);
+    assert!(says(&t, 0, "Connect which provider?", Duration::from_secs(20)), "{:?}", t.text());
+    settle();
+    t.write(b"\r");
+    assert!(says(&t, 0, "How do you connect anthropic?", Duration::from_secs(5)), "{:?}", t.text());
+    settle();
+    let at = t.output().len();
+    t.write(b"\r");
+    // Busy, asking claude for two seconds: a paste, typing and Enter go
+    // nowhere.
+    std::thread::sleep(Duration::from_millis(300));
+    t.write(format!("\x1b[200~{KEY}\x1b[201~").as_bytes());
+    t.write(b"typed\r");
+    // At the pick, a paste goes nowhere either.
+    assert!(says(&t, at, "Which account?", Duration::from_secs(10)), "{:?}", t.text());
+    settle();
+    t.write(format!("\x1b[200~{KEY}\x1b[201~").as_bytes());
+    std::thread::sleep(Duration::from_millis(200));
+    // Esc at the pick cancels it, and nothing was connected.
+    let at = t.output().len();
+    t.write(b"\x1b");
+    assert!(says(&t, at, "nothing connected", Duration::from_secs(5)), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let out = t.text();
+    assert!(!out.contains(KEY) && !out.contains("7777") && !out.contains("typed"), "it reached the screen: {out:?}");
+    assert!(m.seen.lock().unwrap().is_empty(), "a prompt was sent");
+    let history = std::fs::read_to_string(b.root.join("home/.krowk/sessions/tui-history.jsonl")).unwrap_or_default();
+    assert!(!history.contains("7777") && !history.contains("typed"), "{history}");
+}
+
+/// A question that comes up with the overlay hidden does not take the
+/// keys: what is being typed stays the prompt's, and `/connect` opens it.
+#[test]
+fn a_connect_question_asked_while_hidden_waits_to_be_opened() {
+    let b = Sandbox::new("hidden");
+    let mut env = fresh(&b, "http://127.0.0.1:9");
+    env.push(("FAKE_CLAUDE_STATUS_DELAY".into(), "2".into()));
+    let Some(tm) = Tmux::start("hidden", 110, 34, &b.root.join("repo"), &env, &[]) else { return };
+    assert!(tm.wait_for("Connect which provider?", Duration::from_secs(20)).is_some(), "{}", tm.screen());
+    settle();
+    tm.keys(&["Enter"]);
+    assert!(tm.wait_for("How do you connect", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    settle();
+    tm.keys(&["Enter"]);
+    // Hidden while claude is asked; the person starts a prompt.
+    std::thread::sleep(Duration::from_millis(300));
+    tm.keys(&["Escape"]);
+    std::thread::sleep(Duration::from_millis(200));
+    tm.keys(&["-l", "half a prompt"]);
+    assert!(tm.wait_for("/connect is waiting for an answer", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["-l", " more"]);
+    let typed = |s: &str| s.contains("→ half a prompt more");
+    let screen = tm.wait_still(typed, Duration::from_secs(5)).map(|_| tm.screen()).unwrap_or_else(|| panic!("the keys did not stay the prompt's:\n{}", tm.screen()));
+    assert!(!screen.contains("Which account?"), "the question took the screen:\n{screen}");
+    // Cleared, and opened.
+    tm.keys(&["C-u"]);
+    tm.keys(&["/connect", "Enter"]);
+    assert!(tm.wait_for("Which account?", Duration::from_secs(5)).is_some(), "{}", tm.screen());
 }

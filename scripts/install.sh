@@ -856,7 +856,7 @@ next_steps() {
     echo "    $(bold "krowk")                         Open krowk's agent in this terminal"
   fi
   echo "    $(bold "krowk push screenshot.png")     Upload without a key — the link is live, and lasts a day"
-  echo "    $(bold "krowk auth login --token …")    Add a key, and uploads keep, group under runs and stay yours"
+  echo "    $(bold "krowk login --token …")    Add a key, and uploads keep, group under runs and stay yours"
   echo "    $(bold "krowk help")                    Everything else — add --json for the surface as data"
   echo ""
 }

@@ -36,7 +36,7 @@ pub(crate) fn workspaces_list(ctx: &mut Ctx) -> Result<(), Error> {
 
 pub(crate) fn workspaces_use(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if creds::stored_workspaces().is_empty() {
-        return Err(fail("not_authenticated", "no keys are stored to choose between — `krowk auth login` adds one"));
+        return Err(fail("not_authenticated", "no keys are stored to choose between — `krowk login` adds one"));
     }
     let name = match args.first() {
         Some(name) => name.clone(),
@@ -56,7 +56,7 @@ pub(crate) fn config_show(ctx: &mut Ctx) -> Result<(), Error> {
     let view = ConfigView {
         workspace: cfg.workspace,
         sources: cfg.sources,
-        global_path: config::global_path().display().to_string(),
+        global_path: config::global_text(),
         repo_path: config::repo_path("").map(|p| p.display().to_string()).unwrap_or_default(),
     };
     let rendered = render::config_show(&view, ctx.format, ctx.f.quiet, ctx.colour);
@@ -104,7 +104,7 @@ pub(crate) fn config_unset(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
 /// repository's, and a refusal outside one.
 fn config_file(ctx: &Ctx) -> Result<std::path::PathBuf, Error> {
     if ctx.f.global {
-        return Ok(config::global_path());
+        return config::global_path();
     }
     config::repo_path("").ok_or_else(|| {
         fail(
@@ -123,7 +123,7 @@ fn ask_for_workspace(ctx: &Ctx, title: &str, otherwise: Error) -> Result<String,
     }
     let stored = creds::stored_workspaces();
     if stored.is_empty() {
-        return Err(fail("not_authenticated", "no keys are stored to pick from — `krowk auth login` adds one"));
+        return Err(fail("not_authenticated", "no keys are stored to pick from — `krowk login` adds one"));
     }
     pick_workspace(title, &stored)
 }

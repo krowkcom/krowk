@@ -105,7 +105,6 @@ impl Krowk {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", &self.home)
-            .env("XDG_CONFIG_HOME", self.home.join(".config"))
             .env("KROWK_API_URL", &self.api)
             .env("KROWK_NO_UPDATE_CHECK", "1")
             .current_dir(self.home.parent().unwrap());

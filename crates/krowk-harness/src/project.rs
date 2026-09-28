@@ -36,9 +36,7 @@ impl Source for Krowk {
     }
 
     fn discover(&self, env: Env) -> Result<Vec<Ref>, ImportError> {
-        let Some(dir) = log::sessions_dir(env) else {
-            return Err(ImportError::NoHome("krowk: no home directory in environment, so there is no sessions directory".into()));
-        };
+        let dir = log::sessions_dir(env).map_err(|e| ImportError::NoHome(format!("krowk: {}", e.fix())))?;
         let found = log::list(&dir).map_err(|e| ImportError::Other(format!("krowk: list {}: {e}", dir.display())))?;
         Ok(found.into_iter().map(|(id, path)| Ref { provider: HARNESS.into(), id, path: path.display().to_string() }).collect())
     }

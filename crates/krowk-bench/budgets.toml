@@ -31,6 +31,11 @@ what = "Agent build (no features): release binary size"
 unit = "bytes"
 # 3,943,808 bytes (3.76 MiB) with rust 1.97 when this budget was set. The
 # headroom is a quarter of a megabyte, so one real new dependency breaks it.
+# Provider auth 02 (no new crate: `krowk login`, `logout` and `whoami`, the
+# new `auth logout` and the words that point a provider at `krowk connect`)
+# adds 7,648 bytes: 3,953,024 (3.77 MiB).
+# Provider auth 06 (the short `krowk --help`: the 217-line overview's prose
+# moved into command pages and topics) takes 2,176 off: 3,950,848.
 max = { x86_64-linux = 4_194_304 }
 status = "enforced"
 
@@ -107,7 +112,52 @@ unit = "bytes"
 # engine) 9,088 more: 8,172,968 (7.79 MiB), 46,504 over 7.75 MiB. Raised
 # 7.75 -> 8.00 MiB for it — no crate is added, the growth is its code —
 # leaving 215,640 bytes.
-max = { x86_64-linux = 8_388_608 }
+# Provider auth starts at 8,112,488 bytes (7.74 MiB), 13,976 under. Its
+# ticket 01, provider readiness (no new crate: the readiness module and its
+# parallel, bounded vendor checks, Codex's account/read over app-server,
+# `krowk status`, doctor's providers line, and the host's switch, settle and
+# rollover checks made async to ask a vendor off the runtime's thread),
+# adds 68,192 bytes: 8,180,680 (7.80 MiB), 54,216 over 7.75 MiB. Raised
+# 7.75 -> 8.00 MiB by provider auth 01 — no crate is added, the growth is
+# its code — leaving 207,928 bytes for the rest of Provider auth.
+# Provider auth 05, routing a bare model and the default to the one ready
+# instance (no new crate: the router and its refusals, the kind labels),
+# adds 21,856 bytes on the umbrella's 8,181,000: 8,202,856 (7.82 MiB), and
+# its review round 1 (the TUI's own routing and trust question, connect
+# commands) 9,792 more, and round 2 (the settled trust question, held
+# prompts, /model off the loop, registered check groups) 3,360: 8,216,008
+# (7.84 MiB), 172,600 under this.
+# Ticket 02, `krowk connect` and `disconnect` (no new crate: the sign-in
+# moved into the harness behind ProviderAuth and AuthInteraction, the
+# vendor, method and account pickers, the default model, each kind's
+# sign-out; review rounds 1 to 3: naming rules, own-login confirmation,
+# path normalising, undoing only what a sign-in made), adds 89,344 bytes on
+# top of the umbrella's 8,181,000 before 05: 8,270,344 (7.89 MiB).
+# With 05 merged in (one connect command, one label table kept): 8,303,816
+# (7.92 MiB), leaving 84,792 bytes.
+# Provider auth 06 (the short `krowk --help`, with `help --all`, topics and
+# each command's own prose) takes 1,376 off: 8,302,440.
+# Provider auth 03 (stored keys) and 07 (one home) bring the umbrella to
+# 8,379,336, 9,272 under this, and CI measures some 7 KB more than a local
+# build. Provider auth 04, the TUI's `/connect` and `/disconnect` (no new
+# crate: the sign-in on a thread of its own asking through an overlay, the
+# terminal handed to a vendor's login and taken back, the first-run card,
+# readiness marks in `/model`, the host's instances replaced after a
+# connection, OSC 8 links), adds 58,432 bytes: 8,437,768 (8.05 MiB). Raised
+# 8.00 -> 8.25 MiB by 04 — the growth is its code — leaving 212,984 bytes.
+# Its review round 1 (SIGINT kept from krowk while a login has the
+# terminal, a backend not reused after a connection, the overlay's keys)
+# adds 1,696: 8,439,464, 211,288 under this.
+# Main merged into the umbrella (the unhinged permission mode, Claude
+# Code's background agents followed between turns): 8,502,056 (8.11 MiB),
+# 148,696 under this.
+# Provider auth 07's review round 3 (the move from the old layout made
+# small: config and keys read into a staged home renamed into place, the
+# rest named once) takes 10,176 bytes off: 8,491,880, 158,872 under this.
+# Its review (krowk's own files deleted by name, never a directory whole;
+# the two key files merged entry by entry; a held key compared as it is;
+# a linked key file named) adds 6,336: 8,498,216, 152,536 under this.
+max = { x86_64-linux = 8_650_752 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---

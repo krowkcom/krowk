@@ -55,10 +55,10 @@ mod tests {
 
     #[test]
     fn a_command_in_a_clause_gets_its_own_line() {
-        let lines = fix_lines("no key to verify — run `krowk auth login --token krowk_sk_...`, or upload anonymously");
+        let lines = fix_lines("no key to verify — run `krowk login --token krowk_sk_...`, or upload anonymously");
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].say, "No key to verify.");
-        assert_eq!(lines[0].cmd, "krowk auth login --token krowk_sk_...");
+        assert_eq!(lines[0].cmd, "krowk login --token krowk_sk_...");
         let two = fix_lines("first thing; then run `krowk runs finish run_x`");
         assert_eq!((two[0].say.as_str(), two[1].say.as_str(), two[1].cmd.as_str()), ("First thing.", "Then.", "krowk runs finish run_x"));
     }

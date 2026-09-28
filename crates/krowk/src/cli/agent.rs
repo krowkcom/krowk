@@ -144,7 +144,7 @@ fn anonymous_metadata_note(ctx: &Ctx) -> Option<String> {
     let given: Vec<&str> = run_metadata_given(ctx).into_iter().chain(artifact_metadata_given(ctx)).collect();
     (!given.is_empty()).then(|| {
         format!(
-            "{} was not recorded: a keyless upload records no metadata — run `krowk auth login --token krowk_sk_...`",
+            "{} was not recorded: a keyless upload records no metadata — run `krowk login --token krowk_sk_...`",
             given.join(", ")
         )
     })

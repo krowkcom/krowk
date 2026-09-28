@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"id":"msg_login","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Invalid API key · Please run /login"}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key · Please run /login","session_id":"{{SESSION}}"}

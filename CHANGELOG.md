@@ -18,7 +18,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   and still asks where an ask rule or a hook says so; `unhinged` is for when
   you trust the model with everything krowk can reach. Set it for good with
   `"permissions": {"defaultMode": "unhinged"}` in
-  `~/.config/krowk/config.json`; a repository's settings can never choose
+  `~/.krowk/config.json`; a repository's settings can never choose
   it, and neither can `~/.claude/settings.json` (Claude Code would skip that
   whole file, deny rules and hooks included, so krowk reads it as `default`
   and says so). What still holds: a `PreToolUse` hook that blocks a call; `publish`
@@ -30,6 +30,133 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **`krowk --help` fits on one screen**: about 40 lines at 80 columns, where
+  it was 217. It leads with the agent (`krowk`, `krowk -p "…"`, `--model`,
+  `--resume`), lists each command once with a one-line summary under AGENT,
+  PUBLISH, ACCOUNT and OTHER, and ends by pointing at the rest; the agent
+  build, which has no agent, shows neither the AGENT group nor its flags.
+  `krowk help --all` lists every command and subcommand, one line each, the
+  `auth …` long forms included. What the overview used to carry moved beside
+  what it is about: the upload flags, the anonymous upload and claim, and the
+  takedown into `krowk help push`, `claim` and `uploads delete`; logging in
+  into `krowk help login`; which key a command uses into `krowk help
+  workspaces`. Exit codes, the environment and where files live, links, and
+  the global and agent flags are topics: `krowk help topics` lists them,
+  `krowk help exit-codes` shows one. A command's page wraps at 80 columns and
+  names the global flags in one line instead of listing them. `krowk help
+  --json` keeps its shape, with the short summaries; a topic's `--json` is
+  its text as one JSON string. Both builds come out a little smaller.
+
+- **Everything krowk keeps is in one place, `~/.krowk/`, and your config
+  and keys move there by themselves.** The config, the registry keys, the provider
+  logins and stored keys, named Claude Code and Codex accounts, sessions,
+  krowk.db and the price cache were spread over `~/.config/krowk`,
+  `~/.local/share/krowk` and `~/.cache/krowk` (or wherever the XDG
+  variables put them); now they are `~/.krowk/config.json`,
+  `credentials.json`, `accounts/<name>/`, `sessions/` (krowk.db beside the
+  logs), `cache/` and `readiness/`, in a `0700` directory that keeps
+  secrets out of a dotfiles repository that tracks `~/.config`. The first
+  krowk you run after upgrading brings your config and keys in — one line
+  on stderr, `krowk: moved krowk's config and keys to ~/.krowk` — then
+  deletes the old key files, config and price cache (fetched again), so
+  no secret is left where a dotfiles repository may track it. The move is
+  built whole in `~/.krowk.migrating` and renamed into place in one step:
+  a crash before that leaves nothing half-made, and a crash after it is
+  finished on the next start. Nothing else is moved: old files krowk no
+  longer reads — `krowk.db`, a dev build's named accounts and sessions —
+  stay where they are and are named once on stderr, each with what to do
+  (`krowk sessions rebuild` for the session index; `mv` plus its
+  `configDir`, or a fresh `krowk connect`, for an account). Only krowk's
+  own files are deleted, by name — never a directory whole, so XDG
+  variables that put the config, data and cache in one directory lose
+  nothing else — and an old key file that is a link loses only the link,
+  the file it led to named for you to delete. The two old key files are
+  merged entry by entry; one entry they name differently stops the move
+  (`migration_failed`), both kept. A `~/.krowk` that already exists is
+  never merged into; old key files are deleted beside it only when it
+  holds every key in them as it is. A relative `XDG_CONFIG_HOME`, which
+  0.10 followed from the directory you ran in, is not looked at. An old
+  key file krowk cannot
+  read stops the move (`migration_failed`), naming the file with a line
+  and column only, until it is fixed or moved
+  aside. `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` no longer
+  move anything; set
+  `KROWK_HOME` (an absolute path; a relative one is refused) to keep all of
+  it somewhere else — a sandbox, a test — and nothing is moved into it. A
+  `~/.krowk` that is a symlink, or another user's, is refused rather than
+  used.
+
+- **One credentials file**, `~/.krowk/credentials.json` (`0600`): the
+  registry keys `krowk login` stores, the SuperGrok login and stored API
+  keys used to be two files; they are one, written by one locked
+  read-modify-write, so a `krowk login` never drops a provider token and a
+  token refresh never drops a key. A file krowk cannot read is named with
+  its line and column, never its contents.
+
+- **The file tools never read, search or change krowk's home unasked** —
+  any of it, not just the key files: `read`, `grep`, `glob`, `write` and
+  the edit tools ask first even under allow rules (and are refused with
+  no one to ask), judged by where a path really leads (`..`, symlinks,
+  case), and a search of the directory around it skips it. `krowk_push`
+  refuses any file in the home, wherever `KROWK_HOME` puts it, and any
+  `.krowk` directory.
+
+- **With `HOME` unset, krowk no longer uses `.krowk` beside you as its
+  home** — that made a repository's own `.krowk/` its config, trust list
+  and credentials. In every build, `krowk config set --global` and `krowk
+  login` now refuse with `no_home`, `doctor` shows "(no home directory)",
+  nothing is read from or written to a home, and `krowk status`, `-p`, the
+  TUI and `connect` refuse with `no_home`. On Windows, which sets no
+  `HOME`, krowk's home is `%USERPROFILE%\.krowk`.
+
+- **`krowk status` names a key's variable as `env ANTHROPIC_API_KEY`**, where
+  it said `$ANTHROPIC_API_KEY` (and `env ROUTER_KEY, handed to Claude Code`
+  for a backend's key), so a variable the instance reads and a stored
+  reference to one (`stored ($VAR)`) read apart. A missing key's fix line
+  offers storing one: "set OPENAI_API_KEY, or store a key with `krowk
+  connect openai --method api-key`".
+
+- **Every "sign in with …" now says `krowk connect`**: `krowk status`,
+  `providers list`, a refused switch and a failed turn name the connect
+  command for that instance (`krowk connect anthropic --method
+  subscription --name work`) instead of `krowk providers add claude
+  --name work`. `providers add|list|remove` work as before, on the same
+  sign-in code as `connect` — except that adding an instance that exists
+  no longer resets a key variable you set to the one its name implies.
+  Instances are listed with a plain label beside their names — Claude
+  subscription, Anthropic API key, ChatGPT subscription, SuperGrok, … — in
+  the pickers, and in place of the kind in the `krowk status` and
+  `providers list` tables; `--json` keeps `kind`, and `krowk status --json`
+  rows gain `label`.
+
+- **A bare `--model` runs on an instance that can run it here, and krowk
+  never guesses between a key and a subscription.** `--model sonnet` (or
+  `gpt-5.5`, `grok-4.7`, a bare `defaultModel`, the TUI's `/model haiku`)
+  used to go to the family's API instance whether it had a key or not, and
+  no model at all to `anthropic/claude-opus-5-5`, so a person with only a
+  Claude subscription failed. Now a bare id runs on the session's own
+  instance, then on the one `defaultModel` names, when that serves it and
+  is ready; else on the one instance ready here that serves it —
+  `claude/sonnet` with only a Claude subscription signed in. With several
+  ready — an Anthropic API key and a Claude subscription — the prompt is
+  refused (`ambiguous_model`, exit 1) with each one named ("Anthropic API
+  key", "Claude subscription") and the `--model <instance>/<id>` that picks
+  it, or `krowk connect <vendor> --default`; with none, `none_ready` (exit
+  3): "no connected instance serves Claude models — run `krowk connect
+  anthropic --method api-key` … or `krowk connect anthropic --method
+  subscription` …", with what each one needs. No
+  model at all is the default model of the one ready instance, refused the
+  same way. Claude Code's aliases go to a Claude Code instance as they are
+  and to the API as the newest model of their family the catalog lists.
+  `<instance>/<model>` is never rerouted. Routing asks each vendor once, in
+  parallel, from the minute-long cache, and never in a repository nobody
+  trusted. The TUI routes once its first frame is up, so its prompt never
+  waits on a vendor's status check, and when the model it routes runs on
+  Claude Code or Codex in a repository not yet trusted it asks the trust
+  question itself when a prompt is sent, holding it until it is answered:
+  `y` or `n` (Esc) on an empty prompt, once the question has been up for
+  400 ms — keys typed ahead go to the prompt and answer nothing. A no, a
+  refused route or Ctrl-C puts the held prompts back in the editor.
 - **The TUI's status line is one line in one order**:
   `<user>/<host> | <instance>/<model> | $cost | [N tasks] | [N subagents] | ? help`,
   under the prompt box. The task count is the todo list's open items and
@@ -126,6 +253,157 @@ the versions are the `v*` tags a release is cut from. Entries land under
   fields pricing never reads.
 
 ### Added
+
+- **The TUI connects a provider itself: `/connect`, `/disconnect`, and a
+  "Connect a provider" card on the first run.** Before, a fresh machine's
+  first prompt failed against `anthropic` with `not_authenticated`, and the
+  way out was to quit and run `krowk connect`. Now, when nothing here can
+  run a model, bare `krowk` opens on a card that walks the same steps as
+  `krowk connect` — vendor, way in, account, each account marked ready or
+  not — and `/connect` (or `/connect claude:work`) does it any time. A
+  Claude or ChatGPT subscription is still signed in by the vendor's own
+  `claude auth login` or `codex login`: the TUI gives that command the
+  terminal, as Ctrl-Z would, and takes it back after, redrawn at whatever
+  size the window is by then; Ctrl-C there stops that login, not krowk. A
+  SuperGrok sign-in's page (a link) and device code, and a pasted API key,
+  stay in the TUI; the key is shown as bullets and never reaches the
+  screen, the prompt's history or config.json — while the overlay is up,
+  nothing typed or pasted reaches the prompt, and a question that comes up
+  while it is hidden waits for `/connect` to open it rather than taking
+  what is being typed. The result reads as `krowk connect`'s (`✓ Connected
+  claude`, then what it is), and when it is the first connection, or the
+  session had nothing ready to run on, the session moves onto it.
+  `/disconnect` signs the session's instance, or one picked, out, and asks
+  before signing you out of Claude Code or Codex itself. After either, a
+  Claude Code or Codex process already running on the instance it
+  connected or signed out is not reused: the next turn asks the vendor
+  again and starts a new one, so a sign-out takes effect at once. A
+  cancelled or failed one, or one of another instance, keeps it. `/model` marks
+  each instance `✓ ready` or what it lacks (`✗ not signed in`), checking
+  the vendors in the background so a slow `claude` never holds up a key;
+  picking one that is not ready offers `/connect` for it. Both commands are
+  in the `/` menu and the help menu.
+
+- **An API key can be stored, not only read from the environment.**
+  `krowk connect anthropic --method api-key` (or `openai`, `xai`,
+  `openrouter`, `openai-compatible`) at a terminal asks "Paste a key, or
+  reference one ($VAR or !command)" without echoing it; Enter alone keeps
+  reading the key from its variable, as before. Without a terminal,
+  `--key-stdin` stores a key piped in, and `--key-ref '$VAR'` or
+  `--key-ref '!pass show anthropic'` stores a reference — the variable read
+  when krowk starts, or the command's output (one line, run once per krowk
+  process once it works — a failure is not kept, so unlocking the password
+  manager and trying again works — its errors never shown since they may
+  hold the key). The command
+  runs with no terminal — 30 seconds at most, so a password manager that
+  would ask for a passphrase fails at once, saying to unlock it first —
+  except when `krowk connect` runs it at a terminal, where you can type the
+  passphrase. There is no `--key <value>`: it would be in your shell's
+  history. A key, `$VAR` or `!command` over more than one line is refused,
+  so a pasted command never runs as two. The key goes in `~/.krowk/credentials.json`
+  (0600), the file SuperGrok's login is in; `config.json` still names only
+  a variable. A stored key is used before the variable, and when it cannot
+  be had — its variable unset, its command failing — the instance has no
+  key and says why, rather than falling back to the environment's.
+  `krowk status` says where each key comes from (`stored`, `stored
+  ($VAR)`, `stored (!pass …)`, `env ANTHROPIC_API_KEY`), never the key;
+  `krowk status` runs a stored command to check it, and one that fails is
+  `unknown`. `krowk disconnect` deletes a stored key and says whether the
+  variable is set too. The file tools no longer read or search krowk's
+  credentials files without asking, even inside the working directory, by
+  whatever path leads there.
+
+
+- **`krowk connect` connects a model provider, by vendor and method**
+  (in the `harness` build). `krowk connect anthropic` offers a Claude
+  subscription — a Claude Code account, signed in by Claude Code's own
+  `claude auth login` — or an API key; `openai` a ChatGPT subscription
+  (Codex's own `codex login`, or `--method device` for a code typed into
+  any browser) or an API key; `xai` SuperGrok (a browser or a device code)
+  or an API key; `openrouter` and `openai-compatible` an API key. With no
+  vendor on a terminal it asks — vendor, method, then which account: each
+  one there is, with whether it is ready, to reconnect, or a new one by
+  name. Without a terminal nothing is guessed: `--method
+  subscription|api-key` is required where a vendor has more than one, and
+  the error says so. `--name work` adds a second account (`claude:work`,
+  `anthropic:work` — the method picks the prefix, so the two never
+  clash); without it the default-named one is made, or renewed. A new
+  name keeps its method's prefix, holds no `:` after it, and is refused
+  when it differs from one there only in case, would take a built-in of
+  another kind (`claude`), another account's directory, or another
+  instance's key variable (`my-work` and `my_work` would both read
+  `$ANTHROPIC_MY_WORK_API_KEY`; name one with `--api-key-env`). A
+  relative `--config-dir` is kept as the absolute directory it means, with
+  any `..` taken out, and a failed sign-in removes only the directory it
+  made — never an account another connection made beside it. Definitions
+  you wrote by hand that share a directory still renew. Connecting an
+  instance that exists renews its login, and `krowk connect claude:work`
+  does it by name. A sign-in that fails writes nothing. **The first
+  connection becomes the default model** (`defaultModel` in config.json,
+  e.g. `claude:work/claude-opus-5-5`) and says so; later ones leave it
+  alone unless given `--default`. krowk still never signs in to a Claude
+  or ChatGPT subscription itself, nor reads those logins: the vendor's own
+  CLI does, and now starts in krowk's own empty directory rather than the
+  repository you run it in, whose settings nobody trusted.
+- **`krowk disconnect <instance>` signs one out, the way it was signed
+  in**: SuperGrok's tokens are deleted from krowk's credentials file, a
+  Claude Code or Codex account runs `claude auth logout` or `codex logout`
+  with its own directory, and an API-key instance names the variable to
+  unset, since krowk never stores the key. **The built-in `claude` and
+  `codex` are your own Claude Code and Codex login** (`~/.claude`,
+  `~/.codex`), and signing them out signs you out of Claude Code or Codex
+  itself, for every tool: `krowk disconnect` says so and asks at a
+  terminal, and without one refuses unless given `--sign-out-vendor`.
+  The pickers mark them "your own Claude Code login". The definition stays, showing
+  `not signed in` in `krowk status`, unless `--remove` — which also clears
+  `defaultModel` when it ran on that instance (not when a built-in of that
+  name still serves it). With no instance on a
+  terminal it asks which; without one it lists them.
+- **`krowk login`, `krowk logout` and `krowk whoami`** are short for your
+  krowk account: `krowk auth login`, the new `krowk auth logout` (takes the
+  key that resolves here off this machine — the key keeps working until it
+  is revoked in the dashboard), and `krowk auth verify`. `krowk auth`
+  works as before. `krowk login anthropic` and the like say that a model
+  provider is `krowk connect`; `krowk logout` takes no argument, and
+  `krowk logout anthropic` says `krowk disconnect` instead of removing your
+  krowk key; and the account's own errors now say
+  `krowk login` and `krowk whoami`.
+
+- **`krowk status` says which providers can run a turn here, and how to
+  fix the rest** (in the `harness` build). One row per instance — the
+  seven built in and every one you configured — with its kind, its state
+  (`ready`, `key not set`, `not signed in`, `expired`, `not installed`,
+  `unknown`), where its key or login comes from (`$ANTHROPIC_API_KEY`,
+  `Claude Code's own login in ~/.claude`, krowk's SuperGrok login file —
+  never the key itself), and the one command or variable that makes it
+  ready. It exits 0 when at least one instance is ready and 3
+  (`none_ready`) when none is; `--json` gives the rows with the same keys
+  on every row, and on exit 3 the rows are the error's `details`.
+  **`providers list` and `krowk doctor` now use the same check**: doctor
+  gains a `providers` line, and `providers list` rows carry `source` and
+  `fix` in place of `auth`, with `state` spelled as `krowk status` spells
+  it (`key_not_set`, `not_signed_in`, …). Claude Code and Codex are asked
+  at the same time instead of one after the other, so a listing takes as
+  long as the slowest vendor (at most 10 seconds, after which it and
+  anything it started are stopped) rather than their sum;
+  Codex is asked through `codex app-server`'s `account/read`, falling back
+  to `codex login status`. A SuperGrok login whose token expired and
+  cannot be refreshed now shows as `expired` instead of ready.
+- **A switch to a signed-out Claude Code or Codex account is refused
+  before anything starts.** `/model claude:work/sonnet`, `--model` on a
+  resumed session, and a rollover or its offer now ask the vendor whether
+  the account is signed in first, and refuse with the command that signs
+  it in (`krowk providers add claude --name work`); the session stays on
+  its model. Before, Claude Code was started and the turn failed. A
+  signed-in answer is remembered for a minute in the TUI, so switching
+  back and forth does not re-ask; a signed-out one is asked again every
+  time, so signing in in another terminal works at once. Before a turn the
+  vendor is asked in the session's own directory, once its repository is
+  trusted — where the turn will start it — so a project that signs
+  Claude Code in through its own settings — Bedrock, Vertex, an
+  `apiKeyHelper` — still runs; `krowk status` and `providers list` ask in
+  a directory of krowk's own, where such an account shows `not signed
+  in`.
 
 - **Claude Code's background agents are followed between turns, and the
   turn Claude Code begins for them no longer answers your next prompt.**
@@ -369,7 +647,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   adds any Chat Completions server. `krowk providers add supergrok` signs
   in to xAI with a SuperGrok or X Premium subscription in the browser
   (`--device` prints a code to enter anywhere instead) and keeps the
-  tokens in `~/.config/krowk/providers/credentials.json`, created `0600`
+  tokens in `~/.krowk/credentials.json`, created `0600`
   and refreshed as they expire; `krowk -p --model supergrok/grok-4.7`
   then runs on the subscription. `list` shows which instances have their
   key or login; `remove` takes a definition and its login away.
@@ -378,7 +656,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   already on your PATH, signed in the way you signed it in; `krowk
   providers add claude --name work` makes a second account, `claude:work`,
   with a config directory of its own (under
-  `~/.local/share/krowk/claude/`, or `--config-dir`) and signs it in by
+  `~/.krowk/accounts/`, or `--config-dir`) and signs it in by
   running `claude auth login` — Anthropic's own login, on your terminal.
   krowk never reads Claude's credentials or keychain entry; `providers
   list` asks `claude auth status`. One `claude` process serves the whole
@@ -496,7 +774,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `name`, a `description` (when the model should use it), a `model` and a
   `tools` allowlist, the body being its instructions, in the repository's
   `.krowk/agents/` or `.claude/agents/`, or your own
-  (`~/.config/krowk/agents/`, `~/.claude/agents/`), is offered to the model
+  (`~/.krowk/agents/`, `~/.claude/agents/`), is offered to the model
   by name. Claude Code's files work as they are: `tools: Read, Grep, Bash`
   maps to krowk's tools (what krowk has no tool for, like `WebFetch`, is
   left out), and `model: haiku`, `sonnet`, `opus` or `inherit` pick the
@@ -523,7 +801,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   trusted.** `claude -p` runs a repository's hooks and MCP servers without
   its usual trust prompt, so krowk shows its own on a terminal — `krowk
   -p`, and bare `krowk` before the TUI opens — and
-  remembers a yes in `~/.config/krowk/trusted.json` for that repository
+  remembers a yes in `~/.krowk/trusted.json` for that repository
   alone (not for repositories inside it); without a terminal it refuses
   (exit 4, `untrusted_directory`) unless you pass `--trust`, which lasts
   for that run. Your home directory and `/` are never trusted for good —
@@ -538,13 +816,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `codex` already on your PATH: `--model codex/gpt-5.5` runs it signed in
   the way you signed it in. `krowk providers add codex --name team` makes
   a second account, `codex:team`, with a `CODEX_HOME` of its own (under
-  `~/.local/share/krowk/codex/`, or `--config-dir`) that links in your
+  `~/.krowk/accounts/`, or `--config-dir`) that links in your
   Codex `config.toml`, `AGENTS.md`, prompts, skills and rules, so the
   accounts share one configuration while each keeps its own login and
   threads, and signs it in by running `codex login` — OpenAI's own login,
   on your terminal (`--device` for its device code). krowk never reads
   Codex's login file or uses Codex's OAuth client; `providers list` asks
-  `codex login status`. One `codex app-server` serves the whole session:
+  Codex itself (`account/read`, else `codex login status`). One `codex app-server` serves the whole session:
   its turns stream into the same log and `krowk sessions` listing as
   native ones, with the commands Codex ran and the patches it applied as
   tool calls; typing while a turn runs steers it; Ctrl-C interrupts it
@@ -584,7 +862,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   and the TUI no longer hangs waiting on the turn it was asked to abandon.
 - **Native sessions are logs you own, listed beside imported ones.** Each
   session is an append-only JSONL log under
-  `~/.local/share/krowk/sessions/<id>/` (with each turn's exact system
+  `~/.krowk/sessions/<id>/` (with each turn's exact system
   prompt and tool definitions beside it in `context.jsonl`), and it lists
   in `krowk sessions` as harness `krowk` next to Claude, Cursor and
   opencode sessions. `krowk sessions rebuild` re-derives them from the logs
@@ -626,7 +904,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **Provider usage ledgers.** A request your agent gave up on — a timeout,
   a killed shell, a Ctrl-C — can still finish and bill on the provider's
   side, and no transcript ever sees it. Drop the provider's per-request
-  usage export as JSONL into `~/.local/share/krowk/ledger/<name>.jsonl`
+  usage export as JSONL into `~/.krowk/ledger/<name>.jsonl`
   (one execution per line: `id`, `provider`, `model`, token counts,
   optional `cost_usd` and `time`) and `sessions import --from ledger`
   (or `all`, `sync`, `rebuild`) reads it. Every import then reconciles the
@@ -638,12 +916,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **An answer a backend sends whole is shown in the TUI.** A Claude Code
+  turn whose text arrived as one message, with no streamed pieces (an older
+  `claude`, or one that drops its partial messages), ran and was logged but
+  showed nothing between the prompt and `Worked for`, and Ctrl-Y copied
+  nothing of it.
+
 - **A Claude Code `defaultMode` krowk does not run no longer refuses every
   prompt.** `"defaultMode": "auto"` in `~/.claude/settings.json` (or any
   mode krowk does not know) used to fail the settings with `bad_settings`,
   even with `--permission-mode` given. Such a mode now sets nothing: a
   mode in krowk's own config (`permissions.defaultMode` in
-  `~/.config/krowk/config.json`) or `--permission-mode` wins without a
+  `~/.krowk/config.json`) or `--permission-mode` wins without a
   word, and with neither krowk runs in `default` and says so in one line.
   That is Claude Code's `auto`; any other mode krowk does not run
   (`dontAsk`, a value that is not a mode) is read as `default`, so it

@@ -60,7 +60,7 @@ impl Home {
             // A catalog that knows one model a router serves under a name
             // that says nothing of its family.
             catalog: Arc::new(|_, model| (model == "house-coder").then(|| ModelInfo { family: Some("grok-build".into()), ..ModelInfo::default() })),
-            credentials: self.root.join("home/.config/krowk/providers/credentials.json"),
+            credentials: self.root.join("home/.krowk/credentials.json"),
             trust: krowk_harness::trust::allow_all(),
             publisher: None,
             permissions: Default::default(),
@@ -428,4 +428,44 @@ fn r_proto_1_steering_an_interrupted_turn_never_read_comes_back_on_its_result() 
     assert_eq!(result.unread_steers, ["and the docs"], "handed back, not dropped");
     let json = serde_json::to_value(LiveEvent::Result(result)).unwrap();
     assert_eq!(json["unreadSteers"], serde_json::json!(["and the docs"]), "in the stream's result too");
+}
+
+/// R-CRED-1: a stored key's `!command` runs off the host's runtime thread.
+/// The TUI draws and reads keys on a single-threaded runtime; a turn whose
+/// key comes from a slow command (a password manager asking gpg-agent) must
+/// not stop it. Here a ticker on the same current-thread runtime keeps
+/// ticking through a turn whose command takes 1.5 s.
+#[test]
+fn r_cred_1_a_stored_keys_command_never_blocks_the_hosts_runtime() {
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("keyed")));
+    let home = Home::new("keycmd", &m.url);
+    let creds = home.root.join("home/.krowk/credentials.json");
+    std::fs::create_dir_all(creds.parent().unwrap()).unwrap();
+    std::fs::write(&creds, serde_json::json!({"version": 1, "keys": {"anthropic": {"command": "sleep 1.5; echo sk-from-command"}}}).to_string()).unwrap();
+    let mut cfg = home.config();
+    cfg.registry = Registry::resolve(&InstancesConfig { keys_from: Some(creds), ..InstancesConfig::default() }, &home.env());
+    let model = cfg.registry.parse_model("anthropic/claude-sonnet-4-6").unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let (ticks, took) = rt.block_on(async {
+        let host = krowk_harness::host::Host::new(cfg);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let ticks = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let t = ticks.clone();
+        let ticker = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                t.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        let started = std::time::Instant::now();
+        let cmd = krowk_harness::protocol::Command::Prompt { session_id: None, text: "hi".into(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let r = host.execute(cmd, tx).await;
+        ticker.abort();
+        assert!(r.is_ok(), "{:?}", r.err());
+        (ticks.load(std::sync::atomic::Ordering::Relaxed), started.elapsed())
+    });
+    assert!(took >= std::time::Duration::from_millis(1400), "the command ran: {took:?}");
+    assert!(ticks >= 15, "the runtime kept running while the command did: {ticks} ticks in {took:?}");
+    assert_eq!(m.seen.lock().unwrap()[0].header("x-api-key"), Some("sk-from-command"));
 }

@@ -4,7 +4,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "store_unavailable",
-    "fix": "store: no home directory in environment: set HOME (or XDG_DATA_HOME to an absolute path) so krowk.db has a place to live",
+    "fix": "store: there is no home directory to keep krowk's files in — set HOME, or KROWK_HOME to an absolute path",
     "retryable": false
   }
 }
@@ -16,7 +16,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "store_unavailable",
-    "fix": "store: no home directory in environment: set HOME (or XDG_DATA_HOME to an absolute path) so krowk.db has a place to live",
+    "fix": "store: there is no home directory to keep krowk's files in — set HOME, or KROWK_HOME to an absolute path",
     "retryable": false
   }
 }

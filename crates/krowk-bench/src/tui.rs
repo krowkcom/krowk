@@ -217,7 +217,7 @@ fn synthetic_session(sessions: &Path, cwd: &Path, turns: usize, tokens: usize) -
 pub fn replay_rss(bin: &Path, home: &Path) -> Outcome {
     let run = || -> Result<(f64, usize), String> {
         std::fs::create_dir_all(home).map_err(|e| e.to_string())?;
-        let sessions = home.join("data/krowk/sessions");
+        let sessions = home.join(".krowk/sessions");
         let id = synthetic_session(&sessions, home, 100, 200_000)?;
         let m = provider(|| mock::Reply::sse(&mock::text_stream("replayed-and-answered")));
         let mut t = pty::Pty::spawn(tui(bin, home, &m.url, &["--resume", &id]), COLS, ROWS);

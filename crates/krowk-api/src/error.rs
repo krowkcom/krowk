@@ -68,6 +68,6 @@ pub fn private_needs_key() -> Error {
         "private_needs_key",
         "a private upload needs an API key: a keyless upload lands in the shared anonymous \
          workspace, which nobody is a member of, so there is nothing for it to be private to — \
-         run `krowk auth login`, or push it public",
+         run `krowk login`, or push it public",
     )
 }

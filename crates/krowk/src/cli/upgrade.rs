@@ -69,7 +69,9 @@ pub(crate) fn upgrade(ctx: &mut Ctx) -> Result<(), Error> {
         ));
     }
     let latest = latest_version(Duration::from_secs(10))?;
-    write_state(ctx, &json!({ "checked_at": jiff::Timestamp::now().to_string(), "latest": latest }));
+    if let Some(path) = state_path(ctx) {
+        write_state(&path, &json!({ "checked_at": jiff::Timestamp::now().to_string(), "latest": latest }));
+    }
     if !version_less(VERSION, &latest) {
         return report(ctx, json!({ "upgraded": false, "version": VERSION, "latest": latest }), &format!("krowk {VERSION} is the latest release"));
     }
@@ -190,19 +192,12 @@ fn write_binary(r: &mut impl Read, dest: &Path) -> std::io::Result<()> {
     result
 }
 
-fn state_path(ctx: &Ctx) -> PathBuf {
-    let xdg = ctx.env("XDG_CONFIG_HOME");
-    if !xdg.is_empty() {
-        return PathBuf::from(xdg).join("krowk").join("update-check.json");
-    }
-    match krowk_api::creds::home_dir() {
-        Some(home) => home.join(".config").join("krowk").join("update-check.json"),
-        None => PathBuf::from(".krowk").join("update-check.json"),
-    }
+/// `cache/update-check.json` in krowk's home; none without one.
+fn state_path(ctx: &Ctx) -> Option<PathBuf> {
+    krowk_api::home::dir(ctx.io.env).ok().map(|h| h.join(krowk_api::home::CACHE).join("update-check.json"))
 }
 
-fn write_state(ctx: &Ctx, state: &Value) {
-    let path = state_path(ctx);
+fn write_state(path: &std::path::Path, state: &Value) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -216,7 +211,7 @@ pub(crate) fn maybe_notify(ctx: &mut Ctx) {
     if !is_release(VERSION) || krowk_api::truthy(&ctx.env("CI")) || !ctx.env("GITHUB_ACTIONS").is_empty() || krowk_api::truthy(&ctx.env("KROWK_NO_UPDATE_CHECK")) {
         return;
     }
-    let path = state_path(ctx);
+    let Some(path) = state_path(ctx) else { return };
     let mut state: Value = std::fs::read(&path).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or(json!({}));
     let checked = state.get("checked_at").and_then(Value::as_str).and_then(|t| t.parse::<jiff::Timestamp>().ok());
     let stale = checked.is_none_or(|t| jiff::Timestamp::now().duration_since(t).as_secs() >= 24 * 3600);
@@ -225,7 +220,7 @@ pub(crate) fn maybe_notify(ctx: &mut Ctx) {
             state["latest"] = json!(latest);
         }
         state["checked_at"] = json!(jiff::Timestamp::now().to_string());
-        write_state(ctx, &state);
+        write_state(&path, &state);
     }
     if let Some(latest) = state.get("latest").and_then(Value::as_str).filter(|l| version_less(VERSION, l)) {
         let _ = writeln!(ctx.io.stderr, "krowk {latest} is available (this is {VERSION}) — run `krowk upgrade`");

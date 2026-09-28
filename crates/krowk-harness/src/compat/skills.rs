@@ -5,7 +5,7 @@
 //! calls the `skill` tool with the name, and the files beside it (scripts,
 //! references) are the model's to read from there.
 //!
-//! Skills are found in krowk's config directory (`skills/`), Claude Code's
+//! Skills are found in krowk's home (`skills/`), Claude Code's
 //! user directory (`skills/`), and `.claude/skills` in every directory from
 //! the repository's root down to the working directory; a skill of the same
 //! name found later — deeper — replaces the one before. A `SKILL.md` with

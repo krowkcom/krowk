@@ -12,6 +12,8 @@ license-file.workspace = true
 publish.workspace = true
 
 [dependencies]
+# krowk's home and its one credentials file, shared with the lean build.
+krowk-api = { path = "../krowk-api" }
 # The log projects into krowk.db through the same writer the importers use.
 krowk-store = { path = "../krowk-store" }
 krowk-import = { path = "../krowk-import" }

@@ -26,10 +26,11 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> Result<(), krowk_api::Error> {
     report.insert("workspace".into(), json!(workspace_summary(ctx, &resolved)));
     // Runs are where metadata goes, and they need a key.
     report.insert("runs_available".into(), json!(client.authenticated()));
-    report.insert("credentials".into(), json!(creds::credentials_path().display().to_string()));
+    report.insert("credentials".into(), json!(creds::credentials_text()));
     report.insert("config".into(), json!(config_summary()));
     report.insert("store".into(), store_check(ctx));
     report.insert("pricing".into(), pricing_check(ctx));
+    report.insert("providers".into(), providers_check(ctx));
     report.insert("context".into(), serde_json::to_value(crate::runctx::detect(ctx.io.env)).expect("context serializes"));
 
     if ctx.format != Format::Human {
@@ -43,7 +44,7 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> Result<(), krowk_api::Error> {
         };
         let _ = writeln!(ctx.io.stdout, "{k:<15} {v}");
     }
-    for k in ["store", "pricing", "context"] {
+    for k in ["store", "pricing", "providers", "context"] {
         let _ = writeln!(ctx.io.stdout, "{k:<15} {}", report[k]);
     }
     Ok(())
@@ -87,6 +88,33 @@ fn pricing_check(ctx: &Ctx) -> Value {
 #[cfg(not(feature = "sessions"))]
 fn pricing_check(_: &Ctx) -> Value {
     json!({ "name": "pricing", "status": "skip", "message": "this build carries no prices" })
+}
+
+/// Whether any provider instance can run a turn here, by the readiness
+/// check `krowk status` prints — each instance's state, and the command
+/// with the sources and fixes. A warning, not a failure, when none is: a
+/// machine that only pushes evidence needs no provider.
+#[cfg(feature = "harness")]
+fn providers_check(ctx: &Ctx) -> Value {
+    let reports = match super::status::reports(ctx) {
+        Ok((_, _, r)) => r,
+        Err(e) => return json!({ "name": "providers", "status": "warn", "message": e.fix() }),
+    };
+    let ready: Vec<&str> = reports.iter().filter(|r| r.readiness.is_ready()).map(|r| r.instance.as_str()).collect();
+    let message = match ready.as_slice() {
+        [] => format!("none of {} instances is ready", reports.len()),
+        r => format!("{} of {} instances ready: {}", r.len(), reports.len(), r.join(", ")),
+    };
+    let states: Map<String, Value> = reports.iter().map(|r| (r.instance.clone(), json!(r.readiness.state()))).collect();
+    let mut v = json!({ "name": "providers", "status": if ready.is_empty() { "warn" } else { "pass" }, "message": message, "instances": states });
+    v["hint"] = json!("run `krowk status` for where each key or login comes from, and what fixes it");
+    v
+}
+
+/// The agent build runs no model, so it has no provider to check.
+#[cfg(not(feature = "harness"))]
+fn providers_check(_: &Ctx) -> Value {
+    json!({ "name": "providers", "status": "skip", "message": "this build runs no model" })
 }
 
 fn registry_mode(ctx: &Ctx, client: &Client) -> &'static str {
@@ -134,7 +162,7 @@ fn workspace_summary(ctx: &Ctx, resolved: &Result<(String, String), krowk_api::E
             return format!("{ws} ({source}) — but no key is stored for it, so every command here fails");
         }
         if !ctx.env("KROWK_TOKEN").is_empty() {
-            return format!("{ws} ({source}) — but KROWK_TOKEN is set and wins; uploads land wherever that key acts, and `krowk auth verify` names it");
+            return format!("{ws} ({source}) — but KROWK_TOKEN is set and wins; uploads land wherever that key acts, and `krowk whoami` names it");
         }
         return format!("{ws} ({source})");
     }
@@ -144,12 +172,15 @@ fn workspace_summary(ctx: &Ctx, resolved: &Result<(String, String), krowk_api::E
     if creds::token_source(ctx.io.env, "") == TOKEN_SOURCE_NONE {
         return "none — uploads will be anonymous".into();
     }
-    "unknown — not recorded at login; `krowk auth verify` asks the registry".into()
+    "unknown — not recorded at login; `krowk whoami` asks the registry".into()
 }
 
 fn config_summary() -> String {
     let existing = |p: std::path::PathBuf| if p.exists() { p.display().to_string() } else { format!("{} (absent)", p.display()) };
-    let mut parts = vec![format!("global {}", existing(crate::config::global_path()))];
+    let mut parts = vec![match crate::config::global_path() {
+        Ok(p) => format!("global {}", existing(p)),
+        Err(_) => "global (no home directory)".into(),
+    }];
     if let Some(repo) = crate::config::repo_path("") {
         parts.push(format!("repo {}", existing(repo)));
     }
