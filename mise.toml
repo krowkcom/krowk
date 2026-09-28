@@ -6,7 +6,14 @@
 # downloadable bytes (zig is the cross C toolchain cargo-zigbuild drives, and
 # node assembles the npm packages), so `make release-check` and `make dist`
 # work on a clean checkout too. Neither is needed for `make check`.
+#
+# mr-boxington (mbx) wraps cargo so compiled dependencies land in one shared
+# store and every worktree reuses them instead of compiling its own copy. It
+# keeps cargo's own behaviour: the workspace crates still build incrementally,
+# per checkout, and a build it cannot model runs uncached. Each build ends with
+# an `mbx[cache]:` line; `mbx stats` and `mbx tui` show the rest.
 [tools]
-rust = "1.97"
+rust = { version = "1.97", mr_boxington = true }
+mr-boxington = "1.19.0"
 zig = "0.16.0"
 node = "22"
