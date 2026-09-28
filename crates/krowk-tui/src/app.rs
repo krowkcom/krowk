@@ -465,6 +465,9 @@ pub struct App {
     pub offline: Option<String>,
     /// `<user>/<host>`, read once at start, for the status line.
     pub device: Option<String>,
+    /// Where the agent last said it is at work, relative to where the
+    /// session runs: the branch and pull request are read there.
+    pub works_in: Option<std::path::PathBuf>,
     /// The branch checked out, as last read.
     pub branch: String,
     /// The branch's pull request, as `gh` last said.
@@ -598,6 +601,7 @@ impl App {
             turns: 0,
             offline: None,
             device: None,
+            works_in: None,
             branch: String::new(),
             pr: None,
             overlay: Overlay::None,
@@ -1523,6 +1527,9 @@ impl App {
                 if streamed {
                     self.live = None;
                 }
+                if let Some(d) = crate::pr::worked_in(name, input) {
+                    self.works_in = Some(d);
+                }
                 self.calls.push(Call { call_id: call_id.clone(), name: name.clone(), input: input.clone() });
             }
             Item::ToolResult { call_id, output, is_error } => {
@@ -2069,6 +2076,7 @@ impl App {
         self.backend_agents.clear();
         self.unprompted = false;
         self.todos.clear();
+        self.works_in = None;
         self.instances.clear();
         self.turn_instance = None;
         self.offer = None;
@@ -2620,6 +2628,20 @@ mod tests {
         a.on_line(&delta("i", "rd"));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "first line\nsecond\nthird".into() } }));
         assert_eq!(text(&a.take_pending()), ["third"], "the tail, and nothing twice");
+    }
+
+    #[test]
+    fn the_status_line_follows_the_agent_to_where_it_works() {
+        let mut a = app();
+        let call = |a: &mut App, name: &str, input: serde_json::Value| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::ToolCall { call_id: "c".into(), name: name.into(), input } }));
+        call(&mut a, "read", serde_json::json!({"path": "README.md"}));
+        assert_eq!(a.works_in, None, "where the session runs, until the agent says otherwise");
+        call(&mut a, "Bash", serde_json::json!({"command": "cd ../krowk-cli-wt && cargo test"}));
+        assert_eq!(a.works_in.as_deref(), Some(std::path::Path::new("../krowk-cli-wt")));
+        call(&mut a, "Bash", serde_json::json!({"command": "git status"}));
+        assert_eq!(a.works_in.as_deref(), Some(std::path::Path::new("../krowk-cli-wt")), "a command that does not say keeps it");
+        a.forget_session();
+        assert_eq!(a.works_in, None, "a new session starts where it runs");
     }
 
     #[test]

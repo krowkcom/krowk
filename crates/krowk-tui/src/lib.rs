@@ -296,6 +296,7 @@ async fn session(opts: Options) -> Outcome {
         suspended: false,
         checks: None,
         pr: None,
+        looked_in: None,
         first_run: false,
         first_run_pending: false,
         host: &host,
@@ -363,6 +364,8 @@ struct Ui<'h> {
     checks: Option<ChecksFuture>,
     /// The branch checked out and its pull request, being read.
     pr: Option<PrFuture>,
+    /// Where the agent was at work when that was last read.
+    looked_in: Option<PathBuf>,
     /// The flow running is the first-run card's.
     first_run: bool,
     /// The marks being checked decide whether the first-run card opens.
@@ -712,6 +715,7 @@ impl<'h> Ui<'h> {
                     }
                     app.on_line(&line);
                     self.follow(app);
+                    self.follow_the_agent(app);
                     self.flush_requests(app).await;
                 }
                 line = watched(&mut self.watch) => {
@@ -792,6 +796,8 @@ impl<'h> Ui<'h> {
                         app.pr = found;
                         app.touch();
                     }
+                    // The agent moved on while this was read.
+                    self.follow_the_agent(app);
                 }
                 reports = finish(&mut self.checks) => {
                     self.checks = None;
@@ -2103,15 +2109,25 @@ impl<'h> Ui<'h> {
 
     /// Reads the branch checked out and asks `gh` for its pull request,
     /// off the loop, unless that is under way already or the status line
-    /// shows neither.
+    /// shows neither: where the agent is at work, or where the session
+    /// runs when that is no repository (or gone, a worktree removed).
     fn look_for_pr(&mut self, app: &App) {
         let shown = |i| app.settings.status_bar && app.settings.status_items.contains(&i);
         let (branch, pr) = (shown(settings::Item::Branch), shown(settings::Item::Pr));
         if self.pr.is_some() || !(branch || pr) {
             return;
         }
-        let dir = self.runs_in.clone();
-        self.pr = Some(Box::pin(async move { tokio::task::spawn_blocking(move || pr::look(&dir, pr)).await.unwrap_or_default() }));
+        self.looked_in = app.works_in.clone();
+        let dirs: Vec<PathBuf> = app.works_in.iter().map(|d| self.runs_in.join(d)).chain([self.runs_in.clone()]).collect();
+        self.pr = Some(Box::pin(async move { tokio::task::spawn_blocking(move || pr::look(&dirs, pr)).await.unwrap_or_default() }));
+    }
+
+    /// Reads the branch again once the agent is at work somewhere else: a
+    /// worktree it made shows its branch without waiting for the turn.
+    fn follow_the_agent(&mut self, app: &App) {
+        if app.works_in != self.looked_in {
+            self.look_for_pr(app);
+        }
     }
 
     /// At start, with the model known: whether anything here can run a
