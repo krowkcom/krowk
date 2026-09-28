@@ -296,6 +296,7 @@ async fn session(opts: Options) -> Outcome {
         suspended: false,
         checks: None,
         pr: None,
+        looked_in: None,
         first_run: false,
         first_run_pending: false,
         host: &host,
@@ -363,6 +364,8 @@ struct Ui<'h> {
     checks: Option<ChecksFuture>,
     /// The branch checked out and its pull request, being read.
     pr: Option<PrFuture>,
+    /// Where the agent was at work when that was last read.
+    looked_in: Option<PathBuf>,
     /// The flow running is the first-run card's.
     first_run: bool,
     /// The marks being checked decide whether the first-run card opens.
@@ -712,11 +715,19 @@ impl<'h> Ui<'h> {
                     }
                     app.on_line(&line);
                     self.follow(app);
+                    self.follow_the_agent(app);
                     self.flush_requests(app).await;
                 }
                 line = watched(&mut self.watch) => {
-                    app.on_line(&line);
-                    self.go_on(app);
+                    // A session left for another (`/new`, `/sessions`) may
+                    // still say something, a background task of it done: it
+                    // is not the one shown, and before a new one's first
+                    // prompt would be taken for it.
+                    let from_left = app::line_session(&line).is_some_and(|s| app.session_id.as_deref() != Some(s) && self.left.iter().any(|l| l == s));
+                    if !from_left {
+                        app.on_line(&line);
+                        self.go_on(app);
+                    }
                 }
                 r = finish(&mut self.turn) => {
                     self.turn = None;
@@ -792,6 +803,8 @@ impl<'h> Ui<'h> {
                         app.pr = found;
                         app.touch();
                     }
+                    // The agent moved on while this was read.
+                    self.follow_the_agent(app);
                 }
                 reports = finish(&mut self.checks) => {
                     self.checks = None;
@@ -1790,6 +1803,8 @@ impl<'h> Ui<'h> {
         app.model = None;
         app.gap_say(&format!("continuing session {id}"));
         replay(app, id, &events, &self.host.registry());
+        // Where that session's agent was at work, not this one's.
+        self.look_for_pr(app);
         // Its own model from here, not the one the last session was on; one
         // that never ran a turn goes on with the model the next prompt had.
         self.chosen = None;
@@ -1806,26 +1821,34 @@ impl<'h> Ui<'h> {
     /// session begun elsewhere: the trust and settings were that
     /// directory's, and a new session would run here.
     fn new_session(&mut self, app: &mut App) {
-        if self.runs_in != self.started_in {
+        if !same_dir(&self.runs_in, &self.started_in) {
             return app.notice(&format!("this krowk runs a session of {} — start krowk again for a new one", home_relative(&self.runs_in)));
         }
         if !self.can_resume(app) {
             return;
+        }
+        // The instance the session left ran on stays the one a bare
+        // `/model <id>` prefers, as it was before.
+        if self.chosen.is_none() && app.session_id.is_some() {
+            self.chosen = app.model.clone();
         }
         self.leave(app);
         // The one the next prompt goes to, else the one shown — the
         // resumed session's at start — rather than one routed afresh.
         let m = self.model.clone().or_else(|| app.model.clone());
         self.settle_on(app, m);
+        app.branch = pr::branch(&self.runs_in);
         app.start_over(&home_relative(&self.runs_in), self.effort_label.as_deref());
+        self.look_for_pr(app);
         if let Some(m) = self.model.clone() {
             self.owe_trust(app, &m);
         }
     }
 
     /// Session `m`'s model, where there is one, as the next prompt's and
-    /// the one shown, the trust question asked for the last model let go;
-    /// with none, the next prompt's stays.
+    /// the one shown; with none, the next prompt's stays. The trust
+    /// question owed for the last one is let go: the caller asks it again
+    /// for this one (`owe_trust`) once the screen is its own.
     fn settle_on(&mut self, app: &mut App, m: Option<ModelRef>) {
         self.needs_trust = None;
         app.trust_question = None;
@@ -2144,15 +2167,25 @@ impl<'h> Ui<'h> {
 
     /// Reads the branch checked out and asks `gh` for its pull request,
     /// off the loop, unless that is under way already or the status line
-    /// shows neither.
+    /// shows neither: where the agent is at work, or where the session
+    /// runs when that is no repository (or gone, a worktree removed).
     fn look_for_pr(&mut self, app: &App) {
         let shown = |i| app.settings.status_bar && app.settings.status_items.contains(&i);
         let (branch, pr) = (shown(settings::Item::Branch), shown(settings::Item::Pr));
         if self.pr.is_some() || !(branch || pr) {
             return;
         }
-        let dir = self.runs_in.clone();
-        self.pr = Some(Box::pin(async move { tokio::task::spawn_blocking(move || pr::look(&dir, pr)).await.unwrap_or_default() }));
+        self.looked_in = app.follow.works_in.clone();
+        let dirs: Vec<PathBuf> = app.follow.works_in.iter().cloned().chain([self.runs_in.clone()]).collect();
+        self.pr = Some(Box::pin(async move { tokio::task::spawn_blocking(move || pr::look(&dirs, pr)).await.unwrap_or_default() }));
+    }
+
+    /// Reads the branch again once the agent is at work somewhere else: a
+    /// worktree it made shows its branch without waiting for the turn.
+    fn follow_the_agent(&mut self, app: &App) {
+        if app.follow.works_in != self.looked_in {
+            self.look_for_pr(app);
+        }
     }
 
     /// At start, with the model known: whether anything here can run a
@@ -2217,7 +2250,7 @@ impl<'h> Ui<'h> {
                 self.open_resume(app);
                 return false;
             }
-            t if t.starts_with("/new ") => {
+            t if t.split_whitespace().next() == Some("/new") => {
                 app.editor.clear();
                 app.notice("/new takes nothing after it — send the prompt once the new session is up");
                 return false;
@@ -2289,6 +2322,11 @@ impl<'h> Ui<'h> {
         self.prompt(app, text);
         app.offline.is_some()
     }
+}
+
+/// Whether `a` and `b` are one directory, however each is spelled.
+fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
 /// Session `id`'s log, read whole, or why it could not be.
