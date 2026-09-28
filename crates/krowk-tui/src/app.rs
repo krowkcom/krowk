@@ -1611,7 +1611,7 @@ impl App {
                     (true, false) => "Claude Code runs these itself · esc closes this",
                     _ => "↑ ↓ select · enter expands · x interrupts that one · esc closes this",
                 };
-                rows.push(Line::from(Span::styled(clip(hint, width), Style::new().fg(Color::Blue))));
+                rows.push(Line::from(Span::styled(clip(hint, width), dim())));
             }
             Overlay::Models => rows.extend(self.models_overlay(width)),
             Overlay::Modes => rows.extend(self.modes_overlay(width)),
@@ -1787,16 +1787,15 @@ impl App {
     }
 
     fn todos_overlay(&self, width: usize) -> Vec<Line<'static>> {
-        let blue = Style::new().fg(Color::Blue);
         if self.todos.is_empty() {
-            return vec![Line::from(Span::styled(clip("no todo list in this session yet · esc closes this", width), blue))];
+            return vec![Line::from(Span::styled(clip("no todo list in this session yet · esc closes this", width), dim()))];
         }
         self.todos
             .iter()
             .map(|t| {
                 let (mark, style) = match t.status {
-                    TodoStatus::Pending => ("☐ ", blue),
-                    TodoStatus::InProgress => ("◐ ", blue.add_modifier(Modifier::BOLD)),
+                    TodoStatus::Pending => ("☐ ", Style::new()),
+                    TodoStatus::InProgress => ("◐ ", bold()),
                     TodoStatus::Completed => ("☑ ", dim()),
                 };
                 Line::from(Span::styled(clip(&format!("{mark}{}", t.content), width), style))
@@ -1837,44 +1836,43 @@ impl App {
             }
             lines.push(l);
         }
-        lines.into_iter().flat_map(|l| wrap(&l, width)).map(|l| Line::from(Span::styled(l, Style::new().fg(Color::Blue)))).collect()
+        lines.into_iter().flat_map(|l| wrap(&l, width)).map(Line::from).collect()
     }
 
     fn models_overlay(&self, width: usize) -> Vec<Line<'static>> {
-        let mut out = vec![Line::from(Span::styled(clip("switch to — ↑ ↓ choose · enter switch · esc closes · or /model <instance>/<model>", width), dim()))];
-        for (i, p) in self.picks.iter().enumerate() {
-            let chosen = i == self.pick_at;
-            let name = match &p.model {
-                Some(m) => format!("{}/{m}", p.instance),
-                None => format!("{}/…", p.instance),
-            };
-            // Whether it can run here, once its check is back: `…` until then.
-            let (mark, mark_style) = match self.marks.get(&p.instance) {
-                Some(Mark::Ready) => ("  ✓ ready".to_string(), look::success()),
-                Some(Mark::Not(why)) => (format!("  ✗ {why}"), yellow()),
-                Some(Mark::Unknown) => (String::new(), dim()),
-                None => ("  …".to_string(), dim()),
-            };
-            let head = format!("{}{name}  {}", if chosen { "❯ " } else { "  " }, p.note);
-            let style = if chosen { look::accent() } else { Style::new().fg(Color::Blue) };
-            let head = clip(&head, width);
-            let mark = match width - head.width() {
-                0 => String::new(),
-                room => clip(&mark, room),
-            };
-            out.push(Line::from(vec![Span::styled(head, style), Span::styled(mark, mark_style)]));
-        }
+        let rows: Vec<Choice> = self
+            .picks
+            .iter()
+            .map(|p| {
+                let name = match &p.model {
+                    Some(m) => format!("{}/{m}", p.instance),
+                    None => format!("{}/…", p.instance),
+                };
+                // Whether it can run here, once its check is back: `…` until then.
+                let value = match self.marks.get(&p.instance) {
+                    Some(Mark::Ready) => Span::styled("✓ ready", look::success()),
+                    Some(Mark::Not(why)) => Span::styled(format!("✗ {why}"), yellow()),
+                    Some(Mark::Unknown) => Span::raw(""),
+                    None => Span::styled("…", dim()),
+                };
+                Choice { name, value, says: p.note.clone(), warning: None }
+            })
+            .collect();
+        let mut out = vec![picker_title("switch to", "↑↓ choose · enter switch · esc close · or /model <instance>/<model>", width)];
+        out.extend(choices(&rows, self.pick_at, false, width));
         out
     }
 
     fn modes_overlay(&self, width: usize) -> Vec<Line<'static>> {
-        let mut out = vec![Line::from(Span::styled(clip("permission mode — ↑ ↓ choose · enter switch · esc closes · or /mode <name>", width), dim()))];
-        for (i, name) in PermissionMode::NAMES.iter().enumerate() {
-            let chosen = i == self.mode_at;
-            let now = if *name == self.permission_mode { "  now" } else { "" };
-            let style = if chosen { look::accent() } else { Style::new().fg(Color::Blue) };
-            out.extend(described(&format!("{}{name:<16}", if chosen { "❯ " } else { "  " }), &format!("{}{now}", mode_says(name)), width, style));
-        }
+        let rows: Vec<Choice> = PermissionMode::NAMES
+            .iter()
+            .map(|name| {
+                let value = if *name == self.permission_mode { Span::raw("current") } else { Span::raw("") };
+                Choice { name: name.to_string(), value, says: mode_says(name).into(), warning: None }
+            })
+            .collect();
+        let mut out = vec![picker_title("permission mode", "↑↓ choose · enter switch · esc close · or /mode <name>", width)];
+        out.extend(choices(&rows, self.mode_at, false, width));
         out
     }
 
@@ -1882,31 +1880,29 @@ impl App {
         let mode = self.default_mode.as_deref().unwrap_or("default");
         let says = if PermissionMode::parse(mode).is_some() { mode_says(mode) } else { "not a mode krowk runs" };
         let mode = clean(mode);
-        let row = |at: usize, head: String, says: &str| {
-            let chosen = at == self.setting_at;
-            let style = if chosen { look::accent() } else { Style::new().fg(Color::Blue) };
-            described(&format!("{}{head}", if chosen { "❯ " } else { "  " }), says, width, style)
-        };
-        let mut out = vec![Line::from(Span::styled(clip("settings — ↑ ↓ choose · ← → change and save · esc closes", width), dim()))];
-        out.extend(row(0, format!("Default permission mode  ‹ {mode} ›"), says));
-        if let Some((runs, claude)) = &self.default_mode_overridden {
-            let why = format!("  a new session here starts in {} — {claude} or this repository's settings set it, and come after config.json", runs.name());
-            out.extend(wrap(&why, width).into_iter().map(|l| Line::from(Span::styled(l, yellow()))));
-        }
+        let warning = self
+            .default_mode_overridden
+            .as_ref()
+            .map(|(runs, claude)| format!("a new session here starts in {} — {claude} or this repository's settings set it, and come after config.json", runs.name()));
         let cw = self.settings.content_width;
-        let says = match cw {
+        let cw_says = match cw {
             ContentWidth::Prose => format!("at most {} columns", ContentWidth::PROSE),
             ContentWidth::ProseWide => format!("at most {} columns", ContentWidth::PROSE_WIDE),
             ContentWidth::FullWidth => "the terminal's whole width".into(),
         };
-        out.extend(row(1, format!("Content width            ‹ {} ›", cw.name()), &says));
+        let rows = [
+            Choice { name: "Default permission mode".into(), value: Span::raw(mode), says: says.into(), warning },
+            Choice { name: "Content width".into(), value: Span::raw(cw.name()), says: cw_says, warning: None },
+        ];
+        let mut out = vec![picker_title("settings", "↑↓ choose · ←→ change and save · esc close", width)];
+        out.extend(choices(&rows, self.setting_at, true, width));
         out
     }
 
     fn sessions_overlay(&self, width: usize) -> Vec<Line<'static>> {
         let mut out = vec![Line::from(Span::styled(clip("continue a session — ↑ ↓ choose · enter continues it · esc closes", width), dim()))];
         if self.resumable.is_empty() {
-            out.push(Line::from(Span::styled(clip("no earlier session started in this directory", width), Style::new().fg(Color::Blue))));
+            out.push(Line::from(Span::styled(clip("no earlier session started in this directory", width), dim())));
             return out;
         }
         let rows: Vec<[String; 3]> = self.resumable.iter().map(|r| [flat(&r.prompt.chars().take(200).collect::<String>()), ago(r.last_ms, self.resumable_at_ms), String::new()]).collect();
@@ -1976,7 +1972,7 @@ impl App {
             if picks.iter().any(|p| p.instance == m.instance && p.model.as_deref() == Some(&m.model)) {
                 continue;
             }
-            let note = if Some(m) == now.as_ref() { "now".to_string() } else { "used in this session".to_string() };
+            let note = if Some(m) == now.as_ref() { "current".to_string() } else { "used in this session".to_string() };
             picks.push(Pick { instance: m.instance.clone(), model: Some(m.model.clone()), note });
         }
         for (name, kind) in instances {
@@ -1987,7 +1983,7 @@ impl App {
             picks.push(Pick { instance: name.clone(), model, note: kind.to_string() });
         }
         // The one after the current, so enter moves somewhere.
-        self.pick_at = usize::from(picks.len() > 1 && picks.first().is_some_and(|p| p.note == "now"));
+        self.pick_at = usize::from(picks.len() > 1 && picks.first().is_some_and(|p| p.note == "current"));
         self.picks = picks;
         self.overlay = Overlay::Models;
         self.dirty = true;
@@ -2040,16 +2036,97 @@ impl App {
     }
 }
 
-/// A menu row and what it does, on one line where they fit; where not —
-/// prose's 80 columns — what it does wraps under it, indented.
-fn described(head: &str, says: &str, width: usize, style: Style) -> Vec<Line<'static>> {
-    let one = format!("{head}  {says}");
-    if one.width() <= width {
-        return vec![Line::from(Span::styled(one, style))];
+/// A picker's row: what it is, what it is set to, what that means, and
+/// what to watch for, if anything.
+struct Choice {
+    name: String,
+    value: Span<'static>,
+    says: String,
+    warning: Option<String>,
+}
+
+/// A picker's header: its name in bold, the keys it takes dimmed.
+fn picker_title(name: &str, keys: &str, width: usize) -> Line<'static> {
+    let name = clip(name, width);
+    let keys = clip(&format!(" — {keys}"), width - name.width());
+    Line::from(vec![Span::styled(name, bold()), Span::styled(keys, dim())])
+}
+
+/// The settings and pickers' rows, one look for all (codex's styles.md):
+/// three columns — the name, its value, what it means — told apart by
+/// place and weight, the meaning dimmed; the chosen row a bold `❯` and
+/// bold text, and, where ←→ changes it, `‹ ›` round its value. Nothing
+/// moves with the cursor and nothing waits for it: every description and
+/// warning is shown whichever row is chosen, and the only colour is a
+/// value's status or a warning's yellow.
+fn choices(rows: &[Choice], at: usize, cycles: bool, width: usize) -> Vec<Line<'static>> {
+    // Measured as drawn: cleaned, in display columns.
+    let names: Vec<String> = rows.iter().map(|r| clean(&r.name)).collect();
+    let values: Vec<String> = rows.iter().map(|r| clean(&r.value.content)).collect();
+    let pad = |s: &str, w: usize| format!("{s}{}", " ".repeat(w.saturating_sub(s.width())));
+    let value_w = values.iter().map(|v| v.width()).max().unwrap_or(0) + if cycles { 4 } else { 0 };
+    let name_w = names.iter().map(|n| n.width()).max().unwrap_or(0);
+    let value_x = 2 + name_w + 2;
+    let says_x = if value_w == 0 { value_x } else { value_x + value_w + 2 };
+    // Narrower, a description goes under its row; narrower still, the
+    // value too — a name is never cut to keep a column.
+    let stacked = value_x + value_w > width;
+    let beside = width >= says_x + 16;
+    let under = if stacked || !beside { 4 } else { value_x };
+    // `text` wrapped from column `x`, its first line led by `lead` and the
+    // rest hung under what follows it.
+    let hung = |x: usize, lead: &str, text: &str, style: Style| -> Vec<Line<'static>> {
+        let hang = " ".repeat(lead.width());
+        wrap(text, width.saturating_sub(x + lead.width()).max(1))
+            .into_iter()
+            .enumerate()
+            .map(|(i, l)| Line::from(vec![Span::raw(" ".repeat(x)), Span::styled(format!("{}{l}", if i == 0 { lead } else { &hang }), style)]))
+            .collect()
+    };
+    let mut out = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        let chosen = i == at;
+        let weight = if chosen { bold() } else { Style::new() };
+        let value = match (cycles, chosen) {
+            (true, true) => format!("‹ {} ›", values[i]),
+            (true, false) => format!("  {}  ", values[i]),
+            (false, _) => values[i].clone(),
+        };
+        let value = Span::styled(value, r.value.style.patch(weight));
+        let mut line = vec![Span::styled(if chosen { "❯ " } else { "  " }, bold())];
+        if stacked {
+            line.push(Span::styled(clip(&names[i], width.saturating_sub(2)), weight));
+            out.push(Line::from(line));
+            if !value.content.trim().is_empty() {
+                out.push(Line::from(vec![Span::raw("    "), Span::styled(clip(value.content.trim(), width.saturating_sub(4)), value.style)]));
+            }
+            out.extend(hung(4, "", &r.says, dim()));
+        } else {
+            // Each column padded to its width and followed by two spaces,
+            // so the description starts at `says_x` on every row.
+            line.push(Span::styled(pad(&names[i], name_w), weight));
+            if value_w > 0 {
+                line.push(Span::raw("  "));
+                line.push(Span::styled(pad(&value.content, value_w), value.style));
+            }
+            if beside {
+                let says = wrap(&r.says, width - says_x);
+                if let Some(first) = says.first() {
+                    line.push(Span::raw("  "));
+                    line.push(Span::styled(first.clone(), dim()));
+                }
+                out.push(Line::from(line));
+                out.extend(says.into_iter().skip(1).map(|l| Line::from(vec![Span::raw(" ".repeat(says_x)), Span::styled(l, dim())])));
+            } else {
+                out.push(Line::from(line));
+                out.extend(hung(4, "", &r.says, dim()));
+            }
+        }
+        if let Some(w) = &r.warning {
+            out.extend(hung(under, "! ", w, yellow()));
+        }
     }
-    let mut rows = vec![Line::from(Span::styled(clip(head.trim_end(), width), style))];
-    rows.extend(wrap(says, width.saturating_sub(4).max(1)).into_iter().map(|l| Line::from(Span::styled(format!("    {l}"), style))));
-    rows
+    out
 }
 
 /// What a permission mode lets run without asking, in a line.
@@ -2311,9 +2388,9 @@ fn menu(rows: &[[String; 3]], at: usize, width: usize, most_rows: usize) -> Vec<
     let with_third = third > 0 && 2 + title + 2 + most(1).min(width / 2) + 2 + third <= width;
     let described = if with_third { most(1).min(width / 2) } else { width.saturating_sub(2 + title + 2) };
     let table_rows = rows.iter().enumerate().map(|(i, r)| {
-        // Only the selected title is coloured; the rest stays quiet.
+        // Only the selected title is bold; the rest stays quiet.
         let name = clip(&r[0], title);
-        let name = if i == at { Span::styled(name, look::prompt()) } else { Span::raw(name) };
+        let name = if i == at { Span::styled(name, bold()) } else { Span::raw(name) };
         let mut cells = vec![Cell::from(name), Cell::from(Span::styled(clip(&r[1], described), dim()))];
         if with_third {
             cells.push(Cell::from(Span::styled(r[2].clone(), look::border())));
@@ -2322,7 +2399,7 @@ fn menu(rows: &[[String; 3]], at: usize, width: usize, most_rows: usize) -> Vec<
     });
     let (title, described, third) = (title as u16, described as u16, third as u16);
     let widths = if with_third { vec![Constraint::Length(title), Constraint::Length(described), Constraint::Length(third)] } else { vec![Constraint::Length(title), Constraint::Fill(1)] };
-    let table = Table::new(table_rows, widths).block(block).column_spacing(2).highlight_symbol(Span::styled("› ", look::prompt())).highlight_spacing(HighlightSpacing::Always);
+    let table = Table::new(table_rows, widths).block(block).column_spacing(2).highlight_symbol(Span::styled("› ", bold())).highlight_spacing(HighlightSpacing::Always);
     let mut state = TableState::default().with_selected(Some(at));
     // Taller than `most_rows`, the table scrolls to keep the selection in view.
     widget_rows(table, &mut state, width, rows.len().min(most_rows) + 1)
@@ -3044,7 +3121,7 @@ mod tests {
         a.set_width(100);
         let rows = text(&a.view(Instant::now()).0);
         let row = |i: &str| rows.iter().find(|r| r.trim_start().trim_start_matches("❯ ").starts_with(&format!("{i}/"))).cloned().unwrap_or_default();
-        assert!(row("anthropic").ends_with("✓ ready") && row("claude").ends_with("✗ not signed in") && row("openai").ends_with('…'), "{rows:?}");
+        assert!(row("anthropic").contains("✓ ready") && row("claude").contains("✗ not signed in") && row("openai").contains(" … "), "{rows:?}");
     }
 
     #[test]
@@ -3098,6 +3175,23 @@ mod tests {
     }
 
     #[test]
+    fn a_pickers_descriptions_line_up_and_stay_in_its_width() {
+        let says = |s: &str| Choice { name: "n".into(), value: Span::raw(""), says: s.into(), warning: None };
+        let col = |rows: &[Line<'static>], needle: &str| text(rows).iter().find_map(|r| r.find(needle).map(|b| r[..b].width())).unwrap();
+        // No values at all: the description is the second column.
+        let rows = choices(&[says("one two three four five six seven eight nine ten eleven twelve")], 0, false, 30);
+        assert!(text(&rows).iter().all(|r| r.width() <= 30), "{:?}", text(&rows));
+        assert_eq!(col(&rows, "one"), col(&rows, "eleven"), "a wrapped description hangs under itself: {:?}", text(&rows));
+        // A wide value pads by its columns, not its chars.
+        let rows = [
+            Choice { name: "a".into(), value: Span::raw("漢字"), says: "first".into(), warning: None },
+            Choice { name: "b".into(), value: Span::raw("ab"), says: "second".into(), warning: None },
+        ];
+        let rows = choices(&rows, 0, true, 60);
+        assert_eq!(col(&rows, "first"), col(&rows, "second"), "{:?}", text(&rows));
+    }
+
+    #[test]
     fn settings_shows_the_saved_default_and_what_overrides_it() {
         let mut a = app();
         a.width = 120;
@@ -3127,7 +3221,7 @@ mod tests {
         for name in PermissionMode::NAMES {
             assert!(rows.contains(name), "{name} in {rows}");
         }
-        let marked: Vec<&str> = rows.lines().filter(|r| r.ends_with("now")).collect();
+        let marked: Vec<&str> = rows.lines().filter(|r| r.contains("current")).collect();
         assert!(marked.len() == 1 && marked[0].starts_with("❯ plan"), "{rows}");
         // `/perm` finds it by its description; `/mode` by its name, first.
         assert_eq!(help::slash("/mode", &[]).first().map(|s| s.name.as_str()), Some("mode"));

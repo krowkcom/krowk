@@ -97,6 +97,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **`/settings`, `/model` and `/mode` in the TUI read as one table**: each
+  row is a name, its value and what that means, in fixed columns, with the
+  meaning dimmed; they were all one colour, blue, and the chosen row all
+  pink. The chosen row is a bold `❯` and bold text, and in `/settings`
+  `‹ ›` round the value ←→ changes. Every description and warning shows
+  whichever row is chosen, and a warning sits under the value it is about.
+  The only colours left are a model's `✓ ready` or `✗ …` and a warning's
+  yellow. A narrow terminal puts the description, then the value, under the
+  name rather than cutting it. `/model` says `current` of the model in use
+  (was `now`), the word `/mode` uses; the todo list, `ctrl-o`'s details and the
+  `/` menu's chosen row lose their blue too.
 - **Tool calls in the TUI are quieter**: a call's bullet and name are the
   terminal's own text colour and what it acts on (a path, a command, a
   pattern) is dimmed, where they were green, bold and cyan; the bullet
