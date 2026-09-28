@@ -60,6 +60,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The TUI names the skill a call loads**: `Skill: basecamp`, where it
+  showed a bare `skill`, for krowk's own skills and Claude Code's alike. A
+  tool krowk has no name of its own for reads as words, `ListAgents` as
+  `List Agents`, set off from what it acts on by a colon
+  (`Web Fetch: https://…`).
 - **`krowk --help` fits on one screen**: about 40 lines at 80 columns, where
   it was 217. It leads with the agent (`krowk`, `krowk -p "…"`, `--model`,
   `--resume`), lists each command once with a one-line summary under AGENT,
