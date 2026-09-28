@@ -1015,8 +1015,16 @@ stdout:
         },
         {
           "name": "stop",
-          "usage": "krowk host stop",
-          "summary": "Stop the daemon, once no turn runs in it"
+          "usage": "krowk host stop [--force]",
+          "summary": "Stop the daemon, once no turn runs in it",
+          "flags": [
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Stop it though other clients are connected; each reconnects to the next daemon"
+            }
+          ]
         },
         {
           "name": "enable",
@@ -2212,8 +2220,16 @@ stdout:
         },
         {
           "name": "stop",
-          "usage": "krowk host stop",
-          "summary": "Stop the daemon, once no turn runs in it"
+          "usage": "krowk host stop [--force]",
+          "summary": "Stop the daemon, once no turn runs in it",
+          "flags": [
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Stop it though other clients are connected; each reconnects to the next daemon"
+            }
+          ]
         },
         {
           "name": "enable",
@@ -3423,8 +3439,16 @@ stdout:
         },
         {
           "name": "stop",
-          "usage": "krowk host stop",
-          "summary": "Stop the daemon, once no turn runs in it"
+          "usage": "krowk host stop [--force]",
+          "summary": "Stop the daemon, once no turn runs in it",
+          "flags": [
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Stop it though other clients are connected; each reconnects to the next daemon"
+            }
+          ]
         },
         {
           "name": "enable",
@@ -4634,8 +4658,16 @@ tty:
         },
         {
           "name": "stop",
-          "usage": "krowk host stop",
-          "summary": "Stop the daemon, once no turn runs in it"
+          "usage": "krowk host stop [--force]",
+          "summary": "Stop the daemon, once no turn runs in it",
+          "flags": [
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Stop it though other clients are connected; each reconnects to the next daemon"
+            }
+          ]
         },
         {
           "name": "enable",
