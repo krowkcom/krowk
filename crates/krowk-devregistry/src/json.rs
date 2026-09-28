@@ -328,6 +328,15 @@ impl<'a> Fields<'a> {
         out
     }
 
+    /// A number field that was sent, as an integer; None when it was absent,
+    /// null, or not a whole number.
+    pub fn get_num(&self, name: &str) -> Option<i64> {
+        match &self.named(name).last()?.value {
+            Value::Num(n) => n.parse().ok(),
+            _ => None,
+        }
+    }
+
     /// A `json.RawMessage` field: the last member's bytes, whatever they hold.
     pub fn raw(&self, name: &str) -> Option<Range<usize>> {
         self.named(name).last().map(|m| m.raw.clone())

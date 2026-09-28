@@ -9,6 +9,7 @@ pub mod home;
 pub mod migrate;
 pub mod slug;
 pub mod spec;
+pub mod sync;
 pub mod tempfile;
 pub mod types;
 
