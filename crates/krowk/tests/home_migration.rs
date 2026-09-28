@@ -182,7 +182,7 @@ fn an_older_layout_moves_its_config_and_keys_deletes_the_old_secrets_and_names_t
         format!("mkdir -p {h}/accounts && mv {} {h}/accounts/claude-work", account.display(), h = h.display()),
         "set its configDir".into(),
         "krowk connect anthropic --method subscription --name work".into(),
-        format!("mv {} {}/trusted.json", b.old_config().join("trusted.json").display(), h.display()),
+        format!("mv -n {} {}/trusted.json", b.old_config().join("trusted.json").display(), h.display()),
     ] {
         assert!(said.contains(&want), "{want} in: {said}");
     }

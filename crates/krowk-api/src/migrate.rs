@@ -147,6 +147,11 @@ pub fn run(home: &Path, env: Env) -> Result<(), String> {
     for f in &creds_files {
         remove_secret(f);
     }
+    // A directory linked in from a dotfiles repository: the files were
+    // deleted in it, and its history still holds them.
+    if let Some(to) = std::fs::symlink_metadata(&cfg).is_ok_and(|m| m.file_type().is_symlink()).then(|| std::fs::read_link(&cfg).ok()).flatten() {
+        eprintln!("krowk: {} is a link to {}, where the old keys were deleted — if a repository tracks it, its history still holds them", cfg.display(), to.display());
+    }
     let _ = std::fs::remove_file(conf);
     leftovers(&cfg, &cache);
     let _ = std::fs::remove_dir(&cfg);
@@ -265,8 +270,8 @@ pub fn note_old(home: &Path, env: Env) {
                 }
                 // Into a directory the home already has, its contents, not
                 // the directory inside it.
-                _ if p.is_dir() && home.join(&name).is_dir() => other.push(format!("`mv {}/* {h}/{name}/`", p.display())),
-                _ => other.push(format!("`mv {} {h}/{name}`", p.display())),
+                _ if p.is_dir() && home.join(&name).is_dir() => other.push(format!("`mv -n {}/* {h}/{name}/`", p.display())),
+                _ => other.push(format!("`mv -n {} {h}/{name}`", p.display())),
             }
         }
     }
