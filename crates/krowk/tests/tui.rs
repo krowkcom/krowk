@@ -296,6 +296,11 @@ fn resume_continues_an_earlier_session_from_the_slash_menu() {
     // An id that is not one is refused, never sent to the model.
     t.write(b"/sessions nope\r");
     assert!(t.wait_for("\"nope\" is not a krowk session id", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    // A session of its own first, left for the earlier one: krowk.db still
+    // lists it once krowk is gone.
+    let from = t.output().len();
+    t.write(b"summarise the README again\r");
+    assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
     t.write(b"/resume\r");
     assert!(t.wait_for("enter continues it", Duration::from_secs(10)).is_some(), "no picker: {:?}", t.text());
     assert!(t.wait_for("read README.md and summarise it", Duration::from_secs(5)).is_some(), "the session is not listed: {:?}", t.text());
@@ -311,9 +316,12 @@ fn resume_continues_an_earlier_session_from_the_slash_menu() {
     let seen = m.seen.lock().unwrap();
     assert!(!seen.iter().any(|s| s.body["messages"].to_string().contains("/sessions nope")));
     assert!(seen.iter().any(|s| { let b = s.body["messages"].to_string(); b.contains("read README.md and summarise it") && b.contains("and what else is in it?") }), "the earlier turn was not sent");
+    drop(seen);
+    let log = |session: &str| std::fs::read_to_string(b.root.join("home/.krowk/sessions").join(session).join("events.jsonl")).unwrap();
+    assert!(log(&id).contains("and what else is in it?"), "the prompt went to the session resumed");
     let sessions: Vec<PathBuf> = std::fs::read_dir(b.root.join("home/.krowk/sessions")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_dir()).collect();
-    assert_eq!(sessions.len(), 1, "no second session was started: {sessions:?}");
-    assert!(std::fs::read_to_string(sessions[0].join("events.jsonl")).unwrap().contains("and what else is in it?"));
+    assert_eq!(sessions.len(), 2, "the earlier one and the one left for it: {sessions:?}");
+    assert_eq!(krowk_sessions(&b, &m.url), 2, "krowk.db lists the session left too");
 }
 
 /// `/config` (or `/settings`) cycles the default permission mode and saves

@@ -1040,13 +1040,14 @@ impl App {
         }
     }
 
-    /// The subagents still running, in order: what the Agents overlay
-    /// selects among.
     /// Whether the backend is running agents of its own, whose results come
     /// back to this session as a turn it begins.
     pub fn backend_agents_running(&self) -> bool {
         !self.backend_agents.is_empty()
     }
+
+    /// The subagents still running, in order: what the Agents overlay
+    /// selects among.
 
     pub fn agent_count(&self) -> usize {
         self.subs.len()

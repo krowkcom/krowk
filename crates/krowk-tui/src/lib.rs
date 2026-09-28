@@ -134,6 +134,9 @@ pub struct TrustAsk {
 pub struct Outcome {
     /// The session it ran turns in, for the caller to project into krowk.db.
     pub session_id: Option<String>,
+    /// The sessions `/sessions` moved away from, which the caller projects
+    /// too.
+    pub left: Vec<String>,
     /// Why it could not run or stopped early.
     pub error: Option<String>,
     /// Left without waiting for the running turn — a second Ctrl-C, or a
@@ -154,10 +157,10 @@ pub fn run(opts: Options) -> Outcome {
         .build()
     {
         Ok(rt) => rt,
-        Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("the async runtime could not start: {e}")) },
+        Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(format!("the async runtime could not start: {e}")) },
     };
     if let Err(e) = crossterm::terminal::enable_raw_mode() {
-        return Outcome { session_id: None, abandoned: false, error: Some(format!("the terminal could not be put in raw mode: {e}")) };
+        return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(format!("the terminal could not be put in raw mode: {e}")) };
     }
     let hook = std::panic::take_hook();
     // A panic ends the TUI when it aborts the process (the release profile)
@@ -235,7 +238,7 @@ async fn session(opts: Options) -> Outcome {
                 runs_in = replay(&mut app, id, &events).unwrap_or(runs_in);
                 app.say(&format!("resumed session {id}"), app::dim());
             }
-            Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(e) },
+            Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(e) },
         }
     }
     // The model shown before the first turn names one: the one given
@@ -276,7 +279,7 @@ async fn session(opts: Options) -> Outcome {
             let _ = std::io::stdout().write_all(term::TITLE_SAVE);
             t
         }
-        Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("the terminal could not be drawn on: {e}")) },
+        Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(format!("the terminal could not be drawn on: {e}")) },
     };
     let credentials = opts.host.credentials.clone();
     let permissions_cfg = opts.host.permissions.clone();
@@ -314,7 +317,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, left: Vec::new(), last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
@@ -336,7 +339,8 @@ async fn session(opts: Options) -> Outcome {
         let _ = write!(out, "\x1b[2mresume this session with: krowk --resume {id}\x1b[0m\r\n");
     }
     let _ = out.flush();
-    Outcome { session_id: app.session_id.clone(), error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
+    ui.left.retain(|id| app.session_id.as_ref() != Some(id));
+    Outcome { session_id: app.session_id.clone(), left: ui.left, error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
 }
 
 struct Ui<'h> {
@@ -410,6 +414,8 @@ struct Ui<'h> {
     rx: Option<mpsc::Receiver<StreamLine>>,
     /// Set to leave now, without the running turn's end.
     abandoned: bool,
+    /// The sessions `/sessions` moved away from, oldest first.
+    left: Vec<String>,
     /// The last prompt sent: what a yes to a limit's offer sends again on
     /// the instance it moves to (R-INST-7).
     last_prompt: String,
@@ -1743,6 +1749,9 @@ impl<'h> Ui<'h> {
             }
             _ => {}
         }
+        if let Some(old) = app.session_id.clone().filter(|old| !self.left.contains(old)) {
+            self.left.push(old);
+        }
         app.forget_session();
         app.model = None;
         app.gap_say(&format!("continuing session {id}"));
@@ -1771,6 +1780,8 @@ impl<'h> Ui<'h> {
     fn can_resume(&self, app: &mut App) -> bool {
         let waits = if app.running() {
             "the running turn to finish — esc interrupts it"
+        } else if app.offer.is_some() {
+            "the question above — y or n"
         } else if self.held.is_some() {
             "the prompt waiting to be sent — ctrl-c takes it back"
         } else if self.model_route.is_some() {
