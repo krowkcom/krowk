@@ -218,12 +218,22 @@ fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     let b = Sandbox::new("settings");
     let mut t = pty::Pty::spawn(b.command(&m.url, &["--model", "anthropic/claude-sonnet-4-6"]), 120, 30);
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    t.write(b"/config\r");
+    t.write(b"/config\r ");
     assert!(t.wait_for("Default permission mode", Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    // What is typed while it is open never reaches the prompt: only the
-    // space changes the setting.
+    // A key typed ahead of the overlay changes nothing; once it is up,
+    // what is typed never reaches the prompt and only the space changes
+    // the setting. The keys are taken in order, so once config.json has
+    // the change, `zq` has been taken too.
+    let path = b.root.join("home/.krowk/config.json");
+    let saved = || std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["permissions"]["defaultMode"].as_str().map(String::from));
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(saved(), None, "the space typed ahead changed the setting");
     t.write(b"zq ");
-    assert!(t.wait_for("unhinged", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while saved().as_deref() != Some("unhinged") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(saved().as_deref(), Some("unhinged"), "{:?}", t.text());
     assert!(!t.text().contains("zq"), "typed into the prompt: {:?}", t.text());
     t.write(b"\x1b");
     t.write(b"\x04");

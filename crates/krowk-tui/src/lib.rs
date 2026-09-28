@@ -308,6 +308,7 @@ async fn session(opts: Options) -> Outcome {
         held: None,
         needs_trust: None,
         trust_shown: None,
+        settings_shown: None,
         trust: opts.trust,
         effort_label,
         runs_in: runs_in.clone(),
@@ -383,6 +384,9 @@ struct Ui<'h> {
     /// When the trust question came up: keys before `APPROVAL_SETTLE` has
     /// passed were typed ahead, and are no answer.
     trust_shown: Option<std::time::Instant>,
+    /// When `/settings` opened: a key before `APPROVAL_SETTLE` has passed
+    /// was typed ahead, and changes nothing.
+    settings_shown: Option<std::time::Instant>,
     /// The trust question, for a route that lands on a backend.
     trust: Option<TrustAsk>,
     /// The effort as the header shows it.
@@ -935,10 +939,11 @@ impl<'h> Ui<'h> {
             app.notice("/settings: no config.json to save to — krowk has no home directory");
             return;
         };
-        match settings::read(&paths.config) {
+        match krowk_harness::connect::read_config(&paths.config) {
             Ok(raw) => {
                 self.show_settings(app, &raw);
                 app.overlay = Overlay::Settings;
+                self.settings_shown = Some(std::time::Instant::now());
             }
             Err(e) => app.notice(&format!("/settings: {e}")),
         }
@@ -1172,6 +1177,8 @@ impl<'h> Ui<'h> {
                             f.type_str(&s);
                         }
                     }
+                    // Settings takes no text: a paste is dropped.
+                    None if app.overlay == Overlay::Settings => {}
                     None => app.editor.insert_str(&s),
                 }
                 app.touch();
@@ -1513,9 +1520,11 @@ impl<'h> Ui<'h> {
         }
         // Settings: enter, space or the arrows change the one there is, and
         // nothing typed reaches the prompt — a space there would be a change
-        // saved. Esc closes it.
-        if app.overlay == Overlay::Settings && !ctrl && !alt && k.code != KeyCode::Esc {
-            if matches!(k.code, KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right) {
+        // saved — and a key typed ahead, before it was up to be seen,
+        // changes nothing. Esc closes it.
+        if app.overlay == Overlay::Settings && !ctrl && k.code != KeyCode::Esc {
+            let settled = self.settings_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE);
+            if settled && !alt && matches!(k.code, KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right) {
                 self.cycle_default_mode(app);
             }
             return false;

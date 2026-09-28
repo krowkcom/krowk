@@ -114,7 +114,10 @@ pub fn slash(typed: &str, skills: &[(String, String)]) -> Vec<Slash> {
         .enumerate()
         .filter_map(|(i, s)| {
             let hit = score(&s.name).map(|n| n + (1 << 20)).or_else(|| score(&s.description));
-            if whole(s) { Some((hit.unwrap_or(0) + (1 << 21), i)) } else { hit.map(|h| (h, i)) }
+            // An alias outranks even a skill of the same name, as enter
+            // with the menu closed runs the command.
+            let alias = !s.skill && !s.name.eq_ignore_ascii_case(q) && whole(s);
+            if whole(s) { Some((hit.unwrap_or(0) + (1 << 21) + (u32::from(alias) << 22), i)) } else { hit.map(|h| (h, i)) }
         })
         .collect();
     ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));

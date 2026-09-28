@@ -128,11 +128,6 @@ pub fn from_config(raw: &Value) -> (Settings, Vec<String>) {
 /// and the one that asks about nothing.
 pub const DEFAULT_MODES: [PermissionMode; 2] = [PermissionMode::Default, PermissionMode::Unhinged];
 
-/// krowk's config.json as it is now.
-pub fn read(config: &Path) -> Result<Map<String, Value>, String> {
-    krowk_harness::connect::read_config(config)
-}
-
 /// `permissions.defaultMode` in a read config.json as written — none when
 /// it names nothing, which runs as `default`.
 pub fn default_mode(raw: &Map<String, Value>) -> Option<String> {
@@ -150,7 +145,7 @@ pub fn next_default(now: Option<&str>) -> PermissionMode {
 /// Writes `permissions.defaultMode`, keeping every other key as it was:
 /// config.json as written.
 pub fn set_default_mode(config: &Path, m: PermissionMode) -> Result<Map<String, Value>, String> {
-    let mut raw = read(config)?;
+    let mut raw = krowk_harness::connect::read_config(config)?;
     let permissions = raw.entry("permissions").or_insert_with(|| Value::Object(Map::new()));
     let Some(permissions) = permissions.as_object_mut() else {
         return Err(format!("\"permissions\" in {} is not an object — fix it by hand", config.display()));
@@ -181,7 +176,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("krowk-tui-settings-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let config = dir.join("config.json");
-        assert_eq!(read(&config).map(|r| default_mode(&r)), Ok(None), "no file names nothing");
+        assert_eq!(krowk_harness::connect::read_config(&config).map(|r| default_mode(&r)), Ok(None), "no file names nothing");
         assert_eq!(next_default(None), PermissionMode::Unhinged, "unset runs as default, so the next is unhinged");
         assert_eq!(next_default(Some("unhinged")), PermissionMode::Default);
         assert_eq!(next_default(Some("acceptEdits")), PermissionMode::Default, "a mode outside the cycle goes to its start");
@@ -189,7 +184,7 @@ mod tests {
         std::fs::write(&config, json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"]}}).to_string()).unwrap();
         let written = set_default_mode(&config, PermissionMode::Unhinged).unwrap();
         assert_eq!(default_mode(&written).as_deref(), Some("unhinged"));
-        assert_eq!(read(&config).unwrap(), written);
+        assert_eq!(krowk_harness::connect::read_config(&config).unwrap(), written);
         let raw: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
         assert_eq!(raw, json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"], "defaultMode": "unhinged"}}));
         std::fs::write(&config, json!({"permissions": true}).to_string()).unwrap();

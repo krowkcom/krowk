@@ -2654,7 +2654,7 @@ mod tests {
 
     #[test]
     fn an_alias_typed_whole_runs_its_command_before_any_skill() {
-        let skills = [("update-config".to_string(), "Configure things".to_string()), ("quitter".to_string(), "Leaves".to_string())];
+        let skills = [("update-config".to_string(), "Configure things".to_string()), ("quitter".to_string(), "Leaves".to_string()), ("config".to_string(), "A skill named the alias".to_string())];
         assert_eq!(help::slash("/config", &skills).first().map(|s| s.name.as_str()), Some("settings"));
         assert_eq!(help::slash("/quit", &skills).first().map(|s| s.name.as_str()), Some("exit"));
         assert_eq!(help::slash("/permission-mode", &skills).first().map(|s| s.name.as_str()), Some("mode"));

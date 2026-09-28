@@ -1275,7 +1275,11 @@ pub fn read_config(path: &Path) -> Result<Map<String, Value>, String> {
 pub fn write_config(path: &Path, raw: &Map<String, Value>) -> std::io::Result<()> {
     static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let data = serde_json::to_string_pretty(raw).expect("config serializes") + "\n";
-    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    // Where a symlink points, even one whose target is not there yet.
+    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| match std::fs::read_link(path) {
+        Ok(to) => path.parent().unwrap_or(Path::new(".")).join(to),
+        Err(_) => path.to_path_buf(),
+    });
     let dir = path.parent().unwrap_or(Path::new("."));
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = dir.join(format!(".config-{}-{n}.json", std::process::id()));
