@@ -561,24 +561,29 @@ async fn attach(state: Shared, client: u64, id: u64, session: String, after: Opt
             _ => return refuse(&state, EngineError::new("no_session", format!("there is no session {session} — `krowk sessions` lists them"))),
         };
         let n = events.len();
-        let s = state.borrow();
-        let Some(hub) = s.hubs.get(&session).filter(|h| h.in_flight > 0 || h.running) else {
-            break (events, n, Vec::new(), false);
+        // Decided with the hub borrowed, and waited for once it is not.
+        let decided = {
+            let s = state.borrow();
+            match s.hubs.get(&session).filter(|h| h.in_flight > 0 || h.running) {
+                None => Some((n, Vec::new(), false)),
+                Some(hub) => {
+                    let at = hub.head.as_ref().and_then(|h| events.iter().position(|e| &e.id == h));
+                    match (&hub.head, at) {
+                        // Nothing sent live yet, or the read is behind what
+                        // was: the turn's frames are on their way — wait.
+                        (None, _) | (Some(_), None) if tries < 100 => None,
+                        (Some(h), Some(at)) => {
+                            let from = hub.turn.iter().position(|l| matches!(l, StreamLine::Log(ev) if &ev.id == h)).map_or(hub.turn.len(), |i| i + 1);
+                            Some((at + 1, hub.turn[from..].to_vec(), hub.running))
+                        }
+                        _ => Some((n, Vec::new(), hub.running)),
+                    }
+                }
+            }
         };
-        let at = hub.head.as_ref().and_then(|h| events.iter().position(|e| &e.id == h));
-        match (&hub.head, at) {
-            // Nothing sent live yet: the turn's first frames are on their
-            // way; wait for them.
-            (None, _) | (Some(_), None) if tries < 100 => {
-                drop(s);
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                continue;
-            }
-            (Some(h), Some(at)) => {
-                let from = hub.turn.iter().position(|l| matches!(l, StreamLine::Log(ev) if &ev.id == h)).map_or(hub.turn.len(), |i| i + 1);
-                break (events, at + 1, hub.turn[from..].to_vec(), hub.running);
-            }
-            _ => break (events, n, Vec::new(), hub.running),
+        match decided {
+            Some((upto, tail, running)) => break (events, upto, tail, running),
+            None => tokio::time::sleep(Duration::from_millis(10)).await,
         }
     };
     let mut s = state.borrow_mut();
