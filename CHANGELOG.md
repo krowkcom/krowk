@@ -13,12 +13,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 - **The TUI's status line is two rows, and links the branch's pull request.**
   The first row is the model, the device, the task and subagent counts and
-  `? help`; the second is the cost and `#133↗`, the pull request of the
-  branch checked out, as a link: green while open, purple once merged, grey
-  as a draft, red if closed. krowk asks `gh` at start and after every turn,
-  so a pull request the agent opens shows up on its own. Without `gh`, or on
-  a branch with no pull request, the item is left out. The `statusItems`
-  setting takes `pr`, and `cost` and `pr` always sit on the second row.
+  `? help`; the second is the branch checked out, `#133↗`, its pull request
+  as a link (green while open, purple once merged, grey as a draft, red if
+  closed), and the cost. Both are read again after every turn, so a branch
+  the agent switches to or a pull request it opens shows up on its own.
+  Without `gh`, or on a branch with no pull request, the link is left out.
+  The `statusItems` setting takes `branch` and `pr`, and `branch`, `pr` and
+  `cost` always sit on the second row.
 - **Links in the TUI's answers can be clicked.** A markdown link,
   `[the docs](https://…)`, shows as its text, underlined in the link colour
   with a `↗` after it, and the URL itself no longer clutters the line; a

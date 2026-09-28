@@ -50,6 +50,7 @@ const BAR_SEP: &str = " | ";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Rank {
     Pr,
+    Branch,
     Device,
     Subagents,
     Tasks,
@@ -275,8 +276,8 @@ fn window_name(w: &str) -> String {
 const STATUS_INDENT: usize = 2;
 
 /// A row of the status line. Narrow, the items give way one at a time — the
-/// pull request first, then the device, the subagents, the tasks and the
-/// cost — then the model is cut short; `? help` stays.
+/// pull request first, then the branch, the device, the subagents, the tasks
+/// and the cost — then the model is cut short; `? help` stays.
 fn hint_row(mut parts: Vec<Part>, width: usize) -> Line<'static> {
     let room = width.saturating_sub(STATUS_INDENT);
     let used = |parts: &[Part]| parts.iter().map(|p| p.text.width()).sum::<usize>() + parts.len().saturating_sub(1) * BAR_SEP.len();
@@ -427,6 +428,8 @@ pub struct App {
     pub offline: Option<String>,
     /// `<user>/<host>`, read once at start, for the status line.
     pub device: Option<String>,
+    /// The branch checked out, as last read.
+    pub branch: String,
     /// The branch's pull request, as `gh` last said.
     pub pr: Option<crate::pr::Pr>,
     pub overlay: Overlay,
@@ -558,6 +561,7 @@ impl App {
             turns: 0,
             offline: None,
             device: None,
+            branch: String::new(),
             pr: None,
             overlay: Overlay::None,
             settings,
@@ -1738,7 +1742,8 @@ impl App {
     }
 
     /// The status line's items, in the order drawn: `<instance>/<model> |
-    /// <device> | [N tasks] | [N subagents] | ? help` over `<cost> | #N↗`,
+    /// <device> | [N tasks] | [N subagents] | ? help` over `<branch> | #N↗ |
+    /// <cost>`,
     /// the counts only while there is something to count and `offline`
     /// before the help while the API cannot be reached.
     fn status_parts(&self) -> [Vec<Part>; 2] {
@@ -1776,6 +1781,11 @@ impl App {
                     let running = (self.subs.iter().filter(|s| s.status.is_none()).count() + self.backend_agents.len()) as u32;
                     if running > 0 {
                         parts.push(part(Rank::Subagents, format!("[{}]", plural(running, "subagent"))));
+                    }
+                }
+                StatusItem::Branch => {
+                    if !self.branch.is_empty() {
+                        parts.push(part(Rank::Branch, self.branch.clone()));
                     }
                 }
                 // Coloured the way the forge colours it.
@@ -2792,9 +2802,10 @@ mod tests {
         a.device = Some("elvinas/primevise-arch-1".into());
         assert_eq!(a.status_bar(), "anthropic/claude-x | elvinas/primevise-arch-1 | ? help\n$0.00", "the template, nothing to count yet");
         a.pr = Some(Pr { number: 133, state: PrState::Open, url: "https://github.com/krowkcom/krowk-cli/pull/133".into() });
-        assert_eq!(a.status_bar(), "anthropic/claude-x | elvinas/primevise-arch-1 | ? help\n$0.00 | #133↗", "the branch's pull request after the cost");
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Pr, StatusItem::Help, StatusItem::Cost, StatusItem::Device, StatusItem::Model], content_width: ContentWidth::FullWidth };
-        assert_eq!(a.status_bar(), "elvinas/primevise-arch-1 | anthropic/claude-x | ? help\n#133↗ | $0.00", "in the order given, the help last on its row");
+        a.branch = "feature/tui".into();
+        assert_eq!(a.status_bar(), "anthropic/claude-x | elvinas/primevise-arch-1 | ? help\nfeature/tui | #133↗ | $0.00", "the branch and its pull request before the cost");
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost, StatusItem::Pr, StatusItem::Help, StatusItem::Device, StatusItem::Model], content_width: ContentWidth::FullWidth };
+        assert_eq!(a.status_bar(), "elvinas/primevise-arch-1 | anthropic/claude-x | ? help\n$0.00 | #133↗", "in the order given, the help last on its row");
         a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost], content_width: ContentWidth::FullWidth };
         assert_eq!(a.status_bar(), "$0.00");
         a.settings.status_bar = false;

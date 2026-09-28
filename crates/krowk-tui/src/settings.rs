@@ -1,7 +1,7 @@
 //! The TUI's part of krowk's config.json, under `"tui"` (R-TUI-2):
 //!
 //! ```json
-//! { "tui": { "contentWidth": "prose", "statusBar": true, "statusItems": ["model", "device", "tasks", "subagents", "help", "cost", "pr"] } }
+//! { "tui": { "contentWidth": "prose", "statusBar": true, "statusItems": ["model", "device", "tasks", "subagents", "help", "branch", "pr", "cost"] } }
 //! ```
 //!
 //! - `contentWidth` — `prose` (the default) lays out what is above the
@@ -17,10 +17,11 @@
 //!   `anthropic/claude-opus-5-5`, with the instance's limit once it is near
 //!   it — R-INST-6), `device` (`<user>/<host>`), `tasks` (`[2 tasks]`, only
 //!   while the todo list has open items), `subagents` (`[1 subagent]`, only
-//!   while subagents run), `help` (`? help`, last on its row), `cost` (the
-//!   session's) and `pr` (`#133↗`, the branch's pull request, a link coloured
-//!   by its state). `cost` and `pr` make the second row, the rest the first.
-//!   The default is all seven in that order. While the API cannot be reached
+//!   while subagents run), `help` (`? help`, last on its row), `branch` (the
+//!   one checked out), `pr` (`#133↗`, the branch's pull request, a link
+//!   coloured by its state) and `cost` (the session's). `branch`, `pr` and
+//!   `cost` make the second row, the rest the first. The default is all
+//!   eight in that order. While the API cannot be reached
 //!   an `offline` item is added before `help` whatever the list says.
 //!
 //! Names from before the status line was one template still read: `todos`
@@ -55,24 +56,27 @@ pub enum Item {
     Subagents,
     /// `? help`, drawn last on the first row.
     Help,
+    /// The branch checked out.
+    Branch,
     /// `#N↗`, the pull request of the branch checked out.
     Pr,
 }
 
 impl Item {
-    pub const ALL: [(&'static str, Item); 7] = [
+    pub const ALL: [(&'static str, Item); 8] = [
         ("model", Item::Model),
         ("device", Item::Device),
         ("tasks", Item::Tasks),
         ("subagents", Item::Subagents),
         ("help", Item::Help),
-        ("cost", Item::Cost),
+        ("branch", Item::Branch),
         ("pr", Item::Pr),
+        ("cost", Item::Cost),
     ];
 
     /// Whether the item is drawn on the status line's second row.
     pub fn second_row(self) -> bool {
-        matches!(self, Item::Cost | Item::Pr)
+        matches!(self, Item::Branch | Item::Pr | Item::Cost)
     }
 
     /// An item by name — `Some(None)` for an old name kept so a config that
@@ -317,7 +321,7 @@ mod tests {
     #[test]
     fn r_tui_2_the_status_bar_is_optional_and_its_items_configurable() {
         assert_eq!(from_config(&json!({})).0, Settings::default());
-        assert_eq!(Settings::default().status_items, [Item::Model, Item::Device, Item::Tasks, Item::Subagents, Item::Help, Item::Cost, Item::Pr], "the template's order");
+        assert_eq!(Settings::default().status_items, [Item::Model, Item::Device, Item::Tasks, Item::Subagents, Item::Help, Item::Branch, Item::Pr, Item::Cost], "the template's order");
         let (s, w) = from_config(&json!({"tui": {"statusBar": false}}));
         assert!(!s.status_bar && w.is_empty());
         let (s, w) = from_config(&json!({"tui": {"statusItems": ["cost", "model", "cost", "nope"]}}));
