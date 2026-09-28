@@ -293,11 +293,14 @@ fn resume_continues_an_earlier_session_from_the_slash_menu() {
 
     let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 120, 30);
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    // An id that is not one is refused, never sent to the model.
+    t.write(b"/sessions nope\r");
+    assert!(t.wait_for("\"nope\" is not a krowk session id", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"/resume\r");
     assert!(t.wait_for("enter continues it", Duration::from_secs(10)).is_some(), "no picker: {:?}", t.text());
     assert!(t.wait_for("read README.md and summarise it", Duration::from_secs(5)).is_some(), "the session is not listed: {:?}", t.text());
     t.write(b"\r");
-    assert!(t.wait_for(&format!("resumed session {id}"), Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(t.wait_for(&format!("continuing session {id}"), Duration::from_secs(10)).is_some(), "{:?}", t.text());
     let from = t.output().len();
     t.write(b"and what else is in it?\r");
     assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
@@ -306,6 +309,7 @@ fn resume_continues_an_earlier_session_from_the_slash_menu() {
     assert!(t.text().contains(&format!("krowk --resume {id}")), "{:?}", t.text());
     // One request carried both prompts: the turn continued the session.
     let seen = m.seen.lock().unwrap();
+    assert!(!seen.iter().any(|s| s.body["messages"].to_string().contains("/sessions nope")));
     assert!(seen.iter().any(|s| { let b = s.body["messages"].to_string(); b.contains("read README.md and summarise it") && b.contains("and what else is in it?") }), "the earlier turn was not sent");
     let sessions: Vec<PathBuf> = std::fs::read_dir(b.root.join("home/.krowk/sessions")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_dir()).collect();
     assert_eq!(sessions.len(), 1, "no second session was started: {sessions:?}");

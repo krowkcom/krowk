@@ -17,9 +17,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   active; enter continues the chosen one. Its conversation is replayed under
   what is already on screen, the status line and `ctrl-o` start counting
   from that session, and the next prompt goes to it on the model it last ran
-  on. It waits for a running turn to finish, and a session another krowk is
-  running is refused rather than opened twice. `krowk --resume <id>` still
-  opens one directly.
+  on. It waits for a running turn to finish. `/sessions <id>` continues a
+  session by its id, as `krowk --resume <id>` opens one.
 - **Shift+Enter starts a new line in the TUI prompt**, as Alt+Enter,
   Ctrl+J and a `\` before Enter already do. Windows consoles report
   Shift+Enter on their own; elsewhere krowk now asks the terminal for the

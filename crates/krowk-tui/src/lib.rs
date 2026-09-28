@@ -230,8 +230,11 @@ async fn session(opts: Options) -> Outcome {
     let mut runs_in = opts.host.cwd.clone();
     let started_in = opts.host.cwd.clone();
     if let Some(id) = &opts.resume {
-        match replay(&mut app, &sessions_dir, id) {
-            Ok(cwd) => runs_in = cwd.unwrap_or(runs_in),
+        match read_session(&sessions_dir, id) {
+            Ok(events) => {
+                runs_in = replay(&mut app, id, &events).unwrap_or(runs_in);
+                app.say(&format!("resumed session {id}"), app::dim());
+            }
             Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(e) },
         }
     }
@@ -1701,8 +1704,7 @@ impl<'h> Ui<'h> {
     /// them here. Only between turns — the running one would go on
     /// writing to a session no longer shown.
     fn open_resume(&mut self, app: &mut App) {
-        if app.running() {
-            app.notice("that waits for the running turn to finish — esc interrupts it");
+        if !self.can_resume(app) {
             return;
         }
         let mut sessions = log::recent(&self.sessions_dir, &self.started_in, RESUMABLE + 1);
@@ -1716,34 +1718,55 @@ impl<'h> Ui<'h> {
     /// replayed under what is on screen, and the next prompt sent to it, on
     /// the model it last ran on.
     fn resume(&mut self, app: &mut App, id: &str) {
-        if app.running() {
-            app.notice("that waits for the running turn to finish — esc interrupts it");
+        if !self.can_resume(app) {
             return;
         }
-        // Another krowk writing to it would refuse the first prompt: said
-        // now, with the session shown left as it was.
-        if let Err(e @ log::LogError::Busy(_)) = log::SessionLog::open(&self.sessions_dir, id) {
-            app.notice(e.message());
+        if app.session_id.as_deref() == Some(id) {
+            app.notice(&format!("session {id} is the one shown"));
             return;
         }
+        // Read before anything is let go: a log that cannot be read leaves
+        // the session shown as it was.
+        let events = match read_session(&self.sessions_dir, id) {
+            Ok(events) => events,
+            Err(e) => return app.notice(&e),
+        };
         app.forget_session();
+        let before = app.model.take();
         app.gap_say(&format!("continuing session {id}"));
-        match replay(app, &self.sessions_dir, id) {
-            Ok(cwd) => self.runs_in = cwd.unwrap_or_else(|| self.started_in.clone()),
-            Err(e) => {
-                app.notice(&e);
-                return;
-            }
-        }
-        // Its own model from here, not the one the last session was on.
+        self.runs_in = replay(app, id, &events).unwrap_or_else(|| self.started_in.clone());
+        // Its own model from here, not the one the last session was on; one
+        // that never ran a turn goes on with the model the next prompt had.
         self.chosen = None;
         self.needs_trust = None;
         app.trust_question = None;
-        if let Some(m) = app.model.clone() {
-            self.retarget(&m);
-            self.model = Some(m.clone());
-            self.owe_trust(app, &m);
+        match app.model.clone() {
+            Some(m) => {
+                self.retarget(&m);
+                self.model = Some(m.clone());
+                self.owe_trust(app, &m);
+            }
+            None => app.model = self.model.clone().or(before),
         }
+    }
+
+    /// Whether another session may take the one shown's place now: not
+    /// while a turn runs, nor while a prompt waits for the model or the
+    /// trust question, nor a `/model` is being routed — each was meant for
+    /// the session shown. The model routed at start is not: a session
+    /// resumed meanwhile has its own, which the route then leaves alone.
+    fn can_resume(&self, app: &mut App) -> bool {
+        let waits = if app.running() {
+            "the running turn to finish — esc interrupts it"
+        } else if self.held.is_some() {
+            "the prompt waiting to be sent — ctrl-c takes it back"
+        } else if self.model_route.is_some() {
+            "the /model switch to finish"
+        } else {
+            return true;
+        };
+        app.notice(&format!("that waits for {waits}"));
+        false
     }
 
     fn open_models(&mut self, app: &mut App) {
@@ -2050,6 +2073,12 @@ impl<'h> Ui<'h> {
                 self.open_resume(app);
                 return false;
             }
+            t if t.starts_with("/sessions ") => {
+                app.editor.clear();
+                let id = t["/sessions ".len()..].trim().to_string();
+                self.resume(app, &id);
+                return false;
+            }
             "/mode" => {
                 app.editor.clear();
                 app.open_mode_picker();
@@ -2113,19 +2142,24 @@ impl<'h> Ui<'h> {
     }
 }
 
-/// Session `id`'s conversation, from its log, into `app`, which continues
-/// it: the directory it was started in, or why it could not be read.
-fn replay(app: &mut App, sessions_dir: &std::path::Path, id: &str) -> Result<Option<PathBuf>, String> {
-    let events = log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(|e| format!("session {id} could not be read: {}", e.message()))?;
-    let cwd = match events.first().map(|e| &e.body) {
+/// Session `id`'s log, read whole, or why it could not be.
+fn read_session(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_harness::protocol::LogEvent>, String> {
+    if !log::valid_id(id) {
+        return Err(format!("{id:?} is not a krowk session id"));
+    }
+    log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(|e| format!("session {id} could not be read: {}", e.message()))
+}
+
+/// Session `id`'s conversation into `app`, which continues it; the
+/// directory it was started in.
+fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent]) -> Option<PathBuf> {
+    let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
+    app.replay(&log::branch(events, &head));
+    app.session_id = Some(id.to_string());
+    match events.first().map(|e| &e.body) {
         Some(krowk_harness::protocol::LogBody::SessionStarted { cwd, .. }) => Some(PathBuf::from(cwd)),
         _ => None,
-    };
-    let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
-    app.replay(&log::branch(&events, &head));
-    app.session_id = Some(id.to_string());
-    app.say(&format!("resumed session {id}"), app::dim());
-    Ok(cwd)
+    }
 }
 
 /// A key as a terminal without KEYS_PUSH sends it. The protocol reports

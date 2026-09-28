@@ -2030,7 +2030,8 @@ fn ago(ms: i64, now_ms: i64) -> String {
         s if s < d => format!("{}h ago", s / h),
         s if s < 2 * d => "yesterday".into(),
         s if s < 30 * d => format!("{}d ago", s / d),
-        s if s < 365 * d => format!("{}mo ago", s / (30 * d)),
+        s if s < 360 * d => format!("{}mo ago", s / (30 * d)),
+        s if s < 365 * d => "1y ago".into(),
         s => format!("{}y ago", s / (365 * d)),
     }
 }

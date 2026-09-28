@@ -93,7 +93,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("settings", "Settings saved to config.json — the default permission mode"),
     ("connect", "Connect a provider — a subscription or an API key"),
     ("disconnect", "Sign an instance out"),
-    ("sessions", "Continue an earlier session started in this directory"),
+    ("sessions", "Continue an earlier session started in this directory — or /sessions <id>"),
     ("help", "Keys and what they do"),
     ("exit", "Leave krowk"),
 ];
