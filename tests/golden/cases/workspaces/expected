@@ -9,7 +9,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "log in",
-      "cmd": "krowk auth login",
+      "cmd": "krowk login",
       "description": "approving it in the browser stores a key, and uploads stop expiring — `--token krowk_sk_...` stores one directly instead"
     }
   ]
@@ -27,7 +27,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "log in",
-      "cmd": "krowk auth login",
+      "cmd": "krowk login",
       "description": "approving it in the browser stores a key, and uploads stop expiring — `--token krowk_sk_...` stores one directly instead"
     }
   ]
@@ -39,7 +39,7 @@ stdout:
 {
   "ok": true,
   "data": {
-    "path": "<scratch>/home/.config/krowk/credentials.json",
+    "path": "<scratch>/home/.krowk/credentials.json",
     "confirmed": true,
     "key_id": "<key_1>",
     "workspace": "<ws_1>"

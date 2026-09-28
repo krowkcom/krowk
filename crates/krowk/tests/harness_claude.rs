@@ -34,7 +34,10 @@ impl Sandbox {
         std::fs::create_dir_all(root.join("bin")).unwrap();
         std::fs::write(root.join("repo/README.md"), "# krowk\n").unwrap();
         let bin = root.join("bin/claude");
-        std::fs::copy(fixture("fake-claude"), &bin).unwrap();
+        // Linked, not copied: a copy is a file open for writing that a test
+        // forking beside it can inherit, and running it then fails with
+        // "Text file busy" (ETXTBSY) — read as a vendor that could not be checked.
+        std::os::unix::fs::symlink(fixture("fake-claude"), &bin).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         Sandbox { root: root.canonicalize().unwrap() }
@@ -73,7 +76,7 @@ impl Sandbox {
     }
 
     fn data(&self) -> PathBuf {
-        self.root.join("home/.local/share/krowk")
+        self.root.join("home/.krowk")
     }
 
     fn events(&self, session: &str) -> Vec<Value> {
@@ -96,7 +99,7 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
     let b = Sandbox::new("instances");
     for name in ["personal", "work"] {
         let added = b.json(&["providers", "add", "claude", "--name", name, "--json"], &[]);
-        let dir = b.data().join("claude").join(format!("claude-{name}"));
+        let dir = b.data().join("accounts").join(format!("claude-{name}"));
         assert_eq!(added["data"]["instance"], format!("claude:{name}"));
         assert_eq!(added["data"]["kind"], "claude-code");
         assert_eq!(added["data"]["definition"]["configDir"], dir.display().to_string());
@@ -109,7 +112,7 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
     let fake = b.fake_log();
     let logins: Vec<&str> = fake.lines().collect();
     for name in ["personal", "work"] {
-        let dir = b.data().join("claude").join(format!("claude-{name}"));
+        let dir = b.data().join("accounts").join(format!("claude-{name}"));
         let at = logins.iter().position(|l| *l == format!("config {}", dir.display())).expect("ran with the instance's CLAUDE_CONFIG_DIR");
         assert_eq!(logins[at - 1], "argv auth status --json");
     }
@@ -120,21 +123,24 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
     b.json(&["providers", "add", "claude", "--name", "work", "--json"], &[]);
     assert_eq!(b.fake_log().lines().filter(|l| *l == "argv auth login").count(), 2);
 
-    // Status comes from `claude auth status`, per instance.
+    // Status comes from `claude auth status`, per instance, through the
+    // readiness check `krowk status` prints.
     let listed = b.json(&["providers", "list", "--json"], &[]);
     let rows = listed["data"]["instances"].as_array().unwrap();
     let row = |n: &str| rows.iter().find(|r| r["instance"] == n).unwrap_or_else(|| panic!("{n} in {rows:?}")).clone();
     for n in ["claude:personal", "claude:work"] {
-        assert_eq!((row(n)["state"].as_str(), row(n)["auth"].as_str()), (Some("ready"), Some("runs Claude Code: signed in with a Claude max subscription")));
+        let dir = b.data().join("accounts").join(n.replace(':', "-"));
+        assert_eq!((row(n)["state"].as_str(), row(n)["source"].as_str()), (Some("ready"), Some(format!("Claude Code's own login in {} (signed in with a Claude max subscription)", dir.display()).as_str())));
     }
-    assert_eq!(row("claude")["state"], "not signed in", "the default account, in the sandbox's ~/.claude, has no login");
+    assert_eq!(row("claude")["state"], "not_signed_in", "the default account, in the sandbox's ~/.claude, has no login");
+    assert_eq!(row("claude")["fix"], "sign in with `krowk connect anthropic --method subscription`, which runs Claude's own login");
 
     // Each account runs a session, in its own config directory.
     for name in ["personal", "work"] {
         let model = format!("claude:{name}/sonnet");
         let r = b.json(&["-p", "hello", "--model", &model, "--trust", "--output-format", "json"], &[]);
         assert_eq!((r["status"].as_str(), r["model"]["instance"].as_str(), r["result"].as_str()), (Some("completed"), Some(format!("claude:{name}").as_str()), Some("ok")));
-        assert!(b.data().join("claude").join(format!("claude-{name}")).join("projects").is_dir(), "Claude Code kept the transcript in the account's directory");
+        assert!(b.data().join("accounts").join(format!("claude-{name}")).join("projects").is_dir(), "Claude Code kept the transcript in the account's directory");
     }
     let sessions = b.json(&["sessions", "--json"], &[]);
     assert_eq!(sessions["data"]["sessions"].as_array().unwrap().iter().filter(|s| s["harness"] == "krowk").count(), 2);
@@ -143,14 +149,14 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
     let out = b.krowk(&["providers", "add", "claude", "--name", "broken"], &[("FAKE_CLAUDE_LOGIN", "fail")]);
     assert_eq!(out.status.code(), Some(3), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stderr).contains("claude auth login"));
-    assert!(!b.data().join("claude/claude-broken").exists());
-    let cfg: Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.config/krowk/config.json")).unwrap()).unwrap();
+    assert!(!b.data().join("accounts/claude-broken").exists());
+    let cfg: Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap()).unwrap();
     assert!(cfg["instances"].get("claude:broken").is_none() && cfg["instances"].get("claude:work").is_some());
 
     // Removing one keeps Claude's own login where Claude keeps it.
     let removed = b.json(&["providers", "remove", "claude:work", "--json"], &[]);
-    assert_eq!(removed["data"]["config_dir_kept"], b.data().join("claude/claude-work").display().to_string());
-    assert!(b.data().join("claude/claude-work/fake-login").exists());
+    assert_eq!(removed["data"]["config_dir_kept"], b.data().join("accounts/claude-work").display().to_string());
+    assert!(b.data().join("accounts/claude-work/fake-login").exists());
 }
 
 #[test]
@@ -243,11 +249,11 @@ fn r_back_6_headless_refuses_an_untrusted_repository_before_claude_is_spawned() 
     assert!(!b.data().join("sessions").exists() || std::fs::read_dir(b.data().join("sessions")).unwrap().next().is_none(), "no session was created");
     // --trust runs it, for this run only.
     b.json(&["-p", "hello", "--model", "claude/sonnet", "--trust", "--output-format", "json"], &[]);
-    assert!(!b.root.join("home/.config/krowk/trusted.json").exists(), "--trust is not remembered");
+    assert!(!b.root.join("home/.krowk/trusted.json").exists(), "--trust is not remembered");
     // A repository trusted before (a yes at the prompt) needs no flag, and
     // covers its subdirectories.
-    std::fs::create_dir_all(b.root.join("home/.config/krowk")).unwrap();
-    std::fs::write(b.root.join("home/.config/krowk/trusted.json"), serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::write(b.root.join("home/.krowk/trusted.json"), serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
     std::fs::create_dir_all(b.root.join("repo/src")).unwrap();
     let out = b.command(&["-p", "hello", "--model", "claude/sonnet", "--output-format", "json"], &[]).current_dir(b.root.join("repo/src")).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -255,7 +261,7 @@ fn r_back_6_headless_refuses_an_untrusted_repository_before_claude_is_spawned() 
     // the home, which is never trusted for good — only --trust runs there.
     std::fs::create_dir_all(b.root.join("home/.git")).unwrap();
     std::fs::create_dir_all(b.root.join("home/notes")).unwrap();
-    std::fs::write(b.root.join("home/.config/krowk/trusted.json"), serde_json::json!({"directories": [b.root.join("home"), b.root.join("repo")]}).to_string()).unwrap();
+    std::fs::write(b.root.join("home/.krowk/trusted.json"), serde_json::json!({"directories": [b.root.join("home"), b.root.join("repo")]}).to_string()).unwrap();
     let out = b.command(&["-p", "hello", "--model", "claude/sonnet"], &[]).current_dir(b.root.join("home/notes")).output().unwrap();
     assert_eq!(out.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&out.stderr).contains("home directory"), "{}", String::from_utf8_lossy(&out.stderr));
@@ -277,12 +283,12 @@ fn r_inst_1_providers_add_claude_with_a_router_hands_it_the_named_key_and_nothin
     assert_eq!(added["data"]["definition"]["apiKeyEnv"], "ROUTER_KEY", "the variable's name is stored");
     assert_eq!(added["data"]["definition"]["env"]["ANTHROPIC_BASE_URL"], "https://router.example/api");
     assert!(!b.fake_log().contains("argv auth login"), "a router signs in with its key, not a Claude login");
-    let cfg = std::fs::read_to_string(b.root.join("home/.config/krowk/config.json")).unwrap();
+    let cfg = std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap();
     assert!(!cfg.contains("sk-or-"), "never the key");
 
     let listed = b.json(&["providers", "list", "--json"], &[("ROUTER_KEY", "sk-or-live")]);
     let row = listed["data"]["instances"].as_array().unwrap().iter().find(|r| r["instance"] == "claude:router").unwrap().clone();
-    assert_eq!((row["state"].as_str(), row["auth"].as_str()), (Some("ready"), Some("runs Claude Code with the key from $ROUTER_KEY")));
+    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("env ROUTER_KEY, handed to Claude Code")));
 
     // The ambient native key is exported too, and must not reach Claude Code.
     let env = [("ROUTER_KEY", "sk-or-live"), ("ANTHROPIC_API_KEY", "sk-ant-api-ambient"), ("ANTHROPIC_AUTH_TOKEN", "ambient-token")];
@@ -321,7 +327,7 @@ fn r_back_6_the_tui_asks_before_claude_runs_in_an_untrusted_repository() {
         t.write(if yes { b"y" } else { b"n" });
         assert!(t.wait_for("anything", std::time::Duration::from_secs(10)).is_some(), "the TUI opens: {:?}", t.text());
         t.write(b"hello\r");
-        let trusted = b.root.join("home/.config/krowk/trusted.json");
+        let trusted = b.root.join("home/.krowk/trusted.json");
         if yes {
             assert!(t.wait_for("tokens", std::time::Duration::from_secs(10)).is_some(), "the turn ran on Claude Code: {:?}", t.text());
             assert!(std::fs::read_to_string(&trusted).unwrap().contains(&b.root.join("repo").display().to_string()), "a yes is remembered");
@@ -396,7 +402,7 @@ fn r_back_1_a_second_ctrl_c_leaves_at_once_and_kills_claude_codes_process_group(
 
     // The TUI.
     let _ = std::fs::remove_file(b.root.join("fake.log"));
-    let trusted = b.root.join("home/.config/krowk/trusted.json");
+    let trusted = b.root.join("home/.krowk/trusted.json");
     std::fs::create_dir_all(trusted.parent().unwrap()).unwrap();
     std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
     let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color"), ("FAKE_CLAUDE_SCENARIO", &scenario("hang.jsonl"))]);
@@ -420,7 +426,7 @@ fn r_back_1_a_second_ctrl_c_leaves_at_once_and_kills_claude_codes_process_group(
 fn r_sub_3_the_tui_counts_a_background_agent_and_runs_the_turn_claude_code_begins() {
     let b = Sandbox::new("tui-bg");
     b.json(&["providers", "add", "claude", "--json"], &[]);
-    let trusted = b.root.join("home/.config/krowk/trusted.json");
+    let trusted = b.root.join("home/.krowk/trusted.json");
     std::fs::create_dir_all(trusted.parent().unwrap()).unwrap();
     std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
     let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color"), ("FAKE_CLAUDE_SCENARIO", &scenario("background_agent.jsonl"))]);

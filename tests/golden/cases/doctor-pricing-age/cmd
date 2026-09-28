@@ -1,8 +1,8 @@
-@sh d="${XDG_CACHE_HOME:-$HOME/.cache}/krowk"; mkdir -p "$d" && printf '%s' '{"p":{"m":{"input":1}}}' > "$d/models.json" && printf '%s' '{"etag":"","fetched_at_ms":1765929600000}' > "$d/models.meta.json"
+@sh d="$HOME/.krowk/cache"; mkdir -p "$d" && printf '%s' '{"p":{"m":{"input":1}}}' > "$d/models.json" && printf '%s' '{"etag":"","fetched_at_ms":1765929600000}' > "$d/models.meta.json"
 krowk doctor --jq .pricing
-@sh d="${XDG_CACHE_HOME:-$HOME/.cache}/krowk"; printf '%s' '{"etag":"","fetched_at_ms":1763769600000}' > "$d/models.meta.json"
+@sh d="$HOME/.krowk/cache"; printf '%s' '{"etag":"","fetched_at_ms":1763769600000}' > "$d/models.meta.json"
 krowk doctor --jq .pricing
-@sh d="${XDG_CACHE_HOME:-$HOME/.cache}/krowk"; printf '%s' '{"etag":"","fetched_at_ms":1798761600000}' > "$d/models.meta.json"
+@sh d="$HOME/.krowk/cache"; printf '%s' '{"etag":"","fetched_at_ms":1798761600000}' > "$d/models.meta.json"
 krowk doctor --jq .pricing
-@sh d="${XDG_CACHE_HOME:-$HOME/.cache}/krowk"; printf 'garbage' > "$d/models.json"
+@sh d="$HOME/.krowk/cache"; printf 'garbage' > "$d/models.json"
 krowk doctor --jq .pricing

@@ -12,6 +12,8 @@
 //! - `settings` — the status line's configuration (R-TUI-2).
 //! - `device` — the `<user>/<host>` the status line opens with, read once.
 //! - `net` — the connectivity probe behind the offline notice (R-OFF-1).
+//! - `connect` — `/connect` and `/disconnect`: the harness's sign-in, asked
+//!   through an overlay, and the first-run card.
 //!
 //! The loop is event-driven end to end (R-PERF-2): it sleeps in one
 //! `select!` until a key, a frame of the stream, the turn's end or a
@@ -24,6 +26,7 @@
 pub mod app;
 pub mod card;
 pub mod clipboard;
+pub mod connect;
 pub mod device;
 pub mod presence;
 pub mod editor;
@@ -33,12 +36,13 @@ pub mod net;
 pub mod settings;
 pub mod term;
 
-use app::{App, Overlay};
+use app::{App, Mark, Overlay};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use editor::Editor;
 use futures_core::Stream;
 use krowk_harness::engine::EngineError;
 use krowk_harness::host::{Host, HostConfig, Pricer};
+use krowk_harness::instances::Asked;
 use krowk_harness::log;
 use krowk_harness::protocol::{ApprovalDecision, BudgetLimits, Command, Effort, ModelRef, PermissionMode, RunResult, StreamLine, TurnStatus};
 use net::Target;
@@ -48,6 +52,7 @@ use std::future::Future;
 use std::io::Write;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 use term::Term;
 use tokio::sync::{broadcast, mpsc};
@@ -70,6 +75,16 @@ pub struct Options {
     pub resume: Option<String>,
     /// The model for every prompt; the session's own when absent.
     pub model: Option<ModelRef>,
+    /// The model the person named with `--model`: beside the session's
+    /// own, the one a bare `/model` id stays on when it can.
+    pub chosen: Option<ModelRef>,
+    /// A model still to be routed — a bare `--model`, or none at all on a
+    /// session that has none — which the TUI routes itself once its first
+    /// frame is up, so that frame never waits on a vendor's status check.
+    pub route: Option<Route>,
+    /// The trust question for the session's repository, asked in the TUI
+    /// when the model it routed runs on a backend there.
+    pub trust: Option<TrustAsk>,
     pub permission_mode: PermissionMode,
     /// The toolset preset for every prompt; the model's own when absent.
     pub toolset: Option<String>,
@@ -83,6 +98,34 @@ pub struct Options {
     /// Lines shown above the first prompt: config warnings and the like.
     pub notices: Vec<String>,
     pub version: String,
+    /// krowk's config.json, which `/connect` writes definitions into; none
+    /// (no home directory) and `/connect` says so.
+    pub config: Option<PathBuf>,
+}
+
+/// What the TUI routes once it is up (`Host::route_model`).
+pub struct Route {
+    /// A bare id; none routes the default.
+    pub asked: Option<Asked>,
+    /// The session's model, whose instance a bare id stays on when it can.
+    pub current: Option<ModelRef>,
+}
+
+/// The trust question for the session's repository, asked in the TUI:
+/// the one the launcher asks before the TUI takes the terminal, for a model
+/// that was only known once routed.
+#[derive(Clone)]
+pub struct TrustAsk {
+    /// The repository's root.
+    pub root: PathBuf,
+    /// Whether it is trusted now.
+    pub trusted: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Why it cannot be trusted for good (the home directory, `/`); then
+    /// nothing is asked.
+    pub refuses: Option<String>,
+    /// Trusts it: for this run, and remembered when it can be — an error
+    /// when it could not be.
+    pub accept: Arc<dyn Fn() -> Option<String> + Send + Sync>,
 }
 
 /// How the TUI ended.
@@ -115,12 +158,25 @@ pub fn run(opts: Options) -> Outcome {
         return Outcome { session_id: None, abandoned: false, error: Some(format!("the terminal could not be put in raw mode: {e}")) };
     }
     let hook = std::panic::take_hook();
+    // A panic ends the TUI when it aborts the process (the release profile)
+    // or is the TUI's own thread's; one on another thread that unwinds — a
+    // sign-in's, a readiness check's — is that thread's alone, and the TUI
+    // goes on with the terminal as it had it.
+    let tui_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
-        restore_terminal();
+        if cfg!(panic = "abort") || std::thread::current().id() == tui_thread {
+            restore_terminal();
+        }
         hook(info);
     }));
     let outcome = rt.block_on(session(opts));
     restore_terminal();
+    // A readiness check still running (the person quit while the model was
+    // being routed) is not waited for: its process group, registered while
+    // it runs, is killed here, and its blocking thread is let go with the
+    // runtime instead of holding the exit for up to its deadline.
+    krowk_harness::group::kill_all();
+    rt.shutdown_background();
     outcome
 }
 
@@ -133,6 +189,8 @@ fn restore_terminal() {
 
 type TurnFuture<'a> = Pin<Box<dyn Future<Output = Result<Option<RunResult>, EngineError>> + 'a>>;
 type ProbeFuture = Pin<Box<dyn Future<Output = bool>>>;
+type RouteFuture<'a> = Pin<Box<dyn Future<Output = Result<ModelRef, EngineError>> + 'a>>;
+type ChecksFuture = Pin<Box<dyn Future<Output = Vec<krowk_harness::readiness::Report>>>>;
 
 async fn session(opts: Options) -> Outcome {
     let mut stdout = std::io::stdout();
@@ -164,9 +222,14 @@ async fn session(opts: Options) -> Outcome {
     let mut app = App::new(Editor::new(opts.history_file.clone()), inner(size.width), opts.settings.clone(), None, Some(pricer));
     app.log_dir = Some(sessions_dir.display().to_string());
     app.permission_mode = serde_json::to_value(opts.permission_mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+    // Where the session runs: a resumed one where it started.
+    let mut runs_in = opts.host.cwd.clone();
     if let Some(id) = &opts.resume {
         match log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)) {
             Ok(events) => {
+                if let Some(krowk_harness::protocol::LogBody::SessionStarted { cwd, .. }) = events.first().map(|e| &e.body) {
+                    runs_in = PathBuf::from(cwd);
+                }
                 let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
                 app.replay(&log::branch(&events, &head));
                 app.session_id = Some(id.clone());
@@ -175,9 +238,10 @@ async fn session(opts: Options) -> Outcome {
             Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("session {id} could not be read: {}", e.message())) },
         }
     }
-    // The model shown before the first turn names one: the flag, else the
-    // session's last, else the configured default.
-    let shown = opts.model.clone().or_else(|| app.model.clone()).or_else(|| opts.host.registry.default_model().ok());
+    // The model shown before the first turn names one: the one given
+    // (`--model`, or the configured default that names its instance), else
+    // the session's last. One still to be routed is shown once it is.
+    let shown = opts.model.clone().or_else(|| app.model.clone());
     let target = shown.as_ref().and_then(|m| opts.host.registry.get(&m.instance).ok()).and_then(|i| Target::for_url(&i.base_url, &|k| std::env::var(k).unwrap_or_default()));
     app.model = shown;
     app.device = device::name(&|k| std::env::var(k).unwrap_or_default());
@@ -214,8 +278,38 @@ async fn session(opts: Options) -> Outcome {
         }
         Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("the terminal could not be drawn on: {e}")) },
     };
+    let credentials = opts.host.credentials.clone();
     let host = Host::new(opts.host);
-    let mut ui = Ui { host: &host, watch: host.watch(), model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
+    // Routed now, while the first frame is drawn: the vendors it asks
+    // (a Node start for `claude`) never hold the prompt up.
+    let routing: Option<RouteFuture<'_>> = opts.route.map(|r| {
+        let (host, cwd) = (&host, runs_in.clone());
+        Box::pin(async move { host.route_model(r.asked.as_ref(), r.current.as_ref(), &cwd).await }) as RouteFuture<'_>
+    });
+    let effort_label = effort.clone();
+    let paths = opts.config.clone().map(|config| connect::Paths { config, credentials: credentials.clone() });
+    let mut ui = Ui {
+        paths,
+        credentials,
+        data_dir: sessions_dir.parent().map(PathBuf::from),
+        auth: None,
+        suspended: false,
+        checks: None,
+        first_run: false,
+        first_run_pending: false,
+        host: &host,
+        watch: host.watch(),
+        model: opts.model,
+        chosen: opts.chosen,
+        routing,
+        model_route: None,
+        held: None,
+        needs_trust: None,
+        trust_shown: None,
+        trust: opts.trust,
+        effort_label,
+        runs_in: runs_in.clone(),
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
@@ -242,10 +336,54 @@ async fn session(opts: Options) -> Outcome {
 
 struct Ui<'h> {
     host: &'h Host,
+    /// Where `/connect` reads and writes; none without a config directory.
+    paths: Option<connect::Paths>,
+    /// krowk's provider credentials file, for the readiness marks.
+    credentials: PathBuf,
+    /// krowk's data directory, where a vendor is asked outside any
+    /// repository (`readiness::neutral_dir`).
+    data_dir: Option<PathBuf>,
+    /// A `/connect` or `/disconnect` running on its own thread: what it
+    /// asks and tells, and its end.
+    auth: Option<mpsc::UnboundedReceiver<connect::Msg>>,
+    /// The terminal is a vendor login's (`claude auth login`) until it
+    /// says it is done: nothing is drawn meanwhile.
+    suspended: bool,
+    /// The vendors' readiness checks behind the pickers' marks, off the
+    /// runtime's thread: slow ones never hold up a key.
+    checks: Option<ChecksFuture>,
+    /// The flow running is the first-run card's.
+    first_run: bool,
+    /// The marks being checked decide whether the first-run card opens.
+    first_run_pending: bool,
     /// What the host says between turns: a backend's agents, and a turn it
     /// began by itself, which the TUI runs (`continue`).
     watch: broadcast::Receiver<StreamLine>,
     model: Option<ModelRef>,
+    /// The model the person named (`--model`, a `/model` switch): with the
+    /// session's own, what a bare `/model` id stays beside. A routed
+    /// model is not one — it was krowk's pick, not the person's.
+    chosen: Option<ModelRef>,
+    /// The model being routed at start (`Options::route`).
+    routing: Option<RouteFuture<'h>>,
+    /// A `/model <id>` being routed: the loop goes on — keys, signals,
+    /// resizes — while its vendors are asked.
+    model_route: Option<RouteFuture<'h>>,
+    /// Prompts sent before the route, or the trust question after it, was
+    /// settled, joined as steering is: sent once they are.
+    held: Option<String>,
+    /// The routed model runs on a backend in a repository nobody trusted:
+    /// the question to ask, once a prompt is actually sent for it.
+    needs_trust: Option<(ModelRef, String)>,
+    /// When the trust question came up: keys before `APPROVAL_SETTLE` has
+    /// passed were typed ahead, and are no answer.
+    trust_shown: Option<std::time::Instant>,
+    /// The trust question, for a route that lands on a backend.
+    trust: Option<TrustAsk>,
+    /// The effort as the header shows it.
+    effort_label: Option<String>,
+    /// Where the session runs, where a vendor is asked once trusted.
+    runs_in: PathBuf,
     permission_mode: PermissionMode,
     toolset: Option<String>,
     effort: Option<Effort>,
@@ -263,26 +401,44 @@ struct Ui<'h> {
     presence: presence::Presence,
 }
 
-/// SIGTERM and SIGHUP as one stream, registered once. Either asks the TUI
-/// to stop the way Ctrl-D does: the running turn is interrupted and its end
-/// waited for, the terminal restored, the session recorded; a second one
-/// does not wait. Nothing on Windows, where neither is sent.
-struct Hangups {
+/// Two signals as one stream, registered once for the TUI's life.
+///
+/// SIGTERM and SIGHUP (`Signals::hangups`) ask the TUI to stop the way
+/// Ctrl-D does: the running turn is interrupted and its end waited for, the
+/// terminal restored, the session recorded; a second one does not wait.
+///
+/// SIGINT and SIGQUIT (`Signals::interrupts`) reach krowk only while it has
+/// given the terminal up — raw mode off — to a vendor's login or a key's
+/// command: Ctrl-C there is the person's to that command, and must not end
+/// krowk with it. A handler, not an ignore, so the command, which starts
+/// with every handled signal back at its default, still stops on it.
+/// Nothing on Windows, where none of them is sent this way.
+struct Signals {
     #[cfg(unix)]
-    term: Option<tokio::signal::unix::Signal>,
+    a: Option<tokio::signal::unix::Signal>,
     #[cfg(unix)]
-    hup: Option<tokio::signal::unix::Signal>,
+    b: Option<tokio::signal::unix::Signal>,
 }
 
-impl Hangups {
-    fn new() -> Hangups {
+impl Signals {
+    fn hangups() -> Signals {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            Hangups { term: signal(SignalKind::terminate()).ok(), hup: signal(SignalKind::hangup()).ok() }
+            Signals { a: signal(SignalKind::terminate()).ok(), b: signal(SignalKind::hangup()).ok() }
         }
         #[cfg(not(unix))]
-        Hangups {}
+        Signals {}
+    }
+
+    fn interrupts() -> Signals {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            Signals { a: signal(SignalKind::interrupt()).ok(), b: signal(SignalKind::quit()).ok() }
+        }
+        #[cfg(not(unix))]
+        Signals {}
     }
 
     async fn recv(&mut self) {
@@ -298,8 +454,8 @@ impl Hangups {
                 }
             }
             tokio::select! {
-                _ = one(&mut self.term) => {}
-                _ = one(&mut self.hup) => {}
+                _ = one(&mut self.a) => {}
+                _ = one(&mut self.b) => {}
             }
         }
         #[cfg(not(unix))]
@@ -436,6 +592,14 @@ async fn recv(rx: &mut Option<mpsc::Receiver<StreamLine>>) -> StreamLine {
     }
 }
 
+/// The next of a sign-in's messages, or never; none once its thread is gone.
+async fn recv_auth(rx: &mut Option<mpsc::UnboundedReceiver<connect::Msg>>) -> Option<connect::Msg> {
+    match rx {
+        Some(r) => r.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// The next frame the host sent between turns; one missed while the loop
 /// was busy is only a list that a later frame repeats whole.
 async fn watched(rx: &mut broadcast::Receiver<StreamLine>) -> StreamLine {
@@ -475,9 +639,15 @@ impl<'h> Ui<'h> {
         let mut last_activity = Instant::now();
         let mut stall_quiet_until: Option<Instant> = None;
         let mut quitting = false;
-        let mut hangups = Hangups::new();
+        let mut hangups = Signals::hangups();
+        let mut interrupts = Signals::interrupts();
         self.draw(app, term)?;
         last_frame.replace(Instant::now());
+        // A model known at start needs nothing routed; whether anything
+        // here can run it at all is asked now, behind the first frame.
+        if self.routing.is_none() {
+            self.startup_sweep(app);
+        }
         loop {
             let now = Instant::now();
             // Deadlines, only for what is actually pending.
@@ -488,6 +658,12 @@ impl<'h> Ui<'h> {
             let wake = [frame_at, tick_at, stall_at, retry_at, probe_at].into_iter().flatten().min();
             tokio::select! {
                 biased;
+                // Ctrl-C or Ctrl-\ on the terminal a vendor's login has: that
+                // command's, not krowk's (with the TUI's own terminal raw,
+                // they arrive as keys instead). One can land a moment after
+                // the terminal is back, so none stops the TUI; SIGTERM and
+                // SIGHUP are what ask it to from outside.
+                _ = interrupts.recv() => {}
                 _ = hangups.recv() => {
                     if !app.running() || quitting {
                         self.abandoned = app.running();
@@ -574,6 +750,32 @@ impl<'h> Ui<'h> {
                     }
                     self.go_on(app);
                 }
+                r = finish(&mut self.model_route) => {
+                    self.model_route = None;
+                    match r {
+                        Ok(m) => {
+                            self.switch(app, m).await;
+                            self.release(app);
+                        }
+                        Err(e) => {
+                            app.error(&e.info());
+                            self.unhold(app);
+                        }
+                    }
+                }
+                m = recv_auth(&mut self.auth) => self.on_auth(app, term, m)?,
+                reports = finish(&mut self.checks) => {
+                    self.checks = None;
+                    self.marked(app, reports);
+                }
+                r = finish(&mut self.routing) => {
+                    self.routing = None;
+                    if self.routed(app, r) && probe.is_none()
+                        && let Some(t) = self.target.clone()
+                    {
+                        probe = Some(Box::pin(async move { net::reachable(&t).await }));
+                    }
+                }
                 ok = finish(&mut probe) => {
                     probe = None;
                     if ok {
@@ -633,6 +835,10 @@ impl<'h> Ui<'h> {
     }
 
     fn draw<W: Write>(&mut self, app: &mut App, term: &mut Term<W>) -> std::io::Result<()> {
+        // A vendor's login has the terminal: what is owed waits for it.
+        if self.suspended {
+            return Ok(());
+        }
         // The resize event can trail the resize itself; a frame drawn for
         // the old size in between would land in the wrong rows. The size is
         // one ioctl away, so every frame asks.
@@ -701,6 +907,11 @@ impl<'h> Ui<'h> {
                 app.gap_say(&format!("{}now on {m}{when}", look::SWITCH));
                 self.retarget(&m);
                 self.model = Some(m.clone());
+                self.chosen = Some(m.clone());
+                if self.needs_trust.as_ref().is_some_and(|(n, _)| *n != m) {
+                    self.needs_trust = None;
+                    app.trust_question = None;
+                }
                 if !app.running() {
                     app.model = Some(m);
                 }
@@ -713,7 +924,128 @@ impl<'h> Ui<'h> {
         }
     }
 
+    /// The model routed at start, taken: shown, and followed by the
+    /// connectivity probe. On a backend in a repository nobody has trusted,
+    /// the trust question is kept for when a prompt is sent — asked now
+    /// only if one is already held; nothing else asks it, so a key typed as
+    /// the route lands is never its answer. A prompt held for the route
+    /// goes now, or once the question is answered. True when the probe's
+    /// target changed.
+    fn routed(&mut self, app: &mut App, r: Result<ModelRef, EngineError>) -> bool {
+        let m = match r {
+            // Nothing here can run a model: the first run. Connecting one
+            // is offered instead of the failure the first prompt would be.
+            Err(e) if e.code == "none_ready" && self.model.is_none() && app.overlay == Overlay::None && self.auth.is_none() => {
+                self.unhold(app);
+                self.open_flow(app, connect::Job::Connect(None), true);
+                return false;
+            }
+            Ok(m) => m,
+            Err(e) => {
+                app.error(&e.info());
+                self.unhold(app);
+                return false;
+            }
+        };
+        // A `/model` the person gave in the meantime wins.
+        if self.model.is_some() {
+            return self.release(app);
+        }
+        self.retarget(&m);
+        self.model = Some(m.clone());
+        app.header_model(&m, self.effort_label.as_deref());
+        app.model = Some(m.clone());
+        if self.owe_trust(app, &m) {
+            return true;
+        }
+        self.release(app);
+        true
+    }
+
+    /// On a backend in a repository nobody has trusted, the trust question
+    /// is kept for when a prompt is sent — asked now only if one is already
+    /// held. True when it is owed.
+    fn owe_trust(&mut self, app: &mut App, m: &ModelRef) -> bool {
+        let backend = self.host.registry().get(&m.instance).ok().filter(|i| i.backend.is_some()).map(|i| i.vendor);
+        if let (Some(vendor), Some(t)) = (backend, &self.trust)
+            && !(t.trusted)()
+        {
+            match &t.refuses {
+                Some(why) => app.notice(&format!("{m} runs {vendor}, which is started only in a trusted repository, and {} cannot be trusted for good — {why}. Run `krowk -p --trust` there for one run, or pick an API model with /model.", home_relative(&t.root))),
+                None => {
+                    let runs = krowk_harness::trust::what_runs(&t.root);
+                    let has = if runs.is_empty() { "Nothing of that kind is there now.".to_string() } else { format!("It has {}.", runs.join(", ")) };
+                    let q = format!("{m} runs {vendor}, which runs a repository's own hooks and MCP servers without asking. {has} Trust {}? y trusts it, n or esc does not", home_relative(&t.root));
+                    self.needs_trust = Some((m.clone(), q));
+                    if self.held.is_some() {
+                        self.ask_trust(app);
+                    }
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Puts the trust question up, and notes when.
+    fn ask_trust(&mut self, app: &mut App) {
+        if let Some((_, q)) = &self.needs_trust {
+            app.trust_question = Some(q.clone());
+            self.trust_shown = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Whether the trust question stands between a prompt and its turn:
+    /// the model is still the routed backend, and its repository still not
+    /// trusted.
+    fn trust_owed(&self) -> bool {
+        match (&self.needs_trust, &self.trust) {
+            (Some((m, _)), Some(t)) => self.model.as_ref() == Some(m) && !(t.trusted)(),
+            _ => false,
+        }
+    }
+
+    /// Sends the prompts held for the route, if there are any. Always
+    /// false: nothing about the probe changes.
+    fn release(&mut self, app: &mut App) -> bool {
+        if let Some(text) = self.held.take() {
+            self.prompt(app, text);
+        }
+        false
+    }
+
+    /// Puts the prompts held back into the editor, unsent: the route
+    /// failed, the trust question was answered no, or Ctrl-C.
+    fn unhold(&mut self, app: &mut App) {
+        if let Some(text) = self.held.take() {
+            let now = app.editor.text().to_string();
+            app.editor.restore(&if now.trim().is_empty() { text } else { format!("{text}\n\n{now}") });
+        }
+    }
+
+    /// Holds `text` until the model is routed and trusted, beside what is
+    /// held already.
+    fn hold(&mut self, app: &mut App, text: String, why: &str) {
+        app.gap_say(why);
+        self.held = Some(match self.held.take() {
+            Some(h) => format!("{h}\n\n{text}"),
+            None => text,
+        });
+    }
+
     fn prompt(&mut self, app: &mut App, text: String) {
+        // Held until the model is routed and, on a backend, the repository
+        // trusted: the turn would otherwise route it again, or be refused.
+        if self.routing.is_some() || self.model_route.is_some() {
+            return self.hold(app, text, "choosing the model… the prompt goes once it is chosen");
+        }
+        if app.trust_question.is_some() || self.trust_owed() {
+            self.hold(app, text, "the prompt goes once the trust question is answered");
+            if app.trust_question.is_none() {
+                self.ask_trust(app);
+            }
+            return;
+        }
         self.last_prompt = text.clone();
         app.offer = None;
         let (tx, rx) = mpsc::channel(1024);
@@ -773,7 +1105,18 @@ impl<'h> Ui<'h> {
             Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::Char('z') && k.modifiers.contains(KeyModifiers::CONTROL) => self.suspend(app, term)?,
             Event::Key(k) if k.kind != KeyEventKind::Release => return Ok(self.on_key(app, k, quitting).await),
             Event::Paste(s) => {
-                app.editor.insert_str(&s);
+                // With `/connect`'s overlay up, a paste is its question's
+                // answer or nothing: a key pasted early, before the question
+                // is up or while it is a pick, never reaches the prompt, a
+                // turn or the history.
+                match app.flow.as_mut().filter(|_| app.overlay == Overlay::Connect) {
+                    Some(f) => {
+                        if f.settled(APPROVAL_SETTLE) {
+                            f.type_str(&s);
+                        }
+                    }
+                    None => app.editor.insert_str(&s),
+                }
                 app.touch();
             }
             Event::Resize(w, h) => self.resize(app, term, w, h)?,
@@ -802,26 +1145,42 @@ impl<'h> Ui<'h> {
     fn suspend<W: Write>(&mut self, app: &mut App, term: &mut Term<W>) -> std::io::Result<()> {
         #[cfg(unix)]
         {
-            self.keys = None;
-            self.presence.pause();
-            term.finish()?;
-            restore_terminal();
+            self.give_up(term)?;
             // SAFETY: raise only sends a signal to this process.
             unsafe {
                 libc::raise(libc::SIGTSTP);
             }
-            crossterm::terminal::enable_raw_mode()?;
-            let mut out = std::io::stdout();
-            let _ = out.write_all(b"\x1b[?2004h");
-            let _ = out.write_all(term::TITLE_SAVE);
-            let _ = out.flush();
-            let (w, h) = crossterm::terminal::size().unwrap_or((term.size().width, term.size().height));
-            term.resume(Size { width: w.max(1), height: h.max(1) }, cursor_row())?;
-            self.keys = Some(EventStream::new());
-            app.set_width(inner(w));
+            self.take_back(app, term)?;
         }
         #[cfg(not(unix))]
         let _ = (app, term);
+        Ok(())
+    }
+
+    /// The terminal handed over as a shell expects it: the live region
+    /// cleared (its top is where the next output lands), raw mode and
+    /// bracketed paste off, the key reader stopped so nothing here reads
+    /// what the person types next.
+    fn give_up<W: Write>(&mut self, term: &mut Term<W>) -> std::io::Result<()> {
+        self.keys = None;
+        self.presence.pause();
+        term.finish()?;
+        restore_terminal();
+        Ok(())
+    }
+
+    /// And taken back: the live region starts again on the row the cursor
+    /// is on now, at the size the window is now.
+    fn take_back<W: Write>(&mut self, app: &mut App, term: &mut Term<W>) -> std::io::Result<()> {
+        crossterm::terminal::enable_raw_mode()?;
+        let mut out = std::io::stdout();
+        let _ = out.write_all(b"\x1b[?2004h");
+        let _ = out.write_all(term::TITLE_SAVE);
+        let _ = out.flush();
+        let (w, h) = crossterm::terminal::size().unwrap_or((term.size().width, term.size().height));
+        term.resume(Size { width: w.max(1), height: h.max(1) }, cursor_row())?;
+        self.keys = Some(EventStream::new());
+        app.set_width(inner(w));
         Ok(())
     }
 
@@ -834,8 +1193,12 @@ impl<'h> Ui<'h> {
         // (R-PERM-2): y once, s for the session, p for the project, n or
         // Esc no, v to print a request that was cut to fit (its y/s/p work
         // only after). Ctrl-C still interrupts the turn, which declines it too.
+        // Not while `/connect`'s text question is being typed into: an
+        // account name with a `p` in it would allow a call for the project.
+        let typing_answer = app.overlay == Overlay::Connect && app.flow.as_ref().is_some_and(|f| f.typing());
         if let Some(req) = app.approvals.first().cloned()
             && !ctrl
+            && !typing_answer
         {
             // A key already on its way when the request came up — the
             // person was typing — is not an answer.
@@ -863,6 +1226,59 @@ impl<'h> Ui<'h> {
             }
             return false;
         }
+        // `/connect`'s overlay: the arrows and enter answer a pick, what is
+        // typed or pasted answers a text question (and nothing of it reaches
+        // the prompt), esc or Ctrl-C cancels the question — or, while
+        // nothing is asked, only hides the overlay: the sign-in goes on.
+        if app.overlay == Overlay::Connect
+            && let Some(f) = app.flow.as_mut()
+        {
+            let typing = f.typing();
+            // A key already on its way when the question came up — the
+            // person was typing — answers nothing.
+            let settled = f.settled(APPROVAL_SETTLE);
+            match k.code {
+                KeyCode::Esc => {
+                    f.answer(None);
+                    app.overlay = Overlay::None;
+                }
+                KeyCode::Char('c') if ctrl => {
+                    f.answer(None);
+                    app.overlay = Overlay::None;
+                }
+                // Leaves krowk whatever the prompt under the overlay holds,
+                // as it does on an empty prompt; with a turn running, it
+                // stops that turn first, as there.
+                KeyCode::Char('d') if ctrl => {
+                    if app.running() {
+                        *quitting = true;
+                        self.interrupt(app).await;
+                    } else {
+                        app.quit = true;
+                    }
+                }
+                KeyCode::Up if !typing => f.step(-1),
+                KeyCode::Down if !typing => f.step(1),
+                KeyCode::Enter if settled => f.enter(),
+                KeyCode::Backspace if typing => f.backspace(),
+                KeyCode::Char('u') if ctrl && typing => f.clear_input(),
+                KeyCode::Char(c) if typing && settled && !ctrl && !alt => {
+                    f.type_str(c.encode_utf8(&mut [0; 4]));
+                }
+                // Nothing else: while the overlay is up, nothing typed
+                // reaches the prompt, and Enter never sends it.
+                _ => {}
+            }
+            return false;
+        }
+        self.on_prompt_key(app, k, quitting).await
+    }
+
+    /// A key no question or overlay took: the prompt's, the menus' and the
+    /// commands'.
+    async fn on_prompt_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool) -> bool {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = k.modifiers.contains(KeyModifiers::ALT);
         // The Agents overlay takes the keys that move through it: select a
         // subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3).
         if app.overlay == Overlay::Agents && !ctrl && !alt {
@@ -881,6 +1297,35 @@ impl<'h> Ui<'h> {
                     {
                         app.notice(&e.message);
                     }
+                    return false;
+                }
+                _ => {}
+            }
+        }
+        // The trust question for a routed backend. It is answered by one
+        // key on an empty prompt once it has been up for APPROVAL_SETTLE:
+        // `y` trusts the repository and sends what was held; `n` or Esc
+        // does not, and puts it back in the prompt, to be asked again on
+        // the next send. Any other key — and any key typed ahead, before
+        // the settle or onto text in the prompt — is no answer, and goes to
+        // the prompt as it would.
+        if app.trust_question.is_some() && !ctrl && !alt && app.editor.is_empty() && self.trust_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE) {
+            match k.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    app.trust_question = None;
+                    self.needs_trust = None;
+                    if let Some(t) = &self.trust
+                        && let Some(e) = (t.accept)()
+                    {
+                        app.notice(&e);
+                    }
+                    self.release(app);
+                    return false;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    app.trust_question = None;
+                    app.notice("not trusted, so nothing ran — send the prompt again to be asked again, or pick an API model with /model");
+                    self.unhold(app);
                     return false;
                 }
                 _ => {}
@@ -966,6 +1411,8 @@ impl<'h> Ui<'h> {
                         match entry.action {
                             help::Action::Tell => {}
                             help::Action::Model => self.open_models(app),
+                            help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
+                            help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
                             help::Action::Todos => app.overlay = Overlay::Todos,
                             help::Action::Agents => app.overlay = Overlay::Agents,
                             help::Action::Details => app.overlay = Overlay::Details,
@@ -998,6 +1445,14 @@ impl<'h> Ui<'h> {
                 KeyCode::Enter => {
                     app.overlay = Overlay::None;
                     if let Some(p) = app.picks.get(app.pick_at).cloned() {
+                        // Not ready here: connecting it is offered, one
+                        // enter away, rather than a switch that is refused.
+                        if let Some(Mark::Not(why)) = app.marks.get(&p.instance) {
+                            app.gap_say(&format!("{}: {why} — enter connects it", p.instance));
+                            app.editor.clear();
+                            app.editor.insert_str(&format!("/connect {}", p.instance));
+                            return false;
+                        }
                         match p.model {
                             Some(model) => {
                                 self.switch(app, ModelRef { instance: p.instance, model }).await;
@@ -1029,6 +1484,12 @@ impl<'h> Ui<'h> {
                     self.interrupt(app).await;
                 } else if !app.editor.is_empty() {
                     app.editor.clear();
+                } else if self.held.is_some() || app.trust_question.is_some() {
+                    // What is waiting on the route or the trust question
+                    // comes back unsent; a second Ctrl-C then quits.
+                    app.trust_question = None;
+                    self.unhold(app);
+                    app.notice("not sent — it is back in the prompt");
                 } else {
                     app.quit = true;
                 }
@@ -1096,9 +1557,267 @@ impl<'h> Ui<'h> {
         false
     }
 
-    fn open_models(&self, app: &mut App) {
+    fn open_models(&mut self, app: &mut App) {
         let instances: Vec<(String, &'static str)> = self.host.registry().instances.values().map(|i| (i.name.clone(), i.kind)).collect();
         app.open_picker(&instances);
+        self.check_marks(app);
+    }
+
+    /// Starts `/connect` or `/disconnect` on a thread of its own, with its
+    /// overlay; `first_run` is the card that opens when nothing here can
+    /// run a model. One at a time: asked again, the running one is shown.
+    fn open_flow(&mut self, app: &mut App, job: connect::Job, first_run: bool) {
+        let Some(paths) = self.paths.clone() else {
+            app.notice("there is no home directory to keep a connection in — set HOME, or KROWK_HOME to an absolute path");
+            return;
+        };
+        if self.auth.is_some() {
+            app.overlay = Overlay::Connect;
+            if let Some(f) = app.flow.as_mut() {
+                f.shown();
+            }
+            return;
+        }
+        if app.running() {
+            app.notice("that waits for the running turn to finish — esc interrupts it");
+            return;
+        }
+        let (title, prefer) = match &job {
+            connect::Job::Connect(_) => ("Connect a provider", None),
+            // Alone, it starts on the session's instance.
+            connect::Job::Disconnect(t) => ("Disconnect", t.is_none().then(|| self.model.as_ref().map(|m| m.instance.clone())).flatten()),
+        };
+        let intro = match first_run {
+            true => vec![
+                "Nothing here can run a model yet — connect a provider to start.".to_string(),
+                "A subscription signs in with the vendor's own login; an API key is kept in krowk's credentials file, never in config.json.".to_string(),
+            ],
+            false => Vec::new(),
+        };
+        app.flow = Some(connect::Flow::new(title, intro, prefer));
+        app.overlay = Overlay::Connect;
+        self.first_run = first_run;
+        self.auth = Some(connect::start(job, paths));
+    }
+
+    /// One message from the sign-in's thread.
+    fn on_auth<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, m: Option<connect::Msg>) -> std::io::Result<()> {
+        use connect::{Msg, Note};
+        app.touch();
+        let Some(m) = m else {
+            // Gone without a word: it panicked.
+            self.auth = None;
+            app.flow = None;
+            if app.overlay == Overlay::Connect {
+                app.overlay = Overlay::None;
+            }
+            if self.suspended {
+                self.suspended = false;
+                self.take_back(app, term)?;
+            }
+            app.notice("the sign-in stopped before it finished — `krowk status` says what is connected");
+            return Ok(());
+        };
+        match m {
+            Msg::Ask { ask, reply } => match app.flow.as_mut() {
+                Some(f) => {
+                    f.asked(ask, reply);
+                    // Up, the overlay shows it. Hidden, or with another
+                    // overlay open, it waits to be opened: taking the keys
+                    // mid-prompt would make what is being typed its answer.
+                    if app.overlay == Overlay::Connect {
+                        f.shown();
+                    } else {
+                        app.notice("/connect is waiting for an answer — /connect opens it");
+                    }
+                }
+                None => {
+                    let _ = reply.send(None);
+                }
+            },
+            Msg::Note(Note::Info(s)) => {
+                app.gap_say(&s);
+                if let Some(f) = app.flow.as_mut() {
+                    f.busy = s;
+                }
+            }
+            Msg::Note(Note::Url { message, url }) => {
+                app.link(&message, &url);
+                if let Some(f) = app.flow.as_mut() {
+                    f.busy = "waiting for the sign-in in your browser — its link is above".into();
+                }
+            }
+            Msg::Note(Note::Code { url, code, message }) => {
+                let code = card::clean(&code);
+                app.link(&format!("Open this page and enter the code {code} {message}:"), &url);
+                if let Some(f) = app.flow.as_mut() {
+                    f.busy = format!("enter the code {code} at the page linked above — waiting…");
+                }
+            }
+            Msg::Suspend { ready } => {
+                // What is owed to scrollback goes first: krowk's words
+                // before the vendor's.
+                self.draw(app, term)?;
+                self.give_up(term)?;
+                self.suspended = true;
+                let _ = ready.send(());
+            }
+            Msg::Resume => {
+                if self.suspended {
+                    self.suspended = false;
+                    self.take_back(app, term)?;
+                }
+            }
+            Msg::Done(done, registry) => {
+                if self.suspended {
+                    self.suspended = false;
+                    self.take_back(app, term)?;
+                }
+                self.auth = None;
+                self.finished(app, done, registry);
+            }
+        }
+        Ok(())
+    }
+
+    /// A sign-in's end: the instances read again for every turn from now
+    /// on, what it did in the words `krowk connect` uses, and — when the
+    /// session had nothing ready to run on, or this is the first connection
+    /// (it became the default) — the session moved onto it.
+    fn finished(&mut self, app: &mut App, done: Result<connect::Done, EngineError>, registry: Option<krowk_harness::instances::Registry>) {
+        // Whether the session had nothing to run on: its instance marked not
+        // ready, or — never marked — not ready by what needs no process.
+        let stuck = match &self.model {
+            None => true,
+            Some(m) => match app.marks.get(&m.instance) {
+                Some(mark) => matches!(mark, Mark::Not(_)),
+                None => self.host.registry().get(&m.instance).ok().and_then(|i| krowk_harness::readiness::local(i, &self.credentials)).is_some_and(|r| matches!(Mark::of(&r), Mark::Not(_))),
+            },
+        };
+        let first_run = std::mem::take(&mut self.first_run);
+        app.flow = None;
+        if app.overlay == Overlay::Connect {
+            app.overlay = Overlay::None;
+        }
+        // Only a connection or a sign-out that happened replaces a process,
+        // and only the one of the instance it names: a cancelled or failed
+        // flow leaves every session's running process as it was. The
+        // instances are taken as the files now say either way — a connect
+        // that failed after it wrote its definition or key has still
+        // written them.
+        let changed = match &done {
+            Ok(connect::Done::Connected(c)) => Some(c.instance.clone()),
+            Ok(connect::Done::Disconnected(d)) => Some(d.instance.clone()),
+            Err(_) => None,
+        };
+        if let Some(r) = registry {
+            app.vendor_instances = r.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
+            self.host.set_registry(r, changed.as_deref());
+        }
+        if changed.is_some() {
+            // Whatever was marked before may have changed, a check still
+            // out included: its answers are dropped with it.
+            app.marks.clear();
+            self.checks = None;
+        }
+        match done {
+            Ok(connect::Done::Connected(c)) => {
+                let s = c.summary(false);
+                let mut notes = s.notes;
+                if s.signed_in_already {
+                    notes.push("another account is added by name: /connect, then + new account".into());
+                }
+                app.done(if c.renewed { "Renewed" } else { "Connected" }, &c.instance, &s.facts, &notes);
+                match krowk_harness::connect::default_model(c.definition.tag()) {
+                    Some(model) if c.default_model.is_some() || stuck || first_run => self.adopt(app, ModelRef { instance: c.instance.clone(), model: model.to_string() }),
+                    Some(model) => app.gap_say(&format!("/model {}/{model} runs it", c.instance)),
+                    // A server's models are its own: the id is the person's to type.
+                    None => {
+                        app.editor.clear();
+                        app.editor.insert_str(&format!("/model {}/", c.instance));
+                    }
+                }
+            }
+            Ok(connect::Done::Disconnected(d)) => app.disconnected(&d),
+            Err(e) if e.code == "selection_cancelled" => app.gap_say(if first_run { "nothing connected — /connect when you are ready" } else { &e.message }),
+            Err(e) => app.error(&e.info()),
+        }
+    }
+
+    /// The session moves onto `m`, as a routed model is taken: the next
+    /// prompt runs there, after the trust question on a backend in a
+    /// repository nobody trusted.
+    fn adopt(&mut self, app: &mut App, m: ModelRef) {
+        app.gap_say(&format!("{}now on {m}", look::SWITCH));
+        self.retarget(&m);
+        self.model = Some(m.clone());
+        self.chosen = Some(m.clone());
+        app.model = Some(m.clone());
+        self.needs_trust = None;
+        app.trust_question = None;
+        self.owe_trust(app, &m);
+    }
+
+    /// Marks every instance's readiness for the pickers: what needs no
+    /// process now, the vendors behind it off the runtime's thread. True
+    /// while vendors are being asked.
+    fn check_marks(&mut self, app: &mut App) -> bool {
+        let reg = self.host.registry();
+        let mut ask = Vec::new();
+        for i in reg.instances.values() {
+            match krowk_harness::readiness::local(i, &self.credentials) {
+                Some(r) => {
+                    app.marks.insert(i.name.clone(), Mark::of(&r));
+                }
+                // A vendor is asked again each time: a sign-in elsewhere
+                // shows at the next open (its "signed in" is the readiness
+                // cache's for a minute), the last answer shown meanwhile.
+                None => ask.push(i.clone()),
+            }
+        }
+        if ask.is_empty() || self.checks.is_some() {
+            return self.checks.is_some();
+        }
+        let probe = self.data_dir.as_deref().ok_or_else(|| "no data directory".to_string()).and_then(krowk_harness::readiness::neutral_dir).map(krowk_harness::readiness::Probe::at);
+        let Ok(probe) = probe else {
+            for i in &ask {
+                app.marks.insert(i.name.clone(), Mark::Unknown);
+            }
+            return false;
+        };
+        let creds = self.credentials.clone();
+        self.checks = Some(Box::pin(async move {
+            tokio::task::spawn_blocking(move || krowk_harness::readiness::check_all(&ask.iter().collect::<Vec<_>>(), &creds, &probe)).await.unwrap_or_default()
+        }));
+        true
+    }
+
+    /// The vendors' answers, marked; and the first-run card, when they
+    /// were asked for it and nothing can run.
+    fn marked(&mut self, app: &mut App, reports: Vec<krowk_harness::readiness::Report>) {
+        for r in reports {
+            app.marks.insert(r.instance.clone(), Mark::of(&r.readiness));
+        }
+        app.touch();
+        if std::mem::take(&mut self.first_run_pending) && app.marks.values().all(|m| matches!(m, Mark::Not(_))) && app.overlay == Overlay::None && !app.running() && self.auth.is_none() {
+            self.open_flow(app, connect::Job::Connect(None), true);
+        }
+    }
+
+    /// At start, with the model known: whether anything here can run a
+    /// model at all. Ready by a key, a login in krowk's own file or a
+    /// server that takes none, it can, and no vendor is asked; with none of
+    /// those, the vendors are asked behind the first frame, and none of
+    /// them ready opens the first-run card.
+    fn startup_sweep(&mut self, app: &mut App) {
+        let reg = self.host.registry();
+        if reg.instances.values().filter_map(|i| krowk_harness::readiness::local(i, &self.credentials)).any(|r| !matches!(Mark::of(&r), Mark::Not(_))) {
+            return;
+        }
+        self.first_run_pending = true;
+        if !self.check_marks(app) {
+            self.marked(app, Vec::new());
+        }
     }
 
     async fn interrupt(&mut self, app: &mut App) {
@@ -1132,11 +1851,35 @@ impl<'h> Ui<'h> {
                 self.open_models(app);
                 return false;
             }
+            "/connect" | "/disconnect" => {
+                app.editor.clear();
+                let job = if text == "/connect" { connect::Job::Connect(None) } else { connect::Job::Disconnect(None) };
+                self.open_flow(app, job, false);
+                return false;
+            }
+            t if t.starts_with("/connect ") || t.starts_with("/disconnect ") => {
+                app.editor.clear();
+                let (cmd, target) = t.split_once(' ').unwrap_or_default();
+                let target = Some(target.trim().to_string());
+                self.open_flow(app, if cmd == "/connect" { connect::Job::Connect(target) } else { connect::Job::Disconnect(target) }, false);
+                return false;
+            }
             t if t.starts_with("/model ") => {
                 app.editor.clear();
-                match self.host.registry().parse_model(&t["/model ".len()..]) {
-                    Ok(m) => {
-                        self.switch(app, m).await;
+                // A bare id stays on the session's instance when that can
+                // run it, else goes to the one instance ready here that
+                // can; with several, the refusal lists them. The session's
+                // instance is one it ran on, or the person named — never
+                // one routed for it, which would make krowk's pick the
+                // tie-break it refuses to make.
+                let current = self.chosen.clone().or_else(|| app.session_id.as_ref().and(app.model.clone()));
+                let cwd = self.runs_in.clone();
+                // Routed as the loop goes on: its vendors' checks never hold
+                // up keys, signals or a resize.
+                match self.host.registry().read_model(&t["/model ".len()..]) {
+                    Ok(asked) => {
+                        let host = self.host;
+                        self.model_route = Some(Box::pin(async move { host.route_model(Some(&asked), current.as_ref(), &cwd).await }));
                     }
                     Err(e) => app.notice(&format!("/model: {e}")),
                 }

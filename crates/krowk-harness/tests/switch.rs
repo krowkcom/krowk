@@ -26,7 +26,7 @@ mod mock;
 mod providers;
 
 use krowk_harness::host::{Host, HostConfig};
-use krowk_harness::instances::{InstanceKind, InstancesConfig, Registry, Rollover};
+use krowk_harness::instances::{Asked, InstanceKind, InstancesConfig, Registry, Rollover};
 use krowk_harness::log;
 use krowk_harness::protocol::{
     BudgetLimits, Command, ContextRecord, HandoffKind, Item, LimitState, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchReason, TurnStatus,
@@ -143,6 +143,9 @@ struct World {
     rollover: Option<Rollover>,
     order: Vec<String>,
     trust: Option<krowk_harness::trust::Gate>,
+    /// The repository counts as trusted for the repository's own settings
+    /// and for where a router asks a vendor.
+    trusted: bool,
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -162,11 +165,14 @@ impl World {
         use std::os::unix::fs::PermissionsExt;
         for (dir, bin) in [("claude", "fake-claude"), ("codex", "fake-codex")] {
             let to = root.join("bin").join(dir);
-            std::fs::copy(fixture(dir, bin), &to).unwrap();
+            // Linked, not copied: a copy is a file open for writing that a test
+            // forking beside it can inherit, and running it then fails with
+            // "Text file busy" (ETXTBSY) — read as a vendor that could not be checked.
+            std::os::unix::fs::symlink(fixture(dir, bin), &to).unwrap();
             std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let root = root.canonicalize().unwrap();
-        let mut w = World { root, anthropic, openai: mock::serve(responses_script), xai: mock::serve(chat_script), instances: Vec::new(), rollover: None, order: Vec::new(), trust: None, _serial: guard };
+        let mut w = World { root, anthropic, openai: mock::serve(responses_script), xai: mock::serve(chat_script), instances: Vec::new(), rollover: None, order: Vec::new(), trust: None, trusted: false, _serial: guard };
         let key = |v: &str| Some(v.to_string());
         w.instances = vec![
             ("anthropic".into(), InstanceKind::AnthropicApi { api_key_env: key("TEST_ANTHROPIC_KEY"), base_url: Some(w.anthropic.url.clone()), thinking: None, max_tokens: None, effort: None }),
@@ -230,10 +236,10 @@ impl World {
             krowk_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
-            credentials: self.root.join("home/.config/krowk/providers/credentials.json"),
+            credentials: self.root.join("home/.krowk/credentials.json"),
             trust: self.trust.clone().unwrap_or_else(krowk_harness::trust::allow_all),
             publisher: None,
-            permissions: Default::default(),
+            permissions: krowk_harness::permissions::Config { trusted: self.trusted.then(|| Arc::new(|_: &Path| true) as krowk_harness::permissions::settings::Trusted), ..Default::default() },
             agents: krowk_harness::subagent::AgentsConfig::none(),
         })
     }
@@ -598,19 +604,35 @@ fn r_switch_4_a_switch_to_a_model_without_credentials_is_refused_and_the_session
     let (tx, _rx) = mpsc::channel(16);
     let e = rt.block_on(host.execute(prompt(Some(&id), "second", Some(nokey)), tx)).unwrap_err();
     assert!(e.message.ends_with("the session stays on anthropic/claude-sonnet-4-6"), "{}", e.message);
-    // One that fails only once it runs — Claude Code with no login — goes
-    // back to the model before, on the record.
+    // A backend instance that is signed out — `claude auth status` says so —
+    // is refused by the readiness check the same way, before a Claude
+    // process is started for a turn, with the fix and the session kept.
     let nologin = ModelRef { instance: "claude:nologin".into(), model: "haiku".into() };
-    let (r2, _) = rt.block_on(run(&host, prompt(Some(&id), "third", Some(nologin.clone()))));
+    let (tx, _rx) = mpsc::channel(16);
+    let e = rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: nologin.clone() }, tx)).unwrap_err();
+    assert_eq!(e.code, "not_authenticated");
+    assert!(e.message.contains("sign in with `krowk connect anthropic --method subscription --name nologin`, which runs Claude's own login") && e.message.ends_with("the session stays on anthropic/claude-sonnet-4-6"), "{}", e.message);
+    let (tx, _rx) = mpsc::channel(16);
+    let e = rt.block_on(host.execute(prompt(Some(&id), "third", Some(nologin.clone())), tx)).unwrap_err();
+    assert!(e.message.contains("krowk connect anthropic --method subscription --name nologin") && e.message.ends_with("the session stays on anthropic/claude-sonnet-4-6"), "{}", e.message);
+    let asked = w.fake_log("claude-nologin");
+    assert!(asked.contains("argv auth status --json") && !asked.contains("argv -p"), "status asked, no turn process: {asked}");
+    // One that fails only once it runs — a Claude Code login gone stale
+    // after its status said yes — goes back to the model before, on the
+    // record.
+    w.claude("claude:stale", "claude-stale", Some("stale_login.jsonl"), true);
+    let host = w.host();
+    let stale = ModelRef { instance: "claude:stale".into(), model: "haiku".into() };
+    let (r2, _) = rt.block_on(run(&host, prompt(Some(&id), "third", Some(stale.clone()))));
     assert_eq!(r2.status, TurnStatus::Failed);
     let err = r2.error.unwrap();
     assert_eq!(err.code, "not_authenticated");
-    assert!(err.message.contains("krowk providers add claude --name nologin") && err.message.ends_with("the session continues on anthropic/claude-sonnet-4-6"), "{}", err.message);
+    assert!(err.message.contains("krowk connect anthropic --method subscription --name stale") && err.message.ends_with("the session continues on anthropic/claude-sonnet-4-6"), "{}", err.message);
     let back = w.events(&id).into_iter().find_map(|e| match e.body {
         LogBody::ModelSwitched { from, to, reason, .. } => Some((from, to, reason)),
         _ => None,
     });
-    assert_eq!(back, Some((Some(nologin), Eng::Anthropic.model(), SwitchReason::SwitchFailed)));
+    assert_eq!(back, Some((Some(stale), Eng::Anthropic.model(), SwitchReason::SwitchFailed)));
     // The session continues where it was.
     let (r3, _) = rt.block_on(run(&host, prompt(Some(&id), "fourth", None)));
     assert_eq!((r3.status, r3.model), (TurnStatus::Completed, Eng::Anthropic.model()));
@@ -751,7 +773,8 @@ fn r_inst_6_each_instance_reports_how_near_its_limit_it_is() {
 #[test]
 fn r_switch_4_a_switch_the_picker_made_goes_back_when_its_first_turn_cannot_run() {
     let mut w = World::new("picker-back");
-    w.claude("claude:nologin", "claude-nologin", None, false);
+    // Signed in as far as `claude auth status` says, stale once it runs.
+    w.claude("claude:nologin", "claude-nologin", Some("stale_login.jsonl"), true);
     let host = w.host();
     let rt = rt();
     let (r1, _) = rt.block_on(run(&host, prompt(None, "first", Some(Eng::Anthropic.model()))));
@@ -896,4 +919,103 @@ fn r_switch_4_a_switch_during_a_fan_out_moves_the_parent_and_leaves_its_subagent
     assert_eq!((r3.status, r3.model), (TurnStatus::Completed, Eng::Xai.model()));
     let seen = w.seen_by(Eng::Xai, from);
     assert!(seen.contains("toolu_sub") && seen.contains("child did it"), "{seen}");
+}
+
+#[test]
+fn readiness_a_vendors_signed_in_is_believed_for_a_minute_and_a_signed_out_asked_every_time() {
+    let mut w = World::new("readiness-cache");
+    w.claude("claude:in", "claude-in", None, true);
+    let out_dir = w.claude("claude:out", "claude-out", None, false);
+    let host = w.host();
+    let rt = rt();
+    let (r1, _) = rt.block_on(run(&host, prompt(None, "first", Some(Eng::Anthropic.model()))));
+    let id = r1.session_id.clone();
+    let asked = |dir: &str| w.fake_log(dir).lines().filter(|l| *l == "argv auth status --json").count();
+    let switch = |instance: &str| {
+        let (tx, _rx) = mpsc::channel(16);
+        rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: ModelRef { instance: instance.into(), model: "haiku".into() } }, tx))
+    };
+    // Signed in: asked once, then believed — a long-lived host (the TUI)
+    // does not spawn Claude Code's status for every switch.
+    switch("claude:in").unwrap();
+    switch(&Eng::Anthropic.model().instance).unwrap();
+    switch("claude:in").unwrap();
+    assert_eq!(asked("claude-in"), 1);
+    // Signed out: asked every time, so signing in elsewhere and trying again
+    // works at once.
+    assert_eq!(switch("claude:out").unwrap_err().code, "not_authenticated");
+    std::fs::write(out_dir.join("fake-login"), "").unwrap();
+    switch("claude:out").unwrap();
+    assert_eq!(asked("claude-out"), 2);
+}
+
+/// The cwd of every `claude auth status` a fake Claude Code logged.
+fn status_cwds(log: &str) -> Vec<PathBuf> {
+    let lines: Vec<&str> = log.lines().collect();
+    lines.iter().enumerate().filter(|(_, l)| **l == "argv auth status --json").filter_map(|(i, _)| lines[i..].iter().find_map(|l| l.strip_prefix("cwd ")).map(PathBuf::from)).collect()
+}
+
+#[test]
+fn a_bare_model_stays_on_the_sessions_account_goes_to_the_one_ready_instance_and_refuses_to_guess() {
+    let mut w = World::new("routing");
+    let rt = rt();
+    // Only one instance connected: no model at all runs on its default,
+    // asked of the vendor in krowk's own directory for routing and in the
+    // repository, once trusted, for the turn.
+    let all = w.instances.clone();
+    w.instances.retain(|(n, _)| n == "claude:work");
+    let host = w.host();
+    let (r, _) = rt.block_on(run(&host, prompt(None, "hello", None)));
+    assert_eq!((r.status, r.model.to_string()), (TurnStatus::Completed, "claude:work/claude-opus-5-5".to_string()), "{:?}", r.error);
+    let data = log::sessions_dir(&w.env()).unwrap().parent().unwrap().to_path_buf();
+    assert_eq!(status_cwds(&w.fake_log("claude-work")), [data.join("readiness"), w.root.join("repo")], "{}", w.fake_log("claude-work"));
+    // Its repository trusted already, the router asks there, and the
+    // turn's own check is the cache's: one check in all.
+    w.trusted = true;
+    let _ = std::fs::remove_file(w.root.join("claude-work.log"));
+    let host = w.host();
+    let (r, _) = rt.block_on(run(&host, prompt(None, "hello again", None)));
+    assert_eq!(r.status, TurnStatus::Completed, "{:?}", r.error);
+    assert!(status_cwds(&w.fake_log("claude-work")).iter().all(|d| *d == w.root.join("repo")), "{}", w.fake_log("claude-work"));
+    w.trusted = false;
+
+    // The API key, the subscription, a ChatGPT one: several could run it.
+    w.instances = all;
+    let host = w.host();
+    let bare = |m: &str| Asked::Bare(m.into());
+    let repo = w.root.join("repo");
+    let route = |m: Option<&Asked>, current: Option<&ModelRef>| rt.block_on(host.route_model(m, current, &repo));
+    // The TUI's `/model haiku` on a claude:work session: that account.
+    let on_work = ModelRef { instance: "claude:work".into(), model: "sonnet".into() };
+    assert_eq!(route(Some(&bare("haiku")), Some(&on_work)).unwrap(), ModelRef { instance: "claude:work".into(), model: "haiku".into() });
+    // With no session, a key and a subscription both serve it: refused,
+    // never guessed, each named with what it is and how to pick it.
+    let e = route(Some(&bare("haiku")), None).unwrap_err();
+    assert_eq!(e.code, "ambiguous_model");
+    assert!(e.message.contains("anthropic, Anthropic API key: --model anthropic/<model>") && e.message.contains("claude:work, Claude subscription: --model claude:work/haiku"), "{}", e.message);
+    assert!(e.message.contains("(e.g. `krowk connect anthropic --method api-key --default`)"), "{}", e.message);
+    // A subscription whose check could not answer is a candidate too: the
+    // key does not win over it by default.
+    w.claude("claude:slow", "claude-slow", None, true);
+    w.instances.retain(|(n, _)| n == "anthropic" || n == "claude:slow");
+    if let Some((_, InstanceKind::ClaudeCode { binary, .. })) = w.instances.iter_mut().find(|(n, _)| n == "claude:slow") {
+        // A `claude` whose status answer krowk cannot read: `unknown`.
+        let broken = w.root.join("bin/claude-broken");
+        std::fs::write(&broken, "#!/bin/sh\necho 'not json'\nexit 3\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o755)).unwrap();
+        *binary = Some(broken.display().to_string());
+    }
+    let host2 = w.host();
+    let e = rt.block_on(host2.route_model(Some(&bare("haiku")), None, &repo)).unwrap_err();
+    assert!(e.code == "ambiguous_model" && e.message.contains("claude:slow, Claude subscription: --model claude:slow/haiku (could not be checked"), "{}", e.message);
+    assert_eq!(route(Some(&bare("gpt-5.5")), None).unwrap_err().code, "ambiguous_model");
+    let sessions = || std::fs::read_dir(log::sessions_dir(&w.env()).unwrap()).map_or(0, |d| d.count());
+    let before = sessions();
+    let (tx, _rx) = mpsc::channel(64);
+    let e = rt.block_on(host.execute(prompt(None, "hello", None), tx)).unwrap_err();
+    assert_eq!((e.code.as_str(), sessions()), ("ambiguous_model", before), "no model and several ready: the same refusal, before a session exists");
+    // An explicit instance is never rerouted, nor checked by the router.
+    let exact = Asked::Exact(ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() });
+    assert_eq!(route(Some(&exact), None).unwrap().instance, "anthropic");
 }

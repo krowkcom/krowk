@@ -7,6 +7,8 @@ license-file.workspace = true
 publish.workspace = true
 
 [dependencies]
+# krowk.db's place in krowk's home, the one function every path comes from.
+krowk-api = { path = "../krowk-api" }
 # bundled: the SQLite this ships with is the one it was tested with, and a
 # machine without libsqlite3 still gets a working krowk.db.
 rusqlite = { version = "0.40", features = ["bundled"] }

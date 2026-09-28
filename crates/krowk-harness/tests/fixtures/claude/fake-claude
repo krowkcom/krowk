@@ -10,9 +10,11 @@
 #
 # Environment:
 #   FAKE_CLAUDE_SCENARIO  the scenario file (below); a plain answer without one
-#   FAKE_CLAUDE_LOG       where every argv, config dir and line in or out is appended
+#   FAKE_CLAUDE_LOG       where every argv, config dir, working directory and line in or out is appended
 #   FAKE_CLAUDE_SESSION   the session id of a new session
-#   FAKE_CLAUDE_LOGIN     `fail`: `auth login` gives up, as a person closing the browser would
+#   FAKE_CLAUDE_LOGIN     `fail`: `auth login` gives up, as a person closing the browser would;
+#                         `ask`: it waits for a line on the terminal first, as the real one waits on a person
+#   FAKE_CLAUDE_STATUS_DELAY  seconds `auth status` takes to answer
 #   FAKE_CLAUDE_PERMISSION_MODE  the mode init reports, as a settings file
 #                         could make it; the --permission-mode given otherwise
 #
@@ -50,6 +52,7 @@ log() { printf '%s\n' "$*" >>"$LOG"; }
 log "argv $*"
 log "config ${CLAUDE_CONFIG_DIR:-<unset>}"
 log "pid $$"
+log "cwd $PWD"
 
 case "${1:-}" in
 --version)
@@ -59,15 +62,23 @@ case "${1:-}" in
 auth)
   case "${2:-}" in
   login)
+    log "login-cwd $(pwd)"
     if [ "${FAKE_CLAUDE_LOGIN:-}" = fail ]; then
       echo "Login cancelled." >&2
       exit 1
+    fi
+    if [ "${FAKE_CLAUDE_LOGIN:-}" = ask ]; then
+      printf 'Press Enter to sign in to Claude...\n'
+      IFS= read -r answer
+      log "login-read $answer"
     fi
     mkdir -p "$DIR" && : >"$DIR/fake-login"
     echo "Login successful."
     exit 0
     ;;
   status)
+    # As a cold Claude Code on a slow disk: the answer after a while.
+    [ -n "${FAKE_CLAUDE_STATUS_DELAY:-}" ] && sleep "$FAKE_CLAUDE_STATUS_DELAY"
     if [ -f "$DIR/fake-login" ]; then
       printf '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"person@example.com","subscriptionType":"max"}\n'
       exit 0

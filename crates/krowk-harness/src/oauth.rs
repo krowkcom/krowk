@@ -18,29 +18,26 @@
 //! itself (RFC 7591) where the server's metadata offers registration; it
 //! never borrows another program's client id.
 //!
-//! **The tokens are secrets.** They live in krowk's provider credentials
-//! file (`providers/credentials.json` in krowk's config directory), created
-//! `0600` in a `0700` directory and replaced by rename, never in place; no
-//! token is ever printed, logged or put in an error. The file is separate
-//! from the registry's `credentials.json`, whose writer owns every byte of
-//! it, so a registry login can never drop an xAI refresh token and a token
-//! refresh can never touch a registry key — and it keeps the name
-//! `credentials.json`, which `krowk_push` refuses to publish wherever it
-//! sits. xAI rotates refresh tokens, so a refresh
-//! holds a lock on the file and re-reads it first: two krowk processes
-//! refreshing at once would otherwise each spend the other's token.
+//! **The tokens are secrets.** They live in krowk's one credentials file
+//! (`credentials.json` in krowk's home, `krowk_api::creds`), `0600` in the
+//! `0700` home and replaced by rename, never in place; no token is ever
+//! printed, logged or put in an error. The logins are its `instances`, and
+//! stored API keys (`crate::keys`) its `keys`, beside the registry's keys,
+//! which this reader keeps as it found them. xAI rotates refresh tokens, so
+//! a refresh holds the file's lock and re-reads it first: two krowk
+//! processes refreshing at once would otherwise each spend the other's
+//! token. Every write — a login, a refresh, a key stored or removed, a
+//! registry login — is one read-modify-write under that one lock
+//! (`Store::modify`, `krowk_api::creds::modify`).
 
 use crate::engine::EngineError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// The file's place in krowk's config directory: `providers/credentials.json`.
-pub const CREDENTIALS_FILE: &str = "providers/credentials.json";
 /// A token this close to expiring is refreshed before it is used.
 const EXPIRY_MARGIN_MS: i64 = 60_000;
 /// How long a login waits for the browser, or the device code, at most.
@@ -49,8 +46,6 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
 /// within this or fails: the client's own read timeout is the five minutes
 /// a model stream may sit silent, far too long for a token.
 const AUTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long a refresh waits for another krowk's refresh to finish.
-const LOCK_WAIT: Duration = Duration::from_secs(45);
 const LOCK_POLL: Duration = Duration::from_millis(50);
 
 fn fail(message: impl Into<String>) -> EngineError {
@@ -97,6 +92,13 @@ impl Stored {
     fn fresh(&self, at_ms: i64) -> bool {
         !self.access_token.is_empty() && self.expires_at_ms.is_none_or(|e| e - EXPIRY_MARGIN_MS > at_ms)
     }
+
+    /// A login no call can use: its access token is spent and there is no
+    /// refresh token to get another, so only a new login helps. One with a
+    /// refresh token is still good — the next call refreshes it.
+    pub fn expired_for_good(&self, at_ms: i64) -> bool {
+        !self.fresh(at_ms) && self.refresh_token.is_none()
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -105,6 +107,9 @@ struct File {
     version: u32,
     #[serde(default)]
     instances: BTreeMap<String, Stored>,
+    /// Stored API keys, by instance.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    keys: BTreeMap<String, crate::keys::KeyRef>,
     /// Whatever a later krowk writes that this one does not know, kept.
     #[serde(flatten)]
     other: serde_json::Map<String, Value>,
@@ -124,42 +129,55 @@ impl Store {
     /// A file that cannot be read is an error, never an empty store:
     /// writing over it would drop every other login in it.
     fn read(&self) -> Result<File, EngineError> {
-        match std::fs::read(&self.path) {
-            Ok(raw) => serde_json::from_slice(&raw).map_err(|e| fail(format!("{} is not a credentials file krowk can read ({e}) — refusing to write over it; move it aside and sign in again", self.path.display()))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(File { version: 1, ..File::default() }),
-            Err(e) => Err(fail(format!("{} cannot be read: {e}", self.path.display()))),
-        }
+        krowk_api::creds::read(&self.path).map_err(|e| fail(format!("{e} — refusing to write over it; fix it or move it aside and sign in again")))
     }
 
     pub fn load(&self, instance: &str) -> Result<Option<Stored>, EngineError> {
         Ok(self.read()?.instances.remove(instance))
     }
 
-    /// Stores a login, under the store's lock: a login and a refresh in
-    /// another krowk never interleave their read and their write.
-    pub fn save(&self, instance: &str, stored: &Stored) -> Result<(), EngineError> {
+    /// The one way the file changes: under the store's lock, read, edit,
+    /// and written back (by rename) when the edit says it changed something
+    /// — so a login, a refresh and a stored key in two krowks never
+    /// interleave their read and their write.
+    fn modify<R>(&self, edit: impl FnOnce(&mut File) -> (R, bool)) -> Result<R, EngineError> {
         let _lock = self.lock_blocking()?;
-        self.save_locked(instance, stored)
+        self.modify_locked(edit)
     }
 
-    /// `save`, for a caller already holding the lock.
-    fn save_locked(&self, instance: &str, stored: &Stored) -> Result<(), EngineError> {
+    /// `modify`, for a caller already holding the lock.
+    fn modify_locked<R>(&self, edit: impl FnOnce(&mut File) -> (R, bool)) -> Result<R, EngineError> {
         let mut f = self.read()?;
-        f.version = 1;
-        f.instances.insert(instance.into(), stored.clone());
-        self.write(&f)
-    }
-
-    /// Forgets an instance's login, under the store's lock. Whether there
-    /// was one.
-    pub fn remove(&self, instance: &str) -> Result<bool, EngineError> {
-        let _lock = self.lock_blocking()?;
-        let mut f = self.read()?;
-        let had = f.instances.remove(instance).is_some();
-        if had {
-            self.write(&f)?;
+        let (r, changed) = edit(&mut f);
+        if changed {
+            f.version = 1;
+            krowk_api::creds::write(&self.path, &f).map_err(fail)?;
         }
-        Ok(had)
+        Ok(r)
+    }
+
+    /// Stores a login.
+    pub fn save(&self, instance: &str, stored: &Stored) -> Result<(), EngineError> {
+        self.modify(|f| (f.instances.insert(instance.into(), stored.clone()), true)).map(drop)
+    }
+
+    /// Stores an API key for an instance, replacing the one it had.
+    pub fn save_key(&self, instance: &str, key: &crate::keys::KeyRef) -> Result<(), EngineError> {
+        self.modify(|f| (f.keys.insert(instance.into(), key.clone()), true)).map(drop)
+    }
+
+    /// Forgets an instance's login and its stored key. Whether there was
+    /// either.
+    pub fn remove(&self, instance: &str) -> Result<bool, EngineError> {
+        self.modify(|f| {
+            let had = f.instances.remove(instance).is_some() | f.keys.remove(instance).is_some();
+            (had, had)
+        })
+    }
+
+    /// Every stored API key, by instance.
+    pub fn keys(&self) -> Result<BTreeMap<String, crate::keys::KeyRef>, EngineError> {
+        Ok(self.read()?.keys)
     }
 
     /// Every instance with a login.
@@ -167,102 +185,29 @@ impl Store {
         Ok(self.read()?.instances.into_keys().collect())
     }
 
-    fn write(&self, f: &File) -> Result<(), EngineError> {
-        let io = |e: std::io::Error| fail(format!("{} could not be written: {e}", self.path.display()));
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        private_dir(dir).map_err(io)?;
-        let data = serde_json::to_string_pretty(f).expect("credentials serialize") + "\n";
-        let tmp = dir.join(format!(".credentials.json.{}.{}", std::process::id(), random_token(6)?));
-        let result = (|| {
-            let mut o = std::fs::OpenOptions::new();
-            o.write(true).create_new(true);
-            #[cfg(unix)]
-            std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-            let mut file = o.open(&tmp)?;
-            file.write_all(data.as_bytes())?;
-            file.sync_all()?;
-            drop(file);
-            std::fs::rename(&tmp, &self.path)
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        result.map_err(io)
-    }
-
-    /// The store's lock, if nobody holds it: one writer at a time across
-    /// every krowk on the host. Never blocks — the async side polls it, so a
-    /// runtime waiting on another krowk's refresh still hears Ctrl-C.
-    fn try_lock(&self) -> Result<Option<Lock>, EngineError> {
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        private_dir(dir).map_err(|e| fail(format!("{} could not be created: {e}", dir.display())))?;
-        let path = self.path.with_extension("lock");
-        let mut o = std::fs::OpenOptions::new();
-        o.create(true).truncate(false).write(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-        let file = o.open(&path).map_err(|e| fail(format!("{} could not be opened: {e}", path.display())))?;
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            // SAFETY: flock on a descriptor this function owns; released
-            // when the file is closed.
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-                let e = std::io::Error::last_os_error();
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    return Ok(None);
-                }
-                return Err(fail(format!("{} could not be locked: {e}", path.display())));
-            }
-        }
-        Ok(Some(Lock { _file: file }))
-    }
-
-    fn busy(&self) -> EngineError {
-        fail(format!("another krowk held {} for {} seconds — run the command again", self.path.display(), LOCK_WAIT.as_secs()))
+    /// The file's lock, if nobody holds it (`krowk_api::creds::try_lock`).
+    fn try_lock(&self) -> Result<Option<krowk_api::creds::Lock>, EngineError> {
+        krowk_api::creds::try_lock(&self.path).map_err(fail)
     }
 
     /// The lock, waited for — from blocking code: a login or a remove.
-    fn lock_blocking(&self) -> Result<Lock, EngineError> {
-        let until = std::time::Instant::now() + LOCK_WAIT;
-        loop {
-            if let Some(l) = self.try_lock()? {
-                return Ok(l);
-            }
-            if std::time::Instant::now() > until {
-                return Err(self.busy());
-            }
-            std::thread::sleep(LOCK_POLL);
-        }
+    fn lock_blocking(&self) -> Result<krowk_api::creds::Lock, EngineError> {
+        krowk_api::creds::lock(&self.path).map_err(fail)
     }
 
     /// The lock, waited for on the runtime without blocking it.
-    async fn lock_async(&self) -> Result<Lock, EngineError> {
-        let until = tokio::time::Instant::now() + LOCK_WAIT;
+    async fn lock_async(&self) -> Result<krowk_api::creds::Lock, EngineError> {
+        let until = tokio::time::Instant::now() + krowk_api::creds::LOCK_WAIT;
         loop {
             if let Some(l) = self.try_lock()? {
                 return Ok(l);
             }
             if tokio::time::Instant::now() > until {
-                return Err(self.busy());
+                return Err(fail(krowk_api::creds::busy(&self.path)));
             }
             tokio::time::sleep(LOCK_POLL).await;
         }
     }
-}
-
-struct Lock {
-    _file: std::fs::File,
-}
-
-fn private_dir(dir: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
-    }
-    #[cfg(not(unix))]
-    std::fs::create_dir_all(dir)
 }
 
 /// `n` random bytes from the operating system, URL-safe base64. An OS that
@@ -560,15 +505,11 @@ async fn callback(listener: &tokio::net::TcpListener, state: &str) -> Result<Str
     }
 }
 
-/// The command that signs an instance in: `supergrok` is the provider's
-/// own name, `supergrok:work` is `--name work`, and any other name is given
-/// whole (`--name grok:team`).
+/// The command that signs an instance in: `krowk connect xai --method
+/// subscription`, with `--name work` for `supergrok:work`, and `krowk
+/// connect grok:team` for a name no `--name` spells.
 pub fn login_command(instance: &str) -> String {
-    match instance.strip_prefix("supergrok:") {
-        _ if instance == "supergrok" => "krowk providers add supergrok".into(),
-        Some(name) => format!("krowk providers add supergrok --name {name}"),
-        None => format!("krowk providers add supergrok --name {instance}"),
-    }
+    crate::connect::connect_command(instance, "xai-oauth")
 }
 
 /// What a person is told during a login.
@@ -579,8 +520,13 @@ pub enum Step<'a> {
     Device(&'a DevicePrompt),
 }
 
-/// Signs in, from blocking code: the CLI's `providers add supergrok`,
+/// Signs in, from blocking code: `krowk connect xai`,
 /// which starts a runtime of its own for it, as `krowk -p` does.
+///
+/// It builds a runtime of its own and blocks until the browser answers, the
+/// device code is entered, or `LOGIN_TIMEOUT` passes: nothing cancels it
+/// sooner. A front end that must stay responsive meanwhile (the TUI's
+/// `/connect`) runs it off its own thread and needs a cancel added here.
 pub fn sign_in(login: &Login, device: bool, tell: &mut dyn FnMut(Step<'_>)) -> Result<Stored, EngineError> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -667,7 +613,8 @@ impl Tokens {
         // Memory first: the old refresh token is spent now, and a save that
         // fails must not leave this session holding it.
         *cur = stored_from(&v, &e, &cur.client_id, &cur.scope, Some(refresh))?;
-        self.store.save_locked(&self.instance, &cur)?;
+        let (instance, fresh) = (&self.instance, cur.clone());
+        self.store.modify_locked(|f| (f.instances.insert(instance.clone(), fresh), true))?;
         Ok(Some(cur.access_token.clone()))
     }
 
@@ -695,8 +642,8 @@ mod tests {
         let shown = format!("{s:?}");
         assert!(!shown.contains("at-secret") && !shown.contains("rt-secret"), "{shown}");
         assert!(!s.fresh(1) && Stored { expires_at_ms: None, ..s.clone() }.fresh(1));
-        assert_eq!(login_command("supergrok"), "krowk providers add supergrok");
-        assert_eq!(login_command("supergrok:work"), "krowk providers add supergrok --name work");
-        assert_eq!(login_command("grok:team"), "krowk providers add supergrok --name grok:team");
+        assert_eq!(login_command("supergrok"), "krowk connect xai --method subscription");
+        assert_eq!(login_command("supergrok:work"), "krowk connect xai --method subscription --name work");
+        assert_eq!(login_command("grok:team"), "krowk connect grok:team");
     }
 }

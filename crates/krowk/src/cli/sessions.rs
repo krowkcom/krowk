@@ -48,7 +48,7 @@ pub(super) fn project_native(ctx: &Ctx, session_id: &str) -> Result<(), Error> {
         return Err(fail("import_failed", format!("the log of session {session_id} is not where krowk keeps sessions")));
     };
     let mut tree = vec![r.clone()];
-    if let Some(dir) = krowk_harness::log::sessions_dir(ctx.io.env) {
+    if let Ok(dir) = krowk_harness::log::sessions_dir(ctx.io.env) {
         let children = krowk_harness::budget::descendants(&dir, session_id);
         tree.extend(children.iter().filter_map(|(id, _)| found.iter().find(|r| &r.id == id).cloned()));
     }
@@ -1536,8 +1536,8 @@ mod tests {
     fn a_lost_or_corrupt_cache_is_fetched_whole_whatever_its_sidecar_says() {
         let dir = std::env::temp_dir().join(format!("krowk-sync-lost-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let cache_home = dir.join("cache").display().to_string();
-        let env = move |k: &str| if k == "XDG_CACHE_HOME" { cache_home.clone() } else { String::new() };
+        let cache_home = dir.join("home").display().to_string();
+        let env = move |k: &str| if k == "KROWK_HOME" { cache_home.clone() } else { String::new() };
         let cache = pricing::cache_path(&env).unwrap();
         std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
         // A sidecar stamped just now, with the ETag, beside a file that holds nothing.
@@ -1558,8 +1558,8 @@ mod tests {
     fn sync_refreshes_a_stale_price_cache_and_leaves_a_fresh_one_alone() {
         let dir = std::env::temp_dir().join(format!("krowk-sync-prices-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let cache_home = dir.join("cache").display().to_string();
-        let env = move |k: &str| if k == "XDG_CACHE_HOME" { cache_home.clone() } else { String::new() };
+        let cache_home = dir.join("home").display().to_string();
+        let env = move |k: &str| if k == "KROWK_HOME" { cache_home.clone() } else { String::new() };
         let cache = pricing::cache_path(&env).unwrap();
         std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
         std::fs::write(&cache, r#"{"p":{"m":{"input":9}}}"#).unwrap();

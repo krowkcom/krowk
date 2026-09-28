@@ -24,8 +24,26 @@ impl Sandbox {
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         std::fs::write(root.join("repo/README.md"), "# krowk\n\nPermalinks for agent output.\n").unwrap();
+        // The fake `claude` and `codex`, signed in to nothing, first on
+        // PATH: a bare model is routed, which asks every vendor there is,
+        // and never the real ones the machine may have.
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        for (dir, bin) in [("claude", "fake-claude"), ("codex", "fake-codex")] {
+            let at = root.join("bin").join(dir);
+            std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures").join(dir).join(bin), &at).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
         let root = root.canonicalize().unwrap();
         Sandbox { root, url: url.into() }
+    }
+
+    /// PATH with the fakes first.
+    fn path(&self) -> String {
+        format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default())
     }
 
     fn krowk(&self, args: &[&str]) -> Output {
@@ -36,7 +54,7 @@ impl Sandbox {
         Command::new(env!("CARGO_BIN_EXE_krowk"))
             .args(args)
             .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("PATH", self.path())
             .env("HOME", self.root.join("home"))
             .env("KROWK_NO_UPDATE_CHECK", "1")
             .env("ANTHROPIC_API_KEY", key)
@@ -153,7 +171,7 @@ fn p_flags_are_refused_elsewhere_and_bad_values_are_named() {
     let out = b.krowk_with(&["-p", "hi"], "");
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("ANTHROPIC_API_KEY"));
-    assert!(!b.root.join("home/.local/share/krowk/sessions").exists(), "a refused prompt leaves no session behind");
+    assert!(!b.root.join("home/.krowk/sessions").exists(), "a refused prompt leaves no session behind");
     // Nothing listening: named as unreachable, exit 6, and R-OFF-1's words
     // lead the fix line.
     let out = b.krowk(&["-p", "hi", "--model", "claude-sonnet-4-6"]);
@@ -170,13 +188,13 @@ fn p_flags_are_refused_elsewhere_and_bad_values_are_named() {
 fn r_tool_2_krowk_p_records_each_familys_edit_tool_and_toolset_overrides_it() {
     let m = mock::serve(|_, _| mock::Reply::sse(&mock::fixture("turn2_answer.sse")));
     let b = Sandbox::new("toolset", &m.url);
-    let cache = b.root.join("home/.cache/krowk");
+    let cache = b.root.join("home/.krowk/cache");
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(cache.join("models.json"), r#"{"anthropic": {"models": {"house-coder": {"family": "grok-build"}}}}"#).unwrap();
     let tools = |args: &[&str]| -> (String, Vec<String>) {
         let r = b.json(&[&["-p", "hello", "--output-format", "json"], args].concat());
         let id = r["sessionId"].as_str().unwrap().to_string();
-        let raw = std::fs::read_to_string(b.root.join("home/.local/share/krowk/sessions").join(id).join("context.jsonl")).unwrap();
+        let raw = std::fs::read_to_string(b.root.join("home/.krowk/sessions").join(id).join("context.jsonl")).unwrap();
         let rec: Value = serde_json::from_str(raw.lines().next().unwrap()).unwrap();
         let names = rec["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
         (rec["toolset"].as_str().unwrap().to_string(), names)
@@ -193,7 +211,7 @@ fn r_tool_2_krowk_p_records_each_familys_edit_tool_and_toolset_overrides_it() {
     assert_eq!(edit(&["--model", "house-coder"]), pair("grok", "search_replace"), "the catalog's family");
     assert_eq!(edit(&["--model", "anthropic/gpt-5.1-codex", "--toolset", "claude"]), pair("claude", "str_replace"));
     // Config pins one for every model; --toolset still wins.
-    let config = b.root.join("home/.config/krowk");
+    let config = b.root.join("home/.krowk");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("config.json"), r#"{"toolset": "gpt"}"#).unwrap();
     assert_eq!(edit(&["--model", "claude-sonnet-4-6"]), pair("gpt", "apply_patch"));
@@ -220,9 +238,9 @@ fn ctrl_c_interrupts_a_turn_waiting_on_the_model_and_keeps_the_session() {
     });
     let b = Sandbox::new("interrupt", &m.url);
     let child = Command::new(env!("CARGO_BIN_EXE_krowk"))
-        .args(["-p", "hi", "--model", "claude-sonnet-4-6", "--output-format", "json"])
+        .args(["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "json"])
         .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("PATH", b.path())
         .env("HOME", b.root.join("home"))
         .env("KROWK_NO_UPDATE_CHECK", "1")
         .env("ANTHROPIC_API_KEY", "sk-test")

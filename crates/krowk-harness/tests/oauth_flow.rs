@@ -14,6 +14,8 @@ use std::path::PathBuf;
 fn dir(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("krowk-oauth-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
+    // krowk's home, which exists before anything is kept in it.
+    std::fs::create_dir_all(&d).unwrap();
     d
 }
 
@@ -46,13 +48,11 @@ async fn r_prov_4_a_device_login_is_stored_in_a_credentials_file_created_0600() 
     }
 
     let d = dir("device");
-    let store = Store::new(d.join("krowk").join(oauth::CREDENTIALS_FILE));
+    let store = Store::new(d.join("credentials.json"));
     store.save("supergrok", &stored).unwrap();
     #[cfg(unix)]
-    {
-        assert_eq!(mode(&store.path), 0o600, "the credentials file is created 0600");
-        assert_eq!(mode(store.path.parent().unwrap()), 0o700);
-    }
+    // The directory is krowk's home, made 0700 by `krowk_api::home`.
+    assert_eq!(mode(&store.path), 0o600, "the credentials file is created 0600");
     // A second login lands beside the first; neither is lost.
     store.save("grok:team", &stored).unwrap();
     assert_eq!(store.names().unwrap(), ["grok:team", "supergrok"]);
@@ -73,12 +73,15 @@ async fn r_prov_4_a_browser_login_uses_pkce_and_a_loopback_redirect() {
     let http = krowk_harness::http::client().unwrap();
     let page = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let seen_page = page.clone();
+    // The browser's thread says when it has the page: the login can end
+    // before that thread stores it.
+    let (browsed, has_page) = std::sync::mpsc::channel();
     let mut opened = String::new();
     let l = Login { client_id: Some("krowk-test".into()), ..login(&auth.mock.url) };
     let stored = oauth::login_pkce(&http, &l, &mut |url: &str| {
         opened = url.to_string();
         let url = url.to_string();
-        let page = seen_page.clone();
+        let (page, browsed) = (seen_page.clone(), browsed.clone());
         std::thread::spawn(move || {
             // A probe with the wrong state first: ignored, the login waits on.
             let port = url.split("redirect_uri=http%3A%2F%2F127.0.0.1%3A").nth(1).unwrap().split("%2F").next().unwrap().to_string();
@@ -89,11 +92,13 @@ async fn r_prov_4_a_browser_login_uses_pkce_and_a_loopback_redirect() {
             let _ = probe.read_to_string(&mut answer);
             assert!(answer.starts_with("HTTP/1.1 400"), "{answer}");
             *page.lock().unwrap() = providers::browse(&url);
+            let _ = browsed.send(());
         });
     })
     .await
     .unwrap();
     assert_eq!(stored.access_token, "xai-at-1");
+    has_page.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
     assert!(page.lock().unwrap().contains("krowk is signed in"));
     for want in ["response_type=code", "client_id=krowk-test", "code_challenge_method=S256", "code_challenge=", "state=", "scope=openid+offline_access"] {
         assert!(opened.contains(want), "{want} in {opened}");
@@ -120,7 +125,7 @@ async fn r_prov_4_an_expired_token_is_refreshed_once_across_processes_and_rotati
     let http = krowk_harness::http::client().unwrap();
     let first = oauth::login_device(&http, &login(&auth.mock.url), &mut |_| {}).await.unwrap();
     let d = dir("refresh");
-    let store = Store::new(d.join(oauth::CREDENTIALS_FILE));
+    let store = Store::new(d.join("credentials.json"));
     store.save("supergrok", &first).unwrap();
     // Two sessions (two krowk processes) holding the same login.
     let a = Tokens::open(store.clone(), "supergrok").unwrap();
@@ -137,22 +142,25 @@ async fn r_prov_4_an_expired_token_is_refreshed_once_across_processes_and_rotati
     auth.state.lock().unwrap().refresh = "revoked".into();
     let e = a.bearer(&http, true).await.unwrap_err();
     assert_eq!(e.code, "not_authenticated");
-    assert!(e.message.contains("krowk providers add supergrok") && !e.message.contains("xai-rt") && !e.message.contains("xai-at"), "{}", e.message);
+    assert!(e.message.contains("krowk connect xai --method subscription") && !e.message.contains("xai-rt") && !e.message.contains("xai-at"), "{}", e.message);
     // An instance with no login says how to sign in.
-    assert!(Tokens::open(store.clone(), "grok:team").unwrap_err().message.contains("krowk providers add supergrok --name grok:team"));
+    assert!(Tokens::open(store.clone(), "grok:team").unwrap_err().message.contains("krowk connect grok:team"));
     let _ = std::fs::remove_dir_all(&d);
 }
 
 /// Two krowk processes whose token expired at once: their refreshes contend
 /// for the store's lock, the loser waits (on its runtime, never blocking it)
 /// and then uses the winner's token — exactly one refresh, so neither spends
-/// a refresh token the other already rotated away.
+/// a refresh token the other already rotated away. A third stores an API
+/// key in the same file meanwhile (R-CRED-1): its write waits for the lock
+/// too, and neither the rotated token nor the key is lost. Each racer opens
+/// the file and its lock on its own descriptor, as separate processes do.
 #[test]
-fn r_prov_4_two_processes_refreshing_at_once_make_exactly_one_refresh() {
+fn r_prov_4_r_cred_1_two_processes_refreshing_at_once_make_exactly_one_refresh_beside_a_key_being_stored() {
     let auth = providers::auth_server(3600);
     auth.state.lock().unwrap().refresh_delay_ms = 400;
     let d = dir("race");
-    let store = Store::new(d.join(oauth::CREDENTIALS_FILE));
+    let store = Store::new(d.join("credentials.json"));
     let rt = || tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let http = krowk_harness::http::client().unwrap();
     let mut first = rt().block_on(oauth::login_device(&http, &login(&auth.mock.url), &mut |_| {})).unwrap();
@@ -170,10 +178,19 @@ fn r_prov_4_two_processes_refreshing_at_once_make_exactly_one_refresh() {
             })
         })
         .collect();
+    let keyed = {
+        let store = store.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            store.save_key("anthropic", &krowk_harness::keys::KeyRef::Literal("sk-stored".into())).unwrap();
+        })
+    };
     let got: Vec<String> = racers.into_iter().map(|t| t.join().unwrap()).collect();
+    keyed.join().unwrap();
     assert_eq!(got, ["xai-at-2", "xai-at-2"], "the loser used the winner's token");
     assert_eq!(auth.state.lock().unwrap().refreshes, 1, "exactly one refresh");
     assert_eq!(store.load("supergrok").unwrap().unwrap().refresh_token.as_deref(), Some("xai-rt-2"));
+    assert_eq!(store.keys().unwrap().get("anthropic"), Some(&krowk_harness::keys::KeyRef::Literal("sk-stored".into())), "the key stored meanwhile is kept");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -205,7 +222,7 @@ fn r_prov_4_an_interrupt_while_getting_a_token_stops_the_call_and_keeps_the_logi
 
     let auth = providers::auth_server(3600);
     let d = dir("interrupt");
-    let store = Store::new(d.join(oauth::CREDENTIALS_FILE));
+    let store = Store::new(d.join("credentials.json"));
     let rt = || tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let http = krowk_harness::http::client().unwrap();
     let expire = |store: &Store| {
@@ -252,7 +269,7 @@ fn r_prov_4_an_interrupt_while_getting_a_token_stops_the_call_and_keeps_the_logi
             rt().block_on(tokens.bearer(&http, false)).unwrap()
         })
     };
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(100));
     let took = interrupted_call("waiting on the lock");
     assert!(took < Duration::from_millis(1500), "returned {took:?} in, not after the other krowk's refresh");
     assert_eq!(other.join().unwrap(), "xai-at-2");

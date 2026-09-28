@@ -4,7 +4,7 @@ stdout:
   "ok": true,
   "data": {
     "dry_run": true,
-    "store": "<scratch>/home/.local/share/krowk/krowk.db",
+    "store": "<scratch>/home/.krowk/sessions/krowk.db",
     "providers": [
       {
         "provider": "claude",
@@ -94,7 +94,7 @@ stdout:
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.local/share/krowk/krowk.db",
+    "store": "<scratch>/home/.krowk/sessions/krowk.db",
     "providers": [
       {
         "provider": "claude",
@@ -513,7 +513,7 @@ stdout:
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.local/share/krowk/krowk.db",
+    "store": "<scratch>/home/.krowk/sessions/krowk.db",
     "providers": [
       {
         "provider": "claude",
@@ -591,7 +591,7 @@ stdout:
 }
 exit: 0
 
-@ls {home}/.local/share/krowk
+@ls {home}/.krowk/sessions
 import.lock 600
 krowk.db 600
 

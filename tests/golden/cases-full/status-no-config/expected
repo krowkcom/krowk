@@ -1,0 +1,301 @@
+$ krowk status
+stderr:
+{
+  "ok": false,
+  "error": {
+    "details": {
+      "ready": 0,
+      "instances": [
+        {
+          "instance": "anthropic",
+          "kind": "anthropic-api",
+          "label": "Anthropic API key",
+          "state": "key_not_set",
+          "ready": false,
+          "source": "env ANTHROPIC_API_KEY",
+          "fix": "set ANTHROPIC_API_KEY, or store a key with `krowk connect anthropic --method api-key`",
+          "var": "ANTHROPIC_API_KEY",
+          "reason": null
+        },
+        {
+          "instance": "claude",
+          "kind": "claude-code",
+          "label": "Claude subscription",
+          "state": "not_installed",
+          "ready": false,
+          "source": "Claude Code's own login in <scratch>/home/.claude",
+          "fix": "install Claude Code (https://claude.com/claude-code), or name the binary with `krowk connect anthropic --method subscription --binary <path>`",
+          "var": null,
+          "reason": null
+        },
+        {
+          "instance": "codex",
+          "kind": "codex-app-server",
+          "label": "ChatGPT subscription",
+          "state": "not_installed",
+          "ready": false,
+          "source": "Codex's own login in <scratch>/home/.codex",
+          "fix": "install Codex (https://developers.openai.com/codex), or name the binary with `krowk connect openai --method subscription --binary <path>`",
+          "var": null,
+          "reason": null
+        },
+        {
+          "instance": "openai",
+          "kind": "openai-api",
+          "label": "OpenAI API key",
+          "state": "key_not_set",
+          "ready": false,
+          "source": "env OPENAI_API_KEY",
+          "fix": "set OPENAI_API_KEY, or store a key with `krowk connect openai --method api-key`",
+          "var": "OPENAI_API_KEY",
+          "reason": null
+        },
+        {
+          "instance": "openrouter",
+          "kind": "openrouter-api",
+          "label": "OpenRouter",
+          "state": "key_not_set",
+          "ready": false,
+          "source": "env OPENROUTER_API_KEY",
+          "fix": "set OPENROUTER_API_KEY, or store a key with `krowk connect openrouter`",
+          "var": "OPENROUTER_API_KEY",
+          "reason": null
+        },
+        {
+          "instance": "supergrok",
+          "kind": "xai-oauth",
+          "label": "SuperGrok",
+          "state": "not_signed_in",
+          "ready": false,
+          "source": "OAuth login in <scratch>/home/.krowk/credentials.json",
+          "fix": "sign in with `krowk connect xai --method subscription`",
+          "var": null,
+          "reason": null
+        },
+        {
+          "instance": "xai",
+          "kind": "xai-api",
+          "label": "xAI API key",
+          "state": "key_not_set",
+          "ready": false,
+          "source": "env XAI_API_KEY",
+          "fix": "set XAI_API_KEY, or store a key with `krowk connect xai --method api-key`",
+          "var": "XAI_API_KEY",
+          "reason": null
+        }
+      ]
+    },
+    "error": "none_ready",
+    "fix": "none of the 7 instances can run a turn here — each row's fix says what makes it ready",
+    "retryable": false
+  }
+}
+exit: 3
+
+$ krowk status --json
+stderr:
+{
+  "ok": false,
+  "error": {
+    "details": {
+      "ready": 0,
+      "instances": [
+        {
+          "instance": "anthropic",
+          "kind": "anthropic-api",
+          "label": "Anthropic API key",
+          "state": "key_not_set",
+          "ready": false,
+          "source": "env ANTHROPIC_API_KEY",
+          "fix": "set ANTHROPIC_API_KEY, or store a key with `krowk connect anthropic --method api-key`",
+          "var": "ANTHROPIC_API_KEY",
+          "reason": null
+        },
+        {
+          "instance": "claude",
+          "kind": "claude-code",
+          "label": "Claude subscription",
+          "state": "not_installed",
+          "ready": false,
+          "source": "Claude Code's own login in <scratch>/home/.claude",
+          "fix": "install Claude Code (https://claude.com/claude-code), or name the binary with `krowk connect anthropic --method subscription --binary <path>`",
+          "var": null,
+          "reason": null
+        },
+        {
+          "instance": "codex",
+          "kind": "codex-app-server",
+          "label": "ChatGPT subscription",
+          "state": "not_installed",
+          "ready": false,
+          "source": "Codex's own login in <scratch>/home/.codex",
+          "fix": "install Codex (https://developers.openai.com/codex), or name the binary with `krowk connect openai --method subscription --binary <path>`",
+          "var": null,
+          "reason": null
+        },
+        {
+          "instance": "openai",
+          "kind": "openai-api",
+          "label": "OpenAI API key",
+          "state": "key_not_set",
+          "ready": false,
+          "source": "env OPENAI_API_KEY",
+          "fix": "set OPENAI_API_KEY, or store a key with `krowk connect openai --method api-key`",
+          "var": "OPENAI_API_KEY",
+          "reason": null
+        },
+        {
+          "instance": "openrouter",
+          "kind": "openrouter-api",
+          "label": "OpenRouter",
+          "state": "key_not_set",
+          "ready": false,
+          "source": "env OPENROUTER_API_KEY",
+          "fix": "set OPENROUTER_API_KEY, or store a key with `krowk connect openrouter`",
+          "var": "OPENROUTER_API_KEY",
+          "reason": null
+        },
+        {
+          "instance": "supergrok",
+          "kind": "xai-oauth",
+          "label": "SuperGrok",
+          "state": "not_signed_in",
+          "ready": false,
+          "source": "OAuth login in <scratch>/home/.krowk/credentials.json",
+          "fix": "sign in with `krowk connect xai --method subscription`",
+          "var": null,
+          "reason": null
+        },
+        {
+          "instance": "xai",
+          "kind": "xai-api",
+          "label": "xAI API key",
+          "state": "key_not_set",
+          "ready": false,
+          "source": "env XAI_API_KEY",
+          "fix": "set XAI_API_KEY, or store a key with `krowk connect xai --method api-key`",
+          "var": "XAI_API_KEY",
+          "reason": null
+        }
+      ]
+    },
+    "error": "none_ready",
+    "fix": "none of the 7 instances can run a turn here — each row's fix says what makes it ready",
+    "retryable": false
+  }
+}
+exit: 3
+
+$ krowk status --json
+stdout:
+{
+  "ok": true,
+  "data": {
+    "ready": 1,
+    "instances": [
+      {
+        "instance": "anthropic",
+        "kind": "anthropic-api",
+        "label": "Anthropic API key",
+        "state": "ready",
+        "ready": true,
+        "source": "env ANTHROPIC_API_KEY",
+        "fix": null,
+        "var": null,
+        "reason": null
+      },
+      {
+        "instance": "claude",
+        "kind": "claude-code",
+        "label": "Claude subscription",
+        "state": "not_installed",
+        "ready": false,
+        "source": "Claude Code's own login in <scratch>/home/.claude",
+        "fix": "install Claude Code (https://claude.com/claude-code), or name the binary with `krowk connect anthropic --method subscription --binary <path>`",
+        "var": null,
+        "reason": null
+      },
+      {
+        "instance": "codex",
+        "kind": "codex-app-server",
+        "label": "ChatGPT subscription",
+        "state": "not_installed",
+        "ready": false,
+        "source": "Codex's own login in <scratch>/home/.codex",
+        "fix": "install Codex (https://developers.openai.com/codex), or name the binary with `krowk connect openai --method subscription --binary <path>`",
+        "var": null,
+        "reason": null
+      },
+      {
+        "instance": "openai",
+        "kind": "openai-api",
+        "label": "OpenAI API key",
+        "state": "key_not_set",
+        "ready": false,
+        "source": "env OPENAI_API_KEY",
+        "fix": "set OPENAI_API_KEY, or store a key with `krowk connect openai --method api-key`",
+        "var": "OPENAI_API_KEY",
+        "reason": null
+      },
+      {
+        "instance": "openrouter",
+        "kind": "openrouter-api",
+        "label": "OpenRouter",
+        "state": "key_not_set",
+        "ready": false,
+        "source": "env OPENROUTER_API_KEY",
+        "fix": "set OPENROUTER_API_KEY, or store a key with `krowk connect openrouter`",
+        "var": "OPENROUTER_API_KEY",
+        "reason": null
+      },
+      {
+        "instance": "supergrok",
+        "kind": "xai-oauth",
+        "label": "SuperGrok",
+        "state": "not_signed_in",
+        "ready": false,
+        "source": "OAuth login in <scratch>/home/.krowk/credentials.json",
+        "fix": "sign in with `krowk connect xai --method subscription`",
+        "var": null,
+        "reason": null
+      },
+      {
+        "instance": "xai",
+        "kind": "xai-api",
+        "label": "xAI API key",
+        "state": "key_not_set",
+        "ready": false,
+        "source": "env XAI_API_KEY",
+        "fix": "set XAI_API_KEY, or store a key with `krowk connect xai --method api-key`",
+        "var": "XAI_API_KEY",
+        "reason": null
+      }
+    ]
+  },
+  "summary": "1 of 7 instances ready"
+}
+exit: 0
+
+$ krowk status --format human
+stdout:
+anthropic   Anthropic API key     ready          env ANTHROPIC_API_KEY
+claude      Claude subscription   not installed  Claude Code's own login in <scratch>/home/.claude  — install Claude Code (https://claude.com/claude-code), or name the binary with `krowk connect anthropic --method subscription --binary <path>`
+codex       ChatGPT subscription  not installed  Codex's own login in <scratch>/home/.codex  — install Codex (https://developers.openai.com/codex), or name the binary with `krowk connect openai --method subscription --binary <path>`
+openai      OpenAI API key        key not set    env OPENAI_API_KEY  — set OPENAI_API_KEY, or store a key with `krowk connect openai --method api-key`
+openrouter  OpenRouter            key not set    env OPENROUTER_API_KEY  — set OPENROUTER_API_KEY, or store a key with `krowk connect openrouter`
+supergrok   SuperGrok             not signed in  OAuth login in <scratch>/home/.krowk/credentials.json  — sign in with `krowk connect xai --method subscription`
+xai         xAI API key           key not set    env XAI_API_KEY  — set XAI_API_KEY, or store a key with `krowk connect xai --method api-key`
+1 of 7 instances ready
+exit: 0
+
+$ krowk providers list --format human
+stdout:
+anthropic   Anthropic API key     ready          https://api.anthropic.com  (env ANTHROPIC_API_KEY)
+claude      Claude subscription   not installed  claude  (Claude Code's own login in <scratch>/home/.claude)
+codex       ChatGPT subscription  not installed  codex  (Codex's own login in <scratch>/home/.codex)
+openai      OpenAI API key        key not set    https://api.openai.com/v1  (env OPENAI_API_KEY)
+openrouter  OpenRouter            key not set    https://openrouter.ai/api/v1  (env OPENROUTER_API_KEY)
+supergrok   SuperGrok             not signed in  https://api.x.ai/v1  (OAuth login in <scratch>/home/.krowk/credentials.json)
+xai         xAI API key           key not set    https://api.x.ai/v1  (env XAI_API_KEY)
+exit: 0
+

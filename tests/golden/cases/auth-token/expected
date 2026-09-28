@@ -4,7 +4,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "not_authenticated",
-    "fix": "run `krowk auth login --token krowk_sk_...`, or upload anonymously",
+    "fix": "run `krowk login --token krowk_sk_...`, or upload anonymously",
     "retryable": false
   }
 }
@@ -16,7 +16,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "not_authenticated",
-    "fix": "no key to verify — run `krowk auth login --token krowk_sk_...`, or upload anonymously",
+    "fix": "no key to verify — run `krowk login --token krowk_sk_...`, or upload anonymously",
     "retryable": false
   }
 }
@@ -27,7 +27,7 @@ stdout:
 {
   "ok": true,
   "data": {
-    "path": "<scratch>/home/.config/krowk/credentials.json",
+    "path": "<scratch>/home/.krowk/credentials.json",
     "confirmed": true,
     "key_id": "<key_1>",
     "workspace": "<ws_1>"
@@ -70,9 +70,10 @@ stdout:
 exit: 0
 
 @ls {home}
-.config/
-.config/krowk/
-.config/krowk/credentials.json 600
+.krowk/
+.krowk/.old-layout-checked 644
+.krowk/credentials.json 600
+.krowk/credentials.lock 600
 
 $ krowk auth token
 stdout:

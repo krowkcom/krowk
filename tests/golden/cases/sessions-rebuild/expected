@@ -2,7 +2,7 @@ $ krowk sessions import --from all --quiet
 stdout:
 {
   "dry_run": false,
-  "store": "<scratch>/home/.local/share/krowk/krowk.db",
+  "store": "<scratch>/home/.krowk/sessions/krowk.db",
   "providers": [
     {
       "provider": "claude",
@@ -84,7 +84,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "confirmation_required",
-    "fix": "rebuilding deletes <scratch>/home/.local/share/krowk/krowk.db and re-imports every transcript — run `krowk sessions rebuild --yes` to confirm when nobody is at a terminal to ask",
+    "fix": "rebuilding deletes <scratch>/home/.krowk/sessions/krowk.db and re-imports every transcript — run `krowk sessions rebuild --yes` to confirm when nobody is at a terminal to ask",
     "retryable": false
   }
 }
@@ -96,7 +96,7 @@ stdout:
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.local/share/krowk/krowk.db",
+    "store": "<scratch>/home/.krowk/sessions/krowk.db",
     "providers": [
       {
         "provider": "claude",
@@ -167,7 +167,7 @@ stdout:
     ],
     "duration_ms": <n>,
     "removed": [
-      "<scratch>/home/.local/share/krowk/krowk.db"
+      "<scratch>/home/.krowk/sessions/krowk.db"
     ],
     "unpriced_models": [
       "anthropic/claude-opus-5-20260401"

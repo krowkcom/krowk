@@ -369,10 +369,7 @@ fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
 
 /// The fix for an instance with no login.
 fn sign_in_fix(instance: &str) -> String {
-    match instance.split_once(':') {
-        Some((_, name)) => format!("krowk providers add codex --name {name}"),
-        None => "krowk providers add codex".into(),
-    }
+    crate::connect::connect_command(instance, "codex-app-server")
 }
 
 /// A turn Codex ended in failure, as krowk's error. A login gone stale is
@@ -827,7 +824,7 @@ impl Proc {
         cmd.process_group(0);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                EngineError::new("backend_not_found", format!("{} was not found — install Codex (https://developers.openai.com/codex), or name the binary with `krowk providers add codex --binary <path>`", b.binary))
+                EngineError::new("backend_not_found", format!("{} was not found — install Codex (https://developers.openai.com/codex), or name the binary with `krowk connect openai --method subscription --binary <path>`", b.binary))
             } else {
                 EngineError::new("backend_failed", format!("{} could not be started: {e}", b.binary))
             }
@@ -1427,7 +1424,7 @@ mod tests {
     fn r_back_3_a_failed_turn_names_a_stale_login_as_one() {
         let e = failure(&json!({"message": "unexpected status 401 Unauthorized: Missing bearer", "codexErrorInfo": "other"}), "codex:team");
         assert_eq!((e.code.as_str(), e.status), ("not_authenticated", 401));
-        assert!(e.message.contains("krowk providers add codex --name team"), "{}", e.message);
+        assert!(e.message.contains("krowk connect openai --method subscription --name team"), "{}", e.message);
         let e = failure(&json!({"message": "slow down", "codexErrorInfo": {"responseStreamDisconnected": {"httpStatusCode": 429}}}), "codex");
         assert_eq!((e.code.as_str(), e.status), ("backend_failed", 429));
         assert_eq!(failure(&json!({"message": "limit", "codexErrorInfo": "usageLimitExceeded"}), "codex").code, "usage_limit");

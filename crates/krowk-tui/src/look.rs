@@ -26,6 +26,8 @@ pub const TOOL: &str = "◆ ";
 pub const BRANCH: &str = "├─ ";
 pub const LAST_BRANCH: &str = "└─ ";
 pub const WARN: &str = "⚠ ";
+/// Before what a command did, as `krowk connect` prints it.
+pub const DONE: &str = "✓ ";
 pub const STOPPED: &str = "◌ ";
 pub const STEER: &str = "↳ ";
 /// Before a switch of model, instance or engine.
@@ -62,6 +64,18 @@ pub fn warning() -> Style {
 
 pub fn path() -> Style {
     Style::new().fg(Color::Cyan)
+}
+
+/// A URL printed into scrollback: written as an OSC 8 hyperlink to itself
+/// (`term::write_styled`), and never wrapped by krowk, so the link is whole
+/// wherever the terminal breaks it.
+pub fn link() -> Style {
+    Style::new().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
+}
+
+/// Whether a span is a link: `link()`'s style on an http(s) URL.
+pub fn is_link(span: &Span<'_>) -> bool {
+    span.style == link() && (span.content.starts_with("https://") || span.content.starts_with("http://"))
 }
 
 pub fn code() -> Style {

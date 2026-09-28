@@ -167,6 +167,12 @@ impl Pty {
         None
     }
 
+    /// Whether the child is still running, asked without waiting for it
+    /// or touching it.
+    pub fn alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
     /// Waits for the child to exit, killing it after `timeout`.
     pub fn wait(&mut self, timeout: Duration) -> Option<std::process::ExitStatus> {
         let deadline = Instant::now() + timeout;

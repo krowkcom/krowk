@@ -25,7 +25,7 @@ pub fn workspace_list(ws: &Workspaces, f: Format, quiet: bool, colour: bool) -> 
         return if quiet { encode(ws) } else { ok(ws, summary(ws), crumbs(ws)) };
     }
     if ws.stored.is_empty() {
-        return "no keys stored — `krowk auth login` adds one; until then uploads are anonymous and expire".into();
+        return "no keys stored — `krowk login` adds one; until then uploads are anonymous and expire".into();
     }
     let mut lines = vec!["stored keys".to_string()];
     for k in &ws.stored {
@@ -35,7 +35,7 @@ pub fn workspace_list(ws: &Workspaces, f: Format, quiet: bool, colour: bool) -> 
     }
     if !ws.resolved.is_empty() && ws.key_missing {
         lines.push(format!(
-            "{} resolves here ({}) — but no key is stored for it, so every upload fails until `krowk auth login`",
+            "{} resolves here ({}) — but no key is stored for it, so every upload fails until `krowk login`",
             ws.resolved, ws.source
         ));
     } else if !ws.resolved.is_empty() {
@@ -49,7 +49,7 @@ pub fn workspace_list(ws: &Workspaces, f: Format, quiet: bool, colour: bool) -> 
 
 fn summary(ws: &Workspaces) -> String {
     if ws.shadowed {
-        return "KROWK_TOKEN is set and wins over every stored key — `krowk auth verify` names the workspace that key acts in".into();
+        return "KROWK_TOKEN is set and wins over every stored key — `krowk whoami` names the workspace that key acts in".into();
     }
     let stored = format!("{} key(s) stored", ws.stored.len());
     if ws.resolved.is_empty() {
@@ -61,7 +61,7 @@ fn summary(ws: &Workspaces) -> String {
     }
     if ws.key_missing {
         return format!(
-            "{} resolves here ({}) but holds no key — every upload fails until `krowk auth login`",
+            "{} resolves here ({}) but holds no key — every upload fails until `krowk login`",
             ws.resolved, ws.source
         );
     }
@@ -72,7 +72,7 @@ fn crumbs(ws: &Workspaces) -> Vec<Breadcrumb> {
     if ws.stored.is_empty() {
         return vec![crumb(
             "log in",
-            "krowk auth login",
+            "krowk login",
             "approving it in the browser stores a key, and uploads stop expiring — `--token krowk_sk_...` stores one directly instead",
         )];
     }

@@ -1,10 +1,10 @@
 //! The session log: the source of truth for a native session (R-LOG-1).
 //!
-//! Each session is a directory under krowk's data directory, beside krowk.db:
+//! Each session is a directory in krowk's home, beside krowk.db:
 //!
 //! ```text
-//! $XDG_DATA_HOME/krowk/sessions/<session-id>/events.jsonl   the log
-//! $XDG_DATA_HOME/krowk/sessions/<session-id>/context.jsonl  each turn's system prompt and tools
+//! ~/.krowk/sessions/<session-id>/events.jsonl   the log
+//! ~/.krowk/sessions/<session-id>/context.jsonl  each turn's system prompt and tools
 //! ```
 //!
 //! `events.jsonl` is append-only: one `LogEvent` per line, never rewritten.
@@ -27,9 +27,9 @@ use std::path::{Path, PathBuf};
 pub const EVENTS_FILE: &str = "events.jsonl";
 pub const CONTEXT_FILE: &str = "context.jsonl";
 
-/// `<data>/krowk/sessions`, beside krowk.db.
-pub fn sessions_dir(env: &dyn Fn(&str) -> String) -> Option<PathBuf> {
-    Some(krowk_store::db_path(env)?.parent()?.join("sessions"))
+/// `sessions/` in krowk's home, where krowk.db is too.
+pub fn sessions_dir(env: &dyn Fn(&str) -> String) -> Result<PathBuf, krowk_api::Error> {
+    Ok(krowk_api::home::dir(env)?.join(krowk_api::home::SESSIONS))
 }
 
 /// An open session log, holding its lock.

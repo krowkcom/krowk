@@ -36,7 +36,9 @@ pub fn load(dir: &str, env: &dyn Fn(&str) -> String, flag_workspace: &str) -> Re
             c.workspace = v;
         }
     };
-    if let Some(v) = read_file(&global_path())? {
+    if let Ok(p) = global_path()
+        && let Some(v) = read_file(&p)?
+    {
         apply(&mut c, v, SOURCE_GLOBAL);
     }
     if let Some(v) = repo_path(dir).map(|p| read_file(&p)).transpose()?.flatten() {
@@ -63,9 +65,14 @@ fn read_file(path: &Path) -> Result<Option<String>, String> {
     }
 }
 
-/// $XDG_CONFIG_HOME/krowk/config.json, else ~/.config/krowk/config.json.
-pub fn global_path() -> PathBuf {
-    krowk_api::creds::config_dir().join("config.json")
+/// `config.json` in krowk's home (`krowk_api::home`), or why there is none.
+pub fn global_path() -> Result<PathBuf, krowk_api::Error> {
+    Ok(krowk_api::home::get()?.join(krowk_api::home::CONFIG))
+}
+
+/// The same, in words, for a message.
+pub fn global_text() -> String {
+    global_path().map(|p| p.display().to_string()).unwrap_or_else(|_| "(no home directory)".into())
 }
 
 /// <git-root>/.krowk/config.json, when `dir` is inside a checkout. The root is

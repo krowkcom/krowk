@@ -1,5 +1,5 @@
 //! Exit codes are a contract a script branches on, so every failure maps to
-//! one here and nowhere else. The table is in `krowk help`.
+//! one here and nowhere else. The table is in `krowk help exit-codes`.
 
 use krowk_api::Error;
 
@@ -28,6 +28,10 @@ fn client(code: &str) -> Option<i32> {
         // A backend is not started in a repository nobody trusted (R-BACK-6).
         #[cfg(feature = "harness")]
         "untrusted_directory" => REFUSED,
+        // `krowk status` with no instance ready: nothing is signed in or
+        // keyed, the same class as a missing login.
+        #[cfg(feature = "harness")]
+        "none_ready" => AUTH,
         "authorization_expired" => GONE,
         _ => return None,
     })

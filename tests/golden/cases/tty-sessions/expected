@@ -8,7 +8,7 @@ $ krowk sessions import --from all --quiet
 stdout:
 {
   "dry_run": false,
-  "store": "<scratch>/home/.local/share/krowk/krowk.db",
+  "store": "<scratch>/home/.krowk/sessions/krowk.db",
   "providers": [
     {
       "provider": "claude",
@@ -100,7 +100,7 @@ exit: 1
 
 $ @tty krowk sessions rebuild
 tty:
-\e[31m✗\e[0m Rebuilding deletes <scratch>/home/.local/share/krowk/krowk.db and re-imports every transcript.
+\e[31m✗\e[0m Rebuilding deletes <scratch>/home/.krowk/sessions/krowk.db and re-imports every transcript.
 \e[2m  (confirmation_required)\e[0m
 \e[2m  try:\e[0m  krowk sessions rebuild --yes
 exit: 1

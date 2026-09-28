@@ -3,7 +3,7 @@ stdout:
 {
   "ok": true,
   "data": {
-    "path": "<scratch>/home/.config/krowk/credentials.json",
+    "path": "<scratch>/home/.krowk/credentials.json",
     "confirmed": true,
     "key_id": "<key_1>",
     "workspace": "<ws_1>"
@@ -24,7 +24,7 @@ stdout:
 {
   "ok": true,
   "data": {
-    "path": "<scratch>/home/.config/krowk/credentials.json",
+    "path": "<scratch>/home/.krowk/credentials.json",
     "confirmed": true,
     "key_id": "<key_2>",
     "workspace": "<ws_2>"
@@ -86,7 +86,7 @@ stdout:
   "ok": true,
   "data": {
     "default": "<ws_1>",
-    "path": "<scratch>/home/.config/krowk/credentials.json"
+    "path": "<scratch>/home/.krowk/credentials.json"
   },
   "summary": "default workspace is now <ws_1>",
   "breadcrumbs": [
@@ -139,7 +139,7 @@ stdout:
 }
 exit: 0
 
-@cat {home}/.config/krowk/credentials.json
+@cat {home}/.krowk/credentials.json
 {
   "default": "<ws_1>",
   "workspaces": {
@@ -248,7 +248,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "no_key_for_workspace",
-    "fix": "no key is stored for workspace <ws_3> — stored: <ws_1>, <ws_2>; run `krowk auth login` to add one",
+    "fix": "no key is stored for workspace <ws_3> — stored: <ws_1>, <ws_2>; run `krowk login` to add one",
     "retryable": false
   }
 }

@@ -395,6 +395,10 @@ pub struct Scope {
     /// directory, Claude Code's, a backend instance's (`CLAUDE_CONFIG_DIR`,
     /// `CODEX_HOME`), whose settings and hooks decide what runs next.
     pub protected: Vec<PathBuf>,
+    /// Directories no tool reads, searches or changes without a person's
+    /// say, wherever they sit: krowk's home, as named and as it leads — its
+    /// keys, logins, sessions and settings.
+    pub secrets: Vec<PathBuf>,
     pub hidden: Hidden,
 }
 
@@ -419,7 +423,7 @@ const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".krowk"];
 impl Scope {
     /// Only the working directory, nothing opened.
     pub fn within(cwd: &Path) -> Scope {
-        Scope { cwd: cwd.to_path_buf(), roots: Vec::new(), read_roots: Vec::new(), outside: false, open: false, protected: Vec::new(), hidden: Hidden::default() }
+        Scope { cwd: cwd.to_path_buf(), roots: Vec::new(), read_roots: Vec::new(), outside: false, open: false, protected: Vec::new(), secrets: Vec::new(), hidden: Hidden::default() }
     }
 
     /// Where `p` (absolute) leads against the tools' reach, for a read or an
@@ -437,6 +441,9 @@ impl Scope {
             roots.extend(self.read_roots.iter().map(|d| canon(d)));
         }
         let inside = roots.iter().any(|r| real.starts_with(r));
+        if self.secret(p) {
+            return Reach::Fenced(format!("{} is inside krowk's home, which holds its keys, logins and sessions: the tools read, search or change it only with a person's say", p.display()));
+        }
         if edit && let Some(why) = self.fence(p, &real, &root) {
             return Reach::Fenced(why);
         }
@@ -487,6 +494,24 @@ impl Scope {
         };
         self.protected.iter().find(|d| within(real, d) || within(p, d)).map(|d| {
             format!("{} is inside {}, a directory whose settings decide what runs (krowk's, or a backend's own), which the file tools change only with a person's say", p.display(), d.display())
+        })
+    }
+
+    /// Whether `p` is, or is inside, one of `secrets` — by where it leads
+    /// (`..` taken out by its words, and every symlink followed), against
+    /// the secret as named and as it leads, regardless of case: a search
+    /// through `.krowk/../.krowk` or a symlinked alias skips it too.
+    pub fn secret(&self, p: &Path) -> bool {
+        if self.secrets.is_empty() {
+            return false;
+        }
+        let lower = |p: &Path| PathBuf::from(p.to_string_lossy().to_lowercase());
+        let seen: Vec<PathBuf> = [Some(krowk_api::home::lexical(p)), real_path(p, 0).ok()].into_iter().flatten().map(|q| lower(&q)).collect();
+        // The secrets as named and as they lead: `Policy::load` lists both,
+        // so a search resolves only the path it is at, once.
+        self.secrets.iter().any(|s| {
+            let n = lower(&krowk_api::home::lexical(s));
+            seen.iter().any(|q| q.starts_with(&n))
         })
     }
 

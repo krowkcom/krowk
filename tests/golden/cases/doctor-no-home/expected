@@ -11,19 +11,24 @@ stdout:
   "key": "none — uploads will be anonymous",
   "workspace": "none — uploads will be anonymous",
   "runs_available": false,
-  "credentials": ".krowk/credentials.json",
-  "config": "global .krowk/config.json (absent)",
+  "credentials": "(no home directory)",
+  "config": "global (no home directory)",
   "store": {
     "name": "store",
     "status": "fail",
-    "message": "no home directory in environment, so krowk.db has nowhere to live",
-    "hint": "set HOME (or XDG_DATA_HOME to an absolute path) so krowk.db has a place to live"
+    "message": "krowk.db has nowhere to live",
+    "hint": "there is no home directory to keep krowk's files in — set HOME, or KROWK_HOME to an absolute path"
   },
   "pricing": {
     "name": "pricing",
     "status": "warn",
     "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
     "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+  },
+  "providers": {
+    "name": "providers",
+    "status": "skip",
+    "message": "this build runs no model"
   },
   "context": {}
 }

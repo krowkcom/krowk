@@ -19,7 +19,7 @@ use std::time::Duration;
 #[test]
 fn a_request_killed_client_side_is_still_counted_from_the_provider_ledger() {
     let home = scratch();
-    let ledger = home.join(".local/share/krowk/ledger/fake.jsonl");
+    let ledger = home.join(".krowk/ledger/fake.jsonl");
     std::fs::create_dir_all(ledger.parent().unwrap()).unwrap();
 
     // The provider: it reads a request, generates for `think` ms, meters
@@ -78,7 +78,7 @@ fn a_request_killed_client_side_is_still_counted_from_the_provider_ledger() {
     // With the ghost gone, every row is in a transcript: the ledger session
     // costs nothing here, and says where its cost was counted.
     std::fs::write(&ledger, std::fs::read_to_string(&ledger).unwrap().lines().next().unwrap().to_string() + "\n").unwrap();
-    let solo = home.join(".local/share/krowk/ledger/solo.jsonl");
+    let solo = home.join(".krowk/ledger/solo.jsonl");
     std::fs::copy(&ledger, &solo).unwrap();
     std::fs::remove_file(&ledger).unwrap();
     krowk(&home, &["sessions", "import", "--from", "all"]);

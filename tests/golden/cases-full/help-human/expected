@@ -1,0 +1,165 @@
+$ krowk help --format human
+stdout:
+█  █  krowk — a coding agent, and permalinks for its output
+█▀▀▄  version 0.0.0-golden
+
+USAGE
+  krowk                      Open the agent here
+  krowk -p "…"               One prompt, headless
+  krowk <command> [flags]
+
+AGENT
+  connect       Connect a model: Claude, ChatGPT, SuperGrok or an API key
+  disconnect    Sign a connected model out
+  status        What's connected, and whether each is ready
+  sessions      List and read agent sessions on this machine
+
+PUBLISH
+  push          Upload files, get a link for each
+  runs          Group uploads under a run
+  uploads       List, show, attach or delete uploads
+  claim         Keep an anonymous upload past expiry
+
+ACCOUNT
+  login         Sign in to your krowk account
+  logout        Remove this machine's key
+  whoami        Show the key and its workspace
+  workspaces    Switch between stored keys
+
+OTHER
+  providers     Low-level instance config (add, list, remove)
+  config        Show or set configuration
+  doctor        Check this machine's setup
+  pricing       Refresh model prices
+  upgrade       Upgrade krowk
+
+FLAGS
+  --model <instance/model>   Which model (e.g. claude/sonnet)
+  --resume [id]              Continue a session
+  --json · --jq <expr>       Output as JSON, or filter it
+  -h, --help · -v, --version
+
+krowk help <command>  A command's own flags
+krowk help --all      Every command and subcommand
+krowk help topics     flags, exit codes, environment, workspaces, links
+exit: 0
+
+$ krowk help --all --format human
+stdout:
+krowk — every command and subcommand
+
+AGENT
+  connect           Connect a model: Claude, ChatGPT, SuperGrok or an API key
+  disconnect        Sign a connected model out
+  status            What's connected, and whether each is ready
+  sessions          List and read agent sessions on this machine
+  sessions show     Read one session back, with its turns, messages and parts
+  sessions import   Import this machine's agent transcripts
+  sessions rebuild  Delete the local store and re-import every transcript
+  sessions budget   Check a session against a spend limit
+  sessions sync     Import what changed since the last import, refresh prices
+
+PUBLISH
+  push              Upload files, get a link for each
+  runs start        Open a run to group uploads under
+  runs list         List the workspace's runs, newest first
+  runs show         Read one run back, with its metadata
+  runs finish       Close a run
+  uploads create    Upload files: the long form of `krowk push`
+  uploads list      List uploads, newest first: a run's, or the workspace's
+  uploads show      Read one artifact back
+  uploads attach    Put an upload under a run afterwards
+  uploads delete    Take an upload down — immediate, cannot be undone
+  claim             Keep an anonymous upload past expiry
+
+ACCOUNT
+  login             Sign in to your krowk account
+  logout            Remove this machine's key
+  whoami            Show the key and its workspace
+  workspaces list   List the stored keys, and which workspace resolves here
+  workspaces use    Make a stored key the machine-wide default
+  auth login        The long form of `krowk login`
+  auth logout       The long form of `krowk logout`
+  auth token        Print the stored token
+  auth verify       The long form of `krowk whoami`
+
+OTHER
+  providers add     Add an instance, or sign one in
+  providers list    List every instance, and whether it is ready
+  providers remove  Remove an instance's definition, and forget its login
+  config show       The effective configuration, and which layer set each value
+  config set        Write one value into the repo config, or the global one
+  config unset      Remove one value from the repo config, or the global one
+  doctor            Check this machine's setup
+  pricing refresh   Refresh the models.dev price cache
+  upgrade           Upgrade krowk
+  help              This, a command's help, or a topic
+
+krowk help <command>  A command's own flags and explanation
+krowk help topics     flags, exit codes, environment, workspaces, links
+krowk help --json     The whole surface as data, for tooling
+exit: 0
+
+$ krowk help flags --format human
+stdout:
+krowk help flags — The flags every command takes
+
+GLOBAL FLAGS
+  --workspace <string>  Use this workspace's stored key for this one command —
+                        outranks KROWK_WORKSPACE and every config file
+  --dev                 Talk to a local registry at http://localhost:8787/v1
+  --format <string>     human | json | markdown | url (default: human on a TTY,
+                        json when piped). markdown and url describe an upload;
+                        other commands fall back to json
+  --json                Shorthand for --format json
+  --quiet               Raw JSON, no envelope
+  --jq <string>         Filter the JSON with a jq expression — built in, no jq
+                        binary needed. Implies --format json, and reads the bare
+                        record under --quiet
+  --help, -h            Show the help
+  --version, -v         Print the version
+
+AGENT FLAGS (krowk, krowk -p)
+  --print, -p                 Run the prompt given as the arguments (or on
+                              stdin) headless: krowk's own agent answers it,
+                              then exits
+  --output-format <string> (default text)
+                              With -p: text (the answer), json (the result
+                              event) or stream-json (every event, one per line)
+  --model <string>            With -p: the model, as <instance>/<model> or a
+                              model id on the anthropic instance, e.g.
+                              claude-opus-5-5, claude:work/sonnet to run Claude
+                              Code, or codex:team/gpt-5.5 to run Codex; with
+                              --resume, the session moves there
+  --resume <string>           With -p: continue this krowk session — the
+                              sessionId a result names, or its krowk.db id
+  --permission-mode <string> (default default)
+                              With -p and the agent: default, acceptEdits, plan
+                              or bypassPermissions, as in Claude Code, or
+                              unhinged, which asks about nothing: no krowk deny
+                              rule, ask rule or protected directory holds.
+                              Without it, the settings' permissions.defaultMode;
+                              in every other mode a deny rule holds
+  --toolset <string>          With -p: the tools' preset — claude (str_replace),
+                              gpt (apply_patch) or grok (search_replace). The
+                              model's family picks one when absent
+  --effort <string>           With -p: how hard the model thinks — none,
+                              minimal, low, medium, high, xhigh or max, mapped
+                              onto the nearest the model takes. The instance's,
+                              else the provider's default, when absent
+  --max-usd <string>          With -p, and in the TUI: stop the session before
+                              the model call that would take it, with its
+                              subagents, past this many dollars — metered,
+                              priced from models.dev. Exits 4, like `krowk
+                              sessions budget`
+  --max-tokens <string>       With -p, and in the TUI: stop the session before
+                              the model call that would take its generated
+                              tokens (output and reasoning, subagents included)
+                              past this many. Exits 4
+  --trust                     With -p: let a backend (Claude Code, Codex) run in
+                              a repository not yet trusted — it runs the
+                              repository's hooks and MCP servers without asking.
+                              Without it, -p refuses unless a person at the
+                              terminal says yes
+exit: 0
+
