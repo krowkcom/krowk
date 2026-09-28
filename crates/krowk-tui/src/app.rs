@@ -1690,7 +1690,8 @@ impl App {
 
     fn settings_overlay(&self, width: usize) -> Vec<Line<'static>> {
         let mode = self.default_mode.as_deref().unwrap_or("default");
-        let says = if PermissionMode::parse(mode).is_some() { mode_says(mode) } else { "not a mode krowk runs, so it runs as default" };
+        let says = if PermissionMode::parse(mode).is_some() { mode_says(mode) } else { "not a mode krowk runs" };
+        let mode = clean(mode);
         let mut out = vec![
             Line::from(Span::styled(clip("settings — ← → change · enter or esc closes · saved to config.json for the next session", width), dim())),
             Line::from(Span::styled(clip(&format!("❯ Default permission mode  ‹ {mode} ›  {says}"), width), look::accent())),
@@ -2677,7 +2678,10 @@ mod tests {
         a.default_mode = Some("dontAsk".into());
         a.default_mode_overridden = Some((PermissionMode::Plan, "/work/claude/settings.json".into()));
         let rows = text(&a.view(Instant::now()).0).join("\n");
-        assert!(rows.contains("runs as default") && rows.contains("starts in plan") && rows.contains("/work/claude/settings.json"), "{rows}");
+        assert!(rows.contains("not a mode krowk runs") && rows.contains("starts in plan") && rows.contains("/work/claude/settings.json"), "{rows}");
+        a.default_mode = Some("\u{1b}[2Jx".into());
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(!rows.contains('\u{1b}'), "config.json's text is shown, never obeyed: {rows:?}");
     }
 
     #[test]

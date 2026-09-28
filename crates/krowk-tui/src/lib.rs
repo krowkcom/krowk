@@ -224,6 +224,7 @@ async fn session(opts: Options) -> Outcome {
     app.permission_mode = serde_json::to_value(opts.permission_mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     // Where the session runs: a resumed one where it started.
     let mut runs_in = opts.host.cwd.clone();
+    let started_in = opts.host.cwd.clone();
     if let Some(id) = &opts.resume {
         match log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)) {
             Ok(events) => {
@@ -312,6 +313,7 @@ async fn session(opts: Options) -> Outcome {
         trust: opts.trust,
         effort_label,
         runs_in: runs_in.clone(),
+        started_in,
         permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
@@ -393,6 +395,9 @@ struct Ui<'h> {
     effort_label: Option<String>,
     /// Where the session runs, where a vendor is asked once trusted.
     runs_in: PathBuf,
+    /// Where krowk was started, where a new session would start: a resumed
+    /// one runs in its own directory.
+    started_in: PathBuf,
     permission_mode: PermissionMode,
     toolset: Option<String>,
     effort: Option<Effort>,
@@ -953,7 +958,7 @@ impl<'h> Ui<'h> {
     /// read after it overrides.
     fn show_settings(&self, app: &mut App, raw: &serde_json::Map<String, serde_json::Value>) {
         app.default_mode = settings::default_mode(raw);
-        app.default_mode_overridden = settings::overridden(&self.permissions_cfg, raw, &self.runs_in).map(|m| (m, settings::claude_file(&self.permissions_cfg)));
+        app.default_mode_overridden = settings::overridden(&self.permissions_cfg, raw, &self.started_in).map(|m| (m, settings::claude_file(&self.permissions_cfg)));
         app.touch();
     }
 

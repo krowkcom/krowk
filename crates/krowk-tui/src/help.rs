@@ -119,7 +119,8 @@ pub fn slash(typed: &str, skills: &[(String, String)]) -> Vec<Slash> {
     // The name typed whole, or an alias of it, outranks every other hit —
     // `/mode` is not `/model` — and name hits every description hit; ties
     // keep the list's order.
-    let whole = |s: &Slash| s.name.eq_ignore_ascii_case(q) || (!s.skill && ALIASES.iter().any(|(a, c)| a.eq_ignore_ascii_case(q) && *c == s.name));
+    // An alias is read as typed, as `canonical` reads it for enter.
+    let alias = |s: &Slash| !s.skill && ALIASES.iter().any(|(a, c)| *a == q && *c == s.name);
     let mut ranked: Vec<(u32, usize)> = all
         .iter()
         .enumerate()
@@ -127,8 +128,11 @@ pub fn slash(typed: &str, skills: &[(String, String)]) -> Vec<Slash> {
             let hit = score(&s.name).map(|n| n + (1 << 20)).or_else(|| score(&s.description));
             // An alias outranks even a skill of the same name, as enter
             // with the menu closed runs the command.
-            let alias = !s.skill && !s.name.eq_ignore_ascii_case(q) && whole(s);
-            if whole(s) { Some((hit.unwrap_or(0) + (1 << 21) + (u32::from(alias) << 22), i)) } else { hit.map(|h| (h, i)) }
+            match (alias(s), s.name.eq_ignore_ascii_case(q)) {
+                (true, _) => Some((hit.unwrap_or(0) + (1 << 22), i)),
+                (false, true) => Some((hit.unwrap_or(0) + (1 << 21), i)),
+                (false, false) => hit.map(|h| (h, i)),
+            }
         })
         .collect();
     ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));

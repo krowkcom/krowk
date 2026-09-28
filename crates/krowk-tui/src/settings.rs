@@ -129,10 +129,10 @@ pub fn from_config(raw: &Value) -> (Settings, Vec<String>) {
 pub const DEFAULT_MODES: [PermissionMode; 2] = [PermissionMode::Default, PermissionMode::Unhinged];
 
 /// `permissions.defaultMode` in a read config.json as written — none when
-/// there is none, which runs as `default`; a value that is no string as
-/// its JSON.
+/// there is none (or null), which runs as `default`; a value that is no
+/// string as its JSON.
 pub fn default_mode(raw: &Map<String, Value>) -> Option<String> {
-    raw.get("permissions").and_then(|p| p.get("defaultMode")).map(|v| v.as_str().map_or_else(|| v.to_string(), String::from))
+    raw.get("permissions").and_then(|p| p.get("defaultMode")).filter(|v| !v.is_null()).map(|v| v.as_str().map_or_else(|| v.to_string(), String::from))
 }
 
 /// The mode `by` along `DEFAULT_MODES` from `now` (none is `default`), and
@@ -196,6 +196,7 @@ mod tests {
         assert_eq!(step_default(Some("unhinged"), -1), Some(PermissionMode::Default));
         assert_eq!(step_default(Some("acceptEdits"), 1), Some(PermissionMode::Default), "a mode outside them goes to the first");
         assert_eq!(default_mode(json!({"permissions": {"defaultMode": true}}).as_object().unwrap()).as_deref(), Some("true"), "no string is shown as it is");
+        assert_eq!(default_mode(json!({"permissions": {"defaultMode": null}}).as_object().unwrap()), None, "null is none, as the harness reads it");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&config, json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"]}}).to_string()).unwrap();
         let written = set_default_mode(&config, PermissionMode::Unhinged).unwrap();
