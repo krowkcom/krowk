@@ -3,9 +3,9 @@
 //!
 //! The vocabulary follows Grok Build's (xAI, Apache-2.0: its
 //! `xai-grok-pager-render` glyphs and "Terminal" theme, its minimal inline
-//! mode's commit rules, its thinking and turn-status blocks): `❯` for what
-//! the person said, `◆` for a tool, a tool shown once with its outcome,
-//! thinking collapsed to "Thought for 4.2s", `Worked for 12s` after a turn,
+//! mode's commit rules, its turn-status block): `❯` for what the person
+//! said, `◆` for a tool, a tool shown once with its outcome,
+//! `Worked for 12s` after a turn,
 //! ` │ ` between status items. Written here from those ideas; no code was
 //! copied (see THIRD-PARTY-NOTICES).
 //!

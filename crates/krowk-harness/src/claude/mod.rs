@@ -155,6 +155,12 @@ pub fn mcp_config() -> String {
     json!({"mcpServers": {bridge::SERVER: {"type": "sdk", "name": bridge::SERVER}}}).to_string()
 }
 
+/// The `--settings` every process starts with: no `Co-Authored-By: Claude`
+/// trailer on commits, no Claude Code line on pull requests. `attribution`
+/// is the current key, `includeCoAuthoredBy` the one older versions read;
+/// an instance's own `--settings` in its `args` comes later and wins.
+pub const SETTINGS: &str = r#"{"attribution":{"commit":"","pr":""},"includeCoAuthoredBy":false}"#;
+
 /// The whole argument list, krowk's own first and the instance's after.
 pub fn args(l: &Launch, extra: &[String]) -> Vec<String> {
     let mut a: Vec<String> = [
@@ -174,6 +180,7 @@ pub fn args(l: &Launch, extra: &[String]) -> Vec<String> {
     .collect();
     a.push(mcp_config());
     a.push("--strict-mcp-config".into());
+    a.extend(["--settings".into(), SETTINGS.into()]);
     a.extend(["--model".into(), l.model.clone()]);
     if let Some(r) = &l.resume {
         a.extend(["--resume".into(), r.clone()]);
@@ -1379,7 +1386,11 @@ mod tests {
         let a = args(&l, &["--add-dir".into(), "/x".into()]);
         let s = a.join(" ");
         assert!(s.starts_with("-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio --mcp-config "), "{s}");
-        assert!(s.contains(r#"{"mcpServers":{"krowk":{"name":"krowk","type":"sdk"}}} --strict-mcp-config --model haiku --resume cc-1 --effort high --permission-mode default --add-dir /x"#) || s.contains(r#"{"mcpServers":{"krowk":{"type":"sdk","name":"krowk"}}} --strict-mcp-config --model haiku --resume cc-1 --effort high --permission-mode default --add-dir /x"#), "{s}");
+        let rest = format!("--strict-mcp-config --settings {SETTINGS} --model haiku --resume cc-1 --effort high --permission-mode default --add-dir /x");
+        assert!(s.contains(&format!(r#"{{"mcpServers":{{"krowk":{{"name":"krowk","type":"sdk"}}}}}} {rest}"#)) || s.contains(&format!(r#"{{"mcpServers":{{"krowk":{{"type":"sdk","name":"krowk"}}}}}} {rest}"#)), "{s}");
+        // Commits and pull requests made through Claude Code carry no Claude attribution.
+        let settings: Value = serde_json::from_str(SETTINGS).unwrap();
+        assert_eq!(settings, json!({"attribution": {"commit": "", "pr": ""}, "includeCoAuthoredBy": false}));
         assert!(s.contains("--permission-mode default --add-dir"), "the mode is always named, so settings cannot loosen it: {s}");
         assert!(args(&Launch { plan: true, resume: None, effort: None, ..l.clone() }, &[]).join(" ").ends_with("--model haiku --permission-mode plan"));
         // R-PERM-1: krowk's deny rules reach what Claude Code allows by itself.

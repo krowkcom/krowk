@@ -12,7 +12,7 @@
 use crate::editor::Editor;
 use crate::help;
 use crate::look::{self, SEP};
-use crate::settings::{Item as StatusItem, Settings};
+use crate::settings::{ContentWidth, Item as StatusItem, Settings};
 use krowk_harness::host::Pricer;
 use krowk_harness::log::Recent;
 use krowk_harness::protocol::{
@@ -27,8 +27,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Rows the prompt may take before it scrolls within itself.
 const MAX_INPUT_ROWS: usize = 8;
-/// The `/` menu shows this many entries at most, scrolling past them:
-/// every command, and a skill or two under them.
+/// The `/` menu shows this many entries at most, scrolling past them.
 const SLASH_ROWS: usize = 10;
 /// The Krowk mark (.github/logo.svg): its 4×4 glyph, `#`, on a plate a
 /// unit wider all round, `.`.
@@ -313,7 +312,10 @@ pub struct Turn {
 pub struct App {
     pub editor: Editor,
     pending: Vec<Line<'static>>,
+    /// The width laid out in: `room`, at most `settings.content_width`'s.
     width: u16,
+    /// The width there is, inside the padding.
+    room: u16,
     last_blank: bool,
     /// Whether what was pushed last is a tool call's block: the next call
     /// stacks under it, with no blank line between.
@@ -356,13 +358,6 @@ pub struct App {
     calls: Vec<Call>,
     /// Whether the answer being shown has a fenced code block open.
     fence: bool,
-    /// When the thinking streaming now, or held in `thought`, began.
-    thinking_since: Option<Instant>,
-    /// Thinking done and not yet shown, with how long it took. A model
-    /// thinks in more than one block back to back (Claude Code sends a
-    /// signed empty one, then the text): they are one "Thought", shown
-    /// before whatever comes next.
-    thought: Option<Option<Duration>>,
     /// What a backend reported its session is billed to, and on which
     /// instance (R-INST-3).
     billing: Option<(String, Billing)>,
@@ -438,6 +433,9 @@ pub struct App {
     /// read after config.json sets another, and Claude Code's user settings
     /// file as the person would find it.
     pub default_mode_overridden: Option<(PermissionMode, String)>,
+    /// `/settings`' chosen row: 0 the default permission mode, 1 the
+    /// content width.
+    pub setting_at: usize,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
     /// A `/connect` or `/disconnect` running: its overlay's state.
@@ -452,7 +450,8 @@ impl App {
         App {
             editor,
             pending: Vec::new(),
-            width,
+            width: settings.content_width.of(width.max(1)),
+            room: width.max(1),
             last_blank: true,
             after_tool: false,
             live: None,
@@ -478,8 +477,6 @@ impl App {
             replay_model: None,
             calls: Vec::new(),
             fence: false,
-            thinking_since: None,
-            thought: None,
             billing: None,
             vendor_instances: Vec::new(),
             skills: Vec::new(),
@@ -510,15 +507,30 @@ impl App {
             resumable_at_ms: 0,
             default_mode: None,
             default_mode_overridden: None,
+            setting_at: 0,
             help_at: 0,
             flow: None,
             marks: BTreeMap::new(),
         }
     }
 
+    /// `w` is the room there is; what is laid out takes as much of it as
+    /// the content width allows.
     pub fn set_width(&mut self, w: u16) {
-        self.width = w.max(1);
+        self.room = w.max(1);
+        self.width = self.settings.content_width.of(self.room);
         self.dirty = true;
+    }
+
+    pub fn content_width(&self) -> ContentWidth {
+        self.settings.content_width
+    }
+
+    /// Lays out at `w` from here on. What is already in scrollback keeps
+    /// the width it was printed at.
+    pub fn set_content_width(&mut self, w: ContentWidth) {
+        self.settings.content_width = w;
+        self.set_width(self.room);
     }
 
     pub fn touch(&mut self) {
@@ -617,22 +629,8 @@ impl App {
         self.dirty = true;
     }
 
-    /// Thinking held back, into scrollback as one line, before whatever
-    /// else is shown.
-    fn flush_thought(&mut self) {
-        let Some(took) = self.thought.take() else { return };
-        // Thinking streaming now keeps its clock: it is a thought of its own.
-        if !self.live.as_ref().is_some_and(|l| l.kind == LiveKind::Reasoning) {
-            self.thinking_since = None;
-        }
-        let took = took.map(|t| format!(" for {}", look::duration(t))).unwrap_or_default();
-        self.gap();
-        self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(format!("Thought{took}"), dim().add_modifier(Modifier::ITALIC))]));
-    }
-
     /// A blank line before a new block, unless there is one already.
     fn gap(&mut self) {
-        self.flush_thought();
         if !self.last_blank {
             self.pending.push(Line::default());
             self.last_blank = true;
@@ -641,7 +639,6 @@ impl App {
     }
 
     fn push_wrapped(&mut self, first: &str, rest: &str, text: &str, prefix_style: Style, style: Style) {
-        self.flush_thought();
         // Unprefixed text — the answer itself, most of scrollback — stays
         // one line here and is wrapped with everything else on its way out
         // (`take_pending`). Prefixed items wrap here, under their hanging
@@ -707,6 +704,46 @@ impl App {
         }
     }
 
+    /// An instance goes by `to` now: what the session holds of `from` —
+    /// its model, the models it ran on, an offer or a switch still to act
+    /// on, each instance's usage — is `to`'s, so nothing offers or runs a
+    /// name that is gone.
+    pub fn renamed(&mut self, from: &str, to: &str) {
+        let on = |i: &mut String| {
+            if i == from {
+                *i = to.to_string();
+            }
+        };
+        let offer = self.offer.as_mut().map(|o| [&mut o.from.instance, &mut o.to.instance]).into_iter().flatten();
+        for i in [self.model.as_mut().map(|m| &mut m.instance), self.switched.as_mut().map(|m| &mut m.instance), self.turn_instance.as_mut(), self.billing.as_mut().map(|(i, _)| i)].into_iter().flatten().chain(offer) {
+            on(i);
+        }
+        let mut used = Vec::new();
+        for mut m in std::mem::take(&mut self.used) {
+            on(&mut m.instance);
+            if !used.contains(&m) {
+                used.push(m);
+            }
+        }
+        self.used = used;
+        // Two old names of one instance are one instance's usage, added up.
+        if let Some(u) = self.instances.remove(from) {
+            match self.instances.get_mut(to) {
+                Some(t) => {
+                    t.turns += u.turns;
+                    t.tokens += u.tokens;
+                    t.cost += u.cost;
+                    t.unpriced |= u.unpriced;
+                    t.limit = t.limit.take().or(u.limit);
+                    t.live_turn = t.live_turn.take().or(u.live_turn);
+                }
+                None => {
+                    self.instances.insert(to.to_string(), u);
+                }
+            }
+        }
+    }
+
     /// What `/disconnect` did, in `krowk disconnect`'s words.
     pub fn disconnected(&mut self, d: &krowk_harness::connect::Disconnected) {
         use krowk_harness::connect::SignedOut;
@@ -747,7 +784,6 @@ impl App {
 
     /// One line of an answer, in light markdown, wrapped on its way out.
     fn push_md(&mut self, text: &str) {
-        self.flush_thought();
         let line = look::markdown_line(&clean(text), &mut self.fence);
         self.last_blank = line.width() == 0;
         self.after_tool = false;
@@ -763,7 +799,7 @@ impl App {
     /// with no blank line between them.
     fn commit_tool(&mut self, name: &str, input: &serde_json::Value, output: &str, is_error: bool) {
         let name = look::tool_kind(name);
-        if !self.after_tool || self.thought.is_some() {
+        if !self.after_tool {
             self.gap();
         }
         let width = usize::from(self.width.max(8));
@@ -817,7 +853,6 @@ impl App {
     }
 
     fn push_line(&mut self, line: Line<'static>) {
-        self.flush_thought();
         self.last_blank = line.width() == 0;
         self.after_tool = false;
         self.pending.push(line);
@@ -859,20 +894,11 @@ impl App {
                         self.fence = false;
                         LiveKind::Text
                     }
-                    // More thinking straight after some is the same thought.
-                    ItemKind::Reasoning => {
-                        if self.thought.is_none() || self.thinking_since.is_none() {
-                            self.thinking_since = Some(Instant::now());
-                        }
-                        LiveKind::Reasoning
-                    }
+                    ItemKind::Reasoning => LiveKind::Reasoning,
                     ItemKind::ToolCall { name, .. } => LiveKind::Call(name.clone()),
                     ItemKind::ToolResult { .. } => LiveKind::Result,
                     ItemKind::UserText => return,
                 };
-                if kind != LiveKind::Reasoning {
-                    self.flush_thought();
-                }
                 // The turn's answer is all its text, the parts between
                 // tool calls a paragraph apart.
                 if kind == LiveKind::Text && !self.answer.is_empty() && !self.answer.ends_with("\n\n") {
@@ -1279,13 +1305,12 @@ impl App {
                 }
                 self.live = None;
             }
-            // Thinking is shown collapsed, as how long it took — held until
-            // something else comes, so that blocks back to back are one.
+            // Thinking leaves nothing in scrollback: the status line says
+            // it is happening, and the turn's time counts it.
             Item::Reasoning { .. } => {
                 if streamed {
                     self.live = None;
                 }
-                self.thought = Some(if live { self.thinking_since.map(|t| t.elapsed()) } else { None });
             }
             Item::ToolCall { call_id, name, input } => {
                 if streamed {
@@ -1751,14 +1776,25 @@ impl App {
         let mode = self.default_mode.as_deref().unwrap_or("default");
         let says = if PermissionMode::parse(mode).is_some() { mode_says(mode) } else { "not a mode krowk runs" };
         let mode = clean(mode);
+        let row = |at: usize, head: String| {
+            let chosen = at == self.setting_at;
+            let style = if chosen { look::accent() } else { Style::new().fg(Color::Blue) };
+            Line::from(Span::styled(clip(&format!("{}{head}", if chosen { "❯ " } else { "  " }), width), style))
+        };
         let mut out = vec![
-            Line::from(Span::styled(clip("settings — ← → change · enter or esc closes · saved to config.json for the next session", width), dim())),
-            Line::from(Span::styled(clip(&format!("❯ Default permission mode  ‹ {mode} ›  {says}"), width), look::accent())),
+            Line::from(Span::styled(clip("settings, saved to config.json — ↑ ↓ choose · ← → change · esc closes", width), dim())),
+            row(0, format!("Default permission mode  ‹ {mode} ›  {says}")),
         ];
         if let Some((runs, claude)) = &self.default_mode_overridden {
             let why = format!("  a new session here starts in {} — {claude} or this repository's settings set it, and come after config.json", runs.name());
             out.extend(wrap(&why, width).into_iter().map(|l| Line::from(Span::styled(l, yellow()))));
         }
+        let cw = self.settings.content_width;
+        let says = match cw {
+            ContentWidth::Prose => format!("at most {} columns", ContentWidth::PROSE),
+            ContentWidth::FullWidth => "the terminal's whole width".into(),
+        };
+        out.push(row(1, format!("Content width            ‹ {} ›  {says}", cw.name())));
         out
     }
 
@@ -1799,8 +1835,6 @@ impl App {
         self.unsent_steers.clear();
         self.replay_model = None;
         self.fence = false;
-        self.thinking_since = None;
-        self.thought = None;
         self.billing = None;
         self.approvals.clear();
         self.answer.clear();
@@ -2209,8 +2243,10 @@ mod tests {
     use super::*;
     use krowk_harness::protocol::{PermissionMode, WireApi};
 
+    /// Full width: most tests here lay out at a width they set.
     fn app() -> App {
-        App::new(Editor::new(None), 40, Settings::default(), Some(ModelRef { instance: "anthropic".into(), model: "claude-x".into() }), None)
+        let settings = Settings { content_width: ContentWidth::FullWidth, ..Settings::default() };
+        App::new(Editor::new(None), 40, settings, Some(ModelRef { instance: "anthropic".into(), model: "claude-x".into() }), None)
     }
 
     fn text(lines: &[Line]) -> Vec<String> {
@@ -2256,7 +2292,7 @@ mod tests {
     }
 
     #[test]
-    fn thinking_in_blocks_back_to_back_is_one_thought() {
+    fn thinking_leaves_nothing_in_scrollback() {
         let mut a = app();
         a.start_turn(Instant::now());
         let thinking = |text: &str| Item::Reasoning { text: text.into(), blob: None };
@@ -2266,25 +2302,19 @@ mod tests {
             a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: id.into(), item: ItemKind::Reasoning }));
             a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: thinking(t) }));
         }
-        assert!(a.take_pending().is_empty(), "held while more thinking may come");
+        assert!(a.take_pending().is_empty());
         a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "i".into(), item: ItemKind::AssistantText }));
-        let t = text(&a.take_pending());
-        assert_eq!(t.len(), 1, "one line for both blocks: {t:?}");
-        assert!(t[0].starts_with("◆ Thought for "), "{t:?}");
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "Done.".into() } }));
-        // Thinking after the answer is a thought of its own.
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r3".into(), item: thinking("") }));
         a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None }));
-        let t = text(&a.take_pending());
-        assert_eq!(t.iter().filter(|l| l.starts_with("◆ Thought")).count(), 1, "{t:?}");
-        assert_eq!(t.last().map(String::as_str), Some("Worked for 1.0s · 0 tokens"), "{t:?}");
+        assert_eq!(text(&a.take_pending()), ["Done.", "", "Worked for 1.0s · 0 tokens"]);
 
-        // Replayed, the same: one, with no time to say.
+        // Replayed, the same.
         let mut a = app();
         let ev = |id: &str, item| LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item } };
         let evs = [ev("1", thinking("")), ev("2", thinking("Checking.")), ev("3", Item::AssistantText { text: "Done.".into() })];
         a.replay(&evs.iter().collect::<Vec<_>>());
-        assert_eq!(text(&a.take_pending()), ["◆ Thought", "", "Done."]);
+        assert_eq!(text(&a.take_pending()), ["Done."]);
     }
 
     #[test]
@@ -2361,7 +2391,7 @@ mod tests {
     #[test]
     fn r_budget_2_the_status_bar_shows_the_hosts_live_cost_and_the_result_is_not_added_twice() {
         let mut a = app();
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost] };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost], content_width: ContentWidth::FullWidth };
         let cost = |usd: Option<f64>| live(LiveEvent::Cost { session_id: "s".into(), turn_id: "t".into(), cost_usd: usd, turn_cost_usd: usd, generated_tokens: 10 });
         // A resumed session's earlier turns and its subagents are in the
         // host's figure, so it replaces what the TUI had.
@@ -2395,7 +2425,7 @@ mod tests {
 
     #[test]
     fn r_inst_3_the_session_details_say_whether_each_instance_runs_on_a_subscription() {
-        let mut a = App::new(Editor::new(None), 100, Settings { status_bar: true, status_items: vec![StatusItem::Model] }, Some(ModelRef { instance: "codex:team".into(), model: "gpt-5.5".into() }), None);
+        let mut a = App::new(Editor::new(None), 100, Settings { status_bar: true, status_items: vec![StatusItem::Model], ..Settings::default() }, Some(ModelRef { instance: "codex:team".into(), model: "gpt-5.5".into() }), None);
         a.vendor_instances = vec!["codex:team".into(), "codex:personal".into()];
         a.overlay = Overlay::Details;
         let details = |a: &App| text(&a.view(Instant::now()).0).join("\n");
@@ -2421,17 +2451,17 @@ mod tests {
         let mut a = app();
         a.device = Some("elvinas/primevise-arch-1".into());
         assert_eq!(a.status_bar(), "elvinas/primevise-arch-1 | anthropic/claude-x | $0.00 | ? help", "the template, nothing to count yet");
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Help, StatusItem::Cost, StatusItem::Model] };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Help, StatusItem::Cost, StatusItem::Model], content_width: ContentWidth::FullWidth };
         assert_eq!(a.status_bar(), "$0.00 | anthropic/claude-x | ? help", "in the order given, the help last");
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost] };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost], content_width: ContentWidth::FullWidth };
         assert_eq!(a.status_bar(), "$0.00");
         a.settings.status_bar = false;
         let (rows, _) = a.view(Instant::now());
         assert_eq!(rows.len(), 3, "only the prompt, in its box: {:?}", text(&rows));
         a.overlay = Overlay::Keys;
         let (rows, caret) = a.view(Instant::now());
-        assert_eq!(rows.len(), 22, "the help menu, a rule and eighteen entries, over the prompt box");
-        assert_eq!(caret, (2, 20), "after the arrow");
+        assert_eq!(rows.len(), 23, "the help menu, a rule and nineteen entries, over the prompt box");
+        assert_eq!(caret, (2, 21), "after the arrow");
     }
 
     #[test]
@@ -2575,7 +2605,7 @@ mod tests {
     /// the last one finished.
     #[test]
     fn r_sub_3_a_backends_own_agents_are_counted_and_listed_but_not_driven() {
-        let mut a = App::new(Editor::new(None), 100, Settings::default(), Some(ModelRef { instance: "claude".into(), model: "sonnet".into() }), None);
+        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, Some(ModelRef { instance: "claude".into(), model: "sonnet".into() }), None);
         let agents = |v: Vec<BackendAgent>| live(LiveEvent::BackendAgents { session_id: "s".into(), agents: v });
         a.on_line(&agents(vec![BackendAgent { task_id: "a1".into(), description: "survey the repo".into(), agent: Some("general-purpose".into()) }]));
         assert_eq!(a.status_bar(), "claude/sonnet | $0.00 | [1 subagent] | ? help");
@@ -2596,7 +2626,7 @@ mod tests {
 
     #[test]
     fn r_sub_3_each_subagent_is_one_live_line_with_status_tokens_and_cost() {
-        let mut a = App::new(Editor::new(None), 100, Settings::default(), Some(ModelRef { instance: "anthropic".into(), model: "claude-x".into() }), None);
+        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, Some(ModelRef { instance: "anthropic".into(), model: "claude-x".into() }), None);
         a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
         a.start_turn(Instant::now());
         let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
@@ -2641,7 +2671,7 @@ mod tests {
     #[test]
     fn r_todo_3_the_todo_list_is_an_optional_overlay_and_a_reminder_is_krowks() {
         let mut a = app();
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Tasks] };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Tasks], content_width: ContentWidth::FullWidth };
         assert_eq!(a.status_bar(), "", "no list, no item");
         let todo = |c: &str, s| Todo { content: c.into(), status: s };
         a.on_line(&log(LogBody::TodosUpdated { turn_id: "t".into(), todos: vec![todo("read", TodoStatus::Completed), todo("fix", TodoStatus::InProgress), todo("test", TodoStatus::Pending)] }));
@@ -2759,7 +2789,7 @@ mod tests {
     fn r_inst_6_usage_and_limits_are_shown_per_instance() {
         let mut a = app();
         a.set_width(160);
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Model] };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Model], content_width: ContentWidth::FullWidth };
         let usage = Usage { input_tokens: 1000, output_tokens: 200, ..Usage::default() };
         let response = |model: &str| LogBody::ResponseCompleted { turn_id: "t".into(), response_id: None, model: model.into(), usage, stop_reason: None, item_ids: Vec::new() };
         let done = LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage, duration_ms: 1, error: None, reported_cost_usd: None };
@@ -2840,6 +2870,26 @@ mod tests {
         assert_eq!(help::canonical("/permission-mode plan"), "/mode plan");
         assert_eq!(help::canonical("/quit"), "/exit");
         assert_eq!(help::canonical("/configure it"), "/configure it", "only a whole alias");
+    }
+
+    #[test]
+    fn prose_lays_out_at_most_65_columns_and_full_width_takes_the_terminal() {
+        let mut a = App::new(Editor::new(None), 200, Settings::default(), None, None);
+        a.say(&"word ".repeat(40), dim());
+        let lines = a.take_pending();
+        assert!(lines.len() > 1 && lines.iter().all(|l| l.width() <= 65), "{:?}", text(&lines));
+        assert!(text(&a.view(Instant::now()).0).iter().all(|r| r.width() <= 65), "the live region too");
+        a.set_width(30);
+        assert_eq!(a.width, 30, "a narrower terminal keeps all of its width");
+        a.set_width(200);
+        a.set_content_width(ContentWidth::FullWidth);
+        assert_eq!(a.width, 200);
+        a.set_content_width(ContentWidth::Prose);
+        assert_eq!(a.width, 65, "and back, from the width there is");
+        a.overlay = Overlay::Settings;
+        a.setting_at = 1;
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(rows.contains("❯ Content width") && rows.contains("‹ prose ›") && rows.contains("  Default permission mode"), "{rows}");
     }
 
     #[test]
@@ -2924,5 +2974,24 @@ mod tests {
         assert_eq!(wrap("abcdefghijkl", 5), ["abcde", "fghij", "kl"]);
         assert_eq!(wrap("", 5), [""]);
         assert_eq!(clip("hello world", 6), "hello…");
+    }
+
+    #[test]
+    fn a_rename_moves_the_session_onto_the_new_name_and_adds_up_its_usage() {
+        let mut a = app();
+        let m = |i: &str| ModelRef { instance: i.into(), model: "claude-x".into() };
+        a.model = Some(m("claude:a"));
+        a.used = vec![m("claude:a"), m("claude:b")];
+        a.offer = Some(SwitchOffer { from: m("claude:b"), to: m("claude:a"), resets_at_ms: None });
+        for (i, turns) in [("claude:a", 2), ("claude:b", 3)] {
+            a.instances.insert(i.into(), InstanceUsage { turns, tokens: 10, ..Default::default() });
+        }
+        a.renamed("claude:a", "claude:c");
+        a.renamed("claude:b", "claude:c");
+        assert_eq!(a.model, Some(m("claude:c")));
+        assert_eq!(a.used, [m("claude:c")], "one instance, once");
+        assert_eq!(a.offer.as_ref().map(|o| (o.from.instance.as_str(), o.to.instance.as_str())), Some(("claude:c", "claude:c")), "an offer never names a name that is gone");
+        let u = &a.instances["claude:c"];
+        assert_eq!((a.instances.len(), u.turns, u.tokens), (1, 5, 20), "both old names' usage, added up");
     }
 }

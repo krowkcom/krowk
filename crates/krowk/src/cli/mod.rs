@@ -261,6 +261,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(feature = "harness")]
         ["providers", "remove", ..] => providers::remove(ctx, rest(2)),
         #[cfg(feature = "harness")]
+        ["providers", "rename", ..] => providers::rename(ctx, rest(2)),
+        #[cfg(feature = "harness")]
         ["status", ..] => status::status(ctx),
         _ if missing(p) => Err(not_in_build(p)),
         _ => Err(fail("unknown_command", format!("`{}` is not a krowk command — run `krowk --help`", clip(p, 2).join(" ")))),

@@ -20,6 +20,31 @@ the versions are the `v*` tags a release is cut from. Entries land under
   on. It waits for a running turn, and for agents Claude Code runs in the
   background, to finish. `/sessions <id>` continues one of this
   directory's sessions by its full id; `krowk --resume <id>` opens any.
+- **A content width for the TUI**: `tui.contentWidth` in config.json is
+  `prose`, at most 65 columns — Tailwind's `max-w-prose` — or
+  `full-width`, the terminal's whole width. It is a maximum: a terminal
+  narrower than 65 columns still gets all of its width. `/settings` now
+  has two rows, chosen with ↑ and ↓; the content width applies as soon as
+  it is changed, to what is printed from then on. The default is `prose`,
+  so a wide terminal now reads in a column of 65; set `full-width` for
+  the old layout.
+- **Connected instances can be renamed**: `krowk providers rename
+  claude:work claude:personal` on the command line, or `/rename` in the
+  TUI, which picks the instance and asks its new name with the provider's
+  prefix already typed. The new name is always the whole name, exactly as
+  given, and keeps the provider's prefix: a bare `personal` is refused with
+  the name it would need to be. An OpenAI-compatible server's name has no
+  prefix, as before. The instance's
+  login or stored key moves with it, and so does every place config.json
+  names it: `defaultModel`, `rolloverOrder` and `subagents.model`. The old
+  name is kept in config.json's new `renamed` map, so a session that ran on
+  it resumes on the new name and `--model <old>/<model>` still works. A
+  named account's directory and a key's environment variable keep their
+  names; krowk says so when the variable was made from the old name. The
+  built-in instances (`claude`, `codex`, `anthropic`, …) keep their names.
+  The TUI's `/` menu now shows ten entries, so skills still show below
+  krowk's own commands.
+
 - **Shift+Enter starts a new line in the TUI prompt**, as Alt+Enter,
   Ctrl+J and a `\` before Enter already do. Windows consoles report
   Shift+Enter on their own; elsewhere krowk now asks the terminal for the
@@ -77,6 +102,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   and its last one, where it showed the first two and the last three. An
   edit's count of lines added and removed reads `+9 -3`, where it was
   `+9/-3`.
+- **Thinking leaves no line in the TUI's scrollback**: `◆ Thought for 4.2s`
+  is gone. The status line still says `Thinking… 3.2s` while it happens,
+  and `Worked for 12s` at the end of a turn counts it.
 - **The TUI names the skill a call loads**: `Skill: basecamp`, where it
   showed a bare `skill`, for krowk's own skills and Claude Code's alike. A
   tool krowk has no name of its own for reads as words, `ListAgents` as

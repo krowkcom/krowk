@@ -746,6 +746,33 @@ fn a_session_process_is_not_reused_once_its_instance_is_replaced() {
     assert!(fake.contains(&format!("resume {VENDOR_SESSION}")), "{fake}");
 }
 
+/// Renamed while a session's process is up — `/rename claude:work
+/// claude:personal` — it is the same account: the process goes on under
+/// the new name, and a turn naming the old one runs there too.
+#[test]
+fn a_renamed_instance_keeps_its_session_process() {
+    let home = Home::new("renamed");
+    let dir = home.signed_in("cfg");
+    let host = home.host(vec![("claude:work", home.instance(&dir, None))], trust::allow_all());
+    rt().block_on(async {
+        let (_, r) = run(&host, prompt(None, "hello", "claude:work/sonnet", PermissionMode::Default)).await;
+        let sid = r.unwrap().unwrap().session_id;
+        let cfg = InstancesConfig {
+            instances: [("claude:personal".to_string(), home.instance(&dir, None))].into(),
+            renamed: [("claude:work".to_string(), "claude:personal".to_string())].into(),
+            ..Default::default()
+        };
+        host.set_registry_renamed(Registry::resolve(&cfg, &home.env()), "claude:work", "claude:personal");
+        let (lines, r) = run(&host, Command::Prompt { session_id: Some(sid.clone()), text: "again".into(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }).await;
+        let r = r.unwrap().unwrap();
+        assert_eq!((r.status, r.model.instance.as_str()), (TurnStatus::Completed, "claude:personal"), "{lines:?}");
+        let (_, r) = run(&host, prompt(Some(&sid), "old name", "claude:work/sonnet", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().model.instance, "claude:personal", "an old name from a client is the instance it became");
+        host.shutdown().await;
+    });
+    assert_eq!(processes(&home.fake_log()), 1, "one process, before and after the rename: {}", home.fake_log());
+}
+
 /// Every `backend.agents` list a stream carried, as the agents' words.
 fn agents_said(lines: &[StreamLine]) -> Vec<Vec<String>> {
     lines

@@ -57,7 +57,8 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
     // model and in the directory it started in.
     let past = resume.as_ref().and_then(|id| log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)).ok()).unwrap_or_default();
     let session_model = past.iter().rev().find_map(|e| match &e.body {
-        krowk_harness::protocol::LogBody::TurnStarted { model, .. } => Some(model.clone()),
+        // On the name its instance has now, renamed or not.
+        krowk_harness::protocol::LogBody::TurnStarted { model, .. } => Some(registry.current_model(model)),
         _ => None,
     });
     let session_cwd = past.first().and_then(|e| match &e.body {

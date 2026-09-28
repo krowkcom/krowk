@@ -175,6 +175,26 @@ impl Store {
         })
     }
 
+    /// Moves an instance's login and stored key to its new name. Whatever
+    /// was left under the new name — no instance has it — goes, so nothing
+    /// of another's is ever the renamed one's. Whether there was a login or
+    /// a key to move.
+    pub fn rename(&self, from: &str, to: &str) -> Result<bool, EngineError> {
+        self.modify(|f| {
+            let stale = f.instances.remove(to).is_some() | f.keys.remove(to).is_some();
+            let login = f.instances.remove(from);
+            let key = f.keys.remove(from);
+            let had = login.is_some() || key.is_some();
+            if let Some(l) = login {
+                f.instances.insert(to.into(), l);
+            }
+            if let Some(k) = key {
+                f.keys.insert(to.into(), k);
+            }
+            (had, had || stale)
+        })
+    }
+
     /// Every stored API key, by instance.
     pub fn keys(&self) -> Result<BTreeMap<String, crate::keys::KeyRef>, EngineError> {
         Ok(self.read()?.keys)

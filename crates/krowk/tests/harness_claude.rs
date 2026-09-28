@@ -426,6 +426,12 @@ fn r_back_1_a_second_ctrl_c_leaves_at_once_and_kills_claude_codes_process_group(
 fn r_sub_3_the_tui_counts_a_background_agent_and_runs_the_turn_claude_code_begins() {
     let b = Sandbox::new("tui-bg");
     b.json(&["providers", "add", "claude", "--json"], &[]);
+    // At the terminal's whole width: the note read below is wider than
+    // prose's 65 columns.
+    let config = b.root.join("home/.krowk/config.json");
+    let mut cfg: Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    cfg["tui"] = serde_json::json!({"contentWidth": "full-width"});
+    std::fs::write(&config, cfg.to_string()).unwrap();
     let trusted = b.root.join("home/.krowk/trusted.json");
     std::fs::create_dir_all(trusted.parent().unwrap()).unwrap();
     std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();

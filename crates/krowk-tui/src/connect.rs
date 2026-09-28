@@ -1,4 +1,4 @@
-//! `/connect` and `/disconnect`: the harness's one sign-in
+//! `/connect`, `/disconnect` and `/rename`: the harness's one sign-in
 //! (`krowk_harness::connect`), asked and told through an overlay.
 //!
 //! The sign-in is synchronous and asks as it goes — which vendor, which
@@ -18,7 +18,7 @@
 
 use crate::app::{clip, dim};
 use crate::look;
-use krowk_harness::connect::{Answer, AuthInteraction, Connected, Disconnected, Notice, Options, Prompt, ProviderAuth};
+use krowk_harness::connect::{Answer, AuthInteraction, Connected, Disconnected, Notice, Options, Prompt, ProviderAuth, Renamed};
 use krowk_harness::engine::EngineError;
 use krowk_harness::instances::Registry;
 use ratatui::style::{Modifier, Style};
@@ -36,12 +36,16 @@ pub enum Job {
     Connect(Option<String>),
     /// The instance named, else one picked.
     Disconnect(Option<String>),
+    /// The instance named, else one picked, and its new name, else asked
+    /// (`/rename claude:work claude:personal`).
+    Rename(Option<String>, Option<String>),
 }
 
 /// What a job did.
 pub enum Done {
     Connected(Box<Connected>),
     Disconnected(Disconnected),
+    Renamed(Renamed),
 }
 
 /// From the sign-in's thread to the loop.
@@ -55,12 +59,13 @@ pub enum Msg {
     Resume,
     /// The job's end, with the instances read again after it (config.json
     /// and the credentials file) — none when they could not be.
-    Done(Result<Done, EngineError>, Option<Registry>),
+    Done(Result<Done, EngineError>, Option<Box<Registry>>),
 }
 
 pub enum Ask {
     Select { message: String, options: Vec<String> },
-    Text { message: String, secret: bool },
+    /// `initial` is what the input starts as, typed after.
+    Text { message: String, secret: bool, initial: String },
 }
 
 /// What the sign-in tells the person, owned to cross threads.
@@ -88,8 +93,9 @@ pub fn start(job: Job, paths: Paths) -> mpsc::UnboundedReceiver<Msg> {
         let done = match job {
             Job::Connect(target) => pa.request(target.as_deref(), None, Options::default(), &mut ui).and_then(|req| pa.connect(&req, &mut ui)).map(|c| Done::Connected(Box::new(c))),
             Job::Disconnect(target) => pa.disconnect_target(target.as_deref(), &mut ui).and_then(|i| pa.disconnect(&i, false, false, &mut ui)).map(Done::Disconnected),
+            Job::Rename(target, new) => pa.rename_target(target.as_deref(), new.as_deref(), &mut ui).and_then(|(from, new)| pa.rename(&from, &new)).map(Done::Renamed),
         };
-        let registry = pa.definitions().ok().map(|d| Registry::resolve(&d, &env));
+        let registry = pa.definitions().ok().map(|d| Box::new(Registry::resolve(&d, &env)));
         let _ = tx.send(Msg::Done(done, registry));
     });
     rx
@@ -116,8 +122,8 @@ fn cancelled() -> EngineError {
 impl AuthInteraction for Asker {
     fn prompt(&mut self, prompt: Prompt<'_>) -> Result<Answer, EngineError> {
         let ask = match prompt {
-            Prompt::Text { message, .. } => Ask::Text { message: message.into(), secret: false },
-            Prompt::Secret { message, .. } => Ask::Text { message: message.into(), secret: true },
+            Prompt::Text { message, initial, .. } => Ask::Text { message: message.into(), secret: false, initial: initial.into() },
+            Prompt::Secret { message, .. } => Ask::Text { message: message.into(), secret: true, initial: String::new() },
             Prompt::Select { message, options, .. } => Ask::Select { message: message.into(), options: options.iter().map(|o| o.to_string()).collect() },
         };
         let (reply, answer) = sync::channel();
@@ -196,7 +202,7 @@ impl Flow {
                 let at = self.prefer.as_ref().and_then(|p| options.iter().position(|o| o == p || o.starts_with(&format!("{p} (")))).unwrap_or(0);
                 (message, Kind::Select { options, at })
             }
-            Ask::Text { message, secret } => (message, Kind::Text { input: String::new(), secret }),
+            Ask::Text { message, secret, initial } => (message, Kind::Text { input: initial, secret }),
         };
         self.ask = Some(Asking { message: kind.0, kind: kind.1, reply });
         self.shown_at = None;
@@ -335,7 +341,7 @@ mod tests {
     fn a_pasted_key_is_never_drawn_and_goes_to_the_sign_in_whole() {
         let mut f = Flow::new("Connect a provider", Vec::new(), None);
         let (reply, answer) = sync::channel();
-        f.asked(Ask::Text { message: "Paste a key".into(), secret: true }, reply);
+        f.asked(Ask::Text { message: "Paste a key".into(), secret: true, initial: String::new() }, reply);
         assert!(f.type_str("sk-ant-secret\n-123"));
         let (rows, caret) = f.rows(60);
         let shown = text(&rows);

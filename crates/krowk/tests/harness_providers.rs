@@ -131,6 +131,69 @@ fn r_prov_4_a_named_openai_profile_runs_a_gpt_that_patches_a_file_and_reads_the_
 }
 
 #[test]
+fn a_renamed_instance_keeps_its_key_its_default_and_its_sessions() {
+    let m = mock::serve(providers::responses_script);
+    let b = Sandbox::new("rename");
+    let base = format!("{}/v1", m.url);
+    b.ok(&["connect", "openai", "--method", "api-key", "--name", "work", "--base-url", &base, "--key-ref", "$WORK_KEY", "--json"], &[]);
+    // Everywhere config.json can name it, and a name no instance has.
+    let path = b.root.join("home/.krowk/config.json");
+    let mut cfg = b.config();
+    cfg["defaultModel"] = json!("openai:work/gpt-5.4");
+    cfg["rolloverOrder"] = json!(["openai:work", "openai/gpt-5.4"]);
+    cfg["subagents"] = json!({"model": "openai:work/gpt-5.4-mini"});
+    std::fs::write(&path, cfg.to_string()).unwrap();
+    let key = [("WORK_KEY", "sk-work-test")];
+    let r = b.ok(&["-p", "reword the README tagline", "--permission-mode", "acceptEdits", "--output-format", "json"], &key);
+    assert_eq!(r["model"]["instance"], "openai:work", "{r}");
+    let session = r["sessionId"].as_str().unwrap().to_string();
+
+    let done = b.ok(&["providers", "rename", "openai:work", "openai:job", "--json"], &[]);
+    assert_eq!((done["data"]["from"].as_str(), done["data"]["to"].as_str()), (Some("openai:work"), Some("openai:job")), "{done}");
+    assert_eq!(done["data"]["moved_login"], true, "the stored key went with it");
+    assert_eq!(done["data"]["api_key_env"], "OPENAI_WORK_API_KEY", "a variable made from the old name is said, not renamed");
+    let cfg = b.config();
+    assert!(cfg["instances"].get("openai:work").is_none());
+    assert_eq!(cfg["instances"]["openai:job"]["baseUrl"], base.as_str());
+    assert_eq!(cfg["defaultModel"], "openai:job/gpt-5.4");
+    assert_eq!(cfg["rolloverOrder"], json!(["openai:job", "openai/gpt-5.4"]));
+    assert_eq!(cfg["subagents"]["model"], "openai:job/gpt-5.4-mini");
+    assert_eq!(cfg["renamed"], json!({"openai:work": "openai:job"}));
+    let creds: Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.krowk/credentials.json")).unwrap()).unwrap();
+    assert_eq!(creds["keys"].as_object().unwrap().keys().collect::<Vec<_>>(), ["openai:job"], "{creds}");
+
+    // The session that ran on the old name resumes on the new one.
+    let r2 = b.ok(&["-p", "what language is it written in?", "--resume", &session, "--output-format", "json"], &key);
+    assert_eq!(r2["model"], json!({"instance": "openai:job", "model": "gpt-5.4"}), "{r2}");
+    assert!(m.seen.lock().unwrap().iter().all(|s| s.header("authorization") == Some("Bearer sk-work-test")));
+    // What cannot be: a built-in, a name taken, a name that is gone.
+    for (args, code) in [(["claude", "mine"], "built_in"), (["openai:job", "claude:x"], "bad_flag"), (["openai:job", "job"], "e.g. openai:job"), (["openai:work", "x"], "no_instance")] {
+        let out = b.krowk(&["providers", "rename", args[0], args[1], "--json"], &[]);
+        let err = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success() && err.contains(code), "rename {args:?}: {err}");
+    }
+    let out = b.krowk(&["providers", "add", "openai", "--name", "other", "--json"], &[]);
+    assert!(out.status.success());
+    let out = b.krowk(&["providers", "rename", "openai:job", "openai:other", "--json"], &[]);
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("instance_exists"), "{}", String::from_utf8_lossy(&out.stderr));
+    // A built-in is refused before its new name would be asked.
+    let out = b.krowk(&["providers", "rename", "claude", "--json"], &[]);
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("built_in"), "{}", String::from_utf8_lossy(&out.stderr));
+    // An old name still leads to its instance: nothing else may take it,
+    // but the instance may take it back.
+    for args in [vec!["connect", "openai", "--method", "api-key", "--name", "work", "--api-key-env", "X", "--json"], vec!["providers", "rename", "openai:other", "openai:work", "--json"]] {
+        let out = b.krowk(&args, &[]);
+        assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("sessions that ran on it resume there"), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    b.ok(&["providers", "rename", "openai:job", "openai:work", "--json"], &[]);
+    assert_eq!(b.config()["renamed"], json!({"openai:job": "openai:work"}));
+    // Removed, its old names lead nowhere, and are anyone's to take.
+    b.ok(&["providers", "remove", "openai:work", "--json"], &[]);
+    assert_eq!(b.config()["renamed"], json!({}));
+    b.ok(&["providers", "rename", "openai:other", "openai:job", "--json"], &[]);
+}
+
+#[test]
 fn r_prov_4_a_supergrok_device_login_writes_0600_credentials_and_runs_a_grok_task() {
     let auth = providers::auth_server(3600);
     let chat = providers::chat_behind(auth.state.clone());

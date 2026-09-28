@@ -241,6 +241,26 @@ impl Host {
         }
     }
 
+    /// Replaces the instances after `from` was renamed `to`: the same
+    /// instance under another name, so a backend process up on it — agents
+    /// of its own running, a turn it began waiting — goes on as `to`'s,
+    /// never replaced. One left from an instance that had the name `to`
+    /// before is not reused.
+    pub fn set_registry_renamed(&self, registry: Registry, from: &str, to: &str) {
+        let mut all = self.shared.instances.write().unwrap_or_else(|e| e.into_inner());
+        let was = all.generation(from);
+        let now = was.max(all.generation(to)) + 1;
+        all.changed.remove(from);
+        all.changed.insert(to.to_string(), now);
+        all.registry = Arc::new(registry);
+        for b in self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).values_mut() {
+            if b.instance == from && b.generation == was {
+                b.instance = to.to_string();
+                b.generation = now;
+            }
+        }
+    }
+
     /// Where a bare model id — or, with none, the default — runs here
     /// (`readiness::route`), for a client choosing one before it asks for a
     /// turn or a switch (the TUI's `/model sonnet`). `current` is the
@@ -601,6 +621,8 @@ impl Shared {
     /// `switchModel`: checked, then logged — now, or when the running turn
     /// is over — so the session's next turn runs there.
     async fn switch_model(self: &Arc<Self>, session_id: Option<&str>, model: ModelRef, out: mpsc::Sender<StreamLine>) -> Result<(), EngineError> {
+        // A name since renamed is the instance it became.
+        let model = self.registry().current_model(&model);
         let Some(id) = session_id else {
             return self.check_model(&model, &self.cfg.cwd, None).await;
         };
@@ -608,7 +630,7 @@ impl Shared {
             return Err(EngineError::new("no_session", format!("{id:?} is not a krowk session id")));
         }
         let events = log::read_events(&self.cfg.sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(log_failure)?;
-        let past = replay(&log::branch(&events, events.last().map(|e| e.id.as_str()).unwrap_or_default()));
+        let past = replay(&log::branch(&events, events.last().map(|e| e.id.as_str()).unwrap_or_default()), &self.registry());
         // A subagent runs one turn, on the model its definition (or
         // `subagents.model`) chose: there is no next turn to switch.
         if let Some(parent) = &past.parent {
@@ -712,19 +734,22 @@ impl Shared {
             Some(id) => Some(SessionLog::open(&self.cfg.sessions_dir, id).map_err(log_failure)?),
             None => None,
         };
-        let past = opened.as_ref().map(|(log, events)| replay(&log::branch(events, log.head().unwrap_or_default()))).unwrap_or_default();
+        let past = opened.as_ref().map(|(log, events)| replay(&log::branch(events, log.head().unwrap_or_default()), &self.registry())).unwrap_or_default();
         let cwd = past.cwd.clone().unwrap_or_else(|| self.cfg.cwd.clone());
         // A turn a backend began runs where the session's last turn on that
         // instance ran, on its model and effort, whatever came since; in the
         // mode its process is in, else that turn's.
         let (model, permission_mode, effort) = match unprompted {
             Some((instance, mode)) => {
+                // Replayed on the names instances have now: so is this one.
+                let instance = self.registry().current(instance);
                 let Some((m, asked, effort)) = past.last_on.iter().find(|(m, ..)| m.instance == instance).cloned() else {
                     return Err(EngineError::new("nothing_pending", format!("session {} never ran on {instance}", session_id.unwrap_or_default())));
                 };
                 (Some(m), mode.unwrap_or(asked), effort)
             }
-            None => (model, permission_mode, effort),
+            // A name since renamed, from any client, is the instance it became.
+            None => (model.map(|m| self.registry().current_model(&m)), permission_mode, effort),
         };
         let model = match model {
             Some(m) => m,
@@ -1377,7 +1402,9 @@ struct Vendor {
     seen: usize,
 }
 
-fn replay(branch: &[&LogEvent]) -> Past {
+/// Every instance as it is named now (`Registry::current`): a turn logged
+/// on a name since renamed is the renamed instance's.
+fn replay(branch: &[&LogEvent], registry: &Registry) -> Past {
     let mut past = Past::default();
     let mut at: HashMap<&str, usize> = HashMap::new();
     let mut responses = 0usize;
@@ -1392,6 +1419,7 @@ fn replay(branch: &[&LogEvent]) -> Past {
                 past.parent = parent_session_id.clone();
             }
             LogBody::TurnStarted { model, permission_mode, effort, .. } => {
+                let model = &registry.current_model(model);
                 past.model = Some(model.clone());
                 past.last_on.retain(|(m, ..)| m.instance != model.instance);
                 past.last_on.push((model.clone(), *permission_mode, *effort));
@@ -1438,7 +1466,7 @@ fn replay(branch: &[&LogEvent]) -> Past {
                     v.seen = past.turns.len();
                 }
             }
-            LogBody::ModelSwitched { to, .. } => past.model = Some(to.clone()),
+            LogBody::ModelSwitched { to, .. } => past.model = Some(registry.current_model(to)),
             LogBody::RunOpened { run, .. } => past.run = Some(run.clone()),
             // The subagents' own logs hold their conversations; the todo
             // list is read back from the calls that set it.
