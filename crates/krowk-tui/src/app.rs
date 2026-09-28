@@ -75,6 +75,8 @@ pub enum Overlay {
     Models,
     /// The permission mode picker (`/mode`).
     Modes,
+    /// `/settings` (and `/config`): what is saved to config.json.
+    Settings,
     /// `/connect` and `/disconnect`, and the first-run card (`App::flow`).
     Connect,
 }
@@ -346,8 +348,13 @@ pub struct App {
     calls: Vec<Call>,
     /// Whether the answer being shown has a fenced code block open.
     fence: bool,
-    /// When the reasoning streaming now began.
+    /// When the thinking streaming now, or held in `thought`, began.
     thinking_since: Option<Instant>,
+    /// Thinking done and not yet shown, with how long it took. A model
+    /// thinks in more than one block back to back (Claude Code sends a
+    /// signed empty one, then the text): they are one "Thought", shown
+    /// before whatever comes next.
+    thought: Option<Option<Duration>>,
     /// What a backend reported its session is billed to, and on which
     /// instance (R-INST-3).
     billing: Option<(String, Billing)>,
@@ -411,6 +418,13 @@ pub struct App {
     pub pick_at: usize,
     /// The mode picker's chosen row, an index into `PermissionMode::NAMES`.
     pub mode_at: usize,
+    /// `permissions.defaultMode` as config.json has it, for `/settings`;
+    /// none when it names nothing.
+    pub default_mode: Option<String>,
+    /// The mode a new session here starts in instead, when a settings file
+    /// read after config.json sets another, and Claude Code's user settings
+    /// file as the person would find it.
+    pub default_mode_overridden: Option<(PermissionMode, String)>,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
     /// A `/connect` or `/disconnect` running: its overlay's state.
@@ -451,6 +465,7 @@ impl App {
             calls: Vec::new(),
             fence: false,
             thinking_since: None,
+            thought: None,
             billing: None,
             vendor_instances: Vec::new(),
             skills: Vec::new(),
@@ -476,6 +491,8 @@ impl App {
             picks: Vec::new(),
             pick_at: 0,
             mode_at: 0,
+            default_mode: None,
+            default_mode_overridden: None,
             help_at: 0,
             flow: None,
             marks: BTreeMap::new(),
@@ -581,8 +598,22 @@ impl App {
         self.dirty = true;
     }
 
+    /// Thinking held back, into scrollback as one line, before whatever
+    /// else is shown.
+    fn flush_thought(&mut self) {
+        let Some(took) = self.thought.take() else { return };
+        // Thinking streaming now keeps its clock: it is a thought of its own.
+        if !self.live.as_ref().is_some_and(|l| l.kind == LiveKind::Reasoning) {
+            self.thinking_since = None;
+        }
+        let took = took.map(|t| format!(" for {}", look::duration(t))).unwrap_or_default();
+        self.gap();
+        self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(format!("Thought{took}"), dim().add_modifier(Modifier::ITALIC))]));
+    }
+
     /// A blank line before a new block, unless there is one already.
     fn gap(&mut self) {
+        self.flush_thought();
         if !self.last_blank {
             self.pending.push(Line::default());
             self.last_blank = true;
@@ -590,6 +621,7 @@ impl App {
     }
 
     fn push_wrapped(&mut self, first: &str, rest: &str, text: &str, prefix_style: Style, style: Style) {
+        self.flush_thought();
         // Unprefixed text — the answer itself, most of scrollback — stays
         // one line here and is wrapped with everything else on its way out
         // (`take_pending`). Prefixed items wrap here, under their hanging
@@ -692,6 +724,7 @@ impl App {
 
     /// One line of an answer, in light markdown, wrapped on its way out.
     fn push_md(&mut self, text: &str) {
+        self.flush_thought();
         let line = look::markdown_line(&clean(text), &mut self.fence);
         self.last_blank = line.width() == 0;
         self.pending.push(line);
@@ -760,6 +793,7 @@ impl App {
     }
 
     fn push_line(&mut self, line: Line<'static>) {
+        self.flush_thought();
         self.last_blank = line.width() == 0;
         self.pending.push(line);
         self.dirty = true;
@@ -800,14 +834,20 @@ impl App {
                         self.fence = false;
                         LiveKind::Text
                     }
+                    // More thinking straight after some is the same thought.
                     ItemKind::Reasoning => {
-                        self.thinking_since = Some(Instant::now());
+                        if self.thought.is_none() || self.thinking_since.is_none() {
+                            self.thinking_since = Some(Instant::now());
+                        }
                         LiveKind::Reasoning
                     }
                     ItemKind::ToolCall { name, .. } => LiveKind::Call(name.clone()),
                     ItemKind::ToolResult { .. } => LiveKind::Result,
                     ItemKind::UserText => return,
                 };
+                if kind != LiveKind::Reasoning {
+                    self.flush_thought();
+                }
                 // The turn's answer is all its text, the parts between
                 // tool calls a paragraph apart.
                 if kind == LiveKind::Text && !self.answer.is_empty() && !self.answer.ends_with("\n\n") {
@@ -1208,17 +1248,13 @@ impl App {
                 }
                 self.live = None;
             }
-            // Thinking is shown collapsed, as how long it took.
+            // Thinking is shown collapsed, as how long it took — held until
+            // something else comes, so that blocks back to back are one.
             Item::Reasoning { .. } => {
                 if streamed {
                     self.live = None;
                 }
-                let took = if live { self.thinking_since.take().map(|t| format!(" for {}", look::duration(t.elapsed()))) } else { None };
-                self.gap();
-                self.push_line(Line::from(vec![
-                    Span::styled(look::TOOL, dim()),
-                    Span::styled(format!("Thought{}", took.unwrap_or_default()), dim().add_modifier(Modifier::ITALIC)),
-                ]));
+                self.thought = Some(if live { self.thinking_since.map(|t| t.elapsed()) } else { None });
             }
             Item::ToolCall { call_id, name, input } => {
                 if streamed {
@@ -1418,6 +1454,7 @@ impl App {
             }
             Overlay::Models => rows.extend(self.models_overlay(width)),
             Overlay::Modes => rows.extend(self.modes_overlay(width)),
+            Overlay::Settings => rows.extend(self.settings_overlay(width)),
             Overlay::Connect => {
                 if let Some(f) = &self.flow {
                     let (overlay, at) = f.rows(width);
@@ -1674,6 +1711,21 @@ impl App {
             let head = format!("{}{name:<18}{}{now}", if chosen { "❯ " } else { "  " }, mode_says(name));
             let style = if chosen { look::accent() } else { Style::new().fg(Color::Blue) };
             out.push(Line::from(Span::styled(clip(&head, width), style)));
+        }
+        out
+    }
+
+    fn settings_overlay(&self, width: usize) -> Vec<Line<'static>> {
+        let mode = self.default_mode.as_deref().unwrap_or("default");
+        let says = if PermissionMode::parse(mode).is_some() { mode_says(mode) } else { "not a mode krowk runs" };
+        let mode = clean(mode);
+        let mut out = vec![
+            Line::from(Span::styled(clip("settings — ← → change · enter or esc closes · saved to config.json for the next session", width), dim())),
+            Line::from(Span::styled(clip(&format!("❯ Default permission mode  ‹ {mode} ›  {says}"), width), look::accent())),
+        ];
+        if let Some((runs, claude)) = &self.default_mode_overridden {
+            let why = format!("  a new session here starts in {} — {claude} or this repository's settings set it, and come after config.json", runs.name());
+            out.extend(wrap(&why, width).into_iter().map(|l| Line::from(Span::styled(l, yellow()))));
         }
         out
     }
@@ -2100,6 +2152,38 @@ mod tests {
     }
 
     #[test]
+    fn thinking_in_blocks_back_to_back_is_one_thought() {
+        let mut a = app();
+        a.start_turn(Instant::now());
+        let thinking = |text: &str| Item::Reasoning { text: text.into(), blob: None };
+        // Claude Code's way: a signed empty block, then the text, with
+        // nothing between them.
+        for (id, t) in [("r1", ""), ("r2", "Checking the config first.")] {
+            a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: id.into(), item: ItemKind::Reasoning }));
+            a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: thinking(t) }));
+        }
+        assert!(a.take_pending().is_empty(), "held while more thinking may come");
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "i".into(), item: ItemKind::AssistantText }));
+        let t = text(&a.take_pending());
+        assert_eq!(t.len(), 1, "one line for both blocks: {t:?}");
+        assert!(t[0].starts_with("◆ Thought for "), "{t:?}");
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "Done.".into() } }));
+        // Thinking after the answer is a thought of its own.
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r3".into(), item: thinking("") }));
+        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None }));
+        let t = text(&a.take_pending());
+        assert_eq!(t.iter().filter(|l| l.starts_with("◆ Thought")).count(), 1, "{t:?}");
+        assert_eq!(t.last().map(String::as_str), Some("Worked for 1.0s · 0 tokens"), "{t:?}");
+
+        // Replayed, the same: one, with no time to say.
+        let mut a = app();
+        let ev = |id: &str, item| LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item } };
+        let evs = [ev("1", thinking("")), ev("2", thinking("Checking.")), ev("3", Item::AssistantText { text: "Done.".into() })];
+        a.replay(&evs.iter().collect::<Vec<_>>());
+        assert_eq!(text(&a.take_pending()), ["◆ Thought", "", "Done."]);
+    }
+
+    #[test]
     fn a_replayed_session_prints_its_conversation() {
         let mut a = app();
         let ev = |body| LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body };
@@ -2228,8 +2312,8 @@ mod tests {
         assert_eq!(rows.len(), 3, "only the prompt, in its box: {:?}", text(&rows));
         a.overlay = Overlay::Keys;
         let (rows, caret) = a.view(Instant::now());
-        assert_eq!(rows.len(), 20, "the help menu, a rule and sixteen entries, over the prompt box");
-        assert_eq!(caret, (2, 18), "after the arrow");
+        assert_eq!(rows.len(), 21, "the help menu, a rule and seventeen entries, over the prompt box");
+        assert_eq!(caret, (2, 19), "after the arrow");
     }
 
     #[test]
@@ -2627,6 +2711,34 @@ mod tests {
         let rows = text(&a.view(Instant::now()).0);
         let row = |i: &str| rows.iter().find(|r| r.trim_start().trim_start_matches("❯ ").starts_with(&format!("{i}/"))).cloned().unwrap_or_default();
         assert!(row("anthropic").ends_with("✓ ready") && row("claude").ends_with("✗ not signed in") && row("openai").ends_with('…'), "{rows:?}");
+    }
+
+    #[test]
+    fn an_alias_typed_whole_runs_its_command_before_any_skill() {
+        // Enter in the `/` menu runs an alias as typed, and submit reads it
+        // as the command it names.
+        assert!(help::unlisted("/config") && !help::unlisted("/configure"));
+        assert_eq!(help::canonical("/config"), "/settings");
+        assert_eq!(help::canonical("/permission-mode plan"), "/mode plan");
+        assert_eq!(help::canonical("/quit"), "/exit");
+        assert_eq!(help::canonical("/configure it"), "/configure it", "only a whole alias");
+    }
+
+    #[test]
+    fn settings_shows_the_saved_default_and_what_overrides_it() {
+        let mut a = app();
+        a.width = 120;
+        a.default_mode = Some("acceptEdits".into());
+        a.overlay = Overlay::Settings;
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(rows.contains("acceptEdits") && rows.contains("  asks before commands"), "the mode and what it does, apart: {rows}");
+        a.default_mode = Some("dontAsk".into());
+        a.default_mode_overridden = Some((PermissionMode::Plan, "/work/claude/settings.json".into()));
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(rows.contains("not a mode krowk runs") && rows.contains("starts in plan") && rows.contains("/work/claude/settings.json"), "{rows}");
+        a.default_mode = Some("\u{1b}[2Jx".into());
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(!rows.contains('\u{1b}'), "config.json's text is shown, never obeyed: {rows:?}");
     }
 
     #[test]

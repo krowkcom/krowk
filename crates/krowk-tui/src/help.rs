@@ -8,6 +8,7 @@ pub enum Action {
     Tell,
     Model,
     Mode,
+    Settings,
     Connect,
     Disconnect,
     Todos,
@@ -38,6 +39,7 @@ pub const ENTRIES: &[Entry] = &[
     e("Commands", "Type / for commands and skills", "/", Action::Tell),
     e("Model", "Switch model or instance", "/model", Action::Model),
     e("Mode", "Switch permission mode", "/mode", Action::Mode),
+    e("Settings", "The default permission mode, saved", "/settings · /config", Action::Settings),
     e("Connect", "Connect a provider, or renew a login", "/connect", Action::Connect),
     e("Disconnect", "Sign an instance out", "/disconnect", Action::Disconnect),
     e("Todos", "The task list for this session", "ctrl-t", Action::Todos),
@@ -67,22 +69,37 @@ pub struct Slash {
     pub skill: bool,
 }
 
-/// krowk's own commands, as `/` lists them. `UNLISTED` work too.
+/// Names krowk's commands answer to too, unlisted: `/config` runs
+/// `/settings`, whatever a skill is called.
+pub const ALIASES: &[(&str, &str)] = &[("quit", "exit"), ("permission-mode", "mode"), ("config", "settings")];
+
+/// A command typed with an alias, as the command it names: `/config` is
+/// `/settings`, `/permission-mode plan` is `/mode plan`. Anything else is
+/// as it was.
+pub fn canonical(typed: &str) -> String {
+    let (word, rest) = typed.split_once(' ').map_or((typed, None), |(w, r)| (w, Some(r)));
+    match ALIASES.iter().find(|(a, _)| word.strip_prefix('/') == Some(a)) {
+        Some((_, c)) => rest.map_or(format!("/{c}"), |r| format!("/{c} {r}")),
+        None => typed.to_string(),
+    }
+}
+
+/// krowk's own commands, as `/` lists them. `ALIASES` work too.
 pub const COMMANDS: &[(&str, &str)] = &[
     ("model", "Switch model or instance"),
     ("mode", "Switch permission mode — default, acceptEdits, plan, bypassPermissions, unhinged"),
+    ("settings", "Settings saved to config.json — the default permission mode"),
     ("connect", "Connect a provider — a subscription or an API key"),
     ("disconnect", "Sign an instance out"),
     ("help", "Keys and what they do"),
     ("exit", "Leave krowk"),
 ];
 
-/// Commands that run but `/` does not list: other names for listed ones.
-pub const UNLISTED: &[&str] = &["quit", "permission-mode"];
-
-/// Whether `typed` (the prompt, `/` and all) is one of `UNLISTED`.
+/// Whether `typed` (the prompt, `/` and all) is one of `ALIASES`, whole:
+/// enter in the `/` menu runs it as typed.
 pub fn unlisted(typed: &str) -> bool {
-    UNLISTED.contains(&typed.trim().trim_start_matches('/'))
+    let typed = typed.trim().trim_start_matches('/');
+    ALIASES.iter().any(|(a, _)| *a == typed)
 }
 
 /// The commands and skills `typed` (the prompt, `/` and all) finds,
