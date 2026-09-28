@@ -953,7 +953,7 @@ impl<'h> Ui<'h> {
     /// read after it overrides.
     fn show_settings(&self, app: &mut App, raw: &serde_json::Map<String, serde_json::Value>) {
         app.default_mode = settings::default_mode(raw);
-        app.default_mode_overridden = settings::overridden(&self.permissions_cfg, raw, &self.runs_in);
+        app.default_mode_overridden = settings::overridden(&self.permissions_cfg, raw, &self.runs_in).map(|m| (m, settings::claude_file(&self.permissions_cfg)));
         app.touch();
     }
 
@@ -1343,6 +1343,23 @@ impl<'h> Ui<'h> {
     async fn on_prompt_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
+        // Settings takes every key while it is open, ahead of the trust
+        // question and a limit's offer, which are no one's answer here:
+        // enter, space or the arrows change the one setting there is, esc
+        // or Ctrl-C close it, Ctrl-D still leaves krowk, and nothing reaches
+        // the prompt — a space there would be a change saved. A key typed
+        // ahead, before it was up to be seen, changes nothing.
+        if app.overlay == Overlay::Settings && !(ctrl && k.code == KeyCode::Char('d')) {
+            let settled = self.settings_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE);
+            match k.code {
+                KeyCode::Esc => app.overlay = Overlay::None,
+                KeyCode::Char('c') if ctrl => app.overlay = Overlay::None,
+                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right if !ctrl && !alt && settled => self.cycle_default_mode(app),
+                _ => {}
+            }
+            app.touch();
+            return false;
+        }
         // The Agents overlay takes the keys that move through it: select a
         // subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3).
         if app.overlay == Overlay::Agents && !ctrl && !alt {
@@ -1517,17 +1534,6 @@ impl<'h> Ui<'h> {
                 }
                 _ => {}
             }
-        }
-        // Settings: enter, space or the arrows change the one there is, and
-        // nothing typed reaches the prompt — a space there would be a change
-        // saved — and a key typed ahead, before it was up to be seen,
-        // changes nothing. Esc closes it.
-        if app.overlay == Overlay::Settings && !ctrl && k.code != KeyCode::Esc {
-            let settled = self.settings_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE);
-            if settled && !alt && matches!(k.code, KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right) {
-                self.cycle_default_mode(app);
-            }
-            return false;
         }
         // The model picker takes the arrows and enter while it is open.
         if app.overlay == Overlay::Models && !ctrl {

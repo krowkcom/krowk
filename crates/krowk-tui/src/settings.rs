@@ -160,10 +160,21 @@ pub fn set_default_mode(config: &Path, m: PermissionMode) -> Result<Map<String, 
 /// trusted repository's — sets another; none when config.json's is the
 /// one, or the settings do not load (starting says why).
 pub fn overridden(cfg: &krowk_harness::permissions::Config, raw: &Map<String, Value>, cwd: &Path) -> Option<PermissionMode> {
+    // Only the mode is compared: the rest is what starting reads and says.
     let cfg = krowk_harness::permissions::Config { user: Some(Value::Object(raw.clone())), ..cfg.clone() };
     let runs = krowk_harness::permissions::settings::load(&cfg, cwd).ok()?.default_mode.unwrap_or_default();
     let saved = default_mode(raw).and_then(|m| PermissionMode::parse(&m)).unwrap_or_default();
     (runs != saved).then_some(runs)
+}
+
+/// Claude Code's user settings file, `~` for the home directory:
+/// `$CLAUDE_CONFIG_DIR/settings.json` when that is set.
+pub fn claude_file(cfg: &krowk_harness::permissions::Config) -> String {
+    let Some(file) = cfg.claude_home().map(|d| d.join("settings.json")) else { return "~/.claude/settings.json".into() };
+    match cfg.home.as_deref().and_then(|h| file.strip_prefix(h).ok()) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => file.display().to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -204,6 +215,7 @@ mod tests {
         std::fs::write(claude.join("settings.json"), json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
         assert_eq!(overridden(&cfg, &raw("unhinged"), &dir), Some(PermissionMode::AcceptEdits), "Claude's user file comes after config.json");
         assert_eq!(overridden(&cfg, &raw("acceptEdits"), &dir), None, "the same mode overrides nothing");
+        assert_eq!(claude_file(&cfg), "~/claude/settings.json", "CLAUDE_CONFIG_DIR's, under home as ~");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1268,18 +1268,13 @@ pub fn read_config(path: &Path) -> Result<Map<String, Value>, String> {
 }
 
 /// Writes config.json whole, by rename, never in place: how `/connect`
-/// writes its definitions and the TUI's `/settings` what it sets. A
-/// symlinked config.json is written where it points, and a file's mode is
-/// kept (0644 for a new one). Each write has its own temporary file, so a
-/// `/connect` on its thread and `/settings` never share one.
+/// writes its definitions and the TUI's `/settings` what it sets. The
+/// file's mode is kept (0644 for a new one). Each write has its own
+/// temporary file, so a `/connect` on its thread and `/settings` never
+/// share one.
 pub fn write_config(path: &Path, raw: &Map<String, Value>) -> std::io::Result<()> {
     static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let data = serde_json::to_string_pretty(raw).expect("config serializes") + "\n";
-    // Where a symlink points, even one whose target is not there yet.
-    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| match std::fs::read_link(path) {
-        Ok(to) => path.parent().unwrap_or(Path::new(".")).join(to),
-        Err(_) => path.to_path_buf(),
-    });
     let dir = path.parent().unwrap_or(Path::new("."));
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = dir.join(format!(".config-{}-{n}.json", std::process::id()));

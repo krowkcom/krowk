@@ -236,6 +236,7 @@ fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     assert_eq!(saved().as_deref(), Some("unhinged"), "{:?}", t.text());
     assert!(!t.text().contains("zq"), "typed into the prompt: {:?}", t.text());
     t.write(b"\x1b");
+    std::thread::sleep(Duration::from_millis(100));
     t.write(b"\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap()).unwrap();

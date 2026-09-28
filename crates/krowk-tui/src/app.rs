@@ -414,8 +414,9 @@ pub struct App {
     /// none when it names nothing.
     pub default_mode: Option<String>,
     /// The mode a new session here starts in instead, when a settings file
-    /// read after config.json sets another.
-    pub default_mode_overridden: Option<PermissionMode>,
+    /// read after config.json sets another, and Claude Code's user settings
+    /// file as the person would find it.
+    pub default_mode_overridden: Option<(PermissionMode, String)>,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
     /// A `/connect` or `/disconnect` running: its overlay's state.
@@ -1694,8 +1695,8 @@ impl App {
             Line::from(Span::styled(clip("settings — enter or space changes · esc closes · saved to config.json for the next session", width), dim())),
             Line::from(Span::styled(clip(&format!("❯ Default permission mode  {mode:<18}{says}"), width), look::accent())),
         ];
-        if let Some(runs) = self.default_mode_overridden {
-            let why = format!("  a new session here starts in {} — ~/.claude/settings.json or this repository's settings set it, and come after config.json", runs.name());
+        if let Some((runs, claude)) = &self.default_mode_overridden {
+            let why = format!("  a new session here starts in {} — {claude} or this repository's settings set it, and come after config.json", runs.name());
             out.extend(wrap(&why, width).into_iter().map(|l| Line::from(Span::styled(l, yellow()))));
         }
         out
@@ -2670,9 +2671,9 @@ mod tests {
         let rows = text(&a.view(Instant::now()).0).join("\n");
         assert!(rows.contains("acceptEdits") && rows.contains("  asks before commands"), "the mode and what it does, apart: {rows}");
         a.default_mode = Some("dontAsk".into());
-        a.default_mode_overridden = Some(PermissionMode::Plan);
+        a.default_mode_overridden = Some((PermissionMode::Plan, "/work/claude/settings.json".into()));
         let rows = text(&a.view(Instant::now()).0).join("\n");
-        assert!(rows.contains("runs as default") && rows.contains("starts in plan"), "{rows}");
+        assert!(rows.contains("runs as default") && rows.contains("starts in plan") && rows.contains("/work/claude/settings.json"), "{rows}");
     }
 
     #[test]
