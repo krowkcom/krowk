@@ -195,13 +195,26 @@ fn the_mode_picker_sets_the_mode_the_next_turn_runs_in() {
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"/permission-mode nope\r");
     assert!(t.wait_for("nope is not a permission mode", Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    // The bare alias opens the picker, as `/mode` does.
+    // The bare alias opens the picker, as `/mode` does: its header, drawn
+    // after each is sent.
+    let picker = |t: &pty::Pty, from: usize| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if String::from_utf8_lossy(&t.output()[from..]).contains("or /mode <name>") {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        false
+    };
+    let from = t.output().len();
     t.write(b"/permission-mode\r");
-    assert!(t.wait_for("bypassPermissions", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(picker(&t, from), "{:?}", t.text());
     t.write(b"\x1b");
     std::thread::sleep(Duration::from_millis(300));
+    let from = t.output().len();
     t.write(b"/mode\r");
-    assert!(t.wait_for("or /mode <name>", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(picker(&t, from), "{:?}", t.text());
     // From default, two rows down is plan.
     t.write(b"\x1b[B");
     t.write(b"\x1b[B");

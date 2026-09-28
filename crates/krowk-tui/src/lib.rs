@@ -930,7 +930,7 @@ impl<'h> Ui<'h> {
     fn set_mode(&mut self, app: &mut App, m: PermissionMode) {
         self.permission_mode = m;
         app.permission_mode = m.name().into();
-        let when = if app.running() { " from the next prompt" } else { "" };
+        let when = if app.running() { " once this turn is over" } else { "" };
         app.gap_say(&format!("permission mode {}{when}", m.name()));
     }
 
@@ -1380,7 +1380,7 @@ impl<'h> Ui<'h> {
                     return false;
                 }
                 // An unlisted command runs as typed.
-                KeyCode::Enter if help::unlisted(app.editor.text()) => return self.submit(app).await,
+                KeyCode::Enter if app.slash_at == 0 && help::unlisted(app.editor.text()) => return self.submit(app).await,
                 KeyCode::Tab | KeyCode::Enter => {
                     let Some(s) = found.get(app.slash_at.min(found.len().saturating_sub(1))) else { return false };
                     app.editor.clear();
@@ -1423,7 +1423,7 @@ impl<'h> Ui<'h> {
                         match entry.action {
                             help::Action::Tell => {}
                             help::Action::Model => self.open_models(app),
-                            help::Action::Mode => app.open_mode_picker(self.permission_mode),
+                            help::Action::Mode => app.open_mode_picker(),
                             help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
                             help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
                             help::Action::Todos => app.overlay = Overlay::Todos,
@@ -1887,7 +1887,7 @@ impl<'h> Ui<'h> {
             }
             "/mode" | "/permission-mode" => {
                 app.editor.clear();
-                app.open_mode_picker(self.permission_mode);
+                app.open_mode_picker();
                 return false;
             }
             t if t.starts_with("/mode ") || t.starts_with("/permission-mode ") => {

@@ -332,6 +332,9 @@ pub struct App {
     pub steers: Vec<String>,
     /// Steering typed before the turn could take it; sent when it can.
     pub unsent_steers: Vec<String>,
+    /// The mode the next prompt runs in, as the client sends it: the
+    /// picker's `now` and the details overlay. Never a `turn.started`'s —
+    /// a resumed session's last turn, or one a backend began, ran in its own.
     pub permission_mode: String,
     pub log_dir: Option<String>,
     pub quit: bool,
@@ -408,9 +411,6 @@ pub struct App {
     pub pick_at: usize,
     /// The mode picker's chosen row, an index into `PermissionMode::NAMES`.
     pub mode_at: usize,
-    /// The mode the next prompt runs in, as the picker marks it: the
-    /// client's, never a turn's `turn.started` (a resumed one, a late one).
-    mode_now: PermissionMode,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
     /// A `/connect` or `/disconnect` running: its overlay's state.
@@ -476,7 +476,6 @@ impl App {
             picks: Vec::new(),
             pick_at: 0,
             mode_at: 0,
-            mode_now: PermissionMode::Default,
             help_at: 0,
             flow: None,
             marks: BTreeMap::new(),
@@ -1049,7 +1048,7 @@ impl App {
                     self.dirty = true;
                 }
             }
-            LogBody::TurnStarted { model, provider, permission_mode, .. } => {
+            LogBody::TurnStarted { model, provider, .. } => {
                 self.session_id = Some(ev.session_id.clone());
                 self.model = Some(model.clone());
                 self.instances.entry(model.instance.clone()).or_default().turns += 1;
@@ -1058,7 +1057,6 @@ impl App {
                     self.used.push(model.clone());
                 }
                 self.replay_model = Some((provider.clone(), model.model.clone()));
-                self.permission_mode = serde_json::to_value(permission_mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                 if let Some(t) = &mut self.turn {
                     t.prompt_seen = true;
                 }
@@ -1672,7 +1670,7 @@ impl App {
         let mut out = vec![Line::from(Span::styled(clip("permission mode — ↑ ↓ choose · enter switch · esc closes · or /mode <name>", width), dim()))];
         for (i, name) in PermissionMode::NAMES.iter().enumerate() {
             let chosen = i == self.mode_at;
-            let now = if *name == self.mode_now.name() { "  now" } else { "" };
+            let now = if *name == self.permission_mode { "  now" } else { "" };
             let head = format!("{}{name:<18}{}{now}", if chosen { "❯ " } else { "  " }, mode_says(name));
             let style = if chosen { look::accent() } else { Style::new().fg(Color::Blue) };
             out.push(Line::from(Span::styled(clip(&head, width), style)));
@@ -1680,10 +1678,9 @@ impl App {
         out
     }
 
-    /// Opens the mode picker on `now`, the mode the next prompt runs in.
-    pub fn open_mode_picker(&mut self, now: PermissionMode) {
-        self.mode_now = now;
-        self.mode_at = PermissionMode::NAMES.iter().position(|n| *n == now.name()).unwrap_or(0);
+    /// Opens the mode picker on the mode the next prompt runs in.
+    pub fn open_mode_picker(&mut self) {
+        self.mode_at = PermissionMode::NAMES.iter().position(|n| *n == self.permission_mode).unwrap_or(0);
         self.overlay = Overlay::Modes;
         self.dirty = true;
     }
@@ -2635,9 +2632,11 @@ mod tests {
     #[test]
     fn the_mode_picker_opens_on_the_sessions_mode_and_lists_every_mode() {
         let mut a = app();
-        // What the last turn ran in is not what the next prompt runs in.
-        a.permission_mode = "bypassPermissions".into();
-        a.open_mode_picker(PermissionMode::Plan);
+        a.permission_mode = "plan".into();
+        // A turn that ran in another mode — a resumed session's last, one a
+        // backend began — is not what the next prompt runs in.
+        a.on_line(&log(LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: "anthropic".into(), model: "claude-x".into() }, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::BypassPermissions, effort: None }));
+        a.open_mode_picker();
         assert_eq!((a.overlay, a.mode_at), (Overlay::Modes, 2));
         let rows = text(&a.view(Instant::now()).0).join("\n");
         for name in PermissionMode::NAMES {
