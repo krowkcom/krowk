@@ -236,6 +236,8 @@ fn r_sub_1_r_sub_2_r_sub_3_three_subagents_run_in_parallel_each_on_a_line_and_on
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
         let mut interrupted = false;
+        let mut others: Vec<String> = Vec::new();
+        let mut others_done = 0;
         let result = loop {
             tokio::select! {
                 Some(line) = rx.recv() => {
@@ -244,12 +246,24 @@ fn r_sub_1_r_sub_2_r_sub_3_three_subagents_run_in_parallel_each_on_a_line_and_on
                     most_lines = most_lines.max(shown);
                     if let StreamLine::Log(ev) = &line
                         && let LogBody::SubagentStarted { subagent_session_id, description, .. } = &ev.body
-                        && description == "write an essay"
                     {
-                        essay = Some(subagent_session_id.clone());
+                        if description == "write an essay" {
+                            essay = Some(subagent_session_id.clone());
+                        } else {
+                            others.push(subagent_session_id.clone());
+                        }
                     }
-                    // B is streaming: interrupt it, and it alone.
+                    if let StreamLine::Log(ev) = &line
+                        && matches!(ev.body, LogBody::TurnCompleted { .. })
+                        && others.contains(&ev.session_id)
+                    {
+                        others_done += 1;
+                    }
+                    // B is streaming and A and C are done: interrupt it, and
+                    // it alone. Waiting for A and C keeps a slow runner from
+                    // ending B before A's second round-trip lands.
                     if !interrupted
+                        && others_done == 2
                         && let StreamLine::Live(LiveEvent::ItemDelta { session_id, .. }) = &line
                         && essay.as_deref() == Some(session_id.as_str())
                     {

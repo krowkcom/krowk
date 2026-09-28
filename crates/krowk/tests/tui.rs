@@ -185,6 +185,23 @@ fn r_perf_4_a_500_token_a_second_stream_redraws_at_most_60_times_a_second() {
 }
 
 #[test]
+fn a_link_in_an_answer_is_shown_by_its_text_and_an_arrow_and_opens_its_url() {
+    let body = mock::text_stream("Read [the docs](https://krowk.com/docs) or https://krowk.com/faq.\n");
+    let m = mock::serve(move |_, _| mock::Reply::sse(&body));
+    let b = Sandbox::new("links");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 100, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some());
+    t.write(b"links\r");
+    assert!(t.wait_for("tokens", Duration::from_secs(30)).is_some(), "{:?}", t.text());
+    let out = t.text();
+    let link = |url: &str, sgr: &str, text: &str| format!("\x1b]8;;{url}\x1b\\\x1b[{sgr}m{text}\x1b[0m\x1b]8;;\x1b\\");
+    for want in [link("https://krowk.com/docs", "4;36", "the docs"), link("https://krowk.com/docs", "36", "\u{a0}↗"), link("https://krowk.com/faq", "4;36", "https://krowk.com/faq")] {
+        assert!(out.contains(&want), "{want:?} in {out:?}");
+    }
+    assert!(!out.contains("](https"), "the markdown is not shown: {out:?}");
+}
+
+#[test]
 fn r_perf_2_nothing_is_drawn_while_idle() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("idle");

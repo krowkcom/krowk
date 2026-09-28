@@ -697,13 +697,14 @@ fn write_styled(out: &mut impl Write, line: &Line<'_>) -> io::Result<()> {
     for span in &line.spans {
         let style = line.style.patch(span.style);
         let sgr = sgr(style);
-        let text: String = span.content.chars().filter(|c| !c.is_control()).collect();
-        // A URL is a hyperlink to itself (OSC 8), which a terminal that
-        // does not know the sequence skips.
-        if crate::look::is_link(span) {
-            write!(out, "\x1b]8;;{text}\x1b\\\x1b[{sgr}m{text}\x1b[0m\x1b]8;;\x1b\\")?;
+        // A link is a hyperlink (OSC 8) the terminal opens, on a Ctrl-click
+        // in most; a terminal that does not know the sequence skips it.
+        if let Some((text, url)) = crate::look::link_target(span) {
+            let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();
+            write!(out, "\x1b]8;;{}\x1b\\\x1b[{sgr}m{}\x1b[0m\x1b]8;;\x1b\\", clean(&url), clean(text))?;
             continue;
         }
+        let text: String = span.content.chars().filter(|c| !c.is_control()).collect();
         if sgr.is_empty() {
             out.write_all(text.as_bytes())?;
         } else {
@@ -991,6 +992,17 @@ mod tests {
         let out = String::from_utf8_lossy(&t.into_inner()).into_owned();
         assert!(out.contains("evil]0;pwned[2Jname"), "{out:?}");
         assert!(!out.contains("\x1b]0;") && !out.contains("\x07") && !out.contains("\x1b[2J"), "{out:?}");
+    }
+
+    #[test]
+    fn a_link_reaches_scrollback_as_a_hyperlink_to_its_url() {
+        let mut t = Term::new(Vec::new(), Size { width: 60, height: 10 }, 0, 2).unwrap();
+        let mut fence = false;
+        t.frame(&[crate::look::markdown_line("see [docs](https://krowk.com/d)", &mut fence)], &[Line::from("❯ "), Line::default()], (2, 0)).unwrap();
+        let out = String::from_utf8_lossy(&t.into_inner()).into_owned();
+        assert!(out.contains("\x1b]8;;https://krowk.com/d\x1b\\\x1b[4;36mdocs\x1b[0m\x1b]8;;\x1b\\"), "{out:?}");
+        assert!(out.contains("\x1b]8;;https://krowk.com/d\x1b\\\x1b[36m\u{a0}↗\x1b[0m\x1b]8;;\x1b\\"), "{out:?}");
+        assert!(!out.chars().any(|c| ('\u{E0000}'..='\u{E007F}').contains(&c)), "the URL's carrier never reaches the terminal");
     }
 
     #[test]
