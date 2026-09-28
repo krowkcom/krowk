@@ -1700,14 +1700,14 @@ impl<'h> Ui<'h> {
         false
     }
 
-    /// `/sessions`: the sessions started where krowk was, to continue one of
-    /// them here. Only between turns — the running one would go on
+    /// `/sessions`: the sessions started where this one runs, to continue
+    /// one of them here. Only between turns — the running one would go on
     /// writing to a session no longer shown.
     fn open_resume(&mut self, app: &mut App) {
         if !self.can_resume(app) {
             return;
         }
-        let mut sessions = log::recent(&self.sessions_dir, &self.started_in, RESUMABLE + 1);
+        let mut sessions = log::recent(&self.sessions_dir, &self.runs_in, RESUMABLE + 1);
         sessions.retain(|r| app.session_id.as_ref() != Some(&r.id));
         sessions.truncate(RESUMABLE);
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
@@ -1731,22 +1731,35 @@ impl<'h> Ui<'h> {
             Ok(events) => events,
             Err(e) => return app.notice(&e),
         };
+        // Here, only a session of here: the trust question, the skills and
+        // the header are this directory's. A subagent's belongs to its
+        // parent, which continues it.
+        match events.first().map(|e| &e.body) {
+            Some(krowk_harness::protocol::LogBody::SessionStarted { parent_session_id: Some(parent), .. }) => {
+                return app.notice(&format!("session {id} is a subagent of {parent} — continue {parent} instead"));
+            }
+            Some(krowk_harness::protocol::LogBody::SessionStarted { cwd, .. }) if std::path::Path::new(cwd) != self.runs_in => {
+                return app.notice(&format!("session {id} was started in {} — continue it there, with krowk --resume {id}", home_relative(std::path::Path::new(cwd))));
+            }
+            _ => {}
+        }
         app.forget_session();
-        let before = app.model.take();
+        app.model = None;
         app.gap_say(&format!("continuing session {id}"));
-        self.runs_in = replay(app, id, &events).unwrap_or_else(|| self.started_in.clone());
+        replay(app, id, &events);
+        self.last_prompt.clear();
         // Its own model from here, not the one the last session was on; one
         // that never ran a turn goes on with the model the next prompt had.
         self.chosen = None;
         self.needs_trust = None;
         app.trust_question = None;
-        match app.model.clone() {
-            Some(m) => {
-                self.retarget(&m);
-                self.model = Some(m.clone());
-                self.owe_trust(app, &m);
-            }
-            None => app.model = self.model.clone().or(before),
+        if let Some(m) = app.model.clone() {
+            self.retarget(&m);
+            self.model = Some(m);
+        }
+        app.model = self.model.clone();
+        if let Some(m) = self.model.clone() {
+            self.owe_trust(app, &m);
         }
     }
 
@@ -1762,6 +1775,8 @@ impl<'h> Ui<'h> {
             "the prompt waiting to be sent — ctrl-c takes it back"
         } else if self.model_route.is_some() {
             "the /model switch to finish"
+        } else if app.backend_agents_running() {
+            "the agents running in the background — ctrl-g lists them"
         } else {
             return true;
         };
