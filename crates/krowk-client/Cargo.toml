@@ -1,0 +1,47 @@
+# What every krowk client shares — the terminal today, the desktop app
+# (gpui, linked directly) and the phones (UniFFI bindings, ticket 33) later
+# (R-CLIENT-1): the end-to-end encryption, and in time the protocol types
+# and sync. Crypto is implemented here and nowhere else (R-E2E-2); the
+# crypto-import test (tests/crypto_boundary.rs) fails when another crate
+# names a crypto crate as a dependency.
+#
+# This crate never depends on krowk-harness, tokio or reqwest: a GUI or a
+# phone links it without an engine, a runtime or an HTTP stack. Compiled
+# into `krowk` only by the `harness` feature, so the agent build links none
+# of it. Each dependency below says what it costs against full.size in
+# crates/krowk-bench/budgets.toml.
+[package]
+name = "krowk-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[dependencies]
+# krowk's home and its one atomic 0600 write (the credentials file's), for
+# the device key and the wrapped account key. No crypto of its own.
+krowk-api = { path = "../krowk-api" }
+# HPKE (RFC 9180), Base mode, DHKEM(X25519, HKDF-SHA256) + HKDF-SHA256 +
+# ChaCha20-Poly1305: wraps the account key to each device's public key.
+# rozbb's pure-Rust composition over RustCrypto and dalek primitives,
+# chosen over Cryspen's hpke-rs, which links libcrux-sha3 and log whatever
+# suite is used and has moved into libcrux. `x25519` brings x25519-dalek
+# (with `static_secrets` and `zeroize` on) and hkdf; sha2 0.11 and
+# getrandom 0.4 are linked already. No paid audit: see engineering/crypto.md
+# in Canon, and tests/rfc9180.rs, which holds it to the RFC's vectors.
+hpke = { version = "0.14", default-features = false, features = ["alloc", "x25519", "chacha", "getrandom"] }
+# XChaCha20-Poly1305 for session keys and session content: a 24-byte nonce
+# is safe to draw at random for every message, so no counter has to survive
+# a crash or be shared between devices. The same crate hpke uses for its
+# ChaCha20-Poly1305, so it costs the X construction and nothing more.
+# `zeroize` wipes the cipher's key schedule on drop.
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
+# Wiping every secret this crate holds when it is dropped. Linked already.
+zeroize = { version = "1", features = ["derive"] }
+# The recovery phrase's checksum and the key and device ids. Linked already.
+sha2 = "0.11"
+# The operating system's random numbers, for keys and nonces. Linked already.
+getrandom = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
