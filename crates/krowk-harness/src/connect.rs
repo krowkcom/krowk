@@ -735,7 +735,7 @@ impl ProviderAuth<'_> {
             return Err(EngineError::new("built_in", format!("{from} is built in and keeps its name — connect another account by name instead, e.g. `{}`", connect_command(&format!("{from}:<name>"), known.instances.get(from).map_or("", |r| r.kind)))));
         }
         let Some(def) = defs.instances.get(from).cloned() else {
-            let why = match old_name_of(&known, from) {
+            let why = match old_name_of(&known, from, "") {
                 Some(now) => format!("{from} was renamed to {now} already"),
                 None => format!("no instance named {from} is defined — `krowk providers list` shows them"),
             };
@@ -817,7 +817,7 @@ impl ProviderAuth<'_> {
         }
         // An old name of another instance still leads there: its sessions
         // are that account's. One of this instance's own is its to take back.
-        if let Some(other) = old_name_of(&known, &to).filter(|o| o != from) {
+        if let Some(other) = old_name_of(&known, &to, from) {
             return Err(EngineError::new("instance_exists", format!("{to} was {other}'s name, and sessions that ran on it resume there — give {from} another name")));
         }
         // The login and key first, under the credentials file's lock; moved
@@ -948,7 +948,7 @@ impl ProviderAuth<'_> {
                 }
                 // A name an instance was renamed from leads to it still:
                 // sessions that ran on it are that account's.
-                if let Some(other) = old_name_of(&known, &instance) {
+                if let Some(other) = old_name_of(&known, &instance, "") {
                     return Err(EngineError::new("instance_exists", format!("{instance} was renamed to {other}, and sessions that ran on it resume there — reconnect {other}, or give this one another --name")));
                 }
             }
@@ -1384,8 +1384,12 @@ impl ProviderAuth<'_> {
 
 /// The instance `name` is an old name of (`Registry::current`), when one has
 /// it now and `name` itself names none.
-fn old_name_of(known: &Registry, name: &str) -> Option<String> {
-    Some(known.current(name)).filter(|now| now != name && known.instances.contains_key(now))
+/// Case is ignored, as for names in use: two names that differ only in case
+/// make one account directory on a disk that ignores it. `except`, the
+/// instance asking, may take back a name of its own.
+fn old_name_of(known: &Registry, name: &str, except: &str) -> Option<String> {
+    let lower = name.to_lowercase();
+    known.renamed.keys().filter(|old| old.to_lowercase() == lower).map(|old| known.current(old)).find(|now| now != name && now != except && known.instances.contains_key(now))
 }
 
 /// The variable a new named API-key instance reads its key from:
