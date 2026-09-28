@@ -232,14 +232,19 @@ async fn connection(stream: TcpStream, state: Shared) {
     let writer = tokio::task::spawn_local(write(state.clone(), id, outbox.clone(), sink.clone(), acked.clone(), acks.clone()));
     // Its own task: a batch waiting on a window, a host busy with a tool
     // or a session typing flat out never holds a ping back.
+    // Rung when nothing has been heard for three beats: the peer is gone,
+    // whatever TCP has yet to notice.
+    let dead = Rc::new(Notify::new());
     let pinger = {
-        let (sink, heard) = (sink.clone(), heard.clone());
+        let (sink, heard, dead) = (sink.clone(), heard.clone(), dead.clone());
         tokio::task::spawn_local(async move {
             let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + heartbeat, heartbeat);
             loop {
                 tick.tick().await;
+                // Asked before the sink is: a writer stuck on a full
+                // socket holds it.
                 if heard.get().elapsed() > heartbeat * 3 {
-                    let _ = sink.lock().await.close().await;
+                    dead.notify_one();
                     return;
                 }
                 if sink.lock().await.send(Message::Ping(Vec::new().into())).await.is_err() {
@@ -248,7 +253,19 @@ async fn connection(stream: TcpStream, state: Shared) {
             }
         })
     };
-    while let Some(Ok(msg)) = incoming.next().await {
+    let mut gone = false;
+    loop {
+        let msg = tokio::select! {
+            m = incoming.next() => match m {
+                Some(Ok(m)) => m,
+                _ => break,
+            },
+            _ = dead.notified() => {
+                eprintln!("ws client {id}: nothing heard for {:?}: closing", heartbeat * 3);
+                gone = true;
+                break;
+            }
+        };
         heard.set(Instant::now());
         match msg {
             Message::Binary(b) => match Envelope::decode(&b) {
@@ -276,6 +293,11 @@ async fn connection(stream: TcpStream, state: Shared) {
     pinger.abort();
     server::gone(&state, id);
     acks.notify_one();
+    if gone {
+        // Its writer may be stuck on a socket nobody reads: dropped with
+        // it, which closes the connection.
+        writer.abort();
+    }
     let _ = writer.await;
 }
 

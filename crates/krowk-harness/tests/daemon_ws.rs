@@ -540,3 +540,24 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
     });
     daemon.join().unwrap().unwrap();
 }
+
+/// R-LAG-9's other half: a peer that has gone — nothing heard, not even a
+/// pong, for three beats — is let go by the daemon, however long TCP would
+/// take to notice.
+#[test]
+fn r_lag_9_a_peer_that_answers_no_heartbeat_is_let_go() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("dead", "http://127.0.0.1:9");
+    let daemon = home.serve(Duration::from_millis(100), Caps::default());
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let watcher = home.client().await;
+        // Said hello, then never read again: its pongs never go out.
+        let (c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        assert_eq!(watcher.status().await.unwrap().clients, 2);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert_eq!(watcher.status().await.unwrap().clients, 1, "the silent peer was let go");
+        drop(c);
+    });
+    daemon.join().unwrap().unwrap();
+}

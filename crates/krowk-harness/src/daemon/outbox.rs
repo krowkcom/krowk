@@ -232,6 +232,9 @@ impl Outbox {
             return;
         };
         let held: Vec<Out> = q.fifo.drain(..).map(|(_, o)| o).collect();
+        // Counted again as they go back in; its slots went when it fell
+        // behind.
+        q.bytes = 0;
         q.behind = false;
         q.resyncing = false;
         q.backlog = frames.iter().map(|o| o.bytes.len()).sum();
@@ -440,6 +443,8 @@ mod tests {
         assert_eq!(o.due(), vec![("a".to_string(), cursor.clone())]);
         assert!(o.due().is_empty());
         o.resynced("a", vec![delta("a", 9_998, "caught"), delta("a", 9_999, "up")]);
+        let expected: usize = [delta("a", 9_998, "caught"), delta("a", 9_999, "up")].iter().map(|o| o.bytes.len()).sum::<usize>() + "{\"type\":\"done\"}\n".len();
+        assert_eq!(o.bytes(), expected, "every frame counted once");
         o.push("a", delta("a", 10_000, "live"));
         let batch = o.take(1 << 20);
         let a: Vec<&Out> = batch.iter().filter(|(s, _)| s == "a").flat_map(|(_, v)| v).collect();
