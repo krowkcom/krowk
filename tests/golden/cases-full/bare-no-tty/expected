@@ -1037,6 +1037,22 @@ stdout:
           "summary": "Stop the service and remove it"
         }
       ]
+    },
+    {
+      "name": "sync",
+      "summary": "End-to-end encryption keys for syncing sessions",
+      "subcommands": [
+        {
+          "name": "init",
+          "usage": "krowk sync init",
+          "summary": "Set up: a device key, an account key, its recovery phrase"
+        },
+        {
+          "name": "recover",
+          "usage": "krowk sync recover",
+          "summary": "Restore the account key here from its recovery phrase"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -2240,6 +2256,22 @@ stdout:
           "name": "disable",
           "usage": "krowk host disable",
           "summary": "Stop the service and remove it"
+        }
+      ]
+    },
+    {
+      "name": "sync",
+      "summary": "End-to-end encryption keys for syncing sessions",
+      "subcommands": [
+        {
+          "name": "init",
+          "usage": "krowk sync init",
+          "summary": "Set up: a device key, an account key, its recovery phrase"
+        },
+        {
+          "name": "recover",
+          "usage": "krowk sync recover",
+          "summary": "Restore the account key here from its recovery phrase"
         }
       ]
     }
@@ -3461,6 +3493,22 @@ stdout:
           "summary": "Stop the service and remove it"
         }
       ]
+    },
+    {
+      "name": "sync",
+      "summary": "End-to-end encryption keys for syncing sessions",
+      "subcommands": [
+        {
+          "name": "init",
+          "usage": "krowk sync init",
+          "summary": "Set up: a device key, an account key, its recovery phrase"
+        },
+        {
+          "name": "recover",
+          "usage": "krowk sync recover",
+          "summary": "Restore the account key here from its recovery phrase"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -4678,6 +4726,22 @@ tty:
           "name": "disable",
           "usage": "krowk host disable",
           "summary": "Stop the service and remove it"
+        }
+      ]
+    },
+    {
+      "name": "sync",
+      "summary": "End-to-end encryption keys for syncing sessions",
+      "subcommands": [
+        {
+          "name": "init",
+          "usage": "krowk sync init",
+          "summary": "Set up: a device key, an account key, its recovery phrase"
+        },
+        {
+          "name": "recover",
+          "usage": "krowk sync recover",
+          "summary": "Restore the account key here from its recovery phrase"
         }
       ]
     }

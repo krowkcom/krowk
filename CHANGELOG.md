@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk sync init` sets up the end-to-end encryption keys sync will
+  use, and shows your recovery phrase.** It makes a key for this machine
+  and an account key, prints the account key as 24 words, and keeps it
+  only once you type the words back (they are not echoed). Write them
+  down: krowk never stores the phrase and cannot show it again, and it is
+  the only way back to your sessions if every device is lost. On another
+  machine, `krowk sync recover` takes the 24 words (typed, or piped in)
+  and restores the same account key there. Nothing syncs yet — the keys
+  stay in krowk's home, `device.json` and `account-key.json`, both
+  `0600`, and the wrapped account key opens only with that machine's own
+  device key.
 - **The host daemon can serve its sessions over a WebSocket on this
   machine**, the transport other devices will reach it through once the
   relay lands. It is off unless `KROWK_HOST_WS` or `host.websocket` in

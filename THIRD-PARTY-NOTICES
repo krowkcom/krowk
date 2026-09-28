@@ -22,3 +22,16 @@ between status items, edits as removed and added lines on red and green
 bands. krowk's implementation is its own: no Grok Build source file was copied
 or adapted, so no Apache-2.0 obligations attach to krowk's code. The
 acknowledgement is recorded here because the design is theirs.
+
+--------------------------------------------------------------------------------
+BIP-0039 English wordlist — data, copied verbatim
+--------------------------------------------------------------------------------
+Source:    https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt
+           (sha256 2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda)
+License:   MIT (BIP-0039: "This BIP falls under the MIT License.")
+Copyright: Marek Palatinus, Pavol Rusnak, Aaron Voisine, Sean Bowe
+
+crates/krowk-client/src/english.txt is BIP-0039's English list of 2048 words,
+unchanged. krowk's recovery phrase writes the account key as 24 of these words
+with BIP-0039's checksum; the encoding in crates/krowk-client/src/phrase.rs is
+krowk's own.

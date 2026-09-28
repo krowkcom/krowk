@@ -16,3 +16,6 @@
 pub mod e2e;
 pub mod keystore;
 pub mod phrase;
+
+/// A secret the caller holds for a moment — a typed phrase — wiped on drop.
+pub use zeroize::Zeroizing;

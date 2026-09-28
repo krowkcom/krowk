@@ -1531,6 +1531,7 @@ dependencies = [
  "jaq-std",
  "jiff",
  "krowk-api",
+ "krowk-client",
  "krowk-devregistry",
  "krowk-harness",
  "krowk-import",

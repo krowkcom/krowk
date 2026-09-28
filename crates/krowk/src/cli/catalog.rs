@@ -446,7 +446,21 @@ pub fn catalog(version: &str) -> Catalog {
     c.commands.push(cmd("status", "krowk status", "What's connected, and whether each is ready"));
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(host_command());
+    #[cfg(feature = "harness")]
+    c.commands.push(sync_command());
     c
+}
+
+/// `krowk sync`: this machine's end-to-end keys (R-E2E-3, R-E2E-4).
+#[cfg(feature = "harness")]
+fn sync_command() -> Command {
+    Command {
+        subcommands: vec![
+            cmd("init", "krowk sync init", "Set up: a device key, an account key, its recovery phrase"),
+            cmd("recover", "krowk sync recover", "Restore the account key here from its recovery phrase"),
+        ],
+        ..cmd("sync", "", "End-to-end encryption keys for syncing sessions")
+    }
 }
 
 /// `krowk host`: the per-user daemon sessions run in (R-HOST-1, R-HOST-2).
@@ -730,6 +744,11 @@ with `claude auth login` or `codex login`).",
         #[cfg(feature = "harness")]
         "providers" => "Below `krowk connect`: API keys, logins, Claude Code and Codex accounts.",
         #[cfg(feature = "harness")]
+        "sync" => "\
+Sessions are encrypted on this machine before they leave it. `init` shows the
+account key as 24 words once; `recover` takes them on a new machine. Nothing
+syncs yet: the keys are kept in krowk's home, 0600.",
+        #[cfg(feature = "harness")]
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle
 minutes (host.idleMinutes in config.json, or KROWK_HOST_IDLE seconds).
@@ -754,6 +773,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "providers",
             #[cfg(all(feature = "harness", unix))]
             "host",
+            #[cfg(feature = "harness")]
+            "sync",
             #[cfg(all(feature = "sessions", not(feature = "harness")))]
             "sessions",
             "config",
