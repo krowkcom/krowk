@@ -242,7 +242,9 @@ fn r_inst_7_the_tui_offers_the_next_instance_and_y_continues_there() {
     assert!(ok.seen.lock().unwrap().iter().any(|s| s.body.to_string().contains("read README.md and summarise it")), "sent to the instance it moved to");
     // The picker, and a switch refused with its fix.
     t.write(b"/model\r");
-    assert!(t.wait_for("anthropic:nokey/claude-sonnet-4-6", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(t.wait_for("switch model", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(t.wait_for("codex/gpt-5.5", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(!t.text().contains("anthropic:nokey/"), "an instance with no key is not listed: {:?}", t.text());
     // Esc on its own, not the start of an Alt-/ chord.
     t.write(b"\x1b");
     std::thread::sleep(Duration::from_millis(300));
@@ -1029,7 +1031,7 @@ fn slash_offers_commands_and_skills_and_a_skill_reaches_the_model() {
     tm.keys(&["mdl"]);
     tm.wait_still(|s: &str| s.lines().any(|l| l.trim_start().starts_with("› /model")), Duration::from_secs(5)).unwrap_or_else(|| panic!("{}", tm.screen()));
     tm.keys(&["Enter"]);
-    assert!(tm.wait_for("switch to —", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    assert!(tm.wait_for("switch model —", Duration::from_secs(5)).is_some(), "{}", tm.screen());
     tm.keys(&["Escape"]);
     std::thread::sleep(Duration::from_millis(300));
     // A skill: enter leaves `/greet ` for what it is for, then sends it,
@@ -1473,13 +1475,13 @@ fn a_suspended_vendor_login_gives_the_terminal_back_whole_after_a_resize() {
     assert!(screen.lines().all(|l| l.chars().count() <= 72), "{screen}");
 }
 
-/// `/model` marks each instance ready or not, from checks that never hold
-/// a key up — a vendor whose status takes three seconds leaves the picker
-/// moving meanwhile — and a pick that is not ready offers `/connect` for
-/// it instead of a switch. `/disconnect` of the built-in `claude` asks
-/// before signing the person out of Claude Code itself.
+/// `/model` lists only what can run here, from checks that never hold a
+/// key up — a vendor whose status takes three seconds leaves the picker
+/// moving meanwhile, and drops out once it says no — and what is typed
+/// filters it. `/disconnect` of the built-in `claude` asks before signing
+/// the person out of Claude Code itself.
 #[test]
-fn model_marks_readiness_in_the_background_and_offers_connect_and_disconnect_asks_first() {
+fn model_lists_what_is_ready_in_the_background_and_disconnect_asks_first() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("marks");
     let mut env = b.env(&m.url);
@@ -1487,26 +1489,26 @@ fn model_marks_readiness_in_the_background_and_offers_connect_and_disconnect_ask
     let Some(tm) = Tmux::start("marks", 110, 34, &b.root.join("repo"), &env, &["--model", "anthropic/claude-sonnet-4-6"]) else { return };
     assert!(tm.wait_for("? help", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     tm.keys(&["/model", "Enter"]);
-    assert!(tm.wait_for("switch to", Duration::from_secs(5)).is_some(), "{}", tm.screen());
-    let row = |s: &str, name: &str| s.lines().find(|l| l.trim_start().trim_start_matches("❯ ").starts_with(&format!("{name}/"))).unwrap_or_default().to_string();
+    assert!(tm.wait_for("switch model", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    let row = |s: &str, name: &str| s.lines().find(|l| l.trim_start().trim_start_matches("› ").starts_with(&format!("{name}/"))).unwrap_or_default().to_string();
     // The header can be drawn a frame before the rows under it.
     tm.wait_still(|s| !row(s, "claude").is_empty(), Duration::from_secs(5));
     let screen = tm.screen();
-    assert!(row(&screen, "claude").contains(" … "), "claude is still being asked: {screen}");
-    assert!(row(&screen, "anthropic").contains("✓ ready") && row(&screen, "openai").contains("✗ key not set"), "a key is marked at once: {screen}");
+    assert!(row(&screen, "claude").contains("checking…"), "claude is still being asked: {screen}");
+    assert!(!row(&screen, "anthropic").is_empty() && row(&screen, "openai").is_empty(), "a key is checked at once, and one not set is not listed: {screen}");
     // The arrows answer while `claude` is still being asked.
+    let chosen = |s: &str| s.lines().find(|l| l.trim_start().starts_with("› ")).unwrap_or_default().to_string();
+    let before = chosen(&screen);
     tm.keys(&["Down"]);
-    let moved = |s: &str| s.lines().any(|l| l.trim_start().starts_with("❯ codex/"));
+    let moved = |s: &str| chosen(s) != before;
     assert!(tm.wait_still(moved, Duration::from_secs(1)).is_some() || moved(&tm.screen()), "a key waited on a vendor check: {}", tm.screen());
-    assert!(row(&tm.screen(), "claude").contains(" … "), "and it was still being asked: {}", tm.screen());
-    let marked = |s: &str| row(s, "claude").contains("✗ not signed in");
-    tm.wait_still(marked, Duration::from_secs(15)).unwrap_or_else(|| panic!("claude marked once its check is back: {}", tm.screen()));
-    // A pick that is not ready offers /connect for it.
-    tm.keys(&["Up", "Enter"]);
-    assert!(tm.wait_for("not signed in — enter connects it", Duration::from_secs(5)).is_some(), "{}", tm.screen());
-    assert!(tm.wait_for("→ /connect claude", Duration::from_secs(5)).is_some(), "{}", tm.screen());
-    tm.keys(&["C-c"]);
-    std::thread::sleep(Duration::from_millis(200));
+    assert!(row(&tm.screen(), "claude").contains("checking…"), "and it was still being asked: {}", tm.screen());
+    tm.wait_still(|s| row(s, "claude").is_empty(), Duration::from_secs(15)).unwrap_or_else(|| panic!("claude dropped once its check is back: {}", tm.screen()));
+    // What is typed filters the rows.
+    tm.keys(&["zzz"]);
+    assert!(tm.wait_for("nothing matches · enter runs /model zzz", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    tm.keys(&["Escape"]);
+    std::thread::sleep(Duration::from_millis(300));
     // /disconnect of the built-in asks before it signs the person out of
     // Claude Code itself, and no keeps the login.
     std::fs::create_dir_all(b.root.join("home/.claude")).unwrap();
