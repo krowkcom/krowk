@@ -78,7 +78,7 @@ impl Home {
                     agents: krowk_harness::subagent::AgentsConfig::none(),
                 })
             });
-            server::run(server::Options { socket, idle, krowk_version: "test".into() }, factory)
+            server::run(server::Options { socket, idle, krowk_version: "test".into(), ..Default::default() }, factory)
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::os::unix::net::UnixStream::connect(self.socket()).is_err() {

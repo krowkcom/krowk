@@ -8,6 +8,13 @@
 //!   following a session, catching a late client up, and the idle exit.
 //! - `client` — connecting, the hello, and `execute` and `attach` over the
 //!   socket, with the same signature `Host::execute` has.
+//! - `outbox` — what the daemon has for one client: one bounded queue per
+//!   session, progress frames in keyed slots, and falling behind to a
+//!   cursor rather than growing (R-LAG-2, R-LAG-4).
+//! - `replay` — the running turn's frames each session keeps for catching
+//!   a client up, bounded by a snapshot (R-LAG-10).
+//! - `ws` — the WebSocket listener: the same frames in batches, compressed,
+//!   windowed, with heartbeats of their own (R-PROTO-1, R-LAG-3/5/9).
 //! - `service` — `krowk host enable`: the systemd user unit and the launchd
 //!   agent that keep it running on an always-on machine (R-HOST-2).
 //!
@@ -22,9 +29,12 @@
 //! spawn one.
 
 pub mod client;
+pub mod outbox;
 pub mod remote;
+pub mod replay;
 pub mod server;
 pub mod service;
+pub mod ws;
 
 use crate::engine::EngineError;
 use std::path::{Path, PathBuf};
@@ -95,6 +105,30 @@ pub fn idle_window(env: &dyn Fn(&str) -> String, config: Option<&serde_json::Val
         s => s.parse::<u64>().map_err(|_| format!("KROWK_HOST_IDLE is {s:?}, not a number of seconds — set it to one (0 never exits), or unset it"))?,
     };
     Ok((secs > 0).then(|| Duration::from_secs(secs)))
+}
+
+/// Where the WebSocket listener binds, from `KROWK_HOST_WS`, else
+/// `host.websocket` in config.json: a loopback `address:port` (port 0
+/// picks one; `krowk host status` names it), or `off`. Off when neither
+/// says. Anything but loopback is refused: this listener proves who a
+/// client is only with the daemon's token, and reaching other devices is
+/// the relay's job.
+pub fn websocket_addr(env: &dyn Fn(&str) -> String, config: Option<&serde_json::Value>) -> Result<Option<std::net::SocketAddr>, String> {
+    let (value, from) = match env("KROWK_HOST_WS").trim() {
+        "" => match config.and_then(|c| c.pointer("/host/websocket")) {
+            None | Some(serde_json::Value::Null) => return Ok(None),
+            Some(v) => (v.as_str().map(str::to_string).ok_or_else(|| format!("host.websocket in config.json is {v}, not an address — set it to \"127.0.0.1:<port>\" or \"off\""))?, "host.websocket in config.json"),
+        },
+        s => (s.to_string(), "KROWK_HOST_WS"),
+    };
+    if value == "off" {
+        return Ok(None);
+    }
+    let addr: std::net::SocketAddr = value.parse().map_err(|_| format!("{from} is {value:?}, not an address — set it to 127.0.0.1:<port>, or off"))?;
+    if !addr.ip().is_loopback() {
+        return Err(format!("{from} is {addr}, which is not loopback — the host daemon's WebSocket listens on this machine only (127.0.0.1:<port>); other devices reach it through the relay"));
+    }
+    Ok(Some(addr))
 }
 
 /// The lock a starting `krowk` holds while it checks for a daemon and
@@ -351,6 +385,67 @@ mod tests {
         let e = [("XDG_RUNTIME_DIR", deep.display().to_string()), ("HOME", "/home/ada".to_string())];
         assert!(socket(&env(&e)).unwrap_err().contains("too long for a unix socket"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn r_proto_1_the_websocket_listens_on_loopback_or_not_at_all() {
+        let none: [(&str, String); 0] = [];
+        assert_eq!(websocket_addr(&env(&none), None).unwrap(), None, "off by default");
+        let cfg = serde_json::json!({"host": {"websocket": "127.0.0.1:7788"}});
+        assert_eq!(websocket_addr(&env(&none), Some(&cfg)).unwrap(), Some("127.0.0.1:7788".parse().unwrap()));
+        let e = [("KROWK_HOST_WS", "off".to_string())];
+        assert_eq!(websocket_addr(&env(&e), Some(&cfg)).unwrap(), None);
+        let e = [("KROWK_HOST_WS", "[::1]:0".to_string())];
+        assert!(websocket_addr(&env(&e), None).unwrap().is_some());
+        for wide in ["0.0.0.0:7788", "192.168.1.2:7788"] {
+            let e = [("KROWK_HOST_WS", wide.to_string())];
+            assert!(websocket_addr(&env(&e), None).unwrap_err().contains("not loopback"), "{wide}");
+        }
+        let e = [("KROWK_HOST_WS", "localhost".to_string())];
+        assert!(websocket_addr(&env(&e), None).unwrap_err().contains("not an address"));
+    }
+
+    /// R-LAG-9: the daemon's serving code does no blocking I/O on its one
+    /// thread, which every session's stream and every heartbeat share. A
+    /// source check rather than a clippy `disallowed-methods` list: that
+    /// list is workspace-wide, and the rest of krowk calls `std::fs` from
+    /// synchronous code on purpose. What may block is marked `// blocking:`
+    /// with why, above the statement or function it covers — at start, on
+    /// the way out, or inside `spawn_blocking` — and anything else fails
+    /// here. The log's own appends are the host's, not this module's (see
+    /// harness.md → The host daemon).
+    #[test]
+    fn r_lag_9_no_blocking_io_on_the_daemons_thread() {
+        const BLOCKING: [&str; 8] = ["std::fs::", "std::thread::sleep", "std::os::unix::net::", "std::io::stdin", "std::net::TcpStream", "File::open", "read_events(", ".block_on("];
+        let files = [("server.rs", include_str!("server.rs")), ("outbox.rs", include_str!("outbox.rs")), ("replay.rs", include_str!("replay.rs")), ("ws.rs", include_str!("ws.rs"))];
+        let mut found = Vec::new();
+        for (name, src) in files {
+            // The tests below each file block as they like.
+            let src = src.split("#[cfg(test)]").next().unwrap();
+            let (mut covered, mut depth, mut marked) = (false, 0i32, false);
+            for (n, line) in src.lines().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("// blocking:") {
+                    marked = true;
+                    continue;
+                }
+                if marked && !code.starts_with("//") && !code.starts_with("#[") {
+                    (covered, depth, marked) = (true, 0, false);
+                }
+                let hit = BLOCKING.iter().any(|b| code.contains(b)) && !code.starts_with("//") && !code.starts_with("use ");
+                // Waited for off the thread, in the one statement.
+                if hit && !covered && !code.contains("spawn_blocking(") && !(name == "server.rs" && code.contains("local.block_on(&rt")) {
+                    found.push(format!("{name}:{}: {code}", n + 1));
+                }
+                if covered {
+                    depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+                    if depth <= 0 && (code.ends_with(';') || code.ends_with('}') || code.ends_with("})")) {
+                        covered = false;
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "blocking I/O on the daemon's thread — move it into spawn_blocking, or mark why it may block:\n{}", found.join("\n"));
     }
 
     #[test]

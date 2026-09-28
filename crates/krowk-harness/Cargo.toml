@@ -50,8 +50,27 @@ regex-lite = "0.1"
 [target.'cfg(unix)'.dependencies]
 # Killing a timed-out bash call's whole process group.
 libc = "0.2"
+# The host daemon's WebSocket transport (R-PROTO-1), unix-only with the
+# daemon. The server handshake and nothing else: no TLS (loopback now, the
+# relay's TLS later), no client connector. It adds tungstenite, sha1 and
+# futures-sink; http, httparse, rand and the rest are linked already.
+# Hand-rolling RFC 6455 would save those three crates and cost a parser
+# of our own on a listening socket. Measured with ruzstd below: see
+# full.size in crates/krowk-bench/budgets.toml.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+# Batches are zstd-compressed before they would be encrypted (R-LAG-5).
+# Pure Rust at level "fastest" (about zstd's 1): no C toolchain for a
+# cross build, and one crate against zstd-sys's libzstd; the batches are
+# small and compressed once, so the C library's speed buys nothing felt.
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["rt", "net", "macros", "io-util", "time"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+# The WebSocket tests' client: another implementation than the daemon's
+# own end, so a framing mistake cannot pass on both sides at once.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 # Validates recorded session logs against the generated schema in tests only.
 jsonschema = { version = "0.57", default-features = false }

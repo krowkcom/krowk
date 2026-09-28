@@ -50,6 +50,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let config = prompt::config_json()?;
     let socket = daemon::socket(ctx.io.env).map_err(|e| fail("host_unavailable", e))?;
     let idle = daemon::idle_window(ctx.io.env, Some(&config)).map_err(|e| fail("bad_config", e))?;
+    let websocket = daemon::websocket_addr(ctx.io.env, Some(&config)).map_err(|e| fail("bad_config", e))?;
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
     let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), home);
     let trusted_store = store.clone();
@@ -88,7 +89,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
             agents: prompt::agents_config(&env),
         })
     });
-    server::run(server::Options { socket, idle, krowk_version: super::VERSION.into() }, factory).map_err(|e| fail("host_failed", e))
+    server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, ..Default::default() }, factory).map_err(|e| fail("host_failed", e))
 }
 
 pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
@@ -96,7 +97,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
     let service = service::path(service::Platform::here(), ctx.io.env).ok().filter(|p| p.is_file());
     let status: Option<HostStatus> = daemon::status(ctx.io.env, super::VERSION).map_err(engine)?;
     let data = match &status {
-        Some(s) => json!({ "running": true, "socket": s.socket, "pid": s.pid, "version": s.krowk_version, "stale": s.krowk_version != super::VERSION, "uptimeMs": s.uptime_ms, "clients": s.clients.saturating_sub(1), "idleExitMs": s.idle_exit_ms, "sessions": s.sessions, "service": service }),
+        Some(s) => json!({ "running": true, "socket": s.socket, "pid": s.pid, "version": s.krowk_version, "stale": s.krowk_version != super::VERSION, "uptimeMs": s.uptime_ms, "clients": s.clients.saturating_sub(1), "idleExitMs": s.idle_exit_ms, "websocket": s.websocket, "sessions": s.sessions, "service": service }),
         None => json!({ "running": false, "socket": socket, "service": service }),
     };
     if ctx.format != Format::Human {
@@ -116,6 +117,9 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
                 let _ = writeln!(out, "! it runs krowk {}, and this is {} — `kill {}` once its sessions are done, and the next krowk starts this one", s.krowk_version, super::VERSION, s.pid);
             }
             let _ = writeln!(out, "socket   {}", s.socket);
+            if let Some(ws) = &s.websocket {
+                let _ = writeln!(out, "ws       ws://{ws} (loopback; token in host.token beside the socket)");
+            }
             let _ = writeln!(out, "sessions {} ({running} running), {} other client{}", s.sessions.len(), s.clients.saturating_sub(1), if s.clients == 2 { "" } else { "s" });
             let idle = s.idle_exit_ms.map_or("never — run as a service".into(), |ms| format!("after {} idle", uptime(ms)));
             let _ = writeln!(out, "exits    {idle}");
