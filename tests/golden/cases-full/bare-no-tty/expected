@@ -1014,6 +1014,11 @@ stdout:
           ]
         },
         {
+          "name": "stop",
+          "usage": "krowk host stop",
+          "summary": "Stop the daemon, once no turn runs in it"
+        },
+        {
           "name": "enable",
           "usage": "krowk host enable",
           "summary": "Run the daemon as a systemd or launchd user service"
@@ -1181,6 +1186,10 @@ stdout:
       "name": "KROWK_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
       "default": "~/.krowk"
+    },
+    {
+      "name": "KROWK_TUI_HOST",
+      "usage": "local — the TUI runs its sessions in its own process, not the host daemon"
     }
   ]
 }
@@ -2202,6 +2211,11 @@ stdout:
           ]
         },
         {
+          "name": "stop",
+          "usage": "krowk host stop",
+          "summary": "Stop the daemon, once no turn runs in it"
+        },
+        {
           "name": "enable",
           "usage": "krowk host enable",
           "summary": "Run the daemon as a systemd or launchd user service"
@@ -2369,6 +2383,10 @@ stdout:
       "name": "KROWK_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
       "default": "~/.krowk"
+    },
+    {
+      "name": "KROWK_TUI_HOST",
+      "usage": "local — the TUI runs its sessions in its own process, not the host daemon"
     }
   ]
 }
@@ -3404,6 +3422,11 @@ stdout:
           ]
         },
         {
+          "name": "stop",
+          "usage": "krowk host stop",
+          "summary": "Stop the daemon, once no turn runs in it"
+        },
+        {
           "name": "enable",
           "usage": "krowk host enable",
           "summary": "Run the daemon as a systemd or launchd user service"
@@ -3571,6 +3594,10 @@ stdout:
       "name": "KROWK_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
       "default": "~/.krowk"
+    },
+    {
+      "name": "KROWK_TUI_HOST",
+      "usage": "local — the TUI runs its sessions in its own process, not the host daemon"
     }
   ]
 }
@@ -4606,6 +4633,11 @@ tty:
           ]
         },
         {
+          "name": "stop",
+          "usage": "krowk host stop",
+          "summary": "Stop the daemon, once no turn runs in it"
+        },
+        {
           "name": "enable",
           "usage": "krowk host enable",
           "summary": "Run the daemon as a systemd or launchd user service"
@@ -4773,6 +4805,10 @@ tty:
       "name": "KROWK_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
       "default": "~/.krowk"
+    },
+    {
+      "name": "KROWK_TUI_HOST",
+      "usage": "local — the TUI runs its sessions in its own process, not the host daemon"
     }
   ]
 }

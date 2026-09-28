@@ -58,11 +58,14 @@
       ]
     },
     {
-      "description": "A frame of a session the client follows, exactly as the in-process\ntransport streams it.",
+      "description": "A frame of a session the client follows, exactly as the in-process\ntransport streams it. `session` is the followed session it belongs\nto — the line's own, or its parent's for a subagent's — so a client\nfollowing several tells their streams apart.",
       "type": "object",
       "properties": {
         "line": {
           "$ref": "#/$defs/StreamLine"
+        },
+        "session": {
+          "type": "string"
         },
         "type": {
           "type": "string",
@@ -170,6 +173,23 @@
         "type",
         "id",
         "status"
+      ]
+    },
+    {
+      "description": "A followed session has no command streaming in it any more: its\nturn is over (its `result` came first), or the command was refused\nbefore a turn began. A client following it, not running it, stops\nwaiting here.",
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "settled"
+        }
+      },
+      "required": [
+        "type",
+        "session"
       ]
     }
   ],
