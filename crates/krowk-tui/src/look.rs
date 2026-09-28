@@ -21,6 +21,10 @@ pub const PROMPT: &str = "❯ ";
 /// Before the prompt's first row, inside its box.
 pub const ARROW: &str = "→ ";
 pub const TOOL: &str = "◆ ";
+/// Before each line under a tool call, the way a file tree draws a
+/// directory's entries: the last one closes the branch.
+pub const BRANCH: &str = "├─ ";
+pub const LAST_BRANCH: &str = "└─ ";
 pub const WARN: &str = "⚠ ";
 pub const STOPPED: &str = "◌ ";
 pub const STEER: &str = "↳ ";

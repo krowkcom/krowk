@@ -279,6 +279,15 @@ pub struct Term<W: Write> {
     pub reflows: bool,
     /// Frames written, for the tests and the redraw budget's evidence.
     pub frames: u64,
+    /// Whether everything the session printed is still on screen, none of
+    /// it in scrollback yet: only then can a shorter region drop back to
+    /// the bottom by scrolling what is above it down, the rows that makes
+    /// at the top of the screen landing above the session, not inside it.
+    whole: bool,
+    /// Blank rows at the top of the screen while `whole`: room a taller
+    /// region takes by moving what is above it up, rather than scrolling
+    /// it into scrollback.
+    blank_top: u16,
     /// Columns kept clear on the left and the right of everything drawn.
     /// The left ones are moved over, never written — as Claude Code does —
     /// so a terminal that copies only what was written leaves them out.
@@ -293,13 +302,15 @@ impl<W: Write> Term<W> {
         let buf = FrameBuf::default();
         buf.set_row(top);
         let height = height.clamp(1, size.height.max(1));
+        let bottom = size.height.saturating_sub(height);
+        let (whole, blank_top) = if top <= bottom { (true, bottom - top) } else { (false, 0) };
         let top = anchor(&buf, size, top, height)?;
         // Out now, not with the first frame: a resize before that frame
         // measures against a screen that has already moved.
         out.write_all(&buf.take())?;
         out.flush()?;
         let terminal = build(&buf, size, top, height)?;
-        Ok(Term { terminal, buf, out, size, height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0 })
+        Ok(Term { terminal, buf, out, size, height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, whole, blank_top })
     }
 
     pub fn width(&self) -> u16 {
@@ -314,23 +325,45 @@ impl<W: Write> Term<W> {
         self.terminal.get_frame().area().y
     }
 
-    /// Changes the live region's height. A taller one keeps its top and
-    /// pushes what is above it up into scrollback the way a new line would;
-    /// a shorter one is cleared and drops back to the bottom of the screen,
-    /// what is above it moving down with it (`anchor`), so the prompt never
-    /// floats with blank rows under it.
-    fn set_height(&mut self, height: u16) -> io::Result<()> {
-        let height = height.clamp(1, self.size.height.max(1));
-        if height == self.height {
+    /// Changes the live region's height to fit `want` rows. A taller one
+    /// takes the blank rows at the top of the screen first, moving what is
+    /// above it up over them, and past those pushes what is above it into
+    /// scrollback the way a new line would.
+    ///
+    /// A shorter one depends on where the session is. All of it still on
+    /// screen, the region drops back to the bottom and what is above moves
+    /// down with it (`anchor`). Once part of it is in scrollback, moving it
+    /// down would open a gap at the top of the screen that the next line
+    /// pushes into scrollback, between two rows that belong together — a
+    /// logo split in two, a paragraph with a hole in it. What was pushed
+    /// cannot be pulled back, so the region keeps its height instead, the
+    /// rows it no longer needs blank above the prompt (`frame` draws at its
+    /// bottom), and the next lines printed fill them.
+    fn set_height(&mut self, want: u16) -> io::Result<()> {
+        let want = want.clamp(1, self.size.height.max(1));
+        if want == self.height || (want < self.height && !self.whole) {
             return Ok(());
         }
         let mut top = self.top();
-        if height < self.height {
+        if want < self.height {
             self.buf.goto(0, top)?;
             queue!(self.buf.clone(), Clear(CtClear::FromCursorDown))?;
-            top = anchor(&self.buf, self.size, top, height)?;
+            let moved = anchor(&self.buf, self.size, top, want)?;
+            self.blank_top += moved - top;
+            return self.rebuild(moved, want);
         }
-        self.rebuild(top, height)
+        let up = (want - self.height).min(self.blank_top);
+        if up > 0 {
+            CrosstermBackend::new(self.buf.clone()).scroll_region_up(0..top, up)?;
+            // Setting the scroll region moves the cursor to the top left.
+            self.buf.set_row(0);
+            top -= up;
+            self.blank_top -= up;
+        }
+        if want - self.height > up {
+            self.whole = false;
+        }
+        self.rebuild(top, want)
     }
 
     fn rebuild(&mut self, top: u16, height: u16) -> io::Result<()> {
@@ -374,6 +407,9 @@ impl<W: Write> Term<W> {
         // numbered on the old screen: on the new one it is at most the last.
         let row = cursor_row.unwrap_or_else(|| self.buf.row().min(size.height.saturating_sub(1)));
         self.buf.set_row(row);
+        // How much of the session a reflow put in scrollback is not known.
+        self.whole = false;
+        self.blank_top = 0;
         let top = row.saturating_sub(above);
         // A shorter screen can leave the region's top too low for all of it:
         // the terminal took the rows below the caret. The rows it needs are
@@ -415,6 +451,8 @@ impl<W: Write> Term<W> {
             self.emit(lines, height)?;
         }
         let shown = usize::from(self.height);
+        // Rows the region kept but does not need are blank above the rest.
+        let spare = self.height.saturating_sub(rows.len() as u16);
         let pad = if width > 2 * self.pad + 10 { self.pad } else { 0 };
         let inner = width - 2 * pad;
         // The live region is drawn with autowrap off: a row wider than the
@@ -425,13 +463,13 @@ impl<W: Write> Term<W> {
         let drawn = self.terminal.draw(|f| {
             let area = f.area();
             for (i, row) in rows.iter().enumerate().take(usize::from(area.height)) {
-                f.buffer_mut().set_line(area.x + pad, area.y + i as u16, row, inner);
+                f.buffer_mut().set_line(area.x + pad, area.y + spare + i as u16, row, inner);
             }
-            f.set_cursor_position((area.x + pad + caret.0.min(inner.saturating_sub(1)), area.y + caret.1.min(area.height.saturating_sub(1))));
+            f.set_cursor_position((area.x + pad + caret.0.min(inner.saturating_sub(1)), area.y + (spare + caret.1).min(area.height.saturating_sub(1))));
         });
         self.buf.clone().write_all(AUTOWRAP_ON)?;
         drawn?;
-        self.widths = rows.iter().take(shown).map(|r| (r.width() as u16).min(inner) + pad).collect();
+        self.widths = std::iter::repeat_n(0, usize::from(spare)).chain(rows.iter().map(|r| (r.width() as u16).min(inner) + pad)).take(shown).collect();
         let top = self.top();
         if let Some(Position { x, y }) = completed_cursor(&mut self.terminal) {
             self.caret_row = y.saturating_sub(top);
@@ -442,10 +480,13 @@ impl<W: Write> Term<W> {
     }
 
     /// `lines` printed from the viewport's top down, over it, and a
-    /// viewport `height` rows tall rebuilt right below them. Printing past
+    /// viewport for `want` rows rebuilt right below them. Printing past
     /// the bottom row scrolls the screen, which is what moves the
-    /// conversation into scrollback.
-    fn emit(&mut self, lines: &[Line<'static>], height: u16) -> io::Result<()> {
+    /// conversation into scrollback. Lines that leave room below them take
+    /// it the way a shorter region does (`set_height`): the region drops to
+    /// the bottom while the session is all on screen, and otherwise reaches
+    /// down to it, the rows it does not need blank above the prompt.
+    fn emit(&mut self, lines: &[Line<'static>], want: u16) -> io::Result<()> {
         let (w, h) = (self.size.width, self.size.height.max(1));
         let top = self.top();
         let mut out = self.buf.clone();
@@ -461,14 +502,33 @@ impl<W: Write> Term<W> {
             out.write_all(b"\r\n")?;
             used += u32::from(soft_rows(line, w.saturating_sub(pad)));
         }
+        let end = u32::from(top) + used;
+        // Rows the text and the region scroll off the top: blank ones
+        // first, while there are any.
+        let scrolled = (end + u32::from(want)).saturating_sub(u32::from(h));
+        match u16::try_from(scrolled) {
+            Ok(s) if s <= self.blank_top => self.blank_top -= s,
+            _ => {
+                self.whole = false;
+                self.blank_top = 0;
+            }
+        }
+        if scrolled == 0 {
+            // Both fit: the region is every row under the text.
+            let end = end as u16;
+            self.buf.set_row(end);
+            let (top, height) = if self.whole { (anchor(&self.buf, self.size, end, want)?, want) } else { (end, h - end) };
+            self.blank_top += top - end;
+            self.terminal = build(&self.buf, self.size, top, height)?;
+            self.height = height;
+            return Ok(());
+        }
         // The cursor is on the row after the text, at most the last; line
-        // feeds from there reserve the viewport, scrolling if they must.
-        let below = (u32::from(top) + used).min(u32::from(h - 1)) as u16;
-        self.buf.set_row(below);
-        self.buf.feed(height - 1, h);
-        let y = (below + height - 1).min(h - 1) - (height - 1);
-        self.terminal = build(&self.buf, self.size, y, height)?;
-        self.height = height;
+        // feeds from there reserve the viewport, scrolling as they must.
+        self.buf.set_row(end.min(u32::from(h - 1)) as u16);
+        self.buf.feed(want - 1, h);
+        self.terminal = build(&self.buf, self.size, h - want, want)?;
+        self.height = want;
         Ok(())
     }
 
@@ -513,6 +573,8 @@ impl<W: Write> Term<W> {
         // the shell printed is cleared wherever it really is.
         let top = cursor_row.unwrap_or(size.height.saturating_sub(1)).min(size.height.saturating_sub(1));
         self.buf.set_row(top);
+        self.whole = false;
+        self.blank_top = 0;
         let top = anchor(&self.buf, size, top, height)?;
         self.rebuild(top, height)?;
         self.drawn_width = size.width;
@@ -746,6 +808,61 @@ mod tests {
         let out = after_resize(&mut t, &[(70, 26), (40, 26)]);
         assert_eq!(out.matches("\x1b[J").count(), 1, "one clear, not two: {out:?}");
         assert!(out.starts_with("\x1b[?2026h\r\x1b[4A\x1b[J"), "{out:?}");
+    }
+
+    fn prompt(n: usize) -> Vec<Line<'static>> {
+        (0..n).map(|i| Line::from(format!("row {i}"))).collect()
+    }
+
+    fn scrolls_a_region(out: &str) -> bool {
+        out.split("\x1b[").skip(1).any(|seq| seq.find(|c: char| c.is_ascii_alphabetic()).is_some_and(|end| matches!(&seq[end..=end], "r" | "T")))
+    }
+
+    #[test]
+    fn a_region_that_closes_under_scrollback_leaves_no_gap_in_it() {
+        // Twenty lines on a ten-row screen: the session is in scrollback.
+        let mut t = Term::new(Vec::new(), Size { width: 40, height: 10 }, 0, 3).unwrap();
+        t.frame(&prompt(20), &prompt(3), (0, 0)).unwrap();
+        // A menu opens and closes: nothing above is moved down to meet the
+        // prompt, which would leave blank rows at the top for the next line
+        // to push into scrollback between two lines of the conversation.
+        t.frame(&[], &prompt(8), (0, 0)).unwrap();
+        let start = t.out.len();
+        t.frame(&[], &prompt(3), (0, 2)).unwrap();
+        let out = String::from_utf8_lossy(&t.out[start..]).into_owned();
+        assert!(!scrolls_a_region(&out), "{out:?}");
+        assert_eq!((t.top(), t.height), (2, 8), "the region keeps its rows, down to the bottom");
+        assert_eq!(t.caret_row, 7, "the prompt drawn at its bottom");
+        // Lines printed next fill the rows it kept before scrolling.
+        t.frame(&prompt(2), &prompt(3), (0, 0)).unwrap();
+        assert_eq!((t.top(), t.height), (4, 6));
+    }
+
+    #[test]
+    fn lines_printed_as_the_region_shrinks_leave_no_blank_rows_under_it() {
+        let mut t = Term::new(Vec::new(), Size { width: 40, height: 10 }, 0, 3).unwrap();
+        t.frame(&prompt(20), &prompt(8), (0, 0)).unwrap();
+        // A slash command run from its menu: the menu closes as its line
+        // is printed. The region reaches the bottom row.
+        t.frame(&prompt(1), &prompt(3), (0, 0)).unwrap();
+        assert_eq!(t.top() + t.height, 10);
+    }
+
+    #[test]
+    fn a_region_that_closes_with_the_session_on_screen_drops_to_the_bottom() {
+        let mut t = Term::new(Vec::new(), Size { width: 40, height: 20 }, 0, 3).unwrap();
+        t.frame(&prompt(4), &prompt(3), (0, 0)).unwrap();
+        assert_eq!(t.top(), 17);
+        // Taller: the blank rows at the top make room, nothing scrolls off.
+        let start = t.out.len();
+        t.frame(&[], &prompt(8), (0, 0)).unwrap();
+        assert!(String::from_utf8_lossy(&t.out[start..]).contains("\x1b[1;17r\x1b[5S"), "moved up within the screen");
+        t.frame(&[], &prompt(3), (0, 0)).unwrap();
+        assert_eq!((t.top(), t.height), (17, 3));
+        // A line printed as it shrinks: the region still ends on the last row.
+        t.frame(&[], &prompt(8), (0, 0)).unwrap();
+        t.frame(&prompt(1), &prompt(3), (0, 0)).unwrap();
+        assert_eq!((t.top(), t.height), (17, 3));
     }
 
     #[test]

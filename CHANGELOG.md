@@ -47,6 +47,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **The working line says what runs, and one duration**: `Running Read
   README.md…` or `Waiting on 2 subagents…`, with the turn's clock on the
   right — no longer `Running for 10s… 10s`.
+- **A tool call's output hangs under it as a tree**: each line on a `├─`
+  branch and the last on `└─`, the way `tree` draws a directory.
+- **The status line sits right under the prompt box**, without the blank
+  row that was above it.
 
 - **Edits into `.git`, `.claude`, `.codex` and `.krowk` are asked about
   instead of refused**, and so is anything in krowk's own config directory
@@ -638,6 +642,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **Closing a menu no longer leaves blank rows in the conversation or under
+  the prompt.** Once the conversation reached scrollback, a menu, picker or
+  approval that opened and closed moved what was above the prompt down to
+  meet it, and the blank rows that opened at the top of the screen went
+  into scrollback with the next line — gaps between lines, and the logo
+  split in two. A line printed as a menu closed (a slash command run from
+  it) left the prompt floating with blank rows under it. Now the prompt
+  stays on the bottom rows, and rows a closed menu used stay blank above
+  it until the next lines printed fill them.
 - **A Claude Code `defaultMode` krowk does not run no longer refuses every
   prompt.** `"defaultMode": "auto"` in `~/.claude/settings.json` (or any
   mode krowk does not know) used to fail the settings with `bad_settings`,
