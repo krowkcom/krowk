@@ -18,7 +18,7 @@
 //! | 0 | 1 | `v` | 1 |
 //! | 1 | 1 | `kind` | 1 batch (daemon → client), 2 frame (client → daemon), 3 ack (client → daemon) |
 //! | 2 | 1 | `flags` | bit 0: the payload is zstd-compressed |
-//! | 3 | 1 | `enc` | 0 none; any other value is reserved for the AEAD ticket 15 chooses, applied after compressing, and refused until then |
+//! | 3 | 1 | `enc` | 0 none; 1 is XChaCha20-Poly1305 under the session key (`krowk_client::e2e::ENC_XCHACHA20_POLY1305`, applied after compressing), which frames carry from the relay on (tickets 17 and 19); until then any value but 0 is refused |
 //! | 4 | 16 | `session` | the session's UUID, all zero for none |
 //! | 20 | 8 | `seq` | big-endian: a batch's last `line.seq`, or an ack's count of batches applied |
 //!

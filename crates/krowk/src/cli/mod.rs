@@ -21,6 +21,8 @@ mod sessions;
 #[cfg(feature = "harness")]
 mod status;
 #[cfg(feature = "harness")]
+mod sync;
+#[cfg(feature = "harness")]
 mod tui;
 mod upgrade;
 mod workspace;
@@ -280,6 +282,12 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["host", "enable", ..] => host::enable(ctx, true),
         #[cfg(all(feature = "harness", unix))]
         ["host", "disable", ..] => host::enable(ctx, false),
+        #[cfg(feature = "harness")]
+        ["sync"] => show_help(ctx, p),
+        #[cfg(feature = "harness")]
+        ["sync", "init", ..] => sync::init(ctx),
+        #[cfg(feature = "harness")]
+        ["sync", "recover", ..] => sync::recover(ctx),
         _ if missing(p) => Err(not_in_build(p)),
         _ => Err(fail("unknown_command", format!("`{}` is not a krowk command — run `krowk --help`", clip(p, 2).join(" ")))),
     }
