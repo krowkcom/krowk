@@ -11,6 +11,7 @@
 //! - `look` — glyphs, colours, the spinner and the light markdown.
 //! - `settings` — the status line's configuration (R-TUI-2).
 //! - `device` — the `<user>/<host>` the status line opens with, read once.
+//! - `pr` — the branch's pull request the status line links to, from `gh`.
 //! - `net` — the connectivity probe behind the offline notice (R-OFF-1).
 //! - `connect` — `/connect` and `/disconnect`: the harness's sign-in, asked
 //!   through an overlay, and the first-run card.
@@ -28,6 +29,7 @@ pub mod card;
 pub mod clipboard;
 pub mod connect;
 pub mod device;
+pub mod pr;
 pub mod presence;
 pub mod editor;
 pub mod help;
@@ -197,6 +199,7 @@ type TurnFuture<'a> = Pin<Box<dyn Future<Output = Result<Option<RunResult>, Engi
 type ProbeFuture = Pin<Box<dyn Future<Output = bool>>>;
 type RouteFuture<'a> = Pin<Box<dyn Future<Output = Result<ModelRef, EngineError>> + 'a>>;
 type ChecksFuture = Pin<Box<dyn Future<Output = Vec<krowk_harness::readiness::Report>>>>;
+type PrFuture = Pin<Box<dyn Future<Output = Option<pr::Pr>>>>;
 
 async fn session(opts: Options) -> Outcome {
     let mut stdout = std::io::stdout();
@@ -250,17 +253,7 @@ async fn session(opts: Options) -> Outcome {
     app.device = device::name(&|k| std::env::var(k).unwrap_or_default());
     app.skills = krowk_harness::compat::skills::discover(&opts.host.permissions, &opts.host.cwd).into_iter().filter(|k| k.user_invocable).map(|k| (k.name, k.description)).collect();
     app.vendor_instances = opts.host.registry.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
-    let branch = std::process::Command::new("git")
-        .args(["-c", "core.fsmonitor=false", "--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(&opts.host.cwd)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|b| b != "HEAD")
-        .unwrap_or_default();
+    let branch = pr::branch(&opts.host.cwd);
     let effort = opts.effort.and_then(|e| serde_json::to_value(e).ok()).and_then(|v| v.as_str().map(String::from));
     app.header(&home_relative(&opts.host.cwd), &branch, effort.as_deref());
     for n in &opts.notices {
@@ -301,6 +294,7 @@ async fn session(opts: Options) -> Outcome {
         auth: None,
         suspended: false,
         checks: None,
+        pr: None,
         first_run: false,
         first_run_pending: false,
         host: &host,
@@ -366,6 +360,8 @@ struct Ui<'h> {
     /// The vendors' readiness checks behind the pickers' marks, off the
     /// runtime's thread: slow ones never hold up a key.
     checks: Option<ChecksFuture>,
+    /// The branch's pull request, being asked of `gh`.
+    pr: Option<PrFuture>,
     /// The flow running is the first-run card's.
     first_run: bool,
     /// The marks being checked decide whether the first-run card opens.
@@ -670,6 +666,7 @@ impl<'h> Ui<'h> {
         if self.routing.is_none() {
             self.startup_sweep(app);
         }
+        self.look_for_pr(app);
         loop {
             let now = Instant::now();
             // Deadlines, only for what is actually pending.
@@ -754,6 +751,7 @@ impl<'h> Ui<'h> {
                     if network && probe.is_none() {
                         probe_at = Some(Instant::now());
                     }
+                    self.look_for_pr(app);
                     if quitting {
                         return Ok(());
                     }
@@ -786,6 +784,13 @@ impl<'h> Ui<'h> {
                     }
                 }
                 m = recv_auth(&mut self.auth) => self.on_auth(app, term, m)?,
+                found = finish(&mut self.pr) => {
+                    self.pr = None;
+                    if app.pr != found {
+                        app.pr = found;
+                        app.touch();
+                    }
+                }
                 reports = finish(&mut self.checks) => {
                     self.checks = None;
                     self.marked(app, reports);
@@ -2090,6 +2095,16 @@ impl<'h> Ui<'h> {
     /// server that takes none, it can, and no vendor is asked; with none of
     /// those, the vendors are asked behind the first frame, and none of
     /// them ready opens the first-run card.
+    /// Asks `gh` for the branch's pull request, off the loop, unless it is
+    /// being asked already or the status line would not show it.
+    fn look_for_pr(&mut self, app: &App) {
+        if self.pr.is_some() || !app.settings.status_bar || !app.settings.status_items.contains(&settings::Item::Pr) {
+            return;
+        }
+        let dir = self.runs_in.clone();
+        self.pr = Some(Box::pin(async move { tokio::task::spawn_blocking(move || pr::look(&dir)).await.ok().flatten() }));
+    }
+
     fn startup_sweep(&mut self, app: &mut App) {
         let reg = self.host.registry();
         if reg.instances.values().filter_map(|i| krowk_harness::readiness::local(i, &self.credentials)).any(|r| !matches!(Mark::of(&r), Mark::Not(_))) {

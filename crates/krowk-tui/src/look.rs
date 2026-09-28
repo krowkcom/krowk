@@ -72,6 +72,12 @@ pub fn running() -> Style {
     Style::new().fg(Color::Yellow)
 }
 
+/// The `⇄` before a switch of model, instance or engine: where the session
+/// runs changed, so it catches the eye whatever the line says after it.
+pub fn switched() -> Style {
+    success().add_modifier(Modifier::BOLD)
+}
+
 /// What a tool call acts on — a path, a command, a pattern: the ink washed,
 /// not a colour, which is kept for what needs the eye.
 pub fn path() -> Style {
@@ -107,6 +113,18 @@ pub fn link_target<'a>(span: &'a Span<'_>) -> Option<(&'a str, String)> {
         return is_url(&url).then(|| (&content[..at], url));
     }
     (span.style == link() && is_url(content)).then(|| (content, content.to_string()))
+}
+
+/// A live region cell's symbol and the URL a `linked` span left on it, if
+/// any: the cell's text, then the link.
+pub fn cell_link(symbol: &str) -> (&str, Option<String>) {
+    match symbol.find(is_tag) {
+        Some(at) => {
+            let url: String = symbol[at..].chars().filter(|c| is_tag(*c)).filter_map(|c| char::from_u32(u32::from(c) - TAG)).collect();
+            (&symbol[..at], is_url(&url).then_some(url))
+        }
+        None => (symbol, None),
+    }
 }
 
 fn is_url(s: &str) -> bool {
