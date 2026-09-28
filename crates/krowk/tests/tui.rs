@@ -195,8 +195,13 @@ fn the_mode_picker_sets_the_mode_the_next_turn_runs_in() {
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"/permission-mode nope\r");
     assert!(t.wait_for("nope is not a permission mode", Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    t.write(b"/mode\r");
+    // The bare alias opens the picker, as `/mode` does.
+    t.write(b"/permission-mode\r");
     assert!(t.wait_for("bypassPermissions", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"\x1b");
+    std::thread::sleep(Duration::from_millis(300));
+    t.write(b"/mode\r");
+    assert!(t.wait_for("or /mode <name>", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     // From default, two rows down is plan.
     t.write(b"\x1b[B");
     t.write(b"\x1b[B");

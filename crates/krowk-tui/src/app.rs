@@ -408,6 +408,9 @@ pub struct App {
     pub pick_at: usize,
     /// The mode picker's chosen row, an index into `PermissionMode::NAMES`.
     pub mode_at: usize,
+    /// The mode the next prompt runs in, as the picker marks it: the
+    /// client's, never a turn's `turn.started` (a resumed one, a late one).
+    mode_now: PermissionMode,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
     /// A `/connect` or `/disconnect` running: its overlay's state.
@@ -473,6 +476,7 @@ impl App {
             picks: Vec::new(),
             pick_at: 0,
             mode_at: 0,
+            mode_now: PermissionMode::Default,
             help_at: 0,
             flow: None,
             marks: BTreeMap::new(),
@@ -1668,7 +1672,7 @@ impl App {
         let mut out = vec![Line::from(Span::styled(clip("permission mode — ↑ ↓ choose · enter switch · esc closes · or /mode <name>", width), dim()))];
         for (i, name) in PermissionMode::NAMES.iter().enumerate() {
             let chosen = i == self.mode_at;
-            let now = if *name == self.permission_mode { "  now" } else { "" };
+            let now = if *name == self.mode_now.name() { "  now" } else { "" };
             let head = format!("{}{name:<18}{}{now}", if chosen { "❯ " } else { "  " }, mode_says(name));
             let style = if chosen { look::accent() } else { Style::new().fg(Color::Blue) };
             out.push(Line::from(Span::styled(clip(&head, width), style)));
@@ -1676,9 +1680,10 @@ impl App {
         out
     }
 
-    /// Opens the mode picker on the session's mode.
-    pub fn open_mode_picker(&mut self) {
-        self.mode_at = PermissionMode::NAMES.iter().position(|n| *n == self.permission_mode).unwrap_or(0);
+    /// Opens the mode picker on `now`, the mode the next prompt runs in.
+    pub fn open_mode_picker(&mut self, now: PermissionMode) {
+        self.mode_now = now;
+        self.mode_at = PermissionMode::NAMES.iter().position(|n| *n == now.name()).unwrap_or(0);
         self.overlay = Overlay::Modes;
         self.dirty = true;
     }
@@ -2630,17 +2635,20 @@ mod tests {
     #[test]
     fn the_mode_picker_opens_on_the_sessions_mode_and_lists_every_mode() {
         let mut a = app();
-        a.permission_mode = "plan".into();
-        a.open_mode_picker();
+        // What the last turn ran in is not what the next prompt runs in.
+        a.permission_mode = "bypassPermissions".into();
+        a.open_mode_picker(PermissionMode::Plan);
         assert_eq!((a.overlay, a.mode_at), (Overlay::Modes, 2));
         let rows = text(&a.view(Instant::now()).0).join("\n");
         for name in PermissionMode::NAMES {
             assert!(rows.contains(name), "{name} in {rows}");
         }
-        assert!(rows.contains("❯ plan") && rows.contains("now"), "{rows}");
+        let marked: Vec<&str> = rows.lines().filter(|r| r.ends_with("now")).collect();
+        assert!(marked.len() == 1 && marked[0].starts_with("❯ plan"), "{rows}");
         // `/perm` finds it by its description; `/mode` by its name, first.
         assert_eq!(help::slash("/mode", &[]).first().map(|s| s.name.as_str()), Some("mode"));
         assert!(help::slash("/perm", &[]).iter().any(|s| s.name == "mode"));
+        assert!(help::unlisted("/permission-mode") && help::unlisted("/quit") && !help::unlisted("/mode") && !help::unlisted("/permission-mode plan"));
     }
 
     #[test]

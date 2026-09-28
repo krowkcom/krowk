@@ -14,9 +14,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **`/mode` in the TUI (or `/permission-mode`)** switches the running
   session's permission mode: a picker lists `default`, `acceptEdits`,
   `plan`, `bypassPermissions` and `unhinged`, each with what it asks about,
-  or `/mode plan` names one outright. The next turn runs in it; a turn
-  already running keeps the mode it started in. Nothing is saved: the next
-  session starts in `--permission-mode` or the configured default again.
+  or `/mode plan` names one outright. The next prompt runs in it; a turn
+  already running keeps the mode it started in, and so does a turn Claude
+  Code begins by itself when a background agent finishes. Nothing is saved:
+  the next session starts in `--permission-mode` or the configured default
+  again.
 - **`--permission-mode unhinged` runs everything the agent asks to**, with
   no approval: krowk's deny and ask rules, a hook's `ask`, and the protected
   directories (`.git`, `.claude`, `.codex`, `.krowk`, krowk's own config) no

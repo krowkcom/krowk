@@ -67,8 +67,7 @@ pub struct Slash {
     pub skill: bool,
 }
 
-/// krowk's own commands, as `/` lists them. `/quit` and `/permission-mode`
-/// work too, unlisted.
+/// krowk's own commands, as `/` lists them. `UNLISTED` work too.
 pub const COMMANDS: &[(&str, &str)] = &[
     ("model", "Switch model or instance"),
     ("mode", "Switch permission mode — default, acceptEdits, plan, bypassPermissions, unhinged"),
@@ -77,6 +76,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("help", "Keys and what they do"),
     ("exit", "Leave krowk"),
 ];
+
+/// Commands that run but `/` does not list: other names for listed ones.
+pub const UNLISTED: &[&str] = &["quit", "permission-mode"];
+
+/// Whether `typed` (the prompt, `/` and all) is one of `UNLISTED`.
+pub fn unlisted(typed: &str) -> bool {
+    UNLISTED.contains(&typed.trim().trim_start_matches('/'))
+}
 
 /// The commands and skills `typed` (the prompt, `/` and all) finds,
 /// fuzzily, as Grok Build's menu does: ranked by how well the name
