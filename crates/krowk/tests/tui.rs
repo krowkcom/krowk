@@ -679,7 +679,7 @@ fn new_clears_the_screen_and_scrollback_down_to_the_header() {
     tm.keys(&["read README.md and summarise it", "Enter"]);
     assert!(tm.wait_for("tokens", Duration::from_secs(20)).is_some(), "{}", tm.screen());
     tm.keys(&["/new", "Enter"]);
-    let history = tm.wait_still(|s| !s.contains("tokens") && s.contains("Directory:"), Duration::from_secs(10)).unwrap_or_else(|| tm.history());
+    let history = tm.wait_still(|s| !s.contains("tokens") && s.contains("Directory:"), Duration::from_secs(10)).unwrap_or_else(|| panic!("no clean header screen after /new:\n{}", tm.history()));
     assert!(!history.contains("summarise it"), "the earlier session is gone, scrollback too:\n{history}");
     assert_eq!(history.matches("Directory:").count(), 1, "one header:\n{history}");
     assert!(history.lines().count() <= 30, "nothing in scrollback, not even blank rows:\n{history}");

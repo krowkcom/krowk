@@ -1807,18 +1807,29 @@ impl<'h> Ui<'h> {
 
     /// `/new`: a fresh session in place of the one shown, on the same
     /// model, on a cleared screen; the next prompt starts it. The one left
-    /// can be continued with `/sessions`. A new session runs where krowk
-    /// started, not where a session resumed at start was begun.
+    /// can be continued with `/sessions`. Not after a resume at start of a
+    /// session begun elsewhere: the trust and settings were that
+    /// directory's, and a new session would run here.
     fn new_session(&mut self, app: &mut App) {
+        if self.runs_in != self.started_in {
+            return app.notice(&format!("this krowk runs a session of {} — start krowk again for a new one", home_relative(&self.runs_in)));
+        }
         if !self.can_resume(app) {
             return;
         }
         self.leave(app);
-        if self.runs_in != self.started_in {
-            self.runs_in = self.started_in.clone();
-            app.branch = pr::branch(&self.runs_in);
+        // The model shown, the resumed session's at start, is the one the
+        // next prompt goes to, not one routed afresh for a session with none.
+        if self.model.is_none()
+            && let Some(m) = app.model.clone()
+        {
+            self.retarget(&m);
+            self.model = Some(m);
         }
         app.start_over(&home_relative(&self.runs_in), self.effort_label.as_deref());
+        if let Some(m) = self.model.clone() {
+            self.owe_trust(app, &m);
+        }
     }
 
     /// The session shown, left for another: kept to be listed on the way
