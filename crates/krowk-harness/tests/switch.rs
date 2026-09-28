@@ -165,7 +165,10 @@ impl World {
         use std::os::unix::fs::PermissionsExt;
         for (dir, bin) in [("claude", "fake-claude"), ("codex", "fake-codex")] {
             let to = root.join("bin").join(dir);
-            std::fs::copy(fixture(dir, bin), &to).unwrap();
+            // Linked, not copied: a copy is a file open for writing that a test
+            // forking beside it can inherit, and running it then fails with
+            // "Text file busy" (ETXTBSY) — read as a vendor that could not be checked.
+            std::os::unix::fs::symlink(fixture(dir, bin), &to).unwrap();
             std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let root = root.canonicalize().unwrap();

@@ -33,7 +33,10 @@ impl Sandbox {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude/fake-claude");
-        std::fs::copy(fake, root.join("bin/claude")).unwrap();
+        // Linked, not copied: a copy is a file open for writing that a test
+        // forking beside it can inherit, and running it then fails with
+        // "Text file busy" (ETXTBSY) — read as a vendor that could not be checked.
+        std::os::unix::fs::symlink(fake, root.join("bin/claude")).unwrap();
         std::fs::set_permissions(root.join("bin/claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
         Sandbox { root: root.canonicalize().unwrap() }
     }
