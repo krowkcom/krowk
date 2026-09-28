@@ -255,6 +255,19 @@ impl Approvals {
         w.answer.send(decision).map_err(|_| format!("the request {id} is no longer waiting"))
     }
 
+    /// Answers every request of `session_id` still waiting with `deny`:
+    /// nobody is left to answer them (the daemon's last client of the
+    /// session went away).
+    pub fn deny_session(&self, session_id: &str) {
+        let mut map = self.lock();
+        let ids: Vec<String> = map.iter().filter(|(_, w)| w.session_id == session_id).map(|(id, _)| id.clone()).collect();
+        for id in ids {
+            if let Some(w) = map.remove(&id) {
+                let _ = w.answer.send(ApprovalDecision::Deny);
+            }
+        }
+    }
+
     /// Drops whatever a session's finished turn left waiting.
     pub fn forget_session(&self, session_id: &str) {
         self.lock().retain(|_, w| w.session_id != session_id);

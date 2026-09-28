@@ -11,6 +11,24 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A session can outlive its terminal: `krowk -p --daemon` runs the turn
+  in a per-user host daemon.** The first `krowk` that needs the daemon
+  starts it in the background; it listens on a private unix socket
+  (`$XDG_RUNTIME_DIR/krowk/host.sock`, or under `$TMPDIR` on macOS) and
+  exits after ten idle minutes with no session running — `host.idleMinutes`
+  in `config.json`, or `KROWK_HOST_IDLE` in seconds, changes that. Kill the
+  process or close the terminal mid-turn and the turn goes on; `krowk host
+  attach <session>` shows it — what it has done so far, the reply being
+  typed, then the rest live — and any number of clients can follow one
+  session and see the same events. `krowk host status` says whether the
+  daemon runs and what it holds. The daemon asks nobody whether to trust a
+  repository, so a backend runs there only once it is trusted. The TUI
+  still runs its sessions in its own process for now.
+- **`krowk host enable` keeps the daemon running on an always-on machine**,
+  as a systemd user service on Linux or a launchd agent on macOS, with no
+  idle exit; `krowk host disable` stops and removes it. A service has no
+  shell variables, so give it keys with `krowk connect` rather than an
+  exported `ANTHROPIC_API_KEY`.
 - **`/new` in the TUI (or `/clear`) starts a fresh session**, as `/clear`
   does in Claude Code: the screen and its scrollback are cleared, the header
   is printed again, and the next prompt goes on the same model without the

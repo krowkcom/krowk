@@ -53,6 +53,10 @@ pub struct Config {
     pub user: Option<Value>,
     /// Where it lives, for messages.
     pub user_path: Option<PathBuf>,
+    /// Read `user_path` again at every load instead of `user`: a host that
+    /// outlives an edit of config.json (the daemon) holds each turn to the
+    /// deny rules and hooks the file has now.
+    pub reread: bool,
     /// The person's home: `~` in rules, and where Claude's user files are
     /// found when `claude_dir` is unset.
     pub home: Option<PathBuf>,
@@ -239,7 +243,15 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
     let home = cfg.home.as_deref();
     let trusted = cfg.trusted.as_ref().is_some_and(|t| t(&root));
     let mut user: Vec<File> = Vec::new();
-    if let Some(v) = &cfg.user {
+    let fresh = match (&cfg.user_path, cfg.reread) {
+        (Some(p), true) => match std::fs::read(p) {
+            Ok(raw) => Some(serde_json::from_slice::<Value>(&raw).map_err(|e| format!("{} is not valid JSON: {e}", p.display()))?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("{} cannot be read: {e}", p.display())),
+        },
+        _ => cfg.user.clone(),
+    };
+    if let Some(v) = &fresh {
         let source = cfg.user_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "krowk's config.json".into());
         let base = cfg.home.clone().unwrap_or_else(|| cwd.to_path_buf());
         user.push(read_object(v, &source, &root, &base, home)?);

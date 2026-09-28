@@ -644,3 +644,22 @@ fn r_perm_1_a_default_mode_that_is_not_a_string_is_read_as_default_with_a_notice
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A host that outlives an edit of config.json (the daemon) reads it again
+/// for every turn: a deny rule added since holds at once.
+#[test]
+fn a_rereading_config_holds_a_deny_rule_added_after_it_was_made() {
+    let dir = std::env::temp_dir().join(format!("krowk-reread-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("config.json");
+    std::fs::write(&file, "{}").unwrap();
+    let cfg = Config { user: Some(serde_json::json!({})), user_path: Some(file.clone()), reread: true, ..Default::default() };
+    let denies = |cfg: &Config| crate::permissions::settings::load(cfg, &dir).unwrap().rules.len();
+    let before = denies(&cfg);
+    std::fs::write(&file, r#"{"permissions": {"deny": ["Bash(rm:*)"]}}"#).unwrap();
+    assert_eq!(denies(&cfg), before + 1, "read again, not the copy it was made with");
+    let frozen = Config { reread: false, ..cfg.clone() };
+    assert_eq!(denies(&frozen), before);
+    let _ = std::fs::remove_dir_all(&dir);
+}

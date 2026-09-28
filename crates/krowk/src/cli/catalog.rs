@@ -442,7 +442,28 @@ pub fn catalog(version: &str) -> Catalog {
     c.commands.push(providers_command());
     #[cfg(feature = "harness")]
     c.commands.push(cmd("status", "krowk status", "What's connected, and whether each is ready"));
+    #[cfg(all(feature = "harness", unix))]
+    c.commands.push(host_command());
     c
+}
+
+/// `krowk host`: the per-user daemon sessions run in (R-HOST-1, R-HOST-2).
+/// `serve` is what the first `krowk` that needs the daemon starts, and what
+/// the service runs; it is not listed.
+#[cfg(all(feature = "harness", unix))]
+fn host_command() -> Command {
+    Command {
+        subcommands: vec![
+            cmd("status", "krowk host status", "Whether the daemon runs: socket, pid, uptime, sessions"),
+            Command {
+                args: vec![arg("session", "The session id a result names", true)],
+                ..cmd("attach", "krowk host attach <session>", "Follow a session in the daemon, live, as stream-json")
+            },
+            cmd("enable", "krowk host enable", "Run the daemon as a systemd or launchd user service"),
+            cmd("disable", "krowk host disable", "Stop the service and remove it"),
+        ],
+        ..cmd("host", "", "The daemon sessions run in, which outlives the terminal")
+    }
 }
 
 /// Every flag the parser takes outside a command: the ones every command
@@ -607,6 +628,11 @@ fn prompt_flags() -> Vec<Flag> {
             BOOL,
             "With -p: let a backend (Claude Code, Codex) run in a repository not yet trusted — it runs the repository's hooks and MCP servers without asking. Without it, -p refuses unless a person at the terminal says yes",
         ),
+        flag(
+            "daemon",
+            BOOL,
+            "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it",
+        ),
     ]
 }
 
@@ -697,6 +723,11 @@ with `claude auth login` or `codex login`).",
         "providers list" => "Where each runs, too. The same check as `krowk status`.",
         #[cfg(feature = "harness")]
         "providers" => "Below `krowk connect`: API keys, logins, Claude Code and Codex accounts.",
+        #[cfg(feature = "harness")]
+        "host" => "\
+The first krowk that needs it starts the daemon, and it exits after ten idle
+minutes (host.idleMinutes in config.json, or KROWK_HOST_IDLE seconds).
+`krowk host enable` keeps it running instead, for an always-on machine.",
         _ => "",
     }
 }
@@ -715,6 +746,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
         &[
             #[cfg(feature = "harness")]
             "providers",
+            #[cfg(all(feature = "harness", unix))]
+            "host",
             #[cfg(all(feature = "sessions", not(feature = "harness")))]
             "sessions",
             "config",

@@ -1,0 +1,1750 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ServerFrame",
+  "description": "What the host daemon sends a client, one JSON object a line.",
+  "oneOf": [
+    {
+      "description": "The answer to a `hello` the daemon can serve.",
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "krowkVersion": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "welcome"
+        }
+      },
+      "required": [
+        "type",
+        "protocolVersion",
+        "krowkVersion",
+        "pid"
+      ]
+    },
+    {
+      "description": "The answer to one it cannot: a client of another protocol version.\nThe connection closes after it.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "fix": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "refused"
+        }
+      },
+      "required": [
+        "type",
+        "code",
+        "message",
+        "fix"
+      ]
+    },
+    {
+      "description": "A frame of a session the client follows, exactly as the in-process\ntransport streams it.",
+      "type": "object",
+      "properties": {
+        "line": {
+          "$ref": "#/$defs/StreamLine"
+        },
+        "type": {
+          "type": "string",
+          "const": "line"
+        }
+      },
+      "required": [
+        "type",
+        "line"
+      ]
+    },
+    {
+      "description": "A command's end: its result for a `prompt` or `continue`, nothing for\nthe rest, or why it did not run.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "done"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    },
+    {
+      "description": "An `attach` has caught up: every frame after this one is live.\n`running` says whether a turn of the session is under way.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "running": {
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "attached"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "sessionId",
+        "running"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "status": {
+          "$ref": "#/$defs/HostStatus"
+        },
+        "type": {
+          "type": "string",
+          "const": "status"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "status"
+      ]
+    }
+  ],
+  "$defs": {
+    "StreamLine": {
+      "description": "One line of `--output-format stream-json`, and of anything else that\ncarries the event stream: a logged event exactly as the log has it, or a\nlive frame. The two never share a `type`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LogEvent"
+        },
+        {
+          "$ref": "#/$defs/LiveEvent"
+        }
+      ]
+    },
+    "LogEvent": {
+      "description": "One line of a session's log: typed, with a UUIDv7 `id`, and a `parentId`\nnaming the event before it on the same branch — so a fork or a rewind is\na second child of some earlier event, and the log is a tree (R-LOG-1).\nOnly the root, `session.started`, has no parent, and its id is the\nsession's id.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "sessionId": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "timeMs": {
+          "description": "Milliseconds since the Unix epoch, UTC. Order is the parent chain,\nnever this.",
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "timeMs"
+      ],
+      "oneOf": [
+        {
+          "description": "The root of every session.",
+          "type": "object",
+          "properties": {
+            "cwd": {
+              "type": "string"
+            },
+            "krowkVersion": {
+              "type": "string"
+            },
+            "protocolVersion": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parentSessionId": {
+              "description": "The session that spawned this one, for a subagent: its spend is\npart of what that session spent, and a budget counts it there.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "agent": {
+              "description": "The agent definition a subagent runs, by name, when it runs one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "session.started"
+            }
+          },
+          "required": [
+            "type",
+            "cwd",
+            "krowkVersion",
+            "protocolVersion"
+          ]
+        },
+        {
+          "description": "A prompt arrived; the turn runs on `model`. The exact system prompt\nand tools it ran with are in the session's `context.jsonl` under\nthis `turnId` (R-LOG-4).",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "model": {
+              "$ref": "#/$defs/ModelRef"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "wireApi": {
+              "$ref": "#/$defs/WireApi"
+            },
+            "permissionMode": {
+              "$ref": "#/$defs/PermissionMode"
+            },
+            "effort": {
+              "description": "The effort asked for, on krowk's ladder, when one was; what the\nmodel was sent is that rung mapped onto the ones it takes.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Effort"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "turn.started"
+            }
+          },
+          "required": [
+            "type",
+            "turnId",
+            "model",
+            "provider",
+            "wireApi",
+            "permissionMode"
+          ]
+        },
+        {
+          "description": "One item, whole. `itemId` is the id its live frames carried.",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "itemId": {
+              "type": "string"
+            },
+            "item": {
+              "$ref": "#/$defs/Item"
+            },
+            "type": {
+              "type": "string",
+              "const": "item.completed"
+            }
+          },
+          "required": [
+            "type",
+            "turnId",
+            "itemId",
+            "item"
+          ]
+        },
+        {
+          "description": "One model call finished: what it cost, and which items it produced,\nin order — the items that were one message on the provider's wire.",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "responseId": {
+              "description": "The provider's id for the response, e.g. Anthropic's `msg_…`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "description": "The model the provider says answered.",
+              "type": "string"
+            },
+            "usage": {
+              "$ref": "#/$defs/Usage"
+            },
+            "stopReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "itemIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "response.completed"
+            }
+          },
+          "required": [
+            "type",
+            "turnId",
+            "model",
+            "usage",
+            "itemIds"
+          ]
+        },
+        {
+          "description": "The vendor's own session behind a backend turn: what the next\nprocess resumes (`claude --resume`), and where the vendor keeps its\ntranscript, so the session can travel with it (R-BACK-5). Logged\nwhen a backend first reports it, and again only when it changes.",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "backend": {
+              "description": "The backend, e.g. `claude-code` or `codex-app-server`.",
+              "type": "string"
+            },
+            "vendorSessionId": {
+              "description": "The vendor's session id, e.g. Claude Code's.",
+              "type": "string"
+            },
+            "transcriptPath": {
+              "description": "The vendor's transcript file for that session, when known.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "billing": {
+              "description": "Whether the vendor runs on the account's subscription or an API key.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Billing"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "backend.session"
+            }
+          },
+          "required": [
+            "type",
+            "turnId",
+            "backend",
+            "vendorSessionId"
+          ]
+        },
+        {
+          "description": "A model call a backend's own subagent made — Claude Code's `Task` —\nwhich is the subagent's conversation, not this one: metered, so the\nbudget and the session's cost count it, and never replayed.",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "responseId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "description": "The model the provider says answered.",
+              "type": "string"
+            },
+            "usage": {
+              "$ref": "#/$defs/Usage"
+            },
+            "type": {
+              "type": "string",
+              "const": "subagent.response"
+            }
+          },
+          "required": [
+            "type",
+            "turnId",
+            "model",
+            "usage"
+          ]
+        },
+        {
+          "description": "A subagent this session started (R-SUB-1): the child session, which\nis its own log whose root names this session as its parent, and the\ntool call it answers — its final summary is that call's result. The\nlink both ways is what moves, syncs and rebuilds a session tree.",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "callId": {
+              "description": "The `subagent` tool call the child answers.",
+              "type": "string"
+            },
+            "subagentSessionId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "description": {
+              "description": "The few words the model gave it, which the TUI shows.",
+              "type": "string"
+            },
+            "agent": {
+              "description": "The agent definition it runs, when any.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "$ref": "#/$defs/ModelRef"
+            },
+            "type": {
+              "type": "string",
+              "const": "subagent.started"
+            }
+          },
+          "required": [
+            "type",
+            "turnId",
+            "callId",
+            "subagentSessionId",
+            "description",
+            "model"
+          ]
+        },
+        {
+          "description": "The session's todo list, whole, as `todo_write` last set it\n(R-TODO-2): each write replaces the list before it.",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "todos": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Todo"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "todos.updated"
+            }
+          },
+          "required": [
+            "type",
+            "turnId",
+            "todos"
+          ]
+        },
+        {
+          "description": "The krowk run this session's evidence is grouped under, opened by\nits first `publish` (R-EVID-1). Logged once; every later publish, and\na resumed session's, attaches to it.",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "run": {
+              "description": "The run's slug, e.g. `run_…`.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "run.opened"
+            }
+          },
+          "required": [
+            "type",
+            "turnId",
+            "run"
+          ]
+        },
+        {
+          "description": "The session moved to another model, instance or engine: asked for\n(`switchModel`), rolled over from an instance at its limit\n(R-INST-8), or back to the one before when the new one could not run\na turn (R-SWITCH-4). The next turn runs on `to` unless its prompt\nnames another.",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "description": "The turn it followed, when it followed one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "from": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ModelRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "to": {
+              "$ref": "#/$defs/ModelRef"
+            },
+            "reason": {
+              "$ref": "#/$defs/SwitchReason"
+            },
+            "detail": {
+              "description": "Why, in words: the limit that was hit and when it lifts, or the\nfailure the new model's turn ended with.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "model.switched"
+            }
+          },
+          "required": [
+            "type",
+            "to",
+            "reason"
+          ]
+        },
+        {
+          "description": "How a backend turn was brought up to date with what the session did\nelsewhere (R-SWITCH-2, R-INST-4). What the vendor was sent is in\n`context.jsonl` under the turn, as `handoff`.",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "how": {
+              "$ref": "#/$defs/HandoffKind"
+            },
+            "fromInstance": {
+              "description": "The instance whose transcript was copied, for `transcript`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "summarizedTurns": {
+              "description": "Earlier turns told as a summary, and recent ones as they happened.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0,
+              "default": 0
+            },
+            "recentTurns": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0,
+              "default": 0
+            },
+            "fellBack": {
+              "description": "Why a better handoff was not possible: a transcript that could\nnot be copied, a thread the vendor could not resume.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "backend.handoff"
+            }
+          },
+          "required": [
+            "type",
+            "turnId",
+            "how"
+          ]
+        },
+        {
+          "description": "The turn is over.",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/TurnStatus"
+            },
+            "usage": {
+              "description": "Every model call in the turn, summed.",
+              "$ref": "#/$defs/Usage"
+            },
+            "durationMs": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "reportedCostUsd": {
+              "description": "What a backend said the turn cost, when it says (Claude Code's\n`total_cost_usd`). A budget counts it when it is more than krowk\npriced the turn's calls at.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ErrorInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "turn.completed"
+            }
+          },
+          "required": [
+            "type",
+            "turnId",
+            "status",
+            "usage",
+            "durationMs"
+          ]
+        }
+      ]
+    },
+    "ModelRef": {
+      "description": "A model, named as the instance that serves it and the provider's own id\nfor it: `{\"instance\": \"anthropic\", \"model\": \"claude-opus-5-5\"}`.",
+      "type": "object",
+      "properties": {
+        "instance": {
+          "description": "A name from the instance registry, e.g. `anthropic` or `anthropic:work`.",
+          "type": "string"
+        },
+        "model": {
+          "description": "The provider's model id, e.g. `claude-opus-5-5`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instance",
+        "model"
+      ]
+    },
+    "WireApi": {
+      "description": "The wire API a provider speaks. An opaque blob is replayed only to the\nsame provider on the same wire API (R-LOG-3), so this travels with it.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "anthropic-messages"
+          ]
+        },
+        {
+          "description": "OpenAI's Responses API, run stateless (`store: false`).",
+          "type": "string",
+          "const": "openai-responses"
+        },
+        {
+          "description": "Chat Completions: xAI, OpenRouter, and any server that speaks it.",
+          "type": "string",
+          "const": "chat-completions"
+        },
+        {
+          "description": "The `claude` binary's stream-json protocol: Claude Code runs the\nloop and krowk drives it. A thinking signature it streams is\nClaude Code's to replay, never sent to the Messages API by krowk.",
+          "type": "string",
+          "const": "claude-code"
+        },
+        {
+          "description": "`codex app-server`'s JSON-RPC: Codex runs the loop, on its own\nlogin, and krowk drives it. Codex keeps its reasoning to itself, so\nnothing streamed here is ever replayed as a blob.",
+          "type": "string",
+          "const": "codex-app-server"
+        }
+      ]
+    },
+    "PermissionMode": {
+      "description": "Claude-Code-compatible permission modes (R-PERM-1): `default` asks\nbefore edits and commands, `acceptEdits` before commands, `plan` changes\nnothing, and `bypassPermissions` asks before nothing — though a deny\nrule, an ask rule and a hook's ask still hold in each of those. krowk's\nown `unhinged` holds nothing krowk's rules say: every call runs but one a\nhook blocks (`crate::permissions`).",
+      "type": "string",
+      "enum": [
+        "default",
+        "acceptEdits",
+        "plan",
+        "bypassPermissions",
+        "unhinged"
+      ]
+    },
+    "Effort": {
+      "description": "How hard a model thinks, on one ladder for every provider (R-PROV-2).\nEach model takes some of these rungs under its own names; the rung asked\nfor is mapped onto the nearest one the model takes (`crate::effort`).",
+      "type": "string",
+      "enum": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "Item": {
+      "description": "One thing inside a turn, provider-neutral. `reasoning` carries what can\nbe shown, and the provider's own state in `blob`.",
+      "oneOf": [
+        {
+          "description": "What the person asked.",
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "userText"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "description": "What the model answered, as text.",
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "assistantText"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "description": "The model's reasoning: its readable text (often a summary, or empty\nwhen the provider withholds it) and the blob that lets it be replayed.",
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "blob": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ProviderBlob"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "reasoning"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "description": "A tool the model asked krowk to run. `callId` is the provider's id,\nwhich the matching result repeats.",
+          "type": "object",
+          "properties": {
+            "callId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "input": true,
+            "kind": {
+              "type": "string",
+              "const": "toolCall"
+            }
+          },
+          "required": [
+            "kind",
+            "callId",
+            "name",
+            "input"
+          ]
+        },
+        {
+          "description": "What running it produced. A refusal or a failure is a result too,\nwith `isError`, so the model can read why.",
+          "type": "object",
+          "properties": {
+            "callId": {
+              "type": "string"
+            },
+            "output": {
+              "type": "string"
+            },
+            "isError": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "toolResult"
+            }
+          },
+          "required": [
+            "kind",
+            "callId",
+            "output",
+            "isError"
+          ]
+        }
+      ]
+    },
+    "ProviderBlob": {
+      "description": "State a provider needs back verbatim and nobody else may read: a thinking\nsignature, redacted thinking, encrypted reasoning. Stored as the provider\nsent it and replayed unmodified, only to the provider and wire API named\nhere. Anywhere else the reasoning is left out of the request — its text\nis never passed off as something the other model said.",
+      "type": "object",
+      "properties": {
+        "provider": {
+          "description": "The provider that produced it, e.g. `anthropic`.",
+          "type": "string"
+        },
+        "wireApi": {
+          "$ref": "#/$defs/WireApi"
+        },
+        "data": {
+          "description": "Opaque to everything but that provider's client."
+        }
+      },
+      "required": [
+        "provider",
+        "wireApi",
+        "data"
+      ]
+    },
+    "Usage": {
+      "description": "Tokens, split the five ways they are priced. `outputTokens` excludes\n`reasoningTokens` when the provider reports the split; a provider that\ndoes not counts reasoning inside output.",
+      "type": "object",
+      "properties": {
+        "inputTokens": {
+          "description": "Input read at the full rate: what came after the last cache hit.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "outputTokens": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "cacheReadTokens": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "cacheWriteTokens": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "reasoningTokens": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "reasoningTokens"
+      ]
+    },
+    "Billing": {
+      "description": "What a backend session is billed to, as the vendor reports it: the\naccount's subscription, or an API key (R-INST-3).",
+      "type": "string",
+      "enum": [
+        "subscription",
+        "apiKey"
+      ]
+    },
+    "Todo": {
+      "description": "One item of a todo list. Fields other harnesses' todo tools add —\nClaude Code's `activeForm`, an `id`, a `priority` — are taken and\ndropped, so a model trained on theirs is not refused for them.",
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TodoStatus"
+        }
+      },
+      "required": [
+        "content",
+        "status"
+      ]
+    },
+    "TodoStatus": {
+      "description": "Where a todo stands. The names are the ones models are trained on.",
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed"
+      ]
+    },
+    "SwitchReason": {
+      "description": "Why a session moved to another model.",
+      "oneOf": [
+        {
+          "description": "A client asked (`switchModel`).",
+          "type": "string",
+          "const": "requested"
+        },
+        {
+          "description": "The instance it was on hit its rate or usage limit, and `rollover`\nis `auto` (R-INST-8).",
+          "type": "string",
+          "const": "rateLimited"
+        },
+        {
+          "description": "The model a turn switched to could not run it — no login, no key,\nno binary — so the session went back to the one before (R-SWITCH-4).",
+          "type": "string",
+          "const": "switchFailed"
+        }
+      ]
+    },
+    "HandoffKind": {
+      "description": "How a backend was brought up to date with a session that ran somewhere\nelse first (R-SWITCH-2, R-INST-4).",
+      "oneOf": [
+        {
+          "description": "The vendor's own transcript, copied from another instance of the\nsame vendor into this one's config directory and resumed there: the\nfull context, not a summary.",
+          "type": "string",
+          "const": "transcript"
+        },
+        {
+          "description": "The vendor resumed its own thread, and was told what happened on\nother models since it last ran.",
+          "type": "string",
+          "const": "catchUp"
+        },
+        {
+          "description": "A new vendor session, seeded with krowk's summary of the earlier\nturns and the most recent ones as they happened.",
+          "type": "string",
+          "const": "summary"
+        }
+      ]
+    },
+    "TurnStatus": {
+      "description": "How a turn ended.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "completed"
+          ]
+        },
+        {
+          "description": "Stopped by an `interrupt`: what arrived before it is kept.",
+          "type": "string",
+          "const": "interrupted"
+        },
+        {
+          "description": "The engine could not finish: `error` says why.",
+          "type": "string",
+          "const": "failed"
+        }
+      ]
+    },
+    "ErrorInfo": {
+      "description": "Why something failed, as a code a script branches on and a sentence that\nnames the next action.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "httpStatus": {
+          "description": "The HTTP status the provider answered with, when the failure was an\nanswer.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "resetsAtMs": {
+          "description": "For a rate or usage limit: when the provider said it lifts, in\nmilliseconds since the Unix epoch, when it said.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "LiveEvent": {
+      "description": "A frame that is never logged: the typing, and the answer to a command.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            },
+            "itemId": {
+              "type": "string"
+            },
+            "item": {
+              "$ref": "#/$defs/ItemKind"
+            },
+            "type": {
+              "type": "string",
+              "const": "item.started"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "turnId",
+            "itemId",
+            "item"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            },
+            "itemId": {
+              "type": "string"
+            },
+            "delta": {
+              "$ref": "#/$defs/Delta"
+            },
+            "type": {
+              "type": "string",
+              "const": "item.delta"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "turnId",
+            "itemId",
+            "delta"
+          ]
+        },
+        {
+          "description": "What the session has spent so far, after each metered model call:\nwhat the status bar shows (R-BUDGET-2). `costUsd` counts the session\nand its subagents; null when any of it has no price.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            },
+            "costUsd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "turnCostUsd": {
+              "description": "This turn's part of it.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "generatedTokens": {
+              "description": "Output and reasoning tokens, session and subagents: what\n`--max-tokens` counts.",
+              "type": "integer",
+              "format": "int64"
+            },
+            "type": {
+              "type": "string",
+              "const": "cost"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "turnId",
+            "generatedTokens"
+          ]
+        },
+        {
+          "description": "Something for the person at the client and nobody else: an\nanonymous upload's claim command, whose token is a secret. Never\nlogged, never in what a model reads; `krowk -p` prints it on stderr\nand leaves it out of `stream-json`. One sent between turns (a\nbackend let go with its agents) has an empty `turnId`.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "notice"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "turnId",
+            "text"
+          ]
+        },
+        {
+          "description": "How close an instance is to its rate or usage limit, whenever its\nprovider says (R-INST-6).",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "limit": {
+              "$ref": "#/$defs/LimitStatus"
+            },
+            "type": {
+              "type": "string",
+              "const": "limits"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "turnId",
+            "instance",
+            "limit"
+          ]
+        },
+        {
+          "description": "A tool call waits for a person's say.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "approval.requested"
+            }
+          },
+          "$ref": "#/$defs/ApprovalRequest",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "A request was answered — by any client, or by an interrupt (`deny`):\nevery other client that shows it can put it away.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "decision": {
+              "$ref": "#/$defs/ApprovalDecision"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval.resolved"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "turnId",
+            "requestId",
+            "decision"
+          ]
+        },
+        {
+          "description": "How a `prompt` came out: the last thing a headless run prints.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "result"
+            }
+          },
+          "$ref": "#/$defs/RunResult",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "The agents a backend runs by itself for the session (Claude Code's\n`Agent` tool, often in the background), whole, each time the list\nchanges — during a turn and between turns alike. Between turns it\nreaches a host's watchers (`Host::watch`) rather than a turn's\nstream. Empty when the last one has finished.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BackendAgent"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "backend.agents"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "agents"
+          ]
+        },
+        {
+          "description": "A backend began a turn nobody prompted — Claude Code answering a\nbackground agent that finished — and it waits for `continue`. Sent\nto a host's watchers, between turns.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "reason": {
+              "description": "What it answers, in words: `background agent “x” completed`.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "turn.unprompted"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "ItemKind": {
+      "description": "What an item is, before any of it has arrived.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "userText"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "assistantText"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "reasoning"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "callId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "toolCall"
+            }
+          },
+          "required": [
+            "kind",
+            "callId",
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "callId": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "toolResult"
+            }
+          },
+          "required": [
+            "kind",
+            "callId"
+          ]
+        }
+      ]
+    },
+    "Delta": {
+      "description": "A piece of an item as it streams.",
+      "oneOf": [
+        {
+          "description": "More text, for assistant text and reasoning alike.",
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "description": "More of a tool call's input, as a fragment of its JSON.",
+          "type": "object",
+          "properties": {
+            "partialJson": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "toolInput"
+            }
+          },
+          "required": [
+            "kind",
+            "partialJson"
+          ]
+        }
+      ]
+    },
+    "LimitStatus": {
+      "description": "How close an instance is to its rate or usage limit, as its provider\nlast said (R-INST-6): Claude Code's rate-limit events, Codex's\nrate-limit snapshots, a native API's rate-limit headers.",
+      "type": "object",
+      "properties": {
+        "status": {
+          "description": "`allowed`, `warning` (near it) or `limited` (reached).",
+          "$ref": "#/$defs/LimitState"
+        },
+        "window": {
+          "description": "The window the limit counts over, as the provider names it:\n`five_hour`, `seven_day`, `requests`, `tokens`, `300m`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usedPercent": {
+          "description": "How much of it is used, 0–100, when the provider says.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "resetsAtMs": {
+          "description": "When it resets, in milliseconds since the Unix epoch, when the\nprovider says.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "LimitState": {
+      "type": "string",
+      "enum": [
+        "allowed",
+        "warning",
+        "limited"
+      ]
+    },
+    "ApprovalRequest": {
+      "description": "A tool call waiting for a person's say (R-PERM-2): sent to every client\nof the session as `approval.requested`, and answered by one of them with\n`approve`. It waits until answered or the turn is interrupted; a host\nwith no client that answers never sends one, and refuses the call.",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "requestId": {
+          "description": "What `approve` names.",
+          "type": "string"
+        },
+        "tool": {
+          "description": "The tool, as the model called it.",
+          "type": "string"
+        },
+        "input": {
+          "description": "Its input, as the model gave it."
+        },
+        "summary": {
+          "description": "What it would do, in a line, e.g. Bash `rm -rf build` or Write /x/y.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why it is asked rather than run.",
+          "type": "string"
+        },
+        "remember": {
+          "description": "The rules `allowSession` or `allowProject` would remember; none when\nthis call can only be allowed once.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "requestId",
+        "tool",
+        "input",
+        "summary",
+        "reason"
+      ]
+    },
+    "ApprovalDecision": {
+      "description": "An answer to a permission request: allow this call, allow calls like it\nfor the rest of the session or for good in this project (the request's\n`remember` rules), or deny it.",
+      "type": "string",
+      "enum": [
+        "allow",
+        "allowSession",
+        "allowProject",
+        "deny"
+      ]
+    },
+    "SwitchOffer": {
+      "description": "A switch the host suggests when an instance hits its limit and\n`rollover` is `offer`, the default (R-INST-7): the client asks the\nperson, and a yes is `switchModel` to `to` and the prompt again.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/ModelRef"
+        },
+        "to": {
+          "$ref": "#/$defs/ModelRef"
+        },
+        "resetsAtMs": {
+          "description": "When `from`'s limit lifts, when the provider said.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "RunResult": {
+      "description": "The outcome of one `prompt`, with what it cost.",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TurnStatus"
+        },
+        "isError": {
+          "type": "boolean"
+        },
+        "result": {
+          "description": "The turn's final answer: its last assistant text.",
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelRef"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        },
+        "costUsd": {
+          "description": "USD at current models.dev prices, the turn's subagents included;\nnull when any of it has no price.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "durationMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "numModelCalls": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unreadSteers": {
+          "description": "Steering the host accepted for this turn and the engine never read —\nthe turn was interrupted or failed first — oldest first, handed back\nso the client that sent it can offer it again. Never set on a\ncompleted turn: a turn does not complete with steering unread.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "switchOffer": {
+          "description": "A turn that failed on its instance's rate or usage limit, with\n`rollover` at `offer`: the instance it could continue on (R-INST-7).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SwitchOffer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "turnId",
+        "status",
+        "isError",
+        "result",
+        "model",
+        "usage",
+        "durationMs",
+        "numModelCalls"
+      ]
+    },
+    "BackendAgent": {
+      "description": "One agent a backend runs by itself: it is the vendor's, with its own\nconversation, and krowk only reports it (its spend is metered as\n`subagent.response`).",
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "description": "The vendor's id for it, e.g. Claude Code's `task_id`.",
+          "type": "string"
+        },
+        "description": {
+          "description": "The few words the model gave it.",
+          "type": "string"
+        },
+        "agent": {
+          "description": "The agent definition it runs (Claude Code's `subagent_type`), when\nnamed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "taskId",
+        "description"
+      ]
+    },
+    "HostStatus": {
+      "description": "How the host daemon is: `krowk host status`.",
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "krowkVersion": {
+          "type": "string"
+        },
+        "protocolVersion": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "socket": {
+          "type": "string"
+        },
+        "uptimeMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "clients": {
+          "description": "Clients connected now, this one included.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "idleExitMs": {
+          "description": "How long it stays up with nothing to do; none when it never exits\nby itself (run as a service).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sessions": {
+          "description": "The sessions it has run since it started, newest first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HostSession"
+          }
+        }
+      },
+      "required": [
+        "pid",
+        "krowkVersion",
+        "protocolVersion",
+        "socket",
+        "uptimeMs",
+        "clients",
+        "sessions"
+      ]
+    },
+    "HostSession": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "running": {
+          "description": "A turn of it is under way.",
+          "type": "boolean"
+        },
+        "clients": {
+          "description": "Clients following it now.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "sessionId",
+        "running",
+        "clients"
+      ]
+    }
+  }
+}

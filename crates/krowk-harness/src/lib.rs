@@ -40,6 +40,9 @@
 //!   `readiness` — whether each can run a turn here, and what fixes it;
 //!   `connect` — connecting one and signing it out, for the CLI and the TUI.
 //! - `headless` — `krowk -p`.
+//! - `daemon` — the per-user host daemon a session outlives the terminal
+//!   in, its unix socket, and the service that keeps it up (R-HOST-1,
+//!   R-HOST-2).
 //!
 //! Canon `engineering/harness.md` describes all of it for readers who will
 //! not open the code.
@@ -54,6 +57,8 @@ pub mod claude;
 pub mod codex;
 pub mod compat;
 pub mod connect;
+#[cfg(unix)]
+pub mod daemon;
 pub mod effort;
 pub mod engine;
 pub mod evidence;

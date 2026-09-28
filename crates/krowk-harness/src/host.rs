@@ -193,6 +193,14 @@ impl Host {
         self.shared.watch.subscribe()
     }
 
+    /// Denies every approval request of these sessions still waiting: the
+    /// daemon's, when the last client that could answer them went away.
+    pub fn deny_waiting(&self, sessions: &[String]) {
+        for s in sessions {
+            self.shared.approvals.deny_session(s);
+        }
+    }
+
     /// Keeps an idle session's backend process this long instead of
     /// `BACKEND_IDLE`.
     pub fn with_backend_idle(mut self, idle: std::time::Duration) -> Host {

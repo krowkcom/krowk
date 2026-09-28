@@ -91,7 +91,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         agents: agents_config(ctx.io.env),
     };
     let opts = headless::Options { prompt, resume, model, permission_mode, toolset, effort, budget, format };
-    let outcome = headless::run(cfg, opts, ctx.io.stdout);
+    let outcome = if ctx.f.daemon { on_daemon(ctx, &cfg.cwd.clone(), opts)? } else { headless::run(cfg, opts, ctx.io.stdout) };
     let _ = ctx.io.stdout.flush();
 
     // The log is the session; krowk.db is its projection, brought up to date
@@ -115,6 +115,23 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         }
         _ => Ok(()),
     }
+}
+
+/// `--daemon`: the turn is the host daemon's, started first when none runs.
+/// The daemon trusts only a repository on the trusted list, so `--trust`
+/// has nothing to reach it with.
+#[cfg(unix)]
+fn on_daemon(ctx: &mut Ctx, cwd: &std::path::Path, opts: headless::Options) -> Result<headless::Outcome, Error> {
+    if ctx.f.trust {
+        return Err(fail("bad_flag", "--trust holds for one run in this process, and --daemon runs the turn in the host daemon — trust the repository for good (run krowk there on a terminal once), or drop --daemon"));
+    }
+    let spawn = super::host::spawner(ctx)?;
+    Ok(headless::run_on_daemon(ctx.io.env, cwd, super::VERSION, &spawn, opts, ctx.io.stdout))
+}
+
+#[cfg(not(unix))]
+fn on_daemon(_: &mut Ctx, _: &std::path::Path, _: headless::Options) -> Result<headless::Outcome, Error> {
+    Err(fail("not_supported", "--daemon needs a unix socket, which this platform's build does not have yet"))
 }
 
 /// `--model`, read: an instance and a model, or a bare id to route.
@@ -188,6 +205,7 @@ pub(super) fn permissions_config(ctx: &Ctx, config: &serde_json::Value, trusted:
     permissions::Config {
         user: Some(config.clone()),
         user_path: super::providers::config_path().ok(),
+        reread: false,
         home,
         claude_dir,
         krowk_dir: super::providers::krowk_dir().ok(),

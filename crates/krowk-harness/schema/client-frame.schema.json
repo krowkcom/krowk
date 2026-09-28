@@ -1,0 +1,411 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ClientFrame",
+  "description": "What a client sends the host daemon over its unix socket (R-PROTO-1's\nsecond transport), one JSON object a line. The first line is `hello`;\neverything after it wraps the same `Command` the in-process client\nhands `Host::execute`, so a client is written once for both.",
+  "oneOf": [
+    {
+      "description": "Names the protocol the client speaks, and the directory a new\nsession it starts runs in: the daemon serves every directory at once.",
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "krowkVersion": {
+          "description": "The client's own version, for the daemon's log.",
+          "type": "string"
+        },
+        "answersApprovals": {
+          "description": "Whether the client answers `approval.requested` (the TUI). A turn\nit runs asks it, and a request left with no such client\nfollowing the session is denied. One that does not (`krowk -p`)\nruns its turns as the in-process `-p` does: what would be asked\nis refused, with what would allow it.",
+          "type": "boolean",
+          "default": false
+        },
+        "type": {
+          "type": "string",
+          "const": "hello"
+        }
+      },
+      "required": [
+        "type",
+        "protocolVersion",
+        "cwd"
+      ]
+    },
+    {
+      "description": "Runs a command; answered by `done` with the same `id`. The session a\n`prompt` or `continue` runs in is followed from its first line.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "command": {
+          "$ref": "#/$defs/Command"
+        },
+        "type": {
+          "type": "string",
+          "const": "execute"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "command"
+      ]
+    },
+    {
+      "description": "Follows a session: what its log holds after `afterEventId` (all of\nit when absent), the running turn's frames so far, then every frame\nas it happens — the same ones each other client following it gets.\nAnswered by `attached` once the catching-up is sent.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "afterEventId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "attach"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "sessionId"
+      ]
+    },
+    {
+      "description": "Asks how the daemon is; answered by `status`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "status"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    },
+    {
+      "description": "Asks the daemon to exit — `krowk host enable`, handing over to the\nservice. Refused with `host_busy` while a turn runs; answered by\n`done` just before it goes.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "stop"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    }
+  ],
+  "$defs": {
+    "Command": {
+      "description": "What a client asks of the engine. `prompt`, `interrupt`, `steer`,\n`approve`, `switchModel` and `continue` are served today; the rest are typed now so\nevery client is written against the whole vocabulary, and are refused\nwith `not_implemented` until their tickets land.",
+      "oneOf": [
+        {
+          "description": "Start a turn: in `sessionId` when given, else in a new session.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "model": {
+              "description": "The model for this turn; the session's last one when absent.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ModelRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "permissionMode": {
+              "$ref": "#/$defs/PermissionMode",
+              "default": "default"
+            },
+            "toolset": {
+              "description": "The toolset preset for this turn (`claude`, `gpt`, `grok`); the\nconfig's, else the one the model's family picks, when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "effort": {
+              "description": "The reasoning effort for this turn, on krowk's ladder; the\ninstance's, else the provider's default, when absent.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Effort"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "budget": {
+              "description": "The spend this session, with its subagents, may reach: the engine\nrefuses the model call that would go past it (R-BUDGET-1). No\nlimit when absent.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BudgetLimits"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "prompt"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "description": "Stop the running turn, keeping what it produced so far.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "interrupt"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId"
+          ]
+        },
+        {
+          "description": "Add input to the running turn without stopping it. The engine takes\nit before its next model call, and it is logged there as a\n`userText` item.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "steer"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "text"
+          ]
+        },
+        {
+          "description": "Answer an `approval.requested`.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "decision": {
+              "$ref": "#/$defs/ApprovalDecision"
+            },
+            "type": {
+              "type": "string",
+              "const": "approve"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "requestId",
+            "decision"
+          ]
+        },
+        {
+          "description": "Continue the session on another model, instance or engine\n(R-SWITCH-4): checked now — the instance, its key or login, its\nbinary — and refused with the fix when it cannot run, the session\nstaying where it was; accepted, it is logged as `model.switched` and\nthe session's next prompt runs there. While a turn runs it is logged\nonce the turn is over. Without `sessionId` it is only checked: a\nclient that has no session yet asks before its first prompt.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "$ref": "#/$defs/ModelRef"
+            },
+            "type": {
+              "type": "string",
+              "const": "switchModel"
+            }
+          },
+          "required": [
+            "type",
+            "model"
+          ]
+        },
+        {
+          "description": "Branch the session at an event: the new branch's first event names\nit as its parent.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "fromEventId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "fork"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "fromEventId"
+          ]
+        },
+        {
+          "description": "Run the turn a backend began by itself (`turn.unprompted`) — Claude\nCode answering a background agent that finished — as a turn of the\nsession, logged like any other. Refused with `nothing_pending` when\nno such turn is waiting. A `prompt` that arrives first runs it ahead\nof itself, so no prompt ever ends at that turn's answer.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "budget": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BudgetLimits"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "continue"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId"
+          ]
+        }
+      ]
+    },
+    "ModelRef": {
+      "description": "A model, named as the instance that serves it and the provider's own id\nfor it: `{\"instance\": \"anthropic\", \"model\": \"claude-opus-5-5\"}`.",
+      "type": "object",
+      "properties": {
+        "instance": {
+          "description": "A name from the instance registry, e.g. `anthropic` or `anthropic:work`.",
+          "type": "string"
+        },
+        "model": {
+          "description": "The provider's model id, e.g. `claude-opus-5-5`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instance",
+        "model"
+      ]
+    },
+    "PermissionMode": {
+      "description": "Claude-Code-compatible permission modes (R-PERM-1): `default` asks\nbefore edits and commands, `acceptEdits` before commands, `plan` changes\nnothing, and `bypassPermissions` asks before nothing — though a deny\nrule, an ask rule and a hook's ask still hold in each of those. krowk's\nown `unhinged` holds nothing krowk's rules say: every call runs but one a\nhook blocks (`crate::permissions`).",
+      "type": "string",
+      "enum": [
+        "default",
+        "acceptEdits",
+        "plan",
+        "bypassPermissions",
+        "unhinged"
+      ]
+    },
+    "Effort": {
+      "description": "How hard a model thinks, on one ladder for every provider (R-PROV-2).\nEach model takes some of these rungs under its own names; the rung asked\nfor is mapped onto the nearest one the model takes (`crate::effort`).",
+      "type": "string",
+      "enum": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "BudgetLimits": {
+      "description": "What a session may spend, counted over the session and every subagent\nit spawned, from the usage the provider metered — never from what a\nrequest asked for.",
+      "type": "object",
+      "properties": {
+        "maxUsd": {
+          "description": "US dollars, priced from models.dev: `--max-usd`.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "maxTokens": {
+          "description": "Generated tokens — output and reasoning, the part that overshoots a\nrequest's cap: `--max-tokens`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      }
+    },
+    "ApprovalDecision": {
+      "description": "An answer to a permission request: allow this call, allow calls like it\nfor the rest of the session or for good in this project (the request's\n`remember` rules), or deny it.",
+      "type": "string",
+      "enum": [
+        "allow",
+        "allowSession",
+        "allowProject",
+        "deny"
+      ]
+    }
+  }
+}
