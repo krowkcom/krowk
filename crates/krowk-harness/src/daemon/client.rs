@@ -60,11 +60,11 @@ pub fn engine_error(e: ErrorInfo) -> EngineError {
 
 impl Client {
     /// Connects and says hello: `cwd` is where a new session this client
-    /// starts runs.
-    pub async fn connect(path: &Path, cwd: &Path, version: &str) -> Result<Client, ConnectError> {
+    /// starts runs, and `answers` whether it answers approval requests.
+    pub async fn connect(path: &Path, cwd: &Path, version: &str, answers: bool) -> Result<Client, ConnectError> {
         let stream = UnixStream::connect(path).await.map_err(|e| if absent(&e) { ConnectError::Absent } else { ConnectError::Failed(EngineError::new("host_unavailable", format!("{} cannot be reached: {e}", path.display()))) })?;
         let (r, mut w) = stream.into_split();
-        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: version.to_string() };
+        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: version.to_string(), answers_approvals: answers };
         let fail = |e: std::io::Error| ConnectError::Failed(EngineError::new("host_unavailable", format!("{} did not answer: {e}", path.display())));
         w.write_all((serde_json::to_string(&hello).expect("a frame serializes") + "\n").as_bytes()).await.map_err(fail)?;
         let mut lines = BufReader::new(r).lines();
@@ -172,6 +172,16 @@ impl Client {
         match rx.await {
             Ok(ServerFrame::Attached { error: Some(e), .. }) => Err(engine_error(e)),
             Ok(ServerFrame::Attached { running, .. }) => Ok(running),
+            _ => Err(gone()),
+        }
+    }
+
+    /// Asks the daemon to exit; refused (`host_busy`) while a turn runs.
+    pub async fn stop(&self) -> Result<(), EngineError> {
+        let rx = self.ask(|id| ClientFrame::Stop { id }, None)?;
+        match rx.await {
+            Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
+            Ok(ServerFrame::Done { .. }) => Ok(()),
             _ => Err(gone()),
         }
     }

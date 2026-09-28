@@ -899,6 +899,13 @@ pub enum ClientFrame {
         /// The client's own version, for the daemon's log.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         krowk_version: String,
+        /// Whether the client answers `approval.requested` (the TUI). A turn
+        /// it runs asks it, and a request left with no such client
+        /// following the session is denied. One that does not (`krowk -p`)
+        /// runs its turns as the in-process `-p` does: what would be asked
+        /// is refused, with what would allow it.
+        #[serde(default)]
+        answers_approvals: bool,
     },
     /// Runs a command; answered by `done` with the same `id`. The session a
     /// `prompt` or `continue` runs in is followed from its first line.
@@ -915,6 +922,10 @@ pub enum ClientFrame {
     },
     /// Asks how the daemon is; answered by `status`.
     Status { id: u64 },
+    /// Asks the daemon to exit — `krowk host enable`, handing over to the
+    /// service. Refused with `host_busy` while a turn runs; answered by
+    /// `done` just before it goes.
+    Stop { id: u64 },
 }
 
 /// What the host daemon sends a client, one JSON object a line.

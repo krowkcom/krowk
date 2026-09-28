@@ -158,14 +158,18 @@ unit = "bytes"
 # the two key files merged entry by entry; a held key compared as it is;
 # a linked key file named) adds 6,336: 8,498,216, 152,536 under this.
 # The Harness P1 umbrella measures 8,628,168, 22,584 under this. Harness P1
-# ticket 13, the host daemon, adds 347,776 bytes with no new crate. That is
-# the socket server around Host (per-directory hosts, per-session fan-out,
-# catching up a late client, the idle exit, tokio's LocalSet and unix
-# listener, which were already linked but unused until now), its client and
-# the lock-guarded spawn, the serde code for the socket's frames, headless
-# compiled for both transports, `krowk host` and the service files. That
-# comes to 8,975,944 (8.56 MiB), 325,192 over 8.25 MiB. Raised 8.25 ->
-# 8.75 MiB by ticket 13, leaving 199,096 bytes for the rest of Harness P1.
+# ticket 13, the host daemon, adds no new crate. What it does add: the
+# socket server around Host (per-directory hosts, per-session fan-out,
+# catching up a late client, the idle exit and stop, tokio's LocalSet and
+# unix listener, linked but unused until now), its client and the
+# lock-guarded spawn, Deserialize for StreamLine, Command and RunResult,
+# which the socket's frames pull in, headless compiled for both
+# transports, `krowk host` and the service files. It measures 8,997,096
+# (8.58 MiB) in review, and 9,010,408 after review round 1 (approvals by the
+# client's capability, the per-home socket, config re-read per turn,
+# enable's handover): 382,240 over the umbrella, 360,008 over 8.25 MiB.
+# Raised 8.25 -> 8.75 MiB by ticket 13, leaving 164,632 bytes for the rest
+# of Harness P1.
 max = { x86_64-linux = 9_175_040 }
 status = "enforced"
 

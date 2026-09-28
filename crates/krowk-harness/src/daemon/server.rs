@@ -11,9 +11,13 @@
 //! including the typing of the item under way, which the log alone does
 //! not hold (R-LAG-1).
 //!
-//! One `Host` serves each working directory clients connect from: a new
-//! session starts where its client is, and a resumed one keeps its own
-//! directory, as it does in-process. Everything runs on one thread, as the
+//! One `Host` serves each working directory clients connect from, and
+//! whether the client answers approval requests (`hello.answersApprovals`):
+//! a new session starts where its client is, a resumed one keeps its own
+//! directory, as it does in-process, and a `krowk -p` client's turns refuse
+//! what would be asked exactly as in-process `-p` does. A request of an
+//! answering client's turn that no answering client is left to see — the
+//! last one went away — is denied, so no turn waits on nobody. Everything runs on one thread, as the
 //! in-process host does: nothing here is shared across threads.
 //!
 //! It exits after the idle window with no client connected and no turn
@@ -40,9 +44,11 @@ pub struct Options {
     pub krowk_version: String,
 }
 
-/// Makes the host configuration for clients in one working directory: the
-/// caller's, which owns the config, the keys and the price cache.
-pub type Factory = Box<dyn Fn(&Path) -> Result<HostConfig, EngineError>>;
+/// Makes the host configuration for clients in one working directory,
+/// whose turns ask a person (`true`) or refuse what would be asked: the
+/// caller's, which owns the config, the keys and the price cache. It sets
+/// `permissions.approvals` from the flag.
+pub type Factory = Box<dyn Fn(&Path, bool) -> Result<HostConfig, EngineError>>;
 
 /// Serves until idle or told to stop (SIGTERM, SIGINT), on a runtime of its
 /// own.
@@ -54,25 +60,40 @@ pub fn run(opts: Options, factory: Factory) -> Result<(), String> {
 
 struct State {
     factory: Factory,
-    hosts: HashMap<PathBuf, Rc<Host>>,
+    hosts: HashMap<(PathBuf, bool), Rc<Host>>,
     sessions_dir: Option<PathBuf>,
     hubs: HashMap<String, Hub>,
     clients: HashMap<u64, Client>,
     next_client: u64,
+    next_hub: u64,
     /// Turns running (`prompt` and `continue` commands under way).
     working: usize,
     started: Instant,
     opts: Options,
     /// Rung whenever what idleness depends on changes.
     wake: Rc<Notify>,
+    /// A client asked it to exit (`stop`).
+    stopping: bool,
 }
 
 struct Hub {
+    /// The host its last command ran on: where an `interrupt`, `steer` or
+    /// `approve` for it goes.
     host: Rc<Host>,
     followers: Vec<u64>,
-    /// The frames since the running turn's `turn.started`.
+    /// The frames of the running turn, from its `turn.started`; empty
+    /// between turns.
     turn: Vec<StreamLine>,
     running: bool,
+    /// Commands under way in it that stream (`prompt`, `continue`).
+    in_flight: usize,
+    /// The id of the last of its own log events sent to its followers:
+    /// where catching up from the log stops, since what the log has beyond
+    /// it is on its way live.
+    head: Option<String>,
+    /// Its subagents' sessions seen on its stream: their approval requests
+    /// are its followers' to answer too.
+    children: HashSet<String>,
     /// When it was first seen, for the status listing's order.
     seen: u64,
 }
@@ -80,8 +101,7 @@ struct Hub {
 struct Client {
     tx: mpsc::UnboundedSender<ServerFrame>,
     cwd: PathBuf,
-    /// Log events sent while catching up, not to be sent again live.
-    replayed: HashSet<String>,
+    answers: bool,
 }
 
 type Shared = Rc<RefCell<State>>;
@@ -115,6 +135,8 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         hubs: HashMap::new(),
         clients: HashMap::new(),
         next_client: 0,
+        next_hub: 0,
+        stopping: false,
         working: 0,
         started: Instant::now(),
         opts,
@@ -140,10 +162,14 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|e| e.to_string())?;
     let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(|e| e.to_string())?;
     loop {
-        let quiet = {
+        let (quiet, stopping) = {
             let s = state.borrow();
-            s.clients.is_empty() && s.working == 0
+            (s.clients.is_empty() && s.working == 0, s.stopping)
         };
+        if stopping {
+            eprintln!("asked to stop: exiting");
+            break;
+        }
         // The window starts again at every change: it is time with nothing
         // to do, not time since the start.
         let window = async {
@@ -191,8 +217,8 @@ async fn connection(stream: UnixStream, state: Shared) {
         _ => return,
     };
     let refuse = |code: &str, message: String, fix: String| ServerFrame::Refused { code: code.into(), message, fix };
-    let cwd = match serde_json::from_str::<ClientFrame>(&hello) {
-        Ok(ClientFrame::Hello { protocol_version, cwd, .. }) if protocol_version == PROTOCOL_VERSION => PathBuf::from(cwd),
+    let (cwd, answers) = match serde_json::from_str::<ClientFrame>(&hello) {
+        Ok(ClientFrame::Hello { protocol_version, cwd, answers_approvals, .. }) if protocol_version == PROTOCOL_VERSION => (PathBuf::from(cwd), answers_approvals),
         Ok(ClientFrame::Hello { protocol_version, .. }) => {
             let pid = std::process::id();
             let r = refuse(
@@ -214,7 +240,7 @@ async fn connection(stream: UnixStream, state: Shared) {
         s.next_client += 1;
         let id = s.next_client;
         let _ = tx.send(ServerFrame::Welcome { protocol_version: PROTOCOL_VERSION, krowk_version: s.opts.krowk_version.clone(), pid: std::process::id() });
-        s.clients.insert(id, Client { tx, cwd: cwd.clone(), replayed: HashSet::new() });
+        s.clients.insert(id, Client { tx, cwd: cwd.clone(), answers });
         s.wake.notify_one();
         id
     };
@@ -228,9 +254,11 @@ async fn connection(stream: UnixStream, state: Shared) {
     while let Ok(Some(line)) = lines.next_line().await {
         match serde_json::from_str::<ClientFrame>(&line) {
             Ok(ClientFrame::Execute { id: cmd_id, command }) => {
-                tokio::task::spawn_local(execute(state.clone(), id, cwd.clone(), cmd_id, command));
+                tokio::task::spawn_local(execute(state.clone(), id, cmd_id, command));
             }
-            Ok(ClientFrame::Attach { id: cmd_id, session_id, after_event_id }) => attach(&state, id, cmd_id, &session_id, after_event_id.as_deref()),
+            Ok(ClientFrame::Attach { id: cmd_id, session_id, after_event_id }) => {
+                tokio::task::spawn_local(attach(state.clone(), id, cmd_id, session_id, after_event_id));
+            }
             Ok(ClientFrame::Status { id: cmd_id }) => {
                 let s = state.borrow();
                 let f = ServerFrame::Status { id: cmd_id, status: status(&s) };
@@ -238,17 +266,37 @@ async fn connection(stream: UnixStream, state: Shared) {
                     let _ = c.tx.send(f);
                 }
             }
+            Ok(ClientFrame::Stop { id: cmd_id }) => {
+                let mut s = state.borrow_mut();
+                let error = (s.working > 0).then(|| ErrorInfo {
+                    code: "host_busy".into(),
+                    message: format!("the host daemon is running {} turn(s) — let them finish (`krowk host status` lists them), then try again", s.working),
+                    http_status: None,
+                    resets_at_ms: None,
+                });
+                if error.is_none() {
+                    s.stopping = true;
+                    s.wake.notify_one();
+                }
+                if let Some(c) = s.clients.get(&id) {
+                    let _ = c.tx.send(ServerFrame::Done { id: cmd_id, result: None, error });
+                }
+            }
             Ok(ClientFrame::Hello { .. }) => {}
             Err(e) => eprintln!("client {id}: a line that is no frame ({e}): {}", line.chars().take(200).collect::<String>()),
         }
     }
-    // The client is gone; what it started runs on.
+    // The client is gone; what it started runs on — but a request only it
+    // could have answered is answered now, so the turn does not wait on
+    // nobody.
     {
         let mut s = state.borrow_mut();
         s.clients.remove(&id);
         for h in s.hubs.values_mut() {
             h.followers.retain(|f| *f != id);
         }
+        s.unanswerable();
+        s.tidy();
         s.wake.notify_one();
     }
     let _ = writer.await;
@@ -273,18 +321,20 @@ fn status(s: &State) -> HostStatus {
     }
 }
 
-/// The host for clients in `cwd`, made on first need. Its between-turns
-/// frames (`Host::watch`) go to each session's followers.
-fn host_for(state: &Shared, cwd: &Path) -> Result<Rc<Host>, EngineError> {
-    if let Some(h) = state.borrow().hosts.get(cwd) {
+/// The host for clients in `cwd` that do or do not answer approvals, made
+/// on first need. Its between-turns frames (`Host::watch`) go to each
+/// session's followers.
+fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>, EngineError> {
+    let key = (cwd.to_path_buf(), answers);
+    if let Some(h) = state.borrow().hosts.get(&key) {
         return Ok(h.clone());
     }
-    let cfg = (state.borrow().factory)(cwd)?;
+    let cfg = (state.borrow().factory)(cwd, answers)?;
     let dir = cfg.sessions_dir.clone();
     let host = Rc::new(Host::new(cfg));
     let mut s = state.borrow_mut();
     s.sessions_dir.get_or_insert(dir);
-    s.hosts.insert(cwd.to_path_buf(), host.clone());
+    s.hosts.insert(key, host.clone());
     let mut watch = host.watch();
     let weak = Rc::downgrade(state);
     tokio::task::spawn_local(async move {
@@ -319,71 +369,137 @@ fn named(cmd: &Command) -> Option<&str> {
 impl State {
     /// The session's hub, made on first need, with `client` following it.
     fn follow(&mut self, session: &str, host: &Rc<Host>, client: u64) -> &mut Hub {
-        let seen = self.hubs.len() as u64;
-        let hub = self.hubs.entry(session.to_string()).or_insert_with(|| Hub { host: host.clone(), followers: Vec::new(), turn: Vec::new(), running: false, seen });
+        let seen = self.next_hub;
+        let hub = self.hubs.entry(session.to_string()).or_insert_with(|| Hub {
+            host: host.clone(),
+            followers: Vec::new(),
+            turn: Vec::new(),
+            running: false,
+            in_flight: 0,
+            head: None,
+            children: HashSet::new(),
+            seen,
+        });
+        if hub.seen == seen {
+            self.next_hub += 1;
+        }
         if self.clients.contains_key(&client) && !hub.followers.contains(&client) {
             hub.followers.push(client);
         }
         hub
     }
 
+    /// Whether any client following `hub` answers approval requests.
+    fn answered(&self, hub: &Hub) -> bool {
+        hub.followers.iter().any(|f| self.clients.get(f).is_some_and(|c| c.answers))
+    }
+
+    /// Denies the waiting requests of every session no answering client
+    /// follows any more.
+    fn unanswerable(&self) {
+        for (id, hub) in &self.hubs {
+            if hub.running && !self.answered(hub) {
+                let mut all: Vec<String> = hub.children.iter().cloned().collect();
+                all.push(id.clone());
+                hub.host.deny_waiting(&all);
+            }
+        }
+    }
+
+    /// Lets go of the sessions nothing follows or runs, and the hosts no
+    /// session of this daemon is on — each with its backend processes.
+    fn tidy(&mut self) {
+        self.hubs.retain(|_, h| h.running || h.in_flight > 0 || !h.followers.is_empty());
+        let idle: Vec<(PathBuf, bool)> = self.hosts.iter().filter(|(_, h)| Rc::strong_count(h) == 1).map(|(k, _)| k.clone()).collect();
+        for k in idle {
+            if let Some(h) = self.hosts.remove(&k) {
+                tokio::task::spawn_local(async move { h.shutdown().await });
+            }
+        }
+    }
+
     /// One frame of a command run for `client` in `root`'s session — a
     /// subagent's frames included, which are the parent's turn's.
     fn publish(&mut self, root: &str, host: &Rc<Host>, client: u64, line: StreamLine) {
         let hub = self.follow(root, host, client);
+        let own = line.session_id() == root;
+        if !own {
+            hub.children.insert(line.session_id().to_string());
+        }
         if let StreamLine::Log(ev) = &line
-            && ev.session_id == root
+            && own
         {
+            hub.head = Some(ev.id.clone());
             match ev.body {
                 LogBody::TurnStarted { .. } => {
                     hub.turn.clear();
                     hub.running = true;
                 }
-                LogBody::TurnCompleted { .. } => hub.running = false,
+                LogBody::TurnCompleted { .. } => {
+                    hub.running = false;
+                    hub.turn.clear();
+                }
                 _ => {}
             }
         }
-        hub.turn.push(line.clone());
+        if hub.running {
+            hub.turn.push(line.clone());
+        }
+        let asks = matches!(&line, StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(_)));
         let followers = hub.followers.clone();
-        for f in followers {
-            let Some(c) = self.clients.get_mut(&f) else { continue };
-            if let StreamLine::Log(ev) = &line
-                && c.replayed.remove(&ev.id)
-            {
-                continue;
+        for f in &followers {
+            if let Some(c) = self.clients.get(f) {
+                let _ = c.tx.send(ServerFrame::Line { line: line.clone() });
             }
-            let _ = c.tx.send(ServerFrame::Line { line: line.clone() });
+        }
+        // Asked with nobody left who could answer: denied at once.
+        if asks && !self.hubs.get(root).is_some_and(|h| self.answered(h)) {
+            host.deny_waiting(&[line.session_id().to_string()]);
         }
     }
 }
 
-async fn execute(state: Shared, client: u64, cwd: PathBuf, id: u64, cmd: Command) {
+async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     let reply = |state: &Shared, f: ServerFrame| {
         if let Some(c) = state.borrow().clients.get(&client) {
             let _ = c.tx.send(f);
         }
     };
+    let Some((cwd, answers)) = state.borrow().clients.get(&client).map(|c| (c.cwd.clone(), c.answers)) else { return };
     let mut root = named(&cmd).map(String::from);
-    let known = root.as_ref().and_then(|r| state.borrow().hubs.get(r).map(|h| h.host.clone()));
-    let host = match known.map(Ok).unwrap_or_else(|| host_for(&state, &cwd)) {
+    let turn = matches!(cmd, Command::Prompt { .. } | Command::Continue { .. });
+    // A turn runs on the host of the client that asks for it — its
+    // directory, and whether it answers approvals; the rest go to the host
+    // running the session.
+    let known = if turn { None } else { root.as_ref().and_then(|r| state.borrow().hubs.get(r).map(|h| h.host.clone())) };
+    let host = match known.map(Ok).unwrap_or_else(|| host_for(&state, &cwd, answers)) {
         Ok(h) => h,
         Err(e) => return reply(&state, ServerFrame::Done { id, result: None, error: Some(error_info(&e)) }),
     };
-    let turn = matches!(cmd, Command::Prompt { .. } | Command::Continue { .. });
     if turn {
         let mut s = state.borrow_mut();
         s.working += 1;
         s.wake.notify_one();
         if let Some(r) = &root {
-            s.follow(r, &host, client);
+            let hub = s.follow(r, &host, client);
+            hub.host = host.clone();
+            hub.in_flight += 1;
         }
     }
     let (tx, mut rx) = mpsc::channel::<StreamLine>(1024);
     let exec = host.execute(cmd, tx);
     tokio::pin!(exec);
+    let mut counted = root.is_some();
     let mut publish = |line: StreamLine| {
         let r = root.get_or_insert_with(|| line.session_id().to_string()).clone();
-        state.borrow_mut().publish(&r, &host, client, line);
+        let mut s = state.borrow_mut();
+        if turn && !counted {
+            // A new session's hub, made by its first line.
+            let hub = s.follow(&r, &host, client);
+            hub.in_flight += 1;
+            counted = true;
+        }
+        s.publish(&r, &host, client, line);
     };
     let r = loop {
         tokio::select! {
@@ -398,6 +514,10 @@ async fn execute(state: Shared, client: u64, cwd: PathBuf, id: u64, cmd: Command
     if turn {
         let mut s = state.borrow_mut();
         s.working -= 1;
+        if let Some(h) = root.as_ref().and_then(|r| s.hubs.get_mut(r)) {
+            h.in_flight = h.in_flight.saturating_sub(1);
+            h.host = host.clone();
+        }
         s.wake.notify_one();
     }
     let (result, error) = match r {
@@ -405,52 +525,71 @@ async fn execute(state: Shared, client: u64, cwd: PathBuf, id: u64, cmd: Command
         Err(e) => (None, Some(error_info(&e))),
     };
     reply(&state, ServerFrame::Done { id, result, error });
+    state.borrow_mut().tidy();
 }
 
 /// Catches `client` up on `session` and follows it from here on.
-fn attach(state: &Shared, client: u64, id: u64, session: &str, after: Option<&str>) {
+async fn attach(state: Shared, client: u64, id: u64, session: String, after: Option<String>) {
     let refuse = |state: &Shared, e: EngineError| {
         if let Some(c) = state.borrow().clients.get(&client) {
-            let _ = c.tx.send(ServerFrame::Attached { id, session_id: session.to_string(), running: false, error: Some(error_info(&e)) });
+            let _ = c.tx.send(ServerFrame::Attached { id, session_id: session.clone(), running: false, error: Some(error_info(&e)) });
         }
     };
-    let Some(cwd) = state.borrow().clients.get(&client).map(|c| c.cwd.clone()) else { return };
-    let host = match state.borrow().hubs.get(session).map(|h| h.host.clone()).map(Ok).unwrap_or_else(|| host_for(state, &cwd)) {
+    if !log::valid_id(&session) {
+        return refuse(&state, EngineError::new("bad_session", format!("{session:?} is not a session id — the sessionId a result names")));
+    }
+    let Some((cwd, answers)) = state.borrow().clients.get(&client).map(|c| (c.cwd.clone(), c.answers)) else { return };
+    let known = state.borrow().hubs.get(&session).map(|h| h.host.clone());
+    let host = match known.map(Ok).unwrap_or_else(|| host_for(&state, &cwd, answers)) {
         Ok(h) => h,
-        Err(e) => return refuse(state, e),
+        Err(e) => return refuse(&state, e),
     };
-    let Some(dir) = state.borrow().sessions_dir.clone() else { return refuse(state, EngineError::new("no_session", "the daemon has no sessions directory")) };
-    let events = match log::read_events(&dir.join(session).join(log::EVENTS_FILE)) {
-        Ok(e) => e,
-        Err(_) => return refuse(state, EngineError::new("no_session", format!("there is no session {session} — `krowk sessions` lists them"))),
+    let Some(dir) = state.borrow().sessions_dir.clone() else { return refuse(&state, EngineError::new("no_session", "the daemon has no sessions directory")) };
+    let path = dir.join(&session).join(log::EVENTS_FILE);
+    // Read off the daemon's thread, which every other stream shares; then
+    // matched against the hub as it is once the read is back. While a turn
+    // is under way the log is replayed only up to the last event already
+    // sent live (the hub's head): what lies beyond it is on its way, and
+    // comes in order with the frames around it. A head the read does not
+    // reach yet — the log grew while it read — is read again.
+    let mut tries = 0;
+    let (events, upto, tail, running) = loop {
+        tries += 1;
+        let p = path.clone();
+        let events = match tokio::task::spawn_blocking(move || log::read_events(&p)).await {
+            Ok(Ok(e)) => e,
+            _ => return refuse(&state, EngineError::new("no_session", format!("there is no session {session} — `krowk sessions` lists them"))),
+        };
+        let n = events.len();
+        let s = state.borrow();
+        let Some(hub) = s.hubs.get(&session).filter(|h| h.in_flight > 0 || h.running) else {
+            break (events, n, Vec::new(), false);
+        };
+        let at = hub.head.as_ref().and_then(|h| events.iter().position(|e| &e.id == h));
+        match (&hub.head, at) {
+            // Nothing sent live yet: the turn's first frames are on their
+            // way; wait for them.
+            (None, _) | (Some(_), None) if tries < 100 => {
+                drop(s);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            }
+            (Some(h), Some(at)) => {
+                let from = hub.turn.iter().position(|l| matches!(l, StreamLine::Log(ev) if &ev.id == h)).map_or(hub.turn.len(), |i| i + 1);
+                break (events, at + 1, hub.turn[from..].to_vec(), hub.running);
+            }
+            _ => break (events, n, Vec::new(), hub.running),
+        }
     };
     let mut s = state.borrow_mut();
-    let hub = s.follow(session, &host, client);
-    let running = hub.running;
-    // A running turn's frames are held from its start; the log up to the
-    // last event among them is read from disk, and what the log has beyond
-    // that is still on its way to this hub, so it comes live.
-    let (upto, tail): (usize, Vec<StreamLine>) = if running {
-        let last = hub.turn.iter().rposition(|l| matches!(l, StreamLine::Log(_)));
-        let at = last.and_then(|i| match &hub.turn[i] {
-            StreamLine::Log(ev) => events.iter().position(|e| e.id == ev.id),
-            _ => None,
-        });
-        match (last, at) {
-            (Some(i), Some(at)) => (at + 1, hub.turn[i + 1..].to_vec()),
-            _ => (events.len(), Vec::new()),
-        }
-    } else {
-        (events.len(), Vec::new())
-    };
-    let from = after.and_then(|a| events.iter().position(|e| e.id == a)).map_or(0, |i| i + 1);
-    let Some(c) = s.clients.get_mut(&client) else { return };
+    s.follow(&session, &host, client);
+    let from = after.as_deref().and_then(|a| events.iter().position(|e| e.id == a)).map_or(0, |i| i + 1);
+    let Some(c) = s.clients.get(&client) else { return };
     for ev in events.into_iter().take(upto).skip(from) {
-        c.replayed.insert(ev.id.clone());
         let _ = c.tx.send(ServerFrame::Line { line: StreamLine::Log(ev) });
     }
     for line in tail {
         let _ = c.tx.send(ServerFrame::Line { line });
     }
-    let _ = c.tx.send(ServerFrame::Attached { id, session_id: session.to_string(), running, error: None });
+    let _ = c.tx.send(ServerFrame::Attached { id, session_id: session.clone(), running, error: None });
 }

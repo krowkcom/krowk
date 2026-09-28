@@ -42,8 +42,10 @@ fn engine(e: EngineError) -> Error {
 /// The daemon: every working directory's host made the way `krowk -p`
 /// makes its own, save what only a person at a terminal could answer. A
 /// repository is trusted for a backend only when it is on the trusted
-/// list — a daemon asks nobody — and approval requests go to the clients
-/// following the session, which is the TUI's to answer.
+/// list — a daemon asks nobody — and a turn asks approval of the clients
+/// following its session only when the client that ran it answers them
+/// (the TUI); a `krowk -p` client's turn refuses what would be asked, as
+/// in-process `-p` does.
 pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let config = prompt::config_json()?;
     let socket = daemon::socket(ctx.io.env).map_err(|e| fail("host_unavailable", e))?;
@@ -51,7 +53,9 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
     let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), home);
     let trusted_store = store.clone();
-    let permissions = prompt::permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| trusted_store.trusts(root)), true);
+    // config.json's rules and hooks are read again for every turn: the
+    // daemon outlives an edit of them, and a deny rule added since holds.
+    let permissions = krowk_harness::permissions::Config { reread: true, ..prompt::permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| trusted_store.trusts(root)), true) };
     let gate: trust::Gate = Arc::new(move |root: &std::path::Path| {
         if store.trusts(root) {
             return Ok(());
@@ -65,7 +69,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let sessions_dir = log::sessions_dir(ctx.io.env)?;
     let credentials = super::providers::credentials_path()?;
     let env = krowk_api::home::process_env;
-    let factory: server::Factory = Box::new(move |cwd: &std::path::Path| {
+    let factory: server::Factory = Box::new(move |cwd: &std::path::Path, answers: bool| {
         // Read again for each directory's host: a provider connected since
         // the daemon started is one its next directory has.
         let config = prompt::config_json().map_err(|e| EngineError::new("bad_config", e.fix()))?;
@@ -80,7 +84,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
             credentials: credentials.clone(),
             trust: gate.clone(),
             publisher: Some(publisher.clone()),
-            permissions: permissions.clone(),
+            permissions: krowk_harness::permissions::Config { approvals: answers, ..permissions.clone() },
             agents: prompt::agents_config(&env),
         })
     });
@@ -92,7 +96,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
     let service = service::path(service::Platform::here(), ctx.io.env).ok().filter(|p| p.is_file());
     let status: Option<HostStatus> = daemon::status(ctx.io.env, super::VERSION).map_err(engine)?;
     let data = match &status {
-        Some(s) => json!({ "running": true, "socket": s.socket, "pid": s.pid, "version": s.krowk_version, "uptimeMs": s.uptime_ms, "clients": s.clients.saturating_sub(1), "idleExitMs": s.idle_exit_ms, "sessions": s.sessions, "service": service }),
+        Some(s) => json!({ "running": true, "socket": s.socket, "pid": s.pid, "version": s.krowk_version, "stale": s.krowk_version != super::VERSION, "uptimeMs": s.uptime_ms, "clients": s.clients.saturating_sub(1), "idleExitMs": s.idle_exit_ms, "sessions": s.sessions, "service": service }),
         None => json!({ "running": false, "socket": socket, "service": service }),
     };
     if ctx.format != Format::Human {
@@ -108,6 +112,9 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
         Some(s) => {
             let running = s.sessions.iter().filter(|x| x.running).count();
             let _ = writeln!(out, "running  pid {}, krowk {}, up {}", s.pid, s.krowk_version, uptime(s.uptime_ms));
+            if s.krowk_version != super::VERSION {
+                let _ = writeln!(out, "! it runs krowk {}, and this is {} — `kill {}` once its sessions are done, and the next krowk starts this one", s.krowk_version, super::VERSION, s.pid);
+            }
             let _ = writeln!(out, "socket   {}", s.socket);
             let _ = writeln!(out, "sessions {} ({running} running), {} other client{}", s.sessions.len(), s.clients.saturating_sub(1), if s.clients == 2 { "" } else { "s" });
             let idle = s.idle_exit_ms.map_or("never — run as a service".into(), |ms| format!("after {} idle", uptime(ms)));
@@ -155,6 +162,10 @@ pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
         }
         std::fs::write(&file, text).map_err(|e| fail("write_failed", format!("{} could not be written: {e}", file.display())))?;
     }
+    // A daemon started on demand holds the socket the service would bind,
+    // and a service that cannot bind fails its restarts: it is let go
+    // first, once no turn runs in it.
+    let stopped = if on { daemon::stop(ctx.io.env, super::VERSION).map_err(engine)? } else { None };
     for c in service::commands(platform, on, &file, uid) {
         let ran = std::process::Command::new(&c[0]).args(&c[1..]).stdin(std::process::Stdio::null()).output();
         match ran {
@@ -165,17 +176,40 @@ pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
             Err(e) => return Err(fail("service_failed", format!("`{}` could not run: {e} — {} is written; start it with your service manager", c.join(" "), file.display()))),
         }
     }
+    if on {
+        up(platform, uid, &file)?;
+    }
     if !on {
         match std::fs::remove_file(&file) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(fail("write_failed", format!("{} could not be removed: {e}", file.display()))),
             _ => {}
         }
     }
-    let data = json!({ "enabled": on, "service": file });
+    let data = json!({ "enabled": on, "service": file, "stopped": stopped });
     let summary = if on { format!("the host daemon runs as a service: {}", file.display()) } else { format!("the host service is stopped and {} removed", file.display()) };
     if ctx.format != Format::Human {
         return super::sessions::emit_data(ctx, data, summary);
     }
+    if let Some(pid) = stopped {
+        let _ = writeln!(ctx.io.stdout, "stopped the host daemon krowk had started (pid {pid}); the service runs it from now on");
+    }
     let _ = writeln!(ctx.io.stdout, "{summary}");
     Ok(())
+}
+
+/// Whether the service is up: asked a second after it was started, and
+/// again up to three seconds in, since a unit that cannot run is started,
+/// then fails.
+fn up(platform: service::Platform, uid: u32, file: &std::path::Path) -> Result<(), Error> {
+    let c = service::active(platform, uid);
+    let mut last = String::new();
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        match std::process::Command::new(&c[0]).args(&c[1..]).stdin(std::process::Stdio::null()).output() {
+            Ok(o) if o.status.success() => return Ok(()),
+            Ok(o) => last = String::from_utf8_lossy(&o.stdout).trim().to_string() + String::from_utf8_lossy(&o.stderr).trim(),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    Err(fail("service_failed", format!("the service did not stay up (`{}`: {last}) — {} is written; its log is ~/.krowk/host.log, or `journalctl --user -u {}`", c.join(" "), file.display(), service::UNIT)))
 }

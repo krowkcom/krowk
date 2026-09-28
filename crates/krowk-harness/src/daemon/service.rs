@@ -148,6 +148,16 @@ pub fn commands(platform: Platform, enable: bool, file: &Path, uid: u32) -> Vec<
     }
 }
 
+/// The command that succeeds only once the service is up: `enable` asks
+/// it before saying so, since `systemctl enable --now` succeeds for a unit
+/// that fails a moment later.
+pub fn active(platform: Platform, uid: u32) -> Vec<String> {
+    match platform {
+        Platform::Systemd => vec!["systemctl".into(), "--user".into(), "is-active".into(), UNIT.into()],
+        Platform::Launchd => vec!["launchctl".into(), "print".into(), format!("gui/{uid}/{LABEL}")],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +195,7 @@ mod tests {
         assert!(plist.contains("<key>StandardErrorPath</key>\n\t<string>/home/ada/.krowk/host.log</string>"), "{plist}");
         assert_eq!(commands(Platform::Launchd, true, &file, 501), [["launchctl", "bootstrap", "gui/501", file.to_str().unwrap()]]);
         assert_eq!(commands(Platform::Launchd, false, &file, 501)[0][1], "bootout");
+        assert_eq!(active(Platform::Launchd, 501), ["launchctl", "print", "gui/501/com.krowk.host"]);
+        assert_eq!(active(Platform::Systemd, 501), ["systemctl", "--user", "is-active", "krowk-host.service"]);
     }
 }

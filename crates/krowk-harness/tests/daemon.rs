@@ -59,7 +59,7 @@ impl Home {
         let (env, socket) = (self.env(), self.socket());
         let credentials = self.root.join("home/.krowk/credentials.json");
         let t = std::thread::spawn(move || {
-            let factory: server::Factory = Box::new(move |cwd: &Path| {
+            let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {
                 Ok(HostConfig {
                     sessions_dir: log::sessions_dir(&env).unwrap(),
                     cwd: cwd.to_path_buf(),
@@ -70,7 +70,7 @@ impl Home {
                     credentials: credentials.clone(),
                     trust: krowk_harness::trust::allow_all(),
                     publisher: None,
-                    permissions: Default::default(),
+                    permissions: krowk_harness::permissions::Config { approvals: answers, ..Default::default() },
                     agents: krowk_harness::subagent::AgentsConfig::none(),
                 })
             });
@@ -85,7 +85,11 @@ impl Home {
     }
 
     async fn client(&self) -> Client {
-        match Client::connect(&self.socket(), &self.repo(), "test").await {
+        self.client_answering(false).await
+    }
+
+    async fn client_answering(&self, answers: bool) -> Client {
+        match Client::connect(&self.socket(), &self.repo(), "test", answers).await {
             Ok(c) => c,
             Err(_) => panic!("no daemon answered"),
         }
@@ -303,7 +307,7 @@ fn r_host_1_two_krowks_starting_at_once_spawn_one_daemon_over_a_stale_socket() {
                     daemons.lock().unwrap().push(home.serve(Some(Duration::from_millis(300))));
                     Ok(())
                 };
-                rt().block_on(async { daemon::ensure(&env, &home.repo(), "test", &spawn).await.map(|c| c.pid) }).unwrap()
+                rt().block_on(async { daemon::ensure(&env, &home.repo(), "test", false, &spawn).await.map(|c| c.pid) }).unwrap()
             })
         })
         .collect();
@@ -314,4 +318,115 @@ fn r_host_1_two_krowks_starting_at_once_spawn_one_daemon_over_a_stale_socket() {
     for d in daemons.lock().unwrap().drain(..) {
         d.join().unwrap().unwrap();
     }
+}
+
+/// A model that runs one bash command, then answers once it has the result.
+fn runs_bash() -> mock::Mock {
+    mock::serve(|body, _| {
+        let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();
+        if last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result")) {
+            mock::Reply::sse(&mock::text_stream("Done."))
+        } else {
+            mock::Reply::sse(&mock::tool_use("toolu_01Call", "bash", &serde_json::json!({"command": "touch made-by-the-model"})))
+        }
+    })
+}
+
+fn tool_result(lines: &[StreamLine]) -> Option<(String, bool)> {
+    lines.iter().find_map(|l| match l {
+        StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::ToolResult { output, is_error, .. }, .. }, .. }) => Some((output.clone(), *is_error)),
+        _ => None,
+    })
+}
+
+/// R-HOST-1: a `krowk -p` client answers no approval request, so its turn
+/// in the daemon refuses what would be asked exactly as in-process `-p`
+/// does — never waiting on a person nobody will be.
+#[test]
+fn r_host_1_a_p_clients_turn_refuses_what_would_be_asked_as_in_process() {
+    let m = runs_bash();
+    let home = Home::new("refuse", &m.url);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    let lines = rt.block_on(async {
+        let c = home.client().await;
+        let (tx, mut rx) = mpsc::channel(1024);
+        let r = tokio::time::timeout(Duration::from_secs(10), c.execute(home.prompt("make a file"), tx)).await.expect("the turn never waits on a person").unwrap().unwrap();
+        assert_eq!(r.status, TurnStatus::Completed);
+        let mut lines = Vec::new();
+        while let Ok(l) = rx.try_recv() {
+            lines.push(l);
+        }
+        lines
+    });
+    assert!(!lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::ApprovalRequested(_)))), "nobody was asked");
+    let (output, is_error) = tool_result(&lines).unwrap();
+    assert!(is_error && output.contains("--permission-mode"), "the in-process refusal, with what would allow it: {output}");
+    assert!(!home.repo().join("made-by-the-model").exists());
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-HOST-1: a turn waiting on an answer from a client that went away is
+/// answered `deny`, so it ends, and the daemon can go.
+#[test]
+fn r_host_1_a_request_left_with_no_client_to_answer_it_is_denied() {
+    let m = runs_bash();
+    let home = Home::new("leave", &m.url);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    let session = rt.block_on(async {
+        let a = home.client_answering(true).await;
+        let (tx, mut rx) = mpsc::channel(1024);
+        let mut exec = Box::pin(a.execute(home.prompt("make a file"), tx));
+        let session = loop {
+            tokio::select! {
+                Some(line) = rx.recv() => if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = line { break r.session_id },
+                _ = &mut exec => panic!("the turn ended without asking"),
+            }
+        };
+        // The terminal closes with the question on screen.
+        drop(exec);
+        drop(a);
+        session
+    });
+    drop(rt);
+    // No client left: the request is denied, the turn ends, and the
+    // daemon exits after its window.
+    daemon.join().unwrap().unwrap();
+    let events = log::read_events(&log::sessions_dir(&home.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    assert!(events.iter().any(|e| matches!(e.body, LogBody::TurnCompleted { .. })), "the turn ended");
+    let lines: Vec<StreamLine> = events.into_iter().map(StreamLine::Log).collect();
+    let (output, is_error) = tool_result(&lines).unwrap();
+    assert!(is_error, "{output}");
+    assert!(!home.repo().join("made-by-the-model").exists());
+}
+
+/// R-HOST-2: `krowk host enable` hands the socket over to the service by
+/// asking the daemon krowk started to stop — refused while a turn runs.
+#[test]
+fn r_host_2_a_daemon_stops_when_asked_unless_a_turn_runs() {
+    let m = slow();
+    let home = Home::new("stop", &m.url);
+    let daemon = home.serve(None);
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        let (tx, mut rx) = mpsc::channel(1024);
+        let mut exec = Box::pin(a.execute(home.prompt("count"), tx));
+        loop {
+            tokio::select! {
+                Some(line) = rx.recv() => if matches!(line, StreamLine::Live(LiveEvent::ItemDelta { .. })) { break },
+                _ = &mut exec => panic!("ended early"),
+            }
+        }
+        let b = home.client().await;
+        assert_eq!(b.stop().await.unwrap_err().code, "host_busy");
+        exec.await.unwrap();
+        b.stop().await.unwrap();
+    });
+    drop(rt);
+    // With no idle window at all, only the stop ends it.
+    daemon.join().unwrap().unwrap();
+    assert!(!home.socket().exists());
 }

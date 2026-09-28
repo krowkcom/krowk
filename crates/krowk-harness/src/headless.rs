@@ -86,8 +86,15 @@ pub fn run_on_daemon(env: &dyn Fn(&str) -> String, cwd: &std::path::Path, versio
         Err(e) => return Outcome { session_id: None, result: None, error: Some(e) },
     };
     rt.block_on(async {
-        match crate::daemon::ensure(env, cwd, version, spawn).await {
-            Ok(client) => drive(&client, opts, stdout).await,
+        // A `-p` client answers no approval request: its turns refuse what
+        // would be asked, as they do in-process.
+        match crate::daemon::ensure(env, cwd, version, false, spawn).await {
+            Ok(client) => {
+                if client.krowk_version != version {
+                    let _ = writeln!(std::io::stderr(), "! the host daemon (pid {}) runs krowk {}, and this is {version} — its turns run on the old binary until it exits; `kill {}` once its sessions are done", client.pid, client.krowk_version, client.pid);
+                }
+                drive(&client, opts, stdout).await
+            }
             Err(e) => Outcome { session_id: None, result: None, error: Some(e) },
         }
     })
@@ -159,14 +166,6 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
                     && session_id.as_deref() == Some(s.as_str())
                 {
                     agents.clone_from(a);
-                }
-                // Only a daemon's host asks (it serves the TUI too): nobody
-                // is here to answer, so the call is refused as the
-                // in-process run refuses it.
-                if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = &line {
-                    let _ = writeln!(std::io::stderr(), "! {} needs approval, which krowk -p cannot ask for — refused; allow it with a permission rule or --permission-mode", r.summary);
-                    let (atx, _arx) = mpsc::channel(1);
-                    let _ = host.execute(Command::Approve { session_id: r.session_id.clone(), request_id: r.request_id.clone(), decision: crate::protocol::ApprovalDecision::Deny }, atx).await;
                 }
                 // A notice is the person's alone (a claim token is a secret):
                 // the terminal's stderr, never stdout, which a program reads.

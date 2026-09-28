@@ -205,6 +205,7 @@ pub(super) fn permissions_config(ctx: &Ctx, config: &serde_json::Value, trusted:
     permissions::Config {
         user: Some(config.clone()),
         user_path: super::providers::config_path().ok(),
+        reread: false,
         home,
         claude_dir,
         krowk_dir: super::providers::krowk_dir().ok(),

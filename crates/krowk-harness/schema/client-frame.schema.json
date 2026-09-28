@@ -19,6 +19,11 @@
           "description": "The client's own version, for the daemon's log.",
           "type": "string"
         },
+        "answersApprovals": {
+          "description": "Whether the client answers `approval.requested` (the TUI). A turn\nit runs asks it, and a request left with no such client\nfollowing the session is denied. One that does not (`krowk -p`)\nruns its turns as the in-process `-p` does: what would be asked\nis refused, with what would allow it.",
+          "type": "boolean",
+          "default": false
+        },
         "type": {
           "type": "string",
           "const": "hello"
@@ -94,6 +99,25 @@
         "type": {
           "type": "string",
           "const": "status"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    },
+    {
+      "description": "Asks the daemon to exit — `krowk host enable`, handing over to the\nservice. Refused with `host_busy` while a turn runs; answered by\n`done` just before it goes.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "stop"
         }
       },
       "required": [
