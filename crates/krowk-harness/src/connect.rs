@@ -319,6 +319,20 @@ pub struct Request {
     pub default: MakeDefault,
 }
 
+/// What `/connect`'s pickers came to: a connection to make, or one of the
+/// accounts picked to rename instead, and its whole new name.
+pub enum Chosen {
+    Connect(Request),
+    Rename { from: String, to: String },
+}
+
+/// What the account picker came to.
+enum Picked {
+    /// The account to connect or renew; none for the default-named one.
+    Account(Option<String>),
+    Rename { from: String, to: String },
+}
+
 /// What a vendor CLI said of an account, less anything personal.
 #[derive(Debug, Clone)]
 pub struct VendorLogin {
@@ -439,7 +453,7 @@ pub struct Removed {
     pub kept: Option<(String, bool)>,
 }
 
-/// What `rename` (`krowk providers rename`, `/rename`) did.
+/// What `rename` (`krowk providers rename`, `/connect`'s rename) did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Renamed {
     pub from: String,
@@ -456,7 +470,7 @@ pub struct Renamed {
 
 impl Renamed {
     /// What it moved, and what it left the person to do — the same words
-    /// for `krowk providers rename` and the TUI's `/rename`.
+    /// for `krowk providers rename` and the TUI's `/connect`.
     pub fn notes(&self) -> Vec<String> {
         let mut notes = Vec::new();
         if self.login {
@@ -640,6 +654,19 @@ impl ProviderAuth<'_> {
     /// way it was connected; or `<provider>:<name>`, a new one. With no
     /// target, the vendor is asked too.
     pub fn request(&self, target: Option<&str>, method: Option<Method>, options: Options, ui: &mut dyn AuthInteraction) -> Result<Request, EngineError> {
+        match self.choice(target, method, options, false, ui)? {
+            Chosen::Connect(req) => Ok(req),
+            Chosen::Rename { .. } => unreachable!("renaming is offered only when asked for"),
+        }
+    }
+
+    /// `request`, as `/connect` asks it: beside the accounts of the way in
+    /// picked is renaming one of them, when one has a name of its own.
+    pub fn request_or_rename(&self, target: Option<&str>, ui: &mut dyn AuthInteraction) -> Result<Chosen, EngineError> {
+        self.choice(target, None, Options::default(), true, ui)
+    }
+
+    fn choice(&self, target: Option<&str>, method: Option<Method>, options: Options, offer_rename: bool, ui: &mut dyn AuthInteraction) -> Result<Chosen, EngineError> {
         let target = target.map(str::trim).filter(|t| !t.is_empty());
         let vendor = match target {
             None => {
@@ -654,10 +681,13 @@ impl ProviderAuth<'_> {
             // said: a vendor alone is its default-named account, and a
             // second one is always added by name.
             let instance = match method.is_none() && options.name.is_none() && ui.interactive() {
-                true => self.pick_account(way, ui)?,
+                true => match self.pick_account(way, offer_rename, ui)? {
+                    Picked::Account(a) => a,
+                    Picked::Rename { from, to } => return Ok(Chosen::Rename { from, to }),
+                },
                 false => None,
             };
-            return Ok(Request { method: way, instance, options, default: MakeDefault::IfUnset });
+            return Ok(Chosen::Connect(Request { method: way, instance, options, default: MakeDefault::IfUnset }));
         }
         let t = target.expect("a target when no vendor was picked");
         let known = Registry::resolve(&self.definitions()?, self.env);
@@ -682,32 +712,50 @@ impl ProviderAuth<'_> {
                 bad_flag(format!("{instance} connects by {} — --method {} would be another instance: `krowk connect {} --method {}`", way.method.id(), m.id(), way.vendor.id(), m.id()))
             })?,
         };
-        Ok(Request { method: way, instance: Some(instance), options, default: MakeDefault::IfUnset })
+        Ok(Chosen::Connect(Request { method: way, instance: Some(instance), options, default: MakeDefault::IfUnset }))
     }
 
     /// The accounts of this way in there are — defined or built in — each
-    /// with its readiness, to reconnect, and a new one, named here. None
-    /// when there are none yet: the default-named one is made.
-    fn pick_account(&self, way: &'static MethodInfo, ui: &mut dyn AuthInteraction) -> Result<Option<String>, EngineError> {
-        let reg = Registry::resolve(&self.definitions()?, self.env);
+    /// with its readiness, to reconnect, and a new one, named here; with
+    /// `offer_rename`, renaming one too, when one has a name of its own (a
+    /// built-in keeps its name). None when there are none yet: the
+    /// default-named one is made.
+    fn pick_account(&self, way: &'static MethodInfo, offer_rename: bool, ui: &mut dyn AuthInteraction) -> Result<Picked, EngineError> {
+        let defs = self.definitions()?;
+        let reg = Registry::resolve(&defs, self.env);
         let mine: Vec<&Resolved> = reg.instances.values().filter(|r| r.kind == way.kind).collect();
         if mine.is_empty() {
-            return Ok(None);
+            return Ok(Picked::Account(None));
         }
+        let renamable: Vec<&Resolved> = match offer_rename {
+            true => renamable_in(&defs, &mine),
+            false => Vec::new(),
+        };
         let reports = readiness::check_all(&mine, &self.credentials, &self.probe()?);
         let mut labels: Vec<String> = reports.iter().zip(&mine).map(|(r, i)| format!("{} ({}) — {}, reconnect", r.instance, self.label(i), r.readiness.label())).collect();
-        labels.push("+ new account…".into());
+        labels.push("+ Add account…".into());
+        if !renamable.is_empty() {
+            labels.push("  Rename an account…".into());
+        }
         let options: Vec<&str> = labels.iter().map(String::as_str).collect();
         let at = choose(ui, "Which account?", &options, "--name")?;
         if let Some(r) = reports.get(at) {
-            return Ok(Some(r.instance.clone()));
+            return Ok(Picked::Account(Some(r.instance.clone())));
+        }
+        if at > reports.len() {
+            let from = match renamable.as_slice() {
+                [one] => one,
+                _ => self.pick_to_rename(&renamable, "Rename which account?", ui)?,
+            };
+            let to = ask_new_name(ui, &from.name, from.kind)?;
+            return Ok(Picked::Rename { from: from.name.clone(), to });
         }
         let name = ask_text(ui, "Name the new account, e.g. work", "--name, e.g. --name work")?;
         let instance = new_instance(way.provider, &name)?;
         if let Some(k) = reg.instances.keys().find(|k| k.to_lowercase() == instance.to_lowercase()) {
             return Err(bad_flag(format!("{k} is connected already — pick it to reconnect it, or give the new account another name")));
         }
-        Ok(Some(instance))
+        Ok(Picked::Account(Some(instance)))
     }
 
     /// The instance `krowk disconnect` signs out: the one named, else one
@@ -757,7 +805,7 @@ impl ProviderAuth<'_> {
             None => {
                 let defs = self.definitions()?;
                 let reg = Registry::resolve(&defs, self.env);
-                let mine: Vec<&Resolved> = reg.instances.values().filter(|r| defs.instances.contains_key(&r.name) && !built_in(&r.name)).collect();
+                let mine = renamable_in(&defs, &reg.instances.values().collect::<Vec<_>>());
                 if mine.is_empty() {
                     return Err(EngineError::new("no_instance", "no account here has a name of its own to change — a built-in one (claude, codex, anthropic…) keeps its name; `krowk connect <vendor> --name <name>` adds a named one"));
                 }
@@ -765,21 +813,21 @@ impl ProviderAuth<'_> {
                 if !ui.interactive() {
                     return Err(EngineError::new("bad_argument", format!("nobody is at a terminal to pick which instance to rename — name one of {}: `krowk providers rename <instance> <new-name>`", names.join(", "))));
                 }
-                let labels: Vec<String> = mine.iter().map(|r| format!("{} ({})", r.name, self.label(r))).collect();
-                let options: Vec<&str> = labels.iter().map(String::as_str).collect();
-                names[choose(ui, "Rename which instance?", &options, "the instance, e.g. `krowk providers rename claude:work claude:personal`")?].to_string()
+                self.pick_to_rename(&mine, "Rename which instance?", ui)?.name.clone()
             }
         };
         let new = match clean(&new.map(String::from)) {
             Some(n) => n,
-            None => {
-                // The provider's prefix is there already: what is typed after
-                // it is the rest of the whole name, as shown.
-                let prefix = prefix_of(self.renamable(&from)?.1.tag()).map(|p| format!("{p}:")).unwrap_or_default();
-                ask_text_from(ui, &format!("New name for {from}"), "the whole new name, e.g. `krowk providers rename claude:work claude:personal`", &prefix)?
-            }
+            None => ask_new_name(ui, &from, self.renamable(&from)?.1.tag())?,
         };
         Ok((from, new))
+    }
+
+    /// One of `among` picked to rename, each with its kind in plain words.
+    fn pick_to_rename<'r>(&self, among: &[&'r Resolved], message: &str, ui: &mut dyn AuthInteraction) -> Result<&'r Resolved, EngineError> {
+        let labels: Vec<String> = among.iter().map(|r| format!("{} ({})", r.name, self.label(r))).collect();
+        let options: Vec<&str> = labels.iter().map(String::as_str).collect();
+        Ok(among[choose(ui, message, &options, "the instance, e.g. `krowk providers rename claude:work claude:personal`")?])
     }
 
     /// Renames an instance: its definition, its login and stored key in the
@@ -1402,6 +1450,19 @@ fn derived_key_env(provider: &str, name: &str) -> String {
 /// none for a server, whose name is its own.
 fn prefix_of(kind: &str) -> Option<&'static str> {
     by_kind(kind).map(|w| w.provider).filter(|p| *p != "openai-compatible")
+}
+
+/// Those of `among` a rename can take: defined in config.json, and not
+/// built in — a built-in keeps its name.
+fn renamable_in<'r>(defs: &InstancesConfig, among: &[&'r Resolved]) -> Vec<&'r Resolved> {
+    among.iter().copied().filter(|r| defs.instances.contains_key(&r.name) && !built_in(&r.name)).collect()
+}
+
+/// An instance's whole new name, asked with the provider's prefix there
+/// already: what is typed after it is the rest of the name, as shown.
+fn ask_new_name(ui: &mut dyn AuthInteraction, from: &str, kind: &str) -> Result<String, EngineError> {
+    let prefix = prefix_of(kind).map(|p| format!("{p}:")).unwrap_or_default();
+    ask_text_from(ui, &format!("New name for {from}"), "the whole new name, e.g. `krowk providers rename claude:work claude:personal`", &prefix)
 }
 
 /// One of the instances every host has (`instances::implicit`).

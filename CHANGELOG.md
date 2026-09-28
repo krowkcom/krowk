@@ -31,9 +31,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   conversation's: the prompt and the status line under it take the
   terminal's whole width either way.
 - **Connected instances can be renamed**: `krowk providers rename
-  claude:work claude:personal` on the command line, or `/rename` in the
-  TUI, which picks the instance and asks its new name with the provider's
-  prefix already typed. The new name is always the whole name, exactly as
+  claude:work claude:personal` on the command line, or in the TUI from
+  `/connect`'s account picker — "Rename an account…", beside
+  "+ Add account…" — which asks the new name with the provider's prefix
+  already typed. The new name is always the whole name, exactly as
   given, and keeps the provider's prefix: a bare `personal` is refused with
   the name it would need to be. An OpenAI-compatible server's name has no
   prefix, as before. The instance's

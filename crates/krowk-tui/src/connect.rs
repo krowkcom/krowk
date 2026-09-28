@@ -1,5 +1,6 @@
-//! `/connect`, `/disconnect` and `/rename`: the harness's one sign-in
-//! (`krowk_harness::connect`), asked and told through an overlay.
+//! `/connect` and `/disconnect`: the harness's one sign-in
+//! (`krowk_harness::connect`), asked and told through an overlay. An
+//! account is renamed from `/connect` too, picked beside the others.
 //!
 //! The sign-in is synchronous and asks as it goes — which vendor, which
 //! way in, which account, a key — so it runs on a thread of its own, and
@@ -18,7 +19,7 @@
 
 use crate::app::{clip, dim};
 use crate::look;
-use krowk_harness::connect::{Answer, AuthInteraction, Connected, Disconnected, Notice, Options, Prompt, ProviderAuth, Renamed};
+use krowk_harness::connect::{Answer, AuthInteraction, Chosen, Connected, Disconnected, Notice, Prompt, ProviderAuth, Renamed};
 use krowk_harness::engine::EngineError;
 use krowk_harness::instances::Registry;
 use ratatui::style::{Modifier, Style};
@@ -32,13 +33,11 @@ use unicode_width::UnicodeWidthStr;
 /// What to run.
 pub enum Job {
     /// A vendor picked here, or an instance or vendor named
-    /// (`/connect claude:work`).
+    /// (`/connect claude:work`); or, picked beside its accounts, one to
+    /// rename.
     Connect(Option<String>),
     /// The instance named, else one picked.
     Disconnect(Option<String>),
-    /// The instance named, else one picked, and its new name, else asked
-    /// (`/rename claude:work claude:personal`).
-    Rename(Option<String>, Option<String>),
 }
 
 /// What a job did.
@@ -91,9 +90,11 @@ pub fn start(job: Job, paths: Paths) -> mpsc::UnboundedReceiver<Msg> {
         let pa = ProviderAuth { config: paths.config, credentials: paths.credentials, env: &env };
         let mut ui = Asker { tx: tx.clone() };
         let done = match job {
-            Job::Connect(target) => pa.request(target.as_deref(), None, Options::default(), &mut ui).and_then(|req| pa.connect(&req, &mut ui)).map(|c| Done::Connected(Box::new(c))),
+            Job::Connect(target) => pa.request_or_rename(target.as_deref(), &mut ui).and_then(|chosen| match chosen {
+                Chosen::Connect(req) => pa.connect(&req, &mut ui).map(|c| Done::Connected(Box::new(c))),
+                Chosen::Rename { from, to } => pa.rename(&from, &to).map(Done::Renamed),
+            }),
             Job::Disconnect(target) => pa.disconnect_target(target.as_deref(), &mut ui).and_then(|i| pa.disconnect(&i, false, false, &mut ui)).map(Done::Disconnected),
-            Job::Rename(target, new) => pa.rename_target(target.as_deref(), new.as_deref(), &mut ui).and_then(|(from, new)| pa.rename(&from, &new)).map(Done::Renamed),
         };
         let registry = pa.definitions().ok().map(|d| Box::new(Registry::resolve(&d, &env)));
         let _ = tx.send(Msg::Done(done, registry));

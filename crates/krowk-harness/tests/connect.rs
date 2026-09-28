@@ -8,7 +8,7 @@
 
 #![cfg(unix)]
 
-use krowk_harness::connect::{Answer, AuthInteraction, Method, Notice, Options, Prompt, ProviderAuth};
+use krowk_harness::connect::{Answer, AuthInteraction, Chosen, Method, Notice, Options, Prompt, ProviderAuth};
 use krowk_harness::engine::EngineError;
 use serde_json::json;
 use std::collections::VecDeque;
@@ -115,13 +115,13 @@ fn r_inst_2_the_account_picker_lists_each_account_with_its_readiness_and_a_new_o
     let b = Sandbox::new("picker");
     let env = b.env();
     let pa = auth(&b, &env);
-    // The method (Claude subscription, the first), then "+ new account…",
+    // The method (Claude subscription, the first), then "+ Add account…",
     // then its name.
     let mut ui = Script::new(true, vec![Answer::Choice(0), Answer::Choice(2), Answer::Text("team".into())]);
     let req = pa.request(Some("anthropic"), None, Options::default(), &mut ui).unwrap();
     assert_eq!(ui.asked[0].1, ["Claude subscription (Pro, Max, Team) — Claude Code's own login", "Anthropic API key"]);
     assert_eq!(ui.asked[1].0, "Which account?");
-    assert_eq!(ui.asked[1].1, ["claude (Claude subscription, your own Claude Code login) — not signed in, reconnect", "claude:work (Claude subscription) — ready, reconnect", "+ new account…"]);
+    assert_eq!(ui.asked[1].1, ["claude (Claude subscription, your own Claude Code login) — not signed in, reconnect", "claude:work (Claude subscription) — ready, reconnect", "+ Add account…"]);
     assert_eq!(req.instance.as_deref(), Some("claude:team"));
 
     let done = pa.connect(&req, &mut ui).unwrap();
@@ -143,6 +143,24 @@ fn r_inst_2_the_account_picker_lists_each_account_with_its_readiness_and_a_new_o
     let done = pa.connect(&req, &mut ui).unwrap();
     assert!(done.renewed && done.vendor.as_ref().is_some_and(|v| !v.ran), "signed in already: nothing ran");
     assert_eq!(ui.terminal_runs, 0);
+}
+
+/// `/connect`'s picker renames an account beside the others: a built-in
+/// is not offered, so the one with a name of its own is asked nothing more
+/// than its new name, the provider's prefix typed already.
+#[test]
+fn the_connect_picker_renames_an_account_with_a_name_of_its_own() {
+    let b = Sandbox::new("picker-rename");
+    let env = b.env();
+    let pa = auth(&b, &env);
+    let mut ui = Script::new(true, vec![Answer::Choice(0), Answer::Choice(3), Answer::Text("claude:personal".into())]);
+    let chosen = pa.request_or_rename(Some("anthropic"), &mut ui).unwrap();
+    assert_eq!(ui.asked[1].1.last().map(String::as_str), Some("  Rename an account…"));
+    assert_eq!(ui.asked[2].0, "New name for claude:work", "the only one to rename, not asked which: {:?}", ui.asked);
+    let Chosen::Rename { from, to } = chosen else { panic!("a rename") };
+    assert_eq!((from.as_str(), to.as_str()), ("claude:work", "claude:personal"));
+    let done = pa.rename(&from, &to).unwrap();
+    assert_eq!(done.to, "claude:personal");
 }
 
 #[test]
