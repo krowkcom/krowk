@@ -1485,27 +1485,42 @@ impl App {
     pub fn view(&self, now: Instant) -> (Vec<Line<'static>>, (u16, u16)) {
         let width = usize::from(self.width.max(1));
         let mut rows: Vec<Line<'static>> = self.held.lines().into_iter().flat_map(|l| wrap_line(l, width)).collect();
+        // A running call stands where its block will: after a blank line,
+        // unless it stacks under a tool block (`commit_tool`) — so the line
+        // above it does not move when it finishes.
+        let mut stacks = if rows.is_empty() { self.last_blank || self.after_tool } else { true };
+        let tool_gap = |rows: &mut Vec<Line<'static>>, stacks: &mut bool| {
+            if !std::mem::replace(stacks, true) {
+                rows.push(Line::default());
+            }
+        };
         if let Some(live) = &self.live {
             match &live.kind {
                 LiveKind::Text if !live.tail.is_empty() => {
                     let wrapped = wrap(&clean(&live.tail), width);
                     let skip = wrapped.len().saturating_sub(MAX_LIVE_ROWS);
                     rows.extend(wrapped.into_iter().skip(skip).map(Line::from));
+                    stacks = false;
                 }
                 LiveKind::Text => {}
                 LiveKind::Reasoning => {
                     let tail = clean(live.tail.trim());
                     if !tail.is_empty() {
                         rows.push(Line::from(Span::styled(clip(&format!("  {tail}"), width), dim().add_modifier(Modifier::ITALIC))));
+                        stacks = false;
                     }
                 }
-                LiveKind::Call(name) => rows.push(Line::from(vec![Span::styled(look::TOOL, look::running()),Span::styled(clip(name, width.saturating_sub(2)), dim())])),
+                LiveKind::Call(name) => {
+                    tool_gap(&mut rows, &mut stacks);
+                    rows.push(Line::from(vec![Span::styled(look::TOOL, look::running()), Span::styled(clip(name, width.saturating_sub(2)), dim())]));
+                }
                 LiveKind::Result => {}
             }
         }
         // Calls out, their results not back: each as it will be shown — a
         // subagent's as its own line, below.
         for c in self.calls.iter().filter(|c| c.name != "subagent") {
+            tool_gap(&mut rows, &mut stacks);
             let (verb, arg) = look::tool_title(&c.name, &c.input);
             let text = clip(&format!("{verb} {arg}"), width.saturating_sub(2));
             rows.push(Line::from(vec![Span::styled(look::TOOL, look::running()), Span::styled(text, dim())]));
@@ -1520,6 +1535,7 @@ impl App {
                 Some(_) => (look::TOOL.to_string(), red()),
             };
             let text_style = if selected { dim().add_modifier(Modifier::REVERSED) } else { dim() };
+            tool_gap(&mut rows, &mut stacks);
             rows.push(Line::from(vec![Span::styled(glyph, style), Span::styled(clip(&s.line(now), width.saturating_sub(2)), text_style)]));
             if s.expanded && !s.activity.is_empty() {
                 rows.push(Line::from(Span::styled(clip(&format!("{}{}", look::LAST_BRANCH, s.activity), width), dim())));
@@ -2423,6 +2439,24 @@ mod tests {
         let (rows, _) = a.view(Instant::now());
         let row = rows.iter().find(|r| r.spans.first().is_some_and(|s| s.content == look::TOOL)).expect("the call is held");
         assert_eq!(row.spans[0].style, dim());
+    }
+
+    #[test]
+    fn a_running_call_has_the_blank_line_above_it_that_its_block_will() {
+        let mut a = app();
+        a.start_turn(Instant::now());
+        let call = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolCall { call_id: id.into(), name: "read".into(), input: serde_json::json!({"path": "README.md"}) } }));
+        let back = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolResult { call_id: id.into(), output: "x".into(), is_error: false } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::UserText { text: "hi".into() } }));
+        assert_eq!(text(&a.take_pending()), ["❯ hi"]);
+        call(&mut a, "1");
+        assert_eq!(text(&a.view(Instant::now()).0)[..2], ["", "◆ Read README.md"], "a gap under the prompt while it runs");
+        back(&mut a, "1");
+        assert_eq!(text(&a.take_pending()), [""], "the gap it had, now in scrollback");
+        assert_eq!(text(&a.view(Instant::now()).0)[0], "◆ Read README.md (1 lines)");
+        // A call after a call stacks under it, running as when done.
+        call(&mut a, "2");
+        assert_eq!(text(&a.view(Instant::now()).0)[..2], ["◆ Read README.md (1 lines)", "◆ Read README.md"]);
     }
 
     #[test]
