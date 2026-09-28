@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Shift+Enter starts a new line in the TUI prompt**, as Alt+Enter,
+  Ctrl+J and a `\` before Enter already do. krowk now asks the terminal
+  for the first level of the kitty keyboard protocol, which reports
+  Shift+Enter apart from Enter (kitty, Ghostty, WezTerm, foot, Alacritty,
+  iTerm2), and takes the request back on exit, on Ctrl+Z and while a
+  sign-in has the terminal. A terminal without the protocol ignores it, sends
+  Shift+Enter as a plain Enter, and the other new-line keys still work.
+  Inside tmux, Shift+Enter needs `set -g extended-keys always` and
+  `set -g extended-keys-format csi-u` in its config. If
+  krowk is killed outright (`kill -9`), the terminal can be left reporting keys this
+  way; `reset` puts it back.
 - **`/mode` in the TUI (or `/permission-mode`)** switches the running
   session's permission mode: a picker lists `default`, `acceptEdits`,
   `plan`, `bypassPermissions` and `unhinged`, each with what it asks about,

@@ -98,17 +98,37 @@ fn r_pkg_1_r_tui_3_bare_krowk_on_a_terminal_opens_the_prompt_with_only_portable_
     let out = t.text();
     assert!(out.contains("krowk --resume "), "{out:?}");
     // R-TUI-3: nothing a phone terminal, tmux or an SSH hop would not
-    // pass through — no alternate screen, no mouse capture, no keyboard
-    // protocol push, no full-screen clear.
-    for bad in ["\x1b[?1049h", "\x1b[?47h", "\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h", "\x1b[>1u", "\x1b[2J", "\x1b[3J"] {
+    // pass through — no alternate screen, no mouse capture, no full-screen
+    // clear.
+    for bad in ["\x1b[?1049h", "\x1b[?47h", "\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h", "\x1b[2J", "\x1b[3J"] {
         assert!(!out.contains(bad), "sent {bad:?}");
     }
+    // The one keyboard protocol level, for shift-enter: pushed once, and
+    // popped after it.
+    assert_eq!(out.matches("\x1b[>1u").count(), 1, "{out:?}");
+    assert!(out.rfind("\x1b[<u") > out.find("\x1b[>1u"), "the keyboard protocol was never popped: {out:?}");
     // R-TUI-1: every frame is bracketed, and brackets pair up.
     let (begins, ends) = (t.frames().len(), t.frame_ends().len());
     assert!(begins > 2 && begins == ends, "{begins} frames begun, {ends} ended");
     // The log is the session, and krowk.db lists it.
     let seen = m.seen.lock().unwrap();
     assert!(seen.iter().any(|s| s.body["messages"].as_array().is_some_and(|m| m.len() == 3)), "the tool loop ran");
+}
+
+#[test]
+fn shift_enter_starts_a_new_line_and_enter_sends_both() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("shiftenter");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 80, 24);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "no prompt: {:?}", t.text());
+    // What a terminal that took the keyboard protocol push sends for
+    // shift-enter (CSI 13;2u), with plain enter still a CR.
+    t.write(b"read README.md\x1b[13;2uand summarise it\r");
+    assert!(t.wait_for("anywhere.", Duration::from_secs(10)).is_some(), "no answer: {:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let seen = m.seen.lock().unwrap();
+    assert!(seen.iter().any(|s| s.body["messages"][0].to_string().contains("read README.md\\nand summarise it")), "no prompt of two lines was sent");
 }
 
 #[test]

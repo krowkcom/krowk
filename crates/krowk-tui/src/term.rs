@@ -1,8 +1,9 @@
 //! The terminal: an inline ratatui viewport at the bottom of the normal
 //! screen, and everything finished written above it into the terminal's own
-//! scrollback (R-TUI-1). No alternate screen, no mouse capture, no keyboard
-//! protocol extensions: what a phone terminal, tmux or an SSH session does
-//! not understand is never sent (R-TUI-3).
+//! scrollback (R-TUI-1). No alternate screen, no mouse capture: what a phone
+//! terminal, tmux or an SSH session does not understand is never sent
+//! (R-TUI-3). The one keyboard protocol request, KEYS_PUSH, is ignored by a
+//! terminal without it and only adds a key there that the rest never had.
 //!
 //! Three rules keep scrollback exact:
 //!
@@ -76,6 +77,12 @@ pub const SYNC_END: &[u8] = b"\x1b[?2026l";
 /// stack ignores both).
 pub const TITLE_SAVE: &[u8] = b"\x1b[22;2t";
 pub const TITLE_RESTORE: &[u8] = b"\x1b[23;2t";
+/// The kitty keyboard protocol's first level (disambiguate), pushed on
+/// the terminal's stack when the TUI takes the terminal and popped when it
+/// gives it up: shift-enter then arrives apart from enter. Only that level:
+/// text is still sent as text, and no key releases.
+pub const KEYS_PUSH: &[u8] = b"\x1b[>1u";
+pub const KEYS_POP: &[u8] = b"\x1b[<u";
 /// Autowrap off and on again (DECAWM), around the live region's cells.
 const AUTOWRAP_OFF: &[u8] = b"\x1b[?7l";
 const AUTOWRAP_ON: &[u8] = b"\x1b[?7h";

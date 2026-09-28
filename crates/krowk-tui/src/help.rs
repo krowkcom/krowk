@@ -31,7 +31,7 @@ const fn e(title: &'static str, description: &'static str, keys: &'static str, a
 
 pub const ENTRIES: &[Entry] = &[
     e("Send", "Send the prompt", "enter", Action::Tell),
-    e("New line", "Start a new line without sending", "alt-enter · ctrl-j", Action::Tell),
+    e("New line", "Start a new line without sending", "shift-enter · alt-enter · ctrl-j", Action::Tell),
     e("Steer", "Type while a turn runs to redirect it", "type + enter", Action::Tell),
     e("Interrupt", "Stop the running turn", "esc · ctrl-c", Action::Interrupt),
     e("History", "Bring back an earlier prompt", "↑ ↓", Action::Tell),

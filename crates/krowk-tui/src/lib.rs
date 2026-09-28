@@ -183,6 +183,7 @@ pub fn run(opts: Options) -> Outcome {
 fn restore_terminal() {
     let _ = crossterm::terminal::disable_raw_mode();
     let mut out = std::io::stdout();
+    let _ = out.write_all(term::KEYS_POP);
     let _ = out.write_all(b"\x1b[?2004l\x1b[?25h");
     let _ = out.flush();
 }
@@ -195,6 +196,7 @@ type ChecksFuture = Pin<Box<dyn Future<Output = Vec<krowk_harness::readiness::Re
 async fn session(opts: Options) -> Outcome {
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(b"\x1b[?2004h");
+    let _ = stdout.write_all(term::KEYS_PUSH);
     let (w, h) = crossterm::terminal::size().unwrap_or((80, 24));
     let size = Size { width: w.max(1), height: h.max(1) };
     // Asked once, before anything else reads the terminal. A cursor mid-line
@@ -1185,6 +1187,7 @@ impl<'h> Ui<'h> {
         crossterm::terminal::enable_raw_mode()?;
         let mut out = std::io::stdout();
         let _ = out.write_all(b"\x1b[?2004h");
+        let _ = out.write_all(term::KEYS_PUSH);
         let _ = out.write_all(term::TITLE_SAVE);
         let _ = out.flush();
         let (w, h) = crossterm::terminal::size().unwrap_or((term.size().width, term.size().height));
@@ -1288,7 +1291,9 @@ impl<'h> Ui<'h> {
     /// commands'.
     async fn on_prompt_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = k.modifiers.contains(KeyModifiers::ALT);
+        // Shift-enter is alt-enter: a new line, past the menus as alt-enter
+        // goes. Only a terminal that took KEYS_PUSH tells the two enters apart.
+        let alt = k.modifiers.contains(KeyModifiers::ALT) || (k.code == KeyCode::Enter && k.modifiers.contains(KeyModifiers::SHIFT));
         // The Agents overlay takes the keys that move through it: select a
         // subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3).
         if app.overlay == Overlay::Agents && !ctrl && !alt {
