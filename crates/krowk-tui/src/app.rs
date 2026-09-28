@@ -2036,8 +2036,6 @@ impl App {
     }
 }
 
-/// A menu row and what it does, on one line where they fit; where not —
-/// prose's 80 columns — what it does wraps under it, indented.
 /// A picker's row: what it is, what it is set to, what that means, and
 /// what to watch for, if anything.
 struct Choice {
@@ -2062,8 +2060,12 @@ fn picker_title(name: &str, keys: &str, width: usize) -> Line<'static> {
 /// warning is shown whichever row is chosen, and the only colour is a
 /// value's status or a warning's yellow.
 fn choices(rows: &[Choice], at: usize, cycles: bool, width: usize) -> Vec<Line<'static>> {
-    let value_w = rows.iter().map(|r| r.value.content.width()).max().unwrap_or(0) + if cycles { 4 } else { 0 };
-    let name_w = rows.iter().map(|r| r.name.width()).max().unwrap_or(0);
+    // Measured as drawn: cleaned, in display columns.
+    let names: Vec<String> = rows.iter().map(|r| clean(&r.name)).collect();
+    let values: Vec<String> = rows.iter().map(|r| clean(&r.value.content)).collect();
+    let pad = |s: &str, w: usize| format!("{s}{}", " ".repeat(w.saturating_sub(s.width())));
+    let value_w = values.iter().map(|v| v.width()).max().unwrap_or(0) + if cycles { 4 } else { 0 };
+    let name_w = names.iter().map(|n| n.width()).max().unwrap_or(0);
     let value_x = 2 + name_w + 2;
     let says_x = if value_w == 0 { value_x } else { value_x + value_w + 2 };
     // Narrower, a description goes under its row; narrower still, the
@@ -2086,32 +2088,35 @@ fn choices(rows: &[Choice], at: usize, cycles: bool, width: usize) -> Vec<Line<'
         let chosen = i == at;
         let weight = if chosen { bold() } else { Style::new() };
         let value = match (cycles, chosen) {
-            (true, true) => format!("‹ {} ›", r.value.content),
-            (true, false) => format!("  {}  ", r.value.content),
-            (false, _) => r.value.content.to_string(),
+            (true, true) => format!("‹ {} ›", values[i]),
+            (true, false) => format!("  {}  ", values[i]),
+            (false, _) => values[i].clone(),
         };
         let value = Span::styled(value, r.value.style.patch(weight));
-        let mut line = vec![Span::styled(if chosen { "❯ " } else { "  " }, bold()), Span::styled(clip(&r.name, width.saturating_sub(2)), weight)];
+        let mut line = vec![Span::styled(if chosen { "❯ " } else { "  " }, bold())];
         if stacked {
+            line.push(Span::styled(clip(&names[i], width.saturating_sub(2)), weight));
             out.push(Line::from(line));
             if !value.content.trim().is_empty() {
                 out.push(Line::from(vec![Span::raw("    "), Span::styled(clip(value.content.trim(), width.saturating_sub(4)), value.style)]));
             }
             out.extend(hung(4, "", &r.says, dim()));
         } else {
-            line.push(Span::raw(" ".repeat(name_w - r.name.width() + 2)));
+            // Each column padded to its width and followed by two spaces,
+            // so the description starts at `says_x` on every row.
+            line.push(Span::styled(pad(&names[i], name_w), weight));
             if value_w > 0 {
-                line.push(Span::styled(format!("{:<value_w$}", value.content), value.style));
+                line.push(Span::raw("  "));
+                line.push(Span::styled(pad(&value.content, value_w), value.style));
             }
             if beside {
-                let says = hung(says_x, "", &r.says, dim());
-                let mut says = says.into_iter();
-                if let Some(first) = says.next() {
+                let says = wrap(&r.says, width - says_x);
+                if let Some(first) = says.first() {
                     line.push(Span::raw("  "));
-                    line.extend(first.spans.into_iter().skip(1));
+                    line.push(Span::styled(first.clone(), dim()));
                 }
                 out.push(Line::from(line));
-                out.extend(says);
+                out.extend(says.into_iter().skip(1).map(|l| Line::from(vec![Span::raw(" ".repeat(says_x)), Span::styled(l, dim())])));
             } else {
                 out.push(Line::from(line));
                 out.extend(hung(4, "", &r.says, dim()));
@@ -3167,6 +3172,23 @@ mod tests {
         assert!(above(&rows).iter().all(|r| r.width() <= 80), "{rows:?}");
         assert!(rows.join("\n").contains("deny and ask rules still hold"), "the mode picker's too: {rows:?}");
         assert!(rows.iter().any(|r| r.starts_with("❯ default") || r.starts_with("  default  ")), "{rows:?}");
+    }
+
+    #[test]
+    fn a_pickers_descriptions_line_up_and_stay_in_its_width() {
+        let says = |s: &str| Choice { name: "n".into(), value: Span::raw(""), says: s.into(), warning: None };
+        let col = |rows: &[Line<'static>], needle: &str| text(rows).iter().find_map(|r| r.find(needle).map(|b| r[..b].width())).unwrap();
+        // No values at all: the description is the second column.
+        let rows = choices(&[says("one two three four five six seven eight nine ten eleven twelve")], 0, false, 30);
+        assert!(text(&rows).iter().all(|r| r.width() <= 30), "{:?}", text(&rows));
+        assert_eq!(col(&rows, "one"), col(&rows, "eleven"), "a wrapped description hangs under itself: {:?}", text(&rows));
+        // A wide value pads by its columns, not its chars.
+        let rows = [
+            Choice { name: "a".into(), value: Span::raw("漢字"), says: "first".into(), warning: None },
+            Choice { name: "b".into(), value: Span::raw("ab"), says: "second".into(), warning: None },
+        ];
+        let rows = choices(&rows, 0, true, 60);
+        assert_eq!(col(&rows, "first"), col(&rows, "second"), "{:?}", text(&rows));
     }
 
     #[test]

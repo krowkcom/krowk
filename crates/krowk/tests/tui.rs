@@ -1460,7 +1460,8 @@ fn model_marks_readiness_in_the_background_and_offers_connect_and_disconnect_ask
     assert!(tm.wait_for("switch to", Duration::from_secs(5)).is_some(), "{}", tm.screen());
     let row = |s: &str, name: &str| s.lines().find(|l| l.trim_start().trim_start_matches("❯ ").starts_with(&format!("{name}/"))).unwrap_or_default().to_string();
     // The header can be drawn a frame before the rows under it.
-    let screen = tm.wait_still(|s| !row(s, "claude").is_empty(), Duration::from_secs(5)).unwrap_or_else(|| tm.screen());
+    tm.wait_still(|s| !row(s, "claude").is_empty(), Duration::from_secs(5));
+    let screen = tm.screen();
     assert!(row(&screen, "claude").contains(" … "), "claude is still being asked: {screen}");
     assert!(row(&screen, "anthropic").contains("✓ ready") && row(&screen, "openai").contains("✗ key not set"), "a key is marked at once: {screen}");
     // The arrows answer while `claude` is still being asked.
