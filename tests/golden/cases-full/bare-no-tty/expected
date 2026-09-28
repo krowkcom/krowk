@@ -991,6 +991,39 @@ stdout:
       "name": "status",
       "usage": "krowk status",
       "summary": "What's connected, and whether each is ready"
+    },
+    {
+      "name": "host",
+      "summary": "The daemon sessions run in, which outlives the terminal",
+      "subcommands": [
+        {
+          "name": "status",
+          "usage": "krowk host status",
+          "summary": "Whether the daemon runs: socket, pid, uptime, sessions"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk host attach <session>",
+          "summary": "Follow a session in the daemon, live, as stream-json",
+          "args": [
+            {
+              "name": "session",
+              "summary": "The session id a result names",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "enable",
+          "usage": "krowk host enable",
+          "summary": "Run the daemon as a systemd or launchd user service"
+        },
+        {
+          "name": "disable",
+          "usage": "krowk host disable",
+          "summary": "Stop the service and remove it"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -1110,6 +1143,12 @@ stdout:
       "type": "bool",
       "default": "false",
       "usage": "With -p: let a backend (Claude Code, Codex) run in a repository not yet trusted — it runs the repository's hooks and MCP servers without asking. Without it, -p refuses unless a person at the terminal says yes"
+    },
+    {
+      "name": "daemon",
+      "type": "bool",
+      "default": "false",
+      "usage": "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it"
     }
   ],
   "environment": [
@@ -2140,6 +2179,39 @@ stdout:
       "name": "status",
       "usage": "krowk status",
       "summary": "What's connected, and whether each is ready"
+    },
+    {
+      "name": "host",
+      "summary": "The daemon sessions run in, which outlives the terminal",
+      "subcommands": [
+        {
+          "name": "status",
+          "usage": "krowk host status",
+          "summary": "Whether the daemon runs: socket, pid, uptime, sessions"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk host attach <session>",
+          "summary": "Follow a session in the daemon, live, as stream-json",
+          "args": [
+            {
+              "name": "session",
+              "summary": "The session id a result names",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "enable",
+          "usage": "krowk host enable",
+          "summary": "Run the daemon as a systemd or launchd user service"
+        },
+        {
+          "name": "disable",
+          "usage": "krowk host disable",
+          "summary": "Stop the service and remove it"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -2259,6 +2331,12 @@ stdout:
       "type": "bool",
       "default": "false",
       "usage": "With -p: let a backend (Claude Code, Codex) run in a repository not yet trusted — it runs the repository's hooks and MCP servers without asking. Without it, -p refuses unless a person at the terminal says yes"
+    },
+    {
+      "name": "daemon",
+      "type": "bool",
+      "default": "false",
+      "usage": "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it"
     }
   ],
   "environment": [
@@ -3303,6 +3381,39 @@ stdout:
       "name": "status",
       "usage": "krowk status",
       "summary": "What's connected, and whether each is ready"
+    },
+    {
+      "name": "host",
+      "summary": "The daemon sessions run in, which outlives the terminal",
+      "subcommands": [
+        {
+          "name": "status",
+          "usage": "krowk host status",
+          "summary": "Whether the daemon runs: socket, pid, uptime, sessions"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk host attach <session>",
+          "summary": "Follow a session in the daemon, live, as stream-json",
+          "args": [
+            {
+              "name": "session",
+              "summary": "The session id a result names",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "enable",
+          "usage": "krowk host enable",
+          "summary": "Run the daemon as a systemd or launchd user service"
+        },
+        {
+          "name": "disable",
+          "usage": "krowk host disable",
+          "summary": "Stop the service and remove it"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -3422,6 +3533,12 @@ stdout:
       "type": "bool",
       "default": "false",
       "usage": "With -p: let a backend (Claude Code, Codex) run in a repository not yet trusted — it runs the repository's hooks and MCP servers without asking. Without it, -p refuses unless a person at the terminal says yes"
+    },
+    {
+      "name": "daemon",
+      "type": "bool",
+      "default": "false",
+      "usage": "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it"
     }
   ],
   "environment": [
@@ -4466,6 +4583,39 @@ tty:
       "name": "status",
       "usage": "krowk status",
       "summary": "What's connected, and whether each is ready"
+    },
+    {
+      "name": "host",
+      "summary": "The daemon sessions run in, which outlives the terminal",
+      "subcommands": [
+        {
+          "name": "status",
+          "usage": "krowk host status",
+          "summary": "Whether the daemon runs: socket, pid, uptime, sessions"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk host attach <session>",
+          "summary": "Follow a session in the daemon, live, as stream-json",
+          "args": [
+            {
+              "name": "session",
+              "summary": "The session id a result names",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "enable",
+          "usage": "krowk host enable",
+          "summary": "Run the daemon as a systemd or launchd user service"
+        },
+        {
+          "name": "disable",
+          "usage": "krowk host disable",
+          "summary": "Stop the service and remove it"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -4585,6 +4735,12 @@ tty:
       "type": "bool",
       "default": "false",
       "usage": "With -p: let a backend (Claude Code, Codex) run in a repository not yet trusted — it runs the repository's hooks and MCP servers without asking. Without it, -p refuses unless a person at the terminal says yes"
+    },
+    {
+      "name": "daemon",
+      "type": "bool",
+      "default": "false",
+      "usage": "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it"
     }
   ],
   "environment": [

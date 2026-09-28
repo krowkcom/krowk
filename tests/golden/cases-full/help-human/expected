@@ -28,6 +28,7 @@ ACCOUNT
 
 OTHER
   providers     Low-level instance config (add, list, rename, remove)
+  host          The daemon sessions run in, which outlives the terminal
   config        Show or set configuration
   doctor        Check this machine's setup
   pricing       Refresh model prices
@@ -88,6 +89,10 @@ OTHER
   providers list    List every instance, and whether it is ready
   providers remove  Remove an instance's definition, and forget its login
   providers rename  Rename an instance; its login and sessions follow
+  host status       Whether the daemon runs: socket, pid, uptime, sessions
+  host attach       Follow a session in the daemon, live, as stream-json
+  host enable       Run the daemon as a systemd or launchd user service
+  host disable      Stop the service and remove it
   config show       The effective configuration, and which layer set each value
   config set        Write one value into the repo config, or the global one
   config unset      Remove one value from the repo config, or the global one
@@ -162,5 +167,9 @@ AGENT FLAGS (krowk, krowk -p)
                               repository's hooks and MCP servers without asking.
                               Without it, -p refuses unless a person at the
                               terminal says yes
+  --daemon                    With -p: run the turn in the host daemon (started
+                              when none runs) instead of this process, so it
+                              goes on if this process ends — `krowk host attach
+                              <session>` follows it
 exit: 0
 
