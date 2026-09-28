@@ -21,12 +21,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   background, to finish. `/sessions <id>` continues one of this
   directory's sessions by its full id; `krowk --resume <id>` opens any.
 - **A content width for the TUI**: `tui.contentWidth` in config.json is
-  `prose`, at most 65 columns — Tailwind's `max-w-prose` — or
-  `full-width`, the terminal's whole width. It is a maximum: a terminal
-  narrower than 65 columns still gets all of its width. `/settings` now
-  has two rows, chosen with ↑ and ↓; the content width applies as soon as
-  it is changed, to what is printed from then on. The default is `prose`,
-  so a wide terminal now reads in a column of 65; set `full-width` for
+  `prose`, at most 80 columns, or `full-width`, the terminal's whole
+  width. It is a maximum: a terminal narrower than 80 columns still gets
+  all of its width. `/settings` now has two rows, chosen with ↑ and ↓;
+  the content width applies as soon as it is changed, to what is printed
+  from then on. The default is `prose`, so a wide terminal now reads in a
+  column of 80; set `full-width` for
   the old layout. The width is the conversation's: the prompt and the
   status line under it take the terminal's whole width either way.
 - **Connected instances can be renamed**: `krowk providers rename

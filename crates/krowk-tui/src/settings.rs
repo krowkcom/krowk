@@ -5,8 +5,7 @@
 //! ```
 //!
 //! - `contentWidth` — `prose` (the default) lays out what is above the
-//!   prompt at most 65 columns wide, Tailwind's `max-w-prose` (`65ch`),
-//!   however wide the terminal; a narrower one still gets all of its width.
+//!   prompt at most 80 columns wide, however wide the terminal; a narrower one still gets all of its width.
 //!   `full-width` takes the terminal's whole width. The prompt and the
 //!   status line take the whole width either way.
 //! - `statusBar` — false hides the status line under the prompt. The "no
@@ -91,8 +90,8 @@ impl ContentWidth {
     /// In the order `/settings` steps through them.
     pub const ALL: [(&'static str, ContentWidth); 2] = [("prose", ContentWidth::Prose), ("full-width", ContentWidth::FullWidth)];
 
-    /// Tailwind's `max-w-prose`, `65ch`: 65 columns of a monospace font.
-    pub const PROSE: u16 = 65;
+    /// Wide enough for a line of code or a table row, narrow enough to read.
+    pub const PROSE: u16 = 80;
 
     pub fn name(self) -> &'static str {
         ContentWidth::ALL.iter().find(|(_, w)| *w == self).map_or("prose", |(n, _)| n)
@@ -314,7 +313,7 @@ mod tests {
     #[test]
     fn the_content_width_is_a_maximum_prose_by_default() {
         assert_eq!(Settings::default().content_width, ContentWidth::Prose);
-        assert_eq!(ContentWidth::Prose.of(200), 65, "Tailwind's max-w-prose");
+        assert_eq!(ContentWidth::Prose.of(200), 80);
         assert_eq!(ContentWidth::Prose.of(40), 40, "a narrower terminal keeps all of its width");
         assert_eq!(ContentWidth::FullWidth.of(200), 200);
         assert_eq!(from_config(&json!({"tui": {"contentWidth": "full-width"}})).0.content_width, ContentWidth::FullWidth);

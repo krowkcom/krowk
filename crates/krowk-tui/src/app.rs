@@ -1939,7 +1939,7 @@ impl App {
 }
 
 /// A menu row and what it does, on one line where they fit; where not —
-/// prose's 65 columns — what it does wraps under it, indented.
+/// prose's 80 columns — what it does wraps under it, indented.
 fn described(head: &str, says: &str, width: usize, style: Style) -> Vec<Line<'static>> {
     let one = format!("{head}  {says}");
     if one.width() <= width {
@@ -2888,21 +2888,21 @@ mod tests {
     }
 
     #[test]
-    fn prose_lays_out_at_most_65_columns_and_full_width_takes_the_terminal() {
+    fn prose_lays_out_at_most_80_columns_and_full_width_takes_the_terminal() {
         let mut a = App::new(Editor::new(None), 200, Settings::default(), None, None);
         a.say(&"word ".repeat(40), dim());
         let lines = a.take_pending();
-        assert!(lines.len() > 1 && lines.iter().all(|l| l.width() <= 65), "{:?}", text(&lines));
-        // Above the prompt, at most 65; the prompt and the status line
+        assert!(lines.len() > 1 && lines.iter().all(|l| l.width() <= 80), "{:?}", text(&lines));
+        // Above the prompt, at most 80; the prompt and the status line
         // take the whole width.
         let above = |rows: &[String]| rows.iter().take_while(|r| !r.starts_with('─')).cloned().collect::<Vec<_>>();
         a.turn = Some(Turn { started: Instant::now(), want_interrupt: false, interrupt_sent: false, tool_running: false, prompt_seen: true });
         a.editor.insert_str(&"word ".repeat(30));
         let rows = text(&a.view(Instant::now()).0);
-        assert!(!above(&rows).is_empty() && above(&rows).iter().all(|r| r.width() <= 65), "the live region too: {rows:?}");
+        assert!(!above(&rows).is_empty() && above(&rows).iter().all(|r| r.width() <= 80), "the live region too: {rows:?}");
         let rule = rows.iter().find(|r| r.starts_with('─')).unwrap();
         assert_eq!(rule.width(), 200, "the prompt's rule spans the terminal");
-        assert!(rows.iter().any(|r| r.starts_with(look::ARROW) && r.width() > 65), "the prompt wraps at the terminal: {rows:?}");
+        assert!(rows.iter().any(|r| r.starts_with(look::ARROW) && r.width() > 80), "the prompt wraps at the terminal: {rows:?}");
         a.turn = None;
         a.editor = Editor::new(None);
         a.set_width(30);
@@ -2911,15 +2911,15 @@ mod tests {
         a.set_content_width(ContentWidth::FullWidth);
         assert_eq!(a.width, 200);
         a.set_content_width(ContentWidth::Prose);
-        assert_eq!(a.width, 65, "and back, from the width there is");
+        assert_eq!(a.width, 80, "and back, from the width there is");
         a.overlay = Overlay::Settings;
         a.setting_at = 1;
         let rows = text(&a.view(Instant::now()).0).join("\n");
         assert!(rows.contains("❯ Content width") && rows.contains("‹ prose ›") && rows.contains("  Default permission mode"), "{rows}");
-        assert!(rows.contains("asks before edits and commands") && rows.contains("at most 65 columns"), "what each value does, whole: {rows}");
+        assert!(rows.contains("asks before edits and commands") && rows.contains("at most 80 columns"), "what each value does, whole: {rows}");
         a.open_mode_picker();
         let rows = text(&a.view(Instant::now()).0);
-        assert!(above(&rows).iter().all(|r| r.width() <= 65), "{rows:?}");
+        assert!(above(&rows).iter().all(|r| r.width() <= 80), "{rows:?}");
         assert!(rows.join("\n").contains("deny and ask rules still hold"), "the mode picker's too: {rows:?}");
         assert!(rows.iter().any(|r| r.starts_with("❯ default") || r.starts_with("  default  ")), "{rows:?}");
     }
