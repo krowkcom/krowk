@@ -2,7 +2,7 @@
   "name": "krowk",
   "displayName": "Krowk",
   "description": "Publish screenshots, recordings and reports from an agent run to a permalink that unfurls as a card in GitHub, Slack, Basecamp and Linear.",
-  "version": "0.8.2",
+  "version": "0.11.0",
   "author": {
     "name": "Krowk",
     "url": "https://krowk.com"

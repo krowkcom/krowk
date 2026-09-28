@@ -1,14 +1,16 @@
 {
   "name": "@krowk/cli",
   "version": "0.0.0-unpublished",
-  "description": "Permalinks for agent output. Push a screenshot, get a URL that unfurls.",
+  "description": "A coding agent for your terminal — Claude, GPT, Grok or any OpenAI-compatible model — with a permalink for everything it produces.",
   "keywords": [
     "krowk",
-    "screenshot",
-    "permalink",
-    "upload",
+    "coding-agent",
     "agent",
-    "cli"
+    "llm",
+    "tui",
+    "cli",
+    "permalink",
+    "screenshot"
   ],
   "homepage": "https://krowk.com",
   "bugs": "https://github.com/krowkcom/krowk/issues",

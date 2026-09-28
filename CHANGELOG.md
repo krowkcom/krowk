@@ -9,6 +9,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Changed
+
+- `@krowk/cli` on npm describes krowk as the coding agent it carries, with publishing as one of the things it does; `@krowk/mcp` says it publishes from any agent. The build-it-yourself line (npm launcher, `prompt.md`) installs the full build (`--features harness`) rather than `sessions`, which left the agent out. The Claude plugin's manifest version, stuck at 0.8.2, is 0.11.0.
+
 ## [0.11.0] - 2026-09-28
 
 krowk is a coding agent now. Bare `krowk` opens its TUI, `krowk -p` runs it
