@@ -93,6 +93,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   and its last one, where it showed the first two and the last three. An
   edit's count of lines added and removed reads `+9 -3`, where it was
   `+9/-3`.
+- **Thinking leaves no line in the TUI's scrollback**: `◆ Thought for 4.2s`
+  is gone. The status line still says `Thinking… 3.2s` while it happens,
+  and `Worked for 12s` at the end of a turn counts it.
 - **The TUI names the skill a call loads**: `Skill: basecamp`, where it
   showed a bare `skill`, for krowk's own skills and Claude Code's alike. A
   tool krowk has no name of its own for reads as words, `ListAgents` as
