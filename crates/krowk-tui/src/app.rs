@@ -696,6 +696,7 @@ impl App {
     /// (`tree`): a failure's first lines, a command's output cut to its
     /// head and tail, an edit's lines as removed and added.
     fn commit_tool(&mut self, name: &str, input: &serde_json::Value, output: &str, is_error: bool) {
+        let name = look::tool_kind(name);
         self.gap();
         let width = usize::from(self.width.max(8));
         let (verb, arg) = look::tool_title(name, input);
@@ -2086,6 +2087,9 @@ mod tests {
         a.commit_tool("read", &serde_json::json!({"path": "gone.md"}), "no such file", true);
         let t = text(&a.take_pending());
         assert_eq!(t.last().map(String::as_str), Some("└─ no such file"), "one line is the last: {t:?}");
+        a.commit_tool("Bash", &serde_json::json!({"command": "ls"}), "a\nb", false);
+        let t = text(&a.take_pending());
+        assert_eq!(t, ["", "◆ Run ls", "├─ a", "└─ b"], "Claude Code's Bash is krowk's: {t:?}");
     }
 
     #[test]

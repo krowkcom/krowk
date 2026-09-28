@@ -110,13 +110,31 @@ pub fn duration(d: Duration) -> String {
     }
 }
 
+/// The name of krowk's own tool that a vendor's tool is: Claude Code's
+/// `Bash`, `Read`, `Edit`… and Codex's `shell`, so a call through
+/// `claude:` or `codex:` is shown the way a native one is. Any other name
+/// is its own.
+pub fn tool_kind(name: &str) -> &str {
+    match name {
+        "Bash" | "shell" => "bash",
+        "Read" => "read",
+        "Write" => "write",
+        "Grep" => "grep",
+        "Glob" => "glob",
+        "Edit" => "search_replace",
+        "TodoWrite" => "todo_write",
+        other => other,
+    }
+}
+
 /// How a tool call is named: a verb, and what it acts on.
 pub fn tool_title(name: &str, input: &serde_json::Value) -> (String, String) {
     let s = |k: &str| input.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let path = || Some(s("path")).filter(|p| !p.is_empty()).unwrap_or_else(|| s("file_path"));
     let first_line = |t: String| t.lines().next().unwrap_or_default().to_string();
-    match name {
-        "read" => ("Read".into(), s("path")),
-        "write" => ("Write".into(), s("path")),
+    match tool_kind(name) {
+        "read" => ("Read".into(), path()),
+        "write" => ("Write".into(), path()),
         "bash" => ("Run".into(), first_line(s("command"))),
         "grep" => ("Search".into(), s("pattern")),
         "glob" => ("Find".into(), s("pattern")),
@@ -145,7 +163,7 @@ fn patch_paths(patch: &str) -> Vec<String> {
 pub fn edit_lines(name: &str, input: &serde_json::Value) -> Option<(Vec<String>, Vec<String>)> {
     let s = |k: &str| input.get(k).and_then(|v| v.as_str()).map(String::from);
     let split = |t: String| t.lines().map(String::from).collect::<Vec<_>>();
-    match name {
+    match tool_kind(name) {
         "str_replace" => Some((split(s("old_str")?), split(s("new_str")?))),
         "search_replace" => Some((split(s("old_string")?), split(s("new_string")?))),
         "apply_patch" => {
@@ -258,6 +276,18 @@ mod tests {
         assert_eq!((del, add), (vec!["a".to_string(), "b".into()], vec!["c".to_string()]));
         let (del, add) = edit_lines("apply_patch", &json!({"input": "*** Begin Patch\n*** Update File: x\n@@ ctx\n keep\n-old\n+new\n*** End Patch"})).unwrap();
         assert_eq!((del, add), (vec!["old".to_string()], vec!["new".to_string()]));
+    }
+
+    #[test]
+    fn a_vendors_tools_are_named_as_krowks_own() {
+        assert_eq!(tool_title("Read", &json!({"file_path": "/r/README.md"})), ("Read".into(), "/r/README.md".into()));
+        assert_eq!(tool_title("Bash", &json!({"command": "ls\npwd"})), ("Run".into(), "ls".into()));
+        assert_eq!(tool_title("shell", &json!({"command": "ls", "cwd": "/r"})), ("Run".into(), "ls".into()));
+        assert_eq!(tool_title("Grep", &json!({"pattern": "fn test"})), ("Search".into(), "fn test".into()));
+        assert_eq!(tool_title("TodoWrite", &json!({"todos": []})), ("Plan".into(), String::new()));
+        let (del, add) = edit_lines("Edit", &json!({"file_path": "x", "old_string": "a", "new_string": "b\nc"})).unwrap();
+        assert_eq!((del, add), (vec!["a".to_string()], vec!["b".to_string(), "c".into()]));
+        assert_eq!(tool_title("mcp__gh__search", &json!({})).0, "mcp__gh__search", "one krowk has no name for is its own");
     }
 
     #[test]
