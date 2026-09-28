@@ -47,7 +47,8 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // on — the flag, else a resumed session's last, else the default.
     let session_model = resume.as_ref().and_then(|id| log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)).ok()).and_then(|events| {
         events.iter().rev().find_map(|e| match &e.body {
-            krowk_harness::protocol::LogBody::TurnStarted { model, .. } => Some(model.clone()),
+            // On the name its instance has now, renamed or not.
+            krowk_harness::protocol::LogBody::TurnStarted { model, .. } => Some(registry.current_model(model)),
             _ => None,
         })
     });

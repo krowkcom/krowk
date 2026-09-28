@@ -11,6 +11,7 @@ pub enum Action {
     Settings,
     Connect,
     Disconnect,
+    Rename,
     Todos,
     Agents,
     Details,
@@ -42,6 +43,7 @@ pub const ENTRIES: &[Entry] = &[
     e("Settings", "The default permission mode, saved", "/settings · /config", Action::Settings),
     e("Connect", "Connect a provider, or renew a login", "/connect", Action::Connect),
     e("Disconnect", "Sign an instance out", "/disconnect", Action::Disconnect),
+    e("Rename", "Give an instance a new name", "/rename", Action::Rename),
     e("Todos", "The task list for this session", "ctrl-t", Action::Todos),
     e("Subagents", "See, expand or stop subagents", "ctrl-g", Action::Agents),
     e("Session", "Tokens, limits and the log file", "ctrl-o", Action::Details),
@@ -91,6 +93,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("settings", "Settings saved to config.json — the default permission mode"),
     ("connect", "Connect a provider — a subscription or an API key"),
     ("disconnect", "Sign an instance out"),
+    ("rename", "Rename an instance — /rename claude:work claude:personal"),
     ("help", "Keys and what they do"),
     ("exit", "Leave krowk"),
 ];

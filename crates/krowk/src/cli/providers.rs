@@ -72,13 +72,13 @@ impl AuthInteraction for Terminal<'_> {
     }
 
     fn prompt(&mut self, prompt: Prompt<'_>) -> Result<Answer, EngineError> {
-        let (Prompt::Text { message, flag } | Prompt::Secret { message, flag } | Prompt::Select { message, flag, .. }) = &prompt;
+        let (Prompt::Text { message, flag, .. } | Prompt::Secret { message, flag } | Prompt::Select { message, flag, .. }) = &prompt;
         if !self.interactive {
             return Err(EngineError::new("bad_argument", format!("nobody is at a terminal to ask “{message}” — pass {flag}")));
         }
         let cancelled = |_| EngineError::new("selection_cancelled", "nothing was chosen and nothing was changed");
         match prompt {
-            Prompt::Text { message, .. } => inquire::Text::new(message).prompt().map(Answer::Text).map_err(cancelled),
+            Prompt::Text { message, initial, .. } => inquire::Text::new(message).with_initial_value(initial).prompt().map(Answer::Text).map_err(cancelled),
             Prompt::Secret { message, .. } => inquire::Password::new(message).without_confirmation().prompt().map(Answer::Text).map_err(cancelled),
             Prompt::Select { message, options, .. } => inquire::Select::new(message, options.to_vec()).raw_prompt().map(|o| Answer::Choice(o.index)).map_err(cancelled),
         }
@@ -353,6 +353,31 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
         let place = if row.get("binary").is_some() { s("binary") } else { s("base_url") };
         let _ = writeln!(out, "{:<width$}  {:<20}  {:<13}  {place}  ({})", rep.instance, kind_label(rep.kind), rep.readiness.label(), rep.source);
     }
+    Ok(())
+}
+
+/// `krowk providers rename [instance] [new-name]`: a new name — whole,
+/// never prefixed — for an instance, its login and every place config.json names it with it; each
+/// argument, left out at a terminal, is asked.
+pub(super) fn rename(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    if args.len() > 2 {
+        return Err(fail("unexpected_argument", format!("`krowk providers rename` takes an instance and its new name, and got `{}`", args.join(" "))));
+    }
+    let done = {
+        let (pa, mut ui) = parts(ctx, true)?;
+        let (from, new) = pa.rename_target(args.first().map(String::as_str), args.get(1).map(String::as_str), &mut ui).map_err(engine)?;
+        pa.rename(&from, &new).map_err(engine)?
+    };
+    if ctx.format != Format::Human {
+        let summary = format!("renamed {} to {}", done.from, done.to);
+        let report = json!({ "from": done.from, "to": done.to, "kind": done.kind, "moved_login": done.login, "default_model": done.default_model, "api_key_env": done.key_env });
+        return super::sessions::emit_data(ctx, report, summary);
+    }
+    let colour = ctx.colour;
+    let dim = |s: &str| crate::output::paint(colour, crate::output::DIM, s);
+    let mut lines = vec![format!("{} Renamed {} to {}", crate::output::paint(colour, crate::output::GREEN, "✓"), done.from, done.to)];
+    lines.extend(done.notes().iter().map(|n| dim(&format!("  {n}"))));
+    let _ = writeln!(ctx.io.stdout, "{}", lines.join("\n"));
     Ok(())
 }
 

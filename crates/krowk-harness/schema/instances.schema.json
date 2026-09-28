@@ -46,6 +46,13 @@
       "items": {
         "type": "string"
       }
+    },
+    "renamed": {
+      "description": "Names instances were renamed from, and the name each is now\n(`krowk providers rename`): a session that ran on the old name\nresumes on the new one, and `--model <old>/<model>` still runs.\nA name an instance has now is never read through it.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
     }
   },
   "$defs": {

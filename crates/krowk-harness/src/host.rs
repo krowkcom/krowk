@@ -608,7 +608,7 @@ impl Shared {
             return Err(EngineError::new("no_session", format!("{id:?} is not a krowk session id")));
         }
         let events = log::read_events(&self.cfg.sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(log_failure)?;
-        let past = replay(&log::branch(&events, events.last().map(|e| e.id.as_str()).unwrap_or_default()));
+        let past = replay(&log::branch(&events, events.last().map(|e| e.id.as_str()).unwrap_or_default()), &self.registry());
         // A subagent runs one turn, on the model its definition (or
         // `subagents.model`) chose: there is no next turn to switch.
         if let Some(parent) = &past.parent {
@@ -712,7 +712,7 @@ impl Shared {
             Some(id) => Some(SessionLog::open(&self.cfg.sessions_dir, id).map_err(log_failure)?),
             None => None,
         };
-        let past = opened.as_ref().map(|(log, events)| replay(&log::branch(events, log.head().unwrap_or_default()))).unwrap_or_default();
+        let past = opened.as_ref().map(|(log, events)| replay(&log::branch(events, log.head().unwrap_or_default()), &self.registry())).unwrap_or_default();
         let cwd = past.cwd.clone().unwrap_or_else(|| self.cfg.cwd.clone());
         // A turn a backend began runs where the session's last turn on that
         // instance ran, on its model and effort, whatever came since; in the
@@ -1377,7 +1377,9 @@ struct Vendor {
     seen: usize,
 }
 
-fn replay(branch: &[&LogEvent]) -> Past {
+/// Every instance as it is named now (`Registry::current`): a turn logged
+/// on a name since renamed is the renamed instance's.
+fn replay(branch: &[&LogEvent], registry: &Registry) -> Past {
     let mut past = Past::default();
     let mut at: HashMap<&str, usize> = HashMap::new();
     let mut responses = 0usize;
@@ -1392,6 +1394,7 @@ fn replay(branch: &[&LogEvent]) -> Past {
                 past.parent = parent_session_id.clone();
             }
             LogBody::TurnStarted { model, permission_mode, effort, .. } => {
+                let model = &registry.current_model(model);
                 past.model = Some(model.clone());
                 past.last_on.retain(|(m, ..)| m.instance != model.instance);
                 past.last_on.push((model.clone(), *permission_mode, *effort));
@@ -1438,7 +1441,7 @@ fn replay(branch: &[&LogEvent]) -> Past {
                     v.seen = past.turns.len();
                 }
             }
-            LogBody::ModelSwitched { to, .. } => past.model = Some(to.clone()),
+            LogBody::ModelSwitched { to, .. } => past.model = Some(registry.current_model(to)),
             LogBody::RunOpened { run, .. } => past.run = Some(run.clone()),
             // The subagents' own logs hold their conversations; the todo
             // list is read back from the calls that set it.

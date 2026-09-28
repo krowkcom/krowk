@@ -27,7 +27,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// Rows the prompt may take before it scrolls within itself.
 const MAX_INPUT_ROWS: usize = 8;
 /// The `/` menu shows this many entries at most, scrolling past them.
-const SLASH_ROWS: usize = 8;
+const SLASH_ROWS: usize = 10;
 /// The Krowk mark (.github/logo.svg): its 4×4 glyph, `#`, on a plate a
 /// unit wider all round, `.`.
 const LOGO: [&str; 6] = ["......", ".#..#.", ".#..#.", ".###..", ".#..#.", "......"];
@@ -691,6 +691,31 @@ impl App {
         self.push_wrapped("  ", "  ", &facts.join(" · "), dim(), dim());
         for n in notes {
             self.push_wrapped("  ! ", "    ", n, dim(), dim());
+        }
+    }
+
+    /// An instance goes by `to` now: what the session holds of `from` —
+    /// its model, the models it ran on, each instance's usage — is `to`'s,
+    /// so the picker and the details never offer a name that is gone.
+    pub fn renamed(&mut self, from: &str, to: &str) {
+        let on = |i: &mut String| {
+            if i == from {
+                *i = to.to_string();
+            }
+        };
+        for i in [self.model.as_mut().map(|m| &mut m.instance), self.turn_instance.as_mut(), self.billing.as_mut().map(|(i, _)| i)].into_iter().flatten() {
+            on(i);
+        }
+        let mut used = Vec::new();
+        for mut m in std::mem::take(&mut self.used) {
+            on(&mut m.instance);
+            if !used.contains(&m) {
+                used.push(m);
+            }
+        }
+        self.used = used;
+        if let Some(u) = self.instances.remove(from) {
+            self.instances.entry(to.to_string()).or_insert(u);
         }
     }
 
@@ -2338,8 +2363,8 @@ mod tests {
         assert_eq!(rows.len(), 3, "only the prompt, in its box: {:?}", text(&rows));
         a.overlay = Overlay::Keys;
         let (rows, caret) = a.view(Instant::now());
-        assert_eq!(rows.len(), 21, "the help menu, a rule and seventeen entries, over the prompt box");
-        assert_eq!(caret, (2, 19), "after the arrow");
+        assert_eq!(rows.len(), 22, "the help menu, a rule and eighteen entries, over the prompt box");
+        assert_eq!(caret, (2, 20), "after the arrow");
     }
 
     #[test]

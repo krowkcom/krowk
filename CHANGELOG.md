@@ -11,6 +11,23 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Connected instances can be renamed**: `krowk providers rename
+  claude:work claude:personal` on the command line, or `/rename` in the
+  TUI, which picks the instance and asks its new name with the provider's
+  prefix already typed. The new name is always the whole name, exactly as
+  given, and keeps the provider's prefix: a bare `personal` is refused with
+  the name it would need to be. An OpenAI-compatible server's name has no
+  prefix, as before. The instance's
+  login or stored key moves with it, and so does every place config.json
+  names it: `defaultModel`, `rolloverOrder` and `subagents.model`. The old
+  name is kept in config.json's new `renamed` map, so a session that ran on
+  it resumes on the new name and `--model <old>/<model>` still works. A
+  named account's directory and a key's environment variable keep their
+  names; krowk says so when the variable was made from the old name. The
+  built-in instances (`claude`, `codex`, `anthropic`, …) keep their names.
+  The TUI's `/` menu now shows ten entries, so skills still show below
+  krowk's own commands.
+
 - **Shift+Enter starts a new line in the TUI prompt**, as Alt+Enter,
   Ctrl+J and a `\` before Enter already do. Windows consoles report
   Shift+Enter on their own; elsewhere krowk now asks the terminal for the

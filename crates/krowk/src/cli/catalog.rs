@@ -550,8 +550,15 @@ fn providers_command() -> Command {
                 args: vec![arg("instance", "The instance to remove, e.g. openai:work", true)],
                 ..cmd("remove", "krowk providers remove <instance>", "Remove an instance's definition, and forget its login")
             },
+            Command {
+                args: vec![
+                    arg("instance", "The instance to rename, e.g. claude:work — a person at a terminal may omit it and pick", false),
+                    arg("new-name", "Its whole new name, e.g. claude:personal — the same <provider>: prefix; a server's has none. Asked at a terminal when absent", false),
+                ],
+                ..cmd("rename", "krowk providers rename [instance] [new-name]", "Rename an instance; its login and sessions follow")
+            },
         ],
-        ..cmd("providers", "", "Low-level instance config (add, list, remove)")
+        ..cmd("providers", "", "Low-level instance config (add, list, rename, remove)")
     }
 }
 

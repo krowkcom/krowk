@@ -1293,6 +1293,45 @@ fn a_key_pasted_in_connect_is_never_shown_and_the_prompt_runs_on_it() {
     assert!(!config.contains("4242"), "the key is in config.json: {config}");
 }
 
+/// `/rename` picks the session's instance, asks its new name, and the
+/// session goes on on it: the next prompt runs there, and config.json has
+/// it under the new name.
+#[test]
+fn rename_in_the_tui_moves_the_session_onto_the_new_name() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("rename");
+    let config = b.root.join("home/.krowk");
+    std::fs::create_dir_all(&config).unwrap();
+    let instances = serde_json::json!({"instances": {"anthropic:work": {"kind": "anthropic-api", "apiKeyEnv": "ANTHROPIC_API_KEY", "baseUrl": m.url}}});
+    std::fs::write(config.join("config.json"), instances.to_string()).unwrap();
+    let mut t = pty::Pty::spawn(b.command(&m.url, &["--model", "anthropic:work/claude-sonnet-4-6"]), 110, 34);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"read README.md and summarise it in one line\r");
+    assert!(says(&t, at, "anywhere.", Duration::from_secs(15)), "no answer: {:?}", t.text());
+    let at = t.output().len();
+    t.write(b"/rename\r");
+    assert!(says(&t, at, "Rename which instance?", Duration::from_secs(10)), "{:?}", t.text());
+    let at = t.output().len();
+    settle();
+    t.write(b"\r");
+    assert!(says(&t, at, "New name for anthropic:work", Duration::from_secs(5)), "{:?}", t.text());
+    settle();
+    let at = t.output().len();
+    // `anthropic:` is typed already: `job` finishes the whole name.
+    t.write(b"job\r");
+    assert!(says(&t, at, "Renamed anthropic:work to anthropic:job", Duration::from_secs(10)), "{:?}", t.text());
+    let at = t.output().len();
+    t.write(b"what language is it written in?\r");
+    assert!(says(&t, at, "It is written in Rust.", Duration::from_secs(15)), "no answer on the new name: {:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(config.join("config.json")).unwrap()).unwrap();
+    assert!(cfg["instances"].get("anthropic:job").is_some() && cfg["instances"].get("anthropic:work").is_none(), "{cfg}");
+    let log = std::fs::read_dir(config.join("sessions")).unwrap().flatten().filter(|e| e.path().is_dir()).map(|e| std::fs::read_to_string(e.path().join("events.jsonl")).unwrap_or_default()).collect::<String>();
+    assert!(log.contains(r#""instance":"anthropic:job""#), "the second turn ran on the new name: {log}");
+}
+
 /// A vendor's login has the terminal while it runs: the TUI clears its
 /// live region first and draws nothing meanwhile, and takes the terminal
 /// back after — at the size it is by then — with nothing of the old

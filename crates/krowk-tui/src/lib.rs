@@ -235,6 +235,10 @@ async fn session(opts: Options) -> Outcome {
                 }
                 let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
                 app.replay(&log::branch(&events, &head));
+                // A turn logged on a name since renamed is on the new name.
+                for old in opts.host.registry.renamed.keys() {
+                    app.renamed(old, &opts.host.registry.current(old));
+                }
                 app.session_id = Some(id.clone());
                 app.say(&format!("resumed session {id}"), app::dim());
             }
@@ -1513,6 +1517,7 @@ impl<'h> Ui<'h> {
                             help::Action::Settings => self.open_settings(app),
                             help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
                             help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
+                            help::Action::Rename => self.open_flow(app, connect::Job::Rename(None, None), false),
                             help::Action::Todos => app.overlay = Overlay::Todos,
                             help::Action::Agents => app.overlay = Overlay::Agents,
                             help::Action::Details => app.overlay = Overlay::Details,
@@ -1707,6 +1712,7 @@ impl<'h> Ui<'h> {
             connect::Job::Connect(_) => ("Connect a provider", None),
             // Alone, it starts on the session's instance.
             connect::Job::Disconnect(t) => ("Disconnect", t.is_none().then(|| self.model.as_ref().map(|m| m.instance.clone())).flatten()),
+            connect::Job::Rename(t, _) => ("Rename an instance", t.is_none().then(|| self.model.as_ref().map(|m| m.instance.clone())).flatten()),
         };
         let intro = match first_run {
             true => vec![
@@ -1805,7 +1811,7 @@ impl<'h> Ui<'h> {
     /// on, what it did in the words `krowk connect` uses, and — when the
     /// session had nothing ready to run on, or this is the first connection
     /// (it became the default) — the session moved onto it.
-    fn finished(&mut self, app: &mut App, done: Result<connect::Done, EngineError>, registry: Option<krowk_harness::instances::Registry>) {
+    fn finished(&mut self, app: &mut App, done: Result<connect::Done, EngineError>, registry: Option<Box<krowk_harness::instances::Registry>>) {
         // Whether the session had nothing to run on: its instance marked not
         // ready, or — never marked — not ready by what needs no process.
         let stuck = match &self.model {
@@ -1829,11 +1835,12 @@ impl<'h> Ui<'h> {
         let changed = match &done {
             Ok(connect::Done::Connected(c)) => Some(c.instance.clone()),
             Ok(connect::Done::Disconnected(d)) => Some(d.instance.clone()),
+            Ok(connect::Done::Renamed(r)) => Some(r.from.clone()),
             Err(_) => None,
         };
         if let Some(r) = registry {
             app.vendor_instances = r.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
-            self.host.set_registry(r, changed.as_deref());
+            self.host.set_registry(*r, changed.as_deref());
         }
         if changed.is_some() {
             // Whatever was marked before may have changed, a check still
@@ -1860,9 +1867,24 @@ impl<'h> Ui<'h> {
                 }
             }
             Ok(connect::Done::Disconnected(d)) => app.disconnected(&d),
+            Ok(connect::Done::Renamed(r)) => {
+                app.done("Renamed", &format!("{} to {}", r.from, r.to), &[], &r.notes());
+                self.renamed(app, &r.from, &r.to);
+            }
             Err(e) if e.code == "selection_cancelled" => app.gap_say(if first_run { "nothing connected — /connect when you are ready" } else { &e.message }),
             Err(e) => app.error(&e.info()),
         }
+    }
+
+    /// An instance renamed: the session, and whatever it holds of the old
+    /// name, on the new one — the same instance, so nothing is asked again.
+    fn renamed(&mut self, app: &mut App, from: &str, to: &str) {
+        for m in [self.model.as_mut(), self.chosen.as_mut(), self.needs_trust.as_mut().map(|(m, _)| m)].into_iter().flatten() {
+            if m.instance == from {
+                m.instance = to.to_string();
+            }
+        }
+        app.renamed(from, to);
     }
 
     /// The session moves onto `m`, as a routed model is taken: the next
@@ -1988,6 +2010,22 @@ impl<'h> Ui<'h> {
                 match PermissionMode::parse(name) {
                     Some(m) => self.set_mode(app, m),
                     None => app.notice(&format!("/mode: {name} is not a permission mode — one of {}", PermissionMode::NAMES.join(", "))),
+                }
+                return false;
+            }
+            "/rename" => {
+                app.editor.clear();
+                self.open_flow(app, connect::Job::Rename(None, None), false);
+                return false;
+            }
+            t if t.starts_with("/rename ") => {
+                app.editor.clear();
+                let mut words = t["/rename ".len()..].split_whitespace().map(String::from);
+                let (target, new) = (words.next(), words.next());
+                if words.next().is_some() {
+                    app.notice("/rename takes an instance and its whole new name — /rename claude:work claude:personal");
+                } else {
+                    self.open_flow(app, connect::Job::Rename(target, new), false);
                 }
                 return false;
             }

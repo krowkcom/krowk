@@ -37,7 +37,7 @@ impl AuthInteraction for Script {
 
     fn prompt(&mut self, prompt: Prompt<'_>) -> Result<Answer, EngineError> {
         let (message, options, flag) = match prompt {
-            Prompt::Text { message, flag } | Prompt::Secret { message, flag } => (message, Vec::new(), flag),
+            Prompt::Text { message, flag, .. } | Prompt::Secret { message, flag } => (message, Vec::new(), flag),
             Prompt::Select { message, options, flag } => (message, options.iter().map(|o| o.to_string()).collect(), flag),
         };
         self.asked.push((message.to_string(), options));

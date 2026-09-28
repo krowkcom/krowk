@@ -231,8 +231,9 @@ pub enum MakeDefault {
 
 /// What a way in asks.
 pub enum Prompt<'a> {
-    /// A line of text. `flag` is what answers it without a prompt.
-    Text { message: &'a str, flag: &'a str },
+    /// A line of text, starting as `initial`. `flag` is what answers it
+    /// without a prompt.
+    Text { message: &'a str, flag: &'a str, initial: &'a str },
     /// A secret: never echoed, never logged.
     Secret { message: &'a str, flag: &'a str },
     /// One of `options`, by index.
@@ -277,7 +278,12 @@ fn wrong_answer() -> EngineError {
 }
 
 fn ask_text(ui: &mut dyn AuthInteraction, message: &str, flag: &str) -> Result<String, EngineError> {
-    match ui.prompt(Prompt::Text { message, flag })? {
+    ask_text_from(ui, message, flag, "")
+}
+
+/// `ask_text`, the answer starting as `initial`: typed after it, or over it.
+fn ask_text_from(ui: &mut dyn AuthInteraction, message: &str, flag: &str, initial: &str) -> Result<String, EngineError> {
+    match ui.prompt(Prompt::Text { message, flag, initial })? {
         Answer::Text(t) => Ok(t.trim().to_string()),
         Answer::Choice(_) => Err(wrong_answer()),
     }
@@ -431,6 +437,40 @@ pub struct Removed {
     /// A Claude Code or Codex account's directory, kept with the vendor's
     /// login in it, and whether it is Codex's.
     pub kept: Option<(String, bool)>,
+}
+
+/// What `rename` (`krowk providers rename`, `/rename`) did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Renamed {
+    pub from: String,
+    pub to: String,
+    pub kind: &'static str,
+    /// A login or a stored key moved with it.
+    pub login: bool,
+    /// `defaultModel`, when it ran on the old name and was moved.
+    pub default_model: Option<String>,
+    /// The variable its key is still read from, when it was made from the
+    /// old name (`OPENAI_WORK_API_KEY`): renaming it is the person's.
+    pub key_env: Option<String>,
+}
+
+impl Renamed {
+    /// What it moved, and what it left the person to do — the same words
+    /// for `krowk providers rename` and the TUI's `/rename`.
+    pub fn notes(&self) -> Vec<String> {
+        let mut notes = Vec::new();
+        if self.login {
+            notes.push("its login moved with it".to_string());
+        }
+        if let Some(m) = &self.default_model {
+            notes.push(format!("the default model is {m} now"));
+        }
+        notes.push(format!("sessions that ran on {} resume on {}", self.from, self.to));
+        if let Some(v) = &self.key_env {
+            notes.push(format!("! it still reads its key from ${v}"));
+        }
+        notes
+    }
 }
 
 /// Connecting and disconnecting, against krowk's config (`config.json`)
@@ -677,6 +717,156 @@ impl ProviderAuth<'_> {
         let labels: Vec<String> = reg.instances.values().map(|r| format!("{} ({})", r.name, self.label(r))).collect();
         let options: Vec<&str> = labels.iter().map(String::as_str).collect();
         Ok(names[choose(ui, "Disconnect which instance?", &options, "the instance, e.g. `krowk disconnect claude:work`")?].to_string())
+    }
+
+    /// The instance `rename` renames and the name it gets: each the one
+    /// given, else asked — the instance picked from those that can be
+    /// renamed. Never a guess: with nobody to ask, they are listed.
+    pub fn rename_target(&self, target: Option<&str>, new: Option<&str>, ui: &mut dyn AuthInteraction) -> Result<(String, String), EngineError> {
+        let given = |s: Option<&str>| s.map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+        let from = match given(target) {
+            Some(t) => t,
+            None => {
+                let defs = self.definitions()?;
+                let reg = Registry::resolve(&defs, self.env);
+                let mine: Vec<&Resolved> = reg.instances.values().filter(|r| defs.instances.contains_key(&r.name) && !built_in(&r.name)).collect();
+                if mine.is_empty() {
+                    return Err(EngineError::new("no_instance", "no account here has a name of its own to change — a built-in one (claude, codex, anthropic…) keeps its name; `krowk connect <vendor> --name <name>` adds a named one"));
+                }
+                let names: Vec<&str> = mine.iter().map(|r| r.name.as_str()).collect();
+                if !ui.interactive() {
+                    return Err(EngineError::new("bad_argument", format!("nobody is at a terminal to pick which instance to rename — name one of {}: `krowk providers rename <instance> <new-name>`", names.join(", "))));
+                }
+                let labels: Vec<String> = mine.iter().map(|r| format!("{} ({})", r.name, self.label(r))).collect();
+                let options: Vec<&str> = labels.iter().map(String::as_str).collect();
+                names[choose(ui, "Rename which instance?", &options, "the instance, e.g. `krowk providers rename claude:work claude:personal`")?].to_string()
+            }
+        };
+        let new = match given(new) {
+            Some(n) => n,
+            None => {
+                // The provider's prefix is there already: what is typed after
+                // it is the rest of the whole name, as shown.
+                let prefix = self.definitions()?.instances.get(&from).and_then(|d| prefix_of(d.tag())).map(|p| format!("{p}:")).unwrap_or_default();
+                ask_text_from(ui, &format!("New name for {from}"), "the whole new name, e.g. `krowk providers rename claude:work claude:personal`", &prefix)?
+            }
+        };
+        Ok((from, new))
+    }
+
+    /// Renames an instance: its definition, its login and stored key in the
+    /// credentials file, and every place config.json names it —
+    /// `defaultModel`, `rolloverOrder`, `subagents.model`. The old name is
+    /// kept in `renamed`, so a session that ran on it resumes on the new one.
+    /// `new` is the whole name, taken as given, never prefixed: it keeps
+    /// the provider's prefix a connection gave the old one (`claude:work` to
+    /// `claude:personal`), and a server's has none. A built-in keeps its
+    /// name: with its definition gone it
+    /// would come back, a second instance on the same login.
+    ///
+    /// Nothing else moves: a named account's directory is where its
+    /// definition says, and a key's variable is the one it names.
+    pub fn rename(&self, from: &str, new: &str) -> Result<Renamed, EngineError> {
+        let defs = self.definitions()?;
+        let known = Registry::resolve(&defs, self.env);
+        if built_in(from) {
+            return Err(EngineError::new("built_in", format!("{from} is built in and keeps its name — connect another account by name instead, e.g. `{}`", connect_command(&format!("{from}:<name>"), known.instances.get(from).map_or("", |r| r.kind)))));
+        }
+        let Some(def) = defs.instances.get(from) else {
+            let why = match known.renamed.get(from) {
+                Some(_) => format!("{from} was renamed to {} already", known.current(from)),
+                None => format!("no instance named {from} is defined — `krowk providers list` shows them"),
+            };
+            return Err(EngineError::new("no_instance", why));
+        };
+        let kind = def.tag();
+        let provider = by_kind(kind).map(|w| w.provider);
+        let to = new.trim().to_string();
+        check_name(&to)?;
+        match prefix_of(kind) {
+            Some(p) if to.split_once(':').is_none_or(|(pre, rest)| pre != p || rest.is_empty() || rest.contains(':')) => {
+                let rest = to.rsplit(':').next().filter(|r| !r.is_empty()).unwrap_or("personal");
+                return Err(bad_flag(format!("{to:?} is not a {p} name — give the whole new name, which starts with `{p}:`, e.g. {p}:{rest}")));
+            }
+            None if to.contains(':') => return Err(bad_flag(format!("{to:?} cannot name a server: its name is the whole instance name, so no `:`"))),
+            _ => {}
+        }
+        if to == from {
+            return Err(bad_flag(format!("{from} is its name already")));
+        }
+        if let Some(k) = known.instances.keys().find(|k| *k != from && k.to_lowercase() == to.to_lowercase()) {
+            let why = if *k == to { format!("{to} is connected already") } else { format!("{to} differs from {k}, which is there already, only in case") };
+            return Err(EngineError::new("instance_exists", format!("{why} — give {from} another name")));
+        }
+        // The login and key first, under the credentials file's lock; moved
+        // back if config.json cannot be written, so the two never disagree.
+        let store = Store::new(self.credentials.clone());
+        let login = store.rename(from, &to).map_err(|e| EngineError::new("credentials_unwritable", e.message))?;
+        let mut default_model = None;
+        let moved = self.edit(|raw| {
+            let to = to.as_str();
+            // `<old>/<model>` (and, where it may be, `<old>` alone) as the new name.
+            let swap = |s: &str, bare: bool| -> Option<String> {
+                match s.trim().split_once('/') {
+                    Some((i, m)) if i == from => Some(format!("{to}/{m}")),
+                    None if bare && s.trim() == from => Some(to.to_string()),
+                    _ => None,
+                }
+            };
+            if let Some(Value::Object(all)) = raw.get_mut("instances")
+                && let Some(d) = all.remove(from)
+            {
+                all.insert(to.into(), d);
+            }
+            if let Some(m) = raw.get("defaultModel").and_then(Value::as_str).and_then(|m| swap(m, false)) {
+                raw.insert("defaultModel".into(), Value::String(m.clone()));
+                default_model = Some(m);
+            }
+            if let Some(Value::Array(order)) = raw.get_mut("rolloverOrder") {
+                for e in order.iter_mut() {
+                    if let Some(s) = e.as_str().and_then(|s| swap(s, true)) {
+                        *e = Value::String(s);
+                    }
+                }
+            }
+            if let Some(Value::Object(sub)) = raw.get_mut("subagents")
+                && let Some(s) = sub.get("model").and_then(Value::as_str).and_then(|m| swap(m, false))
+            {
+                sub.insert("model".into(), Value::String(s));
+            }
+            // Every older name of this instance now leads to the new one; a
+            // name an instance has is never an old one.
+            let renamed = raw.entry("renamed").or_insert_with(|| Value::Object(Map::new()));
+            if !renamed.is_object() {
+                *renamed = Value::Object(Map::new());
+            }
+            let renamed = renamed.as_object_mut().expect("an object");
+            for v in renamed.values_mut() {
+                if v.as_str() == Some(from) {
+                    *v = Value::String(to.into());
+                }
+            }
+            renamed.insert(from.into(), Value::String(to.into()));
+            renamed.remove(to);
+        });
+        if let Err(e) = moved {
+            if login {
+                let _ = store.rename(&to, from);
+            }
+            return Err(e);
+        }
+        readiness::forget(from);
+        readiness::forget(&to);
+        crate::keys::forget();
+        // A variable made from the old name, which it still reads.
+        let key_env = match (provider, def) {
+            (
+                Some(p),
+                InstanceKind::AnthropicApi { api_key_env: Some(v), .. } | InstanceKind::OpenaiApi { api_key_env: Some(v), .. } | InstanceKind::XaiApi { api_key_env: Some(v), .. } | InstanceKind::OpenrouterApi { api_key_env: Some(v), .. },
+            ) => from.strip_prefix(p).and_then(|r| r.strip_prefix(':')).filter(|n| *v == format!("{}_{}_API_KEY", env_part(p), env_part(n))).map(|_| v.clone()),
+            _ => None,
+        };
+        Ok(Renamed { from: from.into(), to, kind, login, default_model, key_env })
     }
 
     /// Connects: writes the definition — after the sign-in, which must
@@ -1169,6 +1359,17 @@ impl ProviderAuth<'_> {
         };
         Ok(Removed { definition, login, kept })
     }
+}
+
+/// The prefix a named instance of `kind` has (`claude` of `claude:work`):
+/// none for a server, whose name is its own.
+fn prefix_of(kind: &str) -> Option<&'static str> {
+    by_kind(kind).map(|w| w.provider).filter(|p| *p != "openai-compatible")
+}
+
+/// One of the instances every host has (`instances::implicit`).
+fn built_in(name: &str) -> bool {
+    instances::implicit().iter().any(|(n, _)| *n == name)
 }
 
 fn capitalised(s: &str) -> String {

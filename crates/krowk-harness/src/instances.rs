@@ -85,6 +85,12 @@ pub struct InstancesConfig {
     /// kind.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rollover_order: Vec<String>,
+    /// Names instances were renamed from, and the name each is now
+    /// (`krowk providers rename`): a session that ran on the old name
+    /// resumes on the new one, and `--model <old>/<model>` still runs.
+    /// A name an instance has now is never read through it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub renamed: BTreeMap<String, String>,
     /// The provider credentials file stored keys are read from
     /// (`keys::apply`): set by whoever loads the person's own config, and
     /// never by JSON — no config file, a repository's least of all, can
@@ -515,6 +521,8 @@ pub struct Registry {
     pub rollover: Rollover,
     /// Config's `rolloverOrder`, as written.
     pub rollover_order: Vec<String>,
+    /// Config's `renamed`: an old name, and the one it became.
+    pub renamed: BTreeMap<String, String>,
 }
 
 impl Registry {
@@ -531,7 +539,39 @@ impl Registry {
         if let Some(credentials) = &cfg.keys_from {
             crate::keys::apply(&mut instances, credentials, env);
         }
-        Registry { instances, default_model: cfg.default_model.clone(), toolset: cfg.toolset.clone(), subagents: cfg.subagents.clone(), rollover: cfg.rollover.unwrap_or_default(), rollover_order: cfg.rollover_order.clone() }
+        Registry {
+            instances,
+            default_model: cfg.default_model.clone(),
+            toolset: cfg.toolset.clone(),
+            subagents: cfg.subagents.clone(),
+            rollover: cfg.rollover.unwrap_or_default(),
+            rollover_order: cfg.rollover_order.clone(),
+            renamed: cfg.renamed.clone(),
+        }
+    }
+
+    /// The name an instance goes by now: `name` itself when an instance
+    /// has it, else the name it was renamed to (`renamed`, followed through
+    /// every later rename), else `name` as it was.
+    pub fn current(&self, name: &str) -> String {
+        let mut at = name;
+        // Each old name at most once: a hand-written loop ends.
+        for _ in 0..=self.renamed.len() {
+            if self.instances.contains_key(at) {
+                return at.to_string();
+            }
+            match self.renamed.get(at) {
+                Some(next) => at = next,
+                None => break,
+            }
+        }
+        name.to_string()
+    }
+
+    /// `m` on the instance its name is now (`current`): what a session
+    /// logged before a rename runs on after it.
+    pub fn current_model(&self, m: &ModelRef) -> ModelRef {
+        ModelRef { instance: self.current(&m.instance), model: m.model.clone() }
     }
 
     /// Whether `rollover` and `rolloverOrder` say something krowk can do,
@@ -613,13 +653,14 @@ impl Registry {
         if s.is_empty() {
             return Err("the model is empty — pass `<instance>/<model>` or a model id".into());
         }
-        if let Some((instance, model)) = s.split_once('/')
-            && self.instances.contains_key(instance)
+        // A name an instance was renamed from still names it.
+        if let Some((instance, model)) = s.split_once('/').map(|(i, m)| (self.current(i), m))
+            && self.instances.contains_key(&instance)
         {
             if model.is_empty() {
                 return Err(format!("{s:?} names the instance {instance:?} but no model — e.g. {instance}/{DEFAULT_MODEL}"));
             }
-            return Ok(Asked::Exact(ModelRef { instance: instance.into(), model: model.into() }));
+            return Ok(Asked::Exact(ModelRef { instance, model: model.into() }));
         }
         Ok(Asked::Bare(s.into()))
     }
@@ -1009,6 +1050,9 @@ pub fn from_config_json(raw: &serde_json::Value) -> Result<InstancesConfig, Stri
             return Err("\"subagents\": maxParallel must be at least 1".into());
         }
     }
+    if let Some(v) = raw.get("renamed") {
+        cfg.renamed = serde_json::from_value(v.clone()).map_err(|e| format!("\"renamed\": {e} — an object of old instance names and the names they became"))?;
+    }
     Ok(cfg)
 }
 
@@ -1049,6 +1093,21 @@ mod tests {
         // R-TOOL-2: config can pin a toolset, and only one that exists.
         assert_eq!(Registry::resolve(&from_config_json(&serde_json::json!({"toolset": "grok"})).unwrap(), &env).toolset.as_deref(), Some("grok"));
         assert!(from_config_json(&serde_json::json!({"toolset": "vim"})).unwrap_err().contains("claude, gpt, grok"));
+    }
+
+    #[test]
+    fn an_old_name_leads_to_the_instance_it_became_through_every_rename() {
+        let cfg = from_config_json(&serde_json::json!({
+            "instances": {"claude:job": {"kind": "claude-code"}, "claude:work": {"kind": "claude-code"}},
+            "renamed": {"claude:a": "claude:b", "claude:b": "claude:job", "claude:work": "claude:gone", "loop:x": "loop:y", "loop:y": "loop:x"},
+        }))
+        .unwrap();
+        let reg = Registry::resolve(&cfg, &env);
+        assert_eq!(reg.current("claude:a"), "claude:job", "followed through a later rename");
+        assert_eq!(reg.current("claude:work"), "claude:work", "a name an instance has is never an old one");
+        assert_eq!((reg.current("nope"), reg.current("loop:x")), ("nope".into(), "loop:x".into()), "nothing to follow, or a loop, is the name as it was");
+        assert_eq!(reg.read_model("claude:a/opus").unwrap(), Asked::Exact(ModelRef { instance: "claude:job".into(), model: "opus".into() }));
+        assert!(from_config_json(&serde_json::json!({"renamed": ["claude:a"]})).unwrap_err().contains("\"renamed\""));
     }
 
     #[test]
