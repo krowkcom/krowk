@@ -65,6 +65,9 @@ pub struct Flags {
     /// `-p`: run a backend in a repository nobody has trusted yet.
     #[cfg(feature = "harness")]
     pub trust: bool,
+    /// `-p`: run the turn in the host daemon.
+    #[cfg(feature = "harness")]
+    pub daemon: bool,
     /// `providers add`: the instance's name, its key's variable, its base
     /// URL, and how SuperGrok signs in.
     #[cfg(feature = "harness")]
@@ -286,6 +289,8 @@ impl Flags {
                     "device" => &mut self.device,
                     #[cfg(feature = "harness")]
                     "trust" => &mut self.trust,
+                    #[cfg(feature = "harness")]
+                    "daemon" => &mut self.daemon,
                     #[cfg(feature = "harness")]
                     "default" => &mut self.default,
                     #[cfg(feature = "harness")]

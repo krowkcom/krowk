@@ -167,6 +167,75 @@ pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<(), S
     cmd.spawn().map(drop).map_err(|e| format!("{} cannot be run: {e}", program.display()))
 }
 
+/// A runtime for the command line's one call, which has none of its own.
+fn runtime() -> Result<tokio::runtime::Runtime, EngineError> {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| EngineError::new("runtime_unavailable", format!("the async runtime could not start: {e}")))
+}
+
+/// The daemon's client, when one listens; none when nothing does.
+async fn running(env: &dyn Fn(&str) -> String, version: &str) -> Result<Option<client::Client>, EngineError> {
+    let socket = socket(env).map_err(|e| EngineError::new("host_unavailable", e))?;
+    let cwd = std::env::current_dir().unwrap_or_default();
+    match client::Client::connect(&socket, &cwd, version).await {
+        Ok(c) => Ok(Some(c)),
+        Err(client::ConnectError::Absent) => Ok(None),
+        Err(client::ConnectError::Failed(e)) => Err(e),
+    }
+}
+
+/// `krowk host status`: how the daemon is, or none when none runs. Never
+/// starts one.
+pub fn status(env: &dyn Fn(&str) -> String, version: &str) -> Result<Option<crate::protocol::HostStatus>, EngineError> {
+    runtime()?.block_on(async {
+        match running(env, version).await? {
+            Some(c) => c.status().await.map(Some),
+            None => Ok(None),
+        }
+    })
+}
+
+/// `krowk host attach`: every frame of `session` as stream-json — what its
+/// log holds, the running turn so far, then live until that turn's result.
+/// A session with no turn running prints its log and ends.
+pub fn attach(env: &dyn Fn(&str) -> String, version: &str, session: &str, out: &mut dyn std::io::Write) -> Result<(), EngineError> {
+    use crate::protocol::{LiveEvent, StreamLine};
+    let mut print = |line: &StreamLine| {
+        let _ = writeln!(out, "{}", serde_json::to_string(line).expect("a stream line serializes"));
+        let _ = out.flush();
+    };
+    runtime()?.block_on(async {
+        let Some(c) = running(env, version).await? else {
+            return Err(EngineError::new("host_not_running", format!("no host daemon runs, so session {session} is not running there — `krowk -p --resume {session} …` continues it")));
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<StreamLine>(1024);
+        let attach = c.attach(session, None, tx);
+        tokio::pin!(attach);
+        let mut live = false;
+        loop {
+            tokio::select! {
+                biased;
+                Some(line) = rx.recv() => {
+                    print(&line);
+                    if live && matches!(&line, StreamLine::Live(LiveEvent::Result(r)) if r.session_id == session) {
+                        return Ok(());
+                    }
+                }
+                r = &mut attach, if !live => {
+                    if !r? {
+                        // Caught up, and nothing more is coming.
+                        while let Ok(line) = rx.try_recv() {
+                            print(&line);
+                        }
+                        return Ok(());
+                    }
+                    live = true;
+                }
+                else => return Err(EngineError::new("host_gone", "the host daemon closed the connection before the turn ended — `krowk host status` says whether it is up")),
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

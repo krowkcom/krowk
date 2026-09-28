@@ -10,6 +10,8 @@ pub mod flags;
 pub mod help;
 #[cfg(feature = "sessions")]
 mod budget;
+#[cfg(all(feature = "harness", unix))]
+mod host;
 #[cfg(feature = "harness")]
 mod prompt;
 #[cfg(feature = "harness")]
@@ -264,6 +266,18 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["providers", "rename", ..] => providers::rename(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["status", ..] => status::status(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["host"] => host::status(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["host", "serve", ..] => host::serve(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["host", "status", ..] => host::status(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["host", "attach", ..] => host::attach(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["host", "enable", ..] => host::enable(ctx, true),
+        #[cfg(all(feature = "harness", unix))]
+        ["host", "disable", ..] => host::enable(ctx, false),
         _ if missing(p) => Err(not_in_build(p)),
         _ => Err(fail("unknown_command", format!("`{}` is not a krowk command — run `krowk --help`", clip(p, 2).join(" ")))),
     }
@@ -400,7 +414,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
     ];
     #[cfg(feature = "harness")]
     {
-        for name in ["output-format", "model", "resume", "permission-mode", "toolset", "effort", "trust"] {
+        for name in ["output-format", "model", "resume", "permission-mode", "toolset", "effort", "trust", "daemon"] {
             if f.given.contains(name) && !f.print {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk -p`")));
             }
