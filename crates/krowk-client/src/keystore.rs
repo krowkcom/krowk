@@ -169,17 +169,21 @@ impl Keystore {
         krowk_api::home::make(&self.home)?;
         let _lock = krowk_api::creds::lock(&self.account_path())?;
         let mut replaced = None;
-        if let Some(id) = self.account_id()?
-            && id != account.id()
-        {
+        // The same key again keeps how it came here: a key `init` made stays
+        // protected from a later `recover` of another phrase.
+        let mut origin = "recover".to_string();
+        if let Some(id) = self.account_id()? {
             let f: AccountFile = krowk_api::creds::read(&self.account_path())?;
-            if f.origin != "recover" {
+            if id == account.id() {
+                origin = if f.origin == "recover" { f.origin } else { "init".into() };
+            } else if f.origin != "recover" {
                 return Err(format!("this home already holds account key {id}, made here by `krowk sync init` — recovering another into it would lose that one; use a fresh krowk home, or move {} aside", self.account_path().display()));
+            } else {
+                replaced = Some(id);
             }
-            replaced = Some(id);
         }
         let (device, device_created) = self.device_or_create()?;
-        self.save(&device, &account, "recover")?;
+        self.save(&device, &account, &origin)?;
         Ok((Setup { device, device_created, account }, replaced))
     }
 

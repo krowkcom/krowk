@@ -81,8 +81,11 @@ fn r_e2e_3_recovering_another_account_into_a_home_is_refused() {
     let store = Keystore::new(&root.join("home"));
     let setup = store.init(|_| Ok(())).unwrap();
     assert!(store.recover(AccountKey::generate()).unwrap_err().contains("made here by `krowk sync init`"));
-    // The same account again is fine, and changes nothing that matters.
+    // The same account again is fine, and changes nothing that matters —
+    // including that `init` made it: another phrase is still refused after.
     store.recover(setup.account.clone()).unwrap();
+    assert_eq!(store.account().unwrap().unwrap(), setup.account);
+    assert!(store.recover(AccountKey::generate()).unwrap_err().contains("made here by `krowk sync init`"));
     assert_eq!(store.account().unwrap().unwrap(), setup.account);
     let _ = std::fs::remove_dir_all(&root);
 }
