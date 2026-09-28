@@ -85,9 +85,56 @@ pub fn link() -> Style {
     Style::new().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
 }
 
-/// Whether a span is a link: `link()`'s style on an http(s) URL.
-pub fn is_link(span: &Span<'_>) -> bool {
-    span.style == link() && (span.content.starts_with("https://") || span.content.starts_with("http://"))
+/// After a link in an answer, in the link's colour but not underlined: it
+/// opens the link too.
+pub const LINK_ARROW: &str = "\u{a0}↗";
+
+fn link_arrow() -> Style {
+    Style::new().fg(Color::Cyan)
+}
+
+/// Where a span links to, and the text it shows: `link()`'s style on an
+/// http(s) URL links to itself; a `linked` span to the URL it carries.
+pub fn link_target<'a>(span: &'a Span<'_>) -> Option<(&'a str, String)> {
+    if span.style != link() && span.style != link_arrow() {
+        return None;
+    }
+    let content = span.content.as_ref();
+    if let Some(at) = content.find(is_tag) {
+        let url = content[at..].chars().filter(|c| is_tag(*c)).filter_map(|c| char::from_u32(u32::from(c) - TAG)).collect();
+        return Some((&content[..at], url));
+    }
+    (span.style == link() && is_url(content)).then(|| (content, content.to_string()))
+}
+
+fn is_url(s: &str) -> bool {
+    s.starts_with("https://") || s.starts_with("http://")
+}
+
+/// Unicode tag characters: ASCII shifted to U+E0000, zero columns wide and
+/// drawn as nothing. A span's link target rides behind its text as these,
+/// since a span has nowhere else to keep it, and `link_target` reads it back.
+const TAG: u32 = 0xE0000;
+
+fn is_tag(c: char) -> bool {
+    (TAG + 0x21..=TAG + 0x7E).contains(&u32::from(c))
+}
+
+/// `text` in `style`, linking to `url` (an http(s) URL). Anything but
+/// printable ASCII in the URL is percent-encoded, so no escape or control
+/// character can reach the terminal inside it.
+pub fn linked(text: String, style: Style, url: &str) -> Span<'static> {
+    let mut content = text;
+    for b in url.bytes() {
+        let bytes = if (0x21..=0x7E).contains(&b) { vec![b] } else { format!("%{b:02X}").into_bytes() };
+        content.extend(bytes.into_iter().filter_map(|b| char::from_u32(TAG + u32::from(b))));
+    }
+    Span::styled(content, style)
+}
+
+/// A link in an answer: its text in `link()`, then `↗`, both opening `url`.
+fn link_spans(text: &str, url: &str) -> [Span<'static>; 2] {
+    [linked(text.to_string(), link(), url), linked(LINK_ARROW.to_string(), link_arrow(), url)]
 }
 
 pub fn code() -> Style {
@@ -224,6 +271,9 @@ pub fn edit_lines(name: &str, input: &serde_json::Value) -> Option<(Vec<String>,
 /// the code colour, `**bold**` bold. Line by line, so it streams: `fence`
 /// carries whether a fenced block is open across lines.
 pub fn markdown_line(text: &str, fence: &mut bool) -> Line<'static> {
+    // Tag characters carry a link's URL (`linked`): none may come from the
+    // answer, or it could make any span a link to anywhere.
+    let text: &str = &text.replace(|c: char| (TAG..TAG + 0x80).contains(&u32::from(c)), "");
     let trimmed = text.trim_start();
     if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
         *fence = !*fence;
@@ -256,34 +306,89 @@ pub fn markdown_line(text: &str, fence: &mut bool) -> Line<'static> {
     Line::from(spans)
 }
 
-/// `code` and `**bold**` within a line; anything unclosed stays as typed.
+/// `code`, `**bold**` and links within a line: `[text](url)`, `<url>` and a
+/// bare URL, each opening its http(s) URL (`link_spans`). Anything unclosed,
+/// and a link to anything but http(s), stays as typed.
 fn inline(text: &str) -> Vec<Span<'static>> {
     let mut out = Vec::new();
-    let mut rest = text;
-    loop {
-        let tick = rest.find('`');
-        let star = rest.find("**");
-        let (at, marker) = match (tick, star) {
-            (Some(t), Some(s)) if s < t => (s, "**"),
-            (Some(t), _) => (t, "`"),
-            (None, Some(s)) => (s, "**"),
-            (None, None) => break,
+    let mut plain = 0;
+    let mut i = 0;
+    while i < text.len() {
+        let rest = &text[i..];
+        let token = if rest.starts_with('`') || rest.starts_with("**") {
+            let marker = if rest.starts_with('`') { "`" } else { "**" };
+            rest[marker.len()..]
+                .find(marker)
+                .filter(|&close| close > 0)
+                .map(|close| (marker.len() * 2 + close, vec![Span::styled(rest[marker.len()..marker.len() + close].to_string(), if marker == "`" { code() } else { bold() })]))
+        } else {
+            link_at(rest).map(|(len, label, url)| (len, link_spans(&label, url).to_vec()))
         };
-        let Some(close) = rest[at + marker.len()..].find(marker) else { break };
-        let inner = &rest[at + marker.len()..at + marker.len() + close];
-        if inner.is_empty() {
-            break;
+        match token {
+            Some((len, spans)) => {
+                if plain < i {
+                    out.push(Span::raw(text[plain..i].to_string()));
+                }
+                out.extend(spans);
+                i += len;
+                plain = i;
+            }
+            None => i += rest.chars().next().map_or(1, char::len_utf8),
         }
-        if at > 0 {
-            out.push(Span::raw(rest[..at].to_string()));
-        }
-        out.push(Span::styled(inner.to_string(), if marker == "`" { code() } else { bold() }));
-        rest = &rest[at + marker.len() * 2 + close..];
     }
-    if !rest.is_empty() {
-        out.push(Span::raw(rest.to_string()));
+    if plain < text.len() {
+        out.push(Span::raw(text[plain..].to_string()));
     }
     out
+}
+
+/// A link at the start of `s`: how many bytes it takes, the text it shows
+/// and the URL it opens.
+fn link_at(s: &str) -> Option<(usize, String, &str)> {
+    if let Some(rest) = s.strip_prefix('[') {
+        let close = rest.find("](")?;
+        let label = &rest[..close];
+        let after = &rest[close + 2..];
+        // A URL may hold balanced parentheses, as Wikipedia's do.
+        let mut depth = 0;
+        let end = after.char_indices().find_map(|(j, c)| match c {
+            '(' => {
+                depth += 1;
+                None
+            }
+            ')' if depth == 0 => Some(j),
+            ')' => {
+                depth -= 1;
+                None
+            }
+            _ => None,
+        })?;
+        let url = &after[..end];
+        let label = label.replace("**", "").replace('`', "");
+        return (!label.is_empty() && is_url(url) && !url.contains(char::is_whitespace)).then_some((1 + close + 2 + end + 1, label, url));
+    }
+    if let Some(rest) = s.strip_prefix('<') {
+        let url = &rest[..rest.find('>')?];
+        return (is_url(url) && !url.contains(char::is_whitespace)).then(|| (url.len() + 2, url.to_string(), url));
+    }
+    if !is_url(s) {
+        return None;
+    }
+    let mut url = &s[..s.find(char::is_whitespace).unwrap_or(s.len())];
+    // Punctuation after a URL ends the sentence, not the URL; so does a
+    // closing parenthesis the URL did not open.
+    loop {
+        let trimmed = url.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"', '*', '`']);
+        let trimmed = match trimmed.strip_suffix(')') {
+            Some(t) if trimmed.matches('(').count() < trimmed.matches(')').count() => t,
+            _ => trimmed,
+        };
+        if trimmed == url {
+            break;
+        }
+        url = trimmed;
+    }
+    url.split_once("://").is_some_and(|(_, host)| !host.is_empty()).then(|| (url.len(), url.to_string(), url))
 }
 
 #[cfg(test)]
@@ -346,5 +451,39 @@ mod tests {
         assert!(!f);
         assert_eq!(text(&markdown_line("a ` lone tick and **unclosed", &mut f)), "a ` lone tick and **unclosed");
         assert_eq!(text(&markdown_line("line 00001: the quick brown fox", &mut f)), "line 00001: the quick brown fox");
+    }
+
+    fn shown(l: &Line) -> String {
+        l.spans.iter().map(|s| link_target(s).map_or(s.content.as_ref(), |(t, _)| t)).collect()
+    }
+
+    fn targets(l: &Line) -> Vec<String> {
+        l.spans.iter().filter_map(|s| link_target(s).map(|(_, u)| u)).collect()
+    }
+
+    #[test]
+    fn a_link_shows_its_text_and_an_arrow_and_opens_its_url() {
+        let mut f = false;
+        let l = markdown_line("see [the **docs**](https://krowk.com/docs) now", &mut f);
+        assert_eq!(shown(&l), "see the docs\u{a0}↗ now");
+        assert_eq!(targets(&l), ["https://krowk.com/docs"; 2], "the text and the arrow both open it");
+        assert_eq!(l.spans[2].style, link(), "{:?}", l.spans);
+        assert_eq!(l.width(), "see the docs ↗ now".chars().count(), "the URL takes no columns");
+        let l = markdown_line("[Rust](https://en.wikipedia.org/wiki/Rust_(programming_language)).", &mut f);
+        assert_eq!((shown(&l).as_str(), targets(&l)[0].as_str()), ("Rust\u{a0}↗.", "https://en.wikipedia.org/wiki/Rust_(programming_language)"));
+        let l = markdown_line("at https://krowk.com/a, or (<http://x.io>)", &mut f);
+        assert_eq!(shown(&l), "at https://krowk.com/a\u{a0}↗, or (http://x.io\u{a0}↗)");
+        assert_eq!(targets(&l), ["https://krowk.com/a", "https://krowk.com/a", "http://x.io", "http://x.io"]);
+        let l = markdown_line("[b](file:///etc/passwd) [c](src/main.rs) `https://x.io`", &mut f);
+        assert!(targets(&l).is_empty(), "only http(s), and not in code: {:?}", l.spans);
+        assert_eq!(shown(&l), "[b](file:///etc/passwd) [c](src/main.rs) https://x.io");
+        let smuggled = format!("`x{}`", linked(String::new(), link(), "https://evil.io").content);
+        assert!(targets(&markdown_line(&smuggled, &mut f)).is_empty(), "no link smuggled in from the answer");
+    }
+
+    #[test]
+    fn a_links_url_carries_no_control_character() {
+        let s = linked("x".into(), link(), "https://x.io/\x1b]0;pwned\x07/é");
+        assert_eq!(link_target(&s).unwrap().1, "https://x.io/%1B]0;pwned%07/%C3%A9");
     }
 }

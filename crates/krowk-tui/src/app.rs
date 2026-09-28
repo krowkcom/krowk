@@ -2138,12 +2138,15 @@ fn branches(rows: Vec<Span<'static>>) -> Vec<Line<'static>> {
 }
 
 pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
-    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    // A link is left for the terminal to wrap, so it stays one link.
-    if text.width() <= width.max(1) || line.spans.iter().any(look::is_link) {
+    // What each span shows, and the URL it opens if it is a link.
+    let shown: Vec<(&str, Option<String>)> = line.spans.iter().map(|s| look::link_target(s).map_or((s.content.as_ref(), None), |(t, u)| (t, Some(u)))).collect();
+    let text: String = shown.iter().map(|(t, _)| *t).collect();
+    // A URL shown as itself is left for the terminal to wrap, so it stays
+    // one URL when copied.
+    if text.width() <= width.max(1) || shown.iter().any(|(t, u)| u.is_some() && t.starts_with("http")) {
         return vec![line];
     }
-    let styled: Vec<(char, Style)> = line.spans.iter().flat_map(|s| s.content.chars().map(move |c| (c, s.style))).collect();
+    let styled: Vec<(char, Style, Option<&str>)> = line.spans.iter().zip(&shown).flat_map(|(s, (t, u))| t.chars().map(move |c| (c, s.style, u.as_deref()))).collect();
     let mut at = 0;
     let rows = wrap(&text, width);
     let last = rows.len().saturating_sub(1);
@@ -2151,21 +2154,27 @@ pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
         .enumerate()
         .map(|(r, row)| {
             let n = row.chars().count();
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            for &(c, st) in &styled[at..at + n] {
-                match spans.last_mut() {
-                    Some(last) if last.style == st => last.content.to_mut().push(c),
-                    _ => spans.push(Span::styled(c.to_string(), st)),
+            let mut pieces: Vec<(String, Style, Option<&str>)> = Vec::new();
+            for &(c, st, url) in &styled[at..at + n] {
+                match pieces.last_mut() {
+                    Some(last) if last.1 == st && last.2 == url => last.0.push(c),
+                    _ => pieces.push((c.to_string(), st, url)),
                 }
             }
             at += n;
             // The space a row broke at is not drawn at its end.
             if r < last
-                && let Some(end) = spans.last_mut()
-                && end.content.ends_with(' ')
+                && let Some(end) = pieces.last_mut()
+                && end.0.ends_with(' ')
             {
-                end.content.to_mut().pop();
+                end.0.pop();
             }
+            // A link broken across rows opens the same URL from each.
+            let spans: Vec<Span<'static>> = pieces.into_iter().map(|(t, st, url)| match url {
+                    Some(u) => look::linked(t, st, u),
+                    None => Span::styled(t, st),
+                })
+                .collect();
             Line::from(spans).style(line.style)
         })
         .collect()
@@ -2773,6 +2782,20 @@ mod tests {
         assert_eq!(a.answer, "a rather long first line of the answer\nand a second\n\nthen more\n");
         a.start_turn(Instant::now());
         assert!(a.answer.is_empty());
+    }
+
+    #[test]
+    fn a_link_wrapped_across_rows_opens_its_url_from_each() {
+        let mut f = false;
+        let rows = wrap_line(look::markdown_line("read [the whole manual](https://krowk.com/m) first", &mut f), 16);
+        let shown = |l: &Line| l.spans.iter().map(|s| look::link_target(s).map_or(s.content.to_string(), |(t, _)| t.to_string())).collect::<String>();
+        assert_eq!(rows.iter().map(shown).collect::<Vec<_>>(), ["read the whole", "manual\u{a0}↗ first"]);
+        for r in &rows {
+            let urls: Vec<String> = r.spans.iter().filter_map(|s| look::link_target(s).map(|(_, u)| u)).collect();
+            assert!(!urls.is_empty() && urls.iter().all(|u| u == "https://krowk.com/m"), "{:?}", r.spans);
+        }
+        let bare = look::markdown_line("see https://krowk.com/a/rather/long/path for more", &mut f);
+        assert_eq!(wrap_line(bare, 16).len(), 1, "a URL shown as itself is the terminal's to wrap");
     }
 
     #[test]

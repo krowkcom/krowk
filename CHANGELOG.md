@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Links in the TUI's answers can be clicked.** A markdown link,
+  `[the docs](https://…)`, shows as its text, underlined in the link colour
+  with a `↗` after it, and the URL itself no longer clutters the line; a
+  bare `https://…` or `<https://…>` gets the same colour and arrow. Each is
+  a terminal hyperlink (OSC 8), so the terminal opens it: Ctrl+click in most
+  (Ghostty, WezTerm, VS Code, GNOME Terminal), Cmd+click on macOS, and a
+  plain click in kitty. A link wrapped across rows opens from either. Only
+  http and https links are made clickable; any other link, and one in
+  `code`, is shown as typed. Inside tmux, links need tmux 3.4 or later with
+  `set -as terminal-features ",*:hyperlinks"`; a terminal without hyperlinks
+  shows the text and the arrow, not clickable.
 - **`/sessions` in the TUI (or `/resume`)** picks up an earlier session
   without leaving krowk. It lists the last 30 sessions started in this
   directory, newest first, each by its first prompt and when it was last
