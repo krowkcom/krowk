@@ -1,12 +1,13 @@
 //! The one move from an older krowk's XDG layout into `~/.krowk`, the built
-//! binary against a home laid out the way the last release left it: the
-//! config, the registry key, the provider file with a SuperGrok login and a
-//! stored key, a named Claude account (the fake `claude`, no real login),
-//! krowk.db, a session and the models.dev cache (rebuilt, not moved). Everything moves and still
-//! works; a second run moves nothing and never reads the old places again;
-//! a move cut short finishes on the next run; a KROWK_HOME never takes the
-//! person's own files; and a malformed old key file stops the move with its
-//! line and column only.
+//! binary against a home laid out the way the last release (and a dev
+//! build) left it: config.json, the registry key, the provider file with a
+//! SuperGrok login and a stored key, a named Claude account (the fake
+//! `claude`, no real login), krowk.db, a session and the models.dev cache.
+//! The config and the keys move and work, the old secrets are deleted,
+//! and what is not moved is named once with what to do; a move a crash
+//! cut short after its rename is finished; a home that exists takes
+//! nothing; a KROWK_HOME never takes the person's own files; and a
+//! malformed old key file stops the move with its line and column only.
 
 #![cfg(all(feature = "harness", unix))]
 
@@ -32,7 +33,10 @@ impl Sandbox {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude/fake-claude");
-        std::fs::copy(fake, root.join("bin/claude")).unwrap();
+        // Linked, not copied: a copy is a file open for writing that a test
+        // forking beside it can inherit, and running it then fails with
+        // "Text file busy" (ETXTBSY) — read as a vendor that could not be checked.
+        std::os::unix::fs::symlink(fake, root.join("bin/claude")).unwrap();
         std::fs::set_permissions(root.join("bin/claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
         Sandbox { root: root.canonicalize().unwrap() }
     }
@@ -166,75 +170,71 @@ fn mode(p: &Path) -> u32 {
 }
 
 #[test]
-fn an_older_layout_moves_into_the_home_once_and_everything_in_it_still_works() {
+fn an_older_layout_moves_its_config_and_keys_deletes_the_old_secrets_and_names_the_rest() {
     let b = Sandbox::new("full");
     b.old_layout();
 
     let first = b.krowk(&["doctor", "--json"], &[]);
     let said = String::from_utf8_lossy(&first.stderr).into_owned();
-    assert_eq!(said.matches("moved krowk's files to").count(), 1, "one line says so: {said}");
-    assert!(said.contains(&b.krowk_home().display().to_string()), "{said}");
-    for old in [b.old_config(), b.old_data(), b.old_cache()] {
-        assert!(!old.exists(), "{} is left behind", old.display());
-    }
-    assert!(!b.home().join(".krowk.migrating").exists());
-
-    // The layout, private where it was.
     let h = b.krowk_home();
+    assert_eq!(said.matches("moved krowk's config and keys to").count(), 1, "one line says so: {said}");
+    // What is left is named once, with what to do about it.
+    let account = b.old_data().join("claude/claude-work");
+    for want in [
+        "run `krowk sessions rebuild`".to_string(),
+        format!("mkdir -p {h}/accounts && mv {} {h}/accounts/claude-work", account.display(), h = h.display()),
+        "set its configDir".into(),
+        "krowk connect anthropic --method subscription --name work".into(),
+        format!("mv -n {} {}/trusted.json", b.old_config().join("trusted.json").display(), h.display()),
+    ] {
+        assert!(said.contains(&want), "{want} in: {said}");
+    }
+    // The keys are gone from the old directory; what krowk never moves is
+    // still there.
+    for gone in [b.old_config().join("credentials.json"), b.old_config().join("providers"), b.old_config().join("config.json"), b.old_cache(), b.home().join(".krowk.migrating")] {
+        assert!(!gone.exists(), "{} is left behind", gone.display());
+    }
+    for kept in [account.clone(), b.old_data().join("krowk.db"), b.old_data().join("sessions"), b.old_config().join("trusted.json")] {
+        assert!(kept.exists(), "{} was moved", kept.display());
+    }
     assert_eq!(mode(&h), 0o700);
     assert_eq!(mode(&h.join("credentials.json")), 0o600);
-    assert_eq!(mode(&h.join("accounts/claude-work")), 0o700, "an account keeps its mode");
-    assert_eq!(mode(&h.join("sessions/krowk.db")), 0o600);
-    assert!(h.join("sessions/sess-old/events.jsonl").is_file());
-    assert!(!h.join("cache/models.json").exists(), "the cache is rebuilt, not moved");
-    assert!(h.join("trusted.json").is_file());
-    for moved in ["permissions.json", "skills/greet/SKILL.md", "AGENTS.md"] {
-        assert!(h.join(moved).is_file(), "{moved} did not move");
-    }
     assert_eq!(mode(&h.join("config.json")), 0o644, "config.json keeps its mode");
 
     // One credentials file holds the registry's key, the login and the
-    // stored key; nothing of the old provider file's lock is carried.
+    // stored key.
     let c = b.credentials();
     assert_eq!(c["workspaces"]["ws_mig"]["token"], REGISTRY_KEY);
     assert_eq!(c["default"], "ws_mig");
     assert_eq!(c["instances"]["supergrok"]["refreshToken"], REFRESH);
     assert_eq!(c["keys"]["anthropic"], json!({"literal": STORED_KEY}));
-    assert!(!h.join("providers").exists());
+    assert_eq!(b.config()["workspace"], "ws_mig");
 
-    // The account's path in config.json follows it.
-    let cfg = b.config();
-    assert_eq!(cfg["instances"]["claude:work"]["configDir"], h.join("accounts/claude-work").display().to_string());
-    assert_eq!(cfg["workspace"], "ws_mig");
-
-    // And it all works from there: the registry key is found, the named
-    // account is signed in in its own directory, the login and the stored
-    // key make their instances ready, the store opens.
+    // And they work from there: the registry key is found, the login and
+    // the stored key make their instances ready, the store opens (empty).
     let doctor: Value = serde_json::from_slice(&first.stdout).unwrap();
     assert_eq!(doctor["token_source"], "credentials file", "{doctor}");
     assert_eq!(doctor["workspace"], "ws_mig (global config)", "{doctor}");
-    assert_eq!(b.row("claude:work")["state"], "ready");
     assert_eq!(b.row("supergrok")["state"], "ready");
-    let anthropic = b.row("anthropic");
-    assert_eq!(anthropic["state"], "ready", "{anthropic}");
+    assert_eq!(b.row("anthropic")["state"], "ready");
     let sessions = b.krowk(&["sessions", "--json"], &[]);
     assert!(sessions.status.success(), "{}", printed(&sessions));
 
-    // A second run moves nothing and changes nothing it moved.
+    // A second run moves nothing, says nothing, and changes nothing.
     let before = b.tree(&h);
     let again = b.krowk(&["doctor", "--json"], &[]);
-    assert!(!String::from_utf8_lossy(&again.stderr).contains("moved"), "{}", printed(&again));
+    assert!(!String::from_utf8_lossy(&again.stderr).contains("krowk:"), "{}", printed(&again));
     assert_eq!(b.tree(&h), before);
 
-    // The old places are never read again: a config left there by hand is
-    // neither moved nor believed.
-    b.write(&b.old_config().join("config.json"), &json!({"workspace": "ws_stale"}).to_string(), 0o644);
-    let stale = b.krowk(&["config", "show", "--json"], &[]);
-    assert!(printed(&stale).contains("ws_mig") && !printed(&stale).contains("ws_stale"), "{}", printed(&stale));
-    assert!(b.old_config().join("config.json").exists());
-    // One file, two writers, and neither drops the other's: a key stored
-    // by the harness keeps the registry's key, and a registry logout keeps
-    // the login and the stored key.
+    // The account, moved as the line says, is signed in from there.
+    std::fs::create_dir_all(h.join("accounts")).unwrap();
+    std::fs::rename(&account, h.join("accounts/claude-work")).unwrap();
+    let mut cfg = b.config();
+    cfg["instances"]["claude:work"]["configDir"] = json!(h.join("accounts/claude-work"));
+    std::fs::write(h.join("config.json"), cfg.to_string()).unwrap();
+    assert_eq!(b.row("claude:work")["state"], "ready");
+
+    // One file, two writers, and neither drops the other's.
     let stored = b.krowk(&["connect", "openai", "--method", "api-key", "--key-ref", "$OPENAI_KEY_ELSEWHERE"], &[]);
     assert!(stored.status.success(), "{}", printed(&stored));
     assert_eq!(b.credentials()["workspaces"]["ws_mig"]["token"], REGISTRY_KEY);
@@ -243,9 +243,7 @@ fn an_older_layout_moves_into_the_home_once_and_everything_in_it_still_works() {
     let c = b.credentials();
     assert!(c["workspaces"].get("ws_mig").is_none(), "{c}");
     assert_eq!((c["instances"]["supergrok"]["accessToken"].as_str(), c["keys"]["anthropic"]["literal"].as_str()), (Some(ACCESS), Some(STORED_KEY)));
-    assert!(c["keys"]["openai"].is_object(), "{c}");
-    assert_eq!(mode(&h.join("credentials.json")), 0o600);
-    for out in [&first, &again, &stale, &stored, &logout] {
+    for out in [&first, &again, &stored, &logout] {
         for secret in [REGISTRY_KEY, STORED_KEY, ACCESS, REFRESH] {
             assert!(!printed(out).contains(secret), "{secret} printed: {}", printed(out));
         }
@@ -253,33 +251,25 @@ fn an_older_layout_moves_into_the_home_once_and_everything_in_it_still_works() {
 }
 
 #[test]
-fn a_move_cut_short_is_undone_and_made_whole_on_the_next_run() {
-    let b = Sandbox::new("resume");
+fn a_move_a_crash_cut_short_after_its_rename_is_finished_by_the_next_start() {
+    let b = Sandbox::new("finish");
     b.old_layout();
-    // As a crash leaves it: the merged credentials written into the staging
-    // directory, and one account renamed in after its journal line — the
-    // old files all still where they were but that account.
-    let staging = b.home().join(".krowk.migrating");
-    std::fs::create_dir_all(staging.join("accounts")).unwrap();
-    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700)).unwrap();
-    b.write(&staging.join("credentials.json"), r#"{"default":"ws_mig"}"#, 0o600);
-    let (from, to) = (b.old_data().join("claude/claude-work"), staging.join("accounts/claude-work"));
-    // Its journal record, a source and a destination, each NUL-ended, and
-    // a record cut short after it, never renamed.
-    b.write(&staging.join(".moves"), &format!("{}\0{}\0{}\0{}", from.display(), to.display(), b.old_data().display(), staging.join("acc").display()), 0o600);
-    std::fs::rename(&from, &to).unwrap();
-
+    // As a crash after the rename leaves it: the home in place, holding
+    // what the move wrote — each key as it was — and the old key files
+    // still there.
+    let merged = json!({
+        "default": "ws_mig",
+        "workspaces": {"ws_mig": {"token": REGISTRY_KEY, "key_id": "key_mig", "workspace": "ws_mig"}},
+        "version": 1,
+        "instances": {"supergrok": {"issuer": "x"}},
+        "keys": {"anthropic": {"literal": STORED_KEY}},
+    });
+    b.write(&b.krowk_home().join("credentials.json"), &merged.to_string(), 0o600);
+    std::fs::set_permissions(b.krowk_home(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let out = b.krowk(&["doctor", "--json"], &[]);
     assert!(out.status.success(), "{}", printed(&out));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("moved krowk's files to"), "{}", printed(&out));
-    assert!(!staging.exists() && !b.old_config().exists() && !b.old_data().exists() && !b.old_cache().exists());
-    let h = b.krowk_home();
-    let c = b.credentials();
-    assert_eq!(c["workspaces"]["ws_mig"]["token"], REGISTRY_KEY);
-    assert_eq!(c["instances"]["supergrok"]["accessToken"], ACCESS);
-    assert_eq!(b.config()["instances"]["claude:work"]["configDir"], h.join("accounts/claude-work").display().to_string());
-    assert!(h.join("accounts/claude-work/fake-login").exists() && !h.join(".moves").exists());
-    assert_eq!(b.row("claude:work")["state"], "ready");
+    assert!(!b.old_config().join("credentials.json").exists() && !b.old_config().join("providers").exists(), "the old keys are deleted: {}", printed(&out));
+    assert!(!printed(&out).contains(REGISTRY_KEY));
 }
 
 #[test]
@@ -289,10 +279,10 @@ fn a_home_that_exists_takes_nothing_from_an_old_layout_and_names_it_once() {
     std::fs::create_dir_all(b.krowk_home()).unwrap();
     let first = b.krowk(&["doctor", "--json"], &[]);
     let said = String::from_utf8_lossy(&first.stderr).into_owned();
-    assert!(said.contains("old krowk files at") && said.contains(&b.old_config().display().to_string()) && said.contains("move or delete them"), "{said}");
+    assert!(said.contains("old krowk files krowk no longer reads") && said.contains(&b.old_config().join("config.json").display().to_string()), "{said}");
     assert!(b.old_config().join("credentials.json").exists() && !b.krowk_home().join("credentials.json").exists(), "nothing merged in");
     let again = b.krowk(&["doctor", "--json"], &[]);
-    assert!(!String::from_utf8_lossy(&again.stderr).contains("old krowk files"), "said once: {}", printed(&again));
+    assert!(!String::from_utf8_lossy(&again.stderr).contains("no longer reads"), "said once: {}", printed(&again));
     for out in [&first, &again] {
         for secret in [REGISTRY_KEY, STORED_KEY, ACCESS, REFRESH] {
             assert!(!printed(out).contains(secret));

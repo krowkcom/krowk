@@ -32,7 +32,10 @@ impl Sandbox {
         std::fs::create_dir_all(root.join("bin")).unwrap();
         for (dir, bin) in [("claude", "fake-claude"), ("codex", "fake-codex")] {
             let at = root.join("bin").join(dir);
-            std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures").join(dir).join(bin), &at).unwrap();
+            // Linked, not copied: a copy is a file open for writing that a test
+            // forking beside it can inherit, and running it then fails with
+            // "Text file busy" (ETXTBSY) — read as a vendor that could not be checked.
+            std::os::unix::fs::symlink(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures").join(dir).join(bin), &at).unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;

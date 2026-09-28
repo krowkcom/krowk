@@ -50,7 +50,10 @@ impl Home {
         std::fs::create_dir_all(root.join("bin")).unwrap();
         // The fake, installed as `claude`, executable whatever git kept.
         let bin = root.join("bin/claude");
-        std::fs::copy(fixture("fake-claude"), &bin).unwrap();
+        // Linked, not copied: a copy is a file open for writing that a test
+        // forking beside it can inherit, and running it then fails with
+        // "Text file busy" (ETXTBSY) — read as a vendor that could not be checked.
+        std::os::unix::fs::symlink(fixture("fake-claude"), &bin).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         Home { root: root.canonicalize().unwrap(), _serial: guard }
