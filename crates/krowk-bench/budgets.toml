@@ -170,6 +170,10 @@ unit = "bytes"
 # enable's handover): 382,240 over the umbrella, 360,008 over 8.25 MiB.
 # Raised 8.25 -> 8.75 MiB by ticket 13, leaving 164,632 bytes for the rest
 # of Harness P1.
+# Ticket 13b, the TUI on the daemon (no new crate: the link seam, following
+# a running session, per-session streams in the client, reload, settled,
+# `krowk host stop`), adds 78,912 bytes: 9,089,320 (8.67 MiB), 85,720
+# under this.
 max = { x86_64-linux = 9_175_040 }
 status = "enforced"
 

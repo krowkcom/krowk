@@ -11,6 +11,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The TUI's sessions now run in the host daemon, so closing the
+  terminal no longer ends them.** Bare `krowk` starts the daemon if none is
+  running and runs every turn there. When the window closes mid-reply, the
+  turn keeps going. Reopen `krowk` in the same directory and it tells you
+  which session is still running; `krowk --resume <id>` (or
+  `/sessions <id>`) then shows what happened while you were away and
+  follows the rest live. Several TUIs can follow one session and see the
+  same reply. `/connect` updates the daemon's providers too. Set
+  `KROWK_TUI_HOST=local` to keep the TUI's sessions in its own process, as
+  before. `krowk host stop` stops the daemon once no turn is running.
 - **A session can outlive its terminal: `krowk -p --daemon` runs the turn
   in a per-user host daemon.** The first `krowk` that needs the daemon
   starts it in the background; it listens on a private unix socket
