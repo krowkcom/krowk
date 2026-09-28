@@ -692,8 +692,9 @@ impl App {
 
     /// A tool call and what came of it, as one block: `◆ Verb arg (detail)`
     /// — the bullet green, or red when it failed — then what is worth
-    /// seeing of its result: a failure's first lines, a command's output
-    /// cut to its head and tail, an edit's lines as removed and added.
+    /// seeing of its result, as the branches of a file tree under it
+    /// (`tree`): a failure's first lines, a command's output cut to its
+    /// head and tail, an edit's lines as removed and added.
     fn commit_tool(&mut self, name: &str, input: &serde_json::Value, output: &str, is_error: bool) {
         self.gap();
         let width = usize::from(self.width.max(8));
@@ -715,33 +716,37 @@ impl App {
             _ => {}
         }
         self.push_line(Line::from(head));
-        let body_width = width.saturating_sub(2);
+        let body_width = width.saturating_sub(look::BRANCH.width());
+        let mut body: Vec<Span<'static>> = Vec::new();
         if is_error {
-            for l in lines.iter().filter(|l| !l.trim().is_empty()).take(3) {
-                self.push_line(Line::from(vec![Span::raw("  "), Span::styled(clip(l, body_width), red())]));
-            }
-            return;
-        }
-        if let Some((del, add)) = edit {
+            body.extend(lines.iter().filter(|l| !l.trim().is_empty()).take(3).map(|l| Span::styled(clip(l, body_width), red())));
+        } else if let Some((del, add)) = edit {
             const SHOWN: usize = 8;
             for (rows, band) in [(del, look::delete_band()), (add, look::insert_band())] {
-                for l in rows.iter().take(SHOWN) {
-                    self.push_line(Line::from(vec![Span::raw("  "), Span::styled(clip(l, body_width), band)]));
-                }
+                body.extend(rows.iter().take(SHOWN).map(|l| Span::styled(clip(l, body_width), band)));
                 if rows.len() > SHOWN {
-                    self.push_line(Line::from(Span::styled(format!("  … +{} lines", rows.len() - SHOWN), dim())));
+                    body.push(Span::styled(format!("… +{} lines", rows.len() - SHOWN), dim()));
                 }
             }
-            return;
-        }
-        if name == "bash" {
+        } else if name == "bash" {
             let shown: Vec<&str> = if lines.len() <= 5 { lines.clone() } else { lines[..2].iter().chain(&lines[lines.len() - 3..]).copied().collect() };
             for (i, l) in shown.iter().enumerate() {
                 if lines.len() > 5 && i == 2 {
-                    self.push_line(Line::from(Span::styled(format!("  … +{} lines", lines.len() - 5), dim())));
+                    body.push(Span::styled(format!("… +{} lines", lines.len() - 5), dim()));
                 }
-                self.push_line(Line::from(vec![Span::raw("  "), Span::styled(clip(l, body_width), dim())]));
+                body.push(Span::styled(clip(l, body_width), dim()));
             }
+        }
+        self.tree(body);
+    }
+
+    /// `rows` under the line just pushed, each on a branch: `├─ ` and, on
+    /// the last, `└─ `.
+    fn tree(&mut self, rows: Vec<Span<'static>>) {
+        let n = rows.len();
+        for (i, row) in rows.into_iter().enumerate() {
+            let branch = if i + 1 == n { look::LAST_BRANCH } else { look::BRANCH };
+            self.push_line(Line::from(vec![Span::styled(branch, look::border()), row]));
         }
     }
 
@@ -956,9 +961,8 @@ impl App {
         let text = clip(&s.line(Instant::now()), width.saturating_sub(2));
         self.push_line(Line::from(vec![Span::styled(look::TOOL, if is_error { red() } else { look::success() }), Span::styled(text, bold())]));
         if is_error {
-            for l in output.lines().filter(|l| !l.trim().is_empty()).take(2) {
-                self.push_line(Line::from(vec![Span::raw("  "), Span::styled(clip(l, width.saturating_sub(2)), red())]));
-            }
+            let body_width = width.saturating_sub(look::BRANCH.width());
+            self.tree(output.lines().filter(|l| !l.trim().is_empty()).take(2).map(|l| Span::styled(clip(l, body_width), red())).collect());
         }
     }
 
@@ -1313,7 +1317,7 @@ impl App {
             let text_style = if selected { dim().add_modifier(Modifier::REVERSED) } else { dim() };
             rows.push(Line::from(vec![Span::styled(glyph, style), Span::styled(clip(&s.line(now), width.saturating_sub(2)), text_style)]));
             if s.expanded && !s.activity.is_empty() {
-                rows.push(Line::from(Span::styled(clip(&format!("  └ {}", s.activity), width), dim())));
+                rows.push(Line::from(Span::styled(clip(&format!("{}{}", look::LAST_BRANCH, s.activity), width), dim())));
             }
         }
         if let Some(t) = &self.turn {
@@ -1435,9 +1439,7 @@ impl App {
         // A question of `/connect`'s takes the keys, and the caret with them.
         let caret = flow_caret.unwrap_or((ccol + 2, top + (crow as usize - first) as u16));
         if self.settings.status_bar {
-            // A blank row over the status line; the terminal's own edge is
-            // the gap under it.
-            rows.push(Line::default());
+            // Right under the prompt's bottom rule, nothing between.
             rows.push(self.hint_row(width));
         }
         (rows, caret)
@@ -2076,6 +2078,17 @@ mod tests {
     }
 
     #[test]
+    fn what_a_tool_call_brought_back_hangs_under_it_as_a_tree() {
+        let mut a = app();
+        a.commit_tool("bash", &serde_json::json!({"command": "cargo test"}), "one\ntwo\nthree\nfour\nfive\nsix\nseven", false);
+        let t = text(&a.take_pending());
+        assert_eq!(t, ["◆ Run cargo test", "├─ one", "├─ two", "├─ … +2 lines", "├─ five", "├─ six", "└─ seven"], "{t:?}");
+        a.commit_tool("read", &serde_json::json!({"path": "gone.md"}), "no such file", true);
+        let t = text(&a.take_pending());
+        assert_eq!(t.last().map(String::as_str), Some("└─ no such file"), "one line is the last: {t:?}");
+    }
+
+    #[test]
     fn r_off_1_the_notice_is_persistent_in_the_live_region() {
         let mut a = app();
         a.set_offline("api.anthropic.com:443".into());
@@ -2185,9 +2198,8 @@ mod tests {
         assert_eq!(t[0], "─".repeat(90));
         assert_eq!(t[1], "→ Plan, search, build anything", "no sides to the box");
         assert_eq!(t[2], "─".repeat(90));
-        assert_eq!(t[3], "", "a blank row over the status line");
-        assert_eq!(t[4], "  anthropic/claude-x | $0.00 | ? help", "one line, no device known");
-        assert_eq!(t.len(), 5, "the status line last");
+        assert_eq!(t[3], "  anthropic/claude-x | $0.00 | ? help", "right under the box, one line, no device known");
+        assert_eq!(t.len(), 4, "the status line last");
         assert_eq!(caret, (2, 1));
     }
 
@@ -2369,7 +2381,7 @@ mod tests {
         a.agent_move(1);
         assert_eq!(a.agent_selected_running(), None, "the interrupted one has nothing left to interrupt");
         let (rows, _) = a.view(Instant::now());
-        assert!(text(&rows).iter().any(|r| r == "  └ Search fn test"), "{:?}", text(&rows));
+        assert!(text(&rows).iter().any(|r| r == "└─ Search fn test"), "{:?}", text(&rows));
         // Answered, each goes to scrollback once.
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r1".into(), item: Item::ToolResult { call_id: "c1".into(), output: "found them".into(), is_error: false } }));
         let done = text(&a.take_pending());

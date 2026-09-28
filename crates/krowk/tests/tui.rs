@@ -463,6 +463,44 @@ fn r_tui_3_a_widened_terminal_keeps_the_answer_in_scrollback_once() {
 }
 
 #[test]
+fn r_tui_1_a_menu_opened_and_closed_leaves_no_gap_in_scrollback_and_no_space_under_the_prompt() {
+    // Enough of an answer that the logo is part in scrollback, part on
+    // screen: a menu that pushed rows up and then moved what was left down
+    // again split it, and every line under it, with blank rows.
+    let m = streamed(12, Duration::from_micros(100));
+    let b = Sandbox::new("menus");
+    let Some(tm) = Tmux::start("menus", 80, 24, &b.root.join("repo"), &b.env(&m.url), &[]) else { return };
+    assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["go", "Enter"]);
+    assert!(tm.wait_for("tokens", Duration::from_secs(30)).is_some(), "{}", tm.screen());
+    let at_bottom = |s: &str| s.lines().count() == 24 && s.lines().last().is_some_and(|l| l.contains("? help"));
+    // The slash menu closes as its slash is deleted, the help on Esc.
+    for (open, close) in [("/", "BSpace"), ("?", "Escape")] {
+        for _ in 0..3 {
+            tm.keys(&[open]);
+            std::thread::sleep(Duration::from_millis(300));
+            tm.keys(&[close]);
+            std::thread::sleep(Duration::from_millis(300));
+            let screen = tm.screen();
+            assert!(at_bottom(&screen), "the status line on the last row after {open}:\n{screen}");
+        }
+    }
+    tm.keys(&["again", "Enter"]);
+    assert!(tm.wait_for("❯ again", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    let history = tm.wait_still(|s| s.split("❯ again").nth(1).is_some_and(|after| after.contains("tokens")) && at_bottom(s), Duration::from_secs(30)).unwrap_or_else(|| panic!("the second turn never finished:\n{}", tm.screen()));
+    let rows: Vec<&str> = history.lines().collect();
+    let logo: Vec<usize> = rows.iter().enumerate().filter(|(_, l)| l.contains('▀')).map(|(i, _)| i).collect();
+    assert!(logo.len() > 1 && logo.windows(2).all(|w| w[1] == w[0] + 1), "the logo in one piece:\n{history}");
+    let lines: Vec<usize> = rows.iter().enumerate().filter(|(_, l)| l.trim().starts_with("line ")).map(|(i, _)| i).collect();
+    assert_eq!(lines.len(), 24, "both answers, every line once:\n{history}");
+    assert!(lines[..12].windows(2).all(|w| w[1] == w[0] + 1) && lines[12..].windows(2).all(|w| w[1] == w[0] + 1), "each answer without a gap in it:\n{history}");
+    // Between the first answer and the second prompt: its token line, set
+    // off by one blank row each side, and nothing else.
+    let between: Vec<&str> = rows[lines[11] + 1..].iter().take_while(|l| !l.contains("❯ again")).map(|l| l.trim()).collect();
+    assert_eq!(between.iter().filter(|l| l.is_empty()).count(), 2, "no blank rows the menus left behind: {between:?}");
+}
+
+#[test]
 fn r_tui_3_a_resize_mid_stream_never_repeats_a_line_or_leaves_the_live_region_behind() {
     // A narrower and shorter window mid-stream, then a larger one after.
     let m = streamed(300, Duration::from_millis(1));
@@ -779,6 +817,32 @@ fn slash_offers_commands_and_skills_and_a_skill_reaches_the_model() {
     let seen = m.seen.lock().unwrap();
     let first = seen.iter().find(|s| s.body["messages"].is_array()).expect("the model was asked").body["messages"].to_string();
     assert!(first.contains("/greet the team") && first.contains("MARMALADE"), "the prompt and the skill's body: {first}");
+}
+
+#[test]
+fn r_tui_1_a_menu_opened_and_closed_on_a_short_session_puts_nothing_in_scrollback() {
+    // The session all on screen: a menu takes the blank rows above it and
+    // gives them back, and none of them is scrolled into history on the way.
+    let m = streamed(2, Duration::from_micros(100));
+    let b = Sandbox::new("short");
+    let Some(tm) = Tmux::start_after("short", 80, 40, &b.root.join("repo"), &b.env(&m.url), &[], "seq 1 50;") else { return };
+    assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    let gap = |h: &str| {
+        let rows: Vec<&str> = h.lines().collect();
+        let logo = rows.iter().position(|l| l.contains('▀')).unwrap_or_else(|| panic!("no logo:\n{h}"));
+        logo - rows.iter().position(|l| l.trim() == "50").unwrap_or_else(|| panic!("no shell output:\n{h}"))
+    };
+    let before = gap(&tm.history());
+    for _ in 0..3 {
+        tm.keys(&["?"]);
+        std::thread::sleep(Duration::from_millis(300));
+        tm.keys(&["Escape"]);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let history = tm.history();
+    assert_eq!(gap(&history), before, "rows between the shell's output and the logo:\n{history}");
+    let screen = tm.screen();
+    assert!(screen.lines().last().is_some_and(|l| l.contains("? help")), "the status line on the last row:\n{screen}");
 }
 
 /// Whether `needle` is in what the TUI wrote after byte `from`, within
