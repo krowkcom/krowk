@@ -15,6 +15,7 @@
 //! never a file, never `--json`.
 
 use super::Ctx;
+use crate::output::Format;
 use krowk_api::{fail, Error};
 use krowk_client::keystore::{Keystore, Setup};
 use krowk_client::phrase;
@@ -38,6 +39,10 @@ fn report(ctx: &mut Ctx, s: &Setup, recovered: bool) -> Result<(), Error> {
         true => format!("account key {} restored and wrapped to this device ({})", s.account.id(), s.device.id()),
         false => format!("account key {} made and wrapped to this device ({}); keep the recovery phrase", s.account.id(), s.device.id()),
     };
+    if ctx.format == Format::Human {
+        let _ = writeln!(ctx.io.stdout, "{summary}");
+        return Ok(());
+    }
     super::sessions::emit_data(ctx, data, summary)
 }
 

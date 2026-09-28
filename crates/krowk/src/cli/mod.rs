@@ -283,6 +283,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(all(feature = "harness", unix))]
         ["host", "disable", ..] => host::enable(ctx, false),
         #[cfg(feature = "harness")]
+        ["sync"] => show_help(ctx, p),
+        #[cfg(feature = "harness")]
         ["sync", "init", ..] => sync::init(ctx),
         #[cfg(feature = "harness")]
         ["sync", "recover", ..] => sync::recover(ctx),

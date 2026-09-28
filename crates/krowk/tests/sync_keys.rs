@@ -111,6 +111,13 @@ fn r_e2e_4_the_phrase_from_sync_init_restores_the_account_key_on_a_fresh_home() 
     assert_eq!(restored["data"]["recovered"], true);
     assert_ne!(restored["data"]["device"], made["data"]["device"], "a new home is a new device");
 
+    // For a person, the result is its sentence, not the JSON envelope.
+    let third = r.join("third");
+    std::fs::create_dir_all(&third).unwrap();
+    let out = piped(&third, &["sync", "recover", "--format", "human"], &phrase);
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success() && said.starts_with(&format!("account key {account} restored")) && !said.contains('{'), "{said}");
+
     // A phrase with a word changed is refused, and nothing is written.
     let other = r.join("other");
     std::fs::create_dir_all(&other).unwrap();
