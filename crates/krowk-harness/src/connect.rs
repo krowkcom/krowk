@@ -1648,7 +1648,7 @@ fn real(p: &Path) -> PathBuf {
 
 /// Whether two paths are one directory. Case is folded only where the disk
 /// ignores it: macOS and Windows, by default.
-fn same_dir(a: &Path, b: &Path) -> bool {
+pub fn same_dir(a: &Path, b: &Path) -> bool {
     let (a, b) = (real(a), real(b));
     if cfg!(any(target_os = "macos", windows)) {
         a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()

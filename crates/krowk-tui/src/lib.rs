@@ -313,7 +313,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, left: Vec::new(), last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
@@ -335,8 +335,8 @@ async fn session(opts: Options) -> Outcome {
         let _ = write!(out, "\x1b[2mresume this session with: krowk --resume {id}\x1b[0m\r\n");
     }
     let _ = out.flush();
-    ui.left.retain(|id| app.session_id.as_ref() != Some(id));
-    Outcome { session_id: app.session_id.clone(), left: ui.left, error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
+    app.left.retain(|id| app.session_id.as_ref() != Some(id));
+    Outcome { session_id: app.session_id.clone(), left: std::mem::take(&mut app.left), error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
 }
 
 struct Ui<'h> {
@@ -414,8 +414,6 @@ struct Ui<'h> {
     rx: Option<mpsc::Receiver<StreamLine>>,
     /// Set to leave now, without the running turn's end.
     abandoned: bool,
-    /// The sessions `/sessions` moved away from, oldest first.
-    left: Vec<String>,
     /// The last prompt sent: what a yes to a limit's offer sends again on
     /// the instance it moves to (R-INST-7).
     last_prompt: String,
@@ -719,15 +717,8 @@ impl<'h> Ui<'h> {
                     self.flush_requests(app).await;
                 }
                 line = watched(&mut self.watch) => {
-                    // A session left for another (`/new`, `/sessions`) may
-                    // still say something, a background task of it done: it
-                    // is not the one shown, and before a new one's first
-                    // prompt would be taken for it.
-                    let from_left = app::line_session(&line).is_some_and(|s| app.session_id.as_deref() != Some(s) && self.left.iter().any(|l| l == s));
-                    if !from_left {
-                        app.on_line(&line);
-                        self.go_on(app);
-                    }
+                    app.on_line(&line);
+                    self.go_on(app);
                 }
                 r = finish(&mut self.turn) => {
                     self.turn = None;
@@ -1821,16 +1812,11 @@ impl<'h> Ui<'h> {
     /// session begun elsewhere: the trust and settings were that
     /// directory's, and a new session would run here.
     fn new_session(&mut self, app: &mut App) {
-        if !same_dir(&self.runs_in, &self.started_in) {
+        if !krowk_harness::connect::same_dir(&self.runs_in, &self.started_in) {
             return app.notice(&format!("this krowk runs a session of {} — start krowk again for a new one", home_relative(&self.runs_in)));
         }
         if !self.can_resume(app) {
             return;
-        }
-        // The instance the session left ran on stays the one a bare
-        // `/model <id>` prefers, as it was before.
-        if self.chosen.is_none() && app.session_id.is_some() {
-            self.chosen = app.model.clone();
         }
         self.leave(app);
         // The one the next prompt goes to, else the one shown — the
@@ -1839,6 +1825,8 @@ impl<'h> Ui<'h> {
         self.settle_on(app, m);
         app.branch = pr::branch(&self.runs_in);
         app.start_over(&home_relative(&self.runs_in), self.effort_label.as_deref());
+        // A lookup under way was for where the session left worked.
+        self.pr = None;
         self.look_for_pr(app);
         if let Some(m) = self.model.clone() {
             self.owe_trust(app, &m);
@@ -1861,9 +1849,9 @@ impl<'h> Ui<'h> {
 
     /// The session shown, left for another: kept to be listed on the way
     /// out, and its last prompt no longer the title's.
-    fn leave(&mut self, app: &App) {
-        if let Some(old) = app.session_id.clone().filter(|old| !self.left.contains(old)) {
-            self.left.push(old);
+    fn leave(&mut self, app: &mut App) {
+        if let Some(old) = app.session_id.clone().filter(|old| !app.left.contains(old)) {
+            app.left.push(old);
         }
         self.last_prompt.clear();
     }
@@ -2250,7 +2238,7 @@ impl<'h> Ui<'h> {
                 self.open_resume(app);
                 return false;
             }
-            t if t.split_whitespace().next() == Some("/new") => {
+            t if t.split_whitespace().next().map(help::canonical).as_deref() == Some("/new") => {
                 app.editor.clear();
                 app.notice("/new takes nothing after it — send the prompt once the new session is up");
                 return false;
@@ -2322,11 +2310,6 @@ impl<'h> Ui<'h> {
         self.prompt(app, text);
         app.offline.is_some()
     }
-}
-
-/// Whether `a` and `b` are one directory, however each is spelled.
-fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
-    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
 /// Session `id`'s log, read whole, or why it could not be.
