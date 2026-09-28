@@ -66,7 +66,7 @@ impl Sandbox {
     }
 
     /// config.json laying out at the terminal's whole width, for a test
-    /// that reads rows wider than `prose`'s 65 columns.
+    /// that reads rows wider than `prose`'s 80 columns.
     fn full_width(&self) {
         std::fs::create_dir_all(self.root.join("home/.krowk")).unwrap();
         std::fs::write(self.root.join("home/.krowk/config.json"), r#"{"tui": {"contentWidth": "full-width"}}"#).unwrap();
