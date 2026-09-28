@@ -79,7 +79,7 @@ pub const ALIASES: &[(&str, &str)] = &[("quit", "exit"), ("permission-mode", "mo
 /// as it was.
 pub fn canonical(typed: &str) -> String {
     let (word, rest) = typed.split_once(' ').map_or((typed, None), |(w, r)| (w, Some(r)));
-    match ALIASES.iter().find(|(a, _)| word.strip_prefix('/') == Some(a)) {
+    match ALIASES.iter().find(|(a, _)| word.strip_prefix('/').is_some_and(|w| w.eq_ignore_ascii_case(a))) {
         Some((_, c)) => rest.map_or(format!("/{c}"), |r| format!("/{c} {r}")),
         None => typed.to_string(),
     }

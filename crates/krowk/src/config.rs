@@ -136,8 +136,14 @@ fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".config-{}.json", std::process::id()));
     std::fs::write(&tmp, data)?;
+    // As `krowk_harness::connect::write_config` does: the file's mode kept,
+    // but never writable by anyone else.
     #[cfg(unix)]
-    std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path).map_or(0o644, |m| m.permissions().mode() & 0o755);
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+    }
     std::fs::File::open(&tmp)?.sync_all()?;
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);

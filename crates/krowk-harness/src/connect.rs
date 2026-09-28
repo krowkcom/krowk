@@ -1280,15 +1280,23 @@ pub fn write_config(path: &Path, raw: &Map<String, Value>) -> std::io::Result<()
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = dir.join(format!(".config-{}-{n}.json", std::process::id()));
     let result = (|| {
+        use std::io::Write;
         std::fs::create_dir_all(dir)?;
-        std::fs::write(&tmp, data.as_bytes())?;
+        // Made the owner's alone, and only given the file's mode once
+        // written: what it holds is never readable in between.
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+        let mut f = open.open(&tmp)?;
+        f.write_all(data.as_bytes())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(path).map_or(0o644, |m| m.permissions().mode() & 0o755);
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+            f.set_permissions(std::fs::Permissions::from_mode(mode))?;
         }
-        std::fs::File::open(&tmp)?.sync_all()?;
+        f.sync_all()?;
         std::fs::rename(&tmp, path)
     })();
     if result.is_err() {

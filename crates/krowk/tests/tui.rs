@@ -228,7 +228,8 @@ fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     let saved = || std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["permissions"]["defaultMode"].as_str().map(String::from));
     std::thread::sleep(Duration::from_millis(600));
     assert_eq!(saved(), None, "the space typed ahead changed the setting");
-    t.write(b"zq ");
+    // Two spaces at once are a key held down: one change.
+    t.write(b"zq  ");
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while saved().as_deref() != Some("unhinged") && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));

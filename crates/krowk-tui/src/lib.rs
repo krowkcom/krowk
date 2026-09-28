@@ -66,6 +66,8 @@ pub const FRAME: Duration = Duration::from_millis(17);
 const STALL: Duration = Duration::from_millis(700);
 /// How long an approval request is on screen before a key answers it.
 const APPROVAL_SETTLE: Duration = Duration::from_millis(400);
+/// Keys that change a setting this close together are one held down.
+const SETTINGS_REPEAT: Duration = Duration::from_millis(150);
 /// How often an interrupt the host could not take yet is asked again.
 const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
 
@@ -309,6 +311,7 @@ async fn session(opts: Options) -> Outcome {
         needs_trust: None,
         trust_shown: None,
         settings_shown: None,
+        settings_key: None,
         trust: opts.trust,
         effort_label,
         runs_in: runs_in.clone(),
@@ -387,6 +390,9 @@ struct Ui<'h> {
     /// When `/settings` opened: a key before `APPROVAL_SETTLE` has passed
     /// was typed ahead, and changes nothing.
     settings_shown: Option<std::time::Instant>,
+    /// When the last key that changes a setting came: one sooner than
+    /// `SETTINGS_REPEAT` after it is the same key held down.
+    settings_key: Option<std::time::Instant>,
     /// The trust question, for a route that lands on a backend.
     trust: Option<TrustAsk>,
     /// The effort as the header shows it.
@@ -1349,13 +1355,20 @@ impl<'h> Ui<'h> {
         // or Ctrl-C close it, Ctrl-D still leaves krowk, and nothing reaches
         // the prompt — a space there would be a change saved. A key typed
         // ahead, before it was up to be seen, changes nothing.
-        if app.overlay == Overlay::Settings && !(ctrl && k.code == KeyCode::Char('d')) {
-            // A key held down changes it once, not once a repeat.
-            let settled = k.kind != KeyEventKind::Repeat && self.settings_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE);
+        // Ctrl-C on a running turn interrupts it, as anywhere.
+        if app.overlay == Overlay::Settings && !(ctrl && k.code == KeyCode::Char('d')) && !(ctrl && k.code == KeyCode::Char('c') && app.running()) {
             match k.code {
                 KeyCode::Esc => app.overlay = Overlay::None,
                 KeyCode::Char('c') if ctrl => app.overlay = Overlay::None,
-                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right if !ctrl && !alt && settled => self.cycle_default_mode(app),
+                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right if !ctrl && !alt => {
+                    // A key held down changes it once: most terminals send
+                    // its repeats as presses, closer together than anyone
+                    // presses twice.
+                    let held = self.settings_key.replace(std::time::Instant::now()).is_some_and(|t| t.elapsed() < SETTINGS_REPEAT);
+                    if !held && k.kind != KeyEventKind::Repeat && self.settings_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE) {
+                        self.cycle_default_mode(app);
+                    }
+                }
                 _ => {}
             }
             app.touch();
