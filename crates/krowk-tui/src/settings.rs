@@ -1,7 +1,7 @@
 //! The TUI's part of krowk's config.json, under `"tui"` (R-TUI-2):
 //!
 //! ```json
-//! { "tui": { "contentWidth": "prose", "statusBar": true, "statusItems": ["device", "model", "cost", "tasks", "subagents", "help"] } }
+//! { "tui": { "contentWidth": "prose", "statusBar": true, "statusItems": ["model", "device", "tasks", "subagents", "help", "cost", "pr"] } }
 //! ```
 //!
 //! - `contentWidth` — `prose` (the default) lays out what is above the
@@ -13,13 +13,15 @@
 //!   network connectivity" notice is not part of it and shows regardless
 //!   (R-OFF-1).
 //! - `statusItems` — which items the status line shows, in order, joined by
-//!   ` | `: any of `device` (`<user>/<host>`), `model` (the instance and
-//!   model, `anthropic/claude-opus-5-5`, with the instance's limit once it
-//!   is near it — R-INST-6), `cost` (the session's), `tasks` (`[2 tasks]`,
-//!   only while the todo list has open items), `subagents` (`[1 subagent]`,
-//!   only while subagents run) and `help` (`? help`, always last). The
-//!   default is all six in that order. While the API cannot be reached an
-//!   `offline` item is added before `help` whatever the list says.
+//!   ` | `: any of `model` (the instance and model,
+//!   `anthropic/claude-opus-5-5`, with the instance's limit once it is near
+//!   it — R-INST-6), `device` (`<user>/<host>`), `tasks` (`[2 tasks]`, only
+//!   while the todo list has open items), `subagents` (`[1 subagent]`, only
+//!   while subagents run), `help` (`? help`, last on its row), `cost` (the
+//!   session's) and `pr` (`#133↗`, the branch's pull request, a link coloured
+//!   by its state). `cost` and `pr` make the second row, the rest the first.
+//!   The default is all seven in that order. While the API cannot be reached
+//!   an `offline` item is added before `help` whatever the list says.
 //!
 //! Names from before the status line was one template still read: `todos`
 //! is `tasks`, `instance` is `model`, and `connectivity` and `session` are
@@ -51,19 +53,27 @@ pub enum Item {
     Tasks,
     /// `[N subagents]` while subagents run.
     Subagents,
-    /// `? help`, always drawn last.
+    /// `? help`, drawn last on the first row.
     Help,
+    /// `#N↗`, the pull request of the branch checked out.
+    Pr,
 }
 
 impl Item {
-    pub const ALL: [(&'static str, Item); 6] = [
-        ("device", Item::Device),
+    pub const ALL: [(&'static str, Item); 7] = [
         ("model", Item::Model),
-        ("cost", Item::Cost),
+        ("device", Item::Device),
         ("tasks", Item::Tasks),
         ("subagents", Item::Subagents),
         ("help", Item::Help),
+        ("cost", Item::Cost),
+        ("pr", Item::Pr),
     ];
+
+    /// Whether the item is drawn on the status line's second row.
+    pub fn second_row(self) -> bool {
+        matches!(self, Item::Cost | Item::Pr)
+    }
 
     /// An item by name — `Some(None)` for an old name kept so a config that
     /// has it still reads, and that no longer shows anything of its own.
@@ -307,7 +317,7 @@ mod tests {
     #[test]
     fn r_tui_2_the_status_bar_is_optional_and_its_items_configurable() {
         assert_eq!(from_config(&json!({})).0, Settings::default());
-        assert_eq!(Settings::default().status_items, [Item::Device, Item::Model, Item::Cost, Item::Tasks, Item::Subagents, Item::Help], "the template's order");
+        assert_eq!(Settings::default().status_items, [Item::Model, Item::Device, Item::Tasks, Item::Subagents, Item::Help, Item::Cost, Item::Pr], "the template's order");
         let (s, w) = from_config(&json!({"tui": {"statusBar": false}}));
         assert!(!s.status_bar && w.is_empty());
         let (s, w) = from_config(&json!({"tui": {"statusItems": ["cost", "model", "cost", "nope"]}}));

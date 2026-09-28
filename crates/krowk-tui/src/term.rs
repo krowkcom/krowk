@@ -234,7 +234,12 @@ impl Backend for Back {
                 }
                 style = Some(s);
             }
-            out.write_all(cell.symbol().as_bytes())?;
+            // A cell a link is on is a hyperlink (OSC 8) of its own; the
+            // terminal joins neighbours with the same URL into one.
+            match crate::look::cell_link(cell.symbol()) {
+                (text, Some(url)) => write!(out, "\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")?,
+                (text, None) => out.write_all(text.as_bytes())?,
+            }
         }
         if style.is_some() {
             out.write_all(b"\x1b[0m")?;
@@ -1002,6 +1007,17 @@ mod tests {
         let out = String::from_utf8_lossy(&t.into_inner()).into_owned();
         assert!(out.contains("\x1b]8;;https://krowk.com/d\x1b\\\x1b[4;36mdocs\x1b[0m\x1b]8;;\x1b\\"), "{out:?}");
         assert!(out.contains("\x1b]8;;https://krowk.com/d\x1b\\\x1b[36m\u{a0}↗\x1b[0m\x1b]8;;\x1b\\"), "{out:?}");
+        assert!(!out.chars().any(|c| ('\u{E0000}'..='\u{E007F}').contains(&c)), "the URL's carrier never reaches the terminal");
+    }
+
+    #[test]
+    fn a_link_in_the_live_region_is_a_hyperlink_cell_by_cell() {
+        let mut t = Term::new(Vec::new(), Size { width: 60, height: 10 }, 0, 1).unwrap();
+        let url = "https://github.com/krowkcom/krowk-cli/pull/133";
+        let row = Line::from("#1".chars().map(|c| crate::look::linked(c.to_string(), ratatui::style::Style::new(), url)).collect::<Vec<_>>());
+        t.frame(&[], &[row], (0, 0)).unwrap();
+        let out = String::from_utf8_lossy(&t.into_inner()).into_owned();
+        assert!(out.contains(&format!("\x1b]8;;{url}\x1b\\#\x1b]8;;\x1b\\\x1b]8;;{url}\x1b\\1\x1b]8;;\x1b\\")), "{out:?}");
         assert!(!out.chars().any(|c| ('\u{E0000}'..='\u{E007F}').contains(&c)), "the URL's carrier never reaches the terminal");
     }
 

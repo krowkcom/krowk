@@ -696,7 +696,7 @@ fn r_tui_1_a_menu_opened_and_closed_leaves_no_gap_in_scrollback_and_no_space_und
     assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     tm.keys(&["go", "Enter"]);
     assert!(tm.wait_for("tokens", Duration::from_secs(30)).is_some(), "{}", tm.screen());
-    let at_bottom = |s: &str| s.lines().count() == 24 && s.lines().last().is_some_and(|l| l.contains("? help"));
+    let at_bottom = |s: &str| s.lines().count() == 24 && s.lines().nth_back(1).is_some_and(|l| l.contains("? help")) && s.lines().last().is_some_and(|l| l.contains("$0.00"));
     // The slash menu closes as its slash is deleted, the help on Esc.
     for (open, close) in [("/", "BSpace"), ("?", "Escape")] {
         for _ in 0..3 {
@@ -705,7 +705,7 @@ fn r_tui_1_a_menu_opened_and_closed_leaves_no_gap_in_scrollback_and_no_space_und
             tm.keys(&[close]);
             std::thread::sleep(Duration::from_millis(300));
             let screen = tm.screen();
-            assert!(at_bottom(&screen), "the status line on the last row after {open}:\n{screen}");
+            assert!(at_bottom(&screen), "the status line on the last rows after {open}:\n{screen}");
         }
     }
     tm.keys(&["again", "Enter"]);
@@ -736,7 +736,7 @@ fn r_tui_3_a_resize_mid_stream_never_repeats_a_line_or_leaves_the_live_region_be
     assert!(tm.wait_for("tokens", Duration::from_secs(60)).is_some(), "{}", tm.screen());
     tm.tmux(&["resize-window", "-t", "t", "-x", "120", "-y", "40"]);
     // Redrawn at 120x40: the status bar on the last of forty rows.
-    let redrawn = |s: &str| s.lines().count() == 40 && s.lines().last().is_some_and(|l| l.contains("? help")) && s.matches("? help").count() == 1;
+    let redrawn = |s: &str| s.lines().count() == 40 && s.lines().nth_back(1).is_some_and(|l| l.contains("? help")) && s.matches("? help").count() == 1;
     let history = tm.wait_still(redrawn, Duration::from_secs(10)).unwrap_or_else(|| panic!("never redrawn after the resize:\n{}", tm.screen()));
     // A frame already on its way when the terminal changes size is read at
     // the new size; it moves from the caret, so it still lands where it was
@@ -789,11 +789,14 @@ fn narrowing(name: &str, before: &str, steps: &[&str]) {
     assert_eq!(history.matches("Model:     anthropic/claude-opus-5-5").count(), 1, "the header is still there, once:\n{history}");
     let rules = history.lines().filter(|l| l.trim().len() > 3 && l.trim().chars().all(|c| c == '─')).count();
     assert_eq!(rules, 2, "one prompt, its two rules once each:\n{history}");
-    // At 40 columns the status line is one row still: the device and the
-    // cost gave way, the model is cut short, offline and the help stay.
+    // At 40 columns the status line is two rows still: the device gave
+    // way, the model is cut short, offline and the help stay, and the cost
+    // is under them.
     let screen = tm.screen();
-    let bar = screen.lines().map(str::trim_end).rfind(|l| !l.is_empty()).unwrap_or_default();
+    let mut rows = screen.lines().map(str::trim_end).filter(|l| !l.is_empty()).rev();
+    let (cost, bar) = (rows.next().unwrap_or_default(), rows.next().unwrap_or_default());
     assert!(bar.starts_with("    anthropic/cl") && bar.ends_with(" | offline | ? help") && bar.chars().count() <= 40 && !bar.contains('$'), "{bar:?}\n{screen}");
+    assert_eq!(cost, "    $0.00", "{screen}");
     if !before.is_empty() {
         // What was on the terminal is kept: the open scrolls it into
         // scrollback, the way a clear that keeps scrollback does, and the
@@ -1066,7 +1069,7 @@ fn r_tui_1_a_menu_opened_and_closed_on_a_short_session_puts_nothing_in_scrollbac
     let history = tm.history();
     assert_eq!(gap(&history), before, "rows between the shell's output and the logo:\n{history}");
     let screen = tm.screen();
-    assert!(screen.lines().last().is_some_and(|l| l.contains("? help")), "the status line on the last row:\n{screen}");
+    assert!(screen.lines().nth_back(1).is_some_and(|l| l.contains("? help")), "the status line on the last rows:\n{screen}");
 }
 
 /// Whether `needle` is in what the TUI wrote after byte `from`, within

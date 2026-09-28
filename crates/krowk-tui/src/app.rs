@@ -12,6 +12,7 @@
 use crate::editor::Editor;
 use crate::help;
 use crate::look::{self, SEP};
+use crate::pr::State as PrState;
 use crate::settings::{ContentWidth, Item as StatusItem, Settings};
 use krowk_harness::host::Pricer;
 use krowk_harness::log::Recent;
@@ -48,6 +49,7 @@ const BAR_SEP: &str = " | ";
 /// narrow for them all: the lowest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Rank {
+    Pr,
     Device,
     Subagents,
     Tasks,
@@ -64,6 +66,8 @@ struct Part {
     rank: Rank,
     text: String,
     style: Style,
+    /// Where the item links to, as a hyperlink (OSC 8).
+    url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,6 +271,50 @@ fn window_name(w: &str) -> String {
     }
 }
 
+/// Indent of the status line's rows.
+const STATUS_INDENT: usize = 2;
+
+/// A row of the status line. Narrow, the items give way one at a time — the
+/// pull request first, then the device, the subagents, the tasks and the
+/// cost — then the model is cut short; `? help` stays.
+fn hint_row(mut parts: Vec<Part>, width: usize) -> Line<'static> {
+    let room = width.saturating_sub(STATUS_INDENT);
+    let used = |parts: &[Part]| parts.iter().map(|p| p.text.width()).sum::<usize>() + parts.len().saturating_sub(1) * BAR_SEP.len();
+    while used(&parts) > room {
+        // The one to give way next: the lowest rank below the model's.
+        let Some(i) = (0..parts.len()).filter(|&i| parts[i].rank < Rank::Model).min_by_key(|&i| parts[i].rank) else { break };
+        parts.remove(i);
+    }
+    if used(&parts) > room
+        && let Some(i) = parts.iter().position(|p| p.rank == Rank::Model)
+    {
+        let rest = used(&parts) - parts[i].text.width();
+        match room.checked_sub(rest) {
+            Some(left) if left >= 2 => parts[i].text = clip(&parts[i].text, left),
+            _ => {
+                parts.remove(i);
+            }
+        }
+    }
+    while used(&parts) > room && parts.len() > 1 {
+        parts.remove(0);
+    }
+    let mut spans = vec![Span::raw(" ".repeat(STATUS_INDENT.min(width)))];
+    for (i, p) in parts.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(BAR_SEP, dim()));
+        }
+        let text = clip(&p.text, room);
+        match &p.url {
+            // Every cell carries the link: the live region is drawn a cell
+            // at a time (`term::Back`).
+            Some(url) => spans.extend(text.chars().map(|c| look::linked(c.to_string(), p.style, url))),
+            None => spans.push(Span::styled(text, p.style)),
+        }
+    }
+    Line::from(spans)
+}
+
 fn plural(n: u32, what: &str) -> String {
     if n == 1 { format!("1 {what}") } else { format!("{n} {what}s") }
 }
@@ -379,8 +427,10 @@ pub struct App {
     pub offline: Option<String>,
     /// `<user>/<host>`, read once at start, for the status line.
     pub device: Option<String>,
+    /// The branch's pull request, as `gh` last said.
+    pub pr: Option<crate::pr::Pr>,
     pub overlay: Overlay,
-    settings: Settings,
+    pub(crate) settings: Settings,
     /// Steering the host has queued and the engine not yet taken, oldest
     /// first; each leaves when its item comes back in the log.
     pub steers: Vec<String>,
@@ -508,6 +558,7 @@ impl App {
             turns: 0,
             offline: None,
             device: None,
+            pr: None,
             overlay: Overlay::None,
             settings,
             steers: Vec::new(),
@@ -1298,7 +1349,7 @@ impl App {
                 };
                 let from = from.as_ref().map(|f| format!("{f} → ")).unwrap_or_default();
                 let style = if *reason == SwitchReason::Requested { dim() } else { yellow() };
-                self.push_wrapped(look::SWITCH, "  ", &format!("{from}{to}{why}"), style, style);
+                self.push_wrapped(look::SWITCH, "  ", &format!("{from}{to}{why}"), look::switched(), style);
                 self.model = Some(to.clone());
                 if live {
                     self.switched = Some(to.clone());
@@ -1315,7 +1366,7 @@ impl App {
                     },
                 };
                 let fell = fell_back.as_ref().map(|f| format!(" ({f})")).unwrap_or_default();
-                self.push_wrapped(look::SWITCH, "  ", &format!("{said}{fell}"), dim(), dim());
+                self.push_wrapped(look::SWITCH, "  ", &format!("{said}{fell}"), look::switched(), dim());
             }
             // The run the session's evidence goes under: the log's to keep.
             LogBody::RunOpened { .. } => {}
@@ -1666,65 +1717,35 @@ impl App {
         let caret = flow_caret.unwrap_or((ccol + 2, top + (crow as usize - first) as u16));
         if self.settings.status_bar {
             // Right under the prompt's bottom rule, nothing between.
-            rows.push(self.hint_row(inner));
+            let [first, second] = self.status_parts();
+            rows.push(match &self.flash {
+                // What a key just did (Ctrl-Y), in place of the first row
+                // until the next.
+                Some(f) => Line::from(vec![Span::raw(" ".repeat(STATUS_INDENT.min(inner))), Span::styled(clip(f, inner.saturating_sub(STATUS_INDENT)), dim())]),
+                None => hint_row(first, inner),
+            });
+            if !second.is_empty() {
+                rows.push(hint_row(second, inner));
+            }
         }
         (rows, caret)
     }
 
-    /// The status line as text, every item it has room for at any width.
+    /// The status line as text, every item it has room for at any width:
+    /// a row a line.
     pub fn status_bar(&self) -> String {
-        self.status_parts().into_iter().map(|p| p.text).collect::<Vec<_>>().join(BAR_SEP)
+        self.status_parts().into_iter().filter(|r| !r.is_empty()).map(|r| r.into_iter().map(|p| p.text).collect::<Vec<_>>().join(BAR_SEP)).collect::<Vec<_>>().join("\n")
     }
 
-    /// The row under the prompt box: `<device> | <instance>/<model> | <cost>
-    /// | [N tasks] | [N subagents] | ? help`, the counts only while there is
-    /// something to count and `offline` before the help while the API
-    /// cannot be reached. Narrow, the items give way one at a time — the
-    /// device first, then the subagents, the tasks and the cost — then the
-    /// model is cut short; `? help` stays.
-    fn hint_row(&self, width: usize) -> Line<'static> {
-        const INDENT: usize = 2;
-        let room = width.saturating_sub(INDENT);
-        // What a key just did (Ctrl-Y), in place of the line until the next.
-        if let Some(f) = &self.flash {
-            return Line::from(vec![Span::raw(" ".repeat(INDENT.min(width))), Span::styled(clip(f, room), dim())]);
-        }
-        let mut parts = self.status_parts();
-        let used = |parts: &[Part]| parts.iter().map(|p| p.text.width()).sum::<usize>() + parts.len().saturating_sub(1) * BAR_SEP.len();
-        while used(&parts) > room {
-            // The one to give way next: the lowest rank below the model's.
-            let Some(i) = (0..parts.len()).filter(|&i| parts[i].rank < Rank::Model).min_by_key(|&i| parts[i].rank) else { break };
-            parts.remove(i);
-        }
-        if used(&parts) > room
-            && let Some(i) = parts.iter().position(|p| p.rank == Rank::Model)
-        {
-            let rest = used(&parts) - parts[i].text.width();
-            match room.checked_sub(rest) {
-                Some(left) if left >= 2 => parts[i].text = clip(&parts[i].text, left),
-                _ => {
-                    parts.remove(i);
-                }
-            }
-        }
-        while used(&parts) > room && parts.len() > 1 {
-            parts.remove(0);
-        }
-        let mut spans = vec![Span::raw(" ".repeat(INDENT.min(width)))];
-        for (i, p) in parts.into_iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::styled(BAR_SEP, dim()));
-            }
-            spans.push(Span::styled(clip(&p.text, room), p.style));
-        }
-        Line::from(spans)
-    }
-
-    /// The status line's items, in the order drawn.
-    fn status_parts(&self) -> Vec<Part> {
-        let part = |rank, text: String| Part { rank, text, style: dim() };
-        let mut parts: Vec<Part> = Vec::new();
+    /// The status line's items, in the order drawn: `<instance>/<model> |
+    /// <device> | [N tasks] | [N subagents] | ? help` over `<cost> | #N↗`,
+    /// the counts only while there is something to count and `offline`
+    /// before the help while the API cannot be reached.
+    fn status_parts(&self) -> [Vec<Part>; 2] {
+        let part = |rank, text: String| Part { rank, text, style: dim(), url: None };
+        let (mut first, mut second): (Vec<Part>, Vec<Part>) = (Vec::new(), Vec::new());
         for item in &self.settings.status_items {
+            let parts = if item.second_row() { &mut second } else { &mut first };
             match item {
                 StatusItem::Device => {
                     if let Some(d) = self.device.as_ref().filter(|d| !d.is_empty()) {
@@ -1736,7 +1757,7 @@ impl App {
                 StatusItem::Model => {
                     if let Some(m) = &self.model {
                         match self.instances.get(&m.instance).and_then(InstanceUsage::limit_brief) {
-                            Some(w) => parts.push(Part { rank: Rank::Model, text: format!("{m} ({w})"), style: yellow() }),
+                            Some(w) => parts.push(Part { rank: Rank::Model, text: format!("{m} ({w})"), style: yellow(), url: None }),
                             None => parts.push(part(Rank::Model, m.to_string())),
                         }
                     }
@@ -1757,17 +1778,29 @@ impl App {
                         parts.push(part(Rank::Subagents, format!("[{}]", plural(running, "subagent"))));
                     }
                 }
+                // Coloured the way the forge colours it.
+                StatusItem::Pr => {
+                    if let Some(pr) = &self.pr {
+                        let style = match pr.state {
+                            PrState::Open => Style::new().fg(Color::Green),
+                            PrState::Merged => Style::new().fg(Color::Magenta),
+                            PrState::Closed => red(),
+                            PrState::Draft => dim(),
+                        };
+                        parts.push(Part { rank: Rank::Pr, text: format!("#{}↗", pr.number), style, url: Some(pr.url.clone()) });
+                    }
+                }
                 StatusItem::Help => {}
             }
         }
         // Whatever the list says: being offline is news (R-OFF-1).
         if self.offline.is_some() {
-            parts.push(Part { rank: Rank::Offline, text: "offline".into(), style: yellow() });
+            first.push(Part { rank: Rank::Offline, text: "offline".into(), style: yellow(), url: None });
         }
         if self.settings.status_items.contains(&StatusItem::Help) {
-            parts.push(part(Rank::Help, "? help".into()));
+            first.push(part(Rank::Help, "? help".into()));
         }
-        parts
+        [first, second]
     }
 
     /// Opens the help menu on everything, or closes it.
@@ -2473,6 +2506,7 @@ fn widget_rows<W: ratatui::widgets::StatefulWidget>(widget: W, state: &mut W::St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pr::Pr;
     use krowk_harness::protocol::{PermissionMode, WireApi};
 
     /// Full width: most tests here lay out at a width they set.
@@ -2676,20 +2710,20 @@ mod tests {
         let (rows, _) = a.view(Instant::now());
         let all = text(&rows).join("\n");
         assert!(all.contains("no network connectivity"), "{all}");
-        assert!(a.status_bar().ends_with("$0.00 | offline | ? help"), "offline, just before the help: {}", a.status_bar());
+        assert!(a.status_bar().ends_with("offline | ? help\n$0.00"), "offline, just before the help: {}", a.status_bar());
         let (rows, _) = a.view(Instant::now());
-        let bar = rows.last().unwrap();
+        let bar = &rows[rows.len() - 2];
         assert!(bar.spans.iter().any(|s| s.content == "offline" && s.style == yellow()), "in yellow: {bar:?}");
         // Offline shows whatever the items are.
         a.settings.status_items = vec![StatusItem::Cost];
-        assert_eq!(a.status_bar(), "$0.00 | offline");
+        assert_eq!(a.status_bar(), "offline\n$0.00");
         a.settings = Settings::default();
         a.take_dirty();
         a.set_online();
         assert!(a.take_dirty(), "coming back is redrawn");
         let (rows, _) = a.view(Instant::now());
         assert!(!text(&rows).join("\n").contains("no network"));
-        assert_eq!(a.status_bar(), "anthropic/claude-x | $0.00 | ? help", "and online is not news");
+        assert_eq!(a.status_bar(), "anthropic/claude-x | ? help\n$0.00", "and online is not news");
         a.set_online();
         assert!(!a.take_dirty(), "online again draws nothing");
     }
@@ -2756,9 +2790,11 @@ mod tests {
     fn r_tui_2_the_status_bar_follows_its_settings() {
         let mut a = app();
         a.device = Some("elvinas/primevise-arch-1".into());
-        assert_eq!(a.status_bar(), "elvinas/primevise-arch-1 | anthropic/claude-x | $0.00 | ? help", "the template, nothing to count yet");
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Help, StatusItem::Cost, StatusItem::Model], content_width: ContentWidth::FullWidth };
-        assert_eq!(a.status_bar(), "$0.00 | anthropic/claude-x | ? help", "in the order given, the help last");
+        assert_eq!(a.status_bar(), "anthropic/claude-x | elvinas/primevise-arch-1 | ? help\n$0.00", "the template, nothing to count yet");
+        a.pr = Some(Pr { number: 133, state: PrState::Open, url: "https://github.com/krowkcom/krowk-cli/pull/133".into() });
+        assert_eq!(a.status_bar(), "anthropic/claude-x | elvinas/primevise-arch-1 | ? help\n$0.00 | #133↗", "the branch's pull request after the cost");
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Pr, StatusItem::Help, StatusItem::Cost, StatusItem::Device, StatusItem::Model], content_width: ContentWidth::FullWidth };
+        assert_eq!(a.status_bar(), "elvinas/primevise-arch-1 | anthropic/claude-x | ? help\n#133↗ | $0.00", "in the order given, the help last on its row");
         a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost], content_width: ContentWidth::FullWidth };
         assert_eq!(a.status_bar(), "$0.00");
         a.settings.status_bar = false;
@@ -2779,8 +2815,9 @@ mod tests {
         assert_eq!(t[0], "─".repeat(90));
         assert_eq!(t[1], "→ Plan, search, build anything", "no sides to the box");
         assert_eq!(t[2], "─".repeat(90));
-        assert_eq!(t[3], "  anthropic/claude-x | $0.00 | ? help", "right under the box, one line, no device known");
-        assert_eq!(t.len(), 4, "the status line last");
+        assert_eq!(t[3], "  anthropic/claude-x | ? help", "right under the box, no device known");
+        assert_eq!(t[4], "  $0.00", "the cost under it, no pull request known");
+        assert_eq!(t.len(), 5, "the status line last");
         assert_eq!(caret, (2, 1));
     }
 
@@ -2796,23 +2833,26 @@ mod tests {
         for k in ["k1", "k2", "k3"] {
             a.subs.push(Sub::new(k));
         }
-        let bar = |a: &App| text(&a.view(Instant::now()).0).last().unwrap().clone();
-        assert_eq!(bar(&a), "  elvinas/primevise-arch-1 | anthropic/claude-opus-5-5 | $21.47 | [4 tasks] | [3 subagents] | ? help");
-        assert_eq!(a.status_bar(), "elvinas/primevise-arch-1 | anthropic/claude-opus-5-5 | $21.47 | [4 tasks] | [3 subagents] | ? help");
+        let bar = |a: &App| {
+            let mut t = text(&a.view(Instant::now()).0);
+            t.split_off(t.len() - 2)
+        };
+        assert_eq!(bar(&a), ["  anthropic/claude-opus-5-5 | elvinas/primevise-arch-1 | [4 tasks] | [3 subagents] | ? help", "  $21.47"]);
+        assert_eq!(a.status_bar(), "anthropic/claude-opus-5-5 | elvinas/primevise-arch-1 | [4 tasks] | [3 subagents] | ? help\n$21.47");
         // One of each is said in the singular.
         a.on_line(&log(LogBody::TodosUpdated { turn_id: "t".into(), todos: vec![todo(TodoStatus::Completed), todo(TodoStatus::InProgress)] }));
         a.subs[1].status = Some(TurnStatus::Completed);
         a.subs[2].status = Some(TurnStatus::Failed);
-        assert_eq!(a.status_bar(), "elvinas/primevise-arch-1 | anthropic/claude-opus-5-5 | $21.47 | [1 task] | [1 subagent] | ? help");
+        assert_eq!(a.status_bar(), "anthropic/claude-opus-5-5 | elvinas/primevise-arch-1 | [1 task] | [1 subagent] | ? help\n$21.47");
         // Nothing open, nothing running: neither is there.
         a.on_line(&log(LogBody::TodosUpdated { turn_id: "t".into(), todos: vec![todo(TodoStatus::Completed)] }));
         a.subs.clear();
-        assert_eq!(a.status_bar(), "elvinas/primevise-arch-1 | anthropic/claude-opus-5-5 | $21.47 | ? help");
+        assert_eq!(a.status_bar(), "anthropic/claude-opus-5-5 | elvinas/primevise-arch-1 | ? help\n$21.47");
         // A price not known is not a price of nothing.
         let mut b = app();
         b.on_line(&live(LiveEvent::Cost { session_id: "s".into(), turn_id: "t".into(), cost_usd: None, turn_cost_usd: None, generated_tokens: 1 }));
         b.on_line(&live(LiveEvent::Result(RunResult { session_id: "s".into(), turn_id: "t".into(), status: TurnStatus::Completed, is_error: false, result: String::new(), model: ModelRef { instance: "anthropic".into(), model: "claude-x".into() }, usage: Usage::default(), cost_usd: None, duration_ms: 1, num_model_calls: 1, error: None, unread_steers: Vec::new(), switch_offer: None })));
-        assert_eq!(b.status_bar(), "anthropic/claude-x | $— | ? help");
+        assert_eq!(b.status_bar(), "anthropic/claude-x | ? help\n$—");
     }
 
     #[test]
@@ -2843,7 +2883,7 @@ mod tests {
     fn the_status_line_follows_a_switch_of_model() {
         let mut a = app();
         a.on_line(&log(switch_turn("claude:work", "haiku")));
-        assert_eq!(a.status_bar(), "claude:work/haiku | $0.00 | ? help");
+        assert_eq!(a.status_bar(), "claude:work/haiku | ? help\n$0.00");
     }
 
     #[test]
@@ -2856,15 +2896,15 @@ mod tests {
         a.subs.push(Sub::new("k1"));
         let at = |a: &mut App, w: u16| {
             a.set_width(w);
-            let row = text(&a.view(Instant::now()).0).last().unwrap().clone();
+            let rows = text(&a.view(Instant::now()).0);
+            let row = rows[rows.len() - 2].clone();
             assert!(row.width() <= usize::from(w), "{w}: wider than the terminal: {row:?}");
             row
         };
-        assert_eq!(at(&mut a, 100), "  elvinas/primevise-arch-1 | anthropic/claude-opus-5-5 | $0.00 | [2 tasks] | [1 subagent] | ? help");
-        assert_eq!(at(&mut a, 80), "  anthropic/claude-opus-5-5 | $0.00 | [2 tasks] | [1 subagent] | ? help", "the device first");
-        assert_eq!(at(&mut a, 60), "  anthropic/claude-opus-5-5 | $0.00 | [2 tasks] | ? help", "then the subagents");
-        assert_eq!(at(&mut a, 48), "  anthropic/claude-opus-5-5 | $0.00 | ? help", "then the tasks");
-        assert_eq!(at(&mut a, 40), "  anthropic/claude-opus-5-5 | ? help", "then the cost");
+        assert_eq!(at(&mut a, 100), "  anthropic/claude-opus-5-5 | elvinas/primevise-arch-1 | [2 tasks] | [1 subagent] | ? help");
+        assert_eq!(at(&mut a, 80), "  anthropic/claude-opus-5-5 | [2 tasks] | [1 subagent] | ? help", "the device first");
+        assert_eq!(at(&mut a, 60), "  anthropic/claude-opus-5-5 | [2 tasks] | ? help", "then the subagents");
+        assert_eq!(at(&mut a, 40), "  anthropic/claude-opus-5-5 | ? help", "then the tasks");
         assert_eq!(at(&mut a, 30), "  anthropic/claude-o… | ? help", "then the model is cut short");
         assert_eq!(at(&mut a, 12), "  ? help", "the help stays");
         a.set_offline("api.anthropic.com:443".into());
@@ -2932,14 +2972,14 @@ mod tests {
         let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, Some(ModelRef { instance: "claude".into(), model: "sonnet".into() }), None);
         let agents = |v: Vec<BackendAgent>| live(LiveEvent::BackendAgents { session_id: "s".into(), agents: v });
         a.on_line(&agents(vec![BackendAgent { task_id: "a1".into(), description: "survey the repo".into(), agent: Some("general-purpose".into()) }]));
-        assert_eq!(a.status_bar(), "claude/sonnet | $0.00 | [1 subagent] | ? help");
+        assert_eq!(a.status_bar(), "claude/sonnet | [1 subagent] | ? help\n$0.00");
         a.overlay = Overlay::Agents;
         let rows = text(&a.view(Instant::now()).0);
         assert!(rows.iter().any(|r| r.contains("Agent survey the repo · general-purpose · running in Claude Code")), "{rows:?}");
         assert!(rows.iter().any(|r| r.contains("Claude Code runs these itself")), "nothing to select or interrupt: {rows:?}");
         assert_eq!(a.agent_count(), 0);
         a.on_line(&agents(vec![]));
-        assert_eq!(a.status_bar(), "claude/sonnet | $0.00 | ? help");
+        assert_eq!(a.status_bar(), "claude/sonnet | ? help\n$0.00");
         a.on_line(&live(LiveEvent::TurnUnprompted { session_id: "s".into(), reason: "background agent “survey the repo” completed".into() }));
         assert!(a.unprompted, "the client is told to run it");
     }
@@ -2966,7 +3006,7 @@ mod tests {
         a.on_line(&live(LiveEvent::Cost { session_id: "k1".into(), turn_id: "u".into(), cost_usd: Some(0.02), turn_cost_usd: Some(0.02), generated_tokens: 500 }));
         a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 900, error: None, reported_cost_usd: None }));
         assert!(a.take_pending().is_empty(), "nothing of a child's reaches the conversation");
-        assert_eq!(a.status_bar(), "anthropic/claude-x | $0.00 | [1 subagent] | ? help", "a child's cost frame is its line's, not the session's");
+        assert_eq!(a.status_bar(), "anthropic/claude-x | [1 subagent] | ? help\n$0.00", "a child's cost frame is its line's, not the session's");
         let (rows, _) = a.view(Instant::now());
         let rows = text(&rows);
         let lines: Vec<&String> = rows.iter().filter(|r| r.contains("Agent ")).collect();
