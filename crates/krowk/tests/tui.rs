@@ -272,6 +272,46 @@ fn the_mode_picker_sets_the_mode_the_next_turn_runs_in() {
     assert!(logs.iter().any(|p| std::fs::read_to_string(p).is_ok_and(|s| s.contains("\"turn.started\"") && s.contains("\"permissionMode\":\"plan\""))), "no turn ran in plan: {logs:?}");
 }
 
+/// `/sessions` (here by its alias, `/resume`) lists the sessions started
+/// here, and enter continues one in
+/// place of the new session: its conversation is replayed, and the next
+/// prompt goes to it, the earlier turns and all.
+#[test]
+fn resume_continues_an_earlier_session_from_the_slash_menu() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("resume");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"read README.md and summarise it\r");
+    assert!(t.wait_for("anywhere.", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    assert!(t.wait_for("tokens", Duration::from_secs(5)).is_some());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let out = t.text();
+    let at = out.find("krowk --resume ").expect("the resume line") + "krowk --resume ".len();
+    let id = out[at..at + 36].to_string();
+
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"/resume\r");
+    assert!(t.wait_for("enter continues it", Duration::from_secs(10)).is_some(), "no picker: {:?}", t.text());
+    assert!(t.wait_for("read README.md and summarise it", Duration::from_secs(5)).is_some(), "the session is not listed: {:?}", t.text());
+    t.write(b"\r");
+    assert!(t.wait_for(&format!("resumed session {id}"), Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    let from = t.output().len();
+    t.write(b"and what else is in it?\r");
+    assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    assert!(t.text().contains(&format!("krowk --resume {id}")), "{:?}", t.text());
+    // One request carried both prompts: the turn continued the session.
+    let seen = m.seen.lock().unwrap();
+    assert!(seen.iter().any(|s| { let b = s.body["messages"].to_string(); b.contains("read README.md and summarise it") && b.contains("and what else is in it?") }), "the earlier turn was not sent");
+    let sessions: Vec<PathBuf> = std::fs::read_dir(b.root.join("home/.krowk/sessions")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_dir()).collect();
+    assert_eq!(sessions.len(), 1, "no second session was started: {sessions:?}");
+    assert!(std::fs::read_to_string(sessions[0].join("events.jsonl")).unwrap().contains("and what else is in it?"));
+}
+
 /// `/config` (or `/settings`) cycles the default permission mode and saves
 /// it to config.json, and the next session starts in it.
 #[test]

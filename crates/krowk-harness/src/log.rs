@@ -18,7 +18,7 @@
 //! interleaved. Directories are 0700 and files 0600 — a log holds what an
 //! agent was told and read, secrets included.
 
-use crate::protocol::{ContextRecord, LogBody, LogEvent, PROTOCOL_VERSION};
+use crate::protocol::{ContextRecord, Item, LogBody, LogEvent, PROTOCOL_VERSION};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -217,6 +217,52 @@ pub fn list(sessions: &Path) -> std::io::Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
+/// A session as the TUI's `/sessions` lists it, read from the head of its log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recent {
+    pub id: String,
+    /// The first thing the person asked in it.
+    pub prompt: String,
+    /// When its log was last written, in ms since the epoch.
+    pub last_ms: i64,
+}
+
+/// How far into a log `recent` looks for its first prompt.
+const HEAD_LINES: usize = 64;
+
+/// The sessions started in `cwd` that can be continued, the most recently
+/// written first, at most `most` of them. A subagent's belongs to its
+/// parent, and one nobody prompted has nothing to continue: neither is
+/// listed. Only each log's head is read, never the whole.
+pub fn recent(sessions: &Path, cwd: &Path, most: usize) -> Vec<Recent> {
+    let mut found: Vec<(i64, String, PathBuf)> = list(sessions)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(id, path)| {
+            let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+            let ms = modified.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+            Some((ms, id, path))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    found.into_iter().filter_map(|(last_ms, id, path)| head_prompt(&path, cwd).map(|prompt| Recent { id, prompt, last_ms })).take(most).collect()
+}
+
+/// The first prompt of a top-level session started in `cwd`; none for any
+/// other, or one with no prompt in its head.
+fn head_prompt(path: &Path, cwd: &Path) -> Option<String> {
+    let mut lines = BufReader::new(File::open(path).ok()?).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty());
+    let root: LogEvent = serde_json::from_str(&lines.next()?).ok()?;
+    match root.body {
+        LogBody::SessionStarted { cwd: started, parent_session_id: None, .. } if Path::new(&started) == cwd => {}
+        _ => return None,
+    }
+    lines.take(HEAD_LINES).filter_map(|l| serde_json::from_str::<LogEvent>(&l).ok()).find_map(|ev| match ev.body {
+        LogBody::ItemCompleted { item: Item::UserText { text }, .. } if !text.starts_with(crate::todo::REMINDER) => Some(text),
+        _ => None,
+    })
+}
+
 pub(crate) fn private_dir(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -279,6 +325,33 @@ mod tests {
             assert_eq!(mode(&dir.join(&root.id)), 0o700);
             assert_eq!(mode(&dir.join(&root.id).join(EVENTS_FILE)), 0o600);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resume_lists_this_directorys_prompted_sessions_newest_first() {
+        let dir = std::env::temp_dir().join(format!("krowk-harness-recent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let said = |text: &str| LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::UserText { text: text.into() } };
+        let (mut old, _) = SessionLog::create(&dir, Path::new("/repo"), "dev").unwrap();
+        old.append(said(&format!("{} the todo list", crate::todo::REMINDER))).unwrap();
+        old.append(said("fix the parser")).unwrap();
+        let (mut new, _) = SessionLog::create(&dir, Path::new("/repo"), "dev").unwrap();
+        new.append(said("add a flag")).unwrap();
+        let (_unprompted, _) = SessionLog::create(&dir, Path::new("/repo"), "dev").unwrap();
+        let (mut elsewhere, _) = SessionLog::create(&dir, Path::new("/other"), "dev").unwrap();
+        elsewhere.append(said("not here")).unwrap();
+        let (mut child, _) = SessionLog::create_child(&dir, Path::new("/repo"), "dev", Some(&new.session_id), None).unwrap();
+        child.append(said("a subagent's task")).unwrap();
+        // Written last, the older session is the most recent.
+        let touched = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        File::options().append(true).open(old.dir.join(EVENTS_FILE)).unwrap().set_modified(touched).unwrap();
+        let found = recent(&dir, Path::new("/repo"), 10);
+        let listed: Vec<(&str, &str)> = found.iter().map(|r| (r.id.as_str(), r.prompt.as_str())).collect();
+        assert_eq!(listed, [(old.session_id.as_str(), "fix the parser"), (new.session_id.as_str(), "add a flag")]);
+        assert!(found[0].last_ms > found[1].last_ms);
+        assert_eq!(recent(&dir, Path::new("/repo"), 1).len(), 1, "at most `most`");
+        assert!(recent(&dir.join("none"), Path::new("/repo"), 10).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

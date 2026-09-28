@@ -68,6 +68,8 @@ const STALL: Duration = Duration::from_millis(700);
 const APPROVAL_SETTLE: Duration = Duration::from_millis(400);
 /// How often an interrupt the host could not take yet is asked again.
 const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
+/// How many earlier sessions `/sessions` lists.
+const RESUMABLE: usize = 30;
 
 pub struct Options {
     pub host: HostConfig,
@@ -228,17 +230,9 @@ async fn session(opts: Options) -> Outcome {
     let mut runs_in = opts.host.cwd.clone();
     let started_in = opts.host.cwd.clone();
     if let Some(id) = &opts.resume {
-        match log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)) {
-            Ok(events) => {
-                if let Some(krowk_harness::protocol::LogBody::SessionStarted { cwd, .. }) = events.first().map(|e| &e.body) {
-                    runs_in = PathBuf::from(cwd);
-                }
-                let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
-                app.replay(&log::branch(&events, &head));
-                app.session_id = Some(id.clone());
-                app.say(&format!("resumed session {id}"), app::dim());
-            }
-            Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("session {id} could not be read: {}", e.message())) },
+        match replay(&mut app, &sessions_dir, id) {
+            Ok(cwd) => runs_in = cwd.unwrap_or(runs_in),
+            Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(e) },
         }
     }
     // The model shown before the first turn names one: the one given
@@ -297,6 +291,7 @@ async fn session(opts: Options) -> Outcome {
         permissions_cfg,
         credentials,
         data_dir: sessions_dir.parent().map(PathBuf::from),
+        sessions_dir,
         auth: None,
         suspended: false,
         checks: None,
@@ -350,6 +345,8 @@ struct Ui<'h> {
     /// krowk's data directory, where a vendor is asked outside any
     /// repository (`readiness::neutral_dir`).
     data_dir: Option<PathBuf>,
+    /// Where session logs live: what `/sessions` lists and replays.
+    sessions_dir: PathBuf,
     /// A `/connect` or `/disconnect` running on its own thread: what it
     /// asks and tells, and its end.
     auth: Option<mpsc::UnboundedReceiver<connect::Msg>>,
@@ -1513,6 +1510,7 @@ impl<'h> Ui<'h> {
                             help::Action::Settings => self.open_settings(app),
                             help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
                             help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
+                            help::Action::Sessions => self.open_resume(app),
                             help::Action::Todos => app.overlay = Overlay::Todos,
                             help::Action::Agents => app.overlay = Overlay::Agents,
                             help::Action::Details => app.overlay = Overlay::Details,
@@ -1546,6 +1544,27 @@ impl<'h> Ui<'h> {
                     app.overlay = Overlay::None;
                     if let Some(m) = PermissionMode::NAMES.get(app.mode_at).and_then(|n| PermissionMode::parse(n)) {
                         self.set_mode(app, m);
+                    }
+                    return false;
+                }
+                _ => {}
+            }
+        }
+        // So does `/sessions`.
+        if app.overlay == Overlay::Sessions && !ctrl && !alt {
+            match k.code {
+                KeyCode::Up => {
+                    app.resume_at = app.resume_at.saturating_sub(1);
+                    return false;
+                }
+                KeyCode::Down => {
+                    app.resume_at = (app.resume_at + 1).min(app.resumable.len().saturating_sub(1));
+                    return false;
+                }
+                KeyCode::Enter => {
+                    app.overlay = Overlay::None;
+                    if let Some(r) = app.resumable.get(app.resume_at).cloned() {
+                        self.resume(app, &r.id);
                     }
                     return false;
                 }
@@ -1676,6 +1695,55 @@ impl<'h> Ui<'h> {
             app.slash_closed = false;
         }
         false
+    }
+
+    /// `/sessions`: the sessions started where krowk was, to continue one of
+    /// them here. Only between turns — the running one would go on
+    /// writing to a session no longer shown.
+    fn open_resume(&mut self, app: &mut App) {
+        if app.running() {
+            app.notice("that waits for the running turn to finish — esc interrupts it");
+            return;
+        }
+        let mut sessions = log::recent(&self.sessions_dir, &self.started_in, RESUMABLE + 1);
+        sessions.retain(|r| app.session_id.as_ref() != Some(&r.id));
+        sessions.truncate(RESUMABLE);
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        app.open_resume(sessions, now_ms);
+    }
+
+    /// Continues session `id` in place of the one shown: its conversation
+    /// replayed under what is on screen, and the next prompt sent to it, on
+    /// the model it last ran on.
+    fn resume(&mut self, app: &mut App, id: &str) {
+        if app.running() {
+            app.notice("that waits for the running turn to finish — esc interrupts it");
+            return;
+        }
+        // Another krowk writing to it would refuse the first prompt: said
+        // now, with the session shown left as it was.
+        if let Err(e @ log::LogError::Busy(_)) = log::SessionLog::open(&self.sessions_dir, id) {
+            app.notice(e.message());
+            return;
+        }
+        app.forget_session();
+        app.gap_say(&format!("continuing session {id}"));
+        match replay(app, &self.sessions_dir, id) {
+            Ok(cwd) => self.runs_in = cwd.unwrap_or_else(|| self.started_in.clone()),
+            Err(e) => {
+                app.notice(&e);
+                return;
+            }
+        }
+        // Its own model from here, not the one the last session was on.
+        self.chosen = None;
+        self.needs_trust = None;
+        app.trust_question = None;
+        if let Some(m) = app.model.clone() {
+            self.retarget(&m);
+            self.model = Some(m.clone());
+            self.owe_trust(app, &m);
+        }
     }
 
     fn open_models(&mut self, app: &mut App) {
@@ -1977,6 +2045,11 @@ impl<'h> Ui<'h> {
                 self.open_settings(app);
                 return false;
             }
+            "/sessions" => {
+                app.editor.clear();
+                self.open_resume(app);
+                return false;
+            }
             "/mode" => {
                 app.editor.clear();
                 app.open_mode_picker();
@@ -2038,6 +2111,21 @@ impl<'h> Ui<'h> {
         self.prompt(app, text);
         app.offline.is_some()
     }
+}
+
+/// Session `id`'s conversation, from its log, into `app`, which continues
+/// it: the directory it was started in, or why it could not be read.
+fn replay(app: &mut App, sessions_dir: &std::path::Path, id: &str) -> Result<Option<PathBuf>, String> {
+    let events = log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(|e| format!("session {id} could not be read: {}", e.message()))?;
+    let cwd = match events.first().map(|e| &e.body) {
+        Some(krowk_harness::protocol::LogBody::SessionStarted { cwd, .. }) => Some(PathBuf::from(cwd)),
+        _ => None,
+    };
+    let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
+    app.replay(&log::branch(&events, &head));
+    app.session_id = Some(id.to_string());
+    app.say(&format!("resumed session {id}"), app::dim());
+    Ok(cwd)
 }
 
 /// A key as a terminal without KEYS_PUSH sends it. The protocol reports

@@ -11,6 +11,7 @@ pub enum Action {
     Settings,
     Connect,
     Disconnect,
+    Sessions,
     Todos,
     Agents,
     Details,
@@ -42,6 +43,7 @@ pub const ENTRIES: &[Entry] = &[
     e("Settings", "The default permission mode, saved", "/settings · /config", Action::Settings),
     e("Connect", "Connect a provider, or renew a login", "/connect", Action::Connect),
     e("Disconnect", "Sign an instance out", "/disconnect", Action::Disconnect),
+    e("Earlier sessions", "Continue one started here", "/sessions · /resume", Action::Sessions),
     e("Todos", "The task list for this session", "ctrl-t", Action::Todos),
     e("Subagents", "See, expand or stop subagents", "ctrl-g", Action::Agents),
     e("Session", "Tokens, limits and the log file", "ctrl-o", Action::Details),
@@ -71,7 +73,7 @@ pub struct Slash {
 
 /// Names krowk's commands answer to too, unlisted: `/config` runs
 /// `/settings`, whatever a skill is called.
-pub const ALIASES: &[(&str, &str)] = &[("quit", "exit"), ("permission-mode", "mode"), ("config", "settings")];
+pub const ALIASES: &[(&str, &str)] = &[("quit", "exit"), ("permission-mode", "mode"), ("config", "settings"), ("resume", "sessions")];
 
 /// A command typed with an alias, as the command it names: `/config` is
 /// `/settings`, `/permission-mode plan` is `/mode plan`. Anything else is
@@ -91,6 +93,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("settings", "Settings saved to config.json — the default permission mode"),
     ("connect", "Connect a provider — a subscription or an API key"),
     ("disconnect", "Sign an instance out"),
+    ("sessions", "Continue an earlier session started in this directory"),
     ("help", "Keys and what they do"),
     ("exit", "Leave krowk"),
 ];
