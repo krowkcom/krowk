@@ -137,7 +137,7 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.command("http://127.0.0.1:9", &["host", "stop"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+        let _ = self.command("http://127.0.0.1:9", &["host", "stop", "--force"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
         let _ = std::fs::remove_dir_all(&self.run);
     }
 }

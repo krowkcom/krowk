@@ -67,6 +67,15 @@
         "session": {
           "type": "string"
         },
+        "cmd": {
+          "description": "The `execute` whose own stream this is, on the lines sent to the\nclient that ran it: a prompt that starts a session is told its\nlines by this, never by guessing.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
         "type": {
           "type": "string",
           "const": "line"

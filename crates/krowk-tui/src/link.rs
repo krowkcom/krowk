@@ -10,7 +10,7 @@
 //! vendors from here — and a connection made here is read again by the
 //! daemon (`reload`).
 
-use krowk_harness::daemon::client::Client;
+use krowk_harness::daemon::remote::Remote;
 use krowk_harness::engine::EngineError;
 use krowk_harness::host::Host;
 use krowk_harness::instances::{Asked, Registry};
@@ -20,7 +20,7 @@ use tokio::sync::{broadcast, mpsc};
 
 pub enum Link {
     Local(Host),
-    Remote { host: Host, client: Client },
+    Remote { host: Host, client: Remote },
 }
 
 impl Link {
@@ -31,7 +31,7 @@ impl Link {
     }
 
     /// The daemon's client, when the sessions run there.
-    pub fn remote(&self) -> Option<&Client> {
+    pub fn remote(&self) -> Option<&Remote> {
         match self {
             Link::Remote { client, .. } => Some(client),
             Link::Local(_) => None,
@@ -67,6 +67,18 @@ impl Link {
             Link::Local(h) => h.execute(cmd, out).await,
             Link::Remote { client, .. } => client.execute(cmd, out).await,
         }
+    }
+
+    /// Stops following `session_id` in the daemon: the TUI moved on.
+    pub fn leave(&self, session_id: &str) {
+        if let Some(c) = self.remote() {
+            c.leave(session_id);
+        }
+    }
+
+    /// Something to tell the person about the daemon, once: a reconnection.
+    pub fn take_note(&self) -> Option<String> {
+        self.remote().and_then(|c| c.take_note())
     }
 
     /// What arrives between turns: a backend's agents, a turn it began.

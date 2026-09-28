@@ -68,9 +68,15 @@ fn runtime_dir(name: &str) -> Result<std::path::PathBuf, String> {
     Ok(run)
 }
 
+/// Whether a daemon's socket is in runtime directory `run`
+/// (`krowk/<home>/host.sock`).
+fn has_socket(run: &Path) -> bool {
+    std::fs::read_dir(run.join("krowk")).into_iter().flatten().flatten().any(|e| e.path().join("host.sock").exists())
+}
+
 /// `krowk host stop`, waited for: the next run starts with none.
 fn stop_daemon(bin: &Path, home: &Path, run: &Path) {
-    let _ = on_daemon(bin, home, "http://127.0.0.1:9", &["host", "stop"], Some(run)).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    let _ = on_daemon(bin, home, "http://127.0.0.1:9", &["host", "stop", "--force"], Some(run)).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
 }
 
 /// A provider that is there — its port open, so the TUI's connectivity
@@ -121,6 +127,11 @@ fn startup_in(bin: &Path, home: &Path, runs: usize, warm: bool, run: &Path) -> O
         let ms = first.duration_since(t.started).as_secs_f64() * 1000.0;
         if !t.text().contains("? help") {
             return Err(format!("the first frame is not the prompt: {:?}", t.text()));
+        }
+        // Measured on the daemon, or not at all: a TUI that fell back to
+        // its own process would pass this budget without one.
+        if t.text().contains("could not be reached") || !has_socket(run) {
+            return Err(format!("the TUI did not reach the host daemon: {:?}", t.text()));
         }
         quit(&mut t)?;
         if !warm {

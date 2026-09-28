@@ -276,14 +276,34 @@ async fn connection(stream: UnixStream, state: Shared) {
                     let _ = c.tx.send(ServerFrame::Done { id: cmd_id, result: None, error });
                 }
             }
-            Ok(ClientFrame::Stop { id: cmd_id }) => {
+            Ok(ClientFrame::Leave { session_id }) => {
                 let mut s = state.borrow_mut();
-                let error = (s.working > 0).then(|| ErrorInfo {
-                    code: "host_busy".into(),
-                    message: format!("the host daemon is running {} turn(s) — let them finish (`krowk host status` lists them), then try again", s.working),
-                    http_status: None,
-                    resets_at_ms: None,
-                });
+                if let Some(h) = s.hubs.get_mut(&session_id) {
+                    h.followers.retain(|f| *f != id);
+                }
+                s.unanswerable();
+                s.tidy();
+            }
+            Ok(ClientFrame::Stop { id: cmd_id, force }) => {
+                let mut s = state.borrow_mut();
+                let others = s.clients.len().saturating_sub(1);
+                let error = if s.working > 0 {
+                    Some(ErrorInfo {
+                        code: "host_busy".into(),
+                        message: format!("the host daemon is running {} turn(s) — let them finish (`krowk host status` lists them), then try again", s.working),
+                        http_status: None,
+                        resets_at_ms: None,
+                    })
+                } else if others > 0 && !force {
+                    Some(ErrorInfo {
+                        code: "host_in_use".into(),
+                        message: format!("{others} other client(s) are connected to the host daemon (an open krowk, say) — close them, or `krowk host stop --force`: each reconnects to the next daemon"),
+                        http_status: None,
+                        resets_at_ms: None,
+                    })
+                } else {
+                    None
+                };
                 if error.is_none() {
                     s.stopping = true;
                     s.wake.notify_one();
@@ -359,7 +379,7 @@ fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>, Engin
             if let Some(hub) = s.hubs.get(line.session_id()) {
                 for f in &hub.followers {
                     if let Some(c) = s.clients.get(f) {
-                        let _ = c.tx.send(ServerFrame::Line { line: line.clone(), session: line.session_id().to_string() });
+                        let _ = c.tx.send(ServerFrame::Line { line: line.clone(), session: line.session_id().to_string(), cmd: None });
                     }
                 }
             }
@@ -371,11 +391,15 @@ fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>, Engin
 /// `reload`: every host's instances read again, the way each was made.
 fn reload(state: &Shared, changed: Option<&str>, renamed: Option<(String, String)>) -> Result<(), EngineError> {
     let hosts: Vec<((PathBuf, bool), Rc<Host>)> = state.borrow().hosts.iter().map(|(k, h)| (k.clone(), h.clone())).collect();
-    for ((cwd, answers), host) in hosts {
-        let cfg = (state.borrow().factory)(&cwd, answers)?;
+    let Some(((cwd, answers), _)) = hosts.first() else { return Ok(()) };
+    // The instances are the config's and the environment's, not a
+    // directory's: read once, and given to every host, or to none when the
+    // read fails.
+    let registry = (state.borrow().factory)(cwd, *answers)?.registry;
+    for (_, host) in hosts {
         match &renamed {
-            Some((from, to)) => host.set_registry_renamed(cfg.registry, from, to),
-            None => host.set_registry(cfg.registry, changed),
+            Some((from, to)) => host.set_registry_renamed(registry.clone(), from, to),
+            None => host.set_registry(registry.clone(), changed),
         }
     }
     Ok(())
@@ -444,7 +468,7 @@ impl State {
 
     /// One frame of a command run for `client` in `root`'s session — a
     /// subagent's frames included, which are the parent's turn's.
-    fn publish(&mut self, root: &str, host: &Rc<Host>, client: u64, line: StreamLine) {
+    fn publish(&mut self, root: &str, host: &Rc<Host>, client: u64, cmd: u64, line: StreamLine) {
         let hub = self.follow(root, host, client);
         let own = line.session_id() == root;
         if !own {
@@ -478,7 +502,7 @@ impl State {
         let followers = hub.followers.clone();
         for f in &followers {
             if let Some(c) = self.clients.get(f) {
-                let _ = c.tx.send(ServerFrame::Line { line: line.clone(), session: root.to_string() });
+                let _ = c.tx.send(ServerFrame::Line { line: line.clone(), session: root.to_string(), cmd: (*f == client).then_some(cmd) });
             }
         }
         // Asked with nobody left who could answer: denied at once.
@@ -506,6 +530,9 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
         Err(e) => return reply(&state, ServerFrame::Done { id, result: None, error: Some(error_info(&e)) }),
     };
     if turn {
+        // Working from here: a `stop` while the log is counted below must
+        // not end the daemon under a prompt it accepted.
+        state.borrow_mut().working += 1;
         // Counted before it registers: nothing it writes is in the count.
         let dir = state.borrow().sessions_dir.clone();
         let base = match (&root, dir) {
@@ -516,7 +543,6 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
             _ => 0,
         };
         let mut s = state.borrow_mut();
-        s.working += 1;
         s.wake.notify_one();
         if let Some(r) = &root {
             let hub = s.follow(r, &host, client);
@@ -539,7 +565,7 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
             hub.in_flight += 1;
             counted = true;
         }
-        s.publish(&r, &host, client, line);
+        s.publish(&r, &host, client, id, line);
     };
     let r = loop {
         tokio::select! {
@@ -646,10 +672,10 @@ async fn attach(state: Shared, client: u64, id: u64, session: String, after: Opt
     let from = after.as_deref().and_then(|a| events.iter().position(|e| e.id == a)).map_or(0, |i| i + 1);
     let Some(c) = s.clients.get(&client) else { return };
     for ev in events.into_iter().take(upto).skip(from) {
-        let _ = c.tx.send(ServerFrame::Line { line: StreamLine::Log(ev), session: session.clone() });
+        let _ = c.tx.send(ServerFrame::Line { line: StreamLine::Log(ev), session: session.clone(), cmd: None });
     }
     for line in tail {
-        let _ = c.tx.send(ServerFrame::Line { line, session: session.clone() });
+        let _ = c.tx.send(ServerFrame::Line { line, session: session.clone(), cmd: None });
     }
     let _ = c.tx.send(ServerFrame::Attached { id, session_id: session.clone(), running, error: None });
 }

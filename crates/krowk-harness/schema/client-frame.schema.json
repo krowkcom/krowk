@@ -144,13 +144,17 @@
       ]
     },
     {
-      "description": "Asks the daemon to exit — `krowk host enable`, handing over to the\nservice. Refused with `host_busy` while a turn runs; answered by\n`done` just before it goes.",
+      "description": "Asks the daemon to exit — `krowk host stop`, or `krowk host enable`\nhanding over to the service. Refused with `host_busy` while a turn\nruns, and with `host_in_use` while another client is connected\nunless `force` (a TUI connected to it reconnects to the next one);\nanswered by `done` just before it goes.",
       "type": "object",
       "properties": {
         "id": {
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "force": {
+          "type": "boolean",
+          "default": false
         },
         "type": {
           "type": "string",
@@ -160,6 +164,23 @@
       "required": [
         "type",
         "id"
+      ]
+    },
+    {
+      "description": "Stops following a session: the client moved to another (`/new`,\n`/sessions`). Its frames no longer come, and a request only this\nclient could have answered is denied.",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "leave"
+        }
+      },
+      "required": [
+        "type",
+        "sessionId"
       ]
     }
   ],

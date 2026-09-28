@@ -22,6 +22,7 @@
 //! spawn one.
 
 pub mod client;
+pub mod remote;
 pub mod server;
 pub mod service;
 
@@ -66,11 +67,11 @@ pub fn home_key(home: &Path) -> String {
     digest.iter().take(6).map(|b| format!("{b:02x}")).collect()
 }
 
-/// The socket's path.
 /// A unix socket's path must fit `sun_path`: 104 bytes on macOS, 108 on
 /// Linux, the terminating NUL included.
 const SOCKET_PATH_MAX: usize = 103;
 
+/// The socket's path, refused when `sun_path` cannot hold it.
 pub fn socket(env: &dyn Fn(&str) -> String) -> Result<PathBuf, String> {
     let path = dir(env)?.join(SOCKET);
     if path.as_os_str().len() > SOCKET_PATH_MAX {
@@ -127,7 +128,11 @@ pub(crate) fn absent(e: &std::io::Error) -> bool {
 /// starting it with `spawn` and waiting for its socket. Under the lock, so
 /// of two `krowk`s started together one spawns and the other connects to
 /// what it spawned; a socket a dead daemon left is removed only under it.
-pub async fn ensure(env: &dyn Fn(&str) -> String, cwd: &Path, version: &str, answers: bool, spawn: &dyn Fn() -> Result<(), String>) -> Result<client::Client, EngineError> {
+/// Starts the daemon: the process, when it is a child of this one, so a
+/// daemon that exits at start is noticed at once rather than waited for.
+pub type Spawn<'a> = dyn Fn() -> Result<Option<std::process::Child>, String> + Send + Sync + 'a;
+
+pub async fn ensure(env: &dyn Fn(&str) -> String, cwd: &Path, version: &str, answers: bool, spawn: &Spawn<'_>) -> Result<client::Client, EngineError> {
     let dir = dir(env).map_err(|e| EngineError::new("host_unavailable", e))?;
     let path = dir.join(SOCKET);
     match client::Client::connect(&path, cwd, version, answers).await {
@@ -145,7 +150,7 @@ pub async fn ensure(env: &dyn Fn(&str) -> String, cwd: &Path, version: &str, ans
         Err(client::ConnectError::Failed(e)) => return Err(e),
     }
     let _ = std::fs::remove_file(&path);
-    spawn().map_err(|e| EngineError::new("host_unavailable", format!("the host daemon could not be started: {e}")))?;
+    let mut child = spawn().map_err(|e| EngineError::new("host_unavailable", format!("the host daemon could not be started: {e}")))?;
     let deadline = tokio::time::Instant::now() + SPAWN_WAIT;
     loop {
         match client::Client::connect(&path, cwd, version, answers).await {
@@ -160,7 +165,14 @@ pub async fn ensure(env: &dyn Fn(&str) -> String, cwd: &Path, version: &str, ans
                     format!("the host daemon did not open {} within {} s — its log says why: `krowk host status`", path.display(), SPAWN_WAIT.as_secs()),
                 ));
             }
-            Err(client::ConnectError::Absent) => tokio::time::sleep(Duration::from_millis(2)).await,
+            Err(client::ConnectError::Absent) => {
+                // Gone before it listened: a config it refuses, say. Its
+                // log says why; there is nothing to wait for.
+                if let Some(Ok(Some(status))) = child.as_mut().map(|c| c.try_wait()) {
+                    return Err(EngineError::new("host_unavailable", format!("the host daemon exited as it started ({status}) — ~/.krowk/host.log says why")));
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await
+            }
         }
     }
 }
@@ -168,7 +180,7 @@ pub async fn ensure(env: &dyn Fn(&str) -> String, cwd: &Path, version: &str, ans
 /// Starts `program args…` as the daemon: in a session of its own
 /// (`setsid`), so closing the terminal that started it sends it no hangup,
 /// with stdin closed and stdout and stderr appended to `log`.
-pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<(), String> {
+pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::process::Child, String> {
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::process::CommandExt;
     let out = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(log).map_err(|e| format!("{} cannot be opened: {e}", log.display()))?;
@@ -186,9 +198,9 @@ pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<(), S
             Ok(())
         });
     }
-    // Not waited for: it outlives this process. Its exit is reaped by init
-    // once this process is gone, and before then it runs for minutes.
-    cmd.spawn().map(drop).map_err(|e| format!("{} cannot be run: {e}", program.display()))
+    // Not waited for past its start: it outlives this process, and init
+    // reaps it once this process is gone.
+    cmd.spawn().map_err(|e| format!("{} cannot be run: {e}", program.display()))
 }
 
 /// A runtime for the command line's one call, which has none of its own.
@@ -221,11 +233,11 @@ pub fn status(env: &dyn Fn(&str) -> String, version: &str) -> Result<Option<crat
 /// Stops the daemon that runs, if one does, and waits for its socket to go:
 /// `krowk host enable` hands over to the service, which could not bind
 /// while it listens. Refused while a turn runs. Answers the pid stopped.
-pub fn stop(env: &dyn Fn(&str) -> String, version: &str) -> Result<Option<u32>, EngineError> {
+pub fn stop(env: &dyn Fn(&str) -> String, version: &str, force: bool) -> Result<Option<u32>, EngineError> {
     let path = socket(env).map_err(|e| EngineError::new("host_unavailable", e))?;
     runtime()?.block_on(async {
         let Some(c) = running(env, version).await? else { return Ok(None) };
-        c.stop().await?;
+        c.stop(force).await?;
         let pid = c.pid;
         drop(c);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);

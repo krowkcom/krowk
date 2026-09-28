@@ -936,10 +936,20 @@ pub enum ClientFrame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         renamed_to: Option<String>,
     },
-    /// Asks the daemon to exit — `krowk host enable`, handing over to the
-    /// service. Refused with `host_busy` while a turn runs; answered by
-    /// `done` just before it goes.
-    Stop { id: u64 },
+    /// Asks the daemon to exit — `krowk host stop`, or `krowk host enable`
+    /// handing over to the service. Refused with `host_busy` while a turn
+    /// runs, and with `host_in_use` while another client is connected
+    /// unless `force` (a TUI connected to it reconnects to the next one);
+    /// answered by `done` just before it goes.
+    Stop {
+        id: u64,
+        #[serde(default)]
+        force: bool,
+    },
+    /// Stops following a session: the client moved to another (`/new`,
+    /// `/sessions`). Its frames no longer come, and a request only this
+    /// client could have answered is denied.
+    Leave { session_id: String },
 }
 
 /// What the host daemon sends a client, one JSON object a line.
@@ -959,6 +969,11 @@ pub enum ServerFrame {
         line: StreamLine,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         session: String,
+        /// The `execute` whose own stream this is, on the lines sent to the
+        /// client that ran it: a prompt that starts a session is told its
+        /// lines by this, never by guessing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cmd: Option<u64>,
     },
     /// A command's end: its result for a `prompt` or `continue`, nothing for
     /// the rest, or why it did not run.

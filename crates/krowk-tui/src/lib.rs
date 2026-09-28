@@ -73,6 +73,8 @@ const STALL: Duration = Duration::from_millis(700);
 const APPROVAL_SETTLE: Duration = Duration::from_millis(400);
 /// How often an interrupt the host could not take yet is asked again.
 const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
+/// How long a control command sent from a key is waited for.
+const COMMAND_WAIT: Duration = Duration::from_secs(2);
 /// How many earlier sessions `/sessions` lists.
 const RESUMABLE: usize = 30;
 
@@ -118,7 +120,7 @@ pub struct Daemon {
     pub env: Box<dyn Fn(&str) -> String>,
     pub version: String,
     /// Starts it, detached, when none answers.
-    pub spawn: Box<dyn Fn() -> Result<(), String>>,
+    pub spawn: Box<krowk_harness::daemon::Spawn<'static>>,
 }
 
 /// What the TUI routes once it is up (`Host::route_model`).
@@ -249,9 +251,11 @@ async fn session(opts: Options) -> Outcome {
     // Where the session runs: a resumed one where it started.
     let mut runs_in = opts.host.cwd.clone();
     let started_in = opts.host.cwd.clone();
+    let mut replayed_to: Option<String> = None;
     if let Some(id) = &opts.resume {
         match read_session(&sessions_dir, id) {
             Ok(events) => {
+                replayed_to = events.last().map(|e| e.id.clone());
                 runs_in = replay(&mut app, id, &events, &opts.host.registry).unwrap_or(runs_in);
                 app.say(&format!("resumed session {id}"), app::dim());
             }
@@ -296,12 +300,12 @@ async fn session(opts: Options) -> Outcome {
     // session there outlives this terminal (R-HOST-1). One that cannot be
     // reached leaves them here, and says so.
     let mut live: Vec<String> = Vec::new();
-    let host = match &opts.daemon {
+    let host = match opts.daemon {
         None => link::Link::Local(local),
-        Some(d) => match krowk_harness::daemon::ensure(&*d.env, &started_in, &d.version, true, &*d.spawn).await {
+        Some(d) => match krowk_harness::daemon::remote::Remote::connect(d.env, started_in.clone(), d.version.clone(), true, d.spawn).await {
             Ok(client) => {
-                if client.krowk_version != d.version {
-                    app.note(&format!("the host daemon (pid {}) runs krowk {}, and this is {} — `krowk host stop` once its sessions are done", client.pid, client.krowk_version, d.version));
+                if client.krowk_version() != d.version {
+                    app.note(&format!("the host daemon (pid {}) runs krowk {}, and this is {} — `krowk host stop` once its sessions are done", client.pid(), client.krowk_version(), d.version));
                 }
                 // The sessions of this directory still running there, which
                 // `/sessions <id>` follows again.
@@ -317,7 +321,7 @@ async fn session(opts: Options) -> Outcome {
         },
     };
     for id in &live {
-        if opts.resume.as_deref() != Some(id.as_str()) && read_session(&sessions_dir, id).ok().and_then(|ev| ev.first().map(|e| e.body.clone())).is_some_and(|b| matches!(b, krowk_harness::protocol::LogBody::SessionStarted { cwd, .. } if std::path::Path::new(&cwd) == runs_in)) {
+        if opts.resume.as_deref() != Some(id.as_str()) && started_at(&sessions_dir, id).is_some_and(|cwd| cwd == runs_in) {
             app.note(&format!("session {id} is still running here — `/sessions {id}` follows it"));
         }
     }
@@ -363,7 +367,7 @@ async fn session(opts: Options) -> Outcome {
     if let Some(id) = opts.resume.clone()
         && live.contains(&id)
     {
-        ui.reattach(&mut app, &id);
+        ui.reattach(&mut app, &id, replayed_to.clone());
     }
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
@@ -784,6 +788,9 @@ impl<'h> Ui<'h> {
                 }
                 r = finish(&mut self.turn) => {
                     self.turn = None;
+                    if let Some(n) = self.host.take_note() {
+                        app.note(&n);
+                    }
                     // What the host sent before answering is already queued.
                     if let Some(mut rx) = self.rx.take() {
                         while let Ok(line) = rx.try_recv() {
@@ -1203,9 +1210,10 @@ impl<'h> Ui<'h> {
     /// Follows `id`'s turn running in the daemon as though this TUI had
     /// sent it: what its log has after what was replayed, the turn so far,
     /// then live, to its result.
-    fn reattach(&mut self, app: &mut App, id: &str) {
+    /// `after` is the last event the replay drew: what the log gained since
+    /// comes from the daemon, never read here a second time.
+    fn reattach(&mut self, app: &mut App, id: &str, after: Option<String>) {
         let Some(client) = self.host.remote() else { return };
-        let after = read_session(&self.sessions_dir, id).ok().and_then(|ev| ev.last().map(|e| e.id.clone()));
         let (tx, rx) = mpsc::channel(1024);
         let id = id.to_string();
         app.gap_say(&format!("session {id} is running in the host daemon — following it"));
@@ -1280,9 +1288,16 @@ impl<'h> Ui<'h> {
         app.touch();
     }
 
+    /// A control command — interrupt, steering, an approval — waited for
+    /// only so long: over the socket its answer never queues behind the
+    /// turn's frames, but the keys are not held up on a daemon that does not
+    /// answer. One not taken is asked again (`flush_requests`).
     async fn command(&self, cmd: Command) -> Result<(), EngineError> {
         let (tx, _rx) = mpsc::channel(1);
-        self.host.execute(cmd, tx).await.map(|_| ())
+        match tokio::time::timeout(COMMAND_WAIT, self.host.execute(cmd, tx)).await {
+            Ok(r) => r.map(|_| ()),
+            Err(_) => Err(EngineError::new("host_slow", "the host daemon did not answer in time — asked again")),
+        }
     }
 
     /// One terminal event. True when it asks for a connectivity probe.
@@ -1877,7 +1892,7 @@ impl<'h> Ui<'h> {
         replay(app, id, &events, &self.host.registry());
         if self.live.iter().any(|l| l == id) {
             self.live.retain(|l| l != id);
-            self.reattach(app, id);
+            self.reattach(app, id, events.last().map(|e| e.id.clone()));
         }
         // Where that session's agent was at work, not this one's.
         self.look_for_pr(app);
@@ -1935,6 +1950,11 @@ impl<'h> Ui<'h> {
     /// The session shown, left for another: kept to be listed on the way
     /// out, and its last prompt no longer the title's.
     fn leave(&mut self, app: &mut App) {
+        // The daemon stops sending it here: no frame of it is taken for the
+        // next session's.
+        if let Some(old) = &app.session_id {
+            self.host.leave(old);
+        }
         if let Some(old) = app.session_id.clone().filter(|old| !app.left.contains(old)) {
             app.left.push(old);
         }
@@ -2398,6 +2418,22 @@ impl<'h> Ui<'h> {
 }
 
 /// Session `id`'s log, read whole, or why it could not be.
+/// Where session `id` was started: its log's first line, read alone — the
+/// daemon's other sessions may be long, and the first frame waits on this.
+fn started_at(sessions_dir: &std::path::Path, id: &str) -> Option<PathBuf> {
+    use std::io::BufRead;
+    if !log::valid_id(id) {
+        return None;
+    }
+    let f = std::fs::File::open(sessions_dir.join(id).join(log::EVENTS_FILE)).ok()?;
+    let mut first = String::new();
+    std::io::BufReader::new(f).read_line(&mut first).ok()?;
+    match serde_json::from_str::<krowk_harness::protocol::LogEvent>(&first).ok()?.body {
+        krowk_harness::protocol::LogBody::SessionStarted { cwd, .. } => Some(PathBuf::from(cwd)),
+        _ => None,
+    }
+}
+
 fn read_session(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_harness::protocol::LogEvent>, String> {
     if !log::valid_id(id) {
         return Err(format!("{id:?} is not a krowk session id"));

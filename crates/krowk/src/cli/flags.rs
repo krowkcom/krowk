@@ -68,6 +68,9 @@ pub struct Flags {
     /// `-p`: run the turn in the host daemon.
     #[cfg(feature = "harness")]
     pub daemon: bool,
+    /// `host stop`: even with clients connected.
+    #[cfg(feature = "harness")]
+    pub force: bool,
     /// `providers add`: the instance's name, its key's variable, its base
     /// URL, and how SuperGrok signs in.
     #[cfg(feature = "harness")]
@@ -291,6 +294,8 @@ impl Flags {
                     "trust" => &mut self.trust,
                     #[cfg(feature = "harness")]
                     "daemon" => &mut self.daemon,
+                    #[cfg(feature = "harness")]
+                    "force" => &mut self.force,
                     #[cfg(feature = "harness")]
                     "default" => &mut self.default,
                     #[cfg(feature = "harness")]

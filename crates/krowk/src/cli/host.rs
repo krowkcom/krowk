@@ -29,10 +29,10 @@ pub(super) fn log_path(ctx: &Ctx) -> Result<std::path::PathBuf, Error> {
 }
 
 /// Starts the daemon, detached, from this very binary.
-pub(super) fn spawner(ctx: &Ctx) -> Result<impl Fn() -> Result<(), String> + use<>, Error> {
+pub(super) fn spawner(ctx: &Ctx) -> Result<impl Fn() -> Result<Option<std::process::Child>, String> + Send + Sync + use<>, Error> {
     let exe = std::env::current_exe().map_err(|e| fail("host_unavailable", format!("krowk cannot find its own binary to start the host daemon: {e}")))?;
     let log = log_path(ctx)?;
-    Ok(move || daemon::spawn_detached(&exe, &["host", "serve"], &log))
+    Ok(move || daemon::spawn_detached(&exe, &["host", "serve"], &log).map(Some))
 }
 
 fn engine(e: EngineError) -> Error {
@@ -141,7 +141,7 @@ fn uptime(ms: u64) -> String {
 
 /// `krowk host stop`: the daemon asked to exit — refused while a turn runs.
 pub(super) fn stop(ctx: &mut Ctx) -> Result<(), Error> {
-    let stopped = daemon::stop(ctx.io.env, super::VERSION).map_err(engine)?;
+    let stopped = daemon::stop(ctx.io.env, super::VERSION, ctx.f.force).map_err(engine)?;
     let summary = match stopped {
         Some(pid) => format!("the host daemon (pid {pid}) has stopped"),
         None => "no host daemon was running".to_string(),
@@ -186,7 +186,8 @@ pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
     if active && platform == service::Platform::Launchd {
         let _ = ran(&service::commands(platform, false, &file, uid)[0]);
     }
-    let stopped = if on && !active { daemon::stop(ctx.io.env, super::VERSION).map_err(engine)? } else { None };
+    // Forced: an open TUI reconnects to the service's daemon.
+    let stopped = if on && !active { daemon::stop(ctx.io.env, super::VERSION, true).map_err(engine)? } else { None };
     for c in service::commands(platform, on, &file, uid) {
         let ran = std::process::Command::new(&c[0]).args(&c[1..]).stdin(std::process::Stdio::null()).output();
         match ran {

@@ -309,7 +309,7 @@ fn r_host_1_two_krowks_starting_at_once_spawn_one_daemon_over_a_stale_socket() {
                 let spawn = || {
                     spawned.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     daemons.lock().unwrap().push(home.serve(Some(Duration::from_millis(300))));
-                    Ok(())
+                    Ok(None)
                 };
                 rt().block_on(async { daemon::ensure(&env, &home.repo(), "test", false, &spawn).await.map(|c| c.pid) }).unwrap()
             })
@@ -425,9 +425,11 @@ fn r_host_2_a_daemon_stops_when_asked_unless_a_turn_runs() {
             }
         }
         let b = home.client().await;
-        assert_eq!(b.stop().await.unwrap_err().code, "host_busy");
+        assert_eq!(b.stop(false).await.unwrap_err().code, "host_busy");
         exec.await.unwrap();
-        b.stop().await.unwrap();
+        // A's still connected: an open TUI, say.
+        assert_eq!(b.stop(false).await.unwrap_err().code, "host_in_use");
+        b.stop(true).await.unwrap();
     });
     drop(rt);
     // With no idle window at all, only the stop ends it.
@@ -532,6 +534,173 @@ fn r_proto_1_reload_reads_every_hosts_instances_again() {
         let before = home.made.load(std::sync::atomic::Ordering::SeqCst);
         c.reload(Some("anthropic"), None).await.unwrap();
         assert!(home.made.load(std::sync::atomic::Ordering::SeqCst) > before, "each host's configuration made again");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-PROTO-1: a turn's stream nobody drains never holds up the client's
+/// other answers — an interrupt sent on the same connection is answered,
+/// and stops the turn.
+#[test]
+fn r_proto_1_an_interrupt_is_answered_while_the_turns_stream_is_full() {
+    let m = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(&"word ".repeat(2000)), Duration::from_millis(3)));
+    let home = Home::new("full", &m.url);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let c = home.client().await;
+        // Two lines of room, and nobody reading them.
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut exec = Box::pin(c.execute(home.prompt("talk"), tx));
+        let session = tokio::select! {
+            Some(l) = rx.recv() => l.session_id().to_string(),
+            _ = &mut exec => panic!("ended early"),
+        };
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = &mut exec => panic!("ended early"),
+        }
+        let (itx, _irx) = mpsc::channel(1);
+        tokio::time::timeout(Duration::from_secs(3), c.execute(Command::Interrupt { session_id: session }, itx)).await.expect("answered, not stuck behind the stream").unwrap();
+        // Drained, the turn ends interrupted, its lines all there.
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let r = exec.await.unwrap().unwrap();
+        assert_eq!(r.status, TurnStatus::Interrupted);
+        drain.abort();
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-HOST-1: a client whose daemon went away reaches the next one on its
+/// next command — started when none runs — instead of failing until krowk
+/// is restarted.
+#[test]
+fn r_host_1_a_remote_client_reconnects_when_its_daemon_goes() {
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
+    let home = Arc::new(Home::new("reconnect", &m.url));
+    let first = home.serve(Some(Duration::from_millis(300)));
+    let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rt = rt();
+    rt.block_on(async {
+        let (h, st) = (home.clone(), started.clone());
+        let spawn: Box<daemon::Spawn<'static>> = Box::new(move || {
+            st.lock().unwrap().push(h.serve(Some(Duration::from_millis(300))));
+            Ok(None)
+        });
+        let env = home.env();
+        let r = daemon::remote::Remote::connect(Box::new(env), home.repo(), "test".into(), true, spawn).await.unwrap();
+        let (tx, _rx) = mpsc::channel(1024);
+        r.execute(home.prompt("hi"), tx).await.unwrap().unwrap();
+        // Stopped under it, as `krowk host stop --force` does.
+        let other = home.client().await;
+        other.stop(true).await.unwrap();
+        drop(other);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let (tx, _rx) = mpsc::channel(1024);
+        let again = r.execute(home.prompt("hi again"), tx).await.unwrap().unwrap();
+        assert_eq!(again.status, TurnStatus::Completed);
+        assert!(r.take_note().is_some_and(|n| n.contains("reconnected")));
+    });
+    drop(rt);
+    first.join().unwrap().unwrap();
+    assert_eq!(started.lock().unwrap().len(), 1, "the next daemon was started for it");
+    for d in started.lock().unwrap().drain(..) {
+        d.join().unwrap().unwrap();
+    }
+}
+
+/// R-PROTO-1: a prompt that starts a session gets its own lines, bound by
+/// its command — never those of a session the client still follows that
+/// happen to arrive first — and a session left sends nothing more.
+#[test]
+fn r_proto_1_a_new_sessions_stream_is_bound_by_its_command_and_leave_stops_the_rest() {
+    let m = slow();
+    let home = Home::new("bind", &m.url);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        // A ran a turn in S, so it follows S.
+        let (tx, _rx) = mpsc::channel(1024);
+        let s = a.execute(home.prompt("count"), tx).await.unwrap().unwrap().session_id;
+        // B runs another turn in S while A starts a new session.
+        let b = home.client().await;
+        let resume = |text: &str| match home.prompt(text) {
+            Command::Prompt { model, permission_mode, .. } => Command::Prompt { session_id: Some(s.clone()), text: text.into(), model, permission_mode, toolset: None, effort: None, budget: None },
+            _ => unreachable!(),
+        };
+        let (btx, _brx) = mpsc::channel(1024);
+        let mut other = Box::pin(b.execute(resume("again"), btx));
+        let (atx, mut arx) = mpsc::channel(1024);
+        let mut watch = a.watch();
+        let mut mine = Box::pin(a.execute(home.prompt("count too"), atx));
+        let (r_other, r_mine) = tokio::join!(&mut other, &mut mine);
+        let (r_other, r_mine) = (r_other.unwrap().unwrap(), r_mine.unwrap().unwrap());
+        assert_eq!(r_other.session_id, s);
+        assert_ne!(r_mine.session_id, s);
+        let mut lines = Vec::new();
+        while let Ok(l) = arx.try_recv() {
+            lines.push(l);
+        }
+        assert!(!lines.is_empty() && lines.iter().all(|l| l.session_id() == r_mine.session_id), "only its own session's lines");
+        // S's frames came to A's watch instead; once A leaves S, none do.
+        let mut saw_s = false;
+        while let Ok(l) = watch.try_recv() {
+            saw_s |= l.session_id() == s;
+        }
+        assert!(saw_s, "S's frames went where they belong");
+        a.leave(&s);
+        let (btx, _brx) = mpsc::channel(1024);
+        b.execute(resume("once more"), btx).await.unwrap().unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(watch.try_recv().is_err(), "a session left sends nothing");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-HOST-1: reattaching after the last event a replay drew gets every
+/// later event once — nothing appended between the replay and the attach
+/// is lost, and nothing drawn comes again.
+#[test]
+fn r_host_1_following_after_the_replays_last_event_misses_and_repeats_nothing() {
+    let m = slow();
+    let home = Home::new("after", &m.url);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        let (atx, mut arx) = mpsc::channel(1024);
+        let mut exec = Box::pin(a.execute(home.prompt("count"), atx));
+        let mut seen = Vec::new();
+        loop {
+            tokio::select! {
+                Some(l) = arx.recv() => {
+                    seen.push(l);
+                    if typed(&seen).split_whitespace().count() >= 2 { break }
+                }
+                _ = &mut exec => panic!("ended early"),
+            }
+        }
+        let session = seen[0].session_id().to_string();
+        let path = log::sessions_dir(&home.env()).unwrap().join(&session).join(log::EVENTS_FILE);
+        // The replay, then time passes before the attach.
+        let drawn = log::read_events(&path).unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let b = home.client().await;
+        let (btx, mut brx) = mpsc::channel(1024);
+        b.follow(&session, drawn.last().map(|e| e.id.as_str()), btx).await.unwrap().unwrap();
+        exec.await.unwrap();
+        let mut got: Vec<String> = drawn.iter().map(|e| e.id.clone()).collect();
+        while let Ok(l) = brx.try_recv() {
+            if let StreamLine::Log(ev) = l {
+                got.push(ev.id);
+            }
+        }
+        let whole: Vec<String> = log::read_events(&path).unwrap().into_iter().map(|e| e.id).collect();
+        assert_eq!(got, whole, "the log, each event once, in order");
     });
     drop(rt);
     daemon.join().unwrap().unwrap();
