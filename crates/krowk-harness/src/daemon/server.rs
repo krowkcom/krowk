@@ -93,6 +93,9 @@ pub fn run(opts: Options, factory: Factory) -> Result<(), String> {
         return Err(format!("the WebSocket listener binds only to loopback, and {addr} is not — use 127.0.0.1:<port> (the relay reaches other devices)"));
     }
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("the async runtime could not start: {e}"))?;
+    // Every session shares this thread: the logs' blocking work goes to the
+    // blocking pool (R-LAG-9).
+    log::off_thread();
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, serve(opts, factory))
 }

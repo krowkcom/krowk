@@ -158,11 +158,14 @@ impl SessionLog {
         self.context.sync_data().map_err(|e| io("sync the session's context record", e))
     }
 
-    // The same, off the async runtime's thread: the host daemon runs every
-    // session on one thread, and a write or an fsync on a busy disk would
-    // stall every other session's stream and heartbeats with it (R-LAG-9).
-    // Each is awaited before the event is sent anywhere, so no client ever
-    // sees an event the log does not have.
+    // The same, off the async runtime's thread in the host daemon
+    // (`off_thread`): it runs every session on one thread, and an fsync on a
+    // busy disk, or a directory made, would stall every other session's
+    // stream and heartbeats with it (R-LAG-9). Each is awaited before its
+    // event is sent anywhere, so no client ever sees an event the log does
+    // not have. A process with one session and no heartbeats (`krowk -p`,
+    // the TUI on its own host) does them where it is: a blocking pool's
+    // thread there would outlive the work and wake the idle process.
 
     /// `create_child`, off the thread.
     pub async fn create_child_off(sessions: &Path, cwd: &Path, krowk_version: &str, parent: Option<&str>, agent: Option<&str>) -> Result<(SessionLog, LogEvent), LogError> {
@@ -215,7 +218,7 @@ impl SessionLog {
     /// would have failed has ended.
     pub fn sync_behind(&self) {
         let (e, c, id) = (self.dir.join(EVENTS_FILE), self.dir.join(CONTEXT_FILE), self.session_id.clone());
-        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+        let Some(rt) = tokio::runtime::Handle::try_current().ok().filter(|_| OFF_THREAD.load(std::sync::atomic::Ordering::Relaxed)) else {
             if let Err(err) = self.sync() {
                 eprintln!("session {id}: {}", err.message());
             }
@@ -229,8 +232,19 @@ impl SessionLog {
     }
 }
 
-/// Runs `f` on the blocking pool.
+static OFF_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Sends the session log's blocking work to the blocking pool from here on:
+/// the host daemon's choice, as it starts.
+pub fn off_thread() {
+    OFF_THREAD.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Runs `f` on the blocking pool in the host daemon, else where it is.
 async fn off<T: Send + 'static>(f: impl FnOnce() -> Result<T, LogError> + Send + 'static) -> Result<T, LogError> {
+    if !OFF_THREAD.load(std::sync::atomic::Ordering::Relaxed) {
+        return f();
+    }
     tokio::task::spawn_blocking(f).await.map_err(|e| LogError::Io(format!("the session log's writer failed: {e}")))?
 }
 

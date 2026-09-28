@@ -186,7 +186,15 @@ unit = "bytes"
 # hand-written RFC 6455 would save the 51 KB and cost a parser of our own
 # on a listening socket.
 # Raised 8.75 -> 9.00 MiB by ticket 14, leaving 25,432 bytes.
-max = { x86_64-linux = 9_437_184 }
+# Its review round 1 (no new crate: per-session seq counters and the
+# epoch, paged catching up with held frames put back in place, the
+# session log's create/open and fsync off the daemon's thread, the shared
+# TLS configuration, the pre-auth checks and the Origin refusal) adds
+# 38,176 bytes: 9,449,928 (9.01 MiB), 12,744 over. Raised 9.00 -> 9.25
+# MiB, leaving 249,400 bytes for the rest of Harness P1 — ticket 15's
+# encryption among it, which fits only on ring's AEAD and X25519, already
+# linked (harness.md → The WebSocket transport).
+max = { x86_64-linux = 9_699_328 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---
