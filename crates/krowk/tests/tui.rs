@@ -98,17 +98,61 @@ fn r_pkg_1_r_tui_3_bare_krowk_on_a_terminal_opens_the_prompt_with_only_portable_
     let out = t.text();
     assert!(out.contains("krowk --resume "), "{out:?}");
     // R-TUI-3: nothing a phone terminal, tmux or an SSH hop would not
-    // pass through — no alternate screen, no mouse capture, no keyboard
-    // protocol push, no full-screen clear.
-    for bad in ["\x1b[?1049h", "\x1b[?47h", "\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h", "\x1b[>1u", "\x1b[2J", "\x1b[3J"] {
+    // pass through — no alternate screen, no mouse capture, no full-screen
+    // clear.
+    for bad in ["\x1b[?1049h", "\x1b[?47h", "\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h", "\x1b[2J", "\x1b[3J"] {
         assert!(!out.contains(bad), "sent {bad:?}");
     }
+    // The one keyboard protocol level, for shift-enter: pushed once, and
+    // popped after it.
+    assert_eq!(out.matches("\x1b[>1u").count(), 1, "{out:?}");
+    assert_eq!(out.matches("\x1b[<u").count(), 1, "{out:?}");
+    assert!(out.rfind("\x1b[<u") > out.find("\x1b[>1u"), "the keyboard protocol was never popped: {out:?}");
     // R-TUI-1: every frame is bracketed, and brackets pair up.
     let (begins, ends) = (t.frames().len(), t.frame_ends().len());
     assert!(begins > 2 && begins == ends, "{begins} frames begun, {ends} ended");
     // The log is the session, and krowk.db lists it.
     let seen = m.seen.lock().unwrap();
     assert!(seen.iter().any(|s| s.body["messages"].as_array().is_some_and(|m| m.len() == 3)), "the tool loop ran");
+}
+
+#[test]
+fn shift_enter_starts_a_new_line_and_enter_sends_both() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("shiftenter");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 80, 24);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "no prompt: {:?}", t.text());
+    // What a terminal that took the keyboard protocol push sends for
+    // shift-enter (CSI 13;2u), with plain enter still a CR.
+    t.write(b"read README.md\x1b[13;2uand summarise it\r");
+    assert!(t.wait_for("anywhere.", Duration::from_secs(10)).is_some(), "no answer: {:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let seen = m.seen.lock().unwrap();
+    assert!(seen.iter().any(|s| s.body["messages"][0].to_string().contains("read README.md\\nand summarise it")), "no prompt of two lines was sent");
+}
+
+#[test]
+fn ctrl_z_pops_the_keyboard_protocol_for_the_shell_and_pushes_it_again_on_the_way_back() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("ctrlzkeys");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 80, 24);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "no prompt: {:?}", t.text());
+    // Ctrl-Z. krowk leads its own session here, an orphaned process group,
+    // so the kernel drops the SIGTSTP it raises and it takes the terminal
+    // back at once: the whole give-up and take-back, with no shell.
+    t.write(b"\x1a");
+    let back = || t.text().matches("\x1b[>1u").count() == 2;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !back() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let out = t.text();
+    let keys: std::collections::BTreeMap<usize, &str> = out.match_indices("\x1b[>1u").chain(out.match_indices("\x1b[<u")).collect();
+    let keys: Vec<&str> = keys.into_values().collect();
+    assert_eq!(keys, ["\x1b[>1u", "\x1b[<u", "\x1b[>1u", "\x1b[<u"], "pushed, popped for the shell, pushed on the way back, popped on quit");
 }
 
 #[test]
@@ -312,6 +356,7 @@ fn sigterm_and_sighup_restore_the_terminal_and_record_the_session() {
         let out = t.text();
         assert!(out.contains("krowk --resume "), "{name}: the resume line: {out:?}");
         assert!(out.ends_with("\x1b[?2004l\x1b[?25h"), "{name}: bracketed paste off and the cursor back, last: {out:?}");
+        assert!(out.matches("\x1b[>1u").count() == 1 && out.matches("\x1b[<u").count() == 1, "{name}: the keyboard protocol pushed and popped once: {out:?}");
         assert_eq!(krowk_sessions(&b, &m.url), 1, "{name}: the session is in krowk.db");
     }
 }
@@ -336,6 +381,7 @@ fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() 
     assert_eq!(st.code(), Some(130), "{st}");
     let out = t.text();
     assert!(out.contains("krowk --resume ") && out.ends_with("\x1b[?2004l\x1b[?25h"), "{out:?}");
+    assert!(out.matches("\x1b[>1u").count() == 1 && out.matches("\x1b[<u").count() == 1, "the keyboard protocol pushed and popped once: {out:?}");
     assert_eq!(krowk_sessions(&b, &url), 1, "the session is in krowk.db");
 }
 
