@@ -73,6 +73,9 @@ const STALL: Duration = Duration::from_millis(700);
 const APPROVAL_SETTLE: Duration = Duration::from_millis(400);
 /// How often an interrupt the host could not take yet is asked again.
 const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
+/// A control command sent and not answered in time: it was written to the
+/// daemon, which takes it, so it is not sent again.
+const SLOW: &str = "host_slow";
 /// How long a control command sent from a key is waited for.
 const COMMAND_WAIT: Duration = Duration::from_secs(2);
 /// How many earlier sessions `/sessions` lists.
@@ -120,7 +123,7 @@ pub struct Daemon {
     pub env: Box<dyn Fn(&str) -> String>,
     pub version: String,
     /// Starts it, detached, when none answers.
-    pub spawn: Box<krowk_harness::daemon::Spawn<'static>>,
+    pub spawn: Box<dyn Fn() -> Result<Option<std::process::Child>, String> + Send + Sync>,
 }
 
 /// What the TUI routes once it is up (`Host::route_model`).
@@ -299,9 +302,13 @@ async fn session(opts: Options) -> Outcome {
     // The daemon first, when there is one to run the sessions in: a
     // session there outlives this terminal (R-HOST-1). One that cannot be
     // reached leaves them here, and says so.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut live: Vec<String> = Vec::new();
     let host = match opts.daemon {
         None => link::Link::Local(local),
+        #[cfg(not(unix))]
+        Some(_) => link::Link::Local(local),
+        #[cfg(unix)]
         Some(d) => match krowk_harness::daemon::remote::Remote::connect(d.env, started_in.clone(), d.version.clone(), true, d.spawn).await {
             Ok(client) => {
                 if client.krowk_version() != d.version {
@@ -1273,13 +1280,13 @@ impl<'h> Ui<'h> {
         }
         if t.want_interrupt
             && !t.interrupt_sent
-            && self.command(Command::Interrupt { session_id: id.clone() }).await.is_ok()
+            && self.command(Command::Interrupt { session_id: id.clone() }).await.is_ok_or_slow()
             && let Some(t) = &mut app.turn
         {
             t.interrupt_sent = true;
         }
         while let Some(text) = app.unsent_steers.first().cloned() {
-            if self.command(Command::Steer { session_id: id.clone(), text: text.clone() }).await.is_err() {
+            if !self.command(Command::Steer { session_id: id.clone(), text: text.clone() }).await.is_ok_or_slow() {
                 break;
             }
             app.unsent_steers.remove(0);
@@ -1296,7 +1303,7 @@ impl<'h> Ui<'h> {
         let (tx, _rx) = mpsc::channel(1);
         match tokio::time::timeout(COMMAND_WAIT, self.host.execute(cmd, tx)).await {
             Ok(r) => r.map(|_| ()),
-            Err(_) => Err(EngineError::new("host_slow", "the host daemon did not answer in time — asked again")),
+            Err(_) => Err(EngineError::new(SLOW, "the host daemon did not answer in time; the command was sent")),
         }
     }
 
@@ -1424,8 +1431,11 @@ impl<'h> Ui<'h> {
             };
             if let Some(d) = decision {
                 app.answered(&req.request_id);
-                if self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d }).await.is_err() {
-                    app.notice("that approval was already answered, or its turn is over");
+                match self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d }).await {
+                    Ok(()) => {}
+                    // Sent, and not answered in time: the daemon has it.
+                    Err(e) if e.code == SLOW => app.notice("the host daemon is slow to answer — the approval was sent, and the turn goes on once it takes it"),
+                    Err(_) => app.notice("that approval was already answered, or its turn is over"),
                 }
             }
             return false;
@@ -2418,6 +2428,21 @@ impl<'h> Ui<'h> {
 }
 
 /// Session `id`'s log, read whole, or why it could not be.
+/// A control command's outcome, where one sent and not answered in time
+/// counts as sent: sending it again would steer twice.
+trait Sent {
+    fn is_ok_or_slow(&self) -> bool;
+}
+
+impl Sent for Result<(), EngineError> {
+    fn is_ok_or_slow(&self) -> bool {
+        match self {
+            Ok(()) => true,
+            Err(e) => e.code == SLOW,
+        }
+    }
+}
+
 /// Where session `id` was started: its log's first line, read alone — the
 /// daemon's other sessions may be long, and the first frame waits on this.
 fn started_at(sessions_dir: &std::path::Path, id: &str) -> Option<PathBuf> {

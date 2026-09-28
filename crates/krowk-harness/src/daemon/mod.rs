@@ -156,6 +156,14 @@ pub async fn ensure(env: &dyn Fn(&str) -> String, cwd: &Path, version: &str, ans
         match client::Client::connect(&path, cwd, version, answers).await {
             Ok(c) => {
                 drop(lock);
+                // Reaped when it exits, however long that is, so it never
+                // sits as a zombie under a krowk that stays open: a thread
+                // blocked in wait(2) costs nothing while it waits.
+                if let Some(mut child) = child {
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                }
                 return Ok(c);
             }
             Err(client::ConnectError::Failed(e)) => return Err(e),

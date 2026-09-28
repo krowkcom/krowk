@@ -10,6 +10,7 @@
 //! vendors from here — and a connection made here is read again by the
 //! daemon (`reload`).
 
+#[cfg(unix)]
 use krowk_harness::daemon::remote::Remote;
 use krowk_harness::engine::EngineError;
 use krowk_harness::host::Host;
@@ -17,6 +18,33 @@ use krowk_harness::instances::{Asked, Registry};
 use krowk_harness::protocol::{Command, ModelRef, RunResult, StreamLine};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
+
+/// The daemon's client; the daemon is unix-only for now, so elsewhere there
+/// is none and every session runs in the process.
+#[cfg(not(unix))]
+pub enum Remote {}
+
+#[cfg(not(unix))]
+impl Remote {
+    fn leave(&self, _: &str) {
+        match *self {}
+    }
+    fn take_note(&self) -> Option<String> {
+        match *self {}
+    }
+    fn reload_later(&self, _: Option<String>, _: Option<(String, String)>) {
+        match *self {}
+    }
+    pub async fn follow(&self, _: &str, _: Option<&str>, _: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
+        match *self {}
+    }
+    async fn execute(&self, _: Command, _: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
+        match *self {}
+    }
+    fn watch(&self) -> broadcast::Receiver<StreamLine> {
+        match *self {}
+    }
+}
 
 pub enum Link {
     Local(Host),
