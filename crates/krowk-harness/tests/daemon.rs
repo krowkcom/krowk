@@ -23,6 +23,8 @@ use tokio::sync::mpsc;
 struct Home {
     root: PathBuf,
     url: String,
+    /// How many hosts' configurations the daemon has asked for.
+    made: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Home {
@@ -32,7 +34,7 @@ impl Home {
         for d in ["home", "run", "repo/.git"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
-        Home { root, url: url.into() }
+        Home { root, url: url.into(), made: Arc::default() }
     }
 
     fn env(&self) -> impl Fn(&str) -> String + Clone + Send + 'static {
@@ -58,8 +60,10 @@ impl Home {
     fn serve(&self, idle: Option<Duration>) -> std::thread::JoinHandle<Result<(), String>> {
         let (env, socket) = (self.env(), self.socket());
         let credentials = self.root.join("home/.krowk/credentials.json");
+        let made = self.made.clone();
         let t = std::thread::spawn(move || {
             let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {
+                made.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(HostConfig {
                     sessions_dir: log::sessions_dir(&env).unwrap(),
                     cwd: cwd.to_path_buf(),
@@ -429,4 +433,106 @@ fn r_host_2_a_daemon_stops_when_asked_unless_a_turn_runs() {
     // With no idle window at all, only the stop ends it.
     daemon.join().unwrap().unwrap();
     assert!(!home.socket().exists());
+}
+
+/// R-HOST-1: what the TUI reattaches with — a client following a running
+/// turn gets its frames and its result as the client that sent it does;
+/// one following a session with nothing running is told so at once.
+#[test]
+fn r_host_1_a_follower_gets_the_running_turns_frames_and_its_result() {
+    let m = slow();
+    let home = Home::new("follow", &m.url);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        let (atx, mut arx) = mpsc::channel(1024);
+        let mut exec = Box::pin(a.execute(home.prompt("count"), atx));
+        let mut a_lines = Vec::new();
+        loop {
+            tokio::select! {
+                Some(line) = arx.recv() => {
+                    a_lines.push(line);
+                    if !typed(&a_lines).is_empty() {
+                        break;
+                    }
+                }
+                _ = &mut exec => panic!("ended early"),
+            }
+        }
+        let session = a_lines[0].session_id().to_string();
+        let b = home.client_answering(true).await;
+        let (btx, mut brx) = mpsc::channel(1024);
+        let (ra, rb) = tokio::join!(&mut exec, b.follow(&session, None, btx));
+        let (ra, rb) = (ra.unwrap().unwrap(), rb.unwrap().expect("the turn's result"));
+        assert_eq!((rb.turn_id.as_str(), rb.status), (ra.turn_id.as_str(), TurnStatus::Completed));
+        let mut b_lines = Vec::new();
+        while let Ok(l) = brx.try_recv() {
+            b_lines.push(l);
+        }
+        assert_eq!(typed(&b_lines), ANSWER, "every word, once");
+        // Over: following it now answers at once, with nothing.
+        let (ctx, _crx) = mpsc::channel(1024);
+        assert!(b.follow(&session, None, ctx).await.unwrap().is_none());
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-PROTO-1: a client running a turn in one session while following
+/// another keeps their streams apart — each line goes to its session's.
+#[test]
+fn r_proto_1_a_client_in_two_sessions_keeps_their_streams_apart() {
+    let m = slow();
+    let home = Home::new("apart", &m.url);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        let (atx, mut arx) = mpsc::channel(1024);
+        let mut first = Box::pin(a.execute(home.prompt("count"), atx));
+        let one = tokio::select! {
+            Some(line) = arx.recv() => line.session_id().to_string(),
+            _ = &mut first => panic!("ended early"),
+        };
+        // The same client starts a second session while following the first.
+        let b = home.client().await;
+        let (ftx, mut frx) = mpsc::channel(1024);
+        let (stx, mut srx) = mpsc::channel(1024);
+        let (r1, r2) = tokio::join!(b.follow(&one, None, ftx), b.execute(home.prompt("count again"), stx));
+        let (r1, r2) = (r1.unwrap().unwrap(), r2.unwrap().unwrap());
+        assert_ne!(r1.session_id, r2.session_id);
+        let drain = |rx: &mut mpsc::Receiver<StreamLine>| {
+            let mut v = Vec::new();
+            while let Ok(l) = rx.try_recv() {
+                v.push(l);
+            }
+            v
+        };
+        let (followed, ran) = (drain(&mut frx), drain(&mut srx));
+        assert!(followed.iter().all(|l| l.session_id() == r1.session_id), "only the followed session's lines");
+        assert!(ran.iter().all(|l| l.session_id() == r2.session_id), "only its own turn's lines");
+        first.await.unwrap();
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// `/connect` in the TUI: the daemon reads every host's instances again.
+#[test]
+fn r_proto_1_reload_reads_every_hosts_instances_again() {
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
+    let home = Home::new("reload", &m.url);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let c = home.client().await;
+        let (tx, _rx) = mpsc::channel(1024);
+        c.execute(home.prompt("hi"), tx).await.unwrap().unwrap();
+        let before = home.made.load(std::sync::atomic::Ordering::SeqCst);
+        c.reload(Some("anthropic"), None).await.unwrap();
+        assert!(home.made.load(std::sync::atomic::Ordering::SeqCst) > before, "each host's configuration made again");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
 }

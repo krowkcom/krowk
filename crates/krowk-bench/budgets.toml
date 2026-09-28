@@ -203,7 +203,8 @@ what = "Bare `krowk` to an interactive prompt, no daemon running"
 unit = "ms"
 # Spawn to the first complete frame (the end of the first synchronized
 # update), which is the prompt, on a pseudo-terminal answering the cursor
-# query; the startup connectivity probe is not waited for.
+# query; the startup connectivity probe is not waited for. Since ticket 13b
+# the TUI starts the host daemon and connects to it first: that is in here.
 max = 150
 runs = 21
 status = "enforced"
@@ -213,10 +214,12 @@ id = "tui.startup_warm"
 req = "R-PERF-1"
 what = "Bare `krowk` to an interactive prompt, daemon warm"
 unit = "ms"
+# Spawn to the first complete frame with the host daemon already up: the
+# TUI connects over its socket, says hello and asks its status before it
+# draws. Turned on by ticket 13b, when the TUI became the daemon's client.
 max = 50
 runs = 21
-status = "pending"
-owner = "13"
+status = "enforced"
 
 # --- Idle: no polling and no timers while nothing happens (Linux /proc) ---
 

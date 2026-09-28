@@ -922,6 +922,20 @@ pub enum ClientFrame {
     },
     /// Asks how the daemon is; answered by `status`.
     Status { id: u64 },
+    /// Reads the instances again — config.json and the credentials file —
+    /// for every host, after a client connected or signed one out
+    /// (`/connect`): `changed` is that instance, whose backend processes are
+    /// not reused; `renamedFrom` and `renamedTo` a rename, whose are.
+    /// Answered by `done`.
+    Reload {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        changed: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        renamed_from: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        renamed_to: Option<String>,
+    },
     /// Asks the daemon to exit — `krowk host enable`, handing over to the
     /// service. Refused with `host_busy` while a turn runs; answered by
     /// `done` just before it goes.
@@ -938,8 +952,14 @@ pub enum ServerFrame {
     /// The connection closes after it.
     Refused { code: String, message: String, fix: String },
     /// A frame of a session the client follows, exactly as the in-process
-    /// transport streams it.
-    Line { line: StreamLine },
+    /// transport streams it. `session` is the followed session it belongs
+    /// to — the line's own, or its parent's for a subagent's — so a client
+    /// following several tells their streams apart.
+    Line {
+        line: StreamLine,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        session: String,
+    },
     /// A command's end: its result for a `prompt` or `continue`, nothing for
     /// the rest, or why it did not run.
     Done {
@@ -959,6 +979,11 @@ pub enum ServerFrame {
         error: Option<ErrorInfo>,
     },
     Status { id: u64, status: HostStatus },
+    /// A followed session has no command streaming in it any more: its
+    /// turn is over (its `result` came first), or the command was refused
+    /// before a turn began. A client following it, not running it, stops
+    /// waiting here.
+    Settled { session: String },
 }
 
 /// How the host daemon is: `krowk host status`.

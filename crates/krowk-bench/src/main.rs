@@ -105,7 +105,7 @@ fn main() {
                             Err(e) => Outcome::Error(e.clone()),
                         }
                     }
-                    "tui.startup_cold" | "tui.redraw_fps" | "session.replay_rss" => tui_measure(&b.id, &full, &measure::fresh_dir(&work, &b.id), runs),
+                    "tui.startup_cold" | "tui.startup_warm" | "tui.redraw_fps" | "session.replay_rss" => tui_measure(&b.id, &full, &measure::fresh_dir(&work, &b.id), runs),
                     "tui.turn_cpu" => tui_turn_cpu(&full, &measure::fresh_dir(&work, "tui-turn"), Duration::from_secs(b.window_s.unwrap_or(5))),
                     "tui.idle_cpu" | "tui.idle_rss" => {
                         let window = Duration::from_secs(b.window_s.unwrap_or(10));
@@ -159,7 +159,8 @@ fn main() {
 #[cfg(target_os = "linux")]
 fn tui_measure(id: &str, full: &std::path::Path, home: &std::path::Path, runs: usize) -> Outcome {
     match id {
-        "tui.startup_cold" => tui::startup(full, home, runs),
+        "tui.startup_cold" => tui::startup(full, home, runs, false),
+        "tui.startup_warm" => tui::startup(full, home, runs, true),
         "tui.redraw_fps" => tui::redraw(full, home),
         _ => tui::replay_rss(full, home),
     }

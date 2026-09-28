@@ -94,6 +94,10 @@ struct Hub {
     /// Its subagents' sessions seen on its stream: their approval requests
     /// are its followers' to answer too.
     children: HashSet<String>,
+    /// How many events its log held when the streaming command under way
+    /// registered: all of them were written before it, so none comes live,
+    /// and catching up replays them whatever else it cannot tell yet.
+    base: usize,
     /// When it was first seen, for the status listing's order.
     seen: u64,
 }
@@ -266,6 +270,12 @@ async fn connection(stream: UnixStream, state: Shared) {
                     let _ = c.tx.send(f);
                 }
             }
+            Ok(ClientFrame::Reload { id: cmd_id, changed, renamed_from, renamed_to }) => {
+                let error = reload(&state, changed.as_deref(), renamed_from.zip(renamed_to)).err().map(|e| error_info(&e));
+                if let Some(c) = state.borrow().clients.get(&id) {
+                    let _ = c.tx.send(ServerFrame::Done { id: cmd_id, result: None, error });
+                }
+            }
             Ok(ClientFrame::Stop { id: cmd_id }) => {
                 let mut s = state.borrow_mut();
                 let error = (s.working > 0).then(|| ErrorInfo {
@@ -349,13 +359,26 @@ fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>, Engin
             if let Some(hub) = s.hubs.get(line.session_id()) {
                 for f in &hub.followers {
                     if let Some(c) = s.clients.get(f) {
-                        let _ = c.tx.send(ServerFrame::Line { line: line.clone() });
+                        let _ = c.tx.send(ServerFrame::Line { line: line.clone(), session: line.session_id().to_string() });
                     }
                 }
             }
         }
     });
     Ok(host)
+}
+
+/// `reload`: every host's instances read again, the way each was made.
+fn reload(state: &Shared, changed: Option<&str>, renamed: Option<(String, String)>) -> Result<(), EngineError> {
+    let hosts: Vec<((PathBuf, bool), Rc<Host>)> = state.borrow().hosts.iter().map(|(k, h)| (k.clone(), h.clone())).collect();
+    for ((cwd, answers), host) in hosts {
+        let cfg = (state.borrow().factory)(&cwd, answers)?;
+        match &renamed {
+            Some((from, to)) => host.set_registry_renamed(cfg.registry, from, to),
+            None => host.set_registry(cfg.registry, changed),
+        }
+    }
+    Ok(())
 }
 
 /// The session a command names.
@@ -378,6 +401,7 @@ impl State {
             in_flight: 0,
             head: None,
             children: HashSet::new(),
+            base: 0,
             seen,
         });
         if hub.seen == seen {
@@ -431,9 +455,14 @@ impl State {
         {
             hub.head = Some(ev.id.clone());
             match ev.body {
+                // The host that runs it is the one whose turn started —
+                // never one whose command was refused (a second `--resume`
+                // from another directory), where an interrupt would find
+                // nothing.
                 LogBody::TurnStarted { .. } => {
                     hub.turn.clear();
                     hub.running = true;
+                    hub.host = host.clone();
                 }
                 LogBody::TurnCompleted { .. } => {
                     hub.running = false;
@@ -449,7 +478,7 @@ impl State {
         let followers = hub.followers.clone();
         for f in &followers {
             if let Some(c) = self.clients.get(f) {
-                let _ = c.tx.send(ServerFrame::Line { line: line.clone() });
+                let _ = c.tx.send(ServerFrame::Line { line: line.clone(), session: root.to_string() });
             }
         }
         // Asked with nobody left who could answer: denied at once.
@@ -477,12 +506,23 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
         Err(e) => return reply(&state, ServerFrame::Done { id, result: None, error: Some(error_info(&e)) }),
     };
     if turn {
+        // Counted before it registers: nothing it writes is in the count.
+        let dir = state.borrow().sessions_dir.clone();
+        let base = match (&root, dir) {
+            (Some(r), Some(dir)) if log::valid_id(r) => {
+                let p = dir.join(r).join(log::EVENTS_FILE);
+                tokio::task::spawn_blocking(move || log::read_events(&p).map(|e| e.len()).unwrap_or(0)).await.unwrap_or(0)
+            }
+            _ => 0,
+        };
         let mut s = state.borrow_mut();
         s.working += 1;
         s.wake.notify_one();
         if let Some(r) = &root {
             let hub = s.follow(r, &host, client);
-            hub.host = host.clone();
+            if hub.in_flight == 0 {
+                hub.base = base;
+            }
             hub.in_flight += 1;
         }
     }
@@ -514,9 +554,18 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     if turn {
         let mut s = state.borrow_mut();
         s.working -= 1;
-        if let Some(h) = root.as_ref().and_then(|r| s.hubs.get_mut(r)) {
+        if let Some(r) = &root
+            && let Some(h) = s.hubs.get_mut(r)
+        {
             h.in_flight = h.in_flight.saturating_sub(1);
-            h.host = host.clone();
+            if h.in_flight == 0 {
+                let followers = h.followers.clone();
+                for f in &followers {
+                    if let Some(c) = s.clients.get(f) {
+                        let _ = c.tx.send(ServerFrame::Settled { session: r.clone() });
+                    }
+                }
+            }
         }
         s.wake.notify_one();
     }
@@ -567,16 +616,22 @@ async fn attach(state: Shared, client: u64, id: u64, session: String, after: Opt
             match s.hubs.get(&session).filter(|h| h.in_flight > 0 || h.running) {
                 None => Some((n, Vec::new(), false)),
                 Some(hub) => {
+                    // Under way: `running` from its `turn.started`, or a
+                    // command registered whose first frame is on its way.
+                    let running = hub.running || hub.in_flight > 0;
                     let at = hub.head.as_ref().and_then(|h| events.iter().position(|e| &e.id == h));
                     match (&hub.head, at) {
-                        // Nothing sent live yet, or the read is behind what
-                        // was: the turn's frames are on their way — wait.
-                        (None, _) | (Some(_), None) if tries < 100 => None,
+                        // Nothing sent live yet: the log as it was before
+                        // the command, all of which is history.
+                        (None, _) => Some((hub.base.min(n), Vec::new(), running)),
                         (Some(h), Some(at)) => {
                             let from = hub.turn.iter().position(|l| matches!(l, StreamLine::Log(ev) if &ev.id == h)).map_or(hub.turn.len(), |i| i + 1);
-                            Some((at + 1, hub.turn[from..].to_vec(), hub.running))
+                            Some((at + 1, hub.turn[from..].to_vec(), running))
                         }
-                        _ => Some((n, Vec::new(), hub.running)),
+                        // The read is behind what was sent: read again, and
+                        // past that, only what cannot come twice.
+                        (Some(_), None) if tries < 100 => None,
+                        (Some(_), None) => Some((hub.base.min(n), Vec::new(), running)),
                     }
                 }
             }
@@ -591,10 +646,10 @@ async fn attach(state: Shared, client: u64, id: u64, session: String, after: Opt
     let from = after.as_deref().and_then(|a| events.iter().position(|e| e.id == a)).map_or(0, |i| i + 1);
     let Some(c) = s.clients.get(&client) else { return };
     for ev in events.into_iter().take(upto).skip(from) {
-        let _ = c.tx.send(ServerFrame::Line { line: StreamLine::Log(ev) });
+        let _ = c.tx.send(ServerFrame::Line { line: StreamLine::Log(ev), session: session.clone() });
     }
     for line in tail {
-        let _ = c.tx.send(ServerFrame::Line { line });
+        let _ = c.tx.send(ServerFrame::Line { line, session: session.clone() });
     }
     let _ = c.tx.send(ServerFrame::Attached { id, session_id: session.clone(), running, error: None });
 }

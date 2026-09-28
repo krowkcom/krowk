@@ -275,6 +275,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(all(feature = "harness", unix))]
         ["host", "attach", ..] => host::attach(ctx, rest(2)),
         #[cfg(all(feature = "harness", unix))]
+        ["host", "stop", ..] => host::stop(ctx),
+        #[cfg(all(feature = "harness", unix))]
         ["host", "enable", ..] => host::enable(ctx, true),
         #[cfg(all(feature = "harness", unix))]
         ["host", "disable", ..] => host::enable(ctx, false),

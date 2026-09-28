@@ -4,13 +4,16 @@
 //! in-process host runs against the daemon unchanged (`headless::Transport`).
 //!
 //! One reader task takes the daemon's frames in order: a session's lines go
-//! to the stream of the turn this client is running or following, and
-//! every command's `done` resolves that command. A turn's lines all arrive
-//! before its `done`, as they do in-process.
+//! to the stream of the turn this client is running or following in that
+//! session — by the session each `line` names, so a client running a turn
+//! in one session while following another keeps the two apart — and every
+//! command's `done` resolves that command. A turn's lines all arrive before
+//! its `done`, as they do in-process. Lines of a followed session with no
+//! stream of this client's go to `watch`, as `Host::watch` in-process.
 
 use super::absent;
 use crate::engine::EngineError;
-use crate::protocol::{ClientFrame, Command, ErrorInfo, HostStatus, RunResult, ServerFrame, StreamLine, PROTOCOL_VERSION};
+use crate::protocol::{ClientFrame, Command, ErrorInfo, HostStatus, LiveEvent, RunResult, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,10 +47,39 @@ pub struct Client {
 #[derive(Default)]
 struct Inner {
     waiting: HashMap<u64, oneshot::Sender<ServerFrame>>,
-    /// Where a session's lines go: the command whose turn this client is
-    /// running, or the attach it is following, by id.
-    sink: Option<(u64, mpsc::Sender<StreamLine>)>,
+    /// Where each session's lines go.
+    sinks: Vec<Sink>,
     closed: bool,
+}
+
+/// A stream to open with a request: its session, where its lines go, and
+/// whom to tell a followed turn's end.
+type NewSink = (Option<String>, mpsc::Sender<StreamLine>, Option<oneshot::Sender<Option<RunResult>>>);
+
+/// One stream of this client's: a turn it runs, or a session it follows.
+struct Sink {
+    /// The command or attach it is for.
+    cmd: u64,
+    /// The session: none for a prompt that starts one, until its first
+    /// line names it.
+    session: Option<String>,
+    tx: mpsc::Sender<StreamLine>,
+    /// For `follow`: told the running turn's result, or none once the
+    /// session settles without one; the stream ends there.
+    until: Option<oneshot::Sender<Option<RunResult>>>,
+}
+
+impl Inner {
+    /// The stream `session`'s lines go to, binding a new session's prompt
+    /// to it on its first line.
+    fn sink_for(&mut self, session: &str) -> Option<usize> {
+        if let Some(i) = self.sinks.iter().rposition(|s| s.session.as_deref() == Some(session)) {
+            return Some(i);
+        }
+        let i = self.sinks.iter().rposition(|s| s.session.is_none())?;
+        self.sinks[i].session = Some(session.to_string());
+        Some(i)
+    }
 }
 
 fn gone() -> EngineError {
@@ -96,8 +128,27 @@ impl Client {
                 while let Ok(Some(line)) = lines.next_line().await {
                     let Ok(f) = serde_json::from_str::<ServerFrame>(&line) else { continue };
                     match f {
-                        ServerFrame::Line { line } => {
-                            let sink = inner.lock().unwrap_or_else(|e| e.into_inner()).sink.as_ref().map(|(_, s)| s.clone());
+                        ServerFrame::Line { line, session } => {
+                            let key = if session.is_empty() { line.session_id().to_string() } else { session };
+                            let (sink, until) = {
+                                let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
+                                match i.sink_for(&key) {
+                                    Some(n) => {
+                                        let ends = i.sinks[n].until.is_some() && matches!(&line, StreamLine::Live(LiveEvent::Result(r)) if r.session_id == key);
+                                        if ends {
+                                            let s = i.sinks.remove(n);
+                                            (Some(s.tx), s.until)
+                                        } else {
+                                            (Some(i.sinks[n].tx.clone()), None)
+                                        }
+                                    }
+                                    None => (None, None),
+                                }
+                            };
+                            let result = match &line {
+                                StreamLine::Live(LiveEvent::Result(r)) => Some(r.clone()),
+                                _ => None,
+                            };
                             match sink {
                                 Some(s) => {
                                     let _ = s.send(line).await;
@@ -106,12 +157,23 @@ impl Client {
                                     let _ = lines_tx.send(line);
                                 }
                             }
+                            if let Some(u) = until {
+                                let _ = u.send(result);
+                            }
+                        }
+                        ServerFrame::Settled { session } => {
+                            let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
+                            while let Some(n) = i.sinks.iter().position(|s| s.until.is_some() && s.session.as_deref() == Some(session.as_str())) {
+                                if let Some(u) = i.sinks.remove(n).until {
+                                    let _ = u.send(None);
+                                }
+                            }
                         }
                         ServerFrame::Done { id, .. } | ServerFrame::Attached { id, .. } | ServerFrame::Status { id, .. } => {
                             let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                             // A turn's stream ends with its command.
-                            if matches!(f, ServerFrame::Done { .. }) && i.sink.as_ref().is_some_and(|(s, _)| *s == id) {
-                                i.sink = None;
+                            if matches!(f, ServerFrame::Done { .. }) {
+                                i.sinks.retain(|s| s.cmd != id);
                             }
                             if let Some(w) = i.waiting.remove(&id) {
                                 let _ = w.send(f);
@@ -122,7 +184,7 @@ impl Client {
                 }
                 let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                 i.closed = true;
-                i.sink = None;
+                i.sinks.clear();
                 i.waiting.clear();
             });
         }
@@ -135,7 +197,7 @@ impl Client {
         self.lines.subscribe()
     }
 
-    fn ask(&self, frame: impl FnOnce(u64) -> ClientFrame, sink: Option<mpsc::Sender<StreamLine>>) -> Result<oneshot::Receiver<ServerFrame>, EngineError> {
+    fn ask(&self, frame: impl FnOnce(u64) -> ClientFrame, sink: Option<NewSink>) -> Result<oneshot::Receiver<ServerFrame>, EngineError> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         {
@@ -144,8 +206,8 @@ impl Client {
                 return Err(gone());
             }
             i.waiting.insert(id, tx);
-            if let Some(s) = sink {
-                i.sink = Some((id, s));
+            if let Some((session, tx, until)) = sink {
+                i.sinks.push(Sink { cmd: id, session, tx, until });
             }
         }
         self.tx.send(frame(id)).map_err(|_| gone())?;
@@ -155,8 +217,12 @@ impl Client {
     /// `Host::execute`, over the socket: a `prompt` or `continue` streams
     /// its session's lines to `out` until it ends.
     pub async fn execute(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
-        let turn = matches!(cmd, Command::Prompt { .. } | Command::Continue { .. });
-        let rx = self.ask(|id| ClientFrame::Execute { id, command: cmd }, turn.then_some(out))?;
+        let session = match &cmd {
+            Command::Prompt { session_id, .. } => Some(session_id.clone()),
+            Command::Continue { session_id, .. } => Some(Some(session_id.clone())),
+            _ => None,
+        };
+        let rx = self.ask(|id| ClientFrame::Execute { id, command: cmd }, session.map(|s| (s, out, None)))?;
         match rx.await {
             Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
             Ok(ServerFrame::Done { result, .. }) => Ok(result),
@@ -168,10 +234,49 @@ impl Client {
     /// running turn so far, then each frame live, to `out`. Answers whether
     /// a turn is running once caught up.
     pub async fn attach(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<bool, EngineError> {
-        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from) }, Some(out))?;
+        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from) }, Some((Some(session_id.to_string()), out, None)))?;
         match rx.await {
             Ok(ServerFrame::Attached { error: Some(e), .. }) => Err(engine_error(e)),
             Ok(ServerFrame::Attached { running, .. }) => Ok(running),
+            _ => Err(gone()),
+        }
+    }
+
+    /// Follows a session's running turn to its end, as though this client
+    /// ran it: what its log holds after `after`, the turn so far, then each
+    /// frame live, to `out`, answering the turn's result — none when no
+    /// turn is running, or the session settles without one. What the TUI
+    /// reattaches with (R-HOST-1).
+    pub async fn follow(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
+        let (utx, urx) = oneshot::channel();
+        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from) }, Some((Some(session_id.to_string()), out, Some(utx))))?;
+        let running = match rx.await {
+            Ok(ServerFrame::Attached { error: Some(e), .. }) => return Err(engine_error(e)),
+            Ok(ServerFrame::Attached { running, .. }) => running,
+            _ => return Err(gone()),
+        };
+        if !running {
+            let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            i.sinks.retain(|s| !(s.until.is_some() && s.session.as_deref() == Some(session_id)));
+            return Ok(None);
+        }
+        urx.await.map_err(|_| gone())
+    }
+
+    /// `reload`, not waited for: a client that must not stop for it (the
+    /// TUI, just after `/connect`). The daemon takes frames in order, so a
+    /// prompt sent after it runs on what it read.
+    pub fn reload_later(&self, changed: Option<String>, renamed: Option<(String, String)>) {
+        let (renamed_from, renamed_to) = renamed.map_or((None, None), |(a, b)| (Some(a), Some(b)));
+        let _ = self.ask(|id| ClientFrame::Reload { id, changed, renamed_from, renamed_to }, None);
+    }
+
+    /// `reload` (see `ClientFrame::Reload`).
+    pub async fn reload(&self, changed: Option<&str>, renamed: Option<(&str, &str)>) -> Result<(), EngineError> {
+        let rx = self.ask(|id| ClientFrame::Reload { id, changed: changed.map(String::from), renamed_from: renamed.map(|r| r.0.to_string()), renamed_to: renamed.map(|r| r.1.to_string()) }, None)?;
+        match rx.await {
+            Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
+            Ok(ServerFrame::Done { .. }) => Ok(()),
             _ => Err(gone()),
         }
     }

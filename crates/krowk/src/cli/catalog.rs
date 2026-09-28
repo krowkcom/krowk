@@ -459,6 +459,7 @@ fn host_command() -> Command {
                 args: vec![arg("session", "The session id a result names", true)],
                 ..cmd("attach", "krowk host attach <session>", "Follow a session in the daemon, live, as stream-json")
             },
+            cmd("stop", "krowk host stop", "Stop the daemon, once no turn runs in it"),
             cmd("enable", "krowk host enable", "Run the daemon as a systemd or launchd user service"),
             cmd("disable", "krowk host disable", "Stop the service and remove it"),
         ],

@@ -67,8 +67,16 @@ pub fn home_key(home: &Path) -> String {
 }
 
 /// The socket's path.
+/// A unix socket's path must fit `sun_path`: 104 bytes on macOS, 108 on
+/// Linux, the terminating NUL included.
+const SOCKET_PATH_MAX: usize = 103;
+
 pub fn socket(env: &dyn Fn(&str) -> String) -> Result<PathBuf, String> {
-    Ok(dir(env)?.join(SOCKET))
+    let path = dir(env)?.join(SOCKET);
+    if path.as_os_str().len() > SOCKET_PATH_MAX {
+        return Err(format!("{} is too long for a unix socket ({} bytes, at most {SOCKET_PATH_MAX}) — set XDG_RUNTIME_DIR to a shorter directory", path.display(), path.as_os_str().len()));
+    }
+    Ok(path)
 }
 
 /// How long the daemon waits idle before it exits, from `KROWK_HOST_IDLE`
@@ -152,7 +160,7 @@ pub async fn ensure(env: &dyn Fn(&str) -> String, cwd: &Path, version: &str, ans
                     format!("the host daemon did not open {} within {} s — its log says why: `krowk host status`", path.display(), SPAWN_WAIT.as_secs()),
                 ));
             }
-            Err(client::ConnectError::Absent) => tokio::time::sleep(Duration::from_millis(10)).await,
+            Err(client::ConnectError::Absent) => tokio::time::sleep(Duration::from_millis(2)).await,
         }
     }
 }
@@ -317,6 +325,11 @@ mod tests {
         std::os::unix::fs::symlink(root.join("krowk"), other.join("krowk")).unwrap();
         let e = [("XDG_RUNTIME_DIR", other.display().to_string()), ("HOME", "/home/ada".to_string())];
         assert!(socket(&env(&e)).unwrap_err().contains("symlink"));
+        // One sun_path cannot hold is refused by name, not left to bind.
+        let deep = root.join("d".repeat(90));
+        std::fs::create_dir(&deep).unwrap();
+        let e = [("XDG_RUNTIME_DIR", deep.display().to_string()), ("HOME", "/home/ada".to_string())];
+        assert!(socket(&env(&e)).unwrap_err().contains("too long for a unix socket"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

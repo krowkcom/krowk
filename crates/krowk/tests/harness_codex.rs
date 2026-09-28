@@ -54,6 +54,9 @@ impl Sandbox {
             .env("PATH", format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
             .env("HOME", self.root.join("home"))
             .env("KROWK_NO_UPDATE_CHECK", "1")
+            // The TUI runs its sessions in this process here: the daemon has
+            // its own tests (tui.rs, host_daemon), and none is left behind.
+            .env("KROWK_TUI_HOST", "local")
             .env("FAKE_CODEX_LOG", self.root.join("fake.log"))
             .current_dir(self.root.join("repo"))
             .stdin(Stdio::null());
