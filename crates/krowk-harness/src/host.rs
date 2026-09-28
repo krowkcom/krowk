@@ -1521,7 +1521,12 @@ struct Writer<'a> {
 
 impl Writer<'_> {
     async fn log(&mut self, body: LogBody) -> Result<LogEvent, EngineError> {
-        let ev = self.log.append_off(body).await.map_err(log_failure)?;
+        // A write into the page cache, no fsync (that is the turn's end,
+        // off the thread): microseconds (R-PERF-5). Awaited on the
+        // blocking pool it shifts the frames' timing enough to expose a
+        // scrollback race in the TUI (r_tui_1_a_10k_token_answer…), so it
+        // stays here until that is fixed.
+        let ev = self.log.append(body).map_err(log_failure)?;
         let _ = self.out.send(StreamLine::Log(ev.clone())).await;
         Ok(ev)
     }
