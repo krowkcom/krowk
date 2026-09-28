@@ -18,7 +18,7 @@
 //! | 0 | 1 | `v` | 1 |
 //! | 1 | 1 | `kind` | 1 batch (daemon → client), 2 frame (client → daemon), 3 ack (client → daemon) |
 //! | 2 | 1 | `flags` | bit 0: the payload is zstd-compressed |
-//! | 3 | 1 | `enc` | 0 none; 1 is reserved for XChaCha20-Poly1305 (ticket 15), applied after compressing |
+//! | 3 | 1 | `enc` | 0 none; any other value is reserved for the AEAD ticket 15 chooses, applied after compressing, and refused until then |
 //! | 4 | 16 | `session` | the session's UUID, all zero for none |
 //! | 20 | 8 | `seq` | big-endian: a batch's last `line.seq`, or an ack's count of batches applied |
 //!
@@ -45,7 +45,7 @@ use std::cell::Cell;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, Notify};
 use tokio_tungstenite::tungstenite::Message;
@@ -124,7 +124,9 @@ impl Envelope {
             return Ok(self.payload.clone());
         }
         use std::io::Read;
-        let d = ruzstd::decoding::StreamingDecoder::new(&self.payload[..]).map_err(|e| format!("the payload is not zstd: {e}"))?;
+        // A window no bigger than the most it may decompress to: a frame
+        // header asking for more is refused before anything is reserved.
+        let d = ruzstd::decoding::StreamingDecoder::new_with_max_window_size(&self.payload[..], max as u64).map_err(|e| format!("the payload is not zstd, or asks for a window past {max} bytes: {e}"))?;
         let mut out = Vec::new();
         d.take(max as u64 + 1).read_to_end(&mut out).map_err(|e| format!("the payload does not decompress: {e}"))?;
         if out.len() > max {
@@ -203,70 +205,104 @@ pub(super) async fn accept(listener: TcpListener, state: Shared) {
 
 type Sink = futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>;
 
+/// Connections that have not said an authenticated hello yet: past this,
+/// a new one is closed at once, so nobody without the token can make the
+/// daemon hold many handshakes open.
+const UNAUTHENTICATED: usize = 16;
+
+/// The largest hello: a working directory and a token, not a paste.
+const MAX_HELLO: usize = 64 * 1024;
+
 async fn connection(stream: TcpStream, state: Shared) {
+    {
+        let mut s = state.borrow_mut();
+        if s.unauthenticated >= UNAUTHENTICATED {
+            return;
+        }
+        s.unauthenticated += 1;
+    }
+    let hello = handshake(stream, &state).await;
+    state.borrow_mut().unauthenticated -= 1;
+    let Some((sink, incoming, id, outbox)) = hello else { return };
+    serve(state, sink, incoming, id, outbox).await;
+}
+
+type Incoming = futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>;
+
+/// The WebSocket handshake and the hello, refused unless it carries the
+/// token. A browser's request (one with an `Origin`) is refused outright:
+/// no web page is a client of this listener until the relay (ticket 18)
+/// says which origins are.
+async fn handshake(stream: TcpStream, state: &Shared) -> Option<(Rc<Mutex<Sink>>, Incoming, u64, Rc<Outbox>)> {
+    use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
     let _ = stream.set_nodelay(true);
     let config = WebSocketConfig::default().max_message_size(Some(MAX_IN)).max_frame_size(Some(MAX_IN));
-    let Ok(Ok(ws)) = tokio::time::timeout(HELLO_WAIT, tokio_tungstenite::accept_async_with_config(stream, Some(config))).await else {
-        return;
+    // The callback's signature is tungstenite's.
+    #[allow(clippy::result_large_err)]
+    let no_browsers = |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+        if req.headers().contains_key("origin") {
+            let mut refused = ErrorResponse::new(Some("a browser page may not connect to the host daemon".into()));
+            *refused.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN;
+            return Err(refused);
+        }
+        Ok(resp)
     };
+    let ws = tokio::time::timeout(HELLO_WAIT, tokio_tungstenite::accept_hdr_async_with_config(stream, no_browsers, Some(config))).await.ok()?.ok()?;
     let (sink, mut incoming) = ws.split();
     let sink = Rc::new(Mutex::new(sink));
     let hello = match tokio::time::timeout(HELLO_WAIT, incoming.next()).await {
-        Ok(Some(Ok(Message::Binary(b)))) => client_frame(&b),
+        Ok(Some(Ok(Message::Binary(b)))) if b.len() <= MAX_HELLO => client_frame(&b),
         _ => None,
     };
     let token = state.borrow().websocket.as_ref().map(|(_, t)| t.clone());
-    let (id, outbox) = match server::welcome(&state, hello, Some(token.as_deref().unwrap_or_default())) {
-        Ok(c) => c,
+    match server::welcome(state, hello, Some(token.as_deref().unwrap_or_default())) {
+        Ok((id, outbox)) => Some((sink, incoming, id, outbox)),
         Err(refused) => {
             let mut s = sink.lock().await;
             let _ = s.send(Message::Binary(batch("", 0, &server::encode(&refused)).encode().into())).await;
             let _ = s.close().await;
-            return;
+            None
         }
-    };
+    }
+}
+
+async fn serve(state: Shared, sink: Rc<Mutex<Sink>>, mut incoming: Incoming, id: u64, outbox: Rc<Outbox>) {
     let heartbeat = state.borrow().opts.heartbeat;
     let acked = Rc::new(Cell::new(0u64));
     let acks = Rc::new(Notify::new());
-    let heard = Rc::new(Cell::new(Instant::now()));
     let writer = tokio::task::spawn_local(write(state.clone(), id, outbox.clone(), sink.clone(), acked.clone(), acks.clone()));
     // Its own task: a batch waiting on a window, a host busy with a tool
-    // or a session typing flat out never holds a ping back.
-    // Rung when nothing has been heard for three beats: the peer is gone,
-    // whatever TCP has yet to notice.
-    let dead = Rc::new(Notify::new());
+    // or a session typing flat out never holds a ping back. A beat the
+    // writer holds the socket for is skipped rather than waited on: the
+    // writer is sending, which says as much as a ping.
     let pinger = {
-        let (sink, heard, dead) = (sink.clone(), heard.clone(), dead.clone());
+        let sink = sink.clone();
         tokio::task::spawn_local(async move {
             let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + heartbeat, heartbeat);
             loop {
                 tick.tick().await;
-                // Asked before the sink is: a writer stuck on a full
-                // socket holds it.
-                if heard.get().elapsed() > heartbeat * 3 {
-                    dead.notify_one();
-                    return;
-                }
-                if sink.lock().await.send(Message::Ping(Vec::new().into())).await.is_err() {
+                if let Ok(mut s) = sink.try_lock()
+                    && s.send(Message::Ping(Vec::new().into())).await.is_err()
+                {
                     return;
                 }
             }
         })
     };
+    // Nothing heard for three beats — not even a pong — and the peer is
+    // gone, whatever TCP has yet to notice. Timed here, on the reader,
+    // which never waits on the socket's write side.
     let mut gone = false;
     loop {
-        let msg = tokio::select! {
-            m = incoming.next() => match m {
-                Some(Ok(m)) => m,
-                _ => break,
-            },
-            _ = dead.notified() => {
+        let msg = match tokio::time::timeout(heartbeat * 3, incoming.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(_) => break,
+            Err(_) => {
                 eprintln!("ws client {id}: nothing heard for {:?}: closing", heartbeat * 3);
                 gone = true;
                 break;
             }
         };
-        heard.set(Instant::now());
         match msg {
             Message::Binary(b) => match Envelope::decode(&b) {
                 Ok(e) if e.kind == KIND_ACK => {
@@ -280,13 +316,15 @@ async fn connection(stream: TcpStream, state: Shared) {
                 Ok(e) => eprintln!("ws client {id}: a frame of kind {} it may not send", e.kind),
                 Err(e) => eprintln!("ws client {id}: {e}"),
             },
-            // tungstenite queues the pong as it reads the ping; flushed now,
-            // not with the next batch.
+            // tungstenite queues the pong as it reads the ping; flushed now
+            // unless the writer holds the socket, whose next send flushes it.
             Message::Ping(_) => {
-                let _ = sink.lock().await.flush().await;
+                if let Ok(mut s) = sink.try_lock() {
+                    let _ = s.flush().await;
+                }
             }
             Message::Close(_) => break,
-            // A pong only says it is there, which `heard` has noted.
+            // A pong only says it is there, which the timeout has noted.
             _ => {}
         }
     }
@@ -301,10 +339,11 @@ async fn connection(stream: TcpStream, state: Shared) {
     let _ = writer.await;
 }
 
-/// The one ClientFrame a hello message carries.
+/// The one ClientFrame a hello message carries: plain, since nothing
+/// unauthenticated is decompressed.
 fn client_frame(b: &[u8]) -> Option<ClientFrame> {
-    let e = Envelope::decode(b).ok().filter(|e| e.kind == KIND_FRAME)?;
-    serde_json::from_slice(&e.plain(MAX_IN).ok()?).ok()
+    let e = Envelope::decode(b).ok().filter(|e| e.kind == KIND_FRAME && e.flags & FLAG_ZSTD == 0)?;
+    serde_json::from_slice(&e.plain(MAX_HELLO).ok()?).ok()
 }
 
 /// Hands the outbox on in batches, by time or by size, never more than
@@ -320,7 +359,9 @@ async fn write(state: Shared, id: u64, outbox: Rc<Outbox>, sink: Rc<Mutex<Sink>>
             tokio::time::sleep(BATCH_WINDOW).await;
         }
         for (session, outs) in outbox.take(BATCH_BYTES) {
-            while sent >= acked.get() + WINDOW {
+            // An ack past what was sent (a client's `u64::MAX`, say) counts
+            // as what was sent, and never overflows.
+            while sent >= acked.get().min(sent).saturating_add(WINDOW) {
                 acks.notified().await;
                 if !outbox.open() {
                     return;

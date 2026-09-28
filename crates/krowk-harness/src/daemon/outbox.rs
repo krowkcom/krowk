@@ -15,16 +15,21 @@
 //!   cap, every line waiting in it is dropped and the session is marked
 //!   behind: lines published while it is are not queued at all, and the
 //!   server catches the client up from its cursor — the last line handed
-//!   on, by its `seq` and its last logged event — once, from the log and
-//!   the running turn, as an `attach` would. The client sees one gap-free
-//!   stream; the daemon held at most the cap.
+//!   on, by its `seq` and its last logged event — from the log and the
+//!   running turn, as an `attach` would, a page of at most the cap at a
+//!   time, the next page once the client has read the last. The client
+//!   sees one gap-free stream; the daemon holds at most about twice the cap
+//!   for it (a page, and the control frames it has not read). An `attach`
+//!   is the same catching up, from the cursor it names.
 //! - A control frame — `done`, `attached`, `settled`, `welcome`, `status` —
 //!   is never dropped: it answers something the client asked, and there
 //!   are only as many as it asked for. One the client never reads still
 //!   counts, and past the cap the client is let go.
 //!
-//! A session that is being caught up keeps its control frames behind the
-//! catching-up, so a turn's `done` still comes after its lines.
+//! A session that is being caught up holds its control frames, each marked
+//! with where the session stood when it was queued (`Out::mark`), and puts
+//! each back among the catching up at that place: a turn's `done` comes
+//! after its lines and before the next turn's.
 
 use crate::protocol::{LiveEvent, StreamLine};
 use std::cell::RefCell;
@@ -64,6 +69,9 @@ pub struct Out {
     pub line: bool,
     /// The slot a progress frame overwrites.
     pub slot: Option<Slot>,
+    /// A control frame's place: where its session stood (its last own
+    /// logged event and `seq`) when it was queued.
+    pub mark: Cursor,
 }
 
 /// What a progress frame is the latest value of: its kind and the session
@@ -113,14 +121,14 @@ struct Queue {
     bytes: usize,
     next: u64,
     behind: bool,
-    /// Behind, and its catching up asked for (`due`).
+    /// Behind, and its next page asked for (`due`).
     resyncing: bool,
+    /// Control frames held while it is behind, in order.
+    held: Vec<Out>,
+    /// The `attach` this catching up answers, if it is one.
+    attach: Option<u64>,
     /// What has been handed on.
     sent: Cursor,
-    /// Bytes of a catching up still queued: not counted against the cap,
-    /// or a client caught up with more than the cap would fall behind
-    /// again at its next live line, and never catch up.
-    backlog: usize,
 }
 
 impl Queue {
@@ -148,7 +156,6 @@ impl Queue {
             (None, None) => None,
         }?;
         self.bytes -= out.bytes.len();
-        self.backlog = self.backlog.saturating_sub(out.bytes.len());
         if out.seq > 0 {
             self.sent.seq = self.sent.seq.max(out.seq);
         }
@@ -198,20 +205,29 @@ impl Outbox {
             }
         };
         let q = &mut inner.queues[i].1;
-        if q.behind && out.line {
-            return Pushed::Dropped;
-        }
         let line = out.line;
-        q.push(out);
-        let pushed = if line && q.bytes.saturating_sub(q.backlog) > self.caps.session_bytes {
-            q.fifo.retain(|(_, o)| !o.line);
+        if q.behind {
+            if line {
+                return Pushed::Dropped;
+            }
+            q.bytes += out.bytes.len();
+            q.held.push(out);
+        } else {
+            q.push(out);
+        }
+        let control = |q: &Queue| q.fifo.iter().filter(|(_, o)| !o.line).chain(q.slots.values()).filter(|(_, o)| !o.line).map(|(_, o)| o.bytes.len()).sum::<usize>() + q.held.iter().map(|o| o.bytes.len()).sum::<usize>();
+        let pushed = if line && !q.behind && q.bytes > self.caps.session_bytes {
+            // The lines go; the control frames are held, to go back in at
+            // their places among the catching up.
+            let mut held: Vec<Out> = q.fifo.drain(..).map(|(_, o)| o).filter(|o| !o.line).collect();
+            held.append(&mut q.held);
+            q.held = held;
             q.slots.clear();
-            q.backlog = 0;
-            q.bytes = q.fifo.iter().map(|(_, o)| o.bytes.len()).sum();
+            q.bytes = q.held.iter().map(|o| o.bytes.len()).sum();
             q.behind = true;
             q.resyncing = false;
             Pushed::FellBehind(q.sent.clone())
-        } else if !line && q.fifo.iter().filter(|(_, o)| !o.line).map(|(_, o)| o.bytes.len()).sum::<usize>() > self.caps.control_bytes {
+        } else if !line && control(q) > self.caps.control_bytes {
             Pushed::Overflow
         } else {
             Pushed::Queued
@@ -221,35 +237,10 @@ impl Outbox {
         pushed
     }
 
-    /// A session that fell behind, caught up: `frames` go ahead of the
-    /// control frames held while it was behind, and its lines are queued
-    /// again from here. Never counted against the cap — they are what the
-    /// cap was for — so a client still too slow falls behind again at its
-    /// next live line.
-    pub fn resynced(&self, session: &str, frames: Vec<Out>) {
-        let mut inner = self.inner.borrow_mut();
-        let Some((_, q)) = inner.queues.iter_mut().find(|(s, _)| s == session) else {
-            return;
-        };
-        let held: Vec<Out> = q.fifo.drain(..).map(|(_, o)| o).collect();
-        // Counted again as they go back in; its slots went when it fell
-        // behind.
-        q.bytes = 0;
-        q.behind = false;
-        q.resyncing = false;
-        q.backlog = frames.iter().map(|o| o.bytes.len()).sum();
-        for o in frames.into_iter().chain(held) {
-            q.push(o);
-        }
-        drop(inner);
-        self.ready.notify_one();
-    }
-
-    /// Where a client that attached after the logged event `log` stands in
-    /// `session` before anything is handed on: what it is caught up from
-    /// should it fall behind before the first frame goes.
-    pub fn seed(&self, session: &str, log: Option<&str>) {
-        let Some(log) = log else { return };
+    /// Starts catching `session` up from `cursor`, as an `attach` (`id`)
+    /// does: the queue is behind until the last page is in, and live lines
+    /// meanwhile come through the pages instead.
+    pub fn begin(&self, session: &str, cursor: Cursor, attach: u64) {
         let mut inner = self.inner.borrow_mut();
         let i = match inner.queues.iter().position(|(s, _)| s == session) {
             Some(i) => i,
@@ -258,7 +249,66 @@ impl Outbox {
                 inner.queues.len() - 1
             }
         };
-        inner.queues[i].1.sent.log.get_or_insert_with(|| Rc::from(log));
+        let q = &mut inner.queues[i].1;
+        // A second attach of one session: the first's pages serve both.
+        if let Some(old) = q.attach.replace(attach) {
+            q.attach = Some(old.max(attach));
+        }
+        if !q.behind {
+            let mut held: Vec<Out> = q.fifo.drain(..).map(|(_, o)| o).filter(|o| !o.line).collect();
+            held.append(&mut q.held);
+            q.held = held;
+            q.slots.clear();
+            q.bytes = q.held.iter().map(|o| o.bytes.len()).sum();
+            q.behind = true;
+            q.resyncing = false;
+            q.sent = cursor;
+        }
+        drop(inner);
+        self.ready.notify_one();
+    }
+
+    /// Whether `session` is being caught up and waits for its next page:
+    /// a client that left it (`forget`) is not given one.
+    pub fn expects(&self, session: &str) -> bool {
+        self.inner.borrow().queues.iter().any(|(s, q)| s == session && q.behind && q.resyncing)
+    }
+
+    /// The control frames `session` holds while behind, taken to be placed
+    /// among a page (`resynced` gives back those that belong after it).
+    pub fn held(&self, session: &str) -> Vec<Out> {
+        let mut inner = self.inner.borrow_mut();
+        let Some((_, q)) = inner.queues.iter_mut().find(|(s, _)| s == session) else { return Vec::new() };
+        let held = std::mem::take(&mut q.held);
+        q.bytes -= held.iter().map(|o| o.bytes.len()).sum::<usize>();
+        held
+    }
+
+    /// A page of catching up, the held control frames already placed in
+    /// it; `rest` are those that belong after it. The last page (`last`)
+    /// ends the catching up: live lines are queued again from here, and the
+    /// `attach` it answered, if any, is handed back to be answered after it.
+    pub fn resynced(&self, session: &str, page: Vec<Out>, rest: Vec<Out>, last: bool) -> Option<u64> {
+        let mut inner = self.inner.borrow_mut();
+        let (_, q) = inner.queues.iter_mut().find(|(s, _)| s == session)?;
+        for o in page {
+            q.push(o);
+        }
+        q.resyncing = false;
+        let mut attach = None;
+        if last {
+            q.behind = false;
+            attach = q.attach.take();
+            for o in rest {
+                q.push(o);
+            }
+        } else {
+            q.bytes += rest.iter().map(|o| o.bytes.len()).sum::<usize>();
+            q.held = rest;
+        }
+        drop(inner);
+        self.ready.notify_one();
+        attach
     }
 
     /// Whether `session` waits to be caught up.
@@ -274,7 +324,9 @@ impl Outbox {
         let mut inner = self.inner.borrow_mut();
         let mut due = Vec::new();
         for (s, q) in inner.queues.iter_mut() {
-            if q.behind && !q.resyncing {
+            // Due once what it was sent last has been handed on: a client
+            // that still does not read is not paged at again and again.
+            if q.behind && !q.resyncing && q.is_empty() {
                 q.resyncing = true;
                 due.push((s.clone(), q.sent.clone()));
             }
@@ -288,7 +340,7 @@ impl Outbox {
         loop {
             {
                 let inner = self.inner.borrow();
-                if inner.queues.iter().any(|(_, q)| (!q.behind && !q.is_empty()) || (q.behind && !q.resyncing)) {
+                if inner.queues.iter().any(|(_, q)| !q.is_empty() || (q.behind && !q.resyncing)) {
                     return true;
                 }
                 if inner.closed {
@@ -318,10 +370,6 @@ impl Outbox {
             for k in 0..n {
                 let i = (start + k) % n;
                 let (session, q) = &mut inner.queues[i];
-                // Behind: what it holds waits for its catching up.
-                if q.behind {
-                    continue;
-                }
                 // A share at a time: a few frames, then the next session.
                 let mut share = 0;
                 while share < 16 * 1024 && taken < max {
@@ -347,7 +395,9 @@ impl Outbox {
 
     /// Forgets `session`: the client left it.
     pub fn forget(&self, session: &str) {
-        self.inner.borrow_mut().queues.retain(|(s, q)| s != session || q.fifo.iter().any(|(_, o)| !o.line));
+        let mut inner = self.inner.borrow_mut();
+        inner.queues.retain(|(s, _)| s != session);
+        inner.turn = 0;
     }
 
     /// Whether it still takes frames.
@@ -370,16 +420,16 @@ mod tests {
 
     fn delta(session: &str, seq: u64, text: &str) -> Out {
         let line = StreamLine::Live(LiveEvent::ItemDelta { session_id: session.into(), turn_id: "t".into(), item_id: "i".into(), delta: Delta::Text { text: text.into() } });
-        Out { bytes: Rc::from(serde_json::to_vec(&line).unwrap()), seq, log: None, line: true, slot: None }
+        Out { bytes: Rc::from(serde_json::to_vec(&line).unwrap()), seq, log: None, line: true, slot: None, mark: Cursor::default() }
     }
 
     fn cost(session: &str, seq: u64, usd: f64) -> Out {
         let line = StreamLine::Live(LiveEvent::Cost { session_id: session.into(), turn_id: "t".into(), cost_usd: Some(usd), turn_cost_usd: None, generated_tokens: 0 });
-        Out { bytes: Rc::from(serde_json::to_vec(&line).unwrap()), seq, log: None, line: true, slot: slot_of(&line) }
+        Out { bytes: Rc::from(serde_json::to_vec(&line).unwrap()), seq, log: None, line: true, slot: slot_of(&line), mark: Cursor::default() }
     }
 
     fn control(text: &str) -> Out {
-        Out { bytes: Rc::from(text.as_bytes()), seq: 0, log: None, line: false, slot: None }
+        Out { bytes: Rc::from(text.as_bytes()), seq: 0, log: None, line: false, slot: None, mark: Cursor::default() }
     }
 
     fn seqs(batch: &[(String, Vec<Out>)], session: &str) -> Vec<u64> {
@@ -436,13 +486,22 @@ mod tests {
         assert!(at < 100, "at the cap, not later: {at}");
         assert_eq!(cursor.seq, 1, "the cursor is what was handed on");
         assert!(o.behind("a"));
-        // Held while behind, and after the catching up — which is asked
-        // for once.
+        // Held while behind; the catching up is asked for once, and again
+        // only once its page has been read.
         o.push("a", control("{\"type\":\"done\"}\n"));
         assert!(o.take(1 << 20).is_empty(), "nothing of a session behind goes out");
         assert_eq!(o.due(), vec![("a".to_string(), cursor.clone())]);
         assert!(o.due().is_empty());
-        o.resynced("a", vec![delta("a", 9_998, "caught"), delta("a", 9_999, "up")]);
+        let held = o.held("a");
+        assert_eq!(held.len(), 1);
+        o.resynced("a", vec![delta("a", 9_990, "a page")], held, false);
+        assert!(o.behind("a"), "a page is not the last");
+        assert!(o.due().is_empty(), "not before the page is read");
+        assert_eq!(seqs(&o.take(1 << 20), "a"), vec![9_990]);
+        let (_, next) = o.due().pop().expect("the next page is due once it is read");
+        assert_eq!(next.seq, 9_990, "from where the page left the cursor");
+        let held = o.held("a");
+        o.resynced("a", vec![delta("a", 9_998, "caught"), delta("a", 9_999, "up")], held, true);
         let expected: usize = [delta("a", 9_998, "caught"), delta("a", 9_999, "up")].iter().map(|o| o.bytes.len()).sum::<usize>() + "{\"type\":\"done\"}\n".len();
         assert_eq!(o.bytes(), expected, "every frame counted once");
         o.push("a", delta("a", 10_000, "live"));
@@ -450,6 +509,14 @@ mod tests {
         let a: Vec<&Out> = batch.iter().filter(|(s, _)| s == "a").flat_map(|(_, v)| v).collect();
         assert_eq!(a.iter().map(|o| o.seq).collect::<Vec<_>>(), vec![9_998, 9_999, 0, 10_000]);
         assert!(!a[2].line);
+        // A session the client left is not caught up.
+        for i in 0..1000 {
+            o.push("b", delta("b", i + 1, "some text of a token"));
+        }
+        assert!(o.behind("b"));
+        assert_eq!(o.due().len(), 1);
+        o.forget("b");
+        assert!(!o.expects("b"));
     }
 
     #[test]

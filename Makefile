@@ -40,6 +40,9 @@ bench: ## Hold the release builds to the performance and size budgets
 	rm -f $(BENCH_DIR)/krowk-full && cp target/release/krowk $(BENCH_DIR)/krowk-full
 	cargo run --profile bench-tool --locked -p krowk-bench -- --budgets crates/krowk-bench/budgets.toml \
 		--lean $(BENCH_DIR)/krowk-lean --full $(BENCH_DIR)/krowk-full --work $(BENCH_DIR)/work $(BENCH_FLAGS)
+	# R-LAG-2/3/9's load with the flood unpaced, which only an optimized
+	# daemon is held to (tests/daemon_ws.rs says why).
+	cargo test --release --locked -p krowk-harness --test daemon_ws r_lag_2_r_lag_3
 
 schema: ## Regenerate the harness protocol's JSON Schema after a type change
 	KROWK_SCHEMA_UPDATE=1 cargo test -p krowk-harness --test schema

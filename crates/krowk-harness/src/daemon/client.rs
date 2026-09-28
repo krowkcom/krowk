@@ -264,7 +264,7 @@ impl Client {
     /// running turn so far, then each frame live, to `out`. Answers whether
     /// a turn is running once caught up.
     pub async fn attach(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<bool, EngineError> {
-        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: None }, Some((Some(session_id.to_string()), out, None)))?;
+        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: None, epoch: None }, Some((Some(session_id.to_string()), out, None)))?;
         match rx.await {
             Ok(ServerFrame::Attached { error: Some(e), .. }) => Err(engine_error(e)),
             Ok(ServerFrame::Attached { running, .. }) => Ok(running),
@@ -279,7 +279,7 @@ impl Client {
     /// reattaches with (R-HOST-1).
     pub async fn follow(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
         let (utx, urx) = oneshot::channel();
-        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: None }, Some((Some(session_id.to_string()), out, Some(utx))))?;
+        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: None, epoch: None }, Some((Some(session_id.to_string()), out, Some(utx))))?;
         let running = match rx.await {
             Ok(ServerFrame::Attached { error: Some(e), .. }) => return Err(engine_error(e)),
             Ok(ServerFrame::Attached { running, .. }) => running,

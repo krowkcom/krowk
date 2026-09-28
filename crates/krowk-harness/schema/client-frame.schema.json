@@ -92,6 +92,15 @@
           "format": "uint64",
           "minimum": 0
         },
+        "epoch": {
+          "description": "The daemon's `welcome.epoch` the client's `afterSeq` is from. A\n`seq` is a daemon's own: one from another daemon, or with no\nepoch, is not honoured, and the client is caught up from\n`afterEventId` alone.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
         "type": {
           "type": "string",
           "const": "attach"

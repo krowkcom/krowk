@@ -20,6 +20,13 @@
           "format": "uint32",
           "minimum": 0
         },
+        "epoch": {
+          "description": "This daemon's run, as the time it started (ms since the epoch):\nwhat a `line.seq` is numbered within, and what an `attach`\nresuming by `afterSeq` names.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
+        },
         "type": {
           "type": "string",
           "const": "welcome"
@@ -77,7 +84,7 @@
           "minimum": 0
         },
         "seq": {
-          "description": "Its place in the followed session's stream: numbered by the\ndaemon as the host sends it, from 1, and never reused while the\ndaemon runs. Absent on a line replayed from the log, whose\ncursor is its event id.",
+          "description": "Its place in the followed session's stream: numbered by the\ndaemon as the host sends it, from 1, and never reused while the\ndaemon runs (`welcome.epoch`), however often the session is let\ngo and followed again. Absent on a line replayed from the log, whose\ncursor is its event id.",
           "type": [
             "integer",
             "null"
@@ -1758,7 +1765,7 @@
           "default": 0
         },
         "caughtUp": {
-          "description": "How many times a client that fell behind has been caught up from\nits cursor since the daemon started.",
+          "description": "How many times a client has fallen behind, to be caught up from its\ncursor, since the daemon started.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0,

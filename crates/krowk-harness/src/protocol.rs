@@ -932,6 +932,12 @@ pub enum ClientFrame {
         /// resuming from its cursor sees nothing twice.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_seq: Option<u64>,
+        /// The daemon's `welcome.epoch` the client's `afterSeq` is from. A
+        /// `seq` is a daemon's own: one from another daemon, or with no
+        /// epoch, is not honoured, and the client is caught up from
+        /// `afterEventId` alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u64>,
     },
     /// Asks how the daemon is; answered by `status`.
     Status { id: u64 },
@@ -970,7 +976,16 @@ pub enum ClientFrame {
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ServerFrame {
     /// The answer to a `hello` the daemon can serve.
-    Welcome { protocol_version: u32, krowk_version: String, pid: u32 },
+    Welcome {
+        protocol_version: u32,
+        krowk_version: String,
+        pid: u32,
+        /// This daemon's run, as the time it started (ms since the epoch):
+        /// what a `line.seq` is numbered within, and what an `attach`
+        /// resuming by `afterSeq` names.
+        #[serde(default)]
+        epoch: u64,
+    },
     /// The answer to one it cannot: a client of another protocol version.
     /// The connection closes after it.
     Refused { code: String, message: String, fix: String },
@@ -989,7 +1004,8 @@ pub enum ServerFrame {
         cmd: Option<u64>,
         /// Its place in the followed session's stream: numbered by the
         /// daemon as the host sends it, from 1, and never reused while the
-        /// daemon runs. Absent on a line replayed from the log, whose
+        /// daemon runs (`welcome.epoch`), however often the session is let
+        /// go and followed again. Absent on a line replayed from the log, whose
         /// cursor is its event id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
@@ -1043,8 +1059,8 @@ pub struct HostStatus {
     /// bounded however far behind a client is (R-LAG-10).
     #[serde(default)]
     pub queued_bytes: u64,
-    /// How many times a client that fell behind has been caught up from
-    /// its cursor since the daemon started.
+    /// How many times a client has fallen behind, to be caught up from its
+    /// cursor, since the daemon started.
     #[serde(default)]
     pub caught_up: u64,
     /// The sessions it has run since it started, newest first.

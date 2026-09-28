@@ -661,7 +661,7 @@ impl Shared {
         // moment longer than its registration: asked again, briefly.
         let mut tries = 0;
         let (mut log, _) = loop {
-            match SessionLog::open(&self.cfg.sessions_dir, id) {
+            match SessionLog::open_off(&self.cfg.sessions_dir, id).await {
                 Err(LogError::Busy(_)) if tries < 40 => {
                     tries += 1;
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -674,8 +674,8 @@ impl Shared {
                 r => break r.map_err(log_failure)?,
             }
         };
-        let ev = log.append(LogBody::ModelSwitched { turn_id: None, from: past.model, to: model, reason: SwitchReason::Requested, detail: None }).map_err(log_failure)?;
-        log.sync().map_err(log_failure)?;
+        let ev = log.append_off(LogBody::ModelSwitched { turn_id: None, from: past.model, to: model, reason: SwitchReason::Requested, detail: None }).await.map_err(log_failure)?;
+        log.sync_off().await.map_err(log_failure)?;
         let _ = out.send(StreamLine::Log(ev)).await;
         Ok(())
     }
@@ -741,7 +741,7 @@ impl Shared {
             here.register(id)?;
         }
         let opened = match session_id {
-            Some(id) => Some(SessionLog::open(&self.cfg.sessions_dir, id).map_err(log_failure)?),
+            Some(id) => Some(SessionLog::open_off(&self.cfg.sessions_dir, id).await.map_err(log_failure)?),
             None => None,
         };
         let past = opened.as_ref().map(|(log, events)| replay(&log::branch(events, log.head().unwrap_or_default()), &self.registry())).unwrap_or_default();
@@ -805,7 +805,7 @@ impl Shared {
         let (log, events) = match opened {
             Some(opened) => opened,
             None => {
-                let (log, root) = SessionLog::create(&self.cfg.sessions_dir, &self.cfg.cwd, &self.cfg.krowk_version).map_err(log_failure)?;
+                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &self.cfg.cwd, &self.cfg.krowk_version, None, None).await.map_err(log_failure)?;
                 here.register(&log.session_id)?;
                 let _ = out.send(StreamLine::Log(root.clone())).await;
                 (log, vec![root])
@@ -891,7 +891,7 @@ impl Shared {
         key_off_thread(&instance).await?;
         let engine = engine_for(&instance, wire, &self.cfg.credentials, &self.cfg.krowk_version)?;
         let p = &spawn.parent;
-        let (log, root) = SessionLog::create_child(&self.cfg.sessions_dir, &p.cwd, &self.cfg.krowk_version, Some(&p.session_id), run.name.as_deref()).map_err(log_failure)?;
+        let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &p.cwd, &self.cfg.krowk_version, Some(&p.session_id), run.name.as_deref()).await.map_err(log_failure)?;
         let _ = spawn.out.send(StreamLine::Log(root.clone())).await;
         let child = log.session_id.clone();
         let _ = events.send(EngineEvent::SubagentStarted { call_id: call_id.into(), session_id: child.clone(), description: description.into(), agent: run.name.clone(), model: model.clone() }).await;
@@ -1124,7 +1124,7 @@ impl Shared {
                 next = None;
             }
         }
-        plan.log.sync().map_err(log_failure)?;
+        plan.log.sync_off().await.map_err(log_failure)?;
         let result = RunResult {
             session_id,
             turn_id,
@@ -1521,7 +1521,7 @@ struct Writer<'a> {
 
 impl Writer<'_> {
     async fn log(&mut self, body: LogBody) -> Result<LogEvent, EngineError> {
-        let ev = self.log.append(body).map_err(log_failure)?;
+        let ev = self.log.append_off(body).await.map_err(log_failure)?;
         let _ = self.out.send(StreamLine::Log(ev.clone())).await;
         Ok(ev)
     }
@@ -1611,7 +1611,7 @@ impl Writer<'_> {
                     tools,
                     handoff: self.handoff.take(),
                 };
-                self.log.record_context(&rec).map_err(log_failure)?;
+                self.log.record_context_off(&rec).await.map_err(log_failure)?;
             }
             EngineEvent::ItemStarted { item_id, kind } => {
                 self.live(LiveEvent::ItemStarted { session_id: session_id.into(), turn_id, item_id, item: kind }).await;

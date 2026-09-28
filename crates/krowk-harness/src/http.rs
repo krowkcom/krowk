@@ -24,13 +24,16 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// rustls on ring with the platform verifier: the same trust decisions the
 /// rest of krowk makes through ureq.
+///
+/// The TLS configuration is built once a process and shared: building it
+/// reads and parses the platform's roots, tens of milliseconds a turn on
+/// the host daemon's one thread, which every other session streams on
+/// (R-LAG-9). The client itself is made per engine, on the runtime that
+/// uses it, since its connection pool belongs to that runtime.
 pub fn client() -> Result<reqwest::Client, EngineError> {
-    let tls_failed = |e: rustls::Error| EngineError::new("tls_unavailable", format!("the TLS configuration could not be built: {e}"));
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let tls = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(tls_failed)?;
-    let tls = rustls_platform_verifier::BuilderVerifierExt::with_platform_verifier(tls).map_err(tls_failed)?.with_no_client_auth();
+    let tls = tls()
+        .clone()
+        .map_err(|e| EngineError::new("tls_unavailable", format!("the TLS configuration could not be built: {e}")))?;
     reqwest::Client::builder()
         .use_preconfigured_tls(tls)
         .connect_timeout(CONNECT_TIMEOUT)
@@ -38,6 +41,22 @@ pub fn client() -> Result<reqwest::Client, EngineError> {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| EngineError::new("tls_unavailable", format!("the HTTP client could not be built: {e}")))
+}
+
+static TLS: std::sync::OnceLock<Result<rustls::ClientConfig, String>> = std::sync::OnceLock::new();
+
+fn tls() -> &'static Result<rustls::ClientConfig, String> {
+    TLS.get_or_init(|| {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let tls = rustls::ClientConfig::builder_with_provider(provider).with_safe_default_protocol_versions().map_err(|e| e.to_string())?;
+        Ok(rustls_platform_verifier::BuilderVerifierExt::with_platform_verifier(tls).map_err(|e| e.to_string())?.with_no_client_auth())
+    })
+}
+
+/// Builds the shared TLS configuration now: the host daemon calls it off
+/// its thread as it starts, so no turn pays for it there.
+pub fn warm() {
+    let _ = tls();
 }
 
 /// Who a request went to, for the words of a failure.

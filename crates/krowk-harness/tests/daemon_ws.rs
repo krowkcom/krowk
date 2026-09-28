@@ -19,6 +19,7 @@ use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::log;
 use krowk_harness::protocol::{ClientFrame, Command, Delta, LiveEvent, PermissionMode, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
@@ -28,6 +29,8 @@ static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 struct Home {
     root: PathBuf,
     url: String,
+    /// The daemon's thread's worst lateness, in µs, since last zeroed.
+    late: Arc<AtomicU64>,
 }
 
 impl Home {
@@ -37,7 +40,7 @@ impl Home {
         for d in ["home", "run", "repo/.git"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
-        Home { root, url: url.into() }
+        Home { root, url: url.into(), late: Arc::default() }
     }
 
     fn env(&self) -> impl Fn(&str) -> String + Clone + Send + 'static {
@@ -64,6 +67,7 @@ impl Home {
     fn serve(&self, heartbeat: Duration, caps: Caps) -> std::thread::JoinHandle<Result<(), String>> {
         let (env, socket) = (self.env(), self.socket());
         let credentials = self.root.join("home/.krowk/credentials.json");
+        let late = self.late.clone();
         let t = std::thread::spawn(move || {
             let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {
                 Ok(HostConfig {
@@ -80,7 +84,7 @@ impl Home {
                     agents: krowk_harness::subagent::AgentsConfig::none(),
                 })
             });
-            let opts = server::Options { socket, idle: Some(Duration::from_millis(300)), krowk_version: "test".into(), websocket: Some("127.0.0.1:0".parse().unwrap()), heartbeat, caps, ..Default::default() };
+            let opts = server::Options { socket, idle: Some(Duration::from_millis(300)), krowk_version: "test".into(), websocket: Some("127.0.0.1:0".parse().unwrap()), heartbeat, caps, lateness: Some(late), ..Default::default() };
             server::run(opts, factory)
         });
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -104,6 +108,12 @@ impl Home {
         let addr = self.client().await.status().await.unwrap().websocket.expect("the daemon listens on a WebSocket");
         let token = std::fs::read_to_string(self.socket().parent().unwrap().join(ws::TOKEN)).unwrap();
         (addr, token)
+    }
+
+    /// The worst the daemon's thread has been late since the last call, and
+    /// zeroed for the next.
+    fn lateness(&self) -> Duration {
+        Duration::from_micros(self.late.swap(0, Ordering::Relaxed))
     }
 
     fn prompt(&self, text: &str, mode: PermissionMode) -> Command {
@@ -181,7 +191,7 @@ impl Ws {
                     assert_eq!(e.kind, ws::KIND_BATCH);
                     let plain = e.plain(64 << 20).unwrap();
                     let frames = plain.split(|b| *b == b'\n').filter(|l| !l.is_empty()).map(|l| serde_json::from_slice::<ServerFrame>(l).unwrap()).collect();
-                    self.batches += 1;
+                    self.batches = self.batches.wrapping_add(1);
                     if self.acks {
                         self.ack().await;
                     }
@@ -317,26 +327,51 @@ fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
     daemon.join().unwrap().unwrap();
 }
 
-/// The acceptance load: three sessions streaming 500 tokens a second and a
-/// fourth flooding at several thousand, over one WebSocket; no session's
-/// stream stalls more than 50 ms because of another (R-LAG-2: one queue per
-/// session; R-LAG-3: batches by time, 16 ms, never by content). The
-/// progress-slot half of R-LAG-2 — a subagent flooding `cost` frames costs
-/// one frame — is `outbox`'s own test. The flood is paced because an
-/// unoptimized build parses a provider's multi-megabyte burst in one go on
-/// the daemon's thread; the release build does not stall on that either.
+/// The acceptance load (R-LAG-2: one queue per session; R-LAG-3: batches by
+/// time, 16 ms, never by content; R-LAG-9: nothing blocks the thread they
+/// share): three sessions streaming 500 tokens a second and a fourth
+/// flooding, over one WebSocket; no session's stream stalls more than 50 ms
+/// because of another, and the daemon's thread is never late more than
+/// 30 ms. The progress-slot half of R-LAG-2 — a subagent flooding `cost`
+/// frames costs one frame — is `outbox`'s own test.
+///
+/// Here the flood is 5,000 tokens a second, which the unoptimized build
+/// `make check` runs keeps up with; the release build takes the flood
+/// unpaced (`…_release_…`, run by `make bench`), since an unoptimized
+/// build spends tens of milliseconds parsing a provider's burst of
+/// hundreds of kilobytes on the thread.
 #[test]
 fn r_lag_2_r_lag_3_three_sessions_at_500_tokens_a_second_and_a_flood_stall_none() {
+    load(8_000, Some(Duration::from_micros(200)));
+}
+
+/// The same with the flood unpaced — every token the provider has, as fast
+/// as it sends them. Release only: `make bench` runs it.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release only, as make bench runs it")]
+fn r_lag_2_r_lag_3_release_three_sessions_and_an_unpaced_flood_stall_none() {
+    load(30_000, None);
+}
+
+fn load(flood_words: usize, flood_pace: Option<Duration>) {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let paced = words(1000);
-    let flood = words(8_000);
+    let flood = words(flood_words);
     let m = {
         let (p, f) = (paced.clone(), flood.clone());
-        mock::serve(move |body, _| if prompt_of(body).contains("flood") { mock::Reply::paced(mock::text_stream(&f), Duration::from_micros(200)) } else { mock::Reply::paced(mock::text_stream(&p), Duration::from_millis(2)) })
+        mock::serve(move |body, _| {
+            if !prompt_of(body).contains("flood") {
+                mock::Reply::paced(mock::text_stream(&p), Duration::from_millis(2))
+            } else if let Some(pace) = flood_pace {
+                mock::Reply::paced(mock::text_stream(&f), pace)
+            } else {
+                mock::Reply::sse(&mock::text_stream(&f))
+            }
+        })
     };
     let home = Home::new("load", &m.url);
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
-    let (arrivals, texts) = rt().block_on(async {
+    let (arrivals, texts, late) = rt().block_on(async {
         let (addr, token) = home.websocket().await;
         let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
         for (id, what) in [(1, "paced one"), (2, "paced two"), (3, "paced three"), (4, "flood")] {
@@ -347,6 +382,8 @@ fn r_lag_2_r_lag_3_three_sessions_at_500_tokens_a_second_and_a_flood_stall_none(
         let mut arrivals: std::collections::HashMap<String, Vec<Instant>> = Default::default();
         let mut texts: std::collections::HashMap<String, String> = Default::default();
         let mut done = 0;
+        let mut probed = false;
+        let mut late = Duration::ZERO;
         while done < 4 {
             let Some(got) = tokio::time::timeout(Duration::from_secs(30), c.next()).await.expect("the load finished") else { panic!("closed") };
             let Got::Batch(_, frames) = got else { continue };
@@ -362,9 +399,22 @@ fn r_lag_2_r_lag_3_three_sessions_at_500_tokens_a_second_and_a_flood_stall_none(
             for s in sessions {
                 arrivals.entry(s).or_default().push(at);
             }
+            // Once every session is typing, the daemon's thread is watched
+            // until the last ends: nothing may block it long enough to
+            // stall the others (R-LAG-9). The first host's setup, before
+            // that, is the known exception (harness.md → The host daemon).
+            if !probed && arrivals.len() == 4 {
+                probed = true;
+                home.lateness();
+            }
+            if probed && done > 0 && late.is_zero() {
+                late = home.lateness().max(Duration::from_nanos(1));
+            }
         }
-        (arrivals, texts)
+        (arrivals, texts, late)
     });
+    eprintln!("the daemon's thread was late by at most {late:?} while all four streamed");
+    assert!(late < Duration::from_millis(30), "something blocked the daemon's thread {late:?} while four sessions streamed");
     let paced_sessions: Vec<&String> = texts.iter().filter(|(_, t)| t.len() == paced.len()).map(|(s, _)| s).collect();
     assert_eq!(paced_sessions.len(), 3, "each paced session typed its answer whole");
     assert!(texts.values().any(|t| t == &flood), "and the flood its own");
@@ -507,6 +557,7 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
         let (addr, token) = home.websocket().await;
         let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
         let started = Instant::now();
+        home.lateness();
         c.send(&ClientFrame::Execute { id: 1, command: home.prompt("sleep", PermissionMode::BypassPermissions) }).await;
         let (mut pings, mut rtts, mut asked) = (Vec::new(), Vec::new(), None::<Instant>);
         let mut ask = tokio::time::interval(Duration::from_millis(100));
@@ -530,7 +581,9 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
             }
         }
         let took = started.elapsed();
+        let late = home.lateness();
         assert!(took >= Duration::from_secs(5), "the tool ran its five seconds: {took:?}");
+        assert!(late < Duration::from_millis(30), "the daemon's thread was blocked {late:?} during the turn");
         let gap = pings.windows(2).map(|w| w[1] - w[0]).max().unwrap();
         let rtt = rtts.iter().max().unwrap();
         eprintln!("{} pings, longest gap {gap:?}; {} pongs, slowest {rtt:?}", pings.len(), rtts.len());
@@ -558,6 +611,256 @@ fn r_lag_9_a_peer_that_answers_no_heartbeat_is_let_go() {
         tokio::time::sleep(Duration::from_millis(700)).await;
         assert_eq!(watcher.status().await.unwrap().clients, 1, "the silent peer was let go");
         drop(c);
+    });
+    daemon.join().unwrap().unwrap();
+}
+
+/// A client of the unix socket reading and writing raw frames, as a TUI's
+/// link does, with the `seq`s and cursors the client library hides.
+struct Raw {
+    w: std::os::unix::net::UnixStream,
+    r: std::io::BufReader<std::os::unix::net::UnixStream>,
+    epoch: u64,
+}
+
+impl Raw {
+    fn connect(home: &Home) -> Raw {
+        use std::io::Write;
+        let s = std::os::unix::net::UnixStream::connect(home.socket()).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut raw = Raw { w: s.try_clone().unwrap(), r: std::io::BufReader::new(s), epoch: 0 };
+        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: home.repo().display().to_string(), krowk_version: "test".into(), answers_approvals: false, token: None };
+        writeln!(raw.w, "{}", serde_json::to_string(&hello).unwrap()).unwrap();
+        match raw.next() {
+            ServerFrame::Welcome { epoch, .. } => raw.epoch = epoch,
+            f => panic!("{f:?}"),
+        }
+        raw
+    }
+
+    fn send(&mut self, f: &ClientFrame) {
+        use std::io::Write;
+        writeln!(self.w, "{}", serde_json::to_string(f).unwrap()).unwrap();
+    }
+
+    fn next(&mut self) -> ServerFrame {
+        use std::io::BufRead;
+        let mut line = String::new();
+        self.r.read_line(&mut line).expect("a frame in time");
+        serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line}"))
+    }
+
+    /// Frames up to and including the first `until` matches.
+    fn until(&mut self, until: impl Fn(&ServerFrame) -> bool) -> Vec<ServerFrame> {
+        let mut out = Vec::new();
+        loop {
+            let f = self.next();
+            let end = until(&f);
+            out.push(f);
+            if end {
+                return out;
+            }
+        }
+    }
+}
+
+fn prompt_in(home: &Home, session: Option<&str>, text: &str) -> Command {
+    let Command::Prompt { model, permission_mode, .. } = home.prompt(text, PermissionMode::Default) else { unreachable!() };
+    Command::Prompt { session_id: session.map(String::from), text: text.into(), model, permission_mode, toolset: None, effort: None, budget: None }
+}
+
+fn seqs_of(frames: &[ServerFrame]) -> Vec<u64> {
+    frames.iter().filter_map(|f| if let ServerFrame::Line { seq: Some(s), .. } = f { Some(*s) } else { None }).collect()
+}
+
+fn typed_of(frames: &[ServerFrame]) -> String {
+    frames.iter().filter_map(delta_text).map(|(_, t)| t).collect()
+}
+
+/// R-PROTO-1's cursor: a session's `seq`s never start again while the
+/// daemon runs, even once nothing followed it and it was let go; and a
+/// cursor from another daemon run (`epoch`) is caught up from the log, not
+/// trusted to a `seq` this daemon never gave.
+#[test]
+fn r_proto_1_a_seq_is_never_reused_and_a_cursor_from_another_run_is_caught_up_from_the_log() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let answer = words(200);
+    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(2))) };
+    let home = Home::new("seq", &m.url);
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    let mut a = Raw::connect(&home);
+    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one") });
+    let first = a.until(|f| matches!(f, ServerFrame::Done { id: 1, .. }));
+    let session = first.iter().find_map(|f| if let ServerFrame::Line { session, .. } = f { Some(session.clone()) } else { None }).unwrap();
+    let top = *seqs_of(&first).iter().max().unwrap();
+    // Gone, and with it the session's hub: nothing follows or runs it.
+    drop(a);
+    std::thread::sleep(Duration::from_millis(100));
+    let mut b = Raw::connect(&home);
+    b.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, Some(&session), "two") });
+    // Mid-turn, a client with a cursor from another daemon run attaches:
+    // a `seq` past anything, which this daemon must not trust.
+    let mut c = Raw::connect(&home);
+    let early = b.until(|f| typed_of(std::slice::from_ref(f)).contains("w20 "));
+    c.send(&ClientFrame::Attach { id: 7, session_id: session.clone(), after_event_id: None, after_seq: Some(1_000_000), epoch: Some(c.epoch - 1) });
+    let rest = b.until(|f| matches!(f, ServerFrame::Done { id: 1, .. }));
+    let second: Vec<ServerFrame> = early.into_iter().chain(rest).collect();
+    assert!(seqs_of(&second).iter().all(|s| *s > top), "numbered on from {top}, never again from 1: {:?}", &seqs_of(&second)[..3]);
+    let caught = c.until(|f| matches!(f, ServerFrame::Line { line: StreamLine::Live(LiveEvent::Result(_)), .. }));
+    let typed = typed_of(&caught);
+    assert_eq!(typed, answer, "the typing so far and the rest, from the log's cursor alone");
+    drop((b, c));
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-4: a client caught up across a turn boundary gets the first turn's
+/// `done` after that turn's lines and before the next turn's — the place
+/// it was queued at, not after all the catching up.
+#[test]
+fn r_lag_4_a_done_held_while_behind_goes_back_at_its_place() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let answer = words(1500);
+    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_micros(300))) };
+    let home = Home::new("held", &m.url);
+    let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: 16 * 1024, control_bytes: 1 << 20 });
+    // X runs the first turn and stops reading; Y runs the next one in the
+    // same session while X is still behind.
+    let mut x = Raw::connect(&home);
+    x.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one") });
+    let head = x.until(|f| matches!(f, ServerFrame::Line { .. }));
+    let ServerFrame::Line { session, .. } = &head[0] else { unreachable!() };
+    let session = session.clone();
+    let watcher = Raw::connect(&home);
+    drop(watcher);
+    let mut y = Raw::connect(&home);
+    // The first turn ends while X sleeps.
+    std::thread::sleep(Duration::from_millis(1200));
+    y.send(&ClientFrame::Execute { id: 9, command: prompt_in(&home, Some(&session), "two") });
+    y.until(|f| matches!(f, ServerFrame::Done { id: 9, .. }));
+    // X reads again: its first turn's end, its done, then the second turn.
+    use krowk_harness::protocol::{LogBody, LogEvent};
+    let log_kind = |f: &ServerFrame, started: bool| match f {
+        ServerFrame::Line { line: StreamLine::Log(LogEvent { body: LogBody::TurnStarted { .. }, .. }), .. } => started,
+        ServerFrame::Line { line: StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. }), .. } => !started,
+        _ => false,
+    };
+    let mut all = head;
+    let mut ends = 0;
+    while ends < 2 {
+        let f = x.next();
+        ends += usize::from(log_kind(&f, false));
+        all.push(f);
+    }
+    let first_end = all.iter().position(|f| log_kind(f, false)).unwrap();
+    let done = all.iter().position(|f| matches!(f, ServerFrame::Done { id: 1, .. })).expect("the first turn's done came");
+    let second_start = all.iter().enumerate().filter(|(_, f)| log_kind(f, true)).map(|(i, _)| i).nth(1).expect("the second turn started");
+    assert!(first_end < done && done < second_start, "done at {done}, between its turn's end ({first_end}) and the next turn's start ({second_start})");
+    let caught_up = rt().block_on(async { home.client().await.status().await.unwrap().caught_up });
+    assert!(caught_up > 0, "it did fall behind");
+    drop((x, y));
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-10: catching up is paged. A client attaching to a session whose
+/// log is many times the cap, and reading slowly, costs the daemon about a
+/// page at a time, not the log — and gets the whole log once, in order,
+/// then `attached`.
+#[test]
+fn r_lag_10_an_attach_to_a_long_log_is_paged_at_the_cap() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let m = mock::serve(|_, n| mock::Reply::sse(&mock::text_stream(&format!("answer {n}: {}", words(300)))));
+    let home = Home::new("paged", &m.url);
+    let cap = 4 * 1024;
+    let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: cap, control_bytes: 1 << 20 });
+    // Twelve turns: a log several times the cap.
+    let mut a = Raw::connect(&home);
+    a.send(&ClientFrame::Execute { id: 0, command: prompt_in(&home, None, "turn") });
+    let first = a.until(|f| matches!(f, ServerFrame::Done { id: 0, .. }));
+    let ServerFrame::Line { session, .. } = &first[0] else { unreachable!() };
+    let session = session.clone();
+    for id in 1..12 {
+        a.send(&ClientFrame::Execute { id, command: prompt_in(&home, Some(&session), "turn") });
+        a.until(|f| matches!(f, ServerFrame::Done { id: d, .. } if *d == id));
+    }
+    let log = std::fs::read(log::sessions_dir(&home.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    assert!(log.len() > 8 * cap, "a log of {} bytes", log.len());
+    let events = log.iter().filter(|b| **b == b'\n').count();
+    // A slow reader attaches.
+    let mut c = Raw::connect(&home);
+    c.send(&ClientFrame::Attach { id: 5, session_id: session.clone(), after_event_id: None, after_seq: None, epoch: None });
+    let watch = std::thread::spawn({
+        let socket = home.socket();
+        let repo = home.repo();
+        move || {
+            rt().block_on(async {
+                let w = match Client::connect(&socket, &repo, "test", false).await { Ok(c) => c, Err(_) => panic!("no daemon") };
+                let mut most = 0;
+                for _ in 0..60 {
+                    most = most.max(w.status().await.unwrap().queued_bytes);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                most
+            })
+        }
+    });
+    let mut got = Vec::new();
+    loop {
+        std::thread::sleep(Duration::from_millis(2));
+        let f = c.next();
+        if matches!(f, ServerFrame::Attached { id: 5, .. }) {
+            break;
+        }
+        got.push(f);
+    }
+    let most = watch.join().unwrap();
+    let biggest = log.split(|b| *b == b'\n').map(|l| l.len()).max().unwrap();
+    assert!(most as usize <= cap + biggest + 1024, "the daemon held {most} bytes for an attach of a {}-byte log", log.len());
+    let ids: Vec<String> = got.iter().filter_map(|f| if let ServerFrame::Line { line: StreamLine::Log(e), .. } = f { Some(e.id.clone()) } else { None }).collect();
+    assert_eq!(ids.len(), events, "every event once");
+    let mut sorted = ids.clone();
+    sorted.dedup();
+    assert_eq!(sorted.len(), ids.len());
+    drop((a, c));
+    daemon.join().unwrap().unwrap();
+}
+
+/// What a client without the token can learn and cost: nothing about the
+/// daemon (not even its pid or version, whatever protocol it claims), no
+/// decompression, and no connection at all from a browser page.
+#[test]
+fn r_proto_1_nothing_is_said_before_the_token_and_browsers_are_refused() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("preauth", "http://127.0.0.1:9");
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        // Another protocol, no token: unauthorized, not a version to read.
+        let (wire, _) = tokio_tungstenite::connect_async_with_config(format!("ws://{addr}"), None, true).await.unwrap();
+        let mut ws = Ws { wire, batches: 0, acks: true };
+        ws.send(&ClientFrame::Hello { protocol_version: 999, cwd: "/".into(), krowk_version: String::new(), answers_approvals: false, token: None }).await;
+        let Some(Got::Batch(_, f)) = ws.next().await else { panic!("no answer") };
+        assert!(matches!(&f[0], ServerFrame::Refused { code, message, .. } if code == "unauthorized" && !message.contains("pid")), "{:?}", f[0]);
+        // A compressed hello is not decompressed, token or not.
+        let (wire, _) = tokio_tungstenite::connect_async_with_config(format!("ws://{addr}"), None, true).await.unwrap();
+        let mut ws = Ws { wire, batches: 0, acks: true };
+        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: "/".into(), krowk_version: String::new(), answers_approvals: false, token: Some(token.clone()) };
+        let packed = ws::batch("", 0, serde_json::to_string(&hello).unwrap().repeat(20).as_bytes());
+        assert_eq!(packed.flags & ws::FLAG_ZSTD, ws::FLAG_ZSTD);
+        let e = Envelope { kind: ws::KIND_FRAME, ..packed };
+        ws.wire.send(Message::Binary(e.encode().into())).await.unwrap();
+        let Some(Got::Batch(_, f)) = ws.next().await else { panic!("no answer") };
+        assert!(matches!(&f[0], ServerFrame::Refused { code, .. } if code == "unauthorized"), "{:?}", f[0]);
+        // A browser's handshake carries an Origin: refused before a frame.
+        let mut req = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://{addr}")).unwrap();
+        req.headers_mut().insert("origin", "https://example.com".parse().unwrap());
+        assert!(tokio_tungstenite::connect_async(req).await.is_err(), "a page may not connect");
+        // An ack past anything sent neither panics nor stalls the writer.
+        let (mut ok, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        ok.batches = u64::MAX;
+        ok.ack().await;
+        ok.send(&ClientFrame::Status { id: 3 }).await;
+        let Some(Got::Batch(_, f)) = ok.next().await else { panic!("the writer stalled") };
+        assert!(matches!(&f[0], ServerFrame::Status { id: 3, .. }), "{:?}", f[0]);
     });
     daemon.join().unwrap().unwrap();
 }

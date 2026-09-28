@@ -4,8 +4,10 @@
 //! hold until the item ends). Bounded (R-LAG-10): past the cap it becomes a
 //! snapshot — a run of an item's deltas merged into one delta of all their
 //! text, the latest of each progress frame, and a subagent's oldest frames
-//! let go (its own log holds them) — so a long item costs about its text,
-//! not a frame per token.
+//! let go — so a long item costs about its text, not a frame per token. A
+//! subagent's frames let go are not replayed: they are in the subagent's
+//! own log, which catching up does not read, so a client caught up past
+//! the cap sees the subagent from where the replay still holds it.
 //!
 //! A merged delta remembers where each of its pieces ended and which
 //! `seq` it had, so a client resuming from a `seq` inside it is sent only
@@ -88,7 +90,7 @@ impl Tail {
         }
         self.kept = out;
         self.bytes = self.kept.iter().chain(self.slots.values()).map(|k| k.weight).sum();
-        // Still over: a subagent's frames, oldest first. Its log has them.
+        // Still over: a subagent's frames, oldest first (see above).
         while self.bytes > self.cap {
             let Some(i) = self.kept.iter().position(|k| k.line.session_id() != root) else {
                 break;

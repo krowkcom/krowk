@@ -405,18 +405,16 @@ mod tests {
         assert!(websocket_addr(&env(&e), None).unwrap_err().contains("not an address"));
     }
 
-    /// R-LAG-9: the daemon's serving code does no blocking I/O on its one
-    /// thread, which every session's stream and every heartbeat share. A
-    /// source check rather than a clippy `disallowed-methods` list: that
-    /// list is workspace-wide, and the rest of krowk calls `std::fs` from
-    /// synchronous code on purpose. What may block is marked `// blocking:`
-    /// with why, above the statement or function it covers — at start, on
-    /// the way out, or inside `spawn_blocking` — and anything else fails
-    /// here. The log's own appends are the host's, not this module's (see
-    /// harness.md → The host daemon).
+    /// R-LAG-9's tripwire for the daemon's own serving code: no blocking
+    /// call there unless marked `// blocking:` with why, above the
+    /// statement or function it covers — at start, on the way out, or
+    /// inside `spawn_blocking`. A substring scan, so a tripwire, not the
+    /// enforcement: that is the lateness probe in `tests/daemon_ws.rs`,
+    /// which fails when anything — here, in the host, in a tool — holds the
+    /// daemon's thread past 30 ms while sessions stream.
     #[test]
     fn r_lag_9_no_blocking_io_on_the_daemons_thread() {
-        const BLOCKING: [&str; 8] = ["std::fs::", "std::thread::sleep", "std::os::unix::net::", "std::io::stdin", "std::net::TcpStream", "File::open", "read_events(", ".block_on("];
+        const BLOCKING: [&str; 11] = ["std::fs::", "std::thread::sleep", "std::os::unix::net::", "std::io::stdin", "std::net::TcpStream", "File::open", "File::create", "OpenOptions::new", "read_events(", ".block_on(", "sync_data("];
         let files = [("server.rs", include_str!("server.rs")), ("outbox.rs", include_str!("outbox.rs")), ("replay.rs", include_str!("replay.rs")), ("ws.rs", include_str!("ws.rs"))];
         let mut found = Vec::new();
         for (name, src) in files {

@@ -61,11 +61,15 @@ pub struct Options {
     pub caps: Caps,
     /// How much of a running turn each session keeps for catching up.
     pub replay_cap: usize,
+    /// For tests: the most, in microseconds, the daemon's thread has been
+    /// late for a 5 ms tick since this was last set to 0 — how long
+    /// something blocked every session and heartbeat at once (R-LAG-9).
+    pub lateness: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP }
+        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None }
     }
 }
 
@@ -111,8 +115,16 @@ pub(super) struct State {
     wake: Rc<Notify>,
     /// A client asked it to exit (`stop`).
     stopping: bool,
-    /// Clients caught up from their cursor after falling behind.
+    /// Times a client fell behind, to be caught up from its cursor.
     caught_up: u64,
+    /// The last `line.seq` given out in each session: kept when a session
+    /// is let go, so a `seq` is never reused while the daemon runs.
+    seqs: HashMap<String, u64>,
+    /// When this daemon started, in ms since the Unix epoch: the run a
+    /// `seq` is numbered within (`welcome.epoch`).
+    pub(super) epoch: u64,
+    /// WebSocket connections that have not said an authenticated hello yet.
+    pub(super) unauthenticated: usize,
 }
 
 struct Hub {
@@ -123,8 +135,6 @@ struct Hub {
     /// The running turn's frames after its last logged event, bounded;
     /// empty between turns.
     turn: Tail,
-    /// The last `line.seq` given out.
-    seq: u64,
     running: bool,
     /// Commands under way in it that stream (`prompt`, `continue`).
     in_flight: usize,
@@ -189,12 +199,29 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         next_hub: 0,
         stopping: false,
         caught_up: 0,
+        seqs: HashMap::new(),
+        epoch: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64),
+        unauthenticated: 0,
         working: 0,
         started: Instant::now(),
         opts,
         wake: wake.clone(),
     }));
     eprintln!("krowk host {} listening on {} (pid {}, idle exit {})", state.borrow().opts.krowk_version, socket.display(), std::process::id(), idle.map_or("never".into(), |d| format!("{d:?}")));
+    // The TLS configuration every engine shares, built off the thread
+    // before any turn needs it.
+    tokio::task::spawn_blocking(crate::http::warm);
+    if let Some(probe) = state.borrow().opts.lateness.clone() {
+        tokio::task::spawn_local(async move {
+            const TICK: Duration = Duration::from_millis(5);
+            loop {
+                let at = Instant::now();
+                tokio::time::sleep(TICK).await;
+                let late = at.elapsed().saturating_sub(TICK).as_micros() as u64;
+                probe.fetch_max(late, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+    }
     if let Some((listener, _)) = websocket {
         eprintln!("krowk host WebSocket listening on ws://{}", listener.local_addr().map_err(|e| e.to_string())?);
         tokio::task::spawn_local(super::ws::accept(listener, state.clone()));
@@ -273,15 +300,19 @@ fn error_info(e: &EngineError) -> ErrorInfo {
 /// socket's permissions already say whose it is.
 pub(super) fn welcome(state: &Shared, hello: Option<ClientFrame>, token: Option<&str>) -> Result<(u64, Rc<Outbox>), Box<ServerFrame>> {
     let refuse = |code: &str, message: String, fix: String| Box::new(ServerFrame::Refused { code: code.into(), message, fix });
-    let (cwd, answers) = match hello {
-        Some(ClientFrame::Hello { protocol_version, cwd, answers_approvals, token: given, .. }) if protocol_version == PROTOCOL_VERSION => {
-            if let Some(want) = token
-                && !given.as_deref().is_some_and(|g| same(g.as_bytes(), want.as_bytes()))
-            {
-                return Err(refuse("unauthorized", "the hello carries no token, or not this daemon's".into(), "send the token in host.token, beside the daemon's socket, as `hello.token`".into()));
-            }
-            (PathBuf::from(cwd), answers_approvals)
+    // The token before anything else: a client that cannot prove it is this
+    // user learns nothing, not even the daemon's pid or version.
+    if let Some(want) = token {
+        let given = match &hello {
+            Some(ClientFrame::Hello { token: Some(g), .. }) => g.as_str(),
+            _ => "",
+        };
+        if !same(given.as_bytes(), want.as_bytes()) {
+            return Err(refuse("unauthorized", "the hello carries no token, or not this daemon's".into(), "send the token in host.token, beside the daemon's socket, as `hello.token`".into()));
         }
+    }
+    let (cwd, answers) = match hello {
+        Some(ClientFrame::Hello { protocol_version, cwd, answers_approvals, .. }) if protocol_version == PROTOCOL_VERSION => (PathBuf::from(cwd), answers_approvals),
         Some(ClientFrame::Hello { protocol_version, .. }) => {
             let pid = std::process::id();
             return Err(refuse(
@@ -296,7 +327,7 @@ pub(super) fn welcome(state: &Shared, hello: Option<ClientFrame>, token: Option<
     s.next_client += 1;
     let id = s.next_client;
     let outbox = Rc::new(Outbox::new(s.opts.caps));
-    outbox.push("", control(&ServerFrame::Welcome { protocol_version: PROTOCOL_VERSION, krowk_version: s.opts.krowk_version.clone(), pid: std::process::id() }));
+    outbox.push("", control(&ServerFrame::Welcome { protocol_version: PROTOCOL_VERSION, krowk_version: s.opts.krowk_version.clone(), pid: std::process::id(), epoch: s.epoch }));
     s.clients.insert(id, Client { outbox: outbox.clone(), cwd, answers });
     s.wake.notify_one();
     Ok((id, outbox))
@@ -361,8 +392,10 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
         ClientFrame::Execute { id: cmd_id, command } => {
             tokio::task::spawn_local(execute(state.clone(), id, cmd_id, command));
         }
-        ClientFrame::Attach { id: cmd_id, session_id, after_event_id, after_seq } => {
-            tokio::task::spawn_local(attach(state.clone(), id, cmd_id, session_id, after_event_id, after_seq.unwrap_or(0)));
+        ClientFrame::Attach { id: cmd_id, session_id, after_event_id, after_seq, epoch } => {
+            // A `seq` counts only within the daemon run that numbered it.
+            let after_seq = if epoch == Some(state.borrow().epoch) { after_seq.unwrap_or(0) } else { 0 };
+            attach(state, id, cmd_id, session_id, after_event_id, after_seq);
         }
         ClientFrame::Status { id: cmd_id } => {
             let mut s = state.borrow_mut();
@@ -430,7 +463,7 @@ pub(super) fn encode(f: &ServerFrame) -> Rc<[u8]> {
 
 /// A control frame, queued in the session it answers for.
 fn control(f: &ServerFrame) -> Out {
-    Out { bytes: encode(f), seq: 0, log: None, line: false, slot: None }
+    Out { bytes: encode(f), seq: 0, log: None, line: false, slot: None, mark: outbox::Cursor::default() }
 }
 
 /// A `line` frame around `json`, the line already encoded: built by hand so
@@ -451,7 +484,7 @@ fn line_out(json: &str, line: &StreamLine, session: &str, cmd: Option<u64>, seq:
         v.extend_from_slice(format!(",\"seq\":{seq}").as_bytes());
     }
     v.extend_from_slice(b"}\n");
-    Out { bytes: Rc::from(v), seq, log: own_log.cloned(), line: true, slot: outbox::slot_of(line) }
+    Out { bytes: Rc::from(v), seq, log: own_log.cloned(), line: true, slot: outbox::slot_of(line), mark: outbox::Cursor::default() }
 }
 
 fn status(s: &State) -> HostStatus {
@@ -498,9 +531,8 @@ fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>, Engin
             let Some(state) = weak.upgrade() else { break };
             let mut s = state.borrow_mut();
             let session = line.session_id().to_string();
-            let Some(hub) = s.hubs.get_mut(&session) else { continue };
-            hub.seq += 1;
-            let (seq, followers) = (hub.seq, hub.followers.clone());
+            let Some(followers) = s.hubs.get(&session).map(|h| h.followers.clone()) else { continue };
+            let seq = s.next_seq(&session);
             let json = serde_json::to_string(&line).expect("a stream line serializes");
             for f in followers {
                 s.send(f, &session, line_out(&json, &line, &session, None, seq, None));
@@ -544,7 +576,6 @@ impl State {
             host: host.clone(),
             followers: Vec::new(),
             turn: Tail::new(cap),
-            seq: 0,
             running: false,
             in_flight: 0,
             head: None,
@@ -564,7 +595,12 @@ impl State {
     /// Queues `out` for `client` in `session`'s queue. A client past its cap
     /// is caught up from its cursor once it reads again; one that does not
     /// read even its answers is let go.
-    fn send(&mut self, client: u64, session: &str, out: Out) {
+    fn send(&mut self, client: u64, session: &str, mut out: Out) {
+        // A control frame is marked with where its session stands, to be
+        // put back at that place should the client be caught up past it.
+        if !out.line {
+            out.mark = outbox::Cursor { seq: self.seqs.get(session).copied().unwrap_or(0), log: self.hubs.get(session).and_then(|h| h.head.as_deref()).map(Rc::from) };
+        }
         let Some(c) = self.clients.get(&client) else { return };
         match c.outbox.push(session, out) {
             Pushed::Queued | Pushed::Dropped => {}
@@ -572,12 +608,20 @@ impl State {
                 // Caught up once the transport has handed on what it could
                 // (`Outbox::due`, then `resync`).
                 eprintln!("client {client} fell behind on session {session} at seq {}: its queue is dropped to its cursor", cursor.seq);
+                self.caught_up += 1;
             }
             Pushed::Overflow => {
                 eprintln!("client {client} reads nothing, not even its answers: letting it go");
                 self.drop_client(client);
             }
         }
+    }
+
+    /// The session's next `line.seq`.
+    fn next_seq(&mut self, session: &str) -> u64 {
+        let n = self.seqs.entry(session.to_string()).or_insert(0);
+        *n += 1;
+        *n
     }
 
     /// Lets `client` go: its outbox closes once what it has is handed on,
@@ -627,9 +671,8 @@ impl State {
     /// encoded once, and queued for every follower: nothing between the
     /// host's stream and the socket writes anywhere (R-LAG-1).
     fn publish(&mut self, root: &str, host: &Rc<Host>, client: u64, cmd: u64, line: StreamLine) {
+        let seq = self.next_seq(root);
         let hub = self.follow(root, host, client);
-        hub.seq += 1;
-        let seq = hub.seq;
         let own = line.session_id() == root;
         if !own {
             hub.children.insert(line.session_id().to_string());
@@ -758,54 +801,45 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     s.tidy();
 }
 
-/// Catches `client` up on `session` from its cursor after it fell behind:
-/// what it missed goes ahead of the answers held for it meanwhile.
+/// One page of catching `client` up on `session` from `cursor`: a client
+/// that fell behind, or one attaching. Asked for by the transport once the
+/// client has read the last page (`Outbox::due`), so however far behind it
+/// is the daemon holds at most a page for it.
 pub(super) fn resync(state: &Shared, client: u64, session: String, cursor: outbox::Cursor) {
     let state = state.clone();
     tokio::task::spawn_local(async move {
-        let after = cursor.log.as_deref().map(String::from);
-        let deliver = |s: &mut State, frames: Vec<Out>, _running: bool| {
-            if let Some(c) = s.clients.get(&client) {
-                c.outbox.resynced(&session, frames);
-                s.caught_up += 1;
-            }
-        };
-        if catch_up(&state, client, &session, after, cursor.seq, deliver).await.is_err() {
+        let Err(e) = page(&state, client, &session, cursor).await else { return };
+        let mut s = state.borrow_mut();
+        let Some(c) = s.clients.get(&client) else { return };
+        let held = c.outbox.held(&session);
+        match c.outbox.resynced(&session, Vec::new(), held, true) {
+            Some(id) => s.send(client, &session, control(&ServerFrame::Attached { id, session_id: session.clone(), running: false, error: Some(error_info(&e)) })),
             // Nothing to catch it up from: it cannot be given a stream
             // without a gap, so it is let go, and reconnects from its
             // cursor itself.
-            state.borrow_mut().drop_client(client);
+            None => s.drop_client(client),
         }
     });
 }
 
-/// Catches `client` up on `session` and follows it from here on.
-async fn attach(state: Shared, client: u64, id: u64, session: String, after: Option<String>, after_seq: u64) {
-    let seed = after.clone();
-    let deliver = |s: &mut State, frames: Vec<Out>, running: bool| {
-        if let Some(c) = s.clients.get(&client) {
-            c.outbox.seed(&session, seed.as_deref());
-        }
-        for f in frames {
-            s.send(client, &session, f);
-        }
-        s.send(client, &session, control(&ServerFrame::Attached { id, session_id: session.clone(), running, error: None }));
-    };
-    if let Err(e) = catch_up(&state, client, &session, after, after_seq, deliver).await {
-        state.borrow_mut().send(client, &session, control(&ServerFrame::Attached { id, session_id: session.clone(), running: false, error: Some(error_info(&e)) }));
+/// Catches `client` up on `session` from its cursor, in pages, then follows
+/// it from there; answered by `attached` after the last page.
+fn attach(state: &Shared, client: u64, id: u64, session: String, after: Option<String>, after_seq: u64) {
+    let mut s = state.borrow_mut();
+    if !log::valid_id(&session) {
+        let e = EngineError::new("bad_session", format!("{session:?} is not a session id — the sessionId a result names"));
+        return s.send(client, &session, control(&ServerFrame::Attached { id, session_id: session.clone(), running: false, error: Some(error_info(&e)) }));
+    }
+    if let Some(c) = s.clients.get(&client) {
+        c.outbox.begin(&session, outbox::Cursor { seq: after_seq, log: after.as_deref().map(Rc::from) }, id);
     }
 }
 
-/// What brings `client` up to date on `session` from its cursor — the log
-/// after the event `after` (all of it when none), then the running turn's
-/// frames after `after_seq` — handed to `deliver` with whether a turn is
-/// under way, with the state borrowed: nothing is published between the
-/// catching up and what follows it live. `client` follows the session from
-/// there.
-async fn catch_up(state: &Shared, client: u64, session: &str, after: Option<String>, after_seq: u64, deliver: impl FnOnce(&mut State, Vec<Out>, bool)) -> Result<(), EngineError> {
-    if !log::valid_id(session) {
-        return Err(EngineError::new("bad_session", format!("{session:?} is not a session id — the sessionId a result names")));
-    }
+/// One page of `session`'s catching up from `cursor` — the log after its
+/// event (all of it when none), then the running turn's frames after its
+/// `seq` — handed to the client's outbox with the state borrowed: nothing
+/// is published between the last page and what follows it live.
+async fn page(state: &Shared, client: u64, session: &str, cursor: outbox::Cursor) -> Result<(), EngineError> {
     let Some((cwd, answers)) = state.borrow().clients.get(&client).map(|c| (c.cwd.clone(), c.answers)) else { return Ok(()) };
     let known = state.borrow().hubs.get(session).map(|h| h.host.clone());
     let host = known.map(Ok).unwrap_or_else(|| host_for(state, &cwd, answers))?;
@@ -818,7 +852,6 @@ async fn catch_up(state: &Shared, client: u64, session: &str, after: Option<Stri
     // comes in order with the frames around it. A head the read does not
     // reach yet — the log grew while it read — is read again.
     let mut tries = 0;
-    let mut deliver = Some(deliver);
     loop {
         tries += 1;
         let p = path.clone();
@@ -826,18 +859,18 @@ async fn catch_up(state: &Shared, client: u64, session: &str, after: Option<Stri
             Ok(Ok(e)) => e,
             _ => return Err(EngineError::new("no_session", format!("there is no session {session} — `krowk sessions` lists them"))),
         };
-        if decide(state, client, session, &host, events, tries, after.as_deref(), after_seq, &mut deliver) {
+        if decide(state, client, session, &host, events, tries, &cursor) {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
-/// Matches a read of the log against the hub as it is now, and hands
-/// `deliver` what catches the client up — false when the read is behind
-/// what was sent live, and is to be read again.
-#[allow(clippy::too_many_arguments)]
-fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: Vec<crate::protocol::LogEvent>, tries: u32, after: Option<&str>, after_seq: u64, deliver: &mut Option<impl FnOnce(&mut State, Vec<Out>, bool)>) -> bool {
+/// Matches a read of the log against the hub as it is now, and hands the
+/// client's outbox the next page, with the control frames it held put back
+/// at their places — false when the read is behind what was sent live, and
+/// is to be read again.
+fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: Vec<crate::protocol::LogEvent>, tries: u32, cursor: &outbox::Cursor) -> bool {
     let n = events.len();
     let mut s = state.borrow_mut();
     let decided = match s.hubs.get(session).filter(|h| h.in_flight > 0 || h.running) {
@@ -851,7 +884,7 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: V
                 // Nothing sent live yet: the log as it was before the
                 // command, all of which is history.
                 (None, _) => Some((hub.base.min(n), Vec::new(), running)),
-                (Some(_), Some(at)) => Some((at + 1, hub.turn.after(after_seq), running)),
+                (Some(_), Some(at)) => Some((at + 1, hub.turn.after(cursor.seq), running)),
                 // The read is behind what was sent: read again, and
                 // past that, only what cannot come twice.
                 (Some(_), None) if tries < 100 => None,
@@ -860,24 +893,70 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: V
         }
     };
     let Some((upto, tail, running)) = decided else { return false };
-    if !s.clients.contains_key(&client) {
+    // Gone, or it left the session while the log was read.
+    let Some(outbox) = s.clients.get(&client).map(|c| c.outbox.clone()) else { return true };
+    if !outbox.expects(session) {
         return true;
     }
-    s.follow(session, host, client);
-    let from = after.and_then(|a| events.iter().position(|e| e.id == a)).map_or(0, |i| i + 1);
-    let mut frames = Vec::with_capacity(upto.saturating_sub(from) + tail.len());
-    for ev in events.into_iter().take(upto).skip(from) {
+    let from = cursor.log.as_deref().and_then(|a| events.iter().position(|e| e.id == a)).map_or(0, |i| i + 1);
+    let cap = s.opts.caps.session_bytes;
+    // The page: the log from the cursor up to the cap, and once the log is
+    // all in, the running turn's frames. `at` is each frame's place — its
+    // index in the log, or its `seq` — for putting the held frames back.
+    let (mut frames, mut at): (Vec<Out>, Vec<Result<usize, u64>>) = (Vec::new(), Vec::new());
+    let mut bytes = 0;
+    let mut next = from;
+    while next < upto && (bytes < cap || frames.is_empty()) {
+        let ev = events[next].clone();
         let id: Rc<str> = Rc::from(ev.id.as_str());
         let line = StreamLine::Log(ev);
         let json = serde_json::to_string(&line).expect("a stream line serializes");
-        frames.push(line_out(&json, &line, session, None, 0, Some(&id)));
+        let out = line_out(&json, &line, session, None, 0, Some(&id));
+        bytes += out.bytes.len();
+        frames.push(out);
+        at.push(Ok(next));
+        next += 1;
     }
-    for (seq, line) in tail {
-        let json = serde_json::to_string(&line).expect("a stream line serializes");
-        frames.push(line_out(&json, &line, session, None, seq, None));
+    let last = next >= upto;
+    if last {
+        for (seq, line) in tail {
+            let json = serde_json::to_string(&line).expect("a stream line serializes");
+            frames.push(line_out(&json, &line, session, None, seq, None));
+            at.push(Err(seq));
+        }
     }
-    if let Some(deliver) = deliver.take() {
-        deliver(&mut s, frames, running);
+    // Each held frame goes after the frames that came before it: the log's
+    // events up to its mark's, then the turn's frames up to its mark's
+    // `seq`. One whose place is past this page waits for the next.
+    let mut rest = Vec::new();
+    let mut placed: Vec<(usize, Out)> = Vec::new();
+    for h in outbox.held(session) {
+        let li = h.mark.log.as_deref().and_then(|m| events.iter().position(|e| e.id == m));
+        let before = |a: &Result<usize, u64>| match a {
+            Ok(i) => li.is_some_and(|li| *i <= li),
+            Err(q) => li.is_none_or(|li| li + 1 >= upto) && *q <= h.mark.seq,
+        };
+        let k = at.iter().take_while(|a| before(a)).count();
+        if !last && li.is_some_and(|li| li >= next) {
+            rest.push(h);
+        } else {
+            placed.push((k, h));
+        }
+    }
+    let mut page = Vec::with_capacity(frames.len() + placed.len());
+    let mut placed = placed.into_iter().peekable();
+    for (i, f) in frames.into_iter().enumerate() {
+        while let Some((_, h)) = placed.next_if(|(k, _)| *k == i) {
+            page.push(h);
+        }
+        page.push(f);
+    }
+    page.extend(placed.map(|(_, h)| h));
+    if last {
+        s.follow(session, host, client);
+    }
+    if let Some(id) = outbox.resynced(session, page, rest, last) {
+        s.send(client, session, control(&ServerFrame::Attached { id, session_id: session.to_string(), running, error: None }));
     }
     true
 }
