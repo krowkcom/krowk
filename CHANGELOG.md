@@ -11,6 +11,23 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Add a machine to sync by approving it from one that already syncs,
+  with no recovery phrase.** On the new machine, `krowk sync join` shows a
+  32-character code and waits. On a machine that already syncs, `krowk
+  devices approve` asks for that code and hands the account key over,
+  encrypted to the new machine's key. Type the code as the new machine
+  shows it. The new machine then asks for the account key id `approve`
+  printed (or take it as `krowk sync join <id>`), and it keeps nothing
+  unless the ids match. These two checks stop the registry slipping in a
+  key of its own. `krowk devices list` shows the workspace's machines and
+  the account key id this one holds. All of it needs a key to a Pro
+  workspace. On a free workspace the commands refuse, with a fix line
+  saying so. `krowk sync init` and `recover` still work there and with no
+  account at all: the keys stay on this machine. With a Pro key, `init`
+  and `recover` register this machine with the workspace. `recover` then
+  refuses a phrase that restored a different account key from the
+  workspace's, which is how a mistyped word that happens to pass the
+  checksum is caught.
 - **`krowk sync init` sets up the end-to-end encryption keys sync will
   use, and shows your recovery phrase.** It makes a key for this machine
   and an account key, prints the account key as 24 words, and keeps it
@@ -21,7 +38,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   the 24 words — typed at its prompt, or piped from a file (`< phrase.txt`),
   never with `echo`, which keeps them in your shell history — restores the
   same account key there and shows its key id; if the id differs, a word
-  was wrong, and running `recover` again with the right words replaces it. Nothing syncs yet — the keys
+  was wrong, and running `recover` again with the right words replaces it. The keys
   stay in krowk's home, `device.json` and `account-key.json`, both
   `0600`, and the wrapped account key opens only with that machine's own
   device key.

@@ -30,6 +30,7 @@ OTHER
   providers     Low-level instance config (add, list, rename, remove)
   host          The daemon sessions run in, which outlives the terminal
   sync          End-to-end encryption keys for syncing sessions
+  devices       The machines that sync this workspace's sessions
   config        Show or set configuration
   doctor        Check this machine's setup
   pricing       Refresh model prices
@@ -97,6 +98,9 @@ OTHER
   host disable      Stop the service and remove it
   sync init         Set up: a device key, an account key, its recovery phrase
   sync recover      Restore the account key here from its recovery phrase
+  sync join         Add this machine, approved from one that already syncs
+  devices list      The workspace's devices, and the account key this one holds
+  devices approve   Approve a new device's `krowk sync join`
   config show       The effective configuration, and which layer set each value
   config set        Write one value into the repo config, or the global one
   config unset      Remove one value from the repo config, or the global one
