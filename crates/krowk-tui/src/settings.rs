@@ -22,7 +22,7 @@
 //! the details overlay.
 //!
 //! `/settings` (or `/config`) sets what lives outside `"tui"`: for now
-//! `permissions.defaultMode`, cycled between `default` and `unhinged`, which
+//! `permissions.defaultMode`, `default` or `unhinged` chosen with ← and →, which
 //! the next session starts in (`--permission-mode` and a trusted
 //! repository's own `defaultMode` still come first).
 //!
@@ -124,22 +124,24 @@ pub fn from_config(raw: &Value) -> (Settings, Vec<String>) {
     (s, warnings)
 }
 
-/// The modes `/settings` cycles the default through: the one that asks,
-/// and the one that asks about nothing.
+/// The modes `/settings` chooses the default from, left to right: the one
+/// that asks, and the one that asks about nothing.
 pub const DEFAULT_MODES: [PermissionMode; 2] = [PermissionMode::Default, PermissionMode::Unhinged];
 
 /// `permissions.defaultMode` in a read config.json as written — none when
-/// it names nothing, which runs as `default`.
+/// there is none, which runs as `default`; a value that is no string as
+/// its JSON.
 pub fn default_mode(raw: &Map<String, Value>) -> Option<String> {
-    raw.get("permissions").and_then(|p| p.get("defaultMode")).and_then(Value::as_str).map(String::from)
+    raw.get("permissions").and_then(|p| p.get("defaultMode")).map(|v| v.as_str().map_or_else(|| v.to_string(), String::from))
 }
 
-/// The mode after `now` in `DEFAULT_MODES` (none is `default`); the first
-/// for any other.
-pub fn next_default(now: Option<&str>) -> PermissionMode {
+/// The mode `by` along `DEFAULT_MODES` from `now` (none is `default`), and
+/// none past either end: the same key again chooses nothing new. From a
+/// mode outside them, either way is the first.
+pub fn step_default(now: Option<&str>, by: isize) -> Option<PermissionMode> {
     let now = now.unwrap_or(PermissionMode::Default.name());
-    let at = DEFAULT_MODES.iter().position(|m| m.name() == now);
-    at.map_or(DEFAULT_MODES[0], |i| DEFAULT_MODES[(i + 1) % DEFAULT_MODES.len()])
+    let Some(at) = DEFAULT_MODES.iter().position(|m| m.name() == now) else { return Some(DEFAULT_MODES[0]) };
+    at.checked_add_signed(by).and_then(|i| DEFAULT_MODES.get(i)).copied()
 }
 
 /// Writes `permissions.defaultMode`, keeping every other key as it was:
@@ -188,9 +190,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let config = dir.join("config.json");
         assert_eq!(krowk_harness::connect::read_config(&config).map(|r| default_mode(&r)), Ok(None), "no file names nothing");
-        assert_eq!(next_default(None), PermissionMode::Unhinged, "unset runs as default, so the next is unhinged");
-        assert_eq!(next_default(Some("unhinged")), PermissionMode::Default);
-        assert_eq!(next_default(Some("acceptEdits")), PermissionMode::Default, "a mode outside the cycle goes to its start");
+        assert_eq!(step_default(None, 1), Some(PermissionMode::Unhinged), "unset runs as default, so → is unhinged");
+        assert_eq!(step_default(None, -1), None, "nothing left of default");
+        assert_eq!(step_default(Some("unhinged"), 1), None, "held →: nothing past unhinged");
+        assert_eq!(step_default(Some("unhinged"), -1), Some(PermissionMode::Default));
+        assert_eq!(step_default(Some("acceptEdits"), 1), Some(PermissionMode::Default), "a mode outside them goes to the first");
+        assert_eq!(default_mode(json!({"permissions": {"defaultMode": true}}).as_object().unwrap()).as_deref(), Some("true"), "no string is shown as it is");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&config, json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"]}}).to_string()).unwrap();
         let written = set_default_mode(&config, PermissionMode::Unhinged).unwrap();

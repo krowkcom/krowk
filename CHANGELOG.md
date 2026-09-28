@@ -19,7 +19,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   session starts in `--permission-mode` or the configured default again.
 - **`/settings` in the TUI (or `/config`)** opens the settings krowk saves
   to `~/.krowk/config.json`. The first is the default permission mode:
-  enter or space switches it between `default` and `unhinged`, written to
+  ← and → choose `default` or `unhinged`, written to
   `permissions.defaultMode` at once, every other key kept as it was. The
   next session starts in it; the running one keeps its mode, which `/mode`
   changes. When `~/.claude/settings.json` or a trusted repository's settings

@@ -1692,8 +1692,8 @@ impl App {
         let mode = self.default_mode.as_deref().unwrap_or("default");
         let says = if PermissionMode::parse(mode).is_some() { mode_says(mode) } else { "not a mode krowk runs, so it runs as default" };
         let mut out = vec![
-            Line::from(Span::styled(clip("settings — enter or space changes · esc closes · saved to config.json for the next session", width), dim())),
-            Line::from(Span::styled(clip(&format!("❯ Default permission mode  {mode:<17} {says}"), width), look::accent())),
+            Line::from(Span::styled(clip("settings — ← → change · enter or esc closes · saved to config.json for the next session", width), dim())),
+            Line::from(Span::styled(clip(&format!("❯ Default permission mode  ‹ {mode} ›  {says}"), width), look::accent())),
         ];
         if let Some((runs, claude)) = &self.default_mode_overridden {
             let why = format!("  a new session here starts in {} — {claude} or this repository's settings set it, and come after config.json", runs.name());

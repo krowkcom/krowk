@@ -1288,6 +1288,8 @@ pub fn write_config(path: &Path, raw: &Map<String, Value>) -> std::io::Result<()
         open.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+        // One a killed krowk of the same pid left is taken away first.
+        let _ = std::fs::remove_file(&tmp);
         let mut f = open.open(&tmp)?;
         f.write_all(data.as_bytes())?;
         #[cfg(unix)]
