@@ -186,7 +186,7 @@ impl Keystore {
             if id == account.id() {
                 origin = if f.origin == "recover" { f.origin } else { "init".into() };
             } else if f.origin != "recover" {
-                return Err(format!("this home already holds account key {id}, made here by `krowk sync init` — recovering another into it would lose that one; use a fresh krowk home, or move {} aside", self.account_path().display()));
+                return Err(format!("this home already holds account key {id}, put here by `krowk sync init` or `join` — recovering another into it would lose that one; use a fresh krowk home, or move {} aside", self.account_path().display()));
             } else {
                 replaced = Some(id);
             }
