@@ -27,7 +27,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   has two rows, chosen with ↑ and ↓; the content width applies as soon as
   it is changed, to what is printed from then on. The default is `prose`,
   so a wide terminal now reads in a column of 65; set `full-width` for
-  the old layout.
+  the old layout. The width is the conversation's: the prompt and the
+  status line under it take the terminal's whole width either way.
 - **Connected instances can be renamed**: `krowk providers rename
   claude:work claude:personal` on the command line, or `/rename` in the
   TUI, which picks the instance and asks its new name with the provider's

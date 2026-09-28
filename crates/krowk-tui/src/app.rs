@@ -315,7 +315,8 @@ pub struct Turn {
 pub struct App {
     pub editor: Editor,
     pending: Vec<Line<'static>>,
-    /// The width laid out in: `room`, at most `settings.content_width`'s.
+    /// The width above the prompt is laid out in: `room`, at most
+    /// `settings.content_width`'s. The prompt and status line take `room`.
     width: u16,
     /// The width there is, inside the padding.
     room: u16,
@@ -1524,12 +1525,14 @@ impl App {
             }
         }
         // The prompt between two rules, scrolled to keep the caret in
-        // view: `→ ` before its first row, open at the sides.
-        let inner = width.max(1);
+        // view: `→ ` before its first row, open at the sides. The prompt
+        // and the status line take all the room there is; the content
+        // width is for what is above them.
+        let inner = usize::from(self.room.max(1));
         let (input, (crow, ccol)) = self.editor.layout(inner.saturating_sub(2).max(1) as u16);
         let first = (crow as usize + 1).saturating_sub(MAX_INPUT_ROWS);
         let edge = look::border();
-        let across = "─".repeat(width);
+        let across = "─".repeat(inner);
         rows.push(Line::from(Span::styled(across.clone(), edge)));
         let top = rows.len() as u16;
         for (i, row) in input.iter().enumerate().skip(first).take(MAX_INPUT_ROWS) {
@@ -1546,7 +1549,7 @@ impl App {
         let caret = flow_caret.unwrap_or((ccol + 2, top + (crow as usize - first) as u16));
         if self.settings.status_bar {
             // Right under the prompt's bottom rule, nothing between.
-            rows.push(self.hint_row(width));
+            rows.push(self.hint_row(inner));
         }
         (rows, caret)
     }
@@ -2479,7 +2482,7 @@ mod tests {
     #[test]
     fn the_prompt_is_a_box_and_the_row_under_it_says_what_runs_and_what_it_costs() {
         let mut a = app();
-        a.width = 90;
+        a.set_width(90);
         let (rows, caret) = a.view(Instant::now());
         let t = text(&rows);
         assert_eq!(t[0], "─".repeat(90));
@@ -2890,7 +2893,18 @@ mod tests {
         a.say(&"word ".repeat(40), dim());
         let lines = a.take_pending();
         assert!(lines.len() > 1 && lines.iter().all(|l| l.width() <= 65), "{:?}", text(&lines));
-        assert!(text(&a.view(Instant::now()).0).iter().all(|r| r.width() <= 65), "the live region too");
+        // Above the prompt, at most 65; the prompt and the status line
+        // take the whole width.
+        let above = |rows: &[String]| rows.iter().take_while(|r| !r.starts_with('─')).cloned().collect::<Vec<_>>();
+        a.turn = Some(Turn { started: Instant::now(), want_interrupt: false, interrupt_sent: false, tool_running: false, prompt_seen: true });
+        a.editor.insert_str(&"word ".repeat(30));
+        let rows = text(&a.view(Instant::now()).0);
+        assert!(!above(&rows).is_empty() && above(&rows).iter().all(|r| r.width() <= 65), "the live region too: {rows:?}");
+        let rule = rows.iter().find(|r| r.starts_with('─')).unwrap();
+        assert_eq!(rule.width(), 200, "the prompt's rule spans the terminal");
+        assert!(rows.iter().any(|r| r.starts_with(look::ARROW) && r.width() > 65), "the prompt wraps at the terminal: {rows:?}");
+        a.turn = None;
+        a.editor = Editor::new(None);
         a.set_width(30);
         assert_eq!(a.width, 30, "a narrower terminal keeps all of its width");
         a.set_width(200);
@@ -2905,7 +2919,7 @@ mod tests {
         assert!(rows.contains("asks before edits and commands") && rows.contains("at most 65 columns"), "what each value does, whole: {rows}");
         a.open_mode_picker();
         let rows = text(&a.view(Instant::now()).0);
-        assert!(rows.iter().all(|r| r.width() <= 65), "{rows:?}");
+        assert!(above(&rows).iter().all(|r| r.width() <= 65), "{rows:?}");
         assert!(rows.join("\n").contains("deny and ask rules still hold"), "the mode picker's too: {rows:?}");
         assert!(rows.iter().any(|r| r.starts_with("❯ default") || r.starts_with("  default  ")), "{rows:?}");
     }

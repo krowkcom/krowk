@@ -4,10 +4,11 @@
 //! { "tui": { "contentWidth": "prose", "statusBar": true, "statusItems": ["device", "model", "cost", "tasks", "subagents", "help"] } }
 //! ```
 //!
-//! - `contentWidth` — `prose` (the default) lays everything out at most 65
-//!   columns wide, Tailwind's `max-w-prose` (`65ch`), however wide the
-//!   terminal; a narrower one still gets all of its width. `full-width`
-//!   takes the terminal's whole width.
+//! - `contentWidth` — `prose` (the default) lays out what is above the
+//!   prompt at most 65 columns wide, Tailwind's `max-w-prose` (`65ch`),
+//!   however wide the terminal; a narrower one still gets all of its width.
+//!   `full-width` takes the terminal's whole width. The prompt and the
+//!   status line take the whole width either way.
 //! - `statusBar` — false hides the status line under the prompt. The "no
 //!   network connectivity" notice is not part of it and shows regardless
 //!   (R-OFF-1).
@@ -76,7 +77,7 @@ impl Item {
     }
 }
 
-/// How wide the TUI lays out, inside its padding.
+/// How wide what is above the prompt lays out, inside the padding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ContentWidth {
     /// At most `PROSE` columns.
