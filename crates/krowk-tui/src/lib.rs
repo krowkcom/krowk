@@ -2117,15 +2117,15 @@ impl<'h> Ui<'h> {
         if self.pr.is_some() || !(branch || pr) {
             return;
         }
-        self.looked_in = app.works_in.clone();
-        let dirs: Vec<PathBuf> = app.works_in.iter().map(|d| self.runs_in.join(d)).chain([self.runs_in.clone()]).collect();
+        self.looked_in = app.follow.works_in.clone();
+        let dirs: Vec<PathBuf> = app.follow.works_in.iter().cloned().chain([self.runs_in.clone()]).collect();
         self.pr = Some(Box::pin(async move { tokio::task::spawn_blocking(move || pr::look(&dirs, pr)).await.unwrap_or_default() }));
     }
 
     /// Reads the branch again once the agent is at work somewhere else: a
     /// worktree it made shows its branch without waiting for the turn.
     fn follow_the_agent(&mut self, app: &App) {
-        if app.works_in != self.looked_in {
+        if app.follow.works_in != self.looked_in {
             self.look_for_pr(app);
         }
     }
