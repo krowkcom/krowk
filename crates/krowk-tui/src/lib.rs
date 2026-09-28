@@ -68,6 +68,8 @@ const STALL: Duration = Duration::from_millis(700);
 const APPROVAL_SETTLE: Duration = Duration::from_millis(400);
 /// How often an interrupt the host could not take yet is asked again.
 const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
+/// How many earlier sessions `/sessions` lists.
+const RESUMABLE: usize = 30;
 
 pub struct Options {
     pub host: HostConfig,
@@ -132,6 +134,9 @@ pub struct TrustAsk {
 pub struct Outcome {
     /// The session it ran turns in, for the caller to project into krowk.db.
     pub session_id: Option<String>,
+    /// The sessions `/sessions` moved away from, which the caller projects
+    /// too.
+    pub left: Vec<String>,
     /// Why it could not run or stopped early.
     pub error: Option<String>,
     /// Left without waiting for the running turn — a second Ctrl-C, or a
@@ -152,10 +157,10 @@ pub fn run(opts: Options) -> Outcome {
         .build()
     {
         Ok(rt) => rt,
-        Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("the async runtime could not start: {e}")) },
+        Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(format!("the async runtime could not start: {e}")) },
     };
     if let Err(e) = crossterm::terminal::enable_raw_mode() {
-        return Outcome { session_id: None, abandoned: false, error: Some(format!("the terminal could not be put in raw mode: {e}")) };
+        return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(format!("the terminal could not be put in raw mode: {e}")) };
     }
     let hook = std::panic::take_hook();
     // A panic ends the TUI when it aborts the process (the release profile)
@@ -228,21 +233,12 @@ async fn session(opts: Options) -> Outcome {
     let mut runs_in = opts.host.cwd.clone();
     let started_in = opts.host.cwd.clone();
     if let Some(id) = &opts.resume {
-        match log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)) {
+        match read_session(&sessions_dir, id) {
             Ok(events) => {
-                if let Some(krowk_harness::protocol::LogBody::SessionStarted { cwd, .. }) = events.first().map(|e| &e.body) {
-                    runs_in = PathBuf::from(cwd);
-                }
-                let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
-                app.replay(&log::branch(&events, &head));
-                // A turn logged on a name since renamed is on the new name.
-                for old in opts.host.registry.renamed.keys() {
-                    app.renamed(old, &opts.host.registry.current(old));
-                }
-                app.session_id = Some(id.clone());
+                runs_in = replay(&mut app, id, &events, &opts.host.registry).unwrap_or(runs_in);
                 app.say(&format!("resumed session {id}"), app::dim());
             }
-            Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("session {id} could not be read: {}", e.message())) },
+            Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(e) },
         }
     }
     // The model shown before the first turn names one: the one given
@@ -283,7 +279,7 @@ async fn session(opts: Options) -> Outcome {
             let _ = std::io::stdout().write_all(term::TITLE_SAVE);
             t
         }
-        Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("the terminal could not be drawn on: {e}")) },
+        Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(format!("the terminal could not be drawn on: {e}")) },
     };
     let credentials = opts.host.credentials.clone();
     let permissions_cfg = opts.host.permissions.clone();
@@ -301,6 +297,7 @@ async fn session(opts: Options) -> Outcome {
         permissions_cfg,
         credentials,
         data_dir: sessions_dir.parent().map(PathBuf::from),
+        sessions_dir,
         auth: None,
         suspended: false,
         checks: None,
@@ -320,7 +317,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, left: Vec::new(), last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
@@ -342,7 +339,8 @@ async fn session(opts: Options) -> Outcome {
         let _ = write!(out, "\x1b[2mresume this session with: krowk --resume {id}\x1b[0m\r\n");
     }
     let _ = out.flush();
-    Outcome { session_id: app.session_id.clone(), error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
+    ui.left.retain(|id| app.session_id.as_ref() != Some(id));
+    Outcome { session_id: app.session_id.clone(), left: ui.left, error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
 }
 
 struct Ui<'h> {
@@ -354,6 +352,8 @@ struct Ui<'h> {
     /// krowk's data directory, where a vendor is asked outside any
     /// repository (`readiness::neutral_dir`).
     data_dir: Option<PathBuf>,
+    /// Where session logs live: what `/sessions` lists and replays.
+    sessions_dir: PathBuf,
     /// A `/connect` or `/disconnect` running on its own thread: what it
     /// asks and tells, and its end.
     auth: Option<mpsc::UnboundedReceiver<connect::Msg>>,
@@ -414,6 +414,8 @@ struct Ui<'h> {
     rx: Option<mpsc::Receiver<StreamLine>>,
     /// Set to leave now, without the running turn's end.
     abandoned: bool,
+    /// The sessions `/sessions` moved away from, oldest first.
+    left: Vec<String>,
     /// The last prompt sent: what a yes to a limit's offer sends again on
     /// the instance it moves to (R-INST-7).
     last_prompt: String,
@@ -1531,6 +1533,7 @@ impl<'h> Ui<'h> {
                             help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
                             help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
                             help::Action::Rename => self.open_flow(app, connect::Job::Rename(None, None), false),
+                            help::Action::Sessions => self.open_resume(app),
                             help::Action::Todos => app.overlay = Overlay::Todos,
                             help::Action::Agents => app.overlay = Overlay::Agents,
                             help::Action::Details => app.overlay = Overlay::Details,
@@ -1564,6 +1567,27 @@ impl<'h> Ui<'h> {
                     app.overlay = Overlay::None;
                     if let Some(m) = PermissionMode::NAMES.get(app.mode_at).and_then(|n| PermissionMode::parse(n)) {
                         self.set_mode(app, m);
+                    }
+                    return false;
+                }
+                _ => {}
+            }
+        }
+        // So does `/sessions`.
+        if app.overlay == Overlay::Sessions && !ctrl && !alt {
+            match k.code {
+                KeyCode::Up => {
+                    app.resume_at = app.resume_at.saturating_sub(1);
+                    return false;
+                }
+                KeyCode::Down => {
+                    app.resume_at = (app.resume_at + 1).min(app.resumable.len().saturating_sub(1));
+                    return false;
+                }
+                KeyCode::Enter => {
+                    app.overlay = Overlay::None;
+                    if let Some(r) = app.resumable.get(app.resume_at).cloned() {
+                        self.resume(app, &r.id);
                     }
                     return false;
                 }
@@ -1693,6 +1717,95 @@ impl<'h> Ui<'h> {
         if !app.editor.text().starts_with('/') {
             app.slash_closed = false;
         }
+        false
+    }
+
+    /// `/sessions`: the sessions started where this one runs, to continue
+    /// one of them here. Only between turns — the running one would go on
+    /// writing to a session no longer shown.
+    fn open_resume(&mut self, app: &mut App) {
+        if !self.can_resume(app) {
+            return;
+        }
+        let mut sessions = log::recent(&self.sessions_dir, &self.runs_in, RESUMABLE + 1);
+        sessions.retain(|r| app.session_id.as_ref() != Some(&r.id));
+        sessions.truncate(RESUMABLE);
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        app.open_resume(sessions, now_ms);
+    }
+
+    /// Continues session `id` in place of the one shown: its conversation
+    /// replayed under what is on screen, and the next prompt sent to it, on
+    /// the model it last ran on.
+    fn resume(&mut self, app: &mut App, id: &str) {
+        if !self.can_resume(app) {
+            return;
+        }
+        if app.session_id.as_deref() == Some(id) {
+            app.notice(&format!("session {id} is the one shown"));
+            return;
+        }
+        // Read before anything is let go: a log that cannot be read leaves
+        // the session shown as it was.
+        let events = match read_session(&self.sessions_dir, id) {
+            Ok(events) => events,
+            Err(e) => return app.notice(&e),
+        };
+        // Here, only a session of here: the trust question, the skills and
+        // the header are this directory's. A subagent's belongs to its
+        // parent, which continues it.
+        match events.first().map(|e| &e.body) {
+            Some(krowk_harness::protocol::LogBody::SessionStarted { parent_session_id: Some(parent), .. }) => {
+                return app.notice(&format!("session {id} is a subagent of {parent} — continue {parent} instead"));
+            }
+            Some(krowk_harness::protocol::LogBody::SessionStarted { cwd, .. }) if std::path::Path::new(cwd) != self.runs_in => {
+                return app.notice(&format!("session {id} was started in {} — continue it there, with krowk --resume {id}", home_relative(std::path::Path::new(cwd))));
+            }
+            _ => {}
+        }
+        if let Some(old) = app.session_id.clone().filter(|old| !self.left.contains(old)) {
+            self.left.push(old);
+        }
+        app.forget_session();
+        app.model = None;
+        app.gap_say(&format!("continuing session {id}"));
+        replay(app, id, &events, &self.host.registry());
+        self.last_prompt.clear();
+        // Its own model from here, not the one the last session was on; one
+        // that never ran a turn goes on with the model the next prompt had.
+        self.chosen = None;
+        self.needs_trust = None;
+        app.trust_question = None;
+        if let Some(m) = app.model.clone() {
+            self.retarget(&m);
+            self.model = Some(m);
+        }
+        app.model = self.model.clone();
+        if let Some(m) = self.model.clone() {
+            self.owe_trust(app, &m);
+        }
+    }
+
+    /// Whether another session may take the one shown's place now: not
+    /// while a turn runs, nor while a prompt waits for the model or the
+    /// trust question, nor a `/model` is being routed — each was meant for
+    /// the session shown. The model routed at start is not: a session
+    /// resumed meanwhile has its own, which the route then leaves alone.
+    fn can_resume(&self, app: &mut App) -> bool {
+        let waits = if app.running() {
+            "the running turn to finish — esc interrupts it"
+        } else if app.offer.is_some() {
+            "the question above — y or n"
+        } else if self.held.is_some() {
+            "the prompt waiting to be sent — ctrl-c takes it back"
+        } else if self.model_route.is_some() {
+            "the /model switch to finish"
+        } else if app.backend_agents_running() {
+            "the agents running in the background — ctrl-g lists them"
+        } else {
+            return true;
+        };
+        app.notice(&format!("that waits for {waits}"));
         false
     }
 
@@ -2016,6 +2129,17 @@ impl<'h> Ui<'h> {
                 self.open_settings(app);
                 return false;
             }
+            "/sessions" => {
+                app.editor.clear();
+                self.open_resume(app);
+                return false;
+            }
+            t if t.starts_with("/sessions ") => {
+                app.editor.clear();
+                let id = t["/sessions ".len()..].trim().to_string();
+                self.resume(app, &id);
+                return false;
+            }
             "/mode" => {
                 app.editor.clear();
                 app.open_mode_picker();
@@ -2092,6 +2216,30 @@ impl<'h> Ui<'h> {
         }
         self.prompt(app, text);
         app.offline.is_some()
+    }
+}
+
+/// Session `id`'s log, read whole, or why it could not be.
+fn read_session(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_harness::protocol::LogEvent>, String> {
+    if !log::valid_id(id) {
+        return Err(format!("{id:?} is not a krowk session id"));
+    }
+    log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(|e| format!("session {id} could not be read: {}", e.message()))
+}
+
+/// Session `id`'s conversation into `app`, which continues it; the
+/// directory it was started in.
+fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry) -> Option<PathBuf> {
+    let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
+    app.replay(&log::branch(events, &head));
+    // A turn logged on a name since renamed is on the new name.
+    for old in registry.renamed.keys() {
+        app.renamed(old, &registry.current(old));
+    }
+    app.session_id = Some(id.to_string());
+    match events.first().map(|e| &e.body) {
+        Some(krowk_harness::protocol::LogBody::SessionStarted { cwd, .. }) => Some(PathBuf::from(cwd)),
+        _ => None,
     }
 }
 

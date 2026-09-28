@@ -27,7 +27,7 @@ ACCOUNT
   workspaces    Switch between stored keys
 
 OTHER
-  providers     Low-level instance config (add, list, remove)
+  providers     Low-level instance config (add, list, rename, remove)
   config        Show or set configuration
   doctor        Check this machine's setup
   pricing       Refresh model prices
@@ -87,6 +87,7 @@ OTHER
   providers add     Add an instance, or sign one in
   providers list    List every instance, and whether it is ready
   providers remove  Remove an instance's definition, and forget its login
+  providers rename  Rename an instance; its login and sessions follow
   config show       The effective configuration, and which layer set each value
   config set        Write one value into the repo config, or the global one
   config unset      Remove one value from the repo config, or the global one

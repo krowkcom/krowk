@@ -11,6 +11,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`/sessions` in the TUI (or `/resume`)** picks up an earlier session
+  without leaving krowk. It lists the last 30 sessions started in this
+  directory, newest first, each by its first prompt and when it was last
+  active; enter continues the chosen one. Its conversation is replayed under
+  what is already on screen, the status line and `ctrl-o` start counting
+  from that session, and the next prompt goes to it on the model it last ran
+  on. It waits for a running turn, and for agents Claude Code runs in the
+  background, to finish. `/sessions <id>` continues one of this
+  directory's sessions by its full id; `krowk --resume <id>` opens any.
 - **A content width for the TUI**: `tui.contentWidth` in config.json is
   `prose`, at most 65 columns — Tailwind's `max-w-prose` — or
   `full-width`, the terminal's whole width. It is a maximum: a terminal

@@ -132,11 +132,12 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         version: super::VERSION.into(),
         config: Some(super::providers::config_path()?),
     });
-    // As after `krowk -p`: the log is the session, krowk.db its listing.
-    if let Some(id) = &outcome.session_id
-        && let Err(e) = sessions::project_native(ctx, id)
-    {
-        let _ = writeln!(ctx.io.stderr, "! the session is saved, but krowk.db was not updated: {} — `krowk sessions sync` retries", e.fix());
+    // As after `krowk -p`: the log is the session, krowk.db its listing —
+    // each session `/sessions` moved away from, and the one shown last.
+    for id in outcome.left.iter().chain(&outcome.session_id) {
+        if let Err(e) = sessions::project_native(ctx, id) {
+            let _ = writeln!(ctx.io.stderr, "! session {id} is saved, but krowk.db was not updated: {} — `krowk sessions sync` retries", e.fix());
+        }
     }
     // Left without waiting for a turn (a second Ctrl-C, SIGTERM or SIGHUP):
     // recorded above, and exits the way an interrupted command does.

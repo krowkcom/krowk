@@ -280,6 +280,58 @@ fn the_mode_picker_sets_the_mode_the_next_turn_runs_in() {
     assert!(logs.iter().any(|p| std::fs::read_to_string(p).is_ok_and(|s| s.contains("\"turn.started\"") && s.contains("\"permissionMode\":\"plan\""))), "no turn ran in plan: {logs:?}");
 }
 
+/// `/sessions` (here by its alias, `/resume`) lists the sessions started
+/// here, and enter continues one in
+/// place of the new session: its conversation is replayed, and the next
+/// prompt goes to it, the earlier turns and all.
+#[test]
+fn resume_continues_an_earlier_session_from_the_slash_menu() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("resume");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"read README.md and summarise it\r");
+    assert!(t.wait_for("anywhere.", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    assert!(t.wait_for("tokens", Duration::from_secs(5)).is_some());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let out = t.text();
+    let at = out.find("krowk --resume ").expect("the resume line") + "krowk --resume ".len();
+    let id = out[at..at + 36].to_string();
+
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    // An id that is not one is refused, never sent to the model.
+    t.write(b"/sessions nope\r");
+    assert!(t.wait_for("\"nope\" is not a krowk session id", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    // A session of its own first, left for the earlier one: krowk.db still
+    // lists it once krowk is gone.
+    let from = t.output().len();
+    t.write(b"summarise the README again\r");
+    assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
+    t.write(b"/resume\r");
+    assert!(t.wait_for("enter continues it", Duration::from_secs(10)).is_some(), "no picker: {:?}", t.text());
+    assert!(t.wait_for("read README.md and summarise it", Duration::from_secs(5)).is_some(), "the session is not listed: {:?}", t.text());
+    t.write(b"\r");
+    assert!(t.wait_for(&format!("continuing session {id}"), Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    let from = t.output().len();
+    t.write(b"and what else is in it?\r");
+    assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    assert!(t.text().contains(&format!("krowk --resume {id}")), "{:?}", t.text());
+    // One request carried both prompts: the turn continued the session.
+    let seen = m.seen.lock().unwrap();
+    assert!(!seen.iter().any(|s| s.body["messages"].to_string().contains("/sessions nope")));
+    assert!(seen.iter().any(|s| { let b = s.body["messages"].to_string(); b.contains("read README.md and summarise it") && b.contains("and what else is in it?") }), "the earlier turn was not sent");
+    drop(seen);
+    let log = |session: &str| std::fs::read_to_string(b.root.join("home/.krowk/sessions").join(session).join("events.jsonl")).unwrap();
+    assert!(log(&id).contains("and what else is in it?"), "the prompt went to the session resumed");
+    let sessions: Vec<PathBuf> = std::fs::read_dir(b.root.join("home/.krowk/sessions")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_dir()).collect();
+    assert_eq!(sessions.len(), 2, "the earlier one and the one left for it: {sessions:?}");
+    assert_eq!(krowk_sessions(&b, &m.url), 2, "krowk.db lists the session left too");
+}
+
 /// `/config` (or `/settings`) cycles the default permission mode and saves
 /// it to config.json, and the next session starts in it; ↓ chooses the
 /// content width, saved the same way.
@@ -919,9 +971,10 @@ fn the_help_menu_filters_as_you_type_and_enter_runs_the_entry() {
     assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     tm.keys(&["?"]);
     assert!(tm.wait_for("Start a new line without sending", Duration::from_secs(5)).is_some(), "{}", tm.screen());
-    // One entry a line, a title and a description each.
+    // One entry a line, a title and a description each; the last ones
+    // scroll into view, as the `/` menu's do.
     let screen = tm.screen();
-    for (title, description) in [("Send", "Send the prompt"), ("Session", "Tokens, limits and the log file"), ("Quit", "Leave krowk")] {
+    for (title, description) in [("Send", "Send the prompt"), ("Model", "Switch model or instance"), ("Session", "Tokens, limits and the log file")] {
         assert!(screen.lines().any(|l| l.contains(title) && l.contains(description)), "{title} with its description, on one line:\n{screen}");
     }
     // Typing filters: `ses` leaves the session entry first, selected.

@@ -14,6 +14,7 @@ use crate::help;
 use crate::look::{self, SEP};
 use crate::settings::{ContentWidth, Item as StatusItem, Settings};
 use krowk_harness::host::Pricer;
+use krowk_harness::log::Recent;
 use krowk_harness::protocol::{
     ApprovalRequest, BackendAgent, Billing, Delta, ErrorInfo, HandoffKind, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
     TurnStatus, Usage,
@@ -28,6 +29,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const MAX_INPUT_ROWS: usize = 8;
 /// The `/` menu shows this many entries at most, scrolling past them.
 const SLASH_ROWS: usize = 10;
+/// The help menu shows this many entries at most, scrolling past them: with
+/// the prompt box and the status line it fits a 24-row terminal whole.
+const HELP_ROWS: usize = 16;
 /// The Krowk mark (.github/logo.svg): its 4×4 glyph, `#`, on a plate a
 /// unit wider all round, `.`.
 const LOGO: [&str; 6] = ["......", ".#..#.", ".#..#.", ".###..", ".#..#.", "......"];
@@ -79,6 +83,9 @@ pub enum Overlay {
     Settings,
     /// `/connect` and `/disconnect`, and the first-run card (`App::flow`).
     Connect,
+    /// `/sessions` (and `/resume`): the earlier sessions started here
+    /// (`App::resumable`).
+    Sessions,
 }
 
 /// Whether an instance can run a turn, as the pickers mark it: the
@@ -417,6 +424,11 @@ pub struct App {
     pub pick_at: usize,
     /// The mode picker's chosen row, an index into `PermissionMode::NAMES`.
     pub mode_at: usize,
+    /// `/sessions`' rows, the chosen one, and when they were read: what
+    /// "2h ago" is counted from.
+    pub resumable: Vec<Recent>,
+    pub resume_at: usize,
+    resumable_at_ms: i64,
     /// `permissions.defaultMode` as config.json has it, for `/settings`;
     /// none when it names nothing.
     pub default_mode: Option<String>,
@@ -493,6 +505,9 @@ impl App {
             picks: Vec::new(),
             pick_at: 0,
             mode_at: 0,
+            resumable: Vec::new(),
+            resume_at: 0,
+            resumable_at_ms: 0,
             default_mode: None,
             default_mode_overridden: None,
             setting_at: 0,
@@ -1054,6 +1069,12 @@ impl App {
         }
     }
 
+    /// Whether the backend is running agents of its own, whose results come
+    /// back to this session as a turn it begins.
+    pub fn backend_agents_running(&self) -> bool {
+        !self.backend_agents.is_empty()
+    }
+
     /// The subagents still running, in order: what the Agents overlay
     /// selects among.
     pub fn agent_count(&self) -> usize {
@@ -1493,6 +1514,7 @@ impl App {
             Overlay::Models => rows.extend(self.models_overlay(width)),
             Overlay::Modes => rows.extend(self.modes_overlay(width)),
             Overlay::Settings => rows.extend(self.settings_overlay(width)),
+            Overlay::Sessions => rows.extend(self.sessions_overlay(width)),
             Overlay::Connect => {
                 if let Some(f) = &self.flow {
                     let (overlay, at) = f.rows(width);
@@ -1640,7 +1662,7 @@ impl App {
     fn keys_overlay(&self, width: usize) -> Vec<Line<'static>> {
         let found = help::filter(self.editor.text());
         let rows: Vec<[String; 3]> = found.iter().map(|e| [e.title.to_string(), e.description.to_string(), e.keys.to_string()]).collect();
-        menu(&rows, self.help_at, width, usize::MAX)
+        menu(&rows, self.help_at, width, HELP_ROWS)
     }
 
     /// Whether the prompt is a command still being typed — `/` and a word,
@@ -1777,6 +1799,61 @@ impl App {
         };
         out.push(row(1, format!("Content width            ‹ {} ›  {says}", cw.name())));
         out
+    }
+
+    fn sessions_overlay(&self, width: usize) -> Vec<Line<'static>> {
+        let mut out = vec![Line::from(Span::styled(clip("continue a session — ↑ ↓ choose · enter continues it · esc closes", width), dim()))];
+        if self.resumable.is_empty() {
+            out.push(Line::from(Span::styled(clip("no earlier session started in this directory", width), Style::new().fg(Color::Blue))));
+            return out;
+        }
+        let rows: Vec<[String; 3]> = self.resumable.iter().map(|r| [flat(&r.prompt.chars().take(200).collect::<String>()), ago(r.last_ms, self.resumable_at_ms), String::new()]).collect();
+        out.extend(menu(&rows, self.resume_at, width, SLASH_ROWS));
+        out
+    }
+
+    /// Opens `/sessions` on `sessions`, read at `now_ms`.
+    pub fn open_resume(&mut self, sessions: Vec<Recent>, now_ms: i64) {
+        self.resumable = sessions;
+        self.resumable_at_ms = now_ms;
+        self.resume_at = 0;
+        self.overlay = Overlay::Sessions;
+        self.dirty = true;
+    }
+
+    /// Lets go of the session shown, for another to be replayed in its
+    /// place: what was said stays in scrollback, and everything counted of
+    /// it — turns, cost, tokens, todos, the models it ran on — starts over.
+    /// Only between turns.
+    pub fn forget_session(&mut self) {
+        self.finish_live();
+        self.flush_calls();
+        self.session_id = None;
+        self.cost = 0.0;
+        self.unpriced = false;
+        self.costed = false;
+        self.usage = Usage::default();
+        self.turns = 0;
+        self.steers.clear();
+        self.unsent_steers.clear();
+        self.replay_model = None;
+        self.fence = false;
+        self.billing = None;
+        self.approvals.clear();
+        self.answer.clear();
+        self.approval_shown = None;
+        self.approval_expanded = false;
+        self.subs.clear();
+        self.agent_sel = 0;
+        self.backend_agents.clear();
+        self.unprompted = false;
+        self.todos.clear();
+        self.instances.clear();
+        self.turn_instance = None;
+        self.offer = None;
+        self.switched = None;
+        self.used.clear();
+        self.dirty = true;
     }
 
     /// Opens the mode picker on the mode the next prompt runs in.
@@ -1985,6 +2062,21 @@ pub fn clip(s: &str, width: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// How long before `now_ms` `ms` was, as a list says it: "3h ago".
+fn ago(ms: i64, now_ms: i64) -> String {
+    let (m, h, d) = (60, 60 * 60, 24 * 60 * 60);
+    match (now_ms - ms).max(0) / 1000 {
+        s if s < m => "just now".into(),
+        s if s < h => format!("{}m ago", s / m),
+        s if s < d => format!("{}h ago", s / h),
+        s if s < 2 * d => "yesterday".into(),
+        s if s < 30 * d => format!("{}d ago", s / d),
+        s if s < 360 * d => format!("{}mo ago", s / (30 * d)),
+        s if s < 365 * d => "1y ago".into(),
+        s => format!("{}y ago", s / (365 * d)),
+    }
 }
 
 fn tokens(n: i64) -> String {
@@ -2371,8 +2463,8 @@ mod tests {
         assert_eq!(rows.len(), 3, "only the prompt, in its box: {:?}", text(&rows));
         a.overlay = Overlay::Keys;
         let (rows, caret) = a.view(Instant::now());
-        assert_eq!(rows.len(), 22, "the help menu, a rule and eighteen entries, over the prompt box");
-        assert_eq!(caret, (2, 20), "after the arrow");
+        assert_eq!(rows.len(), 1 + HELP_ROWS + 3, "the help menu, a rule and as many entries as it shows, over the prompt box");
+        assert_eq!(caret, (2, 1 + HELP_ROWS as u16 + 1), "after the arrow");
     }
 
     #[test]
@@ -2839,6 +2931,33 @@ mod tests {
         assert_eq!(help::slash("/mode", &[]).first().map(|s| s.name.as_str()), Some("mode"));
         assert!(help::slash("/perm", &[]).iter().any(|s| s.name == "mode"));
         assert!(help::unlisted("/permission-mode") && help::unlisted("/quit") && !help::unlisted("/mode") && !help::unlisted("/permission-mode plan"));
+    }
+
+    #[test]
+    fn resume_lists_each_session_by_its_first_prompt_and_starts_the_counts_over() {
+        let mut a = app();
+        a.set_width(100);
+        a.open_resume(Vec::new(), 0);
+        assert!(text(&a.view(Instant::now()).0).iter().any(|r| r.contains("no earlier session started in this directory")));
+        let hour = 60 * 60 * 1000;
+        let recent = |id: &str, prompt: &str, last_ms| Recent { id: id.into(), prompt: prompt.into(), last_ms };
+        a.open_resume(vec![recent("a", "fix the parser\nthen the tests", 40 * hour - 3 * hour), recent("b", "add a flag", 40 * hour - 30 * hour)], 40 * hour);
+        assert_eq!((a.overlay, a.resume_at), (Overlay::Sessions, 0));
+        let rows = text(&a.view(Instant::now()).0);
+        assert!(rows.iter().any(|r| r.contains("› fix the parser⏎then the tests") && r.contains("3h ago")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("add a flag") && r.contains("yesterday")), "{rows:?}");
+        // What was counted of the session shown goes with it.
+        let m = ModelRef { instance: "anthropic".into(), model: "claude-x".into() };
+        a.on_line(&log(LogBody::TurnStarted { turn_id: "t".into(), model: m.clone(), provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }));
+        a.on_line(&log(LogBody::TodosUpdated { turn_id: "t".into(), todos: vec![Todo { content: "x".into(), status: TodoStatus::Pending }] }));
+        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 5, ..Usage::default() }, duration_ms: 1, error: None, reported_cost_usd: None }));
+        assert!(a.session_id.is_some() && a.turns == 1 && !a.used.is_empty() && !a.todos.is_empty());
+        a.forget_session();
+        assert!(a.session_id.is_none() && a.turns == 0 && a.used.is_empty() && a.todos.is_empty() && a.instances.is_empty());
+        assert_eq!(a.model, Some(m), "shown until the next session's replay names its own");
+        assert_eq!(help::canonical("/resume"), "/sessions");
+        assert!(help::unlisted("/resume"));
+        assert_eq!(help::slash("/sessions", &[]).first().map(|s| s.name.as_str()), Some("sessions"));
     }
 
     #[test]
