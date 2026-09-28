@@ -21,11 +21,18 @@
 //! taken and ignored — offline shows by itself, and the session's id is in
 //! the details overlay.
 //!
+//! `/settings` (or `/config`) sets what lives outside `"tui"`: for now
+//! `permissions.defaultMode`, `default` or `unhinged` chosen with ← and →, which
+//! the next session starts in (`--permission-mode` and a trusted
+//! repository's own `defaultMode` still come first).
+//!
 //! The overlays are toggled from the keyboard rather than configured: `?` on
 //! an empty prompt for the keys, Ctrl-O for the session's details, Ctrl-T
 //! for the todo list and Ctrl-G for the subagents.
 
-use serde_json::Value;
+use krowk_harness::protocol::PermissionMode;
+use serde_json::{Map, Value};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
@@ -117,10 +124,106 @@ pub fn from_config(raw: &Value) -> (Settings, Vec<String>) {
     (s, warnings)
 }
 
+/// The modes `/settings` chooses the default from, left to right: the one
+/// that asks, and the one that asks about nothing.
+pub const DEFAULT_MODES: [PermissionMode; 2] = [PermissionMode::Default, PermissionMode::Unhinged];
+
+/// `permissions.defaultMode` in a read config.json as written — none when
+/// there is none (or null), which runs as `default`; a value that is no
+/// string as its JSON.
+pub fn default_mode(raw: &Map<String, Value>) -> Option<String> {
+    raw.get("permissions").and_then(|p| p.get("defaultMode")).filter(|v| !v.is_null()).map(|v| v.as_str().map_or_else(|| v.to_string(), String::from))
+}
+
+/// The mode `by` along `DEFAULT_MODES` from `now` (none is `default`), and
+/// none past either end: the same key again chooses nothing new. From a
+/// mode outside them, either way is the first.
+pub fn step_default(now: Option<&str>, by: isize) -> Option<PermissionMode> {
+    let now = now.unwrap_or(PermissionMode::Default.name());
+    let Some(at) = DEFAULT_MODES.iter().position(|m| m.name() == now) else { return Some(DEFAULT_MODES[0]) };
+    at.checked_add_signed(by).and_then(|i| DEFAULT_MODES.get(i)).copied()
+}
+
+/// Writes `permissions.defaultMode`, keeping every other key as it was:
+/// config.json as written.
+pub fn set_default_mode(config: &Path, m: PermissionMode) -> Result<Map<String, Value>, String> {
+    let mut raw = krowk_harness::connect::read_config(config)?;
+    let permissions = raw.entry("permissions").or_insert_with(|| Value::Object(Map::new()));
+    let Some(permissions) = permissions.as_object_mut() else {
+        return Err(format!("\"permissions\" in {} is not an object — fix it by hand", config.display()));
+    };
+    permissions.insert("defaultMode".into(), Value::String(m.name().into()));
+    krowk_harness::connect::write_config(config, &raw).map_err(|e| format!("{}: {e}", config.display()))?;
+    Ok(raw)
+}
+
+/// The mode a session started in `cwd` would run in with `raw` as krowk's
+/// config.json, when a file read after it — `~/.claude/settings.json`, a
+/// trusted repository's — sets another; none when config.json's is the
+/// one, or the settings do not load (starting says why).
+pub fn overridden(cfg: &krowk_harness::permissions::Config, raw: &Map<String, Value>, cwd: &Path) -> Option<PermissionMode> {
+    // Only the mode is compared: the rest is what starting reads and says.
+    let cfg = krowk_harness::permissions::Config { user: Some(Value::Object(raw.clone())), ..cfg.clone() };
+    let runs = krowk_harness::permissions::settings::load(&cfg, cwd).ok()?.default_mode.unwrap_or_default();
+    let saved = default_mode(raw).and_then(|m| PermissionMode::parse(&m)).unwrap_or_default();
+    (runs != saved).then_some(runs)
+}
+
+/// Claude Code's user settings file, `~` for the home directory:
+/// `$CLAUDE_CONFIG_DIR/settings.json` when that is set.
+pub fn claude_file(cfg: &krowk_harness::permissions::Config) -> String {
+    let Some(file) = cfg.claude_home().map(|d| d.join("settings.json")) else { return "~/.claude/settings.json".into() };
+    match cfg.home.as_deref().and_then(|h| file.strip_prefix(h).ok()) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => file.display().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn settings_cycles_the_default_mode_and_keeps_the_rest_of_the_config() {
+        let dir = std::env::temp_dir().join(format!("krowk-tui-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("config.json");
+        assert_eq!(krowk_harness::connect::read_config(&config).map(|r| default_mode(&r)), Ok(None), "no file names nothing");
+        assert_eq!(step_default(None, 1), Some(PermissionMode::Unhinged), "unset runs as default, so → is unhinged");
+        assert_eq!(step_default(None, -1), None, "nothing left of default");
+        assert_eq!(step_default(Some("unhinged"), 1), None, "held →: nothing past unhinged");
+        assert_eq!(step_default(Some("unhinged"), -1), Some(PermissionMode::Default));
+        assert_eq!(step_default(Some("acceptEdits"), 1), Some(PermissionMode::Default), "a mode outside them goes to the first");
+        assert_eq!(default_mode(json!({"permissions": {"defaultMode": true}}).as_object().unwrap()).as_deref(), Some("true"), "no string is shown as it is");
+        assert_eq!(default_mode(json!({"permissions": {"defaultMode": null}}).as_object().unwrap()), None, "null is none, as the harness reads it");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&config, json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"]}}).to_string()).unwrap();
+        let written = set_default_mode(&config, PermissionMode::Unhinged).unwrap();
+        assert_eq!(default_mode(&written).as_deref(), Some("unhinged"));
+        assert_eq!(krowk_harness::connect::read_config(&config).unwrap(), written);
+        let raw: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(raw, json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"], "defaultMode": "unhinged"}}));
+        std::fs::write(&config, json!({"permissions": true}).to_string()).unwrap();
+        assert!(set_default_mode(&config, PermissionMode::Default).is_err(), "a permissions that is no object is not overwritten");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_names_the_mode_a_file_read_after_config_json_puts_a_session_in() {
+        let dir = std::env::temp_dir().join(format!("krowk-tui-settings-over-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let claude = dir.join("claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let cfg = krowk_harness::permissions::Config { home: Some(dir.clone()), claude_dir: Some(claude.clone()), ..Default::default() };
+        let raw = |m: &str| json!({"permissions": {"defaultMode": m}}).as_object().unwrap().clone();
+        assert_eq!(overridden(&cfg, &raw("unhinged"), &dir), None, "nothing else sets one");
+        std::fs::write(claude.join("settings.json"), json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
+        assert_eq!(overridden(&cfg, &raw("unhinged"), &dir), Some(PermissionMode::AcceptEdits), "Claude's user file comes after config.json");
+        assert_eq!(overridden(&cfg, &raw("acceptEdits"), &dir), None, "the same mode overrides nothing");
+        assert_eq!(claude_file(&cfg), "~/claude/settings.json", "CLAUDE_CONFIG_DIR's, under home as ~");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn r_tui_2_the_status_bar_is_optional_and_its_items_configurable() {

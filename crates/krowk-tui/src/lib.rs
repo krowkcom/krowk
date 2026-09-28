@@ -224,6 +224,7 @@ async fn session(opts: Options) -> Outcome {
     app.permission_mode = serde_json::to_value(opts.permission_mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     // Where the session runs: a resumed one where it started.
     let mut runs_in = opts.host.cwd.clone();
+    let started_in = opts.host.cwd.clone();
     if let Some(id) = &opts.resume {
         match log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)) {
             Ok(events) => {
@@ -279,6 +280,7 @@ async fn session(opts: Options) -> Outcome {
         Err(e) => return Outcome { session_id: None, abandoned: false, error: Some(format!("the terminal could not be drawn on: {e}")) },
     };
     let credentials = opts.host.credentials.clone();
+    let permissions_cfg = opts.host.permissions.clone();
     let host = Host::new(opts.host);
     // Routed now, while the first frame is drawn: the vendors it asks
     // (a Node start for `claude`) never hold the prompt up.
@@ -290,6 +292,7 @@ async fn session(opts: Options) -> Outcome {
     let paths = opts.config.clone().map(|config| connect::Paths { config, credentials: credentials.clone() });
     let mut ui = Ui {
         paths,
+        permissions_cfg,
         credentials,
         data_dir: sessions_dir.parent().map(PathBuf::from),
         auth: None,
@@ -306,9 +309,11 @@ async fn session(opts: Options) -> Outcome {
         held: None,
         needs_trust: None,
         trust_shown: None,
+        settings_shown: None,
         trust: opts.trust,
         effort_label,
         runs_in: runs_in.clone(),
+        started_in,
         permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
@@ -346,6 +351,9 @@ struct Ui<'h> {
     /// A `/connect` or `/disconnect` running on its own thread: what it
     /// asks and tells, and its end.
     auth: Option<mpsc::UnboundedReceiver<connect::Msg>>,
+    /// What the harness reads permission settings from: for `/settings`,
+    /// which file's `defaultMode` a new session would start in.
+    permissions_cfg: krowk_harness::permissions::Config,
     /// The terminal is a vendor login's (`claude auth login`) until it
     /// says it is done: nothing is drawn meanwhile.
     suspended: bool,
@@ -378,12 +386,18 @@ struct Ui<'h> {
     /// When the trust question came up: keys before `APPROVAL_SETTLE` has
     /// passed were typed ahead, and are no answer.
     trust_shown: Option<std::time::Instant>,
+    /// When `/settings` opened: a key before `APPROVAL_SETTLE` has passed
+    /// was typed ahead, and changes nothing.
+    settings_shown: Option<std::time::Instant>,
     /// The trust question, for a route that lands on a backend.
     trust: Option<TrustAsk>,
     /// The effort as the header shows it.
     effort_label: Option<String>,
     /// Where the session runs, where a vendor is asked once trusted.
     runs_in: PathBuf,
+    /// Where krowk was started, where a new session would start: a resumed
+    /// one runs in its own directory.
+    started_in: PathBuf,
     permission_mode: PermissionMode,
     toolset: Option<String>,
     effort: Option<Effort>,
@@ -924,6 +938,51 @@ impl<'h> Ui<'h> {
         }
     }
 
+    /// `/settings`: config.json's settings as they are now, in an overlay.
+    fn open_settings(&mut self, app: &mut App) {
+        let Some(paths) = &self.paths else {
+            app.notice("/settings: no config.json to save to — krowk has no home directory");
+            return;
+        };
+        match krowk_harness::connect::read_config(&paths.config) {
+            Ok(raw) => {
+                self.show_settings(app, &raw);
+                app.overlay = Overlay::Settings;
+                self.settings_shown = Some(std::time::Instant::now());
+            }
+            Err(e) => app.notice(&format!("/settings: {e}")),
+        }
+    }
+
+    /// config.json's settings as the overlay shows them, and what a file
+    /// read after it overrides.
+    fn show_settings(&self, app: &mut App, raw: &serde_json::Map<String, serde_json::Value>) {
+        app.default_mode = settings::default_mode(raw);
+        app.default_mode_overridden = settings::overridden(&self.permissions_cfg, raw, &self.started_in).map(|m| (m, settings::claude_file(&self.permissions_cfg)));
+        app.touch();
+    }
+
+    /// The default permission mode one along `settings::DEFAULT_MODES`,
+    /// saved at once; at the end, nothing. The session keeps the mode it
+    /// runs in: `/mode` changes that.
+    fn step_default_mode(&mut self, app: &mut App, by: isize) {
+        let Some(paths) = &self.paths else { return };
+        let Some(m) = settings::step_default(app.default_mode.as_deref(), by) else { return };
+        // A `/connect` writes config.json too, from its own thread: one at
+        // a time, so neither loses what the other wrote.
+        if self.auth.is_some() {
+            app.flash = Some("a /connect is running — change settings once it is done".into());
+            return;
+        }
+        match settings::set_default_mode(&paths.config, m) {
+            Ok(raw) => self.show_settings(app, &raw),
+            Err(e) => {
+                app.overlay = Overlay::None;
+                app.notice(&format!("/settings: {e}"));
+            }
+        }
+    }
+
     /// Every prompt from here on runs in `m`. A turn already running keeps
     /// the mode it started in, its gate built with it; so does a turn a
     /// backend begins by itself, in the mode its process is in.
@@ -1125,6 +1184,8 @@ impl<'h> Ui<'h> {
                             f.type_str(&s);
                         }
                     }
+                    // Settings takes no text: a paste is dropped.
+                    None if app.overlay == Overlay::Settings => {}
                     None => app.editor.insert_str(&s),
                 }
                 app.touch();
@@ -1289,6 +1350,26 @@ impl<'h> Ui<'h> {
     async fn on_prompt_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
+        // Settings takes every key while it is open, ahead of the trust
+        // question and a limit's offer, which are no one's answer here: ←
+        // and → choose the one setting there is, enter, esc or Ctrl-C close
+        // it, Ctrl-D still leaves krowk, and nothing reaches the prompt.
+        // Choosing goes one way and stops at the end, so a key held down,
+        // whose repeats most terminals send as presses, chooses the same
+        // value again; and a key typed ahead, before it was up to be seen,
+        // does nothing. Ctrl-C on a running turn interrupts it, as anywhere.
+        if app.overlay == Overlay::Settings && !(ctrl && k.code == KeyCode::Char('d')) && !(ctrl && k.code == KeyCode::Char('c') && app.running()) {
+            let settled = self.settings_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE);
+            match k.code {
+                KeyCode::Esc => app.overlay = Overlay::None,
+                KeyCode::Char('c') if ctrl => app.overlay = Overlay::None,
+                KeyCode::Enter if settled && !ctrl && !alt => app.overlay = Overlay::None,
+                KeyCode::Left | KeyCode::Right if settled && !ctrl && !alt => self.step_default_mode(app, if k.code == KeyCode::Left { -1 } else { 1 }),
+                _ => {}
+            }
+            app.touch();
+            return false;
+        }
         // The Agents overlay takes the keys that move through it: select a
         // subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3).
         if app.overlay == Overlay::Agents && !ctrl && !alt {
@@ -1424,6 +1505,7 @@ impl<'h> Ui<'h> {
                             help::Action::Tell => {}
                             help::Action::Model => self.open_models(app),
                             help::Action::Mode => app.open_mode_picker(),
+                            help::Action::Settings => self.open_settings(app),
                             help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
                             help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
                             help::Action::Todos => app.overlay = Overlay::Todos,
@@ -1865,12 +1947,12 @@ impl<'h> Ui<'h> {
     /// connectivity probe is owed first — the notice is up and the person
     /// is trying again.
     async fn submit(&mut self, app: &mut App) -> bool {
-        let text = app.editor.text().trim().to_string();
+        let text = help::canonical(app.editor.text().trim());
         if text.is_empty() {
             return false;
         }
         match text.as_str() {
-            "/exit" | "/quit" => {
+            "/exit" => {
                 app.editor.clear();
                 app.quit = true;
                 return false;
@@ -1885,12 +1967,17 @@ impl<'h> Ui<'h> {
                 self.open_models(app);
                 return false;
             }
-            "/mode" | "/permission-mode" => {
+            "/settings" => {
+                app.editor.clear();
+                self.open_settings(app);
+                return false;
+            }
+            "/mode" => {
                 app.editor.clear();
                 app.open_mode_picker();
                 return false;
             }
-            t if t.starts_with("/mode ") || t.starts_with("/permission-mode ") => {
+            t if t.starts_with("/mode ") => {
                 app.editor.clear();
                 let name = t.split_once(' ').unwrap_or_default().1.trim();
                 match PermissionMode::parse(name) {

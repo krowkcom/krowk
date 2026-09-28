@@ -489,12 +489,7 @@ impl ProviderAuth<'_> {
     }
 
     fn raw_config(&self) -> Result<Map<String, Value>, EngineError> {
-        let bad = |m: String| EngineError::new("bad_config", m);
-        match std::fs::read(&self.config) {
-            Ok(raw) => serde_json::from_slice(&raw).map_err(|e| bad(format!("{} is not valid JSON: {e}", self.config.display()))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
-            Err(e) => Err(bad(format!("reading {}: {e}", self.config.display()))),
-        }
+        read_config(&self.config).map_err(|m| EngineError::new("bad_config", m))
     }
 
     /// The instances config.json defines.
@@ -533,21 +528,7 @@ impl ProviderAuth<'_> {
         let unwritable = |e: String| EngineError::new("config_unwritable", format!("{}: {e}", self.config.display()));
         let mut raw = self.raw_config()?;
         edit(&mut raw);
-        let data = serde_json::to_string_pretty(&raw).expect("config serializes") + "\n";
-        let dir = self.config.parent().unwrap_or(Path::new("."));
-        let tmp = dir.join(format!(".config-{}-connect.json", std::process::id()));
-        let result = (|| {
-            std::fs::create_dir_all(dir)?;
-            std::fs::write(&tmp, data.as_bytes())?;
-            #[cfg(unix)]
-            std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
-            std::fs::File::open(&tmp)?.sync_all()?;
-            std::fs::rename(&tmp, &self.config)
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        result.map_err(|e| unwritable(e.to_string()))
+        write_config(&self.config, &raw).map_err(|e| unwritable(e.to_string()))
     }
 
     fn home(&self) -> Result<PathBuf, EngineError> {
@@ -1277,6 +1258,55 @@ fn made_dir(dir: Option<&Path>) -> Result<Option<Made>, EngineError> {
     }
 }
 
+/// config.json as a JSON object; none yet is an empty one.
+pub fn read_config(path: &Path) -> Result<Map<String, Value>, String> {
+    match std::fs::read(path) {
+        Ok(raw) => serde_json::from_slice(&raw).map_err(|e| format!("{} is not valid JSON: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(e) => Err(format!("reading {}: {e}", path.display())),
+    }
+}
+
+/// Writes config.json whole, by rename, never in place: how `/connect`
+/// writes its definitions and the TUI's `/settings` what it sets. The
+/// file's mode is kept (0644 for a new one) but never writable by anyone
+/// else: config.json says what runs unasked. Each write has its own
+/// temporary file, so a `/connect` on its thread and `/settings` never
+/// share one.
+pub fn write_config(path: &Path, raw: &Map<String, Value>) -> std::io::Result<()> {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let data = serde_json::to_string_pretty(raw).expect("config serializes") + "\n";
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".config-{}-{n}.json", std::process::id()));
+    let result = (|| {
+        use std::io::Write;
+        std::fs::create_dir_all(dir)?;
+        // Made the owner's alone, and only given the file's mode once
+        // written: what it holds is never readable in between.
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+        // One a killed krowk of the same pid left is taken away first.
+        let _ = std::fs::remove_file(&tmp);
+        let mut f = open.open(&tmp)?;
+        f.write_all(data.as_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(path).map_or(0o644, |m| m.permissions().mode() & 0o755);
+            f.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        }
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// `.` and `..` taken out of a path by its words alone, as a person reads
 /// it — `/a/new/../Other` is `/a/Other` — so a directory made or removed is
 /// the one named, never one a `..` climbs into.
@@ -1372,6 +1402,24 @@ mod tests {
         ] {
             assert_eq!(connect_command(instance, kind), want, "{instance}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_json_keeps_its_mode_but_nobody_else_may_write_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("krowk-write-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.json");
+        let mode = || std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        write_config(&path, &Map::new()).unwrap();
+        assert_eq!(mode(), 0o644, "a new one");
+        for (was, is) in [(0o600, 0o600), (0o666, 0o644), (0o620, 0o600)] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(was)).unwrap();
+            write_config(&path, &Map::new()).unwrap();
+            assert_eq!(mode(), is, "{was:o}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

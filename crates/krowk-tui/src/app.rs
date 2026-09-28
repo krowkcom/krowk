@@ -75,6 +75,8 @@ pub enum Overlay {
     Models,
     /// The permission mode picker (`/mode`).
     Modes,
+    /// `/settings` (and `/config`): what is saved to config.json.
+    Settings,
     /// `/connect` and `/disconnect`, and the first-run card (`App::flow`).
     Connect,
 }
@@ -416,6 +418,13 @@ pub struct App {
     pub pick_at: usize,
     /// The mode picker's chosen row, an index into `PermissionMode::NAMES`.
     pub mode_at: usize,
+    /// `permissions.defaultMode` as config.json has it, for `/settings`;
+    /// none when it names nothing.
+    pub default_mode: Option<String>,
+    /// The mode a new session here starts in instead, when a settings file
+    /// read after config.json sets another, and Claude Code's user settings
+    /// file as the person would find it.
+    pub default_mode_overridden: Option<(PermissionMode, String)>,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
     /// A `/connect` or `/disconnect` running: its overlay's state.
@@ -482,6 +491,8 @@ impl App {
             picks: Vec::new(),
             pick_at: 0,
             mode_at: 0,
+            default_mode: None,
+            default_mode_overridden: None,
             help_at: 0,
             flow: None,
             marks: BTreeMap::new(),
@@ -1443,6 +1454,7 @@ impl App {
             }
             Overlay::Models => rows.extend(self.models_overlay(width)),
             Overlay::Modes => rows.extend(self.modes_overlay(width)),
+            Overlay::Settings => rows.extend(self.settings_overlay(width)),
             Overlay::Connect => {
                 if let Some(f) = &self.flow {
                     let (overlay, at) = f.rows(width);
@@ -1699,6 +1711,21 @@ impl App {
             let head = format!("{}{name:<18}{}{now}", if chosen { "❯ " } else { "  " }, mode_says(name));
             let style = if chosen { look::accent() } else { Style::new().fg(Color::Blue) };
             out.push(Line::from(Span::styled(clip(&head, width), style)));
+        }
+        out
+    }
+
+    fn settings_overlay(&self, width: usize) -> Vec<Line<'static>> {
+        let mode = self.default_mode.as_deref().unwrap_or("default");
+        let says = if PermissionMode::parse(mode).is_some() { mode_says(mode) } else { "not a mode krowk runs" };
+        let mode = clean(mode);
+        let mut out = vec![
+            Line::from(Span::styled(clip("settings — ← → change · enter or esc closes · saved to config.json for the next session", width), dim())),
+            Line::from(Span::styled(clip(&format!("❯ Default permission mode  ‹ {mode} ›  {says}"), width), look::accent())),
+        ];
+        if let Some((runs, claude)) = &self.default_mode_overridden {
+            let why = format!("  a new session here starts in {} — {claude} or this repository's settings set it, and come after config.json", runs.name());
+            out.extend(wrap(&why, width).into_iter().map(|l| Line::from(Span::styled(l, yellow()))));
         }
         out
     }
@@ -2285,8 +2312,8 @@ mod tests {
         assert_eq!(rows.len(), 3, "only the prompt, in its box: {:?}", text(&rows));
         a.overlay = Overlay::Keys;
         let (rows, caret) = a.view(Instant::now());
-        assert_eq!(rows.len(), 20, "the help menu, a rule and sixteen entries, over the prompt box");
-        assert_eq!(caret, (2, 18), "after the arrow");
+        assert_eq!(rows.len(), 21, "the help menu, a rule and seventeen entries, over the prompt box");
+        assert_eq!(caret, (2, 19), "after the arrow");
     }
 
     #[test]
@@ -2684,6 +2711,34 @@ mod tests {
         let rows = text(&a.view(Instant::now()).0);
         let row = |i: &str| rows.iter().find(|r| r.trim_start().trim_start_matches("❯ ").starts_with(&format!("{i}/"))).cloned().unwrap_or_default();
         assert!(row("anthropic").ends_with("✓ ready") && row("claude").ends_with("✗ not signed in") && row("openai").ends_with('…'), "{rows:?}");
+    }
+
+    #[test]
+    fn an_alias_typed_whole_runs_its_command_before_any_skill() {
+        // Enter in the `/` menu runs an alias as typed, and submit reads it
+        // as the command it names.
+        assert!(help::unlisted("/config") && !help::unlisted("/configure"));
+        assert_eq!(help::canonical("/config"), "/settings");
+        assert_eq!(help::canonical("/permission-mode plan"), "/mode plan");
+        assert_eq!(help::canonical("/quit"), "/exit");
+        assert_eq!(help::canonical("/configure it"), "/configure it", "only a whole alias");
+    }
+
+    #[test]
+    fn settings_shows_the_saved_default_and_what_overrides_it() {
+        let mut a = app();
+        a.width = 120;
+        a.default_mode = Some("acceptEdits".into());
+        a.overlay = Overlay::Settings;
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(rows.contains("acceptEdits") && rows.contains("  asks before commands"), "the mode and what it does, apart: {rows}");
+        a.default_mode = Some("dontAsk".into());
+        a.default_mode_overridden = Some((PermissionMode::Plan, "/work/claude/settings.json".into()));
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(rows.contains("not a mode krowk runs") && rows.contains("starts in plan") && rows.contains("/work/claude/settings.json"), "{rows}");
+        a.default_mode = Some("\u{1b}[2Jx".into());
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(!rows.contains('\u{1b}'), "config.json's text is shown, never obeyed: {rows:?}");
     }
 
     #[test]
