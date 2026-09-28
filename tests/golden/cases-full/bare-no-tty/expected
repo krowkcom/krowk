@@ -887,7 +887,7 @@ stdout:
     },
     {
       "name": "providers",
-      "summary": "Low-level instance config (add, list, remove)",
+      "summary": "Low-level instance config (add, list, rename, remove)",
       "subcommands": [
         {
           "name": "add",
@@ -965,6 +965,23 @@ stdout:
               "name": "instance",
               "summary": "The instance to remove, e.g. openai:work",
               "required": true
+            }
+          ]
+        },
+        {
+          "name": "rename",
+          "usage": "krowk providers rename [instance] [new-name]",
+          "summary": "Rename an instance; its login and sessions follow",
+          "args": [
+            {
+              "name": "instance",
+              "summary": "The instance to rename, e.g. claude:work — a person at a terminal may omit it and pick",
+              "required": false
+            },
+            {
+              "name": "new-name",
+              "summary": "Its whole new name, e.g. claude:personal — the same <provider>: prefix; a server's has none. Asked at a terminal when absent",
+              "required": false
             }
           ]
         }
@@ -2019,7 +2036,7 @@ stdout:
     },
     {
       "name": "providers",
-      "summary": "Low-level instance config (add, list, remove)",
+      "summary": "Low-level instance config (add, list, rename, remove)",
       "subcommands": [
         {
           "name": "add",
@@ -2097,6 +2114,23 @@ stdout:
               "name": "instance",
               "summary": "The instance to remove, e.g. openai:work",
               "required": true
+            }
+          ]
+        },
+        {
+          "name": "rename",
+          "usage": "krowk providers rename [instance] [new-name]",
+          "summary": "Rename an instance; its login and sessions follow",
+          "args": [
+            {
+              "name": "instance",
+              "summary": "The instance to rename, e.g. claude:work — a person at a terminal may omit it and pick",
+              "required": false
+            },
+            {
+              "name": "new-name",
+              "summary": "Its whole new name, e.g. claude:personal — the same <provider>: prefix; a server's has none. Asked at a terminal when absent",
+              "required": false
             }
           ]
         }
@@ -3165,7 +3199,7 @@ stdout:
     },
     {
       "name": "providers",
-      "summary": "Low-level instance config (add, list, remove)",
+      "summary": "Low-level instance config (add, list, rename, remove)",
       "subcommands": [
         {
           "name": "add",
@@ -3243,6 +3277,23 @@ stdout:
               "name": "instance",
               "summary": "The instance to remove, e.g. openai:work",
               "required": true
+            }
+          ]
+        },
+        {
+          "name": "rename",
+          "usage": "krowk providers rename [instance] [new-name]",
+          "summary": "Rename an instance; its login and sessions follow",
+          "args": [
+            {
+              "name": "instance",
+              "summary": "The instance to rename, e.g. claude:work — a person at a terminal may omit it and pick",
+              "required": false
+            },
+            {
+              "name": "new-name",
+              "summary": "Its whole new name, e.g. claude:personal — the same <provider>: prefix; a server's has none. Asked at a terminal when absent",
+              "required": false
             }
           ]
         }
@@ -4311,7 +4362,7 @@ tty:
     },
     {
       "name": "providers",
-      "summary": "Low-level instance config (add, list, remove)",
+      "summary": "Low-level instance config (add, list, rename, remove)",
       "subcommands": [
         {
           "name": "add",
@@ -4389,6 +4440,23 @@ tty:
               "name": "instance",
               "summary": "The instance to remove, e.g. openai:work",
               "required": true
+            }
+          ]
+        },
+        {
+          "name": "rename",
+          "usage": "krowk providers rename [instance] [new-name]",
+          "summary": "Rename an instance; its login and sessions follow",
+          "args": [
+            {
+              "name": "instance",
+              "summary": "The instance to rename, e.g. claude:work — a person at a terminal may omit it and pick",
+              "required": false
+            },
+            {
+              "name": "new-name",
+              "summary": "Its whole new name, e.g. claude:personal — the same <provider>: prefix; a server's has none. Asked at a terminal when absent",
+              "required": false
             }
           ]
         }
