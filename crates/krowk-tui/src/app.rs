@@ -1048,7 +1048,6 @@ impl App {
 
     /// The subagents still running, in order: what the Agents overlay
     /// selects among.
-
     pub fn agent_count(&self) -> usize {
         self.subs.len()
     }
