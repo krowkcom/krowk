@@ -12,6 +12,9 @@
 //! Colours are the terminal's own sixteen, so a person's theme decides what
 //! they look like and a phone terminal shows them; the diff bands are two
 //! 256-colour indexes that stay red and green where 256 colours degrade.
+//! Most of what is shown is ink on the terminal's paper — its foreground,
+//! full or washed (dim) — never the white or black slots, which are
+//! surfaces in one mode or the other; a hue is for what needs the eye.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -62,8 +65,10 @@ pub fn warning() -> Style {
     Style::new().fg(Color::Yellow)
 }
 
+/// What a tool call acts on — a path, a command, a pattern: the ink washed,
+/// not a colour, which is kept for what needs the eye.
 pub fn path() -> Style {
-    Style::new().fg(Color::Cyan)
+    dim()
 }
 
 /// A URL printed into scrollback: written as an OSC 8 hyperlink to itself

@@ -310,6 +310,9 @@ pub struct App {
     pending: Vec<Line<'static>>,
     width: u16,
     last_blank: bool,
+    /// Whether what was pushed last is a tool call's block: the next call
+    /// stacks under it, with no blank line between.
+    after_tool: bool,
     live: Option<Live>,
     pub turn: Option<Turn>,
     pub session_id: Option<String>,
@@ -441,6 +444,7 @@ impl App {
             pending: Vec::new(),
             width,
             last_blank: true,
+            after_tool: false,
             live: None,
             turn: None,
             session_id: None,
@@ -581,6 +585,7 @@ impl App {
         }
         self.pending.push(Line::default());
         self.last_blank = true;
+        self.after_tool = false;
         self.dirty = true;
     }
 
@@ -595,6 +600,7 @@ impl App {
         self.pending.push(Line::from(vec![Span::styled(format!("{:<label$}", "Model:"), dim()), Span::raw(clean(&model))]));
         self.pending.push(Line::default());
         self.last_blank = true;
+        self.after_tool = false;
         self.dirty = true;
     }
 
@@ -617,6 +623,7 @@ impl App {
         if !self.last_blank {
             self.pending.push(Line::default());
             self.last_blank = true;
+            self.after_tool = false;
         }
     }
 
@@ -629,6 +636,7 @@ impl App {
         if first.is_empty() && rest.is_empty() {
             let line = Line::from(Span::styled(clean(text), style));
             self.last_blank = line.width() == 0;
+            self.after_tool = false;
             self.pending.push(line);
             self.dirty = true;
             return;
@@ -638,6 +646,7 @@ impl App {
             let prefix = if i == 0 { first } else { rest };
             let line = if prefix.is_empty() { Line::from(Span::styled(row, style)) } else { Line::from(vec![Span::styled(prefix.to_string(), prefix_style), Span::styled(row, style)]) };
             self.last_blank = line.width() == 0;
+            self.after_tool = false;
             self.pending.push(line);
         }
         self.dirty = true;
@@ -669,6 +678,7 @@ impl App {
         let url: String = crate::card::clean(url).chars().filter(|c| !c.is_whitespace()).collect();
         self.pending.push(Line::from(vec![Span::raw("  "), Span::styled(url, look::link())]));
         self.last_blank = false;
+        self.after_tool = false;
         self.dirty = true;
     }
 
@@ -727,23 +737,27 @@ impl App {
         self.flush_thought();
         let line = look::markdown_line(&clean(text), &mut self.fence);
         self.last_blank = line.width() == 0;
+        self.after_tool = false;
         self.pending.push(line);
         self.dirty = true;
     }
 
     /// A tool call and what came of it, as one block: `◆ Verb arg (detail)`
-    /// — the bullet green, or red when it failed — then what is worth
-    /// seeing of its result, as the branches of a file tree under it
-    /// (`tree`): a failure's first lines, a command's output cut to its
-    /// head and tail, an edit's lines as removed and added.
+    /// in ink, the argument washed — the bullet red when it failed — then
+    /// what is worth seeing of its result, as the branches of a file tree
+    /// under it (`tree`): a failure's first lines, a command's last line,
+    /// an edit's lines as removed and added. Calls one after another stack
+    /// with no blank line between them.
     fn commit_tool(&mut self, name: &str, input: &serde_json::Value, output: &str, is_error: bool) {
         let name = look::tool_kind(name);
-        self.gap();
+        if !self.after_tool || self.thought.is_some() {
+            self.gap();
+        }
         let width = usize::from(self.width.max(8));
         let (verb, arg) = look::tool_title(name, input);
         let lines: Vec<&str> = output.lines().collect();
         let edit = if is_error { None } else { look::edit_lines(name, input) };
-        let mut head = vec![Span::styled(look::TOOL, if is_error { red() } else { look::success() }), Span::styled(verb.clone(), bold())];
+        let mut head = vec![Span::styled(look::TOOL, if is_error { red() } else { dim() }), Span::raw(verb.clone())];
         if !arg.is_empty() {
             head.push(Span::raw(" "));
             head.push(Span::styled(clip(&arg, width.saturating_sub(verb.width() + 14)), look::path()));
@@ -755,6 +769,7 @@ impl App {
                 head.push(Span::styled(format!("/-{}", del.len()), red()));
             }
             (None, "read" | "grep" | "glob" | "write", _) => head.push(Span::styled(format!(" ({} lines)", lines.len()), dim())),
+            (None, "bash", _) if lines.len() > 1 => head.push(Span::styled(format!(" ({} lines)", lines.len()), dim())),
             _ => {}
         }
         self.push_line(Line::from(head));
@@ -771,15 +786,11 @@ impl App {
                 }
             }
         } else if name == "bash" {
-            let shown: Vec<&str> = if lines.len() <= 5 { lines.clone() } else { lines[..2].iter().chain(&lines[lines.len() - 3..]).copied().collect() };
-            for (i, l) in shown.iter().enumerate() {
-                if lines.len() > 5 && i == 2 {
-                    body.push(Span::styled(format!("… +{} lines", lines.len() - 5), dim()));
-                }
-                body.push(Span::styled(clip(l, body_width), dim()));
-            }
+            // Its last line is most often its verdict; the rest is the log.
+            body.extend(lines.iter().rev().find(|l| !l.trim().is_empty()).map(|l| Span::styled(clip(l, body_width), dim())));
         }
         self.tree(body);
+        self.after_tool = true;
     }
 
     /// `rows` under the line just pushed, each on a branch: `├─ ` and, on
@@ -795,6 +806,7 @@ impl App {
     fn push_line(&mut self, line: Line<'static>) {
         self.flush_thought();
         self.last_blank = line.width() == 0;
+        self.after_tool = false;
         self.pending.push(line);
         self.dirty = true;
     }
@@ -1347,7 +1359,7 @@ impl App {
         for c in self.calls.iter().filter(|c| c.name != "subagent") {
             let (verb, arg) = look::tool_title(&c.name, &c.input);
             let text = clip(&format!("{verb} {arg}"), width.saturating_sub(2));
-            rows.push(Line::from(vec![Span::styled(look::TOOL, look::accent()), Span::styled(text, dim())]));
+            rows.push(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(text, dim())]));
         }
         // Each subagent, one line: live status, tokens and cost (R-SUB-3).
         let frame_at = |since: Duration| look::SPINNER[(since.as_millis() / look::SPIN_FRAME.as_millis()) as usize % look::SPINNER.len()];
@@ -2206,13 +2218,27 @@ mod tests {
         let mut a = app();
         a.commit_tool("bash", &serde_json::json!({"command": "cargo test"}), "one\ntwo\nthree\nfour\nfive\nsix\nseven", false);
         let t = text(&a.take_pending());
-        assert_eq!(t, ["◆ Run cargo test", "├─ one", "├─ two", "├─ … +2 lines", "├─ five", "├─ six", "└─ seven"], "{t:?}");
+        assert_eq!(t, ["◆ Run cargo test (7 lines)", "└─ seven"], "a command shows its last line: {t:?}");
         a.commit_tool("read", &serde_json::json!({"path": "gone.md"}), "no such file", true);
         let t = text(&a.take_pending());
-        assert_eq!(t.last().map(String::as_str), Some("└─ no such file"), "one line is the last: {t:?}");
-        a.commit_tool("Bash", &serde_json::json!({"command": "ls"}), "a\nb", false);
+        assert_eq!(t, ["◆ Read gone.md (failed)", "└─ no such file"], "a call after a call stacks under it: {t:?}");
+        a.push_md("Next.");
+        a.commit_tool("Bash", &serde_json::json!({"command": "ls"}), "a\nb\n\n", false);
         let t = text(&a.take_pending());
-        assert_eq!(t, ["", "◆ Run ls", "├─ a", "└─ b"], "Claude Code's Bash is krowk's: {t:?}");
+        assert_eq!(t, ["Next.", "", "◆ Run ls (3 lines)", "└─ b"], "Claude Code's Bash is krowk's: {t:?}");
+        a.commit_tool("bash", &serde_json::json!({"command": "true"}), "", false);
+        assert_eq!(text(&a.take_pending()), ["◆ Run true"]);
+    }
+
+    #[test]
+    fn what_a_tool_acts_on_is_washed_ink_not_a_colour() {
+        let mut a = app();
+        a.commit_tool("read", &serde_json::json!({"path": "src/app.rs"}), "x", false);
+        let head = a.take_pending().remove(0);
+        let path = head.spans.iter().find(|s| s.content == "src/app.rs").unwrap();
+        assert_eq!(path.style, look::path());
+        assert_eq!(path.style.fg, None, "the terminal's own ink: {head:?}");
+        assert_eq!(head.spans[0].style.fg, None, "a bullet that worked is ink too: {head:?}");
     }
 
     #[test]
