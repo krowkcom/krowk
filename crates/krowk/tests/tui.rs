@@ -60,6 +60,10 @@ impl Sandbox {
             ("HOME".into(), home.display().to_string()),
             ("TERM".into(), "xterm-256color".into()),
             ("KROWK_NO_UPDATE_CHECK".into(), "1".into()),
+            // In this process, as before the daemon: the TUI's drawing is
+            // what these hold, and a test that runs the daemon says so
+            // (`Daemon`), with a runtime directory of its own.
+            ("KROWK_TUI_HOST".into(), "local".into()),
             ("ANTHROPIC_API_KEY".into(), "sk-test".into()),
             ("ANTHROPIC_BASE_URL".into(), url.into()),
         ]

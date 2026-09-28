@@ -275,6 +275,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(all(feature = "harness", unix))]
         ["host", "attach", ..] => host::attach(ctx, rest(2)),
         #[cfg(all(feature = "harness", unix))]
+        ["host", "stop", ..] => host::stop(ctx),
+        #[cfg(all(feature = "harness", unix))]
         ["host", "enable", ..] => host::enable(ctx, true),
         #[cfg(all(feature = "harness", unix))]
         ["host", "disable", ..] => host::enable(ctx, false),
@@ -434,6 +436,9 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
             if f.given.contains(name) && !add && !connect {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk connect` and `krowk providers add`")));
             }
+        }
+        if f.given.contains("force") && !words.starts_with(&["host", "stop"]) {
+            return Err(fail("bad_flag", "`--force` is only a flag of `krowk host stop`"));
         }
         let owners = [("device", "`krowk providers add` (`krowk connect` takes --method device)", add), ("method", "`krowk connect`", connect), ("default", "`krowk connect`", connect), ("key-stdin", "`krowk connect`", connect), ("key-ref", "`krowk connect`", connect), ("remove", "`krowk disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`krowk disconnect`", words.first() == Some(&"disconnect"))];
         for (name, owner, allowed) in owners {

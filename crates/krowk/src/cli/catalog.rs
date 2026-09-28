@@ -434,6 +434,8 @@ pub fn catalog(version: &str) -> Catalog {
             EnvVar { name: "KROWK_AGENT", usage: "Agent name to report", default: "" },
             EnvVar { name: "KROWK_NO_UPDATE_CHECK", usage: "1/true/yes/on — never check for or mention new releases", default: "" },
             EnvVar { name: "KROWK_HOME", usage: "Where krowk keeps its files, an absolute path", default: "~/.krowk" },
+            #[cfg(feature = "harness")]
+            EnvVar { name: "KROWK_TUI_HOST", usage: "local — the TUI runs its sessions in its own process, not the host daemon", default: "" },
         ],
     };
     #[cfg(feature = "harness")]
@@ -458,6 +460,10 @@ fn host_command() -> Command {
             Command {
                 args: vec![arg("session", "The session id a result names", true)],
                 ..cmd("attach", "krowk host attach <session>", "Follow a session in the daemon, live, as stream-json")
+            },
+            Command {
+                flags: vec![flag("force", BOOL, "Stop it though other clients are connected; each reconnects to the next daemon")],
+                ..cmd("stop", "krowk host stop [--force]", "Stop the daemon, once no turn runs in it")
             },
             cmd("enable", "krowk host enable", "Run the daemon as a systemd or launchd user service"),
             cmd("disable", "krowk host disable", "Stop the service and remove it"),

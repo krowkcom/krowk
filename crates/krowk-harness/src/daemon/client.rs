@@ -4,13 +4,16 @@
 //! in-process host runs against the daemon unchanged (`headless::Transport`).
 //!
 //! One reader task takes the daemon's frames in order: a session's lines go
-//! to the stream of the turn this client is running or following, and
-//! every command's `done` resolves that command. A turn's lines all arrive
-//! before its `done`, as they do in-process.
+//! to the stream of the turn this client is running or following in that
+//! session — by the session each `line` names, so a client running a turn
+//! in one session while following another keeps the two apart — and every
+//! command's `done` resolves that command. A turn's lines all arrive before
+//! its `done`, as they do in-process. Lines of a followed session with no
+//! stream of this client's go to `watch`, as `Host::watch` in-process.
 
 use super::absent;
 use crate::engine::EngineError;
-use crate::protocol::{ClientFrame, Command, ErrorInfo, HostStatus, RunResult, ServerFrame, StreamLine, PROTOCOL_VERSION};
+use crate::protocol::{ClientFrame, Command, ErrorInfo, HostStatus, LiveEvent, RunResult, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,10 +47,79 @@ pub struct Client {
 #[derive(Default)]
 struct Inner {
     waiting: HashMap<u64, oneshot::Sender<ServerFrame>>,
-    /// Where a session's lines go: the command whose turn this client is
-    /// running, or the attach it is following, by id.
-    sink: Option<(u64, mpsc::Sender<StreamLine>)>,
+    /// Where each session's lines go.
+    sinks: Vec<Sink>,
     closed: bool,
+}
+
+/// A stream to open with a request: its session, where its lines go, and
+/// whom to tell a followed turn's end.
+type NewSink = (Option<String>, mpsc::Sender<StreamLine>, Option<oneshot::Sender<Option<RunResult>>>);
+
+/// One stream of this client's: a turn it runs, or a session it follows.
+/// Its lines are queued without bound and handed on by a task of its own,
+/// so the reader never waits on a stream nobody drains — a command's
+/// answer (an interrupt's, above all) is never stuck behind a full one.
+struct Sink {
+    /// The command or attach it is for.
+    cmd: u64,
+    /// The session: none for a prompt that starts one, until the daemon's
+    /// first line of that command (`line.cmd`) names it.
+    session: Option<String>,
+    q: mpsc::UnboundedSender<Item>,
+    /// A `follow`: it ends at the session's result, or when it settles.
+    follow: bool,
+}
+
+/// What a stream's task hands on, in order.
+enum Item {
+    Line(StreamLine),
+    /// A followed turn's end.
+    End(Option<RunResult>),
+    /// The command's `done`, told once every line before it is handed on.
+    Done(oneshot::Sender<ServerFrame>, ServerFrame),
+}
+
+impl Sink {
+    fn open(cmd: u64, session: Option<String>, out: mpsc::Sender<StreamLine>, until: Option<oneshot::Sender<Option<RunResult>>>) -> Sink {
+        let (q, mut rx) = mpsc::unbounded_channel::<Item>();
+        let follow = until.is_some();
+        tokio::spawn(async move {
+            let mut until = until;
+            while let Some(item) = rx.recv().await {
+                match item {
+                    Item::Line(l) => {
+                        let _ = out.send(l).await;
+                    }
+                    Item::End(r) => {
+                        if let Some(u) = until.take() {
+                            let _ = u.send(r);
+                        }
+                        return;
+                    }
+                    Item::Done(w, f) => {
+                        let _ = w.send(f);
+                        return;
+                    }
+                }
+            }
+        });
+        Sink { cmd, session, q, follow }
+    }
+}
+
+impl Inner {
+    /// The stream a line goes to: its command's, when it names one, else
+    /// its session's.
+    fn sink_for(&mut self, session: &str, cmd: Option<u64>) -> Option<usize> {
+        if let Some(c) = cmd
+            && let Some(i) = self.sinks.iter().position(|s| s.cmd == c)
+        {
+            self.sinks[i].session.get_or_insert_with(|| session.to_string());
+            return Some(i);
+        }
+        self.sinks.iter().rposition(|s| s.session.as_deref() == Some(session))
+    }
 }
 
 fn gone() -> EngineError {
@@ -96,25 +168,45 @@ impl Client {
                 while let Ok(Some(line)) = lines.next_line().await {
                     let Ok(f) = serde_json::from_str::<ServerFrame>(&line) else { continue };
                     match f {
-                        ServerFrame::Line { line } => {
-                            let sink = inner.lock().unwrap_or_else(|e| e.into_inner()).sink.as_ref().map(|(_, s)| s.clone());
-                            match sink {
-                                Some(s) => {
-                                    let _ = s.send(line).await;
+                        ServerFrame::Line { line, session, cmd } => {
+                            let key = if session.is_empty() { line.session_id().to_string() } else { session };
+                            let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
+                            match i.sink_for(&key, cmd) {
+                                Some(n) => {
+                                    let ends = i.sinks[n].follow && matches!(&line, StreamLine::Live(LiveEvent::Result(r)) if r.session_id == key);
+                                    let result = match &line {
+                                        StreamLine::Live(LiveEvent::Result(r)) if ends => Some(r.clone()),
+                                        _ => None,
+                                    };
+                                    let _ = i.sinks[n].q.send(Item::Line(line));
+                                    if ends {
+                                        let _ = i.sinks.remove(n).q.send(Item::End(result));
+                                    }
                                 }
                                 None => {
                                     let _ = lines_tx.send(line);
                                 }
                             }
                         }
+                        ServerFrame::Settled { session } => {
+                            let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
+                            while let Some(n) = i.sinks.iter().position(|s| s.follow && s.session.as_deref() == Some(session.as_str())) {
+                                let _ = i.sinks.remove(n).q.send(Item::End(None));
+                            }
+                        }
                         ServerFrame::Done { id, .. } | ServerFrame::Attached { id, .. } | ServerFrame::Status { id, .. } => {
                             let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
-                            // A turn's stream ends with its command.
-                            if matches!(f, ServerFrame::Done { .. }) && i.sink.as_ref().is_some_and(|(s, _)| *s == id) {
-                                i.sink = None;
-                            }
-                            if let Some(w) = i.waiting.remove(&id) {
-                                let _ = w.send(f);
+                            let Some(w) = i.waiting.remove(&id) else { continue };
+                            // A turn's `done` comes after its lines: handed
+                            // on by its stream, once they are. Any other
+                            // answer at once — never behind a stream.
+                            match i.sinks.iter().position(|s| s.cmd == id).filter(|_| matches!(f, ServerFrame::Done { .. })) {
+                                Some(n) => {
+                                    let _ = i.sinks.remove(n).q.send(Item::Done(w, f));
+                                }
+                                None => {
+                                    let _ = w.send(f);
+                                }
                             }
                         }
                         ServerFrame::Welcome { .. } | ServerFrame::Refused { .. } => {}
@@ -122,7 +214,7 @@ impl Client {
                 }
                 let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                 i.closed = true;
-                i.sink = None;
+                i.sinks.clear();
                 i.waiting.clear();
             });
         }
@@ -135,7 +227,7 @@ impl Client {
         self.lines.subscribe()
     }
 
-    fn ask(&self, frame: impl FnOnce(u64) -> ClientFrame, sink: Option<mpsc::Sender<StreamLine>>) -> Result<oneshot::Receiver<ServerFrame>, EngineError> {
+    fn ask(&self, frame: impl FnOnce(u64) -> ClientFrame, sink: Option<NewSink>) -> Result<oneshot::Receiver<ServerFrame>, EngineError> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         {
@@ -144,8 +236,8 @@ impl Client {
                 return Err(gone());
             }
             i.waiting.insert(id, tx);
-            if let Some(s) = sink {
-                i.sink = Some((id, s));
+            if let Some((session, tx, until)) = sink {
+                i.sinks.push(Sink::open(id, session, tx, until));
             }
         }
         self.tx.send(frame(id)).map_err(|_| gone())?;
@@ -155,8 +247,12 @@ impl Client {
     /// `Host::execute`, over the socket: a `prompt` or `continue` streams
     /// its session's lines to `out` until it ends.
     pub async fn execute(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
-        let turn = matches!(cmd, Command::Prompt { .. } | Command::Continue { .. });
-        let rx = self.ask(|id| ClientFrame::Execute { id, command: cmd }, turn.then_some(out))?;
+        let session = match &cmd {
+            Command::Prompt { session_id, .. } => Some(session_id.clone()),
+            Command::Continue { session_id, .. } => Some(Some(session_id.clone())),
+            _ => None,
+        };
+        let rx = self.ask(|id| ClientFrame::Execute { id, command: cmd }, session.map(|s| (s, out, None)))?;
         match rx.await {
             Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
             Ok(ServerFrame::Done { result, .. }) => Ok(result),
@@ -168,7 +264,7 @@ impl Client {
     /// running turn so far, then each frame live, to `out`. Answers whether
     /// a turn is running once caught up.
     pub async fn attach(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<bool, EngineError> {
-        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from) }, Some(out))?;
+        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from) }, Some((Some(session_id.to_string()), out, None)))?;
         match rx.await {
             Ok(ServerFrame::Attached { error: Some(e), .. }) => Err(engine_error(e)),
             Ok(ServerFrame::Attached { running, .. }) => Ok(running),
@@ -176,9 +272,61 @@ impl Client {
         }
     }
 
-    /// Asks the daemon to exit; refused (`host_busy`) while a turn runs.
-    pub async fn stop(&self) -> Result<(), EngineError> {
-        let rx = self.ask(|id| ClientFrame::Stop { id }, None)?;
+    /// Follows a session's running turn to its end, as though this client
+    /// ran it: what its log holds after `after`, the turn so far, then each
+    /// frame live, to `out`, answering the turn's result — none when no
+    /// turn is running, or the session settles without one. What the TUI
+    /// reattaches with (R-HOST-1).
+    pub async fn follow(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
+        let (utx, urx) = oneshot::channel();
+        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from) }, Some((Some(session_id.to_string()), out, Some(utx))))?;
+        let running = match rx.await {
+            Ok(ServerFrame::Attached { error: Some(e), .. }) => return Err(engine_error(e)),
+            Ok(ServerFrame::Attached { running, .. }) => running,
+            _ => return Err(gone()),
+        };
+        if !running {
+            let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            i.sinks.retain(|s| !(s.follow && s.session.as_deref() == Some(session_id)));
+            return Ok(None);
+        }
+        urx.await.map_err(|_| gone())
+    }
+
+    /// `reload`, not waited for: a client that must not stop for it (the
+    /// TUI, just after `/connect`). The daemon takes frames in order, so a
+    /// prompt sent after it runs on what it read.
+    pub fn reload_later(&self, changed: Option<String>, renamed: Option<(String, String)>) {
+        let (renamed_from, renamed_to) = renamed.map_or((None, None), |(a, b)| (Some(a), Some(b)));
+        let _ = self.ask(|id| ClientFrame::Reload { id, changed, renamed_from, renamed_to }, None);
+    }
+
+    /// `reload` (see `ClientFrame::Reload`).
+    pub async fn reload(&self, changed: Option<&str>, renamed: Option<(&str, &str)>) -> Result<(), EngineError> {
+        let rx = self.ask(|id| ClientFrame::Reload { id, changed: changed.map(String::from), renamed_from: renamed.map(|r| r.0.to_string()), renamed_to: renamed.map(|r| r.1.to_string()) }, None)?;
+        match rx.await {
+            Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
+            Ok(ServerFrame::Done { .. }) => Ok(()),
+            _ => Err(gone()),
+        }
+    }
+
+    /// Whether the daemon has closed this connection: its next command
+    /// needs another client (`daemon::remote`).
+    pub fn closed(&self) -> bool {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).closed
+    }
+
+    /// Stops following `session_id` (`ClientFrame::Leave`).
+    pub fn leave(&self, session_id: &str) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).sinks.retain(|s| s.session.as_deref() != Some(session_id));
+        let _ = self.tx.send(ClientFrame::Leave { session_id: session_id.to_string() });
+    }
+
+    /// Asks the daemon to exit; refused (`host_busy`) while a turn runs, and
+    /// (`host_in_use`) while another client is connected unless `force`.
+    pub async fn stop(&self, force: bool) -> Result<(), EngineError> {
+        let rx = self.ask(|id| ClientFrame::Stop { id, force }, None)?;
         match rx.await {
             Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
             Ok(ServerFrame::Done { .. }) => Ok(()),

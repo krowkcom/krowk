@@ -29,10 +29,10 @@ pub(super) fn log_path(ctx: &Ctx) -> Result<std::path::PathBuf, Error> {
 }
 
 /// Starts the daemon, detached, from this very binary.
-pub(super) fn spawner(ctx: &Ctx) -> Result<impl Fn() -> Result<(), String> + use<>, Error> {
+pub(super) fn spawner(ctx: &Ctx) -> Result<impl Fn() -> Result<Option<std::process::Child>, String> + Send + Sync + use<>, Error> {
     let exe = std::env::current_exe().map_err(|e| fail("host_unavailable", format!("krowk cannot find its own binary to start the host daemon: {e}")))?;
     let log = log_path(ctx)?;
-    Ok(move || daemon::spawn_detached(&exe, &["host", "serve"], &log))
+    Ok(move || daemon::spawn_detached(&exe, &["host", "serve"], &log).map(Some))
 }
 
 fn engine(e: EngineError) -> Error {
@@ -139,6 +139,20 @@ fn uptime(ms: u64) -> String {
     }
 }
 
+/// `krowk host stop`: the daemon asked to exit — refused while a turn runs.
+pub(super) fn stop(ctx: &mut Ctx) -> Result<(), Error> {
+    let stopped = daemon::stop(ctx.io.env, super::VERSION, ctx.f.force).map_err(engine)?;
+    let summary = match stopped {
+        Some(pid) => format!("the host daemon (pid {pid}) has stopped"),
+        None => "no host daemon was running".to_string(),
+    };
+    if ctx.format != Format::Human {
+        return super::sessions::emit_data(ctx, json!({ "stopped": stopped }), summary);
+    }
+    let _ = writeln!(ctx.io.stdout, "{summary}");
+    Ok(())
+}
+
 /// Every frame of the session as stream-json, until its running turn ends.
 pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let [session] = args else {
@@ -165,7 +179,15 @@ pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
     // A daemon started on demand holds the socket the service would bind,
     // and a service that cannot bind fails its restarts: it is let go
     // first, once no turn runs in it.
-    let stopped = if on { daemon::stop(ctx.io.env, super::VERSION).map_err(engine)? } else { None };
+    // Enabled again: the daemon up is the service's own, which the service
+    // manager restarts — launchd only once it is booted out, since a second
+    // `bootstrap` of a loaded agent fails.
+    let active = on && ran(&service::active(platform, uid));
+    if active && platform == service::Platform::Launchd {
+        let _ = ran(&service::commands(platform, false, &file, uid)[0]);
+    }
+    // Forced: an open TUI reconnects to the service's daemon.
+    let stopped = if on && !active { daemon::stop(ctx.io.env, super::VERSION, true).map_err(engine)? } else { None };
     for c in service::commands(platform, on, &file, uid) {
         let ran = std::process::Command::new(&c[0]).args(&c[1..]).stdin(std::process::Stdio::null()).output();
         match ran {
@@ -195,6 +217,11 @@ pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
     }
     let _ = writeln!(ctx.io.stdout, "{summary}");
     Ok(())
+}
+
+/// Whether a service manager's command succeeds.
+fn ran(c: &[String]) -> bool {
+    std::process::Command::new(&c[0]).args(&c[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
 /// Whether the service is up: asked a second after it was started, and

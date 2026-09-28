@@ -80,7 +80,7 @@ fn runtime() -> Result<tokio::runtime::Runtime, EngineError> {
 /// the daemon's and survives this process. What it prints is what the
 /// in-process run prints.
 #[cfg(unix)]
-pub fn run_on_daemon(env: &dyn Fn(&str) -> String, cwd: &std::path::Path, version: &str, spawn: &dyn Fn() -> Result<(), String>, opts: Options, stdout: &mut dyn Write) -> Outcome {
+pub fn run_on_daemon(env: &dyn Fn(&str) -> String, cwd: &std::path::Path, version: &str, spawn: &crate::daemon::Spawn<'_>, opts: Options, stdout: &mut dyn Write) -> Outcome {
     let rt = match runtime() {
         Ok(rt) => rt,
         Err(e) => return Outcome { session_id: None, result: None, error: Some(e) },
