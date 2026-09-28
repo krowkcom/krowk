@@ -1542,6 +1542,7 @@ impl<'h> Ui<'h> {
                             help::Action::Settings => self.open_settings(app),
                             help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
                             help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
+                            help::Action::New => self.new_session(app),
                             help::Action::Sessions => self.open_resume(app),
                             help::Action::Todos => app.overlay = Overlay::Todos,
                             help::Action::Agents => app.overlay = Overlay::Agents,
@@ -1802,6 +1803,24 @@ impl<'h> Ui<'h> {
         if let Some(m) = self.model.clone() {
             self.owe_trust(app, &m);
         }
+    }
+
+    /// `/new`: a fresh session in place of the one shown, on the same
+    /// model; the next prompt starts it. The one left can be continued
+    /// with `/sessions`.
+    fn new_session(&mut self, app: &mut App) {
+        if !self.can_resume(app) {
+            return;
+        }
+        let Some(old) = app.session_id.clone() else {
+            return app.notice("this session is new already");
+        };
+        if !self.left.contains(&old) {
+            self.left.push(old);
+        }
+        app.forget_session();
+        self.last_prompt.clear();
+        app.gap_say("a new session — /sessions continues the last one");
     }
 
     /// Whether another session may take the one shown's place now: not
@@ -2164,6 +2183,11 @@ impl<'h> Ui<'h> {
             "/settings" => {
                 app.editor.clear();
                 self.open_settings(app);
+                return false;
+            }
+            "/new" => {
+                app.editor.clear();
+                self.new_session(app);
                 return false;
             }
             "/sessions" => {

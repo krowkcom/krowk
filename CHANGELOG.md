@@ -11,6 +11,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`/new` in the TUI (or `/clear`) starts a fresh session** on the same
+  model, the earlier turns left behind. The session left is kept, and
+  `/sessions` continues it.
 - **The TUI's status line is two rows, and links the branch's pull request.**
   The first row is the model, the device, the task and subagent counts and
   `? help`; the second is the branch checked out, `#133↗`, its pull request

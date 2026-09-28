@@ -351,6 +351,35 @@ fn resume_continues_an_earlier_session_from_the_slash_menu() {
     assert_eq!(krowk_sessions(&b, &m.url), 2, "krowk.db lists the session left too");
 }
 
+/// `/new` (here by its alias, `/clear`) leaves the session shown for a
+/// fresh one: the next prompt goes without the earlier turns, and both
+/// sessions are kept.
+#[test]
+fn new_starts_a_fresh_session_and_keeps_the_one_left() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("new");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    // Nothing sent yet: the session is new already.
+    t.write(b"/new\r");
+    assert!(t.wait_for("this session is new already", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    let from = t.output().len();
+    t.write(b"read README.md and summarise it\r");
+    assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
+    t.write(b"/clear\r");
+    assert!(t.wait_for("a new session", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    let from = t.output().len();
+    t.write(b"summarise the README again\r");
+    assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let seen = m.seen.lock().unwrap();
+    assert!(!seen.iter().any(|s| { let b = s.body["messages"].to_string(); b.contains("/new") || b.contains("/clear") }), "a command went to the model");
+    assert!(!seen.iter().any(|s| { let b = s.body["messages"].to_string(); b.contains("read README.md and summarise it") && b.contains("summarise the README again") }), "the earlier turn was sent to the new session");
+    drop(seen);
+    assert_eq!(krowk_sessions(&b, &m.url), 2, "krowk.db lists the session left too");
+}
+
 /// `/config` (or `/settings`) cycles the default permission mode and saves
 /// it to config.json, and the next session starts in it; ↓ chooses the
 /// content width, saved the same way.
