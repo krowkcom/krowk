@@ -1793,13 +1793,8 @@ impl<'h> Ui<'h> {
         // Its own model from here, not the one the last session was on; one
         // that never ran a turn goes on with the model the next prompt had.
         self.chosen = None;
-        self.needs_trust = None;
-        app.trust_question = None;
-        if let Some(m) = app.model.clone() {
-            self.retarget(&m);
-            self.model = Some(m);
-        }
-        app.model = self.model.clone();
+        let m = app.model.clone();
+        self.settle_on(app, m);
         if let Some(m) = self.model.clone() {
             self.owe_trust(app, &m);
         }
@@ -1818,18 +1813,27 @@ impl<'h> Ui<'h> {
             return;
         }
         self.leave(app);
-        // The model shown, the resumed session's at start, is the one the
-        // next prompt goes to, not one routed afresh for a session with none.
-        if self.model.is_none()
-            && let Some(m) = app.model.clone()
-        {
-            self.retarget(&m);
-            self.model = Some(m);
-        }
+        // The one the next prompt goes to, else the one shown — the
+        // resumed session's at start — rather than one routed afresh.
+        let m = self.model.clone().or_else(|| app.model.clone());
+        self.settle_on(app, m);
         app.start_over(&home_relative(&self.runs_in), self.effort_label.as_deref());
         if let Some(m) = self.model.clone() {
             self.owe_trust(app, &m);
         }
+    }
+
+    /// Session `m`'s model, where there is one, as the next prompt's and
+    /// the one shown, the trust question asked for the last model let go;
+    /// with none, the next prompt's stays.
+    fn settle_on(&mut self, app: &mut App, m: Option<ModelRef>) {
+        self.needs_trust = None;
+        app.trust_question = None;
+        if let Some(m) = m {
+            self.retarget(&m);
+            self.model = Some(m);
+        }
+        app.model = self.model.clone();
     }
 
     /// The session shown, left for another: kept to be listed on the way

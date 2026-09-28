@@ -356,8 +356,11 @@ impl<W: Write> Term<W> {
     /// is moved down to sit right above the viewport (see `anchor`).
     pub fn new(mut out: W, size: Size, top: u16, height: u16) -> io::Result<Term<W>> {
         let buf = FrameBuf::default();
+        buf.set_row(top);
         let height = height.clamp(1, size.height.max(1));
-        let (top, whole, blank_top) = open(&buf, size, top, height)?;
+        let bottom = size.height.saturating_sub(height);
+        let (whole, blank_top) = if top <= bottom { (true, bottom - top) } else { (false, 0) };
+        let top = anchor(&buf, size, top, height)?;
         // Out now, not with the first frame: a resize before that frame
         // measures against a screen that has already moved.
         out.write_all(&buf.take())?;
@@ -624,14 +627,16 @@ impl<W: Write> Term<W> {
     }
 
     /// Clears the screen and its scrollback (`ESC [3J`, where the terminal
-    /// has it) and starts the live region afresh, as `new` does on an
-    /// empty screen.
+    /// has it) and starts the live region afresh on the top row: the lines
+    /// the next frame prints go from there down, scrolling nothing into the
+    /// history just cleared, and the region then drops to the bottom with
+    /// them above it, as on a screen `new` opened on.
     pub fn wipe(&mut self) -> io::Result<()> {
         self.buf.clone().write_all(b"\x1b[H\x1b[2J\x1b[3J")?;
-        let top;
-        (top, self.whole, self.blank_top) = open(&self.buf, self.size, 0, self.height)?;
-        self.terminal = build(&self.buf, self.size, top, self.height)?;
-        Ok(())
+        self.buf.set_row(0);
+        self.whole = true;
+        self.blank_top = 0;
+        self.rebuild(0, self.height)
     }
 
     /// Clears the live region and leaves the cursor at its top, at the
@@ -796,18 +801,6 @@ fn anchor(buf: &FrameBuf, size: Size, top: u16, height: u16) -> io::Result<u16> 
         write!(buf.clone(), "\x1b[{}L", bottom - top)?;
     }
     Ok(bottom)
-}
-
-/// Where a region `height` rows tall goes when started afresh with the
-/// cursor on row `top`, all of the session on screen: what is above it
-/// moved down to sit right above it (`anchor`). With whether the session
-/// is all on screen, and the blank rows at its top (`Term::whole`,
-/// `blank_top`).
-fn open(buf: &FrameBuf, size: Size, top: u16, height: u16) -> io::Result<(u16, bool, u16)> {
-    buf.set_row(top);
-    let bottom = size.height.saturating_sub(height);
-    let (whole, blank_top) = if top <= bottom { (true, bottom - top) } else { (false, 0) };
-    Ok((anchor(buf, size, top, height)?, whole, blank_top))
 }
 
 fn build(buf: &FrameBuf, size: Size, top: u16, height: u16) -> io::Result<Terminal<Back>> {

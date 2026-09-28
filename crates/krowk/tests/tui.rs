@@ -361,7 +361,7 @@ fn new_starts_a_fresh_session_and_keeps_the_one_left() {
     let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 120, 30);
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     // Words after it are refused, never sent as a prompt.
-    t.write(b"/clear and start over\r");
+    t.write(b"/clear kumquat\r");
     assert!(t.wait_for("/new takes nothing after it", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"read README.md and summarise it\r");
     assert!(t.wait_for("tokens", Duration::from_secs(20)).is_some(), "{:?}", t.text());
@@ -374,10 +374,54 @@ fn new_starts_a_fresh_session_and_keeps_the_one_left() {
     t.write(b"\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let seen = m.seen.lock().unwrap();
-    assert!(!seen.iter().any(|s| s.body["messages"].to_string().contains("/clear") || s.body["messages"].to_string().contains("start over")), "the command went to the model");
+    assert!(!seen.iter().any(|s| s.body["messages"].to_string().contains("/clear") || s.body["messages"].to_string().contains("kumquat")), "the command went to the model");
     assert!(!seen.iter().any(|s| { let b = s.body["messages"].to_string(); b.contains("read README.md and summarise it") && b.contains("summarise the README again") }), "the earlier turn was sent to the new session");
     drop(seen);
     assert_eq!(krowk_sessions(&b, &m.url), 2, "krowk.db lists the session left too");
+}
+
+/// After `krowk --resume`, `/new` keeps to the directory the session was
+/// resumed for: one begun elsewhere is refused, its trust and settings
+/// being that directory's; one begun here is left for a fresh session.
+#[test]
+fn new_after_a_resume_at_start_keeps_to_the_directory() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("new-resume");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"read README.md and summarise it\r");
+    assert!(t.wait_for("tokens", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let out = t.text();
+    let at = out.find("krowk --resume ").expect("the resume line") + "krowk --resume ".len();
+    let id = out[at..at + 36].to_string();
+
+    let elsewhere = b.root.join("elsewhere");
+    std::fs::create_dir_all(elsewhere.join(".git")).unwrap();
+    let mut c = b.command(&m.url, &["--resume", &id]);
+    c.current_dir(&elsewhere);
+    let mut t = pty::Pty::spawn(c, 120, 30);
+    assert!(t.wait_for(&format!("resumed session {id}"), Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"/new\r");
+    assert!(t.wait_for("for a new one", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+
+    let mut t = pty::Pty::spawn(b.command(&m.url, &["--resume", &id]), 120, 30);
+    assert!(t.wait_for(&format!("resumed session {id}"), Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    let from = t.output().len();
+    t.write(b"/new\r");
+    assert!(wait_after(&t, from, "Model:", Duration::from_secs(10)), "the header names the model: {:?}", t.text());
+    let from = t.output().len();
+    t.write(b"summarise the README again\r");
+    assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let seen = m.seen.lock().unwrap();
+    let last = seen.iter().rev().find(|s| s.body["messages"].to_string().contains("summarise the README again")).expect("the prompt was sent");
+    assert!(!last.body["messages"].to_string().contains("read README.md and summarise it"), "the resumed turns went to the new session");
+    assert_eq!(last.body["model"], seen[0].body["model"], "on the model the resumed session was on");
 }
 
 /// `/config` (or `/settings`) cycles the default permission mode and saves
