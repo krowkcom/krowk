@@ -98,7 +98,7 @@ static READY: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 /// The home, checked once per process: one `lstat` when it is there, and
 /// for the default home one `stat` of its old-layout marker. When it is
 /// not, the files an older krowk kept under the XDG directories are moved
-/// in first, all or nothing (`crate::migrate`), and it is made `0700`.
+/// in first (`crate::migrate`), and it is made `0700`.
 pub fn dir(env: Env) -> Result<PathBuf, Error> {
     let home = resolve(env)?;
     let mut ready = READY.lock().unwrap_or_else(|e| e.into_inner());
@@ -141,8 +141,10 @@ fn prepare(home: &Path, env: Env) -> Result<(), Error> {
                 Err(m) if exists(home) => Err(fail("bad_home", m)),
                 Err(_) => Ok(()),
                 Ok(()) => {
+                    // What the move left, or an old layout with nothing to
+                    // move, named now, once.
                     if inherits {
-                        let _ = std::fs::write(home.join(CHECKED), "");
+                        crate::migrate::note_old(home, env);
                     }
                     Ok(())
                 }

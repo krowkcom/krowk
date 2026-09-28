@@ -151,6 +151,9 @@ unit = "bytes"
 # Main merged into the umbrella (the unhinged permission mode, Claude
 # Code's background agents followed between turns): 8,502,056 (8.11 MiB),
 # 148,696 under this.
+# Provider auth 07's review round 3 (the move from the old layout made
+# small: config and keys read into a staged home renamed into place, the
+# rest named once) takes 10,176 bytes off: 8,491,880, 158,872 under this.
 max = { x86_64-linux = 8_650_752 }
 status = "enforced"
 
