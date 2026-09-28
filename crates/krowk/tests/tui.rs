@@ -803,3 +803,29 @@ fn slash_offers_commands_and_skills_and_a_skill_reaches_the_model() {
     let first = seen.iter().find(|s| s.body["messages"].is_array()).expect("the model was asked").body["messages"].to_string();
     assert!(first.contains("/greet the team") && first.contains("MARMALADE"), "the prompt and the skill's body: {first}");
 }
+
+#[test]
+fn r_tui_1_a_menu_opened_and_closed_on_a_short_session_puts_nothing_in_scrollback() {
+    // The session all on screen: a menu takes the blank rows above it and
+    // gives them back, and none of them is scrolled into history on the way.
+    let m = streamed(2, Duration::from_micros(100));
+    let b = Sandbox::new("short");
+    let Some(tm) = Tmux::start_after("short", 80, 40, &b.root.join("repo"), &b.env(&m.url), &[], "seq 1 50;") else { return };
+    assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    let gap = |h: &str| {
+        let rows: Vec<&str> = h.lines().collect();
+        let logo = rows.iter().position(|l| l.contains('▀')).unwrap_or_else(|| panic!("no logo:\n{h}"));
+        logo - rows.iter().position(|l| l.trim() == "50").unwrap_or_else(|| panic!("no shell output:\n{h}"))
+    };
+    let before = gap(&tm.history());
+    for _ in 0..3 {
+        tm.keys(&["?"]);
+        std::thread::sleep(Duration::from_millis(300));
+        tm.keys(&["Escape"]);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let history = tm.history();
+    assert_eq!(gap(&history), before, "rows between the shell's output and the logo:\n{history}");
+    let screen = tm.screen();
+    assert!(screen.lines().last().is_some_and(|l| l.contains("? help")), "the status line on the last row:\n{screen}");
+}

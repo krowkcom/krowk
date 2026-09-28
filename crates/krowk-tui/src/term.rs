@@ -47,6 +47,15 @@
 //!   would erase the visible part of the conversation, so the resize is
 //!   handled here instead: the old live region is cleared from its top down
 //!   and the viewport rebuilt in place.
+//! - **What reached scrollback is never moved on screen.** A region that
+//!   grows pushes what is above it up; one that shrinks cannot pull it back,
+//!   and moving what is left down to meet it would open blank rows at the
+//!   top that the next line pushes into scrollback inside the conversation.
+//!   So the region drops back to the bottom only while the whole session is
+//!   on screen, and otherwise keeps its height, the spare rows blank above
+//!   the prompt (`Term::set_height`). Rows are moved with insert and delete
+//!   line, never a scroll region: a scroll that starts at the top row puts
+//!   what it scrolls in tmux's history.
 
 use crossterm::terminal::{Clear, ClearType as CtClear};
 use crossterm::{queue, QueueableCommand};
@@ -354,9 +363,11 @@ impl<W: Write> Term<W> {
         }
         let up = (want - self.height).min(self.blank_top);
         if up > 0 {
-            CrosstermBackend::new(self.buf.clone()).scroll_region_up(0..top, up)?;
-            // Setting the scroll region moves the cursor to the top left.
-            self.buf.set_row(0);
+            // Deleted from the top row, everything under it moves up and the
+            // blank rows go nowhere: a scroll, even inside a scroll region
+            // that starts at the top, puts them in tmux's history.
+            self.buf.goto(0, 0)?;
+            write!(self.buf.clone(), "\x1b[{up}M")?;
             top -= up;
             self.blank_top -= up;
         }
@@ -681,11 +692,12 @@ pub fn reflows_from(env: &dyn Fn(&str) -> String) -> bool {
 }
 
 /// Moves the viewport to the bottom of the screen: the rows above `top`
-/// (the shell's output, the command line) scroll down to sit right above
-/// it, and the blank rows below the cursor become blank rows at the top of
-/// the screen. Nothing on screen is lost or drawn twice — only blank rows
-/// are scrolled out of the region. A region at the bottom is what keeps a
-/// reflowing resize from pushing it into history (see `Term::resize`).
+/// (the shell's output, the command line) move down to sit right above
+/// it, blank rows inserted at the top of the screen. Nothing on screen is
+/// lost or drawn twice — only the blank rows below `top` are pushed off the
+/// bottom, and inserted lines are never scrolled anywhere, so none reach
+/// scrollback. A region at the bottom is what keeps a reflowing resize from
+/// pushing it into history (see `Term::resize`).
 fn anchor(buf: &FrameBuf, size: Size, top: u16, height: u16) -> io::Result<u16> {
     let bottom = size.height.saturating_sub(height);
     // Already at the bottom, or below it: ratatui makes room by scrolling
@@ -694,9 +706,8 @@ fn anchor(buf: &FrameBuf, size: Size, top: u16, height: u16) -> io::Result<u16> 
         return Ok(top);
     }
     if top > 0 {
-        CrosstermBackend::new(buf.clone()).scroll_region_down(0..bottom, bottom - top)?;
-        // Setting the scroll region moves the cursor to the top left.
-        buf.set_row(0);
+        buf.goto(0, 0)?;
+        write!(buf.clone(), "\x1b[{}L", bottom - top)?;
     }
     Ok(bottom)
 }
@@ -769,9 +780,9 @@ mod tests {
         let mut t = Term::new(Vec::new(), Size { width: 40, height: 10 }, 4, 3).unwrap();
         assert_eq!(t.top(), 7, "the bottom three rows");
         let out = String::from_utf8_lossy(&t.out).into_owned();
-        // Rows 1-7 scrolled down by 3: the four rows above the cursor land
-        // right above the viewport, and only blank rows leave the region.
-        assert_eq!(out, "\x1b[1;7r\x1b[3T\x1b[r", "{out:?}");
+        // Three rows inserted at the top: the four rows above the cursor
+        // land right above the viewport, and only blank rows are pushed off.
+        assert_eq!(out, "\r\x1b[4A\x1b[3L", "{out:?}");
         let t = Term::new(Vec::new(), Size { width: 40, height: 10 }, 0, 3).unwrap();
         assert!(t.out.is_empty(), "nothing above the cursor: nothing to move");
     }
@@ -814,8 +825,8 @@ mod tests {
         (0..n).map(|i| Line::from(format!("row {i}"))).collect()
     }
 
-    fn scrolls_a_region(out: &str) -> bool {
-        out.split("\x1b[").skip(1).any(|seq| seq.find(|c: char| c.is_ascii_alphabetic()).is_some_and(|end| matches!(&seq[end..=end], "r" | "T")))
+    fn moves_what_is_above(out: &str) -> bool {
+        out.split("\x1b[").skip(1).any(|seq| seq.find(|c: char| c.is_ascii_alphabetic()).is_some_and(|end| matches!(&seq[end..=end], "r" | "T" | "L")))
     }
 
     #[test]
@@ -830,7 +841,7 @@ mod tests {
         let start = t.out.len();
         t.frame(&[], &prompt(3), (0, 2)).unwrap();
         let out = String::from_utf8_lossy(&t.out[start..]).into_owned();
-        assert!(!scrolls_a_region(&out), "{out:?}");
+        assert!(!moves_what_is_above(&out), "{out:?}");
         assert_eq!((t.top(), t.height), (2, 8), "the region keeps its rows, down to the bottom");
         assert_eq!(t.caret_row, 7, "the prompt drawn at its bottom");
         // Lines printed next fill the rows it kept before scrolling.
@@ -856,7 +867,7 @@ mod tests {
         // Taller: the blank rows at the top make room, nothing scrolls off.
         let start = t.out.len();
         t.frame(&[], &prompt(8), (0, 0)).unwrap();
-        assert!(String::from_utf8_lossy(&t.out[start..]).contains("\x1b[1;17r\x1b[5S"), "moved up within the screen");
+        assert!(String::from_utf8_lossy(&t.out[start..]).contains("\x1b[5M"), "moved up within the screen");
         t.frame(&[], &prompt(3), (0, 0)).unwrap();
         assert_eq!((t.top(), t.height), (17, 3));
         // A line printed as it shrinks: the region still ends on the last row.
