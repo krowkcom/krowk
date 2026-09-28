@@ -29,6 +29,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const MAX_INPUT_ROWS: usize = 8;
 /// The `/` menu shows this many entries at most, scrolling past them.
 const SLASH_ROWS: usize = 10;
+/// The help menu shows this many entries at most, scrolling past them: with
+/// the prompt box and the status line it fits a 24-row terminal whole.
+const HELP_ROWS: usize = 16;
 /// The Krowk mark (.github/logo.svg): its 4×4 glyph, `#`, on a plate a
 /// unit wider all round, `.`.
 const LOGO: [&str; 6] = ["......", ".#..#.", ".#..#.", ".###..", ".#..#.", "......"];
@@ -1659,7 +1662,7 @@ impl App {
     fn keys_overlay(&self, width: usize) -> Vec<Line<'static>> {
         let found = help::filter(self.editor.text());
         let rows: Vec<[String; 3]> = found.iter().map(|e| [e.title.to_string(), e.description.to_string(), e.keys.to_string()]).collect();
-        menu(&rows, self.help_at, width, usize::MAX)
+        menu(&rows, self.help_at, width, HELP_ROWS)
     }
 
     /// Whether the prompt is a command still being typed — `/` and a word,
@@ -2460,8 +2463,8 @@ mod tests {
         assert_eq!(rows.len(), 3, "only the prompt, in its box: {:?}", text(&rows));
         a.overlay = Overlay::Keys;
         let (rows, caret) = a.view(Instant::now());
-        assert_eq!(rows.len(), 23, "the help menu, a rule and nineteen entries, over the prompt box");
-        assert_eq!(caret, (2, 21), "after the arrow");
+        assert_eq!(rows.len(), 1 + HELP_ROWS + 3, "the help menu, a rule and as many entries as it shows, over the prompt box");
+        assert_eq!(caret, (2, 1 + HELP_ROWS as u16 + 1), "after the arrow");
     }
 
     #[test]

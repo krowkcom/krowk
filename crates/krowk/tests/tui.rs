@@ -971,9 +971,10 @@ fn the_help_menu_filters_as_you_type_and_enter_runs_the_entry() {
     assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     tm.keys(&["?"]);
     assert!(tm.wait_for("Start a new line without sending", Duration::from_secs(5)).is_some(), "{}", tm.screen());
-    // One entry a line, a title and a description each.
+    // One entry a line, a title and a description each; the last ones
+    // scroll into view, as the `/` menu's do.
     let screen = tm.screen();
-    for (title, description) in [("Send", "Send the prompt"), ("Session", "Tokens, limits and the log file"), ("Quit", "Leave krowk")] {
+    for (title, description) in [("Send", "Send the prompt"), ("Model", "Switch model or instance"), ("Session", "Tokens, limits and the log file")] {
         assert!(screen.lines().any(|l| l.contains(title) && l.contains(description)), "{title} with its description, on one line:\n{screen}");
     }
     // Typing filters: `ses` leaves the session entry first, selected.
