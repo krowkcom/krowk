@@ -282,6 +282,33 @@ fn window_name(w: &str) -> String {
     }
 }
 
+/// A model as a person names it: `claude-opus-5-5` is `Claude Opus 5.5`,
+/// `gpt-5.5-codex` is `GPT-5.5 Codex`, `anthropic/claude-haiku-4-5-20251001`
+/// is `Claude Haiku 4.5`. A vendor's date stamp says nothing a person reads.
+fn model_name(model: &str) -> String {
+    let model = model.rsplit('/').next().unwrap_or(model);
+    let (model, tag) = model.find('[').map_or((model, ""), |i| model.split_at(i));
+    let mut tokens: Vec<&str> = model.split('-').collect();
+    if tokens.len() > 1 && tokens.last().is_some_and(|t| *t == "latest" || (t.len() == 8 && t.bytes().all(|b| b.is_ascii_digit()))) {
+        tokens.pop();
+    }
+    let number = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    let mut words: Vec<String> = Vec::new();
+    let mut prev = "";
+    for t in tokens {
+        match words.last_mut() {
+            // `5-5` is `5.5`, `gpt-5.5` is `GPT-5.5`.
+            Some(w) if number(prev) && number(t) => w.push_str(&format!(".{t}")),
+            Some(w) if prev == "gpt" => w.push_str(&format!("-{t}")),
+            _ if t == "gpt" => words.push("GPT".into()),
+            _ if !t.is_empty() && t.bytes().all(|b| b.is_ascii_alphabetic()) => words.push(t[..1].to_ascii_uppercase() + &t[1..]),
+            _ => words.push(t.into()),
+        }
+        prev = t;
+    }
+    words.join(" ") + tag
+}
+
 /// Indent of the status line's rows.
 const STATUS_INDENT: usize = 2;
 
@@ -1778,13 +1805,15 @@ impl App {
                         parts.push(part(Rank::Device, d.clone()));
                     }
                 }
-                // The instance and model as krowk names them, and the
-                // instance's limit once it is worth knowing (R-INST-6).
+                // The model as a person names it, the instance krowk runs it
+                // on, and the instance's limit once it is worth knowing
+                // (R-INST-6).
                 StatusItem::Model => {
                     if let Some(m) = &self.model {
+                        let name = model_name(&m.model);
                         match self.instances.get(&m.instance).and_then(InstanceUsage::limit_brief) {
-                            Some(w) => parts.push(Part { rank: Rank::Model, text: format!("{m} ({w})"), style: yellow(), url: None }),
-                            None => parts.push(part(Rank::Model, m.to_string())),
+                            Some(w) => parts.push(Part { rank: Rank::Model, text: format!("{name} ({}, {w})", m.instance), style: yellow(), url: None }),
+                            None => parts.push(part(Rank::Model, format!("{name} ({})", m.instance))),
                         }
                     }
                 }
@@ -2769,7 +2798,7 @@ mod tests {
         assert!(a.take_dirty(), "coming back is redrawn");
         let (rows, _) = a.view(Instant::now());
         assert!(!text(&rows).join("\n").contains("no network"));
-        assert_eq!(a.status_bar(), "anthropic/claude-x | ? help\n$0.00", "and online is not news");
+        assert_eq!(a.status_bar(), "Claude X (anthropic) | ? help\n$0.00", "and online is not news");
         a.set_online();
         assert!(!a.take_dirty(), "online again draws nothing");
     }
@@ -2822,7 +2851,7 @@ mod tests {
         assert_eq!(billed(&a, "codex:team").as_deref(), Some(""), "nothing is assumed before Codex says: {}", details(&a));
         a.on_line(&log(session(Billing::Subscription)));
         assert_eq!(billed(&a, "codex:team").as_deref(), Some("subscription"), "{}", details(&a));
-        assert_eq!(a.status_bar(), "codex:team/gpt-5.5", "and the status line does not say");
+        assert_eq!(a.status_bar(), "GPT-5.5 (codex:team)", "and the status line does not say");
         a.on_line(&log(turn("codex:personal")));
         assert_eq!(billed(&a, "codex:personal").as_deref(), Some(""), "another instance's billing is not this one's: {}", details(&a));
         a.on_line(&log(session(Billing::ApiKey)));
@@ -2836,12 +2865,12 @@ mod tests {
     fn r_tui_2_the_status_bar_follows_its_settings() {
         let mut a = app();
         a.device = Some("elvinas/primevise-arch-1".into());
-        assert_eq!(a.status_bar(), "anthropic/claude-x | elvinas/primevise-arch-1 | ? help\n$0.00", "the template, nothing to count yet");
+        assert_eq!(a.status_bar(), "Claude X (anthropic) | elvinas/primevise-arch-1 | ? help\n$0.00", "the template, nothing to count yet");
         a.pr = Some(Pr { number: 133, state: PrState::Open, url: "https://github.com/krowkcom/krowk-cli/pull/133".into() });
         a.branch = "feature/tui".into();
-        assert_eq!(a.status_bar(), "anthropic/claude-x | elvinas/primevise-arch-1 | ? help\nfeature/tui | #133↗ | $0.00", "the branch and its pull request before the cost");
+        assert_eq!(a.status_bar(), "Claude X (anthropic) | elvinas/primevise-arch-1 | ? help\nfeature/tui | #133↗ | $0.00", "the branch and its pull request before the cost");
         a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost, StatusItem::Pr, StatusItem::Help, StatusItem::Device, StatusItem::Model], content_width: ContentWidth::FullWidth };
-        assert_eq!(a.status_bar(), "elvinas/primevise-arch-1 | anthropic/claude-x | ? help\n$0.00 | #133↗", "in the order given, the help last on its row");
+        assert_eq!(a.status_bar(), "elvinas/primevise-arch-1 | Claude X (anthropic) | ? help\n$0.00 | #133↗", "in the order given, the help last on its row");
         a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost], content_width: ContentWidth::FullWidth };
         assert_eq!(a.status_bar(), "$0.00");
         a.settings.status_bar = false;
@@ -2862,7 +2891,7 @@ mod tests {
         assert_eq!(t[0], "─".repeat(90));
         assert_eq!(t[1], "→ Plan, search, build anything", "no sides to the box");
         assert_eq!(t[2], "─".repeat(90));
-        assert_eq!(t[3], "  anthropic/claude-x | ? help", "right under the box, no device known");
+        assert_eq!(t[3], "  Claude X (anthropic) | ? help", "right under the box, no device known");
         assert_eq!(t[4], "  $0.00", "the cost under it, no pull request known");
         assert_eq!(t.len(), 5, "the status line last");
         assert_eq!(caret, (2, 1));
@@ -2884,22 +2913,22 @@ mod tests {
             let mut t = text(&a.view(Instant::now()).0);
             t.split_off(t.len() - 2)
         };
-        assert_eq!(bar(&a), ["  anthropic/claude-opus-5-5 | elvinas/primevise-arch-1 | [4 tasks] | [3 subagents] | ? help", "  $21.47"]);
-        assert_eq!(a.status_bar(), "anthropic/claude-opus-5-5 | elvinas/primevise-arch-1 | [4 tasks] | [3 subagents] | ? help\n$21.47");
+        assert_eq!(bar(&a), ["  Claude Opus 5.5 (anthropic) | elvinas/primevise-arch-1 | [4 tasks] | [3 subagents] | ? help", "  $21.47"]);
+        assert_eq!(a.status_bar(), "Claude Opus 5.5 (anthropic) | elvinas/primevise-arch-1 | [4 tasks] | [3 subagents] | ? help\n$21.47");
         // One of each is said in the singular.
         a.on_line(&log(LogBody::TodosUpdated { turn_id: "t".into(), todos: vec![todo(TodoStatus::Completed), todo(TodoStatus::InProgress)] }));
         a.subs[1].status = Some(TurnStatus::Completed);
         a.subs[2].status = Some(TurnStatus::Failed);
-        assert_eq!(a.status_bar(), "anthropic/claude-opus-5-5 | elvinas/primevise-arch-1 | [1 task] | [1 subagent] | ? help\n$21.47");
+        assert_eq!(a.status_bar(), "Claude Opus 5.5 (anthropic) | elvinas/primevise-arch-1 | [1 task] | [1 subagent] | ? help\n$21.47");
         // Nothing open, nothing running: neither is there.
         a.on_line(&log(LogBody::TodosUpdated { turn_id: "t".into(), todos: vec![todo(TodoStatus::Completed)] }));
         a.subs.clear();
-        assert_eq!(a.status_bar(), "anthropic/claude-opus-5-5 | elvinas/primevise-arch-1 | ? help\n$21.47");
+        assert_eq!(a.status_bar(), "Claude Opus 5.5 (anthropic) | elvinas/primevise-arch-1 | ? help\n$21.47");
         // A price not known is not a price of nothing.
         let mut b = app();
         b.on_line(&live(LiveEvent::Cost { session_id: "s".into(), turn_id: "t".into(), cost_usd: None, turn_cost_usd: None, generated_tokens: 1 }));
         b.on_line(&live(LiveEvent::Result(RunResult { session_id: "s".into(), turn_id: "t".into(), status: TurnStatus::Completed, is_error: false, result: String::new(), model: ModelRef { instance: "anthropic".into(), model: "claude-x".into() }, usage: Usage::default(), cost_usd: None, duration_ms: 1, num_model_calls: 1, error: None, unread_steers: Vec::new(), switch_offer: None })));
-        assert_eq!(b.status_bar(), "anthropic/claude-x | ? help\n$—");
+        assert_eq!(b.status_bar(), "Claude X (anthropic) | ? help\n$—");
     }
 
     #[test]
@@ -2927,10 +2956,28 @@ mod tests {
     }
 
     #[test]
+    fn a_model_is_named_the_way_a_person_names_it() {
+        for (id, name) in [
+            ("claude-opus-5-5", "Claude Opus 5.5"),
+            ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+            ("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6"),
+            ("claude-opus-5-5[1m]", "Claude Opus 5.5[1m]"),
+            ("gpt-5.5", "GPT-5.5"),
+            ("gpt-5.5-codex", "GPT-5.5 Codex"),
+            ("o3", "o3"),
+            ("grok-4-latest", "Grok 4"),
+            ("haiku", "Haiku"),
+            ("", ""),
+        ] {
+            assert_eq!(model_name(id), name, "{id}");
+        }
+    }
+
+    #[test]
     fn the_status_line_follows_a_switch_of_model() {
         let mut a = app();
         a.on_line(&log(switch_turn("claude:work", "haiku")));
-        assert_eq!(a.status_bar(), "claude:work/haiku | ? help\n$0.00");
+        assert_eq!(a.status_bar(), "Haiku (claude:work) | ? help\n$0.00");
     }
 
     #[test]
@@ -2948,14 +2995,14 @@ mod tests {
             assert!(row.width() <= usize::from(w), "{w}: wider than the terminal: {row:?}");
             row
         };
-        assert_eq!(at(&mut a, 100), "  anthropic/claude-opus-5-5 | elvinas/primevise-arch-1 | [2 tasks] | [1 subagent] | ? help");
-        assert_eq!(at(&mut a, 80), "  anthropic/claude-opus-5-5 | [2 tasks] | [1 subagent] | ? help", "the device first");
-        assert_eq!(at(&mut a, 60), "  anthropic/claude-opus-5-5 | [2 tasks] | ? help", "then the subagents");
-        assert_eq!(at(&mut a, 40), "  anthropic/claude-opus-5-5 | ? help", "then the tasks");
-        assert_eq!(at(&mut a, 30), "  anthropic/claude-o… | ? help", "then the model is cut short");
+        assert_eq!(at(&mut a, 100), "  Claude Opus 5.5 (anthropic) | elvinas/primevise-arch-1 | [2 tasks] | [1 subagent] | ? help");
+        assert_eq!(at(&mut a, 80), "  Claude Opus 5.5 (anthropic) | [2 tasks] | [1 subagent] | ? help", "the device first");
+        assert_eq!(at(&mut a, 60), "  Claude Opus 5.5 (anthropic) | [2 tasks] | ? help", "then the subagents");
+        assert_eq!(at(&mut a, 40), "  Claude Opus 5.5 (anthropic) | ? help", "then the tasks");
+        assert_eq!(at(&mut a, 30), "  Claude Opus 5.5 (a… | ? help", "then the model is cut short");
         assert_eq!(at(&mut a, 12), "  ? help", "the help stays");
         a.set_offline("api.anthropic.com:443".into());
-        assert_eq!(at(&mut a, 40), "  anthropic/claude-o… | offline | ? help", "offline outlasts the rest");
+        assert_eq!(at(&mut a, 40), "  Claude Opus 5.5 (a… | offline | ? help", "offline outlasts the rest");
         assert_eq!(at(&mut a, 20), "  offline | ? help");
         assert_eq!(at(&mut a, 4), "  ?…");
     }
@@ -3019,14 +3066,14 @@ mod tests {
         let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, Some(ModelRef { instance: "claude".into(), model: "sonnet".into() }), None);
         let agents = |v: Vec<BackendAgent>| live(LiveEvent::BackendAgents { session_id: "s".into(), agents: v });
         a.on_line(&agents(vec![BackendAgent { task_id: "a1".into(), description: "survey the repo".into(), agent: Some("general-purpose".into()) }]));
-        assert_eq!(a.status_bar(), "claude/sonnet | [1 subagent] | ? help\n$0.00");
+        assert_eq!(a.status_bar(), "Sonnet (claude) | [1 subagent] | ? help\n$0.00");
         a.overlay = Overlay::Agents;
         let rows = text(&a.view(Instant::now()).0);
         assert!(rows.iter().any(|r| r.contains("Agent survey the repo · general-purpose · running in Claude Code")), "{rows:?}");
         assert!(rows.iter().any(|r| r.contains("Claude Code runs these itself")), "nothing to select or interrupt: {rows:?}");
         assert_eq!(a.agent_count(), 0);
         a.on_line(&agents(vec![]));
-        assert_eq!(a.status_bar(), "claude/sonnet | ? help\n$0.00");
+        assert_eq!(a.status_bar(), "Sonnet (claude) | ? help\n$0.00");
         a.on_line(&live(LiveEvent::TurnUnprompted { session_id: "s".into(), reason: "background agent “survey the repo” completed".into() }));
         assert!(a.unprompted, "the client is told to run it");
     }
@@ -3053,7 +3100,7 @@ mod tests {
         a.on_line(&live(LiveEvent::Cost { session_id: "k1".into(), turn_id: "u".into(), cost_usd: Some(0.02), turn_cost_usd: Some(0.02), generated_tokens: 500 }));
         a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 900, error: None, reported_cost_usd: None }));
         assert!(a.take_pending().is_empty(), "nothing of a child's reaches the conversation");
-        assert_eq!(a.status_bar(), "anthropic/claude-x | [1 subagent] | ? help\n$0.00", "a child's cost frame is its line's, not the session's");
+        assert_eq!(a.status_bar(), "Claude X (anthropic) | [1 subagent] | ? help\n$0.00", "a child's cost frame is its line's, not the session's");
         let (rows, _) = a.view(Instant::now());
         let rows = text(&rows);
         let lines: Vec<&String> = rows.iter().filter(|r| r.contains("Agent ")).collect();
@@ -3214,17 +3261,17 @@ mod tests {
         a.on_line(&live(LiveEvent::Limits { session_id: "s".into(), turn_id: "t".into(), instance: "claude:work".into(), limit: LimitStatus { status: LimitState::Warning, window: Some("five_hour".into()), used_percent: Some(82.0), resets_at_ms: None } }));
         a.on_line(&cost(0.35));
         a.on_line(&log(done));
-        assert_eq!(a.status_bar(), "claude:work/sonnet (82% of 5-hour)", "the instance's limit, once it is near");
+        assert_eq!(a.status_bar(), "Sonnet (claude:work, 82% of 5-hour)", "the instance's limit, once it is near");
         a.on_line(&live(LiveEvent::Limits { session_id: "s".into(), turn_id: "t".into(), instance: "claude:work".into(), limit: LimitStatus { status: LimitState::Warning, window: Some("seven_day".into()), used_percent: Some(78.0), resets_at_ms: None } }));
-        assert_eq!(a.status_bar(), "claude:work/sonnet (78% of 7-day)");
+        assert_eq!(a.status_bar(), "Sonnet (claude:work, 78% of 7-day)");
         a.overlay = Overlay::Details;
         let rows = text(&a.view(Instant::now()).0).join("\n");
         assert!(rows.contains("anthropic: 1 turn · 1.2k tokens · $0.25"), "{rows}");
         assert!(rows.contains("claude:work: 1 turn · 1.2k tokens · $0.35 · 78% used of seven_day"), "{rows}");
         a.on_line(&live(LiveEvent::Limits { session_id: "s".into(), turn_id: "t".into(), instance: "claude:work".into(), limit: LimitStatus { status: LimitState::Allowed, window: Some("seven_day".into()), used_percent: Some(20.0), resets_at_ms: None } }));
-        assert_eq!(a.status_bar(), "claude:work/sonnet", "shown only while it is near");
+        assert_eq!(a.status_bar(), "Sonnet (claude:work)", "shown only while it is near");
         a.on_line(&live(LiveEvent::Limits { session_id: "s".into(), turn_id: "t".into(), instance: "claude:work".into(), limit: LimitStatus { status: LimitState::Limited, window: Some("five_hour".into()), used_percent: Some(100.0), resets_at_ms: None } }));
-        assert_eq!(a.status_bar(), "claude:work/sonnet (limited)");
+        assert_eq!(a.status_bar(), "Sonnet (claude:work, limited)");
         assert_eq!(super::window_name("seven_day_opus"), "7-day opus");
         assert_eq!(super::window_name("requests"), "requests");
     }

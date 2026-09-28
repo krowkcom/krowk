@@ -117,6 +117,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The status line names the model the way a person does.** It reads
+  `Claude Opus 5.5 (claude:primevise)` rather than
+  `claude:primevise/claude-opus-5-5`, with the instance's limit after it
+  once it is near: `Claude Sonnet 4.6 (claude:work, 82% of 5-hour)`.
 - **`/model` lists only what can run, and filters as you type.** An
   instance whose check says it cannot run here (no key, not signed in) is
   left out, and a subscription still being checked says `checking…` until

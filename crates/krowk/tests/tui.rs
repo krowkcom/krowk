@@ -457,7 +457,7 @@ fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() 
     let mut t = pty::Pty::spawn(b.command(&url, &[]), 80, 24);
     // With no model asked, the TUI routes one once it is up: the key's
     // instance, named in the status line once chosen.
-    assert!(t.wait_for("anthropic/claude-opus-5-5 |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(t.wait_for("Claude Opus 5.5 (anthropic) |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"wait forever\r");
     assert!(t.wait_for("esc to interrupt", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     // The prompt drawn back as the log's `❯` line: the turn has started,
@@ -797,7 +797,7 @@ fn narrowing(name: &str, before: &str, steps: &[&str]) {
     let screen = tm.screen();
     let mut rows = screen.lines().map(str::trim_end).filter(|l| !l.is_empty()).rev();
     let (cost, bar) = (rows.next().unwrap_or_default(), rows.next().unwrap_or_default());
-    assert!(bar.starts_with("    anthropic/cl") && bar.ends_with(" | offline | ? help") && bar.chars().count() <= 40 && !bar.contains('$'), "{bar:?}\n{screen}");
+    assert!(bar.starts_with("    Claude Opus") && bar.ends_with(" | offline | ? help") && bar.chars().count() <= 40 && !bar.contains('$'), "{bar:?}\n{screen}");
     assert_eq!(cost, "    $0.00", "{screen}");
     if !before.is_empty() {
         // What was on the terminal is kept: the open scrolls it into
@@ -1153,7 +1153,7 @@ fn trust_is_asked_on_send_and_a_no_puts_the_prompt_back_to_be_asked_again() {
     let b = Sandbox::new("trustno");
     b.full_width();
     let mut t = pty::Pty::spawn(subscription_only(&b, false, "0"), 100, 30);
-    assert!(t.wait_for("claude/claude-opus-5-5 |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(t.wait_for("Claude Opus 5.5 (claude) |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     assert!(!t.text().contains(TRUST_ASKED), "asked before anything was sent: {:?}", t.text());
     t.write(b"first-try\r");
     assert!(t.wait_for(TRUST_ASKED, Duration::from_secs(10)).is_some(), "{:?}", t.text());
