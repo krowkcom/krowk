@@ -117,6 +117,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **`/model` lists only what can run, and filters as you type.** An
+  instance whose check says it cannot run here (no key, not signed in) is
+  left out, and a subscription still being checked says `checking…` until
+  it is kept or dropped. Typing narrows the rows to those with every word
+  typed; enter with nothing matching runs `/model <what was typed>`. The
+  picker is the help menu's table, scrolling past 12 rows, each row saying
+  `current`, `used in this session` or the account in words (`Claude
+  subscription`), and an instance of another kind starts on its default
+  model rather than `…`. A switch of model is a line of its own, with a
+  blank row above and below and a green, bold `⇄`.
 - **`/settings`, `/model` and `/mode` in the TUI read as one table**: each
   row is a name, its value and what that means, in fixed columns, with the
   meaning dimmed; they were all one colour, blue, and the chosen row all

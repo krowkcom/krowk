@@ -33,6 +33,8 @@ const SLASH_ROWS: usize = 10;
 /// The help menu shows this many entries at most, scrolling past them: with
 /// the prompt box and the status line it fits a 24-row terminal whole.
 const HELP_ROWS: usize = 16;
+/// The model picker shows this many rows at most, scrolling past them.
+const MODEL_ROWS: usize = 12;
 /// The Krowk mark (.github/logo.svg): its 4×4 glyph, `#`, on a plate a
 /// unit wider all round, `.`.
 const LOGO: [&str; 6] = ["......", ".#..#.", ".#..#.", ".###..", ".#..#.", "......"];
@@ -189,8 +191,16 @@ impl Sub {
 pub struct Pick {
     pub instance: String,
     pub model: Option<String>,
-    /// What the row says beside it: `now`, `used here`, the instance's kind.
+    /// What the row says beside it: `current`, `used in this session`, the
+    /// instance's kind in words.
     pub note: String,
+}
+
+impl Pick {
+    /// `<instance>/<model>`, or `<instance>/…` for an id to be typed.
+    pub fn name(&self) -> String {
+        format!("{}/{}", self.instance, self.model.as_deref().unwrap_or("…"))
+    }
 }
 
 /// What one instance has done in this session, and how near its limit it
@@ -768,6 +778,14 @@ impl App {
     pub fn gap_say(&mut self, text: &str) {
         self.gap();
         self.push_wrapped("", "", text, dim(), dim());
+    }
+
+    /// A switch of model the client made, a line to itself with a blank
+    /// row above and below: dim, behind the switch's `⇄`.
+    pub fn say_switched(&mut self, text: &str) {
+        self.gap();
+        self.push_wrapped(look::SWITCH, "  ", text, look::switched(), dim());
+        self.gap();
     }
 
     /// A note from before the session started (a setting read one way
@@ -1354,6 +1372,7 @@ impl App {
                 let from = from.as_ref().map(|f| format!("{f} → ")).unwrap_or_default();
                 let style = if *reason == SwitchReason::Requested { dim() } else { yellow() };
                 self.push_wrapped(look::SWITCH, "  ", &format!("{from}{to}{why}"), look::switched(), style);
+                self.gap();
                 self.model = Some(to.clone());
                 if live {
                     self.switched = Some(to.clone());
@@ -1370,7 +1389,9 @@ impl App {
                     },
                 };
                 let fell = fell_back.as_ref().map(|f| format!(" ({f})")).unwrap_or_default();
+                self.gap();
                 self.push_wrapped(look::SWITCH, "  ", &format!("{said}{fell}"), look::switched(), dim());
+                self.gap();
             }
             // The run the session's evidence goes under: the log's to keep.
             LogBody::RunOpened { .. } => {}
@@ -1898,27 +1919,41 @@ impl App {
         lines.into_iter().flat_map(|l| wrap(&l, width)).map(Line::from).collect()
     }
 
+    /// The model picker's rows as shown: an instance whose check says it
+    /// cannot run here is left out, and what is typed in the prompt keeps
+    /// the rows that have every word of it.
+    pub fn found_picks(&self) -> Vec<&Pick> {
+        let words: Vec<String> = self.editor.text().split_whitespace().map(str::to_lowercase).collect();
+        self.picks
+            .iter()
+            .filter(|p| !matches!(self.marks.get(&p.instance), Some(Mark::Not(_))))
+            .filter(|p| {
+                let hay = format!("{} {}", p.name(), p.note).to_lowercase();
+                words.iter().all(|w| hay.contains(w.as_str()))
+            })
+            .collect()
+    }
+
     fn models_overlay(&self, width: usize) -> Vec<Line<'static>> {
-        let rows: Vec<Choice> = self
-            .picks
+        let found = self.found_picks();
+        let mut out = vec![picker_title("switch model", "type to filter · ↑↓ choose · enter switch · esc close", width)];
+        if found.is_empty() && self.editor.text().trim().is_empty() {
+            out.push(Line::from(Span::styled(clip("  nothing connected can run a model here · /connect signs one in", width), dim())));
+            return out;
+        }
+        let rows: Vec<[String; 3]> = found
             .iter()
             .map(|p| {
-                let name = match &p.model {
-                    Some(m) => format!("{}/{m}", p.instance),
-                    None => format!("{}/…", p.instance),
-                };
-                // Whether it can run here, once its check is back: `…` until then.
-                let value = match self.marks.get(&p.instance) {
-                    Some(Mark::Ready) => Span::styled("✓ ready", look::success()),
-                    Some(Mark::Not(why)) => Span::styled(format!("✗ {why}"), yellow()),
-                    Some(Mark::Unknown) => Span::raw(""),
-                    None => Span::styled("…", dim()),
-                };
-                Choice { name, value, says: p.note.clone(), warning: None }
+                // Still being checked: shown, and gone if the check says no.
+                let says = if self.marks.contains_key(&p.instance) { p.note.clone() } else { format!("{} · checking…", p.note) };
+                [p.name(), says, String::new()]
             })
             .collect();
-        let mut out = vec![picker_title("switch to", "↑↓ choose · enter switch · esc close · or /model <instance>/<model>", width)];
-        out.extend(choices(&rows, self.pick_at, false, width));
+        if rows.is_empty() {
+            out.push(Line::from(Span::styled(clip(&format!("  nothing matches · enter runs /model {}", self.editor.text().trim()), width), dim())));
+            return out;
+        }
+        out.extend(menu(&rows, self.pick_at, width, MODEL_ROWS));
         out
     }
 
@@ -2022,7 +2057,8 @@ impl App {
 
     /// Opens the picker: the models this session ran on, newest first, then
     /// every other instance — with the session's model id where the
-    /// instance is of the same kind, else to be typed.
+    /// instance is of the same kind, else its kind's default, else to be
+    /// typed. What is typed while it is open filters it.
     pub fn open_picker(&mut self, instances: &[(String, &'static str)]) {
         let kind_of = |i: &str| instances.iter().find(|(n, _)| n == i).map(|(_, k)| *k);
         let mut picks: Vec<Pick> = Vec::new();
@@ -2038,8 +2074,8 @@ impl App {
             if picks.iter().any(|p| &p.instance == name) {
                 continue;
             }
-            let model = now.as_ref().filter(|m| kind_of(&m.instance) == Some(*kind)).map(|m| m.model.clone());
-            picks.push(Pick { instance: name.clone(), model, note: kind.to_string() });
+            let model = now.as_ref().filter(|m| kind_of(&m.instance) == Some(*kind)).map(|m| m.model.clone()).or_else(|| krowk_harness::instances::default_model_of(kind).map(String::from));
+            picks.push(Pick { instance: name.clone(), model, note: krowk_harness::instances::kind_label(kind).to_string() });
         }
         // The one after the current, so enter moves somewhere.
         self.pick_at = usize::from(picks.len() > 1 && picks.first().is_some_and(|p| p.note == "current"));
@@ -3200,14 +3236,14 @@ mod tests {
         a.take_pending();
         let to = ModelRef { instance: "claude:personal".into(), model: "sonnet".into() };
         a.on_line(&log(LogBody::ModelSwitched { turn_id: None, from: Some(ModelRef { instance: "claude:work".into(), model: "sonnet".into() }), to: to.clone(), reason: SwitchReason::RateLimited, detail: Some("claude:work is limited".into()) }));
-        assert_eq!(text(&a.take_pending()), ["⇄ claude:work/sonnet → claude:personal/sonnet — claude:work is limited"]);
+        assert_eq!(text(&a.take_pending()), ["⇄ claude:work/sonnet → claude:personal/sonnet — claude:work is limited", ""]);
         assert_eq!((a.model.clone(), a.switched.take()), (Some(to.clone()), Some(to)), "the next prompt goes where the session went");
         a.on_line(&log(LogBody::BackendHandoff { turn_id: "t".into(), how: HandoffKind::Summary, from_instance: None, summarized_turns: 2, recent_turns: 3, fell_back: None }));
-        assert_eq!(text(&a.take_pending()), ["⇄ seeded with a summary of 2 earlier turns and the last 3 turns as they happened"]);
+        assert_eq!(text(&a.take_pending()), ["⇄ seeded with a summary of 2 earlier turns and the last 3 turns as they happened", ""]);
     }
 
     #[test]
-    fn the_model_picker_lists_the_sessions_models_then_every_instance() {
+    fn the_model_picker_lists_the_sessions_models_then_every_connected_instance() {
         let mut a = app();
         a.on_line(&log(switch_turn("openai", "gpt-5.4")));
         a.on_line(&log(switch_turn("anthropic", "claude-x")));
@@ -3220,20 +3256,27 @@ mod tests {
                 ("anthropic".to_string(), Some("claude-x".to_string())),
                 ("openai".to_string(), Some("gpt-5.4".to_string())),
                 ("anthropic:work".to_string(), Some("claude-x".to_string())),
-                ("claude".to_string(), None),
+                ("claude".to_string(), Some(krowk_harness::instances::DEFAULT_MODEL.to_string())),
             ],
-            "the session's models first; an instance of the same kind keeps the model id; another kind's is typed"
+            "the session's models first; an instance of the same kind keeps the model id; another kind starts on its default"
         );
         assert_eq!(a.pick_at, 1, "enter moves somewhere");
+        a.set_width(100);
         let rows = text(&a.view(Instant::now()).0).join("\n");
-        assert!(rows.contains("❯ openai/gpt-5.4") && rows.contains("claude/…"), "{rows}");
-        // Each row says whether it can run here once its check is back.
+        assert!(rows.contains("› openai/gpt-5.4") && rows.contains("Claude subscription · checking…"), "{rows}");
+        // An instance that cannot run here is not listed at all.
         a.marks.insert("anthropic".into(), Mark::Ready);
         a.marks.insert("claude".into(), Mark::Not("not signed in"));
-        a.set_width(100);
-        let rows = text(&a.view(Instant::now()).0);
-        let row = |i: &str| rows.iter().find(|r| r.trim_start().trim_start_matches("❯ ").starts_with(&format!("{i}/"))).cloned().unwrap_or_default();
-        assert!(row("anthropic").contains("✓ ready") && row("claude").contains("✗ not signed in") && row("openai").contains(" … "), "{rows:?}");
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(!rows.contains("claude/") && rows.contains("anthropic:work/claude-x") && !rows.contains("✓"), "{rows}");
+        // What is typed filters the rows, every word of it.
+        a.editor.insert_str("work claude");
+        let found: Vec<String> = a.found_picks().iter().map(|p| p.name()).collect();
+        assert_eq!(found, ["anthropic:work/claude-x"]);
+        a.editor.clear();
+        a.editor.insert_str("nothing/here");
+        assert!(a.found_picks().is_empty());
+        assert!(text(&a.view(Instant::now()).0).join("\n").contains("enter runs /model nothing/here"));
     }
 
     #[test]

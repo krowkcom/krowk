@@ -936,7 +936,7 @@ impl<'h> Ui<'h> {
         match self.host.execute(Command::SwitchModel { session_id: app.session_id.clone(), model: m.clone() }, tx).await {
             Ok(_) => {
                 let when = if app.running() { " once this turn is over" } else { "" };
-                app.gap_say(&format!("{}now on {m}{when}", look::SWITCH));
+                app.say_switched(&format!("now on {m}{when}"));
                 self.retarget(&m);
                 self.model = Some(m.clone());
                 self.chosen = Some(m.clone());
@@ -1603,28 +1603,36 @@ impl<'h> Ui<'h> {
                 _ => {}
             }
         }
-        // The model picker takes the arrows and enter while it is open.
-        if app.overlay == Overlay::Models && !ctrl {
+        // The model picker takes the arrows, enter and esc while it is open;
+        // everything typed goes to the prompt, and filters it.
+        if app.overlay == Overlay::Models && !ctrl && !alt {
+            let found = app.found_picks().len();
             match k.code {
                 KeyCode::Up => {
-                    app.pick_at = app.pick_at.saturating_sub(1);
+                    app.pick_at = app.pick_at.min(found.saturating_sub(1)).saturating_sub(1);
                     return false;
                 }
                 KeyCode::Down => {
-                    app.pick_at = (app.pick_at + 1).min(app.picks.len().saturating_sub(1));
+                    app.pick_at = (app.pick_at + 1).min(found.saturating_sub(1));
+                    return false;
+                }
+                KeyCode::Esc => {
+                    app.overlay = Overlay::None;
+                    app.editor.clear();
                     return false;
                 }
                 KeyCode::Enter => {
                     app.overlay = Overlay::None;
-                    if let Some(p) = app.picks.get(app.pick_at).cloned() {
-                        // Not ready here: connecting it is offered, one
-                        // enter away, rather than a switch that is refused.
-                        if let Some(Mark::Not(why)) = app.marks.get(&p.instance) {
-                            app.gap_say(&format!("{}: {why} — enter connects it", p.instance));
-                            app.editor.clear();
-                            app.editor.insert_str(&format!("/connect {}", p.instance));
-                            return false;
-                        }
+                    let typed = app.editor.text().trim().to_string();
+                    let chosen = app.found_picks().get(app.pick_at.min(found.saturating_sub(1))).map(|p| (*p).clone());
+                    app.editor.clear();
+                    // Nothing listed matches: what was typed is a model to
+                    // route, as `/model` would.
+                    if chosen.is_none() && !typed.is_empty() {
+                        app.editor.insert_str(&format!("/model {typed}"));
+                        return self.submit(app).await;
+                    }
+                    if let Some(p) = chosen {
                         match p.model {
                             Some(model) => {
                                 self.switch(app, ModelRef { instance: p.instance, model }).await;
@@ -1638,6 +1646,7 @@ impl<'h> Ui<'h> {
                     }
                     return false;
                 }
+                KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete => app.pick_at = 0,
                 _ => {}
             }
         }
@@ -2036,7 +2045,7 @@ impl<'h> Ui<'h> {
     /// prompt runs there, after the trust question on a backend in a
     /// repository nobody trusted.
     fn adopt(&mut self, app: &mut App, m: ModelRef) {
-        app.gap_say(&format!("{}now on {m}", look::SWITCH));
+        app.say_switched(&format!("now on {m}"));
         self.retarget(&m);
         self.model = Some(m.clone());
         self.chosen = Some(m.clone());
