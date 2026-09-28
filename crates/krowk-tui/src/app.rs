@@ -75,6 +75,8 @@ pub enum Overlay {
     Models,
     /// The permission mode picker (`/mode`).
     Modes,
+    /// `/settings` (and `/config`): what is saved to config.json.
+    Settings,
     /// `/connect` and `/disconnect`, and the first-run card (`App::flow`).
     Connect,
 }
@@ -408,6 +410,9 @@ pub struct App {
     pub pick_at: usize,
     /// The mode picker's chosen row, an index into `PermissionMode::NAMES`.
     pub mode_at: usize,
+    /// `permissions.defaultMode` as config.json has it, for `/settings`;
+    /// none when it names nothing.
+    pub default_mode: Option<String>,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
     /// A `/connect` or `/disconnect` running: its overlay's state.
@@ -473,6 +478,7 @@ impl App {
             picks: Vec::new(),
             pick_at: 0,
             mode_at: 0,
+            default_mode: None,
             help_at: 0,
             flow: None,
             marks: BTreeMap::new(),
@@ -1416,6 +1422,7 @@ impl App {
             }
             Overlay::Models => rows.extend(self.models_overlay(width)),
             Overlay::Modes => rows.extend(self.modes_overlay(width)),
+            Overlay::Settings => rows.extend(self.settings_overlay(width)),
             Overlay::Connect => {
                 if let Some(f) = &self.flow {
                     let (overlay, at) = f.rows(width);
@@ -1674,6 +1681,14 @@ impl App {
             out.push(Line::from(Span::styled(clip(&head, width), style)));
         }
         out
+    }
+
+    fn settings_overlay(&self, width: usize) -> Vec<Line<'static>> {
+        let mode = self.default_mode.as_deref().unwrap_or("default");
+        vec![
+            Line::from(Span::styled(clip("settings — enter or space changes · esc closes · saved to config.json for the next session", width), dim())),
+            Line::from(Span::styled(clip(&format!("❯ Default permission mode  {mode:<10}{}", mode_says(mode)), width), look::accent())),
+        ]
     }
 
     /// Opens the mode picker on the session's mode.
@@ -2226,8 +2241,8 @@ mod tests {
         assert_eq!(rows.len(), 3, "only the prompt, in its box: {:?}", text(&rows));
         a.overlay = Overlay::Keys;
         let (rows, caret) = a.view(Instant::now());
-        assert_eq!(rows.len(), 20, "the help menu, a rule and sixteen entries, over the prompt box");
-        assert_eq!(caret, (2, 18), "after the arrow");
+        assert_eq!(rows.len(), 21, "the help menu, a rule and seventeen entries, over the prompt box");
+        assert_eq!(caret, (2, 19), "after the arrow");
     }
 
     #[test]

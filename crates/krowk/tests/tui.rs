@@ -210,6 +210,33 @@ fn the_mode_picker_sets_the_mode_the_next_turn_runs_in() {
     assert!(logs.iter().any(|p| std::fs::read_to_string(p).is_ok_and(|s| s.contains("\"turn.started\"") && s.contains("\"permissionMode\":\"plan\""))), "no turn ran in plan: {logs:?}");
 }
 
+/// `/config` (or `/settings`) cycles the default permission mode and saves
+/// it to config.json, and the next session starts in it.
+#[test]
+fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("settings");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &["--model", "anthropic/claude-sonnet-4-6"]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"/config\r");
+    assert!(t.wait_for("Default permission mode", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b" ");
+    assert!(t.wait_for("unhinged", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"\x1b");
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap()).unwrap();
+    assert_eq!(config["permissions"]["defaultMode"], "unhinged", "{config}");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &["--model", "anthropic/claude-sonnet-4-6"]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"read README.md and summarise it\r");
+    assert!(t.wait_for("anywhere.", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let logs = walk(&b.root.join("home"));
+    assert!(logs.iter().any(|p| std::fs::read_to_string(p).is_ok_and(|s| s.contains("\"turn.started\"") && s.contains("\"permissionMode\":\"unhinged\""))), "no turn ran unhinged: {logs:?}");
+}
+
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
     entries.flatten().flat_map(|e| if e.path().is_dir() { walk(&e.path()) } else { vec![e.path()] }).collect()

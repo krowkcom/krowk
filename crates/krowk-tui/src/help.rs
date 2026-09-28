@@ -8,6 +8,7 @@ pub enum Action {
     Tell,
     Model,
     Mode,
+    Settings,
     Connect,
     Disconnect,
     Todos,
@@ -38,6 +39,7 @@ pub const ENTRIES: &[Entry] = &[
     e("Commands", "Type / for commands and skills", "/", Action::Tell),
     e("Model", "Switch model or instance", "/model", Action::Model),
     e("Mode", "Switch permission mode", "/mode", Action::Mode),
+    e("Settings", "The default permission mode, saved", "/settings · /config", Action::Settings),
     e("Connect", "Connect a provider, or renew a login", "/connect", Action::Connect),
     e("Disconnect", "Sign an instance out", "/disconnect", Action::Disconnect),
     e("Todos", "The task list for this session", "ctrl-t", Action::Todos),
@@ -67,11 +69,12 @@ pub struct Slash {
     pub skill: bool,
 }
 
-/// krowk's own commands, as `/` lists them. `/quit` and `/permission-mode`
-/// work too, unlisted.
+/// krowk's own commands, as `/` lists them. `/quit`, `/permission-mode`
+/// and `/config` work too, unlisted.
 pub const COMMANDS: &[(&str, &str)] = &[
     ("model", "Switch model or instance"),
     ("mode", "Switch permission mode — default, acceptEdits, plan, bypassPermissions, unhinged"),
+    ("settings", "Settings saved to config.json — the default permission mode"),
     ("connect", "Connect a provider — a subscription or an API key"),
     ("disconnect", "Sign an instance out"),
     ("help", "Keys and what they do"),

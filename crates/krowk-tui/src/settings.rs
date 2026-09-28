@@ -21,11 +21,18 @@
 //! taken and ignored — offline shows by itself, and the session's id is in
 //! the details overlay.
 //!
+//! `/settings` (or `/config`) sets what lives outside `"tui"`: for now
+//! `permissions.defaultMode`, cycled between `default` and `unhinged`, which
+//! the next session starts in (`--permission-mode` and a trusted
+//! repository's own `defaultMode` still come first).
+//!
 //! The overlays are toggled from the keyboard rather than configured: `?` on
 //! an empty prompt for the keys, Ctrl-O for the session's details, Ctrl-T
 //! for the todo list and Ctrl-G for the subagents.
 
-use serde_json::Value;
+use krowk_harness::protocol::PermissionMode;
+use serde_json::{Map, Value};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
@@ -117,10 +124,68 @@ pub fn from_config(raw: &Value) -> (Settings, Vec<String>) {
     (s, warnings)
 }
 
+/// The modes `/settings` cycles the default through: the one that asks,
+/// and the one that asks about nothing.
+pub const DEFAULT_MODES: [PermissionMode; 2] = [PermissionMode::Default, PermissionMode::Unhinged];
+
+/// `permissions.defaultMode` in krowk's config.json as written — none when
+/// it names nothing, which runs as `default`.
+pub fn default_mode(config: &Path) -> Result<Option<String>, String> {
+    let raw = read(config)?;
+    Ok(raw.get("permissions").and_then(|p| p.get("defaultMode")).and_then(Value::as_str).map(String::from))
+}
+
+/// The mode after `now` in `DEFAULT_MODES` (none is `default`); the first
+/// for any other.
+pub fn next_default(now: Option<&str>) -> PermissionMode {
+    let now = now.unwrap_or(PermissionMode::Default.name());
+    let at = DEFAULT_MODES.iter().position(|m| m.name() == now);
+    at.map_or(DEFAULT_MODES[0], |i| DEFAULT_MODES[(i + 1) % DEFAULT_MODES.len()])
+}
+
+/// Writes `permissions.defaultMode`, keeping every other key as it was.
+pub fn set_default_mode(config: &Path, m: PermissionMode) -> Result<(), String> {
+    let mut raw = read(config)?;
+    let permissions = raw.entry("permissions").or_insert_with(|| Value::Object(Map::new()));
+    let Some(permissions) = permissions.as_object_mut() else {
+        return Err(format!("\"permissions\" in {} is not an object — fix it by hand", config.display()));
+    };
+    permissions.insert("defaultMode".into(), Value::String(m.name().into()));
+    krowk_harness::connect::write_config(config, &raw).map_err(|e| format!("{}: {e}", config.display()))
+}
+
+fn read(config: &Path) -> Result<Map<String, Value>, String> {
+    match std::fs::read(config) {
+        Ok(raw) => serde_json::from_slice(&raw).map_err(|e| format!("{} is not valid JSON: {e}", config.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(e) => Err(format!("reading {}: {e}", config.display())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn settings_cycles_the_default_mode_and_keeps_the_rest_of_the_config() {
+        let dir = std::env::temp_dir().join(format!("krowk-tui-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("config.json");
+        assert_eq!(default_mode(&config), Ok(None), "no file names nothing");
+        assert_eq!(next_default(None), PermissionMode::Unhinged, "unset runs as default, so the next is unhinged");
+        assert_eq!(next_default(Some("unhinged")), PermissionMode::Default);
+        assert_eq!(next_default(Some("acceptEdits")), PermissionMode::Default, "a mode outside the cycle goes to its start");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&config, json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"]}}).to_string()).unwrap();
+        set_default_mode(&config, PermissionMode::Unhinged).unwrap();
+        assert_eq!(default_mode(&config), Ok(Some("unhinged".into())));
+        let raw: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(raw, json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"], "defaultMode": "unhinged"}}));
+        std::fs::write(&config, json!({"permissions": true}).to_string()).unwrap();
+        assert!(set_default_mode(&config, PermissionMode::Default).is_err(), "a permissions that is no object is not overwritten");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn r_tui_2_the_status_bar_is_optional_and_its_items_configurable() {

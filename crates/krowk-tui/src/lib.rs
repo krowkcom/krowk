@@ -924,6 +924,39 @@ impl<'h> Ui<'h> {
         }
     }
 
+    /// `/settings`: config.json's settings as they are now, in an overlay.
+    fn open_settings(&mut self, app: &mut App) {
+        let Some(paths) = &self.paths else {
+            app.notice("/settings: no config.json to save to — krowk has no home directory");
+            return;
+        };
+        match settings::default_mode(&paths.config) {
+            Ok(m) => {
+                app.default_mode = m;
+                app.overlay = Overlay::Settings;
+                app.touch();
+            }
+            Err(e) => app.notice(&format!("/settings: {e}")),
+        }
+    }
+
+    /// The default permission mode to the next in the cycle, saved at once.
+    /// The session keeps the mode it runs in: `/mode` changes that.
+    fn cycle_default_mode(&mut self, app: &mut App) {
+        let Some(paths) = &self.paths else { return };
+        let m = settings::next_default(app.default_mode.as_deref());
+        match settings::set_default_mode(&paths.config, m) {
+            Ok(()) => {
+                app.default_mode = Some(m.name().into());
+                app.touch();
+            }
+            Err(e) => {
+                app.overlay = Overlay::None;
+                app.notice(&format!("/settings: {e}"));
+            }
+        }
+    }
+
     /// Every prompt from here on runs in `m`. A turn already running keeps
     /// the mode it started in: its gate was built with it.
     fn set_mode(&mut self, app: &mut App, m: PermissionMode) {
@@ -1421,6 +1454,7 @@ impl<'h> Ui<'h> {
                             help::Action::Tell => {}
                             help::Action::Model => self.open_models(app),
                             help::Action::Mode => app.open_mode_picker(),
+                            help::Action::Settings => self.open_settings(app),
                             help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
                             help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
                             help::Action::Todos => app.overlay = Overlay::Todos,
@@ -1461,6 +1495,11 @@ impl<'h> Ui<'h> {
                 }
                 _ => {}
             }
+        }
+        // Settings: enter, space or the arrows change the one there is.
+        if app.overlay == Overlay::Settings && !ctrl && !alt && matches!(k.code, KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right) {
+            self.cycle_default_mode(app);
+            return false;
         }
         // The model picker takes the arrows and enter while it is open.
         if app.overlay == Overlay::Models && !ctrl {
@@ -1880,6 +1919,11 @@ impl<'h> Ui<'h> {
             "/model" => {
                 app.editor.clear();
                 self.open_models(app);
+                return false;
+            }
+            "/settings" | "/config" => {
+                app.editor.clear();
+                self.open_settings(app);
                 return false;
             }
             "/mode" | "/permission-mode" => {

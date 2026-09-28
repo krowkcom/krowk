@@ -17,6 +17,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   or `/mode plan` names one outright. The next turn runs in it; a turn
   already running keeps the mode it started in. Nothing is saved: the next
   session starts in `--permission-mode` or the configured default again.
+- **`/settings` in the TUI (or `/config`)** opens the settings krowk saves
+  to `~/.krowk/config.json`. The first is the default permission mode:
+  enter or space switches it between `default` and `unhinged`, written to
+  `permissions.defaultMode` at once, every other key kept as it was. The
+  next session starts in it; the running one keeps its mode, which `/mode`
+  changes.
 - **`--permission-mode unhinged` runs everything the agent asks to**, with
   no approval: krowk's deny and ask rules, a hook's `ask`, and the protected
   directories (`.git`, `.claude`, `.codex`, `.krowk`, krowk's own config) no

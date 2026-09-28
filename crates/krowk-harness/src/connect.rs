@@ -533,21 +533,7 @@ impl ProviderAuth<'_> {
         let unwritable = |e: String| EngineError::new("config_unwritable", format!("{}: {e}", self.config.display()));
         let mut raw = self.raw_config()?;
         edit(&mut raw);
-        let data = serde_json::to_string_pretty(&raw).expect("config serializes") + "\n";
-        let dir = self.config.parent().unwrap_or(Path::new("."));
-        let tmp = dir.join(format!(".config-{}-connect.json", std::process::id()));
-        let result = (|| {
-            std::fs::create_dir_all(dir)?;
-            std::fs::write(&tmp, data.as_bytes())?;
-            #[cfg(unix)]
-            std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
-            std::fs::File::open(&tmp)?.sync_all()?;
-            std::fs::rename(&tmp, &self.config)
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        result.map_err(|e| unwritable(e.to_string()))
+        write_config(&self.config, &raw).map_err(|e| unwritable(e.to_string()))
     }
 
     fn home(&self) -> Result<PathBuf, EngineError> {
@@ -1275,6 +1261,26 @@ fn made_dir(dir: Option<&Path>) -> Result<Option<Made>, EngineError> {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
         Err(e) => Err(failed(e)),
     }
+}
+
+/// Writes config.json whole, by rename, never in place: how `/connect`
+/// writes its definitions and the TUI's `/settings` what it sets.
+pub fn write_config(path: &Path, raw: &Map<String, Value>) -> std::io::Result<()> {
+    let data = serde_json::to_string_pretty(raw).expect("config serializes") + "\n";
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let tmp = dir.join(format!(".config-{}-harness.json", std::process::id()));
+    let result = (|| {
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(&tmp, data.as_bytes())?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
+        std::fs::File::open(&tmp)?.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// `.` and `..` taken out of a path by its words alone, as a person reads
