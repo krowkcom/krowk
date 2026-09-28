@@ -895,6 +895,9 @@ impl<'h> Ui<'h> {
         if let Some(title) = self.presence.update(state, &self.last_prompt) {
             term.title(&title)?;
         }
+        if std::mem::take(&mut app.wipe) {
+            term.wipe()?;
+        }
         if std::mem::take(&mut app.copy) {
             // What was shown, not what was sent: no escape or bidi control
             // reaches the place it is pasted.
@@ -1806,21 +1809,17 @@ impl<'h> Ui<'h> {
     }
 
     /// `/new`: a fresh session in place of the one shown, on the same
-    /// model; the next prompt starts it. The one left can be continued
-    /// with `/sessions`.
+    /// model, on a cleared screen; the next prompt starts it. The one left
+    /// can be continued with `/sessions`.
     fn new_session(&mut self, app: &mut App) {
         if !self.can_resume(app) {
             return;
         }
-        let Some(old) = app.session_id.clone() else {
-            return app.notice("this session is new already");
-        };
-        if !self.left.contains(&old) {
+        if let Some(old) = app.session_id.clone().filter(|old| !self.left.contains(old)) {
             self.left.push(old);
         }
-        app.forget_session();
         self.last_prompt.clear();
-        app.gap_say("a new session — /sessions continues the last one");
+        app.start_over(&home_relative(&self.runs_in), self.effort_label.as_deref());
     }
 
     /// Whether another session may take the one shown's place now: not

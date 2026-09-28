@@ -626,6 +626,19 @@ impl<W: Write> Term<W> {
         Ok(())
     }
 
+    /// Clears the screen and its scrollback (`ESC [3J`, where the terminal
+    /// has it) and starts the live region afresh at the top, as `new`
+    /// would on an empty screen.
+    pub fn wipe(&mut self) -> io::Result<()> {
+        self.buf.clone().write_all(b"\x1b[H\x1b[2J\x1b[3J")?;
+        self.buf.set_row(0);
+        let height = self.height;
+        self.whole = true;
+        self.blank_top = self.size.height.saturating_sub(height);
+        let top = anchor(&self.buf, self.size, 0, height)?;
+        self.rebuild(top, height)
+    }
+
     /// Clears the live region and leaves the cursor at its top, at the
     /// start of a line, so the shell prompt that follows lands right under
     /// the conversation.

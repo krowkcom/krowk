@@ -360,21 +360,18 @@ fn new_starts_a_fresh_session_and_keeps_the_one_left() {
     let b = Sandbox::new("new");
     let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 120, 30);
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    // Nothing sent yet: the session is new already.
-    t.write(b"/new\r");
-    assert!(t.wait_for("this session is new already", Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    let from = t.output().len();
     t.write(b"read README.md and summarise it\r");
-    assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
+    assert!(t.wait_for("tokens", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    let from = t.output().len();
     t.write(b"/clear\r");
-    assert!(t.wait_for("a new session", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(wait_after(&t, from, "Directory:", Duration::from_secs(10)), "the header again: {:?}", t.text());
     let from = t.output().len();
     t.write(b"summarise the README again\r");
     assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
     t.write(b"\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let seen = m.seen.lock().unwrap();
-    assert!(!seen.iter().any(|s| { let b = s.body["messages"].to_string(); b.contains("/new") || b.contains("/clear") }), "a command went to the model");
+    assert!(!seen.iter().any(|s| s.body["messages"].to_string().contains("/clear")), "the command went to the model");
     assert!(!seen.iter().any(|s| { let b = s.body["messages"].to_string(); b.contains("read README.md and summarise it") && b.contains("summarise the README again") }), "the earlier turn was sent to the new session");
     drop(seen);
     assert_eq!(krowk_sessions(&b, &m.url), 2, "krowk.db lists the session left too");
@@ -666,6 +663,23 @@ fn r_tui_1_a_10k_token_answer_lands_in_tmux_scrollback_exactly_once() {
     // The prompt line is in scrollback once too, and the live region is not.
     assert_eq!(history.matches("❯ write it all out").count(), 1, "{history}");
     assert_eq!(history.matches("esc to interrupt").count(), 0, "a live row leaked into scrollback");
+}
+
+/// `/new`, as `/clear` in Claude Code: the screen and its scrollback are
+/// cleared, and the header is all there is, the prompt under it.
+#[test]
+fn new_clears_the_screen_and_scrollback_down_to_the_header() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("new-screen");
+    let Some(tm) = Tmux::start("new-screen", 100, 30, &b.root.join("repo"), &b.env(&m.url), &[]) else { return };
+    assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["read README.md and summarise it", "Enter"]);
+    assert!(tm.wait_for("tokens", Duration::from_secs(20)).is_some(), "{}", tm.screen());
+    tm.keys(&["/new", "Enter"]);
+    let history = tm.wait_still(|s| !s.contains("tokens") && s.contains("Directory:"), Duration::from_secs(10)).unwrap_or_else(|| tm.history());
+    assert!(!history.contains("summarise it"), "the earlier session is gone, scrollback too:\n{history}");
+    assert_eq!(history.matches("Directory:").count(), 1, "one header:\n{history}");
+    assert!(history.lines().find(|l| !l.trim().is_empty()).is_some_and(|l| l.contains('▀')), "the header opens the screen:\n{history}");
 }
 
 #[test]

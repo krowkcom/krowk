@@ -485,6 +485,9 @@ pub struct App {
     pub answer: String,
     /// Set by Ctrl-Y; the next frame puts `answer` on the clipboard.
     pub copy: bool,
+    /// Set by `/new`; the next frame clears the screen and its scrollback
+    /// before it prints what is owed.
+    pub wipe: bool,
     /// A word under the prompt until the next key: "copied".
     pub flash: Option<String>,
     /// When the approval shown now came up: keys typed in the moment
@@ -593,6 +596,7 @@ impl App {
             approvals: Vec::new(),
             answer: String::new(),
             copy: false,
+            wipe: false,
             flash: None,
             approval_shown: None,
             approval_expanded: false,
@@ -2046,6 +2050,20 @@ impl App {
         self.switched = None;
         self.used.clear();
         self.dirty = true;
+    }
+
+    /// A fresh session in place of the one shown, as `/clear` does in
+    /// Claude Code: the screen and its scrollback cleared, and the header
+    /// printed again on an empty screen.
+    pub fn start_over(&mut self, cwd: &str, effort: Option<&str>) {
+        self.forget_session();
+        self.pending.clear();
+        self.held = Held::default();
+        self.overlay = Overlay::None;
+        self.flash = None;
+        self.wipe = true;
+        let branch = self.branch.clone();
+        self.header(cwd, &branch, effort);
     }
 
     /// Opens the mode picker on the mode the next prompt runs in.
