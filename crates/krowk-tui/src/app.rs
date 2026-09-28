@@ -591,7 +591,10 @@ impl App {
     /// else is shown.
     fn flush_thought(&mut self) {
         let Some(took) = self.thought.take() else { return };
-        self.thinking_since = None;
+        // Thinking streaming now keeps its clock: it is a thought of its own.
+        if !self.live.as_ref().is_some_and(|l| l.kind == LiveKind::Reasoning) {
+            self.thinking_since = None;
+        }
         let took = took.map(|t| format!(" for {}", look::duration(t))).unwrap_or_default();
         self.gap();
         self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(format!("Thought{took}"), dim().add_modifier(Modifier::ITALIC))]));
@@ -822,7 +825,7 @@ impl App {
                     }
                     // More thinking straight after some is the same thought.
                     ItemKind::Reasoning => {
-                        if self.thought.is_none() {
+                        if self.thought.is_none() || self.thinking_since.is_none() {
                             self.thinking_since = Some(Instant::now());
                         }
                         LiveKind::Reasoning
