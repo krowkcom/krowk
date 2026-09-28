@@ -133,11 +133,20 @@ pub fn untagged(s: &str) -> String {
 /// character can reach the terminal inside it.
 pub fn linked(text: String, style: Style, url: &str) -> Span<'static> {
     let mut content = text;
-    for b in url.bytes() {
-        let bytes = if (0x21..=0x7E).contains(&b) { vec![b] } else { format!("%{b:02X}").into_bytes() };
-        content.extend(bytes.into_iter().filter_map(|b| char::from_u32(TAG + u32::from(b))));
-    }
+    content.extend(encoded(url).chars().filter_map(|c| char::from_u32(TAG + u32::from(c))));
     Span::styled(content, style)
+}
+
+/// `url` as printable ASCII: every other byte percent-encoded.
+fn encoded(url: &str) -> String {
+    url.bytes().map(|b| if (0x21..=0x7E).contains(&b) { char::from(b).to_string() } else { format!("%{b:02X}") }).collect()
+}
+
+/// Whether a link shows its own URL (`link_target`'s text and target), as a
+/// bare one does: then it is left whole for the terminal to wrap, so it
+/// copies as one URL.
+pub fn shows_its_url(text: &str, url: &str) -> bool {
+    text == url || (is_url(text) && encoded(text) == url)
 }
 
 /// A link in an answer: its text in `link()`, then `↗`, both opening `url`.
@@ -403,10 +412,12 @@ fn link_at(s: &str) -> Option<(usize, String, &str)> {
         let url = &rest[..end];
         return has_host(url).then(|| (end + 2, url.to_string(), url));
     }
-    if !is_url(s) {
+    // Its host looked at first: a line of `http:///` costs a look at each.
+    if !is_url(s) || !s[s.find("://")? + 3..].starts_with(|c: char| c != '/' && !c.is_whitespace()) {
         return None;
     }
-    let mut url = &s[..s.find(char::is_whitespace).unwrap_or(s.len())];
+    let end = s.char_indices().take_while(|&(j, c)| j < URL_MAX && !c.is_whitespace()).last().map_or(0, |(j, c)| j + c.len_utf8());
+    let mut url = &s[..end];
     // Punctuation after a URL ends the sentence, not the URL; so does a
     // closing bracket the URL did not open. The brackets are counted once
     // and kept count of as the end is taken off, so a run of them costs a
@@ -538,7 +549,7 @@ mod tests {
     fn a_line_of_unclosed_brackets_takes_linear_time() {
         let mut f = false;
         let trailing = |c: &str| format!("http://x{}", c.repeat(80_000));
-        for line in ["[1,".repeat(40_000), "a <".repeat(40_000), "[a](x".repeat(20_000), "<http://x".repeat(20_000), trailing(")"), trailing("]"), trailing(".)")] {
+        for line in ["[1,".repeat(40_000), "a <".repeat(40_000), "[a](x".repeat(20_000), "<http://x".repeat(20_000), trailing(")"), trailing("]"), trailing(".)"), "http:///".repeat(40_000), "<https:///".repeat(40_000)] {
             let t = std::time::Instant::now();
             markdown_line(&line, &mut f);
             assert!(t.elapsed() < Duration::from_millis(500), "{:?} for {:?}…", t.elapsed(), &line[..12]);
