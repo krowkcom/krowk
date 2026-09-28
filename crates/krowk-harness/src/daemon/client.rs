@@ -136,7 +136,7 @@ impl Client {
     pub async fn connect(path: &Path, cwd: &Path, version: &str, answers: bool) -> Result<Client, ConnectError> {
         let stream = UnixStream::connect(path).await.map_err(|e| if absent(&e) { ConnectError::Absent } else { ConnectError::Failed(EngineError::new("host_unavailable", format!("{} cannot be reached: {e}", path.display()))) })?;
         let (r, mut w) = stream.into_split();
-        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: version.to_string(), answers_approvals: answers };
+        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: version.to_string(), answers_approvals: answers, token: None };
         let fail = |e: std::io::Error| ConnectError::Failed(EngineError::new("host_unavailable", format!("{} did not answer: {e}", path.display())));
         w.write_all((serde_json::to_string(&hello).expect("a frame serializes") + "\n").as_bytes()).await.map_err(fail)?;
         let mut lines = BufReader::new(r).lines();
@@ -168,7 +168,7 @@ impl Client {
                 while let Ok(Some(line)) = lines.next_line().await {
                     let Ok(f) = serde_json::from_str::<ServerFrame>(&line) else { continue };
                     match f {
-                        ServerFrame::Line { line, session, cmd } => {
+                        ServerFrame::Line { line, session, cmd, .. } => {
                             let key = if session.is_empty() { line.session_id().to_string() } else { session };
                             let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                             match i.sink_for(&key, cmd) {
@@ -264,7 +264,7 @@ impl Client {
     /// running turn so far, then each frame live, to `out`. Answers whether
     /// a turn is running once caught up.
     pub async fn attach(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<bool, EngineError> {
-        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from) }, Some((Some(session_id.to_string()), out, None)))?;
+        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: None, epoch: None }, Some((Some(session_id.to_string()), out, None)))?;
         match rx.await {
             Ok(ServerFrame::Attached { error: Some(e), .. }) => Err(engine_error(e)),
             Ok(ServerFrame::Attached { running, .. }) => Ok(running),
@@ -279,7 +279,7 @@ impl Client {
     /// reattaches with (R-HOST-1).
     pub async fn follow(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
         let (utx, urx) = oneshot::channel();
-        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from) }, Some((Some(session_id.to_string()), out, Some(utx))))?;
+        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: None, epoch: None }, Some((Some(session_id.to_string()), out, Some(utx))))?;
         let running = match rx.await {
             Ok(ServerFrame::Attached { error: Some(e), .. }) => return Err(engine_error(e)),
             Ok(ServerFrame::Attached { running, .. }) => running,

@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub const EVENTS_FILE: &str = "events.jsonl";
 pub const CONTEXT_FILE: &str = "context.jsonl";
@@ -36,8 +37,10 @@ pub fn sessions_dir(env: &dyn Fn(&str) -> String) -> Result<PathBuf, krowk_api::
 pub struct SessionLog {
     pub session_id: String,
     pub dir: PathBuf,
-    events: File,
-    context: File,
+    /// Shared with the blocking pool, where the async appends write (see
+    /// `off`).
+    events: Arc<File>,
+    context: Arc<File>,
     /// The event the next append hangs from.
     head: Option<String>,
 }
@@ -119,7 +122,7 @@ impl SessionLog {
             Err(std::fs::TryLockError::Error(e)) => return Err(io(format_args!("lock {}", dir.join(EVENTS_FILE).display()), e)),
         }
         let context = append_private(&dir.join(CONTEXT_FILE)).map_err(|e| io(format_args!("open {}", dir.join(CONTEXT_FILE).display()), e))?;
-        Ok(SessionLog { session_id, dir, events, context, head: None })
+        Ok(SessionLog { session_id, dir, events: Arc::new(events), context: Arc::new(context), head: None })
     }
 
     pub fn head(&self) -> Option<&str> {
@@ -139,13 +142,13 @@ impl SessionLog {
     fn write(&mut self, ev: &LogEvent) -> Result<(), LogError> {
         let mut line = serde_json::to_string(ev).expect("an event serializes");
         line.push('\n');
-        self.events.write_all(line.as_bytes()).map_err(|e| io("append to the session log", e))
+        (&*self.events).write_all(line.as_bytes()).map_err(|e| io("append to the session log", e))
     }
 
     pub fn record_context(&mut self, rec: &ContextRecord) -> Result<(), LogError> {
         let mut line = serde_json::to_string(rec).expect("a context record serializes");
         line.push('\n');
-        self.context.write_all(line.as_bytes()).map_err(|e| io("append to the session's context record", e))
+        (&*self.context).write_all(line.as_bytes()).map_err(|e| io("append to the session's context record", e))
     }
 
     /// Flushed to the disk at the end of a turn, not per event: an event is
@@ -154,6 +157,95 @@ impl SessionLog {
         self.events.sync_data().map_err(|e| io("sync the session log", e))?;
         self.context.sync_data().map_err(|e| io("sync the session's context record", e))
     }
+
+    // The same, off the async runtime's thread in the host daemon
+    // (`off_thread`): it runs every session on one thread, and an fsync on a
+    // busy disk, or a directory made, would stall every other session's
+    // stream and heartbeats with it (R-LAG-9). Each is awaited before its
+    // event is sent anywhere, so no client ever sees an event the log does
+    // not have. A process with one session and no heartbeats (`krowk -p`,
+    // the TUI on its own host) does them where it is: a blocking pool's
+    // thread there would outlive the work and wake the idle process.
+
+    /// `create_child`, off the thread.
+    pub async fn create_child_off(sessions: &Path, cwd: &Path, krowk_version: &str, parent: Option<&str>, agent: Option<&str>) -> Result<(SessionLog, LogEvent), LogError> {
+        let (sessions, cwd, v, parent, agent) = (sessions.to_path_buf(), cwd.to_path_buf(), krowk_version.to_string(), parent.map(String::from), agent.map(String::from));
+        off(move || SessionLog::create_child(&sessions, &cwd, &v, parent.as_deref(), agent.as_deref())).await
+    }
+
+    /// `open`, off the thread.
+    pub async fn open_off(sessions: &Path, session_id: &str) -> Result<(SessionLog, Vec<LogEvent>), LogError> {
+        let (sessions, id) = (sessions.to_path_buf(), session_id.to_string());
+        off(move || SessionLog::open(&sessions, &id)).await
+    }
+
+    /// `append`, its write off the thread.
+    pub async fn append_off(&mut self, body: LogBody) -> Result<LogEvent, LogError> {
+        let ev = LogEvent { id: krowk_store::new_id(), parent_id: self.head.clone(), session_id: self.session_id.clone(), time_ms: krowk_store::now_ms(), body };
+        let mut line = serde_json::to_string(&ev).expect("an event serializes");
+        line.push('\n');
+        let f = self.events.clone();
+        off(move || (&*f).write_all(line.as_bytes()).map_err(|e| io("append to the session log", e))).await?;
+        self.head = Some(ev.id.clone());
+        Ok(ev)
+    }
+
+    /// `record_context`, its write off the thread.
+    pub async fn record_context_off(&mut self, rec: &ContextRecord) -> Result<(), LogError> {
+        let mut line = serde_json::to_string(rec).expect("a context record serializes");
+        line.push('\n');
+        let f = self.context.clone();
+        off(move || (&*f).write_all(line.as_bytes()).map_err(|e| io("append to the session's context record", e))).await
+    }
+
+    /// `sync`, off the thread.
+    pub async fn sync_off(&self) -> Result<(), LogError> {
+        let (e, c) = (self.events.clone(), self.context.clone());
+        off(move || {
+            e.sync_data().map_err(|x| io("sync the session log", x))?;
+            c.sync_data().map_err(|x| io("sync the session's context record", x))
+        })
+        .await
+    }
+}
+
+impl SessionLog {
+    /// `sync` at a turn's end, on the blocking pool, not waited for: the
+    /// turn's result goes out as it did while the sync runs. It syncs the
+    /// files through descriptors of its own, so the session's lock goes
+    /// with this log as before and the next turn is never refused as busy
+    /// while it runs; a sync that fails is said on stderr, since the turn it
+    /// would have failed has ended.
+    pub fn sync_behind(&self) {
+        let (e, c, id) = (self.dir.join(EVENTS_FILE), self.dir.join(CONTEXT_FILE), self.session_id.clone());
+        let Some(rt) = tokio::runtime::Handle::try_current().ok().filter(|_| OFF_THREAD.load(std::sync::atomic::Ordering::Relaxed)) else {
+            if let Err(err) = self.sync() {
+                eprintln!("session {id}: {}", err.message());
+            }
+            return;
+        };
+        drop(rt.spawn_blocking(move || {
+            if let Err(err) = File::open(&e).and_then(|f| f.sync_data()).and_then(|()| File::open(&c)).and_then(|f| f.sync_data()) {
+                eprintln!("session {id}: the log could not be synced: {err}");
+            }
+        }));
+    }
+}
+
+static OFF_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Sends the session log's blocking work to the blocking pool from here on:
+/// the host daemon's choice, as it starts.
+pub fn off_thread() {
+    OFF_THREAD.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Runs `f` on the blocking pool in the host daemon, else where it is.
+async fn off<T: Send + 'static>(f: impl FnOnce() -> Result<T, LogError> + Send + 'static) -> Result<T, LogError> {
+    if !OFF_THREAD.load(std::sync::atomic::Ordering::Relaxed) {
+        return f();
+    }
+    tokio::task::spawn_blocking(f).await.map_err(|e| LogError::Io(format!("the session log's writer failed: {e}")))?
 }
 
 /// Every event in a log file. A line that does not parse — the torn tail of

@@ -24,6 +24,13 @@
           "type": "boolean",
           "default": false
         },
+        "token": {
+          "description": "The daemon's bearer token (`host.token`, beside the socket): what\na WebSocket client proves it is this user with, since TCP cannot\nsay whose process connected. It rides the hello rather than a\nheader because browsers and Workers cannot set headers on a\nWebSocket. The unix socket ignores it: its permissions already\nkeep everyone else out.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "type": {
           "type": "string",
           "const": "hello"
@@ -75,6 +82,24 @@
             "string",
             "null"
           ]
+        },
+        "afterSeq": {
+          "description": "The last `line.seq` of this session the client has: of the\nrunning turn's frames, only later ones are sent, so a client\nresuming from its cursor sees nothing twice.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "epoch": {
+          "description": "The daemon's `welcome.epoch` the client's `afterSeq` is from. A\n`seq` is a daemon's own: one from another daemon, or with no\nepoch, is not honoured, and the client is caught up from\n`afterEventId` alone.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
         },
         "type": {
           "type": "string",

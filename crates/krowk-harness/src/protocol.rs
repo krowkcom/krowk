@@ -906,6 +906,14 @@ pub enum ClientFrame {
         /// is refused, with what would allow it.
         #[serde(default)]
         answers_approvals: bool,
+        /// The daemon's bearer token (`host.token`, beside the socket): what
+        /// a WebSocket client proves it is this user with, since TCP cannot
+        /// say whose process connected. It rides the hello rather than a
+        /// header because browsers and Workers cannot set headers on a
+        /// WebSocket. The unix socket ignores it: its permissions already
+        /// keep everyone else out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
     },
     /// Runs a command; answered by `done` with the same `id`. The session a
     /// `prompt` or `continue` runs in is followed from its first line.
@@ -919,6 +927,17 @@ pub enum ClientFrame {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_event_id: Option<String>,
+        /// The last `line.seq` of this session the client has: of the
+        /// running turn's frames, only later ones are sent, so a client
+        /// resuming from its cursor sees nothing twice.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_seq: Option<u64>,
+        /// The daemon's `welcome.epoch` the client's `afterSeq` is from. A
+        /// `seq` is a daemon's own: one from another daemon, or with no
+        /// epoch, is not honoured, and the client is caught up from
+        /// `afterEventId` alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u64>,
     },
     /// Asks how the daemon is; answered by `status`.
     Status { id: u64 },
@@ -957,7 +976,16 @@ pub enum ClientFrame {
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ServerFrame {
     /// The answer to a `hello` the daemon can serve.
-    Welcome { protocol_version: u32, krowk_version: String, pid: u32 },
+    Welcome {
+        protocol_version: u32,
+        krowk_version: String,
+        pid: u32,
+        /// This daemon's run, as the time it started (ms since the epoch):
+        /// what a `line.seq` is numbered within, and what an `attach`
+        /// resuming by `afterSeq` names.
+        #[serde(default)]
+        epoch: u64,
+    },
     /// The answer to one it cannot: a client of another protocol version.
     /// The connection closes after it.
     Refused { code: String, message: String, fix: String },
@@ -974,6 +1002,13 @@ pub enum ServerFrame {
         /// lines by this, never by guessing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cmd: Option<u64>,
+        /// Its place in the followed session's stream: numbered by the
+        /// daemon as the host sends it, from 1, and never reused while the
+        /// daemon runs (`welcome.epoch`), however often the session is let
+        /// go and followed again. Absent on a line replayed from the log, whose
+        /// cursor is its event id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
     },
     /// A command's end: its result for a `prompt` or `continue`, nothing for
     /// the rest, or why it did not run.
@@ -1016,6 +1051,18 @@ pub struct HostStatus {
     /// by itself (run as a service).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_exit_ms: Option<u64>,
+    /// The loopback address its WebSocket listener is bound to, when one
+    /// is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket: Option<String>,
+    /// Bytes waiting for clients to read, over every client and session:
+    /// bounded however far behind a client is (R-LAG-10).
+    #[serde(default)]
+    pub queued_bytes: u64,
+    /// How many times a client has fallen behind, to be caught up from its
+    /// cursor, since the daemon started.
+    #[serde(default)]
+    pub caught_up: u64,
     /// The sessions it has run since it started, newest first.
     pub sessions: Vec<HostSession>,
 }

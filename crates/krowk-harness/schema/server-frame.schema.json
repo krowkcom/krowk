@@ -20,6 +20,13 @@
           "format": "uint32",
           "minimum": 0
         },
+        "epoch": {
+          "description": "This daemon's run, as the time it started (ms since the epoch):\nwhat a `line.seq` is numbered within, and what an `attach`\nresuming by `afterSeq` names.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
+        },
         "type": {
           "type": "string",
           "const": "welcome"
@@ -69,6 +76,15 @@
         },
         "cmd": {
           "description": "The `execute` whose own stream this is, on the lines sent to the\nclient that ran it: a prompt that starts a session is told its\nlines by this, never by guessing.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "seq": {
+          "description": "Its place in the followed session's stream: numbered by the\ndaemon as the host sends it, from 1, and never reused while the\ndaemon runs (`welcome.epoch`), however often the session is let\ngo and followed again. Absent on a line replayed from the log, whose\ncursor is its event id.",
           "type": [
             "integer",
             "null"
@@ -1733,6 +1749,27 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "websocket": {
+          "description": "The loopback address its WebSocket listener is bound to, when one\nis.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "queuedBytes": {
+          "description": "Bytes waiting for clients to read, over every client and session:\nbounded however far behind a client is (R-LAG-10).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
+        },
+        "caughtUp": {
+          "description": "How many times a client has fallen behind, to be caught up from its\ncursor, since the daemon started.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
         },
         "sessions": {
           "description": "The sessions it has run since it started, newest first.",
