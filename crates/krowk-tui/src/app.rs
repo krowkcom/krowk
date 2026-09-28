@@ -732,7 +732,7 @@ impl App {
     pub fn link(&mut self, message: &str, url: &str) {
         self.gap();
         self.push_wrapped("", "", message, dim(), dim());
-        let url: String = crate::card::clean(url).chars().filter(|c| !c.is_whitespace()).collect();
+        let url: String = look::untagged(&crate::card::clean(url)).chars().filter(|c| !c.is_whitespace()).collect();
         self.pending.push(Line::from(vec![Span::raw("  "), Span::styled(url, look::link())]));
         self.last_blank = false;
         self.after_tool = false;
