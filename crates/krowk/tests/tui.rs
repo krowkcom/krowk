@@ -359,14 +359,14 @@ fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     }
     assert_eq!(saved().as_deref(), Some("unhinged"), "{:?}", t.text());
     assert!(!t.text().contains("zq"), "typed into the prompt: {:?}", t.text());
-    // ↓ chooses the content width, → makes it the terminal's whole width.
+    // ↓ chooses the content width, → makes it prose-wide.
     let width = || std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["tui"]["contentWidth"].as_str().map(String::from));
     t.write(b"\x1b[B\x1b[C");
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while width().as_deref() != Some("full-width") && std::time::Instant::now() < deadline {
+    while width().as_deref() != Some("prose-wide") && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(width().as_deref(), Some("full-width"), "{:?}", t.text());
+    assert_eq!(width().as_deref(), Some("prose-wide"), "{:?}", t.text());
     assert_eq!(saved().as_deref(), Some("unhinged"), "the mode stays as chosen");
     t.write(b"\x1b");
     std::thread::sleep(Duration::from_millis(100));

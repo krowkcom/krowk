@@ -227,7 +227,7 @@ and is configured in `~/.krowk/config.json`, under `tui`:
 
 | Key | Purpose |
 | --- | --- |
-| `tui.contentWidth` | `prose` (the default) keeps the conversation at most 80 columns wide, however wide the terminal; a narrower one still gets all of its width. `full-width` takes the terminal's whole width. The prompt and the status line always take the whole width. `/settings` switches it at once |
+| `tui.contentWidth` | `prose` (the default) keeps the conversation at most 80 columns wide, however wide the terminal; a narrower one still gets all of its width. `prose-wide` is the same at most 120 columns. `full-width` takes the terminal's whole width. The prompt and the status line always take the whole width. `/settings` switches it at once |
 | `tui.statusBar` | `false` hides the status line. The no-network notice shows regardless |
 | `tui.statusItems` | Which items the line shows, in order (all six by default): `device` (`<user>/<host>`), `model` (the instance and model, with the instance's rate limit once it is near it: `claude:work/haiku (78% of 7-day)`), `cost` (the session's, priced from models.dev), `tasks` (open todos, only while there are any), `subagents` (only while they run) and `help` (`? help`, always last). `offline` is added before the help while the API cannot be reached. The old names still read: `todos` is `tasks`, `instance` is `model`, and `connectivity` and `session` are ignored |
 

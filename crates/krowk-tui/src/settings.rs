@@ -6,8 +6,8 @@
 //!
 //! - `contentWidth` — `prose` (the default) lays out what is above the
 //!   prompt at most 80 columns wide, however wide the terminal; a narrower
-//!   one still gets all of its width. `full-width` takes the terminal's
-//!   whole width. The prompt and the status line take the whole width
+//!   one still gets all of its width. `prose-wide` is the same at most 120
+//!   columns, and `full-width` takes the terminal's whole width. The prompt and the status line take the whole width
 //!   either way.
 //! - `statusBar` — false hides the status line under the prompt. The "no
 //!   network connectivity" notice is not part of it and shows regardless
@@ -83,16 +83,23 @@ pub enum ContentWidth {
     /// At most `PROSE` columns.
     #[default]
     Prose,
+    /// At most `PROSE_WIDE` columns.
+    ProseWide,
     /// The terminal's whole width.
     FullWidth,
 }
 
 impl ContentWidth {
     /// In the order `/settings` steps through them.
-    pub const ALL: [(&'static str, ContentWidth); 2] = [("prose", ContentWidth::Prose), ("full-width", ContentWidth::FullWidth)];
+    pub const ALL: [(&'static str, ContentWidth); 3] =
+        [("prose", ContentWidth::Prose), ("prose-wide", ContentWidth::ProseWide), ("full-width", ContentWidth::FullWidth)];
 
     /// Wide enough for a line of code or a table row, narrow enough to read.
     pub const PROSE: u16 = 80;
+
+    /// Room for a wide table or a long line of code, still short of a wide
+    /// terminal's whole width.
+    pub const PROSE_WIDE: u16 = 120;
 
     pub fn name(self) -> &'static str {
         ContentWidth::ALL.iter().find(|(_, w)| *w == self).map_or("prose", |(n, _)| n)
@@ -107,6 +114,7 @@ impl ContentWidth {
     pub fn of(self, room: u16) -> u16 {
         match self {
             ContentWidth::Prose => room.min(ContentWidth::PROSE),
+            ContentWidth::ProseWide => room.min(ContentWidth::PROSE_WIDE),
             ContentWidth::FullWidth => room,
         }
     }
@@ -147,7 +155,7 @@ pub fn from_config(raw: &Value) -> (Settings, Vec<String>) {
         None => {}
         Some(v) => match v.as_str().and_then(ContentWidth::parse) {
             Some(w) => s.content_width = w,
-            None => warnings.push(format!("config tui.contentWidth: {v} is not a width — prose or full-width")),
+            None => warnings.push(format!("config tui.contentWidth: {v} is not a width — prose, prose-wide or full-width")),
         },
     }
     match tui.get("statusBar") {
@@ -316,12 +324,17 @@ mod tests {
         assert_eq!(Settings::default().content_width, ContentWidth::Prose);
         assert_eq!(ContentWidth::Prose.of(200), 80);
         assert_eq!(ContentWidth::Prose.of(40), 40, "a narrower terminal keeps all of its width");
+        assert_eq!(ContentWidth::ProseWide.of(200), 120);
+        assert_eq!(ContentWidth::ProseWide.of(100), 100);
         assert_eq!(ContentWidth::FullWidth.of(200), 200);
+        assert_eq!(from_config(&json!({"tui": {"contentWidth": "prose-wide"}})).0.content_width, ContentWidth::ProseWide);
         assert_eq!(from_config(&json!({"tui": {"contentWidth": "full-width"}})).0.content_width, ContentWidth::FullWidth);
         let (s, w) = from_config(&json!({"tui": {"contentWidth": "wide"}}));
         assert_eq!(s.content_width, ContentWidth::Prose, "a malformed value leaves the default");
-        assert!(w.len() == 1 && w[0].contains("\"wide\"") && w[0].contains("full-width"), "{w:?}");
-        assert_eq!(ContentWidth::Prose.step(1), Some(ContentWidth::FullWidth));
+        assert!(w.len() == 1 && w[0].contains("\"wide\"") && w[0].contains("prose-wide") && w[0].contains("full-width"), "{w:?}");
+        assert_eq!(ContentWidth::Prose.step(1), Some(ContentWidth::ProseWide));
+        assert_eq!(ContentWidth::ProseWide.step(1), Some(ContentWidth::FullWidth));
+        assert_eq!(ContentWidth::FullWidth.step(-1), Some(ContentWidth::ProseWide));
         assert_eq!(ContentWidth::FullWidth.step(1), None, "held →: nothing past full-width");
         assert_eq!(ContentWidth::Prose.step(-1), None);
     }

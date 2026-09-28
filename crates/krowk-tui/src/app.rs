@@ -1896,6 +1896,7 @@ impl App {
         let cw = self.settings.content_width;
         let says = match cw {
             ContentWidth::Prose => format!("at most {} columns", ContentWidth::PROSE),
+            ContentWidth::ProseWide => format!("at most {} columns", ContentWidth::PROSE_WIDE),
             ContentWidth::FullWidth => "the terminal's whole width".into(),
         };
         out.extend(row(1, format!("Content width            ‹ {} ›", cw.name()), &says));
@@ -3080,6 +3081,8 @@ mod tests {
         a.set_width(200);
         a.set_content_width(ContentWidth::FullWidth);
         assert_eq!(a.width, 200);
+        a.set_content_width(ContentWidth::ProseWide);
+        assert_eq!(a.width, 120);
         a.set_content_width(ContentWidth::Prose);
         assert_eq!(a.width, 80, "and back, from the width there is");
         a.overlay = Overlay::Settings;
