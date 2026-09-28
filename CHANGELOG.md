@@ -66,8 +66,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   longer reads — `krowk.db`, a dev build's named accounts and sessions —
   stay where they are and are named once on stderr, each with what to do
   (`krowk sessions rebuild` for the session index; `mv` plus its
-  `configDir`, or a fresh `krowk connect`, for an account). A `~/.krowk`
-  that already exists is never merged into. An old key file krowk cannot
+  `configDir`, or a fresh `krowk connect`, for an account). Only krowk's
+  own files are deleted, by name — never a directory whole, so XDG
+  variables that put the config, data and cache in one directory lose
+  nothing else — and an old key file that is a link loses only the link,
+  the file it led to named for you to delete. The two old key files are
+  merged entry by entry; one entry they name differently stops the move
+  (`migration_failed`), both kept. A `~/.krowk` that already exists is
+  never merged into; old key files are deleted beside it only when it
+  holds every key in them as it is. A relative `XDG_CONFIG_HOME`, which
+  0.10 followed from the directory you ran in, is not looked at. An old
+  key file krowk cannot
   read stops the move (`migration_failed`), naming the file with a line
   and column only, until it is fixed or moved
   aside. `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` no longer

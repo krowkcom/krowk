@@ -251,11 +251,12 @@ fn an_older_layout_moves_its_config_and_keys_deletes_the_old_secrets_and_names_t
 fn a_move_a_crash_cut_short_after_its_rename_is_finished_by_the_next_start() {
     let b = Sandbox::new("finish");
     b.old_layout();
-    // As a crash after the rename leaves it: the home in place, the old
-    // key files still there.
+    // As a crash after the rename leaves it: the home in place, holding
+    // what the move wrote — each key as it was — and the old key files
+    // still there.
     let merged = json!({
         "default": "ws_mig",
-        "workspaces": {"ws_mig": {"token": REGISTRY_KEY}},
+        "workspaces": {"ws_mig": {"token": REGISTRY_KEY, "key_id": "key_mig", "workspace": "ws_mig"}},
         "version": 1,
         "instances": {"supergrok": {"issuer": "x"}},
         "keys": {"anthropic": {"literal": STORED_KEY}},

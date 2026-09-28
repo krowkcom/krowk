@@ -104,12 +104,16 @@ pub fn run(home: &Path, env: Env) -> Result<(), String> {
     let aside = |e: String| format!("{e} — fix it or move it aside, and krowk moves its config and keys into {}", home.display());
     let [reg, prov] = &creds_files;
     let mut merged: Map<String, Value> = creds::read(prov).map_err(aside)?;
-    merged.extend(creds::registry_section(reg).map_err(aside)?);
+    merge(&mut merged, creds::registry_section(reg).map_err(aside)?).map_err(|e| format!("{} and {} {e} — keep the one you want in one file, and krowk moves its config and keys into {}", prov.display(), reg.display(), home.display()))?;
     let config = match std::fs::read(&conf) {
         Ok(b) => Some(b),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(io(&conf, e)),
     };
+    // Only a staging directory was left, and nothing to bring: no move.
+    if merged.is_empty() && config.is_none() {
+        return Ok(());
+    }
 
     home::make(&staging)?;
     let built = (|| {
@@ -141,23 +145,72 @@ pub fn run(home: &Path, env: Env) -> Result<(), String> {
     }
     // In place: the old copies go — the keys first.
     for f in &creds_files {
-        let _ = std::fs::remove_file(f);
+        remove_secret(f);
     }
-    for f in [cfg.join("providers").join("credentials.lock"), conf, cfg.join("update-check.json")] {
-        let _ = std::fs::remove_file(f);
-    }
-    let _ = std::fs::remove_dir(cfg.join("providers"));
+    let _ = std::fs::remove_file(conf);
+    leftovers(&cfg, &cache);
     let _ = std::fs::remove_dir(&cfg);
-    let _ = std::fs::remove_dir_all(&cache);
     Ok(())
 }
 
+/// Folds `other` into `into` one level down — `keys`, `workspaces`,
+/// `instances` entry by entry — so neither file's entries replace the
+/// other's. The same entry named twice with different values is refused:
+/// one of them would be lost when both files are deleted.
+fn merge(into: &mut Map<String, Value>, other: Map<String, Value>) -> Result<(), String> {
+    for (k, v) in other {
+        match (into.get_mut(&k), v) {
+            (Some(Value::Object(a)), Value::Object(b)) => {
+                for (e, bv) in b {
+                    match a.get(&e) {
+                        Some(av) if *av != bv => return Err(format!("both name {k}.{e}, differently")),
+                        _ => {
+                            a.insert(e, bv);
+                        }
+                    }
+                }
+            }
+            (Some(a), b) if k != "version" && *a != b => return Err(format!("both set {k}, differently")),
+            (Some(_), _) => {}
+            (None, b) => {
+                into.insert(k, b);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Removes an old credential file. One that is a link (a dotfiles
+/// repository's file linked into place) loses only the link, so the file it
+/// led to — which still holds the keys — is named.
+fn remove_secret(f: &Path) {
+    let link = std::fs::symlink_metadata(f).is_ok_and(|m| m.file_type().is_symlink()).then(|| std::fs::read_link(f).ok()).flatten();
+    let _ = std::fs::remove_file(f);
+    if let Some(to) = link {
+        eprintln!("krowk: {} was a link to {}, which still holds the old keys — delete it (and its history, if a repository tracks it)", f.display(), to.display());
+    }
+}
+
+/// What else a released krowk kept, deleted once its home is in place: the
+/// update check, a dev build's provider lock, and the models.dev cache —
+/// by name, never a directory whole, since the XDG variables may put the
+/// cache, config and data directories in one.
+fn leftovers(cfg: &Path, cache: &Path) {
+    for f in [cfg.join("providers").join("credentials.lock"), cfg.join("update-check.json"), cache.join("models.json")] {
+        let _ = std::fs::remove_file(f);
+    }
+    let _ = std::fs::remove_dir(cfg.join("providers"));
+    let _ = std::fs::remove_dir(cache);
+}
+
 /// Whether the home's credentials file holds every entry of `old`: each
-/// workspace, login and stored key it names (a value may have changed
-/// since — a token refreshed — the entry is what counts), and its default.
+/// workspace key and stored key as it is — a different one there is
+/// another key, and the old one would be lost — each login by name (its
+/// tokens refresh), and its default.
 fn held(old: &Map<String, Value>, new: &Map<String, Value>) -> bool {
     old.iter().all(|(k, v)| match (v, new.get(k)) {
-        (Value::Object(o), Some(Value::Object(n))) => o.keys().all(|e| n.contains_key(e)),
+        (Value::Object(o), Some(Value::Object(n))) if k == "instances" => o.keys().all(|e| n.contains_key(e)),
+        (Value::Object(o), Some(Value::Object(n))) => o.iter().all(|(e, ov)| n.get(e) == Some(ov)),
         (Value::Object(o), _) => o.is_empty(),
         (_, n) => k == "version" || n.is_some(),
     })
@@ -172,25 +225,26 @@ pub fn note_old(home: &Path, env: Env) {
     if exists(&marker) {
         return;
     }
-    let Some([cfg, data, _]) = olds(home, env) else { return };
+    let Some([cfg, data, cache]) = olds(home, env) else { return };
     let new: Map<String, Value> = creds::read(&home.join(home::CREDENTIALS)).unwrap_or_default();
     let [reg, prov] = old_creds(&cfg);
     for (f, old) in [(&reg, creds::registry_section(&reg)), (&prov, creds::read(&prov))] {
         if exists(f) && old.is_ok_and(|o| held(&o, &new)) {
-            let _ = std::fs::remove_file(f);
+            remove_secret(f);
         }
     }
     let conf = cfg.join(home::CONFIG);
     if exists(&conf) && std::fs::read(&conf).ok() == std::fs::read(home.join(home::CONFIG)).ok() {
         let _ = std::fs::remove_file(&conf);
     }
-    let _ = std::fs::remove_file(cfg.join("providers").join("credentials.lock"));
-    let _ = std::fs::remove_dir(cfg.join("providers"));
+    leftovers(&cfg, &cache);
 
     let h = home.display();
     let mut lines: Vec<String> = Vec::new();
     let mut other: Vec<String> = Vec::new();
-    for dir in [&cfg, &data] {
+    // One directory when the XDG variables put config and data together.
+    let dirs: Vec<&PathBuf> = if data == cfg { vec![&cfg] } else { vec![&cfg, &data] };
+    for dir in dirs {
         for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let (p, name) = (e.path(), e.file_name().to_string_lossy().into_owned());
             match name.as_str() {
@@ -209,6 +263,9 @@ pub fn note_old(home: &Path, env: Env) {
                         ));
                     }
                 }
+                // Into a directory the home already has, its contents, not
+                // the directory inside it.
+                _ if p.is_dir() && home.join(&name).is_dir() => other.push(format!("`mv {}/* {h}/{name}/`", p.display())),
                 _ => other.push(format!("`mv {} {h}/{name}`", p.display())),
             }
         }
@@ -315,10 +372,18 @@ mod tests {
         let (d, env) = old_layout("exists");
         let home = d.join(".krowk");
         std::fs::create_dir_all(&home).unwrap();
-        // The home holds the registry's workspace but not the provider key.
+        // The home names the registry's workspace with another key: the old
+        // one is not the home's, and is kept.
         std::fs::write(home.join(home::CREDENTIALS), json!({"default": "ws", "workspaces": {"ws": {"token": "rotated"}}}).to_string()).unwrap();
         note_old(&home, &env);
-        assert!(!d.join(".config/krowk/credentials.json").exists(), "every entry is in the home: deleted");
+        assert!(d.join(".config/krowk/credentials.json").exists(), "a workspace the home holds with another key: kept");
+        // The home holds it as it is (a move a crash cut short), but not the
+        // provider key.
+        let _ = std::fs::remove_file(home.join(home::CHECKED));
+        let reg = creds::registry_section(&d.join(".config/krowk/credentials.json")).unwrap();
+        creds::write(&home.join(home::CREDENTIALS), &reg).unwrap();
+        note_old(&home, &env);
+        assert!(!d.join(".config/krowk/credentials.json").exists(), "every entry is in the home as it is: deleted");
         assert!(d.join(".config/krowk/providers/credentials.json").exists(), "a key the home lacks: kept");
         let c: Map<String, Value> = creds::read(&home.join(home::CREDENTIALS)).unwrap();
         assert!(c.get("keys").is_none(), "nothing merged in");
@@ -327,6 +392,98 @@ mod tests {
         std::fs::write(home.join(home::CREDENTIALS), json!({"keys": {"openai": {}}}).to_string()).unwrap();
         note_old(&home, &env);
         assert!(d.join(".config/krowk/providers/credentials.json").exists(), "checked once");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The XDG variables all naming one directory: the cache is that
+    /// directory too, and only what krowk moved, and its own cache file,
+    /// leave it.
+    #[test]
+    fn xdg_directories_that_are_one_lose_nothing_but_what_was_moved() {
+        let d = std::env::temp_dir().join(format!("krowk-migrate-shared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let x = d.join("xdg/krowk");
+        std::fs::create_dir_all(x.join("claude/claude-work")).unwrap();
+        for (f, body) in [
+            ("credentials.json", json!({"default": "ws", "workspaces": {"ws": {"token": KEY}}}).to_string()),
+            ("config.json", r#"{"workspace":"ws"}"#.to_string()),
+            ("update-check.json", "{}".to_string()),
+            ("models.json", "{}".to_string()),
+            ("trusted.json", "{}".to_string()),
+            ("krowk.db", "db".to_string()),
+            ("claude/claude-work/fake-login", "".to_string()),
+        ] {
+            std::fs::write(x.join(f), body).unwrap();
+        }
+        let (h, xs) = (d.display().to_string(), d.join("xdg").display().to_string());
+        let env = move |k: &str| match k {
+            "HOME" => h.clone(),
+            "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_CACHE_HOME" => xs.clone(),
+            _ => String::new(),
+        };
+        run(&d.join(".krowk"), &env).unwrap();
+        let c: Map<String, Value> = creds::read(&d.join(".krowk").join(home::CREDENTIALS)).unwrap();
+        assert_eq!(c["workspaces"]["ws"]["token"].as_str(), Some(KEY));
+        for kept in ["trusted.json", "krowk.db", "claude/claude-work/fake-login"] {
+            assert!(x.join(kept).exists(), "{kept} was deleted");
+        }
+        for gone in ["credentials.json", "config.json", "update-check.json", "models.json"] {
+            assert!(!x.join(gone).exists(), "{gone} is left");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The two old key files both naming one entry: merged entry by entry,
+    /// and refused — both kept — when they name it differently.
+    #[test]
+    fn two_key_files_are_merged_entry_by_entry_and_a_conflict_moves_nothing() {
+        let (d, env) = old_layout("collide");
+        let reg = d.join(".config/krowk/credentials.json");
+        std::fs::write(&reg, json!({"default": "ws", "workspaces": {"ws": {"token": KEY}}, "keys": {"anthropic": {"env": "A"}}}).to_string()).unwrap();
+        run(&d.join(".krowk"), &env).unwrap();
+        let c: Map<String, Value> = creds::read(&d.join(".krowk").join(home::CREDENTIALS)).unwrap();
+        assert_eq!((c["keys"]["anthropic"]["env"].as_str(), c["keys"]["openai"]["env"].as_str()), (Some("A"), Some("K")), "both files' keys: {c:?}");
+        let _ = std::fs::remove_dir_all(&d);
+
+        let (d, env) = old_layout("conflict");
+        let reg = d.join(".config/krowk/credentials.json");
+        std::fs::write(&reg, json!({"default": "ws", "workspaces": {"ws": {"token": KEY}}, "keys": {"openai": {"env": "OTHER"}}}).to_string()).unwrap();
+        let e = run(&d.join(".krowk"), &env).unwrap_err();
+        assert!(e.contains("keys.openai") && !e.contains(KEY), "{e}");
+        assert!(reg.exists() && prov_exists(&d) && !d.join(".krowk").exists(), "nothing moved, nothing deleted");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn prov_exists(d: &Path) -> bool {
+        d.join(".config/krowk/providers/credentials.json").exists()
+    }
+
+    /// A key file linked in from elsewhere loses its link; the file it led to
+    /// is not krowk's to delete, and is named instead.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_key_file_loses_only_its_link() {
+        let (d, env) = old_layout("linked");
+        let reg = d.join(".config/krowk/credentials.json");
+        let dotfiles = d.join("dotfiles-credentials.json");
+        std::fs::rename(&reg, &dotfiles).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, &reg).unwrap();
+        run(&d.join(".krowk"), &env).unwrap();
+        assert!(reg.symlink_metadata().is_err() && dotfiles.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A staging directory left with nothing to bring: taken away, and no
+    /// home made or move claimed.
+    #[test]
+    fn a_stale_staging_directory_with_nothing_old_moves_nothing() {
+        let d = std::env::temp_dir().join(format!("krowk-migrate-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let home = d.join(".krowk");
+        std::fs::create_dir_all(staging(&home)).unwrap();
+        let h = d.display().to_string();
+        run(&home, &move |k: &str| if k == "HOME" { h.clone() } else { String::new() }).unwrap();
+        assert!(!staging(&home).exists() && !home.exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 
