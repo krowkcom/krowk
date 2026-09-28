@@ -1355,6 +1355,7 @@ impl App {
                 }
             }
             LogBody::TurnStarted { model, provider, .. } => {
+                self.follow.turn_started();
                 self.session_id = Some(ev.session_id.clone());
                 self.model = Some(model.clone());
                 self.instances.entry(model.instance.clone()).or_default().turns += 1;

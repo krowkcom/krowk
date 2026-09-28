@@ -95,9 +95,16 @@ impl Follow {
                 _ => return,
             }
         };
-        if at.ancestors().any(|a| a.join(".git").exists()) {
+        // A `cd -P dir` or `cd build 2>/dev/null` read wrong names nothing.
+        if at.is_dir() && at.ancestors().any(|a| a.join(".git").exists()) {
             self.works_in = Some(at);
         }
+    }
+
+    /// A turn starts where the session runs: Claude Code's process, and its
+    /// shell, may be new (another model, another mode, a resume).
+    pub fn turn_started(&mut self) {
+        self.shell_in = None;
     }
 }
 
@@ -180,24 +187,29 @@ mod tests {
         }
         std::fs::write(wt.join(".git"), "gitdir: ../main/.git/worktrees/wt").unwrap();
         let mut f = Follow { runs_in: Some(main.clone()), ..Follow::default() };
-        let mut call = |tool: &str, input: Value| {
+        let call = |f: &mut Follow, tool: &str, input: Value| {
             f.call(tool, &input);
             f.works_in.clone()
         };
-        assert_eq!(call("Read", json!({"file_path": wt.join("README.md")})), None, "reading is not working there");
-        assert_eq!(call("Bash", json!({"command": "git status"})), None, "a command that does not say");
-        assert_eq!(call("Bash", json!({"command": "cd ../wt && git status"})), Some(wt.clone()), "beside the project, a relative cd");
+        assert_eq!(call(&mut f, "Read", json!({"file_path": wt.join("README.md")})), None, "reading is not working there");
+        assert_eq!(call(&mut f, "Bash", json!({"command": "git status"})), None, "a command that does not say");
+        assert_eq!(call(&mut f, "Bash", json!({"command": "cd ../wt && git status"})), Some(wt.clone()), "beside the project, a relative cd");
         // Out of the project, Claude Code's shell went back to it.
-        assert_eq!(call("Bash", json!({"command": "cd crates/tui && cargo test"})), Some(main.join("crates/tui")));
+        assert_eq!(call(&mut f, "Bash", json!({"command": "cd crates/tui && cargo test"})), Some(main.join("crates/tui")));
         // Inside it, the shell stays where it went.
-        assert_eq!(call("Bash", json!({"command": "cd .. && ls"})), Some(main.join("crates")));
-        assert_eq!(call("bash", json!({"command": "cd crates/tui && ls"})), Some(main.join("crates/tui")), "krowk's own shell starts where the session runs");
-        assert_eq!(call("shell", json!({"command": "ls", "cwd": wt.join("crates/tui")})), Some(wt.join("crates/tui")), "Codex says where");
-        assert_eq!(call("Write", json!({"file_path": tmp.join("notes.txt")})), Some(wt.join("crates/tui")), "outside any repository: still the worktree");
-        assert_eq!(call("Bash", json!({"command": format!("cd {} && ls", tmp.display())})), Some(wt.join("crates/tui")));
-        assert_eq!(call("write", json!({"path": "crates/tui/app.rs"})), Some(main.join("crates/tui")), "a relative path is where the session runs");
-        assert_eq!(call("Edit", json!({"file_path": wt.join("crates/tui/app.rs")})), Some(wt.join("crates/tui")));
-        assert_eq!(call("Bash", json!({"command": "cd $(git rev-parse --show-toplevel) && ls"})), Some(wt.join("crates/tui")), "only a shell knows");
+        assert_eq!(call(&mut f, "Bash", json!({"command": "cd .. && ls"})), Some(main.join("crates")));
+        f.turn_started();
+        assert_eq!(call(&mut f, "Bash", json!({"command": "cd crates && ls"})), Some(main.join("crates")), "a turn's shell starts where the session runs");
+        assert_eq!(call(&mut f, "bash", json!({"command": "cd crates/tui && ls"})), Some(main.join("crates/tui")), "krowk's own shell starts where the session runs");
+        assert_eq!(call(&mut f, "shell", json!({"command": "ls", "cwd": wt.join("crates/tui")})), Some(wt.join("crates/tui")), "Codex says where");
+        assert_eq!(call(&mut f, "Write", json!({"file_path": tmp.join("notes.txt")})), Some(wt.join("crates/tui")), "outside any repository: still the worktree");
+        assert_eq!(call(&mut f, "Bash", json!({"command": format!("cd {} && ls", tmp.display())})), Some(wt.join("crates/tui")));
+        assert_eq!(call(&mut f, "write", json!({"path": "crates/tui/app.rs"})), Some(main.join("crates/tui")), "a relative path is where the session runs");
+        assert_eq!(call(&mut f, "Edit", json!({"file_path": wt.join("crates/tui/app.rs")})), Some(wt.join("crates/tui")));
+        assert_eq!(call(&mut f, "Bash", json!({"command": "cd $(git rev-parse --show-toplevel) && ls"})), Some(wt.join("crates/tui")), "only a shell knows");
+        for unread in ["cd -", "cd -P crates", "cd crates 2>/dev/null && ls", "cd nowhere && ls"] {
+            assert_eq!(call(&mut f, "Bash", json!({"command": unread})), Some(wt.join("crates/tui")), "{unread}: names no directory");
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

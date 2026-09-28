@@ -1794,6 +1794,8 @@ impl<'h> Ui<'h> {
         app.model = None;
         app.gap_say(&format!("continuing session {id}"));
         replay(app, id, &events, &self.host.registry());
+        // Where that session's agent was at work, not this one's.
+        self.look_for_pr(app);
         self.last_prompt.clear();
         // Its own model from here, not the one the last session was on; one
         // that never ran a turn goes on with the model the next prompt had.
