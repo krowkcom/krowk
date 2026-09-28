@@ -401,17 +401,76 @@ pub struct Turn {
 /// The most tool blocks a repeated run is counted over (`App::hold`).
 const GROUP: usize = 3;
 
-/// The finished tool blocks not yet in scrollback: a run made `times`
-/// (and `next` of its blocks into once more), then those after it that
-/// could still start one.
+/// The finished tool blocks not yet in scrollback: a batch of quiet calls,
+/// or else a run made `times` (and `next` of its blocks into once more),
+/// then those after it that could still start one.
 #[derive(Default)]
 struct Held {
     /// Where among the lines owed to scrollback the held blocks stand.
     at: usize,
+    batch: Batch,
     unit: Vec<Vec<Line<'static>>>,
     times: usize,
     next: usize,
     tail: Vec<Vec<Line<'static>>>,
+}
+
+/// What a quiet call did, for a batch's count.
+#[derive(Clone, Copy, PartialEq)]
+enum Quiet {
+    Read,
+    Search,
+    Run,
+}
+
+/// Quiet calls one after another — reads, searches and commands that went
+/// well — counted on one line: `◆ Read 2 files, ran 5 commands`. A call
+/// alone is shown as itself.
+#[derive(Default)]
+struct Batch {
+    first: Vec<Line<'static>>,
+    calls: usize,
+    /// Each kind's count, in the order first made.
+    kinds: Vec<(Quiet, usize)>,
+    /// The files read, each counted once.
+    files: Vec<String>,
+}
+
+impl Batch {
+    fn add(&mut self, quiet: Quiet, what: String, block: Vec<Line<'static>>) {
+        if self.calls == 0 {
+            self.first = block;
+        }
+        self.calls += 1;
+        if quiet == Quiet::Read {
+            if self.files.contains(&what) {
+                return;
+            }
+            self.files.push(what);
+        }
+        match self.kinds.iter_mut().find(|(q, _)| *q == quiet) {
+            Some((_, n)) => *n += 1,
+            None => self.kinds.push((quiet, 1)),
+        }
+    }
+
+    fn lines(&self) -> Vec<Line<'static>> {
+        if self.calls < 2 {
+            return self.first.clone();
+        }
+        let parts: Vec<String> = self.kinds.iter().map(|&(q, n)| {
+            let (verb, noun) = match q {
+                Quiet::Read => ("read", "file"),
+                Quiet::Search => ("searched for", "pattern"),
+                Quiet::Run => ("ran", "command"),
+            };
+            format!("{verb} {n} {noun}{}", if n == 1 { "" } else { "s" })
+        }).collect();
+        let said = parts.join(", ");
+        let mut chars = said.chars();
+        let said: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+        vec![Line::from(vec![Span::styled(look::TOOL, dim()), Span::raw(said)])]
+    }
 }
 
 impl Held {
@@ -427,6 +486,9 @@ impl Held {
     }
 
     fn lines(&self) -> Vec<Line<'static>> {
+        if self.batch.calls > 0 {
+            return self.batch.lines();
+        }
         let mut out = self.run_lines();
         out.extend(self.unit[..self.next].iter().chain(&self.tail).flatten().cloned());
         out
@@ -967,8 +1029,17 @@ impl App {
         }
         let width = usize::from(self.width.max(8));
         let (verb, arg) = look::tool_title(name, input);
-        let lines: Vec<&str> = output.lines().collect();
+        // Claude Code's note that a `cd` did not last says nothing of the
+        // command.
+        let lines: Vec<&str> = output.lines().filter(|l| !l.starts_with("Shell cwd was reset to ")).collect();
         let edit = if is_error { None } else { look::edit_lines(name, input) };
+        let quiet = match name {
+            _ if is_error => None,
+            "read" => Some(Quiet::Read),
+            "grep" | "glob" => Some(Quiet::Search),
+            "bash" => Some(Quiet::Run),
+            _ => None,
+        };
         let mut head = vec![Span::styled(look::TOOL, if is_error { red() } else { dim() }), Span::raw(verb.clone())];
         if !arg.is_empty() {
             head.push(Span::raw(" "));
@@ -1002,7 +1073,7 @@ impl App {
             body.extend(lines.iter().rev().find(|l| !l.trim().is_empty()).map(|l| Span::styled(clip(l, body_width), dim())));
         }
         block.extend(branches(body));
-        self.hold(block);
+        self.hold(block, quiet.map(|q| (q, arg)));
     }
 
     /// `rows` under the line just pushed, each on a branch (`branches`).
@@ -1019,13 +1090,29 @@ impl App {
     /// made again that came back otherwise is its own line. What is held is
     /// in the live region, where the stack it ends goes on; the first line
     /// pushed after it lets it go to scrollback (`take_pending`).
-    fn hold(&mut self, block: Vec<Line<'static>>) {
+    ///
+    /// A quiet call is not held so but counted in a batch (`Batch`), which
+    /// the first call that is not quiet ends.
+    fn hold(&mut self, block: Vec<Line<'static>>, quiet: Option<(Quiet, String)>) {
         if self.pending.len() > self.held.at {
             self.release();
         }
         self.after_tool = true;
         self.last_blank = false;
         self.dirty = true;
+        if let Some((q, what)) = quiet {
+            if self.held.batch.calls == 0 {
+                let lines = std::mem::take(&mut self.held).lines();
+                self.pending.extend(lines);
+            }
+            self.held.batch.add(q, what, block);
+            self.held.at = self.pending.len();
+            return;
+        }
+        if self.held.batch.calls > 0 {
+            let lines = std::mem::take(&mut self.held.batch).lines();
+            self.pending.extend(lines);
+        }
         let h = &mut self.held;
         if h.times > 1 {
             if h.unit[h.next] == block {
@@ -2715,31 +2802,31 @@ mod tests {
     #[test]
     fn a_call_made_again_straight_after_is_counted_not_shown_twice() {
         let mut a = app();
-        let run = |a: &mut App, cmd: &str, out: &str| a.commit_tool("bash", &serde_json::json!({"command": cmd}), out, false);
+        let run = |a: &mut App, cmd: &str, out: &str| a.commit_tool("bash", &serde_json::json!({"command": cmd}), out, true);
         let held = |a: &App| text(&a.view(Instant::now()).0).into_iter().take_while(|r| !r.starts_with('─')).collect::<Vec<_>>();
-        run(&mut a, "git status", "clean");
-        run(&mut a, "git status", "clean");
+        run(&mut a, "git status", "locked");
+        run(&mut a, "git status", "locked");
         assert!(a.take_pending().is_empty(), "held while it could be made again");
-        assert_eq!(held(&a), ["◆ Run git status ×2", "└─ clean"]);
-        run(&mut a, "git status", "clean");
-        assert_eq!(held(&a), ["◆ Run git status ×3", "└─ clean"]);
+        assert_eq!(held(&a), ["◆ Run git status (failed) ×2", "└─ locked"]);
+        run(&mut a, "git status", "locked");
+        assert_eq!(held(&a), ["◆ Run git status (failed) ×3", "└─ locked"]);
         // A call that came back otherwise is its own.
-        run(&mut a, "git status", "dirty");
+        run(&mut a, "git status", "gone");
         a.push_md("Done.");
-        assert_eq!(text(&a.take_pending()), ["◆ Run git status ×3", "└─ clean", "◆ Run git status", "└─ dirty", "Done."]);
+        assert_eq!(text(&a.take_pending()), ["◆ Run git status (failed) ×3", "└─ locked", "◆ Run git status (failed)", "└─ gone", "Done."]);
     }
 
     #[test]
     fn a_run_of_calls_made_again_is_counted_as_one() {
         let mut a = app();
-        let run = |a: &mut App, cmd: &str| a.commit_tool("bash", &serde_json::json!({"command": cmd}), "ok", false);
+        let run = |a: &mut App, cmd: &str| a.commit_tool("bash", &serde_json::json!({"command": cmd}), "no", true);
         for cmd in ["cargo fmt", "cargo build", "cargo test", "cargo build", "cargo test", "cargo build", "cargo test", "cargo build"] {
             run(&mut a, cmd);
         }
         a.flush_calls();
         assert_eq!(
             text(&a.take_pending()),
-            ["◆ Run cargo fmt", "└─ ok", "◆ Run cargo build ×3", "└─ ok", "◆ Run cargo test ×3", "└─ ok", "◆ Run cargo build", "└─ ok"],
+            ["◆ Run cargo fmt (failed)", "└─ no", "◆ Run cargo build (failed) ×3", "└─ no", "◆ Run cargo test (failed) ×3", "└─ no", "◆ Run cargo build (failed)", "└─ no"],
             "the start of a repeat it broke off in is shown as it is"
         );
         // Calls that never repeat go out as the stack grows.
@@ -2747,6 +2834,28 @@ mod tests {
             run(&mut a, &format!("echo {i}"));
         }
         assert_eq!(text(&a.take_pending()).len(), 2 * (8 - (2 * GROUP - 1)));
+    }
+
+    #[test]
+    fn quiet_calls_in_a_row_are_counted_on_one_line() {
+        let mut a = app();
+        let ok = |a: &mut App, name: &str, input: serde_json::Value| a.commit_tool(name, &input, "x\ny\nShell cwd was reset to /r", false);
+        ok(&mut a, "Bash", serde_json::json!({"command": "cd w && ls"}));
+        assert_eq!(text(&a.view(Instant::now()).0)[..2], ["◆ Run cd w && ls (2 lines)", "└─ y"], "alone, itself, the reset note left out");
+        ok(&mut a, "Read", serde_json::json!({"file_path": "a.rs"}));
+        ok(&mut a, "Grep", serde_json::json!({"pattern": "fn"}));
+        ok(&mut a, "Read", serde_json::json!({"file_path": "a.rs"}));
+        ok(&mut a, "Bash", serde_json::json!({"command": "ls"}));
+        assert!(a.take_pending().is_empty(), "held while the batch goes on");
+        assert_eq!(text(&a.held.lines()), ["◆ Ran 2 commands, read 1 file, searched for 1 pattern"]);
+        // A call worth seeing ends it, and is shown whole.
+        a.commit_tool("Bash", &serde_json::json!({"command": "cargo test"}), "boom", true);
+        ok(&mut a, "Read", serde_json::json!({"file_path": "b.rs"}));
+        a.push_md("Done.");
+        assert_eq!(
+            text(&a.take_pending()),
+            ["◆ Ran 2 commands, read 1 file, searched", "for 1 pattern", "◆ Run cargo test (failed)", "└─ boom", "◆ Read b.rs (2 lines)", "Done."]
+        );
     }
 
     #[test]
