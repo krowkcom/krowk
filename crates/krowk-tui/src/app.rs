@@ -2143,7 +2143,7 @@ pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     let text: String = shown.iter().map(|(t, _)| *t).collect();
     // A URL shown as itself is left for the terminal to wrap, so it stays
     // one URL when copied.
-    if text.width() <= width.max(1) || shown.iter().any(|(t, u)| u.is_some() && t.starts_with("http")) {
+    if text.width() <= width.max(1) || shown.iter().any(|(t, u)| u.as_deref() == Some(*t)) {
         return vec![line];
     }
     let styled: Vec<(char, Style, Option<&str>)> = line.spans.iter().zip(&shown).flat_map(|(s, (t, u))| t.chars().map(move |c| (c, s.style, u.as_deref()))).collect();
@@ -2796,6 +2796,8 @@ mod tests {
         }
         let bare = look::markdown_line("see https://krowk.com/a/rather/long/path for more", &mut f);
         assert_eq!(wrap_line(bare, 16).len(), 1, "a URL shown as itself is the terminal's to wrap");
+        let named = look::markdown_line("the [httpx docs](https://www.python-httpx.org) are good", &mut f);
+        assert!(wrap_line(named, 16).len() > 1, "text that only starts like a URL is wrapped");
     }
 
     #[test]

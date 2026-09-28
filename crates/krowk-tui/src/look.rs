@@ -89,8 +89,10 @@ pub fn link() -> Style {
 /// opens the link too.
 pub const LINK_ARROW: &str = "\u{a0}↗";
 
+/// Not underlined: said as a removed modifier, which draws as nothing, so
+/// the arrow's style is its own and never `code()`'s.
 fn link_arrow() -> Style {
-    Style::new().fg(Color::Cyan)
+    Style::new().fg(Color::Cyan).remove_modifier(Modifier::UNDERLINED)
 }
 
 /// Where a span links to, and the text it shows: `link()`'s style on an
@@ -294,7 +296,7 @@ pub fn markdown_line(text: &str, fence: &mut bool) -> Line<'static> {
             2 => Color::Blue,
             _ => Color::Magenta,
         };
-        return Line::from(Span::styled(trimmed[hashes + 1..].to_string(), bold().fg(colour)));
+        return Line::from(emphasised(inline(&trimmed[hashes + 1..]), bold().fg(colour)));
     }
     let mut spans = vec![Span::raw(indent.to_string())];
     let body = if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")).or_else(|| trimmed.strip_prefix("+ ")) {
@@ -324,7 +326,11 @@ fn inline(text: &str) -> Vec<Span<'static>> {
             rest[marker.len()..]
                 .find(marker)
                 .filter(|&close| close > 0)
-                .map(|close| (marker.len() * 2 + close, vec![Span::styled(rest[marker.len()..marker.len() + close].to_string(), if marker == "`" { code() } else { bold() })]))
+                .map(|close| {
+                    let inner = &rest[marker.len()..marker.len() + close];
+                    let spans = if marker == "`" { vec![Span::styled(inner.to_string(), code())] } else { emphasised(inline(inner), bold()) };
+                    (marker.len() * 2 + close, spans)
+                })
         } else {
             link_at(rest).map(|(len, label, url)| (len, link_spans(&label, url).to_vec()))
         };
@@ -349,6 +355,17 @@ fn inline(text: &str) -> Vec<Span<'static>> {
 /// The longest URL looked for: a scan for a URL's end stops here, so a
 /// line of unclosed brackets costs a bounded look from each.
 const URL_MAX: usize = 2048;
+
+/// `spans` in `style`, each keeping its own on top; a link keeps its look
+/// exactly, which is what makes it one (`link_target`).
+fn emphasised(spans: Vec<Span<'static>>, style: Style) -> Vec<Span<'static>> {
+    spans.into_iter().map(|s| if link_target(&s).is_some() { s } else { Span::styled(s.content, style.patch(s.style)) }).collect()
+}
+
+/// Whether `url` names a host: `http://` alone opens nothing.
+fn has_host(url: &str) -> bool {
+    url.split_once("://").is_some_and(|(_, host)| !host.is_empty() && !host.starts_with('/'))
+}
 
 /// A link at the start of `s`: how many bytes it takes, the text it shows
 /// and the URL it opens.
@@ -376,31 +393,43 @@ fn link_at(s: &str) -> Option<(usize, String, &str)> {
         })?;
         let url = &after[..end];
         let label = label.replace("**", "").replace('`', "");
-        return (!label.trim().is_empty() && is_url(url)).then_some((1 + close + 2 + end + 1, label, url));
+        return (!label.trim().is_empty() && is_url(url) && has_host(url)).then_some((1 + close + 2 + end + 1, label, url));
     }
     if let Some(rest) = s.strip_prefix('<') {
         if !is_url(rest) {
             return None;
         }
         let end = rest.char_indices().take_while(|&(j, c)| j < URL_MAX && !c.is_whitespace() && c != '<').find(|&(_, c)| c == '>')?.0;
-        return Some((end + 2, rest[..end].to_string(), &rest[..end]));
+        let url = &rest[..end];
+        return has_host(url).then(|| (end + 2, url.to_string(), url));
     }
     if !is_url(s) {
         return None;
     }
     let mut url = &s[..s.find(char::is_whitespace).unwrap_or(s.len())];
     // Punctuation after a URL ends the sentence, not the URL; so does a
-    // closing bracket the URL did not open.
+    // closing bracket the URL did not open. The brackets are counted once
+    // and kept count of as the end is taken off, so a run of them costs a
+    // look each.
+    let count = |c: char| url.matches(c).count();
+    let (mut parens, mut squares) = (count(')') as isize - count('(') as isize, count(']') as isize - count('[') as isize);
     loop {
         let trimmed = url.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"', '*', '`', '>']);
-        let unopened = |close: char, open: char| trimmed.ends_with(close) && trimmed.matches(open).count() < trimmed.matches(close).count();
-        let trimmed = if unopened(')', '(') || unopened(']', '[') { &trimmed[..trimmed.len() - 1] } else { trimmed };
+        let trimmed = if trimmed.ends_with(')') && parens > 0 {
+            parens -= 1;
+            &trimmed[..trimmed.len() - 1]
+        } else if trimmed.ends_with(']') && squares > 0 {
+            squares -= 1;
+            &trimmed[..trimmed.len() - 1]
+        } else {
+            trimmed
+        };
         if trimmed == url {
             break;
         }
         url = trimmed;
     }
-    url.split_once("://").is_some_and(|(_, host)| !host.is_empty()).then(|| (url.len(), url.to_string(), url))
+    has_host(url).then(|| (url.len(), url.to_string(), url))
 }
 
 #[cfg(test)]
@@ -508,7 +537,8 @@ mod tests {
     #[test]
     fn a_line_of_unclosed_brackets_takes_linear_time() {
         let mut f = false;
-        for line in ["[1,".repeat(40_000), "a <".repeat(40_000), "[a](x".repeat(20_000), "<http://x".repeat(20_000)] {
+        let trailing = |c: &str| format!("http://x{}", c.repeat(80_000));
+        for line in ["[1,".repeat(40_000), "a <".repeat(40_000), "[a](x".repeat(20_000), "<http://x".repeat(20_000), trailing(")"), trailing("]"), trailing(".)")] {
             let t = std::time::Instant::now();
             markdown_line(&line, &mut f);
             assert!(t.elapsed() < Duration::from_millis(500), "{:?} for {:?}…", t.elapsed(), &line[..12]);
@@ -516,7 +546,25 @@ mod tests {
     }
 
     #[test]
+    fn a_link_in_bold_or_a_heading_is_a_link_too() {
+        let mut f = false;
+        let l = markdown_line("- **[Title](https://x.io)** — desc", &mut f);
+        assert_eq!((shown(&l).as_str(), targets(&l)), ("• Title\u{a0}↗ — desc", vec!["https://x.io".to_string(); 2]));
+        let l = markdown_line("**See [docs](https://x.io) and `this`**", &mut f);
+        assert_eq!(shown(&l), "See docs\u{a0}↗ and this");
+        assert!(l.spans.iter().filter(|s| link_target(s).is_none() && !s.content.is_empty()).all(|s| s.style.add_modifier.contains(Modifier::BOLD)), "{:?}", l.spans);
+        assert_eq!(l.spans.iter().find(|s| s.content == "this").unwrap().style.fg, Some(Color::Cyan), "code keeps its colour in bold");
+        let l = markdown_line("## See [docs](https://x.io)", &mut f);
+        assert_eq!((shown(&l).as_str(), targets(&l).len()), ("See docs\u{a0}↗", 2));
+        assert_eq!(l.spans[0].style, bold().fg(Color::Blue));
+        let l = markdown_line("<http://> [a](http://) [b](https:///x)", &mut f);
+        assert!(targets(&l).is_empty(), "no host, no link: {:?}", l.spans);
+    }
+
+    #[test]
     fn only_an_http_target_is_read_back() {
+        let code = Span::styled(format!("x{}", linked(String::new(), link(), "https://evil.io").content), code());
+        assert!(link_target(&code).is_none(), "a code span is never a link, whatever it carries");
         assert!(link_target(&linked("https://ok.io".into(), link(), "file:///etc/passwd")).is_none());
         let signin = untagged(&format!("https://ok.io{}", linked(String::new(), link(), "https://evil.io").content));
         assert_eq!(link_target(&Span::styled(signin, link())).unwrap().1, "https://ok.io");
