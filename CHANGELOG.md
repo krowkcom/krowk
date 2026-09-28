@@ -47,8 +47,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   --json` keeps its shape, with the short summaries; a topic's `--json` is
   its text as one JSON string. Both builds come out a little smaller.
 
-- **Everything krowk keeps is in one place, `~/.krowk/`, and your files
-  move there by themselves.** The config, the registry keys, the provider
+- **Everything krowk keeps is in one place, `~/.krowk/`, and your config
+  and keys move there by themselves.** The config, the registry keys, the provider
   logins and stored keys, named Claude Code and Codex accounts, sessions,
   krowk.db and the price cache were spread over `~/.config/krowk`,
   `~/.local/share/krowk` and `~/.cache/krowk` (or wherever the XDG
@@ -56,19 +56,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `credentials.json`, `accounts/<name>/`, `sessions/` (krowk.db beside the
   logs), `cache/` and `readiness/`, in a `0700` directory that keeps
   secrets out of a dotfiles repository that tracks `~/.config`. The first
-  krowk you run after upgrading moves the old files in — one line on
-  stderr, `krowk: moved krowk's files to ~/.krowk`, keeping each file's
-  permissions and pointing a named account's `configDir` or `codexHome` in
-  `config.json` at where it went — and never reads the old places again.
-  The price cache is not moved; it is fetched again. The move is all or
-  nothing: a crash part way is undone by the next run, which then makes the
-  whole move, and when anything cannot be moved (another file system, two
-  files with one name, a permission) everything is put back and krowk
-  refuses with `migration_failed`, saying what to do by hand — or to set
-  `KROWK_HOME` to start a new home. A `~/.krowk` that already exists is
-  never merged into: old files beside it are named once, on stderr, for you
-  to move or delete. An old key file krowk cannot read stops the move,
-  naming the file with a line and column only, until it is fixed or moved
+  krowk you run after upgrading brings your config and keys in — one line
+  on stderr, `krowk: moved krowk's config and keys to ~/.krowk` — then
+  deletes the old key files, config and price cache (fetched again), so
+  no secret is left where a dotfiles repository may track it. The move is
+  built whole in `~/.krowk.migrating` and renamed into place in one step:
+  a crash before that leaves nothing half-made, and a crash after it is
+  finished on the next start. Nothing else is moved: old files krowk no
+  longer reads — `krowk.db`, a dev build's named accounts and sessions —
+  stay where they are and are named once on stderr, each with what to do
+  (`krowk sessions rebuild` for the session index; `mv` plus its
+  `configDir`, or a fresh `krowk connect`, for an account). A `~/.krowk`
+  that already exists is never merged into. An old key file krowk cannot
+  read stops the move (`migration_failed`), naming the file with a line
+  and column only, until it is fixed or moved
   aside. `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` no longer
   move anything; set
   `KROWK_HOME` (an absolute path; a relative one is refused) to keep all of
