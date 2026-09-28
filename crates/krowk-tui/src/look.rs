@@ -123,6 +123,7 @@ pub fn tool_kind(name: &str) -> &str {
         "Glob" => "glob",
         "Edit" => "search_replace",
         "TodoWrite" => "todo_write",
+        "Skill" => "skill",
         other => other,
     }
 }
@@ -140,14 +141,37 @@ pub fn tool_title(name: &str, input: &serde_json::Value) -> (String, String) {
         "glob" => ("Find".into(), s("pattern")),
         "todo_write" => ("Plan".into(), String::new()),
         "subagent" => ("Agent".into(), s("description")),
+        "skill" => labelled("Skill".into(), Some(s("name")).filter(|n| !n.is_empty()).unwrap_or_else(|| s("skill"))),
         "str_replace" => ("Edit".into(), s("path")),
         "search_replace" => ("Edit".into(), s("file_path")),
         "apply_patch" => ("Edit".into(), patch_paths(&s("input")).join(", ")),
         other => {
             let arg = ["command", "path", "file_path", "pattern", "url"].iter().map(|k| s(k)).find(|v| !v.is_empty()).unwrap_or_default();
-            (other.to_string(), first_line(arg))
+            labelled(words(other), first_line(arg))
         }
     }
+}
+
+/// A name that isn't a verb, set off from what it acts on:
+/// `Skill: basecamp`, `Web Fetch: https://…`.
+fn labelled(name: String, arg: String) -> (String, String) {
+    if arg.is_empty() { (name, arg) } else { (format!("{name}:"), arg) }
+}
+
+/// `ListAgents` as `List Agents`, `HTTPGet` as `HTTP Get`: a word starts at
+/// a capital after a lowercase letter or digit, or at the last capital of a
+/// run followed by a lowercase letter.
+fn words(name: &str) -> String {
+    let c: Vec<char> = name.chars().collect();
+    let mut out = String::with_capacity(name.len() + 4);
+    for (i, &ch) in c.iter().enumerate() {
+        let starts = i > 0 && ch.is_uppercase() && (c[i - 1].is_lowercase() || c[i - 1].is_ascii_digit() || (c[i - 1].is_uppercase() && c.get(i + 1).is_some_and(|n| n.is_lowercase())));
+        if starts {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn patch_paths(patch: &str) -> Vec<String> {
@@ -285,6 +309,12 @@ mod tests {
         assert_eq!(tool_title("shell", &json!({"command": "ls", "cwd": "/r"})), ("Run".into(), "ls".into()));
         assert_eq!(tool_title("Grep", &json!({"pattern": "fn test"})), ("Search".into(), "fn test".into()));
         assert_eq!(tool_title("TodoWrite", &json!({"todos": []})), ("Plan".into(), String::new()));
+        assert_eq!(tool_title("skill", &json!({"name": "basecamp"})), ("Skill:".into(), "basecamp".into()));
+        assert_eq!(tool_title("Skill", &json!({"skill": "basecamp"})), ("Skill:".into(), "basecamp".into()));
+        assert_eq!(tool_title("ListAgents", &json!({})), ("List Agents".into(), String::new()));
+        assert_eq!(tool_title("WebFetch", &json!({"url": "https://x"})), ("Web Fetch:".into(), "https://x".into()));
+        assert_eq!(tool_title("HTTPGet", &json!({})), ("HTTP Get".into(), String::new()));
+        assert_eq!(tool_title("web_search", &json!({})), ("web_search".into(), String::new()));
         let (del, add) = edit_lines("Edit", &json!({"file_path": "x", "old_string": "a", "new_string": "b\nc"})).unwrap();
         assert_eq!((del, add), (vec!["a".to_string()], vec!["b".to_string(), "c".into()]));
         assert_eq!(tool_title("mcp__gh__search", &json!({})).0, "mcp__gh__search", "one krowk has no name for is its own");
