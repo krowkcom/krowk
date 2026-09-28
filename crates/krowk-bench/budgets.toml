@@ -191,9 +191,16 @@ unit = "bytes"
 # session log's create/open and fsync off the daemon's thread, the shared
 # TLS configuration, the pre-auth checks and the Origin refusal) adds
 # 38,176 bytes: 9,449,928 (9.01 MiB), 12,744 over. Raised 9.00 -> 9.25
-# MiB, leaving 249,400 bytes for the rest of Harness P1 — ticket 15's
-# encryption among it, which fits only on ring's AEAD and X25519, already
-# linked (harness.md → The WebSocket transport).
+# MiB, leaving 249,400 bytes for the rest of Harness P1.
+# Ticket 15, krowk-client's end-to-end keys and `krowk sync init` /
+# `recover`, takes the umbrella from 9,449,928 to 9,543,688 (9.10 MiB):
+# 93,760 bytes, 155,640 under this, so no raise. Spec R-E2E-2 names HPKE
+# and XChaCha20-Poly1305, neither of which ring (linked for TLS) has, so
+# the crates are RustCrypto's and dalek's: hpke with hkdf and hmac,
+# x25519-dalek on curve25519-dalek, chacha20poly1305 with poly1305 and
+# cipher, and the embedded 13 KB BIP-0039 word list; sha2, getrandom and
+# zeroize were linked already. The expectation written here before, that
+# 15 would fit only on ring's primitives, did not hold: it fits on these.
 max = { x86_64-linux = 9_699_328 }
 status = "enforced"
 

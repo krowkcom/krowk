@@ -8,6 +8,11 @@
 //! ephemeral key as DeriveKeyPair(random(32)): an RNG that returns the
 //! vector's `ikmE` makes it the vector's ephemeral key, so `enc` and every
 //! ciphertext must come out byte for byte.
+//!
+//! R-OSS-1: the public crypto design, `engineering/crypto.md` in Canon,
+//! states the HPKE crate's audit status on the strength of this file — no
+//! paid audit, and these vectors passing — so a change here is a change
+//! to what that document may claim.
 
 use hpke::rand_core::{TryCryptoRng, TryRng};
 use hpke::{Deserializable, Kem as _, OpModeR, OpModeS, Serializable};
