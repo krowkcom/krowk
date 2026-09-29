@@ -119,6 +119,9 @@ pub struct SyncStore {
     /// Workspace and slug → the slug of the vintage a pending one replaces
     /// ("" for none), which its finalize checks again.
     pub vintage_replaces: HashMap<(String, String), String>,
+    /// Vintages a later one replaced: kept, bytes and all, as the registry
+    /// keeps them for its retention window, and no longer the week's.
+    pub vintages_replaced: std::collections::HashSet<(String, String)>,
     /// Key and create → the minute its count began, and the count.
     pub bursts: HashMap<(String, &'static str), (Timestamp, usize)>,
     /// 0 is MAX_SESSIONS.
@@ -1236,7 +1239,7 @@ fn serialize_vintage(week: &str, c: &Chunk) -> Vec<(String, Json)> {
 
 /// The week's ready vintage in a workspace: its slug.
 fn current_vintage(s: &SyncStore, workspace: &str, week: &str) -> Option<String> {
-    s.vintages.iter().find(|((w, _), (wk, c))| w == workspace && wk == week && c.ready).map(|((_, slug), _)| slug.clone())
+    s.vintages.iter().find(|(k, (wk, c))| k.0 == workspace && wk == week && c.ready && !s.vintages_replaced.contains(*k)).map(|((_, slug), _)| slug.clone())
 }
 
 fn vintage_conflict(week: &str) -> Resp {
@@ -1327,7 +1330,8 @@ fn declared_vintage(week: &str, c: &Chunk, site: &str) -> Json {
 }
 
 /// A vintage's bytes landed: checked against the declare, then it is the
-/// week's, and the one it replaced is erased with its bytes. Idempotent.
+/// week's, and the one it replaced is kept but no longer listed, as the
+/// registry keeps it for its retention window. Idempotent.
 pub fn finalize_vintage(app: &App, req: &mut Req, slug: &str, signer: &str) -> Resp {
     let run = || -> Result<Resp, Resp> {
         let workspace = gate(req)?;
@@ -1349,10 +1353,8 @@ pub fn finalize_vintage(app: &App, req: &mut Req, slug: &str, signer: &str) -> R
         if current_vintage(&s.sync, &workspace, &week).unwrap_or_default() != replaces {
             return Err(vintage_conflict(&week));
         }
-        if let Some(old) = current_vintage(&s.sync, &workspace, &week)
-            && let Some((_, gone)) = s.sync.vintages.remove(&(workspace.clone(), old))
-        {
-            s.objects.remove(&gone.storage_key);
+        if let Some(old) = current_vintage(&s.sync, &workspace, &week) {
+            s.sync.vintages_replaced.insert((workspace.clone(), old));
         }
         let (_, c) = s.sync.vintages.get_mut(&(workspace, slug.to_owned())).ok_or_else(not_found)?;
         c.ready = true;
@@ -1371,7 +1373,8 @@ pub fn list_vintages(app: &App, req: &Req, site: &str) -> Resp {
     };
     let week = req.query_get("week");
     let s = app.lock();
-    let mut ready: Vec<(&String, &Chunk)> = s.sync.vintages.iter().filter(|((w, _), (wk, c))| *w == workspace && c.ready && (week.is_empty() || *wk == week)).map(|(_, (wk, c))| (wk, c)).collect();
+    let mut ready: Vec<(&String, &Chunk)> =
+        s.sync.vintages.iter().filter(|(k, (wk, c))| k.0 == workspace && c.ready && !s.sync.vintages_replaced.contains(*k) && (week.is_empty() || *wk == week)).map(|(_, (wk, c))| (wk, c)).collect();
     ready.sort_by(|a, b| a.0.cmp(b.0));
     let page = ready
         .into_iter()
