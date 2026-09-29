@@ -186,6 +186,22 @@ fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
     let header: [u8; e2e::HEADER] = [&[1u8, 1, 0, e2e::ENC_XCHACHA20_POLY1305][..], &id, &[0; 8]].concat().try_into().unwrap();
     assert_eq!(opener.open(&header, &sealer.seal(&header, b"turn 1").unwrap()).unwrap(), b"turn 1");
 
+    // The session's log: the laptop, holding the lease, writes two sealed
+    // chunks through presign → storage → finalize; the desktop reads them
+    // back in order and opens them (R-E2E-1, R-VINT-5's stored bytes).
+    let mut sealer = e2e::ChunkSealer::new(&session_key, id, 0, e2e::NO_PREVIOUS_CHUNK, lease.fence);
+    for (text, last) in [(TITLE, false), ("the last turn", true)] {
+        let sealed = sealer.seal(text.as_bytes(), last).unwrap();
+        let put = client.put_chunk(&uuid(&id), sealer.next() - 1, &sealed, &lease.token).unwrap();
+        assert_eq!(put.state, "ready");
+    }
+    let page = client.list_chunks(&uuid(&id), None, 50).unwrap();
+    assert_eq!(page.chunks.iter().map(|c| c.index).collect::<Vec<_>>(), [0, 1]);
+    let mut reader = e2e::ChunkReader::new(&key, id);
+    let log: Vec<Vec<u8>> = page.chunks.iter().map(|c| reader.open(&client.read_chunk(c).unwrap()).unwrap()).collect();
+    assert_eq!(log, [TITLE.as_bytes().to_vec(), b"the last turn".to_vec()]);
+    assert!(reader.finished(), "the log ends with its final chunk");
+
     let listed = json(&run(&desktop, api, token, &["devices", "list", "--json"], ""));
     assert_eq!(listed["data"]["devices"].as_array().unwrap().len(), 2, "{listed}");
     assert_eq!(listed["data"]["devices"].as_array().unwrap().iter().filter(|d| d["this_device"] == true).count(), 1);
@@ -319,4 +335,126 @@ fn r_sync_1_setup_with_the_registry_unreachable_stays_local_and_registers_later(
     let listed = json(&run(&laptop, &api, TOKEN, &["devices", "list", "--json"], ""));
     assert_eq!(listed["data"]["devices"][0]["name"], "work laptop");
     let _ = std::fs::remove_dir_all(&r);
+}
+
+/// R-SYNC-2: a chunk is the lease holder's to write. A stale token and a
+/// missing one are both refused with a fix, and nothing is stored.
+#[test]
+fn r_sync_2_a_chunk_with_a_stale_or_missing_lease_token_is_refused() {
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let client = krowk_api::Client::new(&format!("{}/v1", registry.url()), TOKEN);
+    let account = AccountKey::generate();
+    let (a, b) = (e2e::DeviceKey::generate(), e2e::DeviceKey::generate());
+    for d in [&a, &b] {
+        client.register_device(&e2e::hex(&d.public().0), "machine", &account.id().to_string()).unwrap();
+    }
+    let id: [u8; 16] = e2e::random();
+    let key = SessionKey::generate();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&key, &id, &account)), None, None).unwrap();
+    let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60).unwrap();
+    let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60).unwrap();
+
+    let sealed = e2e::ChunkSealer::new(&key, id, 0, e2e::NO_PREVIOUS_CHUNK, held.fence).seal(b"a stale holder's turn", false).unwrap();
+    for token in [held.token.as_str(), ""] {
+        let e = client.put_chunk(&uuid(&id), 0, &sealed, token).unwrap_err();
+        assert_eq!(e.code(), "lease_stale", "{:?}", e.body);
+        assert!(e.fix().contains("acquire it again"), "{:?}", e.body);
+    }
+    assert!(client.list_chunks(&uuid(&id), None, 50).unwrap().chunks.is_empty());
+
+    client.put_chunk(&uuid(&id), 0, &sealed, &moved.token).unwrap();
+    let again = client.put_chunk(&uuid(&id), 0, &sealed, &moved.token).unwrap_err();
+    assert_eq!(again.code(), "chunk_exists");
+    // A chunk is no artifact: the listing a push reads does not have it.
+    let artifacts = client.list_artifacts("", 50).unwrap();
+    assert!(artifacts.artifacts.is_empty(), "{artifacts:?}");
+}
+
+/// The stand-in holds the registry's limits: the session cap, the burst
+/// ceiling on creates, and revocation by the owner's reset.
+#[test]
+fn the_stand_in_models_the_session_cap_the_burst_ceiling_and_revocation() {
+    let config = krowk_devregistry::Config { max_sessions: 1, ..Default::default() };
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), config).unwrap();
+    let mut client = krowk_api::Client::new(&format!("{}/v1", registry.url()), TOKEN);
+    // A 429 is retried after its Retry-After; the minute is not waited out here.
+    client.sleep = |_| {};
+    let account = AccountKey::generate();
+    let device = e2e::DeviceKey::generate();
+    let public = e2e::hex(&device.public().0);
+    client.register_device(&public, "laptop", &account.id().to_string()).unwrap();
+    let wrapped = |id: &[u8; 16]| e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), id, &account));
+
+    let first: [u8; 16] = e2e::random();
+    client.put_sync_session(&uuid(&first), &wrapped(&first), None, None).unwrap();
+    let second: [u8; 16] = e2e::random();
+    assert_eq!(client.put_sync_session(&uuid(&second), &wrapped(&second), None, None).unwrap_err().code(), "session_limit_reached");
+
+    // The owner's reset revokes the device: it cannot act until it registers again.
+    let mut conn = TcpStream::connect(registry.addr()).unwrap();
+    write!(conn, "POST /_reset/sync HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    let mut answer = String::new();
+    conn.read_to_string(&mut answer).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    assert_eq!(client.acquire_lease(&uuid(&first), &device.id().to_string(), 60).unwrap_err().code(), "device_revoked");
+    // The reset cleared the pin too, so registering again may pin another key.
+    let fresh = AccountKey::generate().id().to_string();
+    client.register_device(&public, "laptop", &fresh).unwrap();
+    client.acquire_lease(&uuid(&first), &device.id().to_string(), 60).unwrap();
+
+    // 120 creates a minute, then 429 (two spent above).
+    let refused = (0..125).find_map(|_| client.register_device(&public, "laptop", &fresh).err()).expect("the ceiling was met");
+    assert_eq!(refused.code(), "too_many_requests");
+}
+
+/// R-SYNC-2, as the stand-in holds it: a pending chunk a displaced holder
+/// declared is not the next holder's to finalize, does not block its index,
+/// and a chunk is at most 64 MiB.
+#[test]
+fn r_sync_2_a_displaced_holders_pending_chunk_is_replaced_not_finalized() {
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let client = krowk_api::Client::new(&format!("{}/v1", registry.url()), TOKEN);
+    let account = AccountKey::generate();
+    let (a, b) = (e2e::DeviceKey::generate(), e2e::DeviceKey::generate());
+    for d in [&a, &b] {
+        client.register_device(&e2e::hex(&d.public().0), "machine", &account.id().to_string()).unwrap();
+    }
+    let id: [u8; 16] = e2e::random();
+    let key = SessionKey::generate();
+    let session = uuid(&id);
+    client.put_sync_session(&session, &e2e::hex(&e2e::wrap_session_key(&key, &id, &account)), None, None).unwrap();
+
+    // A declares chunk 0 by hand and is displaced before finalizing it.
+    let held = client.acquire_lease(&session, &a.id().to_string(), 60).unwrap();
+    let stale = e2e::ChunkSealer::new(&key, id, 0, e2e::NO_PREVIOUS_CHUNK, held.fence).seal(b"A's", false).unwrap();
+    let declare = |token: &str, blob: &[u8], size: usize| {
+        let body = serde_json::json!({ "chunk": { "index": 0, "byte_size": size, "checksum": e2e::hex(&sha(blob)), "lease_token": token } });
+        raw(registry.addr(), "POST", &format!("/v1/sessions/{session}/chunks"), &body.to_string())
+    };
+    assert!(declare(&held.token, &stale, stale.len()).starts_with("HTTP/1.1 201"));
+    let moved = client.renew_lease(&session, &b.id().to_string(), &held.token, 60).unwrap();
+    let fin = raw(registry.addr(), "PUT", &format!("/v1/sessions/{session}/chunks/0/finalization"), &serde_json::json!({ "chunk": { "lease_token": moved.token } }).to_string());
+    assert!(fin.starts_with("HTTP/1.1 409") && fin.contains("lease_stale"), "{fin}");
+
+    // B's own chunk 0 replaces it and lands.
+    let mine = e2e::ChunkSealer::new(&key, id, 0, e2e::NO_PREVIOUS_CHUNK, moved.fence).seal(b"B's", false).unwrap();
+    client.put_chunk(&session, 0, &mine, &moved.token).unwrap();
+    let listed = client.list_chunks(&session, None, 50).unwrap();
+    assert_eq!(e2e::ChunkReader::new(&key, id).open(&client.read_chunk(&listed.chunks[0]).unwrap()).unwrap(), b"B's");
+
+    let too_big = declare(&moved.token, b"x", (64 << 20) + 1);
+    assert!(too_big.starts_with("HTTP/1.1 422") && too_big.contains("byte_size"), "{too_big}");
+}
+
+fn sha(b: &[u8]) -> [u8; 32] {
+    e2e::chunk_digest(b)
+}
+
+/// One request to the stand-in, keyed, and its whole answer.
+fn raw(addr: std::net::SocketAddr, method: &str, path: &str, body: &str) -> String {
+    let mut conn = TcpStream::connect(addr).unwrap();
+    write!(conn, "{method} {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+    let mut answer = String::new();
+    conn.read_to_string(&mut answer).unwrap();
+    answer
 }

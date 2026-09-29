@@ -143,6 +143,11 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     client.renew_lease(id, &device, &lease.token, 60).unwrap();
     client.list_sync_sessions("", 50).unwrap();
     client.show_sync_session(id).unwrap();
+    let sealed = b"sealed bytes stand-in";
+    let chunk = client.put_chunk(id, 0, sealed, &lease.token).unwrap();
+    let listed = client.list_chunks(id, None, 50).unwrap();
+    assert_eq!(client.read_chunk(&listed.chunks[0]).unwrap(), sealed);
+    assert_eq!(chunk.index, 0);
     client.release_lease(id, &lease.token).unwrap();
 
     assert!(failures.lock().unwrap().is_empty(), "{:?}", failures.lock().unwrap());
@@ -166,6 +171,12 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         "PUT /v1/sessions/{id}/lease",
         "GET /v1/sessions",
         "GET /v1/sessions/{id}",
+        // A chunk of the session's log: declared under an Idempotency-Key,
+        // its bytes put to storage (not pinned, as for an artifact), then
+        // finalized; read back through the listing and storage.
+        "POST /v1/sessions/{id}/chunks +key",
+        "PUT /v1/sessions/{id}/chunks/0/finalization",
+        "GET /v1/sessions/{id}/chunks",
         "DELETE /v1/sessions/{id}/lease",
     ];
     let got = calls.lock().unwrap().clone();
