@@ -163,9 +163,13 @@ unit = "bytes"
 # (10.37 MiB), 2,223,528 over 8.25 MiB. About 0.95 MB is the grammars'
 # dump; the rest is syntect, fancy-regex and the dump's decoding. Loaded
 # lazily (2 ms on the first code shown), so startup and idle RSS do not
-# move. Raised 8.25 -> 10.50 MiB for it, leaving 135,768 bytes. A curated
-# grammar set could win back some of it later.
-max = { x86_64-linux = 11_010_048 }
+# move. Raised 8.25 -> 10.50 MiB for it, leaving 135,768 bytes.
+# Raised again 10.50 -> 11.00 MiB so the next features do not each raise
+# it: 660,056 bytes of room over 10,874,280. Still light for what it is:
+# the other agent CLIs ship a 242 MB (Claude Code) or 287 MB (Codex)
+# binary, and Cursor Agent a 547 MB install. A curated grammar set could
+# win back some of the highlighter's share later.
+max = { x86_64-linux = 11_534_336 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---

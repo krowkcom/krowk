@@ -1156,6 +1156,7 @@ impl<'h> Ui<'h> {
         }
         self.last_prompt = text.clone();
         app.offer = None;
+        app.echo(&text);
         let (tx, rx) = mpsc::channel(1024);
         let cmd = Command::Prompt { session_id: app.session_id.clone(), text, model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
         self.turn = Some(Box::pin(self.host.execute(cmd, tx)));
