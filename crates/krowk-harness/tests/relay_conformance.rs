@@ -10,7 +10,7 @@
 //! KROWK_RELAY_URL=ws://127.0.0.1:8787 cargo test -p krowk-harness --test relay_conformance
 //! ```
 //!
-//! once that relay trusts `tests/fixtures/relay/keyring.json` — the
+//! once that relay trusts `tests/fixtures/relay/roster.json` — the
 //! devices' signing keys, their workspaces and the sessions' leases. The
 //! fixture's seeds are test keys, published on purpose; nothing real is
 //! ever signed with them. Each test has its own devices and session, so the
@@ -32,8 +32,8 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-const FIXTURE: &str = include_str!("fixtures/relay/keyring.json");
-const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/relay/keyring.json");
+const FIXTURE: &str = include_str!("fixtures/relay/roster.json");
+const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/relay/roster.json");
 
 /// Every test, its devices and its session: `<test>-host` holds the lease
 /// of session `<test>`, `<test>-viewer` and `<test>-viewer2` watch it, all
@@ -73,7 +73,7 @@ fn device(name: &str, workspace: &str, revoked: bool) -> Value {
     json!({"name": name, "id": device_id(name).to_string(), "seed": e2e::hex(&seed(name)), "signingKey": e2e::hex(&key.public().0), "workspace": workspace, "revoked": revoked})
 }
 
-/// The fixture, generated: what `keyring.json` must hold.
+/// The fixture, generated: what `roster.json` must hold.
 fn fixture() -> Value {
     let mut devices = Vec::new();
     let mut sessions = Vec::new();
@@ -87,7 +87,7 @@ fn fixture() -> Value {
     devices.push(device("revoked", "ws_conformance_a", true));
     let stranger = device("stranger", "ws_conformance_a", false);
     json!({
-        "about": "The relay conformance suite's test devices (crates/krowk-harness/tests/relay_conformance.rs). The seeds are published test keys: never trust this keyring outside a test.",
+        "about": "The relay conformance suite's test devices (crates/krowk-harness/tests/relay_conformance.rs). The seeds are published test keys: never trust this roster outside a test.",
         "devices": devices,
         "sessions": sessions,
         "unregistered": [stranger],
@@ -97,7 +97,7 @@ fn fixture() -> Value {
 /// The checked-in fixture is the generated one; `KROWK_FIXTURE_UPDATE=1`
 /// writes it. Another relay loads the file, so it must not drift.
 #[test]
-fn the_checked_in_keyring_is_the_generated_one() {
+fn the_checked_in_roster_is_the_generated_one() {
     let want = serde_json::to_string_pretty(&fixture()).unwrap() + "\n";
     if std::env::var_os("KROWK_FIXTURE_UPDATE").is_some() {
         std::fs::create_dir_all(std::path::Path::new(FIXTURE_PATH).parent().unwrap()).unwrap();
@@ -109,7 +109,7 @@ fn the_checked_in_keyring_is_the_generated_one() {
 
 /// The relay under test: `KROWK_RELAY_URL`, or the reference relay started
 /// in this process on a loopback port with the fixture — the same
-/// `relay::run` that `krowk relay serve --keyring` runs.
+/// `relay::run` that `krowk relay serve --roster` runs.
 fn relay_url() -> &'static str {
     static URL: OnceLock<String> = OnceLock::new();
     URL.get_or_init(|| {
@@ -118,8 +118,8 @@ fn relay_url() -> &'static str {
         }
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
-        let keyring = krowk_harness::relay::Keyring::parse(FIXTURE).unwrap();
-        std::thread::spawn(move || krowk_harness::relay::run(listener, krowk_harness::relay::Config { keyring, origin: None, limits: Default::default() }));
+        let roster = krowk_harness::relay::Roster::parse(FIXTURE).unwrap();
+        std::thread::spawn(move || krowk_harness::relay::run(listener, krowk_harness::relay::Config { roster, origin: None, limits: Default::default() }));
         url
     })
 }

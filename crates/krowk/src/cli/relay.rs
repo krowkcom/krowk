@@ -3,22 +3,22 @@
 //! stand-in the tests and ticket 18's conformance runs use, and a way to
 //! run a relay of one's own. Loopback unless `--addr` names another
 //! address, and then it says so, as the stand-in registry does: anyone who
-//! reaches it can open connections, though only the keyring's devices can
+//! reaches it can open connections, though only the roster's devices can
 //! join, and it only ever holds ciphertext.
 
 use super::Ctx;
 use krowk_api::{fail, Error};
-use krowk_harness::relay::{self, Config, Keyring, Limits};
+use krowk_harness::relay::{self, Config, Roster, Limits};
 use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 
 pub const DEFAULT_ADDR: &str = "127.0.0.1:7790";
 
 pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
-    if ctx.f.keyring.is_empty() {
-        return Err(fail("bad_flags", "krowk relay serve needs --keyring FILE: the devices it trusts and the sessions' leases, as engineering/relay.md lays out"));
+    if ctx.f.roster.is_empty() {
+        return Err(fail("bad_flags", "krowk relay serve needs --roster FILE: the devices it trusts and the sessions' leases, as engineering/relay.md lays out"));
     }
-    let text = std::fs::read_to_string(&ctx.f.keyring).map_err(|e| fail("bad_config", format!("{} cannot be read: {e}", ctx.f.keyring)))?;
-    let keyring = Keyring::parse(&text).map_err(|e| fail("bad_config", format!("{}: {e}", ctx.f.keyring)))?;
+    let text = std::fs::read_to_string(&ctx.f.roster).map_err(|e| fail("bad_config", format!("{} cannot be read: {e}", ctx.f.roster)))?;
+    let roster = Roster::parse(&text).map_err(|e| fail("bad_config", format!("{}: {e}", ctx.f.roster)))?;
     let asked = if ctx.f.addr.is_empty() { DEFAULT_ADDR.to_string() } else { ctx.f.addr.clone() };
     let addr: SocketAddr = asked.to_socket_addrs().ok().and_then(|mut a| a.next()).ok_or_else(|| fail("bad_flags", format!("--addr {asked:?} needs a host and a numeric port, like {DEFAULT_ADDR}")))?;
     let origin = Some(ctx.f.origin.clone()).filter(|o| !o.is_empty());
@@ -32,7 +32,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     // Bound before it is announced, so a script keying off the banner
     // finds it listening.
     let _ = ctx.io.stdout.write_all(banner(&bound, origin.as_deref()).as_bytes()).and_then(|_| ctx.io.stdout.flush());
-    relay::run(listener, Config { keyring, origin, limits: Limits::default() }).map_err(|e| fail("relay_unavailable", e))
+    relay::run(listener, Config { roster, origin, limits: Limits::default() }).map_err(|e| fail("relay_unavailable", e))
 }
 
 /// Where the relay is, where a session's channel is, and — bound wider
@@ -42,7 +42,7 @@ pub fn banner(bound: &SocketAddr, origin: Option<&str>) -> String {
     let mut lines = vec![format!("krowk relay listening on {base}"), format!("  a session's channel: {base}{}<session id>", relay::PATH)];
     if !bound.ip().to_canonical().is_loopback() {
         let what = if bound.ip().is_unspecified() { "every interface".to_string() } else { bound.ip().to_string() };
-        lines.push(format!("  ! reachable from the network on {what} — anyone can connect; only the keyring's devices can join, and it carries ciphertext only"));
+        lines.push(format!("  ! reachable from the network on {what} — anyone can connect; only the roster's devices can join, and it carries ciphertext only"));
     }
     lines.join("\n") + "\n"
 }

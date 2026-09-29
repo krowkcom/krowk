@@ -17,7 +17,7 @@
 //!   nonce, the device signs it with its Ed25519 signing key
 //!   (`krowk_client::e2e::SigningKey::sign_relay_join`), binding the role,
 //!   the session, its device id and the relay it dialed. Who is trusted
-//!   comes from a keyring (`Keyring`): the registry's device records and
+//!   comes from a roster (`Roster`): the registry's device records and
 //!   leases in ticket 18, a file here.
 //! - **Fan-out**: the host's batches go to every viewer; a viewer's frames
 //!   go to the host alone, routed so the host knows whose they are.
@@ -33,11 +33,11 @@
 //! on one thread, each link's writes a task of their own, so one slow
 //! viewer holds nobody else back.
 
-pub mod keyring;
+pub mod roster;
 
 use crate::daemon::ws::{ENC_XCHACHA20_POLY1305, Envelope, FLAG_ZSTD, HEADER, KIND_ACK, KIND_BATCH, KIND_FRAME, KIND_RELAY, KIND_ROUTED};
 use futures_util::{SinkExt, StreamExt};
-pub use keyring::Keyring;
+pub use roster::Roster;
 use krowk_client::e2e::{self, DeviceId, RELAY_ROLE_HOST, RELAY_ROLE_VIEWER};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
@@ -118,7 +118,7 @@ pub const WINDOW: u64 = crate::daemon::ws::WINDOW;
 /// How a relay is run.
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub keyring: Keyring,
+    pub roster: Roster,
     /// The origin devices sign (`ws://127.0.0.1:7790`, `wss://relay.krowk.com`):
     /// what they dialed. Without it, `ws://` and the request's `Host`.
     pub origin: Option<String>,
@@ -406,7 +406,7 @@ fn read_join(b: &[u8]) -> Result<Join, Refusal> {
     Ok(Join { role, device, signature, fence, stream, after })
 }
 
-/// Who may join: a device the keyring knows, not revoked, whose signature
+/// Who may join: a device the roster knows, not revoked, whose signature
 /// verifies, of the session's workspace, and — to host — the holder of
 /// its lease, naming the lease's current fence. The signature proves the
 /// device; the fence says it knows the lease is still its own, so a host
@@ -415,7 +415,7 @@ fn read_join(b: &[u8]) -> Result<Join, Refusal> {
 /// relay never needs it, so never holds it. Checked in that order, so a
 /// device the relay does not trust learns nothing about the session.
 fn admit(relay: &Relay, session: [u8; 16], nonce: &[u8; 32], origin: &str, j: Join) -> Result<(DeviceId, u8, Join), Refusal> {
-    let ring = &relay.config.keyring;
+    let ring = &relay.config.roster;
     let Some(device) = ring.device(&j.device) else {
         return Err(refuse("unknown_device", format!("device {} is not one this relay trusts", j.device), "register the device (krowk sync init, or krowk sync join and approve it), then connect again"));
     };

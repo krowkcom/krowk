@@ -110,7 +110,7 @@ pub struct Flags {
     #[cfg(feature = "harness")]
     pub addr: String,
     #[cfg(feature = "harness")]
-    pub keyring: String,
+    pub roster: String,
     #[cfg(feature = "harness")]
     pub origin: String,
     /// Which flags were typed, by canonical name — a different question from
@@ -281,7 +281,7 @@ impl Flags {
             #[cfg(feature = "harness")]
             "addr" => text(&mut self.addr),
             #[cfg(feature = "harness")]
-            "keyring" => text(&mut self.keyring),
+            "roster" => text(&mut self.roster),
             #[cfg(feature = "harness")]
             "origin" => text(&mut self.origin),
             _ => {

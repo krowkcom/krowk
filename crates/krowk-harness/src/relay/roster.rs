@@ -14,7 +14,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
-pub struct Keyring {
+pub struct Roster {
     devices: HashMap<[u8; 16], Device>,
     sessions: HashMap<[u8; 16], Session>,
 }
@@ -62,12 +62,12 @@ struct SessionEntry {
     fence: u64,
 }
 
-impl Keyring {
+impl Roster {
     /// Reads the JSON above; any entry krowk cannot read is refused by
     /// name, rather than a device silently left out.
-    pub fn parse(text: &str) -> Result<Keyring, String> {
-        let f: File = serde_json::from_str(text).map_err(|e| format!("the keyring is not the JSON relay.md lays out: {e}"))?;
-        let mut ring = Keyring::default();
+    pub fn parse(text: &str) -> Result<Roster, String> {
+        let f: File = serde_json::from_str(text).map_err(|e| format!("the roster is not the JSON relay.md lays out: {e}"))?;
+        let mut ring = Roster::default();
         for d in f.devices {
             let id = DeviceId::parse(&d.id).ok_or_else(|| format!("device {:?} is not a device id (32 hex characters)", d.id))?;
             let key: [u8; 32] = e2e::unhex(&d.signing_key).and_then(|k| k.try_into().ok()).ok_or_else(|| format!("device {}'s signingKey is not 64 hex characters", d.id))?;

@@ -1,5 +1,5 @@
 {
-  "about": "The relay conformance suite's test devices (crates/krowk-harness/tests/relay_conformance.rs). The seeds are published test keys: never trust this keyring outside a test.",
+  "about": "The relay conformance suite's test devices (crates/krowk-harness/tests/relay_conformance.rs). The seeds are published test keys: never trust this roster outside a test.",
   "devices": [
     {
       "name": "auth-host",
