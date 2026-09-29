@@ -234,7 +234,7 @@ pub(super) fn grep(i: &GrepInput, scope: &Scope) -> (String, bool) {
     // when it is binary; a directory is walked.
     let (root, files, mut truncated) = match std::fs::metadata(&target) {
         Ok(m) if m.is_file() => {
-            let (mut f, _) = match open_regular(&target) {
+            let (mut f, _) = match open_regular(&target, scope.sandbox.is_some()) {
                 Ok(f) => f,
                 Err(e) => return (e.replace("which read does not open", "which grep does not search"), true),
             };
@@ -267,7 +267,7 @@ pub(super) fn grep(i: &GrepInput, scope: &Scope) -> (String, bool) {
         if scope.hidden.hides(&path) || sandboxed(rel) {
             continue;
         }
-        let Ok((f, size)) = open_regular(&path) else { continue };
+        let Ok((f, size)) = open_regular(&path, scope.sandbox.is_some()) else { continue };
         if size > GREP_MAX_FILE {
             continue;
         }

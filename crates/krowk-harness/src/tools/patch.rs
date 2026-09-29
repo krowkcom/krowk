@@ -337,10 +337,11 @@ pub(super) fn apply(patch: &str, scope: &Scope) -> (String, bool) {
     // is deleted. A file the patch touches twice sees its first change.
     let mut files: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
     let mut summary = Vec::new();
+    let exact = scope.sandbox.is_some();
     let current = |files: &BTreeMap<PathBuf, Option<String>>, p: &Path| -> Result<Option<String>, String> {
         match files.get(p) {
             Some(state) => Ok(state.clone()),
-            None if p.exists() => read_text(p, "apply_patch").map(Some),
+            None if p.exists() => read_text(p, "apply_patch", exact).map(Some),
             None => Ok(None),
         }
     };
@@ -434,7 +435,7 @@ pub(super) fn apply(patch: &str, scope: &Scope) -> (String, bool) {
             unstage(&staged);
             return (format!("{} could not be created, so nothing was changed: {e}", parent.display()), true);
         }
-        match stage(&p, text.as_bytes()) {
+        match stage(&p, text.as_bytes(), exact) {
             Ok(tmp) => staged.push((tmp, p)),
             Err(e) => {
                 unstage(&staged);
@@ -443,13 +444,13 @@ pub(super) fn apply(patch: &str, scope: &Scope) -> (String, bool) {
         }
     }
     for (n, (tmp, p)) in staged.iter().enumerate() {
-        if let Err(e) = commit(tmp, p) {
+        if let Err(e) = commit(tmp, p, exact) {
             unstage(&staged[n + 1..]);
             return (format!("{} could not be written: {e} — the patch is partly applied; read the files it names before patching again", p.display()), true);
         }
     }
     for (p, _) in deletes {
-        if let Err(e) = std::fs::remove_file(&p)
+        if let Err(e) = super::remove(&p, exact)
             && e.kind() != std::io::ErrorKind::NotFound
         {
             return (format!("{} could not be deleted: {e} — the rest of the patch is applied", p.display()), true);

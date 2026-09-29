@@ -73,7 +73,7 @@ pub(super) fn write(i: &WriteInput, scope: &Scope) -> (String, bool) {
     {
         return (format!("{} could not be created: {e}", parent.display()), true);
     }
-    if let Err(e) = write_atomic(&path, i.content.as_bytes()) {
+    if let Err(e) = write_atomic(&path, i.content.as_bytes(), scope.sandbox.is_some()) {
         return (format!("{} could not be written: {e}", path.display()), true);
     }
     let lines = i.content.lines().count();
@@ -93,9 +93,9 @@ pub(super) struct Replace<'a> {
 
 /// Reads a file an edit may change: regular, not too big, UTF-8, and not
 /// binary — an edit of bytes it cannot show would be blind.
-pub(super) fn read_text(path: &Path, tool: &str) -> Result<String, String> {
+pub(super) fn read_text(path: &Path, tool: &str, exact: bool) -> Result<String, String> {
     use std::io::Read;
-    let (f, size) = open_regular(path).map_err(|e| e.replace("which read does not open", &format!("which {tool} does not edit")))?;
+    let (f, size) = open_regular(path, exact).map_err(|e| e.replace("which read does not open", &format!("which {tool} does not edit")))?;
     if size > EDIT_MAX_BYTES {
         return Err(format!("{} is {} MB, more than {tool} edits ({} MB) — change it with bash instead", path.display(), size >> 20, EDIT_MAX_BYTES >> 20));
     }
@@ -118,7 +118,7 @@ pub(super) fn replace(r: &Replace<'_>, scope: &Scope) -> (String, bool) {
     if r.old == r.new {
         return (format!("{} and its replacement are the same, so there is nothing to change", r.old_name), true);
     }
-    let text = match read_text(&path, r.tool) {
+    let text = match read_text(&path, r.tool, scope.sandbox.is_some()) {
         Ok(t) => t,
         Err(e) => return (e, true),
     };
@@ -154,7 +154,7 @@ pub(super) fn replace(r: &Replace<'_>, scope: &Scope) -> (String, bool) {
     }
     let first_line = line_of(at[0]);
     let updated = if r.replace_all { text.replace(old.as_str(), &new) } else { text.replacen(old.as_str(), &new, 1) };
-    if let Err(e) = write_atomic(&path, updated.as_bytes()) {
+    if let Err(e) = write_atomic(&path, updated.as_bytes(), scope.sandbox.is_some()) {
         return (format!("{} could not be written: {e}", path.display()), true);
     }
     let what = if at.len() == 1 { "1 occurrence".to_string() } else { format!("{} occurrences", at.len()) };

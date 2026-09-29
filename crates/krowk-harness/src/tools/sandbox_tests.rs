@@ -3,7 +3,6 @@
 //! where it cannot — CI's Ubuntu runners forbid the user namespaces it
 //! needs.
 
-use super::tests::dir;
 use super::*;
 use crate::sandbox::{By, Plan, Profile, Sandbox};
 use serde_json::json;
@@ -32,8 +31,18 @@ fn setup(name: &str, profile: Profile) -> (PathBuf, PathBuf, Scope) {
     setup_by(name, profile, By::Bubblewrap)
 }
 
+/// A scratch directory outside `/tmp`: the sandbox mounts a private tmpfs
+/// there, so a fake home under it would be invisible for that reason alone
+/// and a "hidden" check on it would prove nothing.
+fn scratch(name: &str) -> PathBuf {
+    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp").join(format!("krowk-sbx-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d.canonicalize().unwrap()
+}
+
 fn setup_by(name: &str, profile: Profile, by: By) -> (PathBuf, PathBuf, Scope) {
-    let base = dir(name).canonicalize().unwrap();
+    let base = scratch(name);
     let (ws, home) = (base.join("ws"), base.join("home"));
     std::fs::create_dir_all(ws.join(".git/hooks")).unwrap();
     std::fs::create_dir_all(home.join(".ssh")).unwrap();
@@ -97,6 +106,11 @@ async fn r_perm_3_git_hooks_and_settings_are_read_only_inside_the_sandbox() {
     // creates is gone when it returns, and the call says so.
     let (out, err) = bash(&ws, &scope, "mkdir -p .krowk .codex && echo '{\"hooks\":{}}' > .krowk/config.json && ln -s /tmp .codex/x").await;
     assert!(err && out.contains("the sandbox removed") && !ws.join(".krowk").exists() && !ws.join(".codex").exists(), "{out}");
+    // Nor a nested repository the command makes: its `.git` is removed
+    // after the call, which says so.
+    std::fs::create_dir_all(ws.join("nested")).unwrap();
+    let (out, err) = bash(&ws, &scope, "mkdir -p nested/.git/hooks && echo 'echo pwned' > nested/.git/hooks/pre-commit").await;
+    assert!(err && out.contains("the sandbox removed") && !ws.join("nested/.git").exists(), "{out}");
     // Not by a symlink in the workspace either.
     let (out, err) = bash(&ws, &scope, "ln -s .git/hooks h && echo x > h/post-checkout").await;
     assert!(err && !ws.join(".git/hooks/post-checkout").exists(), "{out}");
@@ -141,6 +155,10 @@ async fn r_perm_3_strict_and_read_only_have_no_network_and_read_only_writes_noth
         let (base, ws, scope) = setup(&format!("sbx-net-{}", profile.name()), profile);
         let (out, err) = bash(&ws, &scope, &connect).await;
         assert!(err && !out.contains("connected"), "{profile:?}: {out}");
+        // No name resolves — no resolver socket is mounted — and a resolver
+        // named by its address is unreachable too.
+        let (out, _) = bash(&ws, &scope, "timeout 5 getent hosts example.com && echo resolved; echo q > /dev/udp/1.1.1.1/53 && echo sent").await;
+        assert!(!out.contains("resolved") && !out.contains("sent") && out.contains("unreachable"), "{profile:?}: {out}");
         let _ = std::fs::remove_dir_all(base);
     }
     let (base, ws, ro) = setup("sbx-ro", Profile::ReadOnly);

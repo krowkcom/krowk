@@ -17,27 +17,33 @@ the versions are the `v*` tags a release is cut from. Entries land under
   commands inside the `workspace` sandbox below, and inside a container in
   `acceptEdits` with the file tools held to the same fences. Pass
   `--permission-mode default` to keep the old behaviour. `--sandbox
-  workspace|read-only|strict|off` puts the `bash` tool inside bubblewrap:
-  `workspace` lets it write the working directory and its added directories
-  and nothing else, hides `~/.ssh`, `~/.gnupg`, `~/.aws` and similar
-  credential directories and krowk's home, and keeps the network;
-  `read-only` writes nothing and has no network; `strict` also hides the
-  whole home outside the workspace. In every profile `.git`, `.claude`,
-  `.codex`, `.krowk` and krowk's and Claude Code's settings directories stay
-  read-only, and the file tools hold the same lines whatever the permission
-  mode says. A sandboxed command gets only `PATH`, `TERM`, the locale,
-  `USER`, a private `HOME` and `TMPDIR` — no provider key, token or agent
-  socket — no inherited file descriptor, and a session of its own. The
-  Rust toolchain still runs: `RUSTUP_HOME` and `CARGO_HOME` (`~/.rustup`,
-  `~/.cargo`) are bound read-only and named to it, with cargo's
-  `credentials.toml` hidden, so `cargo build` of what is already fetched
-  works and fetching a new dependency does not.
-  `PreToolUse` hooks are the person's own and run outside it. A run with no `--permission-mode` and no `defaultMode` takes
-  the workspace sandbox and `acceptEdits` where bubblewrap works (or inside
-  a container), and keeps asking — so refusing edits — where it does not. A
-  sandbox that cannot be enforced refuses the run with a fix instead of
-  running unsandboxed: bubblewrap missing or blocked, a Claude Code or Codex
-  backend, `--daemon`, macOS (Seatbelt is not built yet) and Windows.
+  workspace|read-only|strict|off` puts the `bash` tool inside bubblewrap.
+  The sandbox allows rather than lists what it hides: your home is replaced
+  by an empty one, and only the workspace, the Rust toolchain's homes and —
+  under `workspace` and `read-only` — the home's entries whose names do not
+  start with a dot come back, so dotfiles and dot directories
+  (`.git-credentials`, `.netrc`, `.npmrc`, `~/.ssh`, agents' logins) are out
+  of reach, and programs installed under a dot directory of the home (mise's
+  shims, `~/.local/bin`) are not on the sandbox's `PATH`. `workspace` writes
+  the working directory and its added directories and keeps the network;
+  `read-only` writes nothing and has no network, not even DNS; `strict` has
+  no network and hides the whole home outside the workspace. Every `.git` in
+  the workspace, nested repositories and gitdir files included, and every
+  hooks directory a repository's `core.hooksPath` names there, stays
+  read-only, as do `.claude`, `.codex` and `.krowk`; a `.git` a command
+  creates is removed after the call. The file tools hold the same lines
+  under every permission mode, and open exactly the path they checked, so a
+  symlink swapped in meanwhile fails the call. A sandboxed command gets
+  only `PATH`, `TERM`, the locale, `USER`, a private `HOME` and `TMPDIR` —
+  no provider key, token or agent socket — no inherited file descriptor, and
+  a session of its own. `RUSTUP_HOME` and `CARGO_HOME` are bound read-only
+  with cargo's `credentials.toml` hidden, so `cargo build` of what is
+  already fetched works and fetching a new dependency does not. `PreToolUse`
+  hooks are your own and run outside the sandbox. A sandbox that cannot be
+  enforced refuses the run with a fix instead of running unsandboxed:
+  bubblewrap missing or blocked, a workspace too large to search for
+  repositories, a Claude Code or Codex backend, `--daemon`, macOS (Seatbelt
+  is not built yet) and Windows.
 
 - **krowk's own agent uses your MCP servers.** It reads the `mcpServers`
   you set up for Claude Code (`~/.claude.json`, its `settings.json`), those

@@ -3,30 +3,38 @@
 //! command does — and whatever it starts — meets the kernel's refusal,
 //! not krowk's judgement of a command line it cannot fully read.
 //!
+//! What it lets a command see is allowed, not listed: the person's home
+//! is replaced by an empty directory, and only the workspace, the Rust
+//! toolchain's homes (read-only) and — under `workspace` and `read-only` —
+//! the home's top-level entries whose names do not start with a dot
+//! (read-only) are bound back into it. A home's credentials live in its
+//! dotfiles and dot directories, more of them than any list names.
+//!
 //! Three named profiles:
 //!
 //! - **workspace**: the working directory and the directories the
 //!   settings add are writable; the rest of the file system is read-only;
-//!   credential directories (`~/.ssh`, `~/.gnupg`, `~/.aws`, …) and
-//!   krowk's home are hidden; the network is open.
-//! - **read-only**: nothing is writable but a private `/tmp`; the same
-//!   directories are hidden; no network.
-//! - **strict**: the workspace is writable, the person's whole home
-//!   outside it is hidden, and there is no network.
+//!   the network is on, the resolver with it.
+//! - **read-only**: nothing is writable but a private `/tmp`; no network,
+//!   and no resolver.
+//! - **strict**: the workspace is writable, the whole home outside it is
+//!   hidden, and there is no network or resolver.
 //!
-//! In every profile `.git`, `.claude`, `.codex` and `.krowk` inside a
-//! writable directory stay read-only, and so do the directories whose
-//! settings and hooks decide what runs next (Claude Code's, krowk's own):
-//! a command that could write `.git/hooks/pre-commit` or
+//! In every profile every `.git` in the workspace — nested repositories
+//! and gitdir files included, found by searching it when a call runs — and
+//! every hooks directory a repository's `core.hooksPath` names inside it
+//! stay read-only, as do `.claude`, `.codex` and `.krowk` at its top and
+//! the settings directories inside it; a `.git` a command creates is
+//! removed after the call. A command that could write `.git/hooks` or
 //! `.claude/settings.json` could run anything the next time git or an
-//! agent starts. `/tmp` is private to the call, and `/run` — where the
-//! ssh agent, the session bus and the Docker socket live — is empty but
-//! for the resolver. The Rust toolchain's homes are readable and named to
-//! the command, cargo's registry credentials in them hidden; they are not
+//! agent starts. `/tmp` is private to the call, and `/run` — where the ssh
+//! agent, the session bus and the Docker socket live — is empty but for
+//! the resolver under `workspace`. Cargo's registry credentials are hidden
+//! in the cargo home in use and in `~/.cargo`; the toolchain homes are not
 //! writable, so a build of what is already fetched works and a fetch does
-//! not — the simpler of the safe choices. The command's environment is an allowlist (`env`),
-//! it inherits no descriptor past stdio, and it runs in a session, IPC,
-//! UTS and pid namespace of its own.
+//! not — the simpler of the safe choices. The command's environment is an
+//! allowlist (`env`), it inherits no descriptor past stdio, and it runs in
+//! a session, IPC, UTS and pid namespace of its own.
 //!
 //! It fails closed: a profile this machine cannot enforce refuses to run
 //! anything, with a `fix`, rather than running unsandboxed. On Linux it is
@@ -40,7 +48,9 @@
 //!
 //! The file tools run in krowk's own process, not in the sandbox: under
 //! one they hold the same lines themselves (`tools::Scope::edit_path`,
-//! `tools::Scope::path`), and no rule, grant, person or mode opens them.
+//! `tools::Scope::path`, the same fences via `Plan::fences`), open exactly
+//! the path they checked (`tools::exact`), and no rule, grant, person or
+//! mode opens them.
 
 use std::path::{Path, PathBuf};
 
@@ -116,8 +126,23 @@ const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".krowk"];
 
 /// One sandbox, laid out: what a call may write, what it may only read,
 /// what it may not see, and whether it reaches the network.
+/// What a plan is laid out from, kept so it can be laid out again when a
+/// call runs (`Plan::current`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Inputs {
+    sandbox: Sandbox,
+    cwd: PathBuf,
+    roots: Vec<PathBuf>,
+    readable: Vec<PathBuf>,
+    protected: Vec<PathBuf>,
+    secrets: Vec<PathBuf>,
+    home: Option<PathBuf>,
+    toolchains: Vec<(&'static str, PathBuf)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
+    inputs: Inputs,
     pub profile: Profile,
     /// Whether commands run inside bubblewrap; false inside a container,
     /// where only the file tools' own fences are krowk's to add.
@@ -130,11 +155,23 @@ pub struct Plan {
     pub read_only: Vec<PathBuf>,
     /// Replaced by an empty directory.
     pub hidden: Vec<PathBuf>,
-    /// Under strict, the home replaced by an empty one before the
-    /// workspace is bound back into it.
+    /// The person's home, replaced by an empty one in every profile before
+    /// what is allowed back is bound into it: default-deny, since what a
+    /// home holds that signs or logs in as the person (`.git-credentials`,
+    /// `.netrc`, `.npmrc`, an agent's login) is no list's to name.
     pub home: Option<PathBuf>,
-    /// Directories bound read-only back into a hidden home: the skills.
+    /// The home's top-level entries whose names do not start with a dot,
+    /// bound back read-only under `workspace` and `read-only` (none under
+    /// `strict`): documents and checkouts, not the dotfiles and dot
+    /// directories credentials and configuration live in.
+    pub home_entries: Vec<PathBuf>,
+    /// Directories bound read-only back into a hidden home: the skills and
+    /// the toolchain homes.
     pub readable: Vec<PathBuf>,
+    /// Why no command may run in this plan, when one may not: a workspace
+    /// too large to search for every repository in it is refused, since a
+    /// `.git` not found is a `.git` not fenced.
+    pub refused: Option<String>,
     /// The Rust toolchain's homes, as `RUSTUP_HOME` and `CARGO_HOME` name
     /// them (or `~/.rustup` and `~/.cargo`): readable, never writable, and
     /// named to the command, since its own `HOME` is private. Cargo's
@@ -154,6 +191,21 @@ impl Plan {
     /// `new`, reading `RUSTUP_HOME` and `CARGO_HOME` from `env`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_in(sandbox: Sandbox, cwd: &Path, roots: &[PathBuf], readable: &[PathBuf], protected: &[PathBuf], secrets: &[PathBuf], home: Option<&Path>, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Plan {
+        let toolchains = toolchains(home, env);
+        Plan::build(Inputs { sandbox, cwd: cwd.into(), roots: roots.into(), readable: readable.into(), protected: protected.into(), secrets: secrets.into(), home: home.map(Into::into), toolchains })
+    }
+
+    /// The plan laid out again, as the workspace and the home are now: a
+    /// call's command and a file tool's check see the repositories, hooks
+    /// directories and home entries there are when it runs, not those
+    /// there were when the session's scope was made.
+    pub fn current(&self) -> Plan {
+        Plan::build(self.inputs.clone())
+    }
+
+    fn build(inputs: Inputs) -> Plan {
+        let Inputs { sandbox, ref cwd, ref roots, ref readable, ref protected, ref secrets, ref home, ref toolchains } = inputs;
+        let (cwd, home) = (cwd.as_path(), home.as_deref());
         // As they lead: a bind mount is of the real directory, and a
         // symlinked working directory would otherwise leave `.git` where
         // the mount never reaches.
@@ -165,38 +217,71 @@ impl Plan {
             }
         }
         let mut read_only: Vec<PathBuf> = writable.iter().flat_map(|w| FENCED.iter().map(move |f| w.join(f))).collect();
-        read_only.extend(protected.iter().map(|d| canon(d)));
+        // Every repository in the workspace, nested ones too, and the hooks
+        // directory each names: bound read-only, and fenced from the file
+        // tools alike.
+        let (repos, refused) = match repositories(&writable, home) {
+            Ok(r) => (r, None),
+            Err(why) => (Fences::default(), Some(why)),
+        };
+        read_only.extend(repos.all());
+        // A settings directory outside the workspace is read-only already
+        // (the root is bound read-only, the home is hidden); one inside it
+        // is bound back read-only over the writable bind.
+        read_only.extend(protected.iter().map(|d| canon(d)).filter(|d| writable.iter().any(|w| d.starts_with(w))));
+        read_only.sort();
+        read_only.dedup();
         let mut hidden: Vec<PathBuf> = home.map(|h| CREDENTIALS.iter().map(|c| canon(&h.join(c))).collect()).unwrap_or_default();
-        let toolchains = toolchains(home, env);
-        // `credentials` is cargo's older name for the same file.
-        hidden.extend(toolchains.iter().filter(|(k, _)| *k == "CARGO_HOME").flat_map(|(_, d)| ["credentials.toml", "credentials"].map(|f| d.join(f))));
+        let toolchains = toolchains.clone();
+        // Cargo's registry credentials, in the cargo home in use and in the
+        // default one (`credentials` is the older name of the same file).
+        let cargo_homes: Vec<PathBuf> = toolchains.iter().filter(|(k, _)| *k == "CARGO_HOME").map(|(_, d)| d.clone()).chain(home.map(|h| canon(&h.join(".cargo")))).collect();
+        hidden.extend(cargo_homes.iter().flat_map(|d| ["credentials.toml", "credentials"].map(|f| d.join(f))));
         hidden.extend(secrets.iter().map(|d| canon(d)));
         hidden.dedup();
         let profile = sandbox.profile;
+        let home = home.map(canon);
+        let home_entries = match (&home, profile) {
+            (Some(h), Profile::Workspace | Profile::ReadOnly) => std::fs::read_dir(h)
+                .map(|rd| rd.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.')).map(|e| e.path()).collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
         Plan {
+            inputs: inputs.clone(),
             profile,
             kernel: sandbox.by == By::Bubblewrap,
             cwd: canon(cwd),
             writable,
             read_only,
             hidden,
-            home: home.filter(|_| profile == Profile::Strict).map(canon),
+            home,
+            home_entries,
             readable: readable.iter().map(|d| canon(d)).chain(toolchains.iter().map(|(_, d)| d.clone())).collect(),
+            refused,
             toolchains,
         }
     }
 
     /// Whether a read of `real` (a path as it leads) is one the sandbox
-    /// would not let a command make: inside a hidden directory, or under
-    /// strict inside the home and outside every directory bound back.
+    /// would not let a command make: inside a hidden directory, or inside
+    /// the home and outside every directory bound back into it.
     pub fn hides(&self, real: &Path) -> bool {
         if self.hidden.iter().any(|h| real.starts_with(h)) {
             return true;
         }
         match &self.home {
-            Some(home) => real.starts_with(home) && !self.writable.iter().chain(&self.readable).any(|w| real.starts_with(w)),
+            Some(home) => real.starts_with(home) && !self.writable.iter().chain(&self.readable).chain(&self.home_entries).any(|w| real.starts_with(w)),
             None => false,
         }
+    }
+
+    /// Whether `real` is inside what the plan keeps read-only in the
+    /// workspace: a repository's `.git`, a hooks directory one names, a
+    /// settings directory. The file tools fence the same list the sandbox
+    /// binds, so a command and a tool agree.
+    pub fn fences(&self, real: &Path) -> bool {
+        self.read_only.iter().any(|r| real.starts_with(r))
     }
 
     /// bubblewrap's arguments for the plan, before `--` and the command.
@@ -206,14 +291,22 @@ impl Plan {
     pub fn bwrap_args(&self) -> Vec<String> {
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let mut a: Vec<String> = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run"].map(String::from).to_vec();
-        // The resolver `/etc/resolv.conf` leads to, where systemd or
-        // NetworkManager keep it; nothing else of `/run` comes back.
-        for r in ["/run/systemd/resolve", "/run/NetworkManager", "/run/resolvconf"] {
-            a.extend(["--ro-bind-try".into(), r.into(), r.into()]);
+        if self.profile.network() {
+            // The resolver `/etc/resolv.conf` leads to, where systemd or
+            // NetworkManager keep it; nothing else of `/run` comes back.
+            // `workspace` means the network is on.
+            for r in ["/run/systemd/resolve", "/run/NetworkManager", "/run/resolvconf"] {
+                a.extend(["--ro-bind-try".into(), r.into(), r.into()]);
+            }
+        } else if std::fs::symlink_metadata("/etc/resolv.conf").is_ok_and(|m| m.is_file()) {
+            // No resolver at all: nss-resolve's socket stays in the empty
+            // `/run`, and a resolv.conf that is a file is emptied (one that
+            // leads into `/run` already leads nowhere).
+            a.extend(["--ro-bind", "/dev/null", "/etc/resolv.conf"].map(String::from));
         }
         if let Some(home) = &self.home {
             a.extend(["--tmpfs".into(), s(home)]);
-            for r in &self.readable {
+            for r in self.home_entries.iter().chain(&self.readable) {
                 a.extend(["--ro-bind-try".into(), s(r), s(r)]);
             }
         }
@@ -264,17 +357,32 @@ impl Plan {
 /// starts there. Whatever of them the call left behind is removed when
 /// this is dropped — after the call, when its pid namespace, and so
 /// everything it started, is gone — and named by `appeared`.
-pub struct Unfenced(Vec<PathBuf>);
+/// A repository nested anywhere in the workspace that the call created —
+/// `git init` in a subdirectory, a clone — is removed the same way: the
+/// workspace is searched again after the call for every `.git` it did not
+/// have before.
+pub struct Unfenced {
+    missing: Vec<PathBuf>,
+    writable: Vec<PathBuf>,
+    home: Option<PathBuf>,
+    repos: Vec<PathBuf>,
+}
 
 impl Unfenced {
     pub fn before(plan: &Plan) -> Unfenced {
-        Unfenced(plan.read_only.iter().filter(|p| std::fs::symlink_metadata(p).is_err()).cloned().collect())
+        let missing = plan.read_only.iter().filter(|p| std::fs::symlink_metadata(p).is_err()).cloned().collect();
+        let repos = repositories(&plan.writable, plan.home.as_deref()).map(|f| f.repos).unwrap_or_default();
+        Unfenced { missing, writable: plan.writable.clone(), home: plan.home.clone(), repos }
     }
 
     /// Removes what appeared and says so; empty when nothing did.
     pub fn appeared(&mut self) -> Vec<PathBuf> {
         let mut out = Vec::new();
-        for p in std::mem::take(&mut self.0) {
+        let mut gone = std::mem::take(&mut self.missing);
+        if let Ok(now) = repositories(&std::mem::take(&mut self.writable), self.home.as_deref()) {
+            gone.extend(now.repos.into_iter().filter(|r| !self.repos.contains(r)));
+        }
+        for p in gone {
             let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
             // Not followed: a symlink is removed as a link, and a directory's
             // contents are removed without following the links in it.
@@ -289,6 +397,101 @@ impl Drop for Unfenced {
     fn drop(&mut self) {
         self.appeared();
     }
+}
+
+/// Entries a workspace search looks at before it gives up — and refuses
+/// the sandbox, since a repository it did not reach is one it cannot fence.
+const WALK_BUDGET: usize = 400_000;
+
+/// What the workspace search found: every `.git` (a directory, or a file
+/// naming a git directory elsewhere), and each hooks directory a
+/// repository's `core.hooksPath` names inside a writable root.
+#[derive(Debug, Default)]
+struct Fences {
+    repos: Vec<PathBuf>,
+    extra: Vec<PathBuf>,
+}
+
+impl Fences {
+    fn all(self) -> impl Iterator<Item = PathBuf> {
+        self.repos.into_iter().chain(self.extra)
+    }
+}
+
+/// Searches each writable root for repositories, following no symlink and
+/// not descending into a `.git` (compared as the file tools compare it,
+/// case-folded, with Windows' trailing dots and spaces dropped).
+fn repositories(roots: &[PathBuf], home: Option<&Path>) -> Result<Fences, String> {
+    let is_git = |n: &std::ffi::OsStr| n.to_string_lossy().trim_end_matches(['.', ' ']).eq_ignore_ascii_case(".git");
+    let within = |p: &Path| roots.iter().any(|r| p.starts_with(r));
+    let mut f = Fences::default();
+    let mut seen = 0usize;
+    for root in roots {
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten() {
+                seen += 1;
+                if seen > WALK_BUDGET {
+                    return Err(format!("the workspace holds more than {WALK_BUDGET} files and directories, too many to search for every repository in it, so the sandbox cannot fence them — run krowk in a smaller directory, or without --sandbox"));
+                }
+                let Ok(t) = e.file_type() else { continue };
+                let p = e.path();
+                if is_git(&e.file_name()) {
+                    let repo = dir.clone();
+                    let gitdir = if t.is_dir() { Some(p.clone()) } else { git_file_target(&p, &repo) };
+                    if let Some(g) = gitdir.clone().filter(|g| g != &p && within(g)) {
+                        f.extra.push(g);
+                    }
+                    if let Some(hooks) = gitdir.as_deref().and_then(|g| hooks_path(g, &repo, home)).filter(|h| within(h)) {
+                        f.extra.push(hooks);
+                    }
+                    f.repos.push(p);
+                } else if t.is_dir() {
+                    stack.push(p);
+                }
+            }
+        }
+    }
+    Ok(f)
+}
+
+/// Where a `.git` file (`gitdir: <path>`, a worktree's or a submodule's)
+/// leads, resolved against the repository.
+fn git_file_target(file: &Path, repo: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let target = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
+    let p = if Path::new(target).is_absolute() { PathBuf::from(target) } else { repo.join(target) };
+    Some(p.canonicalize().unwrap_or(p))
+}
+
+/// The hooks directory a git directory's config names (`core.hooksPath`),
+/// read as text — git itself is not run in a repository a model may have
+/// written — and resolved as git does: `~/` against the home, a relative
+/// path against the repository's working tree.
+fn hooks_path(gitdir: &Path, repo: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(gitdir.join("config")).ok()?;
+    let mut core = false;
+    let mut found = None;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            core = line.trim_start_matches('[').trim_end_matches(']').trim().eq_ignore_ascii_case("core");
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=')
+            && core
+            && k.trim().eq_ignore_ascii_case("hookspath")
+        {
+            found = Some(v.trim().trim_matches('"').to_string());
+        }
+    }
+    let v = found.filter(|v| !v.is_empty())?;
+    let p = match v.strip_prefix("~/") {
+        Some(rest) => home?.join(rest),
+        None if Path::new(&v).is_absolute() => PathBuf::from(&v),
+        None => repo.join(&v),
+    };
+    Some(krowk_api::home::lexical(&p))
 }
 
 /// The Rust toolchain's homes that exist: `RUSTUP_HOME` and `CARGO_HOME`
@@ -400,24 +603,39 @@ mod tests {
     #[test]
     fn r_perm_3_the_plan_fences_git_and_settings_and_hides_credentials() {
         let base = crate::tools::tests::dir("sandbox-plan");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
         std::fs::create_dir_all(base.join("ws")).unwrap();
         std::fs::create_dir_all(base.join("home/.ssh")).unwrap();
+        std::fs::create_dir_all(base.join("home/src")).unwrap();
+        // A nested repository naming its own hooks directory, and one that
+        // is a gitdir file (a worktree's, a submodule's).
+        std::fs::create_dir_all(base.join("ws/sub/.git")).unwrap();
+        std::fs::write(base.join("ws/sub/.git/config"), "[core]\n\tbare = false\n[Core]\n\thooksPath = \"tools/hooks\"\n").unwrap();
+        std::fs::create_dir_all(base.join("ws/wt")).unwrap();
+        std::fs::write(base.join("ws/wt/.git"), "gitdir: ../sub/.git\n").unwrap();
         let base = base.canonicalize().unwrap();
         let p = plan(Profile::Workspace, &base);
+        for fenced in ["ws/sub/.git", "ws/sub/tools/hooks", "ws/wt/.git"] {
+            assert!(p.fences(&base.join(fenced).join("x")), "{fenced}: {:?}", p.read_only);
+        }
         assert_eq!(p.writable, [base.join("ws")]);
         for d in [".git", ".claude", ".codex", ".krowk"] {
             assert!(p.read_only.contains(&base.join("ws").join(d)), "{d}");
         }
-        assert!(p.read_only.contains(&base.join("home/.claude")));
+        assert!(p.hides(&base.join("home/.claude/settings.json")) && !p.fences(&base.join("home/.claude")), "outside the workspace a settings directory is hidden with the home, not bound back");
         assert!(p.hidden.contains(&base.join("home/.ssh")) && p.hidden.contains(&base.join("home/.krowk")));
         let args = p.bwrap_args();
         let at = |x: &str, v: &Path| args.windows(3).position(|w| w[0] == x && w[1] == v.to_string_lossy()).unwrap_or_else(|| panic!("{x} {}", v.display()));
         assert!(at("--bind", &base.join("ws")) < at("--ro-bind-try", &base.join("ws/.git")));
         assert!(args.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == base.join("home/.ssh").to_string_lossy()));
         assert!(!args.contains(&"--unshare-net".to_string()), "workspace keeps the network");
+        assert!(args.contains(&"/run/systemd/resolve".to_string()), "and its resolver");
+        assert!(at("--tmpfs", &base.join("home")) < at("--ro-bind-try", &base.join("home/src")), "the home is hidden, then its non-dot entries come back");
         assert!(p.hides(&base.join("home/.ssh/id_ed25519")) && !p.hides(&base.join("home/src")));
         let strict = plan(Profile::Strict, &base);
         assert!(strict.bwrap_args().contains(&"--unshare-net".to_string()));
+        assert!(!strict.bwrap_args().iter().any(|a| a.starts_with("/run/")), "strict mounts no resolver");
         assert!(strict.hides(&base.join("home/src")) && !strict.hides(&base.join("ws/a.rs")), "strict hides the home outside the workspace");
         let ro = plan(Profile::ReadOnly, &base);
         assert!(ro.bwrap_args().windows(2).any(|w| w[0] == "--ro-bind" && w[1] == base.join("ws").to_string_lossy()), "read-only binds the workspace read-only");
