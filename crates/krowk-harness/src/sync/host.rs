@@ -401,6 +401,12 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                 if let Some(w) = dws.as_mut() && (dheard.elapsed() > DEAD || !super::ping(w).await) { dws = None; }
             }
             _ = tokio::time::sleep_until(dretry.into()), if dws.is_none() && listening.is_some() => {
+                // The listener's viewers went with the host's link to it,
+                // however it was lost: none of them is here to answer, so a
+                // remote turn's approval is denied after `APPROVAL_WAIT`
+                // rather than waiting on a chain nobody holds.
+                for l in link.links() { if l >= super::direct::FIRST_LINK { link.forget(l); } }
+                dpresent = None;
                 // The direct listener, joined as the relay is: the same
                 // ticket, the same stream. What the relay has not yet
                 // acknowledged seeds it, so a viewer moving over resumes

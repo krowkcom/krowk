@@ -593,6 +593,8 @@ fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mut Op
             StreamLine::Live(LiveEvent::ApprovalResolved { request_id, .. }) => {
                 asked.remove(request_id);
             }
+            // A turn's end resolves whatever it still asked.
+            StreamLine::Live(LiveEvent::Result(_)) => asked.clear(),
             _ => {}
         }
         frame.push(Update::Line(line));
