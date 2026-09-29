@@ -207,7 +207,10 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                     acked = applied;
                     if !super::send(w, ack(&raw, applied)).await { ws = None; }
                 }
-                if !frame.is_empty() {
+                // Never two hand-offs inside one display frame, however late
+                // the last tick ran (R-LAG-7).
+                let last = handed.lock().unwrap_or_else(|e| e.into_inner()).last().copied();
+                if !frame.is_empty() && last.is_none_or(|t| t.elapsed() >= FRAME) {
                     handed.lock().unwrap_or_else(|e| e.into_inner()).push(Instant::now());
                     if out.send(std::mem::take(&mut frame)).await.is_err() { break; }
                 }
