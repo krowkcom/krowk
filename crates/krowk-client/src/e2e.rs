@@ -959,7 +959,7 @@ mod tests {
 
     #[test]
     fn r_e2e_2_the_enc_byte_is_the_one_the_frame_header_reserves() {
-        // 0 is "none" in the header (daemon::ws::ENC_NONE); this is the
+        // 0 is "none" in the header (protocol::frame::ENC_NONE); this is the
         // first value the transport was told to wait for.
         assert_eq!(ENC_XCHACHA20_POLY1305, 1);
         assert_eq!(header(0)[3], ENC_XCHACHA20_POLY1305);

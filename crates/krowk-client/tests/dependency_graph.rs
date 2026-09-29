@@ -1,6 +1,6 @@
 //! R-CLIENT-1: `krowk-client` is what the desktop app (gpui) and the
 //! phones (UniFFI, ticket 33) link, and they link it without the engine,
-//! an async runtime or an HTTP stack. So nothing it pulls in — directly or
+//! tokio or reqwest. So nothing it pulls in — directly or
 //! through another crate, on any target — may be `krowk-harness`, `tokio`
 //! or `reqwest`.
 //!
@@ -8,6 +8,9 @@
 //! resolved `cargo metadata`: a runtime that arrives through krowk-api is
 //! linked all the same. Dev-dependencies are left out, since no client
 //! links a test's.
+//!
+//! It is not the whole of "no HTTP stack": the keystore's krowk-api still
+//! brings ureq, until its home and credentials split out from under it.
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -54,13 +57,13 @@ fn violations(metadata: &Value) -> Vec<String> {
 fn metadata() -> Value {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml");
-    let out = Command::new(cargo).args(["metadata", "--format-version", "1", "--manifest-path", root]).output().expect("cargo metadata runs");
+    let out = Command::new(cargo).args(["metadata", "--format-version", "1", "--locked", "--manifest-path", root]).output().expect("cargo metadata runs");
     assert!(out.status.success(), "cargo metadata failed: {}", String::from_utf8_lossy(&out.stderr));
     serde_json::from_slice(&out.stdout).expect("cargo metadata is JSON")
 }
 
 #[test]
-fn r_client_1_krowk_client_links_no_harness_runtime_or_http_stack() {
+fn r_client_1_krowk_client_links_no_harness_tokio_or_reqwest() {
     let m = metadata();
     // The forbidden crates are in the workspace's graph, so their absence
     // from krowk-client's means something.
