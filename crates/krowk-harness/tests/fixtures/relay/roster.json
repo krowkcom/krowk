@@ -122,6 +122,54 @@
       "revoked": false
     },
     {
+      "name": "behind-host",
+      "id": "91ae4b0a9b98d826c3cbaf87e54c667b",
+      "seed": "4f3530b1b5eaa045f64f7dfeca04cf40c86c96e1899697b0247159e8e7062041",
+      "signingKey": "fa3dc1d8433bdb46aa48b4e459d1d8d645c10467c46fb82f8104b5170f7c0823",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "behind-viewer",
+      "id": "319944738673ef76c1b1847d1c122901",
+      "seed": "d5aba6e27912a20bd3c919ddede8eabd15c125ff557055c670613186a03c3cc3",
+      "signingKey": "69df6ca05fc50eeb8677b3dd7abcf28bdaa39029e4458aa64c1436175ea27d92",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "behind-viewer2",
+      "id": "439caaffa5830ff509090576fb45d442",
+      "seed": "607b6caa7574355b11d41acb4724a2fef5f3df09e4aa5989a96bac7d68ef75f9",
+      "signingKey": "f0b9a18702b75782550f04f2795e8a508ba0c0bbf041ee1f13426f47561581ea",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "absent-host",
+      "id": "4bb59763ddfeae9076838137ac1840e3",
+      "seed": "38487215425130ab9c7b8206f00a2e55979d0545d02f23002aaebf53fc134ba8",
+      "signingKey": "4ad33a3768da9e8724cd52d08527ad39c9b039adfeb4316d269ef4ffa2f3c550",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "absent-viewer",
+      "id": "8719bd2a5f57b2f325fc83e6ee18a1b5",
+      "seed": "34954f4cbbc3a01e900a4d2c1ad031ed941420edbddced989d1c4ffc59b1aff4",
+      "signingKey": "400a1999a6508ebb99c8cde457fd62477d16ec272dafa9affd0fb06651ef9da5",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "absent-viewer2",
+      "id": "9090484110c027f937577430fb09c2b8",
+      "seed": "acb0c89bf44e9a0e612372d4ba346e7c06e0b9180e461f2780b2f3c658afea8e",
+      "signingKey": "bb2f5e54e6b54e633a73261cf05b0f236d10072c53d391ebb9044dddba491a6a",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
       "name": "heartbeat-host",
       "id": "304daf0e29a8f480907b3072a65e2e17",
       "seed": "c5e1a197d193fd85adb971069d66bf1f1e75c7b70d919eda4743c20c9ecdb7ae",
@@ -266,6 +314,30 @@
       "revoked": false
     },
     {
+      "name": "lockout-host",
+      "id": "8f8e2b149777e9b5dbd268b0093f3eb8",
+      "seed": "62ec77e982ccbde155587c3eeae7d2a2e2cab65ad557699dc80eb32fa9012658",
+      "signingKey": "cc8c03b485cab7467f5d8d9c5117727148ef198e167fbc1c807564cc88ae8b0a",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "lockout-viewer",
+      "id": "8e8e4b22eb9dcdc48c086469054e7009",
+      "seed": "914b09fec18d3db3625c6bdcaa38fc3edd2adf94af6779fb0b0f1ff1092c6423",
+      "signingKey": "2aaf653e34fc337f97db939269370e6d7c61643655ba2b66f5f6ef4efca39868",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "lockout-viewer2",
+      "id": "b7ce58c9a212a15432817537d5557603",
+      "seed": "2fc926ba2d53cb7a0d1ee85f28de7383f591a9eb7eda1d087ae104f53356b8c8",
+      "signingKey": "ace2848d86f1e7f98511a2406a3284dbd61244033c42ad45ffad7464341c1a0b",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
       "name": "size-host",
       "id": "f7b9076f0ab07b34476a542498d3f331",
       "seed": "4e172b3f0808cd199bb72a15e9319a54e849b7d8374710fe47f0ec80b26dea38",
@@ -286,6 +358,30 @@
       "id": "504971cf0af03443ff1ae6ec5d52676a",
       "seed": "da3b3681ac004c1d369a808e9097bc9609a6fd7be36a89ea52350058a023e2bc",
       "signingKey": "caff8571939263fe956d23a43a54f0b40baf3f2e76a63bcd6a3f6f4daff89029",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "prejoin-host",
+      "id": "22ff84866ac776124fbe7cfb8554f7e5",
+      "seed": "448239e35a50bf4522bf2b587bae4ea29fe0f86d5bd8aeb5b394f034cd1679bc",
+      "signingKey": "0d6cc786aabf453300096a9ab94ad4839c2357e593812481e4d8cc5179604fbd",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "prejoin-viewer",
+      "id": "cbe9f2d660d67dbce91db3016e78b614",
+      "seed": "07d79e971a952bbfdd9d43d1f51dabc47ff0baf6c25891c49e5156d0449f5017",
+      "signingKey": "53a62550e7306be583cee27f9ade0818cb1342591099262a841dbc1f8b598bab",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "prejoin-viewer2",
+      "id": "5aee5d62334ac939a920b8a1a1ad21b0",
+      "seed": "17a98f6892845e3cad7750431a7a63c7733a167920aad23c0e3345b39819b0b4",
+      "signingKey": "e154ae9f6f1bfbcc23b99d25d368c093d071488f43570ed652ae104457ec8b5e",
       "workspace": "ws_conformance_a",
       "revoked": false
     },
@@ -343,6 +439,20 @@
       "fence": 101
     },
     {
+      "name": "behind",
+      "id": "fb783214-0a0e-756b-bc12-9b9f154495b3",
+      "workspace": "ws_conformance_a",
+      "holder": "91ae4b0a9b98d826c3cbaf87e54c667b",
+      "fence": 186
+    },
+    {
+      "name": "absent",
+      "id": "825f0f9e-fcea-7ba4-bed2-3cf14568aa1a",
+      "workspace": "ws_conformance_a",
+      "holder": "4bb59763ddfeae9076838137ac1840e3",
+      "fence": 234
+    },
+    {
       "name": "heartbeat",
       "id": "56f7e751-23f8-7879-a951-aef664d6a3d3",
       "workspace": "ws_conformance_a",
@@ -385,11 +495,25 @@
       "fence": 228
     },
     {
+      "name": "lockout",
+      "id": "847b2d8e-65da-7278-8dc6-8df2c5b7ee90",
+      "workspace": "ws_conformance_a",
+      "holder": "8f8e2b149777e9b5dbd268b0093f3eb8",
+      "fence": 47
+    },
+    {
       "name": "size",
       "id": "a10ecbe5-454a-7bf2-8faa-c561712d2a14",
       "workspace": "ws_conformance_a",
       "holder": "f7b9076f0ab07b34476a542498d3f331",
       "fence": 172
+    },
+    {
+      "name": "prejoin",
+      "id": "480ed3c4-d7f7-7ae2-8a00-d39f6c88cc49",
+      "workspace": "ws_conformance_a",
+      "holder": "22ff84866ac776124fbe7cfb8554f7e5",
+      "fence": 56
     }
   ],
   "unregistered": [

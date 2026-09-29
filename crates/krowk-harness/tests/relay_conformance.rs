@@ -38,7 +38,7 @@ const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/
 /// Every test, its devices and its session: `<test>-host` holds the lease
 /// of session `<test>`, `<test>-viewer` and `<test>-viewer2` watch it, all
 /// in workspace A.
-const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "heartbeat", "window", "order", "replace", "stream", "rate", "size"];
+const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin"];
 
 /// How long anything the relay should answer may take, and how long to
 /// wait to be sure nothing comes.
@@ -244,6 +244,18 @@ impl Conn {
         self.send(e).await;
     }
 
+    /// Waits for the relay's ack of the host's batches up to `seq` (the
+    /// relay acknowledges every eighth).
+    async fn acked(&mut self, seq: u64) {
+        loop {
+            match self.next().await {
+                In::Env(e) if e.kind == KIND_ACK && e.seq >= seq => return,
+                In::Env(e) if e.kind == KIND_ACK => continue,
+                other => panic!("expected the relay's ack of {seq}, got {other:?}"),
+            }
+        }
+    }
+
     async fn ack(&mut self, seq: u64) {
         let e = Envelope { kind: KIND_ACK, flags: 0, enc: ENC_NONE, session: self.session, seq, payload: Vec::new() };
         self.send(e).await;
@@ -289,7 +301,8 @@ async fn dial(test: &str) -> (Conn, Value) {
     let challenge = c.control().await;
     assert_eq!(challenge["type"], "challenge", "{challenge}");
     assert_eq!(challenge["version"], 1);
-    assert_eq!(challenge["relay"], origin(), "the relay names the origin the client dialed");
+    // `challenge.relay` is informational (relay.md): a client never signs
+    // it, so the suite holds a relay to nothing about it.
     (c, challenge)
 }
 
@@ -323,7 +336,7 @@ async fn join_as(test: &str, a: &As<'_>) -> (Conn, Value) {
     let nonce: [u8; 32] = e2e::unhex(challenge["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
     let key = SigningKey::from_secret(&seed(a.key_of.unwrap_or(a.name))).unwrap();
     let dialed = origin();
-    let sig = key.sign_relay_join(a.role, &c.session, &nonce, &device_id(a.name), a.origin.unwrap_or(&dialed));
+    let sig = key.sign_relay_join(a.role, &c.session, &nonce, &device_id(a.name), a.origin.unwrap_or(&dialed)).unwrap();
     let mut join = json!({"type": "join", "role": if a.role == RELAY_ROLE_HOST { "host" } else { "viewer" }, "device": device_id(a.name).to_string(), "signature": e2e::hex(&sig)});
     if let Some(f) = a.fence {
         join["fence"] = f.into();
@@ -373,7 +386,7 @@ async fn r_relay_1_only_a_trusted_device_with_its_own_signature_joins_and_only_t
         let (mut c, challenge) = dial(t).await;
         let nonce: [u8; 32] = e2e::unhex(challenge["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
         let key = SigningKey::from_secret(&seed("auth-host")).unwrap();
-        let sig = key.sign_relay_join(RELAY_ROLE_VIEWER, &c.session, &nonce, &device_id("auth-host"), &origin());
+        let sig = key.sign_relay_join(RELAY_ROLE_VIEWER, &c.session, &nonce, &device_id("auth-host"), &origin()).unwrap();
         c.send_control(json!({"type": "join", "role": "host", "device": device_id("auth-host").to_string(), "signature": e2e::hex(&sig), "fence": fence(t), "stream": e2e::hex(&stream_id(t, 1))})).await;
         c.refused("bad_signature").await;
     }
@@ -383,7 +396,8 @@ async fn r_relay_1_only_a_trusted_device_with_its_own_signature_joins_and_only_t
     // one naming no fence.
     refused_join(t, &As { fence: Some(fence(t) - 1), ..host(t) }, "stale_lease").await;
     refused_join(t, &As { fence: None, ..host(t) }, "stale_lease").await;
-    refused_join(t, &As { name: "outsider", ..viewer(t, "viewer") }, "not_in_workspace").await;
+    // Another workspace's session reads as none at all.
+    refused_join(t, &As { name: "outsider", ..viewer(t, "viewer") }, "unknown_session").await;
     // A session the relay does not know, asked by a device it does.
     refused_join("nowhere", &viewer(t, "viewer"), "unknown_session").await;
     // Anything but a join first, and a join missing what it needs.
@@ -514,12 +528,15 @@ async fn r_lag_6_a_viewer_resumes_from_a_seq_without_losing_a_frame_in_the_ring_
     }
     v.ack(7).await;
     drop(v);
-    // Sent while it was away.
-    for seq in 11..=40 {
+    // Sent while it was away; the relay holds them all once it has
+    // acknowledged the last — over a network nothing else orders the
+    // host's batches before the viewer's join.
+    for seq in 11..=48 {
         h.batch(seq).await;
     }
+    h.acked(48).await;
     let (mut v, j) = joined(t, &As { stream: Some(stream), after: Some(7), ..viewer(t, "viewer") }).await;
-    assert_eq!(j["seq"], 40, "{j}");
+    assert_eq!(j["seq"], 48, "{j}");
     for seq in 8..=23 {
         v.batch_in(seq).await;
     }
@@ -530,12 +547,20 @@ async fn r_lag_6_a_viewer_resumes_from_a_seq_without_losing_a_frame_in_the_ring_
         v.batch_in(seq).await;
     }
     v.ack(39).await;
-    v.batch_in(40).await;
+    for seq in 40..=48 {
+        v.batch_in(seq).await;
+    }
+    v.ack(48).await;
     // Then live.
-    h.batch(41).await;
-    v.batch_in(41).await;
+    for seq in 49..=56 {
+        h.batch(seq).await;
+    }
+    h.acked(56).await;
+    for seq in 49..=56 {
+        v.batch_in(seq).await;
+    }
     // A viewer already up to date is sent nothing again.
-    let (mut v2, _) = joined(t, &As { stream: Some(stream), after: Some(41), ..viewer(t, "viewer2") }).await;
+    let (mut v2, _) = joined(t, &As { stream: Some(stream), after: Some(56), ..viewer(t, "viewer2") }).await;
     v2.quiet().await;
 }
 
@@ -551,14 +576,7 @@ async fn r_lag_6_a_viewer_the_ring_buffer_cannot_serve_is_told_to_resync() {
     for seq in 1..=1100 {
         h.batch(seq).await;
     }
-    // The relay has them all once it has acknowledged the last.
-    loop {
-        match h.next().await {
-            In::Env(e) if e.kind == KIND_ACK && e.seq == 1096 => break,
-            In::Env(e) if e.kind == KIND_ACK => continue,
-            other => panic!("expected acks, got {other:?}"),
-        }
-    }
+    h.acked(1096).await;
     let (mut v, _) = joined(t, &As { stream: Some(stream), after: Some(3), ..viewer(t, "viewer") }).await;
     let r = v.control().await;
     assert_eq!((r["type"].as_str(), r["reason"].as_str()), (Some("resync"), Some("beyond_buffer")), "{r}");
@@ -727,12 +745,110 @@ async fn r_relay_1_a_message_past_the_size_cap_is_refused() {
     let big = vec![7u8; (4 << 20) + 1];
     let e = h.sealed(KIND_BATCH, 1, &big);
     let _ = h.ws.send(Message::Binary(e.encode().into())).await;
-    match h.recv(ANSWER).await {
-        Some(In::Control(c)) => assert_eq!(c["code"], "too_large", "{c}"),
-        Some(In::Closed(_)) | None => {}
-        other => panic!("expected too_large, got {other:?}"),
-    }
+    h.refused("too_large").await;
     let (mut c, _) = dial(t).await;
     c.send_control(json!({"type": "join", "pad": "x".repeat(70 * 1024)})).await;
     c.refused("too_large").await;
+}
+
+/// R-LAG-6: a viewer that stops acknowledging while the host sends past
+/// the ring buffer is told, once it acknowledges again, that the relay
+/// cannot fill its gap — never served a batch after the gap as though it
+/// followed — and then follows live.
+#[tokio::test]
+async fn r_lag_6_a_viewer_left_behind_by_the_ring_buffer_is_told_to_resync() {
+    let t = "behind";
+    let (mut h, _) = joined(t, &host(t)).await;
+    let (mut v, _) = joined(t, &viewer(t, "viewer")).await;
+    for seq in 1..=1104 {
+        h.batch(seq).await;
+    }
+    h.acked(1104).await;
+    for seq in 1..=16 {
+        v.batch_in(seq).await;
+    }
+    v.ack(16).await;
+    let r = v.control().await;
+    assert_eq!((r["type"].as_str(), r["reason"].as_str()), (Some("resync"), Some("behind")), "{r}");
+    h.batch(1105).await;
+    v.batch_in(1105).await;
+}
+
+/// R-RELAY-1: a viewer's frame with no host connected is refused
+/// `host_absent`, the link staying open; once the host is there, frames
+/// reach it.
+#[tokio::test]
+async fn r_relay_1_a_frame_with_no_host_is_refused_host_absent_and_the_link_stays() {
+    let t = "absent";
+    let (mut v, j) = joined(t, &viewer(t, "viewer")).await;
+    assert_eq!((j["host"].as_bool(), j["stream"].is_null()), (Some(false), true), "no stream yet reads as null: {j}");
+    let f = v.sealed(KIND_FRAME, 0, b"sealed");
+    v.send(f.clone()).await;
+    let e = v.expect("error").await;
+    assert_eq!(e["code"], "host_absent", "{e}");
+    v.ws.send(Message::Text("ping".into())).await.unwrap();
+    assert!(matches!(v.next().await, In::Text(s) if s == "pong"), "still open");
+    let (mut h, _) = joined(t, &host(t)).await;
+    v.expect("host").await;
+    v.send(f).await;
+    loop {
+        match h.next().await {
+            In::Env(e) if e.kind == KIND_ROUTED => break,
+            In::Env(_) => continue,
+            other => panic!("expected the routed frame, got {other:?}"),
+        }
+    }
+}
+
+/// R-RELAY-1: viewers reconnecting in a loop use up their own join
+/// ceiling, never the host's: the lease holder still joins its channel.
+#[tokio::test]
+async fn r_relay_1_viewers_joining_in_a_loop_cannot_lock_the_host_out() {
+    let t = "lockout";
+    for which in ["viewer", "viewer2"] {
+        for _ in 0..30 {
+            let (c, _) = joined(t, &viewer(t, which)).await;
+            drop(c);
+        }
+    }
+    let (_h, j) = joined(t, &host(t)).await;
+    assert_eq!(j["role"], "host");
+}
+
+/// The reference relay's own defence before a join, beyond the contract:
+/// connections that never finish the upgrade, from one address, cannot
+/// crowd out another's, and a connection sending past the pre-join budget
+/// is let go. Skipped against another relay unless KROWK_RELAY_REFERENCE
+/// says it is one.
+#[tokio::test]
+async fn r_relay_1_the_reference_relay_bounds_what_comes_before_a_join() {
+    if std::env::var_os("KROWK_RELAY_URL").is_some() && std::env::var_os("KROWK_RELAY_REFERENCE").is_none() {
+        return;
+    }
+    let t = "prejoin";
+    let authority = relay_url().split("://").nth(1).unwrap().to_string();
+    let port: u16 = authority.rsplit(':').next().unwrap().parse().unwrap();
+    // Seventy idle connections from 127.0.0.2, saying nothing.
+    let mut idle = Vec::new();
+    for _ in 0..70 {
+        let sock = tokio::net::TcpSocket::new_v4().unwrap();
+        sock.bind("127.0.0.2:0".parse().unwrap()).unwrap();
+        if let Ok(s) = sock.connect(format!("127.0.0.1:{port}").parse().unwrap()).await {
+            idle.push(s);
+        }
+    }
+    let (_v, j) = joined(t, &viewer(t, "viewer")).await;
+    assert_eq!(j["role"], "viewer", "another address still joins");
+    // Past the pre-join budget: closed, with too_large when it can say so.
+    let (mut c, _) = dial(t).await;
+    let _ = c.ws.send(Message::Binary(vec![0u8; 200 * 1024].into())).await;
+    loop {
+        match c.recv(ANSWER).await {
+            Some(In::Closed(_)) => break,
+            Some(In::Control(e)) if e["type"] == "error" => assert_eq!(e["code"], "too_large", "{e}"),
+            None => panic!("still open past the pre-join budget"),
+            _ => {}
+        }
+    }
+    drop(idle);
 }

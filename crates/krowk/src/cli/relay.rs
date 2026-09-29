@@ -21,11 +21,15 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let roster = Roster::parse(&text).map_err(|e| fail("bad_config", format!("{}: {e}", ctx.f.roster)))?;
     let asked = if ctx.f.addr.is_empty() { DEFAULT_ADDR.to_string() } else { ctx.f.addr.clone() };
     let addr: SocketAddr = asked.to_socket_addrs().ok().and_then(|mut a| a.next()).ok_or_else(|| fail("bad_flags", format!("--addr {asked:?} needs a host and a numeric port, like {DEFAULT_ADDR}")))?;
-    let origin = Some(ctx.f.origin.clone()).filter(|o| !o.is_empty());
-    if let Some(o) = &origin
-        && !(o.starts_with("ws://") || o.starts_with("wss://"))
-    {
-        return Err(fail("bad_flags", format!("--origin {o:?} is ws://host:port or wss://host, what devices dial")));
+    let origin = match Some(ctx.f.origin.clone()).filter(|o| !o.is_empty()) {
+        None => None,
+        Some(o) => Some(krowk_client_origin(&o).ok_or_else(|| fail("bad_flags", format!("--origin {o:?} is ws://host[:port] or wss://host[:port], what devices dial")))?),
+    };
+    // Off loopback, the relay must be told what devices dial: taking it
+    // from the Host a client sends would let a relay in the middle pass
+    // this one's challenge through under its own name (relay.md → Joining).
+    if origin.is_none() && !addr.ip().to_canonical().is_loopback() {
+        return Err(fail("bad_flags", format!("--addr {asked} is reachable from the network, so the relay needs --origin: the URL devices dial it by, like wss://relay.example.com")));
     }
     let listener = TcpListener::bind(addr).map_err(|e| fail("relay_unavailable", format!("{addr} cannot be listened on: {e}")))?;
     let bound = listener.local_addr().map_err(|e| fail("relay_unavailable", e.to_string()))?;
@@ -33,6 +37,12 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     // finds it listening.
     let _ = ctx.io.stdout.write_all(banner(&bound, origin.as_deref()).as_bytes()).and_then(|_| ctx.io.stdout.flush());
     relay::run(listener, Config { roster, origin, limits: Limits::default() }).map_err(|e| fail("relay_unavailable", e))
+}
+
+/// `--origin` in the form devices sign it.
+fn krowk_client_origin(o: &str) -> Option<String> {
+    let lower = o.to_ascii_lowercase();
+    krowk_harness::relay::canonical_origin(o).filter(|_| lower.starts_with("ws://") || lower.starts_with("wss://"))
 }
 
 /// Where the relay is, where a session's channel is, and — bound wider
@@ -60,5 +70,15 @@ mod tests {
         assert!(banner(&"0.0.0.0:7790".parse().unwrap(), None).contains("! reachable from the network on every interface"));
         assert!(banner(&"192.168.1.4:7790".parse().unwrap(), Some("wss://relay.example")).contains("on 192.168.1.4"));
         assert!(!banner(&"[::1]:7790".parse().unwrap(), None).contains('!'));
+    }
+
+    /// R-RELAY-1: `--origin` is taken as a device signs it, and only as a
+    /// WebSocket URL.
+    #[test]
+    fn r_relay_1_origin_is_canonical_and_a_websocket_url() {
+        assert_eq!(krowk_client_origin("WSS://Relay.Example:443/v1").as_deref(), Some("wss://relay.example"));
+        assert_eq!(krowk_client_origin("ws://10.0.0.2:7790").as_deref(), Some("ws://10.0.0.2:7790"));
+        assert_eq!(krowk_client_origin("https://relay.example"), None);
+        assert_eq!(krowk_client_origin("relay.example"), None);
     }
 }

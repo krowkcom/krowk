@@ -37,6 +37,7 @@ pub mod roster;
 
 use crate::daemon::ws::{ENC_XCHACHA20_POLY1305, Envelope, FLAG_ZSTD, HEADER, KIND_ACK, KIND_BATCH, KIND_FRAME, KIND_RELAY, KIND_ROUTED};
 use futures_util::{SinkExt, StreamExt};
+pub use krowk_client::e2e::canonical_origin;
 pub use roster::Roster;
 use krowk_client::e2e::{self, DeviceId, RELAY_ROLE_HOST, RELAY_ROLE_VIEWER};
 use serde_json::{Value, json};
@@ -70,7 +71,8 @@ pub struct Limits {
     pub ring_bytes: usize,
     /// Viewers on one channel at once.
     pub viewers: usize,
-    /// Joins a minute, per device and per session.
+    /// Joins a minute to one channel: per device, and viewers' joins all
+    /// told, so viewers reconnecting in a loop cannot use up the host's.
     pub joins_per_device: u32,
     pub joins_per_session: u32,
     /// Messages and bytes a second a link may send: a token bucket that
@@ -81,9 +83,17 @@ pub struct Limits {
     pub viewer_bytes: f64,
     /// What may wait to be written to one link before it is let go.
     pub link_queue: usize,
-    /// Connections that have not joined yet.
+    /// Connections that have not joined yet: in all, and from one address.
     pub unjoined: usize,
-    /// How long a connection has to join.
+    pub unjoined_per_peer: usize,
+    /// Bytes a connection may send before it has joined: the upgrade
+    /// request, the join and a few heartbeats. Counted as they are read,
+    /// so no more than this is buffered for anyone unauthenticated.
+    pub prejoin_bytes: usize,
+    /// Text heartbeats answered before a join.
+    pub prejoin_pings: u32,
+    /// How long the WebSocket upgrade may take, and then the join.
+    pub upgrade_wait: Duration,
     pub join_wait: Duration,
     /// The relay's own pings, and silence past three of them closes a link.
     pub heartbeat: Duration,
@@ -105,11 +115,22 @@ impl Default for Limits {
             viewer_bytes: 4.0 * (1 << 20) as f64 + HEADER as f64,
             link_queue: 16 << 20,
             unjoined: 64,
+            unjoined_per_peer: 32,
+            prejoin_bytes: 80 * 1024,
+            prejoin_pings: 8,
+            upgrade_wait: Duration::from_secs(3),
             join_wait: Duration::from_secs(10),
             heartbeat: crate::daemon::ws::HEARTBEAT,
         }
     }
 }
+
+/// The largest whole number a JSON field carries: what a JavaScript number
+/// holds exactly (relay.md → Joining).
+pub const MAX_JSON_INT: u64 = (1 << 53) - 1;
+
+/// How long a channel nobody is on keeps its ring buffer.
+pub const IDLE_CHANNEL: Duration = Duration::from_secs(5 * 60);
 
 /// Batches in flight to a viewer before the relay waits for its ack: the
 /// daemon's window (R-LAG-4), per link.
@@ -120,7 +141,10 @@ pub const WINDOW: u64 = crate::daemon::ws::WINDOW;
 pub struct Config {
     pub roster: Roster,
     /// The origin devices sign (`ws://127.0.0.1:7790`, `wss://relay.krowk.com`):
-    /// what they dialed. Without it, `ws://` and the request's `Host`.
+    /// what they dialed. Without it, `ws://` and the request's `Host` —
+    /// for loopback only, since a relay that trusts the `Host` a client
+    /// sends lets a relay in the middle pass its challenge through
+    /// (`krowk relay serve` refuses another address without `--origin`).
     pub origin: Option<String>,
     pub limits: Limits,
 }
@@ -139,11 +163,11 @@ pub fn run(listener: std::net::TcpListener, config: Config) -> Result<(), String
 
 /// Accepts connections for ever. Inside a `LocalSet`.
 pub async fn serve(listener: TcpListener, config: Config) {
-    let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), devices: RefCell::new(HashMap::new()), unjoined: Cell::new(0), links: Cell::new(0) });
+    let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), peers: RefCell::new(HashMap::new()), unjoined: Cell::new(0), links: Cell::new(0) });
     loop {
         match listener.accept().await {
-            Ok((stream, _)) => {
-                tokio::task::spawn_local(connection(stream, relay.clone()));
+            Ok((stream, peer)) => {
+                tokio::task::spawn_local(connection(stream, peer.ip(), relay.clone()));
             }
             Err(e) => {
                 eprintln!("relay accept: {e}");
@@ -156,8 +180,8 @@ pub async fn serve(listener: TcpListener, config: Config) {
 struct Relay {
     config: Config,
     channels: RefCell<HashMap<[u8; 16], Channel>>,
-    /// Each device's joins in the current minute.
-    devices: RefCell<HashMap<[u8; 16], Minute>>,
+    /// Connections not yet joined, by the address they came from.
+    peers: RefCell<HashMap<std::net::IpAddr, usize>>,
     unjoined: Cell<usize>,
     links: Cell<u64>,
 }
@@ -219,7 +243,17 @@ struct Channel {
     /// The last `seq` the channel was sent in this stream; 0 for none.
     last: u64,
     viewers: HashMap<u64, Viewer>,
-    joins: Minute,
+    /// This minute's joins: each device's, and all viewers'.
+    device_joins: HashMap<[u8; 16], Minute>,
+    viewer_joins: Minute,
+    /// Since when nobody has been on the channel.
+    empty_since: Option<Instant>,
+}
+
+impl Channel {
+    fn stream_json(&self) -> Value {
+        if self.stream == [0; 16] { Value::Null } else { e2e::hex(&self.stream).into() }
+    }
 }
 
 struct Viewer {
@@ -254,6 +288,49 @@ impl Link {
     fn control(&self, v: Value) -> bool {
         self.send(Message::Binary(control(&v).into()))
     }
+
+    /// Lets a link go that has more waiting than it may: told, if there is
+    /// room to tell it, then closed. Its reader sees the close and leaves.
+    fn overflow(&self) {
+        let r = refuse("link_overflow", "more waits for this link than the relay holds", "read faster, and join again with your cursor");
+        self.queued.set(0);
+        let _ = self.tx.send(Message::Binary(control(&r.json()).into()));
+        let _ = self.tx.send(Message::Close(Some(CloseFrame { code: CloseCode::Policy, reason: "link_overflow".into() })));
+    }
+}
+
+/// A connection's reads, counted against what it may send before it has
+/// joined: past the budget the read fails and the connection goes, so
+/// nothing unauthenticated is buffered past it. Lifted once it joins.
+struct Metered {
+    inner: TcpStream,
+    left: Rc<Cell<usize>>,
+}
+
+impl tokio::io::AsyncRead for Metered {
+    fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let r = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        let n = buf.filled().len() - before;
+        if n > self.left.get() {
+            self.left.set(0);
+            return std::task::Poll::Ready(Err(std::io::Error::other("sent past what it may before joining")));
+        }
+        self.left.set(self.left.get() - n);
+        r
+    }
+}
+
+impl tokio::io::AsyncWrite for Metered {
+    fn poll_write(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+    fn poll_flush(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 /// A control message: kind 4, plain JSON, no session.
@@ -279,16 +356,33 @@ impl Refusal {
     }
 }
 
-type Ws = tokio_tungstenite::WebSocketStream<TcpStream>;
+type Ws = tokio_tungstenite::WebSocketStream<Metered>;
 
-async fn connection(stream: TcpStream, relay: Rc<Relay>) {
-    if relay.unjoined.get() >= relay.config.limits.unjoined {
-        return;
+async fn connection(stream: TcpStream, peer: std::net::IpAddr, relay: Rc<Relay>) {
+    let limits = &relay.config.limits;
+    {
+        let mut peers = relay.peers.borrow_mut();
+        let from = peers.entry(peer).or_default();
+        if relay.unjoined.get() >= limits.unjoined || *from >= limits.unjoined_per_peer {
+            return;
+        }
+        *from += 1;
     }
     relay.unjoined.set(relay.unjoined.get() + 1);
-    let joined = handshake(stream, &relay).await;
+    let left = Rc::new(Cell::new(limits.prejoin_bytes));
+    let joined = handshake(Metered { inner: stream, left: left.clone() }, &relay).await;
     relay.unjoined.set(relay.unjoined.get() - 1);
+    {
+        let mut peers = relay.peers.borrow_mut();
+        if let Some(n) = peers.get_mut(&peer) {
+            *n -= 1;
+            if *n == 0 {
+                peers.remove(&peer);
+            }
+        }
+    }
     let Some((ws, session, device, role, join)) = joined else { return };
+    left.set(usize::MAX);
     let (tx, rx) = mpsc::unbounded_channel();
     let id = relay.links.get() + 1;
     relay.links.set(id);
@@ -309,9 +403,9 @@ async fn close(ws: &mut Ws, r: &Refusal) {
 }
 
 /// The WebSocket handshake, the challenge and the join.
-async fn handshake(stream: TcpStream, relay: &Rc<Relay>) -> Option<(Ws, [u8; 16], DeviceId, u8, Join)> {
+async fn handshake(stream: Metered, relay: &Rc<Relay>) -> Option<(Ws, [u8; 16], DeviceId, u8, Join)> {
     use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
-    let _ = stream.set_nodelay(true);
+    let _ = stream.inner.set_nodelay(true);
     let limits = &relay.config.limits;
     let config = WebSocketConfig::default().max_message_size(Some(limits.max_message)).max_frame_size(Some(limits.max_message));
     let seen: Rc<RefCell<(Option<[u8; 16]>, String)>> = Rc::default();
@@ -328,14 +422,19 @@ async fn handshake(stream: TcpStream, relay: &Rc<Relay>) -> Option<(Ws, [u8; 16]
         *into.borrow_mut() = (Some(session), host);
         Ok(resp)
     };
-    let mut ws = tokio::time::timeout(limits.join_wait, tokio_tungstenite::accept_hdr_async_with_config(stream, route, Some(config))).await.ok()?.ok()?;
+    let mut ws = tokio::time::timeout(limits.upgrade_wait, tokio_tungstenite::accept_hdr_async_with_config(stream, route, Some(config))).await.ok()?.ok()?;
     let (session, host) = seen.borrow().clone();
     let session = session?;
-    let origin = relay.config.origin.clone().unwrap_or_else(|| format!("ws://{host}"));
+    let given = relay.config.origin.clone().unwrap_or_else(|| format!("ws://{host}"));
+    let Some(origin) = e2e::canonical_origin(&given) else {
+        close(&mut ws, &refuse("bad_origin", format!("{given:?} is no origin a device can sign"), "dial the relay by a host name or address, or start it with --origin")).await;
+        return None;
+    };
     let nonce: [u8; 32] = e2e::random();
     let challenge = json!({"type": "challenge", "version": VERSION, "nonce": e2e::hex(&nonce), "relay": origin, "session": e2e::hex(&session)});
     ws.send(Message::Binary(control(&challenge).into())).await.ok()?;
     let deadline = tokio::time::Instant::now() + limits.join_wait;
+    let mut pings = 0;
     let join = loop {
         match tokio::time::timeout_at(deadline, ws.next()).await {
             Err(_) => {
@@ -344,9 +443,18 @@ async fn handshake(stream: TcpStream, relay: &Rc<Relay>) -> Option<(Ws, [u8; 16]
             }
             Ok(Some(Ok(Message::Binary(b)))) => break b,
             Ok(Some(Ok(Message::Text(t)))) if t.as_str() == "ping" => {
+                pings += 1;
+                if pings > limits.prejoin_pings {
+                    close(&mut ws, &refuse("rate_limited", "more heartbeats than a join takes to sign", "join, then beat")).await;
+                    return None;
+                }
                 let _ = ws.send(Message::Text("pong".into())).await;
             }
             Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
+            Ok(Some(Err(_))) => {
+                close(&mut ws, &refuse("too_large", format!("at most {} bytes may come before the join", limits.prejoin_bytes), "send the join, at most 64 KiB, and nothing larger before it")).await;
+                return None;
+            }
             Ok(Some(Ok(_))) => {
                 close(&mut ws, &refuse("not_joined", "the first message after the challenge must be a join", "answer the challenge with a join control message")).await;
                 return None;
@@ -400,11 +508,11 @@ fn read_join(b: &[u8]) -> Result<Join, Refusal> {
     };
     let after = match v.get("afterSeq").filter(|s| !s.is_null()) {
         None => None,
-        Some(s) => Some(s.as_u64().ok_or_else(|| bad("has an afterSeq that is not a whole number"))?),
+        Some(s) => Some(s.as_u64().filter(|n| *n <= MAX_JSON_INT).ok_or_else(|| bad("has an afterSeq that is not a whole number up to 2^53 - 1"))?),
     };
     let fence = match v.get("fence").filter(|s| !s.is_null()) {
         None => None,
-        Some(s) => Some(s.as_u64().ok_or_else(|| bad("has a fence that is not a whole number"))?),
+        Some(s) => Some(s.as_u64().filter(|n| *n <= MAX_JSON_INT).ok_or_else(|| bad("has a fence that is not a whole number up to 2^53 - 1"))?),
     };
     Ok(Join { role, device, signature, fence, stream, after })
 }
@@ -428,14 +536,16 @@ fn admit(relay: &Relay, session: [u8; 16], nonce: &[u8; 32], origin: &str, j: Jo
     if device.signing.verify_relay_join(&j.signature, j.role, &session, nonce, &j.device, origin).is_err() {
         return Err(refuse("bad_signature", "the join's signature does not verify under the device's signing key", "sign this challenge's nonce with the device's own signing key, for the role, session and relay origin you dialed"));
     }
-    if !relay.devices.borrow_mut().entry(j.device.0).or_default().take(relay.config.limits.joins_per_device) {
-        return Err(refuse("rate_limited", format!("device {} joined more than {} times this minute", j.device, relay.config.limits.joins_per_device), "wait a minute, and reconnect with backoff"));
-    }
-    let Some(entry) = ring.session(&session) else {
-        return Err(refuse("unknown_session", "the relay has no such session", "open a session that syncs; its lease names the host"));
+    // Another workspace's session reads as no session: a device of one
+    // workspace learns nothing of another's session ids.
+    let Some(entry) = ring.session(&session).filter(|e| e.workspace == device.workspace) else {
+        return Err(refuse("unknown_session", "the relay has no such session for this device", "open a session of your own workspace that syncs; its lease names the host"));
     };
-    if entry.workspace != device.workspace {
-        return Err(refuse("not_in_workspace", "the device is not of the session's workspace", "join from a device of the workspace the session belongs to"));
+    let limits = &relay.config.limits;
+    let mut channels = relay.channels.borrow_mut();
+    let channel = channels.entry(session).or_default();
+    if !channel.device_joins.entry(j.device.0).or_default().take(limits.joins_per_device) {
+        return Err(refuse("rate_limited", format!("device {} joined this session more than {} times this minute", j.device, limits.joins_per_device), "wait a minute, and reconnect with backoff"));
     }
     if j.role == RELAY_ROLE_HOST {
         if entry.holder != j.device.0 {
@@ -447,14 +557,15 @@ fn admit(relay: &Relay, session: [u8; 16], nonce: &[u8; 32], origin: &str, j: Jo
         if j.stream.is_none() {
             return Err(refuse("bad_join", "a host's join names no stream", "send the stream epoch the host seals batches under, 32 hex characters"));
         }
-    }
-    let mut channels = relay.channels.borrow_mut();
-    let channel = channels.entry(session).or_default();
-    if !channel.joins.take(relay.config.limits.joins_per_session) {
-        return Err(refuse("rate_limited", format!("the session was joined more than {} times this minute", relay.config.limits.joins_per_session), "wait a minute, and reconnect with backoff"));
-    }
-    if j.role == RELAY_ROLE_VIEWER && channel.viewers.len() >= relay.config.limits.viewers {
-        return Err(refuse("channel_full", format!("the session has {} viewers already", channel.viewers.len()), "close a device watching the session, then join again"));
+    } else {
+        // Full is checked before the join is counted, so being refused as
+        // full costs the session nothing.
+        if channel.viewers.len() >= limits.viewers {
+            return Err(refuse("channel_full", format!("the session has {} viewers already", channel.viewers.len()), "close a device watching the session, then join again"));
+        }
+        if !channel.viewer_joins.take(limits.joins_per_session) {
+            return Err(refuse("rate_limited", format!("viewers joined the session more than {} times this minute", limits.joins_per_session), "wait a minute, and reconnect with backoff"));
+        }
     }
     Ok((j.device, j.role, j))
 }
@@ -462,7 +573,11 @@ fn admit(relay: &Relay, session: [u8; 16], nonce: &[u8; 32], origin: &str, j: Jo
 /// Puts a joined link on its channel, and says so.
 fn enter(relay: &Relay, session: [u8; 16], link: &Rc<Link>, role: u8, j: Join) {
     let mut channels = relay.channels.borrow_mut();
+    // A channel nobody has been on for a while is forgotten, its buffer
+    // with it: a host coming back starts it afresh.
+    channels.retain(|id, c| *id == session || c.empty_since.is_none_or(|t| t.elapsed() < IDLE_CHANNEL));
     let ch = channels.entry(session).or_default();
+    ch.empty_since = None;
     if role == RELAY_ROLE_HOST {
         let stream = j.stream.expect("admitted with a stream");
         if let Some(old) = ch.host.take() {
@@ -489,9 +604,9 @@ fn enter(relay: &Relay, session: [u8; 16], link: &Rc<Link>, role: u8, j: Join) {
         }
         return;
     }
-    let stream = e2e::hex(&ch.stream);
+    let stream = ch.stream_json();
     let host = ch.host.is_some();
-    link.control(json!({"type": "joined", "role": "viewer", "link": link.id, "stream": if ch.stream == [0; 16] { Value::Null } else { stream.clone().into() }, "seq": ch.last, "host": host}));
+    link.control(json!({"type": "joined", "role": "viewer", "link": link.id, "stream": stream.clone(), "seq": ch.last, "host": host}));
     // Where it starts: after its cursor when the buffer still holds what
     // follows it in this stream, else live, told to catch up from the host.
     let live = ch.last;
@@ -518,6 +633,7 @@ fn enter(relay: &Relay, session: [u8; 16], link: &Rc<Link>, role: u8, j: Join) {
 /// Sends a viewer what the buffer holds for it, up to its window.
 fn pump(ch: &mut Channel, id: u64) {
     let Some(first) = ch.ring.front().map(|(s, _)| *s) else { return };
+    let stream = ch.stream_json();
     let Some(v) = ch.viewers.get_mut(&id) else { return };
     if v.next == 0 {
         v.next = first;
@@ -526,13 +642,14 @@ fn pump(ch: &mut Channel, id: u64) {
     while v.next <= ch.last && v.next < v.acked.saturating_add(WINDOW).saturating_add(1) {
         if v.next < first {
             // Fell behind the buffer while its window was full.
-            v.link.control(json!({"type": "resync", "reason": "behind", "stream": e2e::hex(&ch.stream), "seq": ch.last}));
+            v.link.control(json!({"type": "resync", "reason": "behind", "stream": stream, "seq": ch.last}));
             v.next = ch.last + 1;
             v.acked = ch.last;
             return;
         }
         let (_, bytes) = &ch.ring[(v.next - first) as usize];
         if !v.link.send(Message::Binary(bytes.to_vec().into())) {
+            v.link.overflow();
             return;
         }
         v.next += 1;
@@ -637,7 +754,7 @@ fn from_host(relay: &Relay, session: [u8; 16], link: &Rc<Link>, e: Envelope, raw
         KIND_BATCH => {
             sealed(&e, session)?;
             let first = ch.last == 0;
-            if e.seq == 0 || (!first && e.seq != ch.last + 1) {
+            if e.seq == 0 || e.seq > MAX_JSON_INT || (!first && e.seq != ch.last + 1) {
                 return Err(refuse("seq_out_of_order", format!("batch seq {} does not follow {}", e.seq, ch.last), "number a stream's batches 1, 2, 3 … on the relay, one more each, from where the joined message says the relay is"));
             }
             let bytes: Rc<[u8]> = raw.into();
@@ -669,8 +786,7 @@ fn from_host(relay: &Relay, session: [u8; 16], link: &Rc<Link>, e: Envelope, raw
             if let Some(v) = ch.viewers.get(&e.seq)
                 && !v.link.send(Message::Binary(e.payload.into()))
             {
-                v.link.control(refuse("link_overflow", "more waits for this viewer than the relay holds", "read faster, and join again with your cursor").json());
-                let _ = v.link.send(Message::Close(Some(CloseFrame { code: CloseCode::Policy, reason: "link_overflow".into() })));
+                v.link.overflow();
             }
             Ok(())
         }
@@ -689,7 +805,9 @@ fn from_viewer(relay: &Relay, session: [u8; 16], link: &Rc<Link>, e: Envelope, r
                 return Err(refuse("host_absent", "the session's host is not connected; the frame was dropped", "send it again once a host message says the host is present"));
             };
             let routed = Envelope { kind: KIND_ROUTED, flags: 0, enc: ENC_XCHACHA20_POLY1305, session, seq: link.id, payload: raw.to_vec() };
-            host.send(Message::Binary(routed.encode().into()));
+            if !host.send(Message::Binary(routed.encode().into())) {
+                host.overflow();
+            }
             Ok(())
         }
         KIND_ACK => {
@@ -718,6 +836,9 @@ fn leave(relay: &Relay, session: [u8; 16], link: &Rc<Link>, role: u8) {
         && let Some(h) = &ch.host
     {
         h.control(json!({"type": "viewer", "event": "left", "link": link.id, "device": link.device.to_string()}));
+    }
+    if ch.host.is_none() && ch.viewers.is_empty() {
+        ch.empty_since = Some(Instant::now());
     }
 }
 

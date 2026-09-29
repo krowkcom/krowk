@@ -680,10 +680,13 @@ impl SigningKey {
     /// Answers a relay's challenge: a signature over `relay_join_message`.
     /// `origin` is the relay the caller dialed, as it dialed it — never the
     /// origin a relay's challenge names, or a relay could pass another
-    /// relay's challenge through and join there as this device.
-    pub fn sign_relay_join(&self, role: u8, session: &[u8; 16], nonce: &[u8; 32], device: &DeviceId, origin: &str) -> [u8; 64] {
+    /// relay's challenge through and join there as this device. It is
+    /// signed in its canonical form (`canonical_origin`); a URL that has
+    /// none is refused rather than signed as it came.
+    pub fn sign_relay_join(&self, role: u8, session: &[u8; 16], nonce: &[u8; 32], device: &DeviceId, origin: &str) -> Result<[u8; 64], Error> {
         use ed25519_dalek::Signer as _;
-        self.0.sign(&relay_join_message(role, session, nonce, device, origin)).to_bytes()
+        let origin = canonical_origin(origin).ok_or_else(|| err(format!("{origin:?} is not a relay URL (ws://, wss://, http:// or https:// and a host)")))?;
+        Ok(self.0.sign(&relay_join_message(role, session, nonce, device, &origin)).to_bytes())
     }
 }
 
@@ -704,10 +707,52 @@ impl SigningPublic {
     /// has one encoding and a key cannot be chosen to verify anything.
     pub fn verify_relay_join(&self, signature: &[u8], role: u8, session: &[u8; 16], nonce: &[u8; 32], device: &DeviceId, origin: &str) -> Result<(), Error> {
         let bad = || err("the signature does not verify");
+        let origin = canonical_origin(origin).ok_or_else(bad)?;
         let key = ed25519_dalek::VerifyingKey::from_bytes(&self.0).map_err(|_| bad())?;
         let sig: [u8; 64] = signature.try_into().map_err(|_| bad())?;
-        key.verify_strict(&relay_join_message(role, session, nonce, device, origin), &ed25519_dalek::Signature::from_bytes(&sig)).map_err(|_| bad())
+        key.verify_strict(&relay_join_message(role, session, nonce, device, &origin), &ed25519_dalek::Signature::from_bytes(&sig)).map_err(|_| bad())
     }
+}
+
+/// A relay's origin as a join signs it: `ws://` or `wss://` (`http` and
+/// `https` map to them, since a Worker sees an upgrade as HTTP), the host
+/// lowercased, an IPv6 address in brackets, the port only when it is not
+/// the scheme's default (80, 443), and nothing after the authority. The
+/// signer and the verifier each reduce what they have to this, so `wss://
+/// Relay.krowk.com:443/v1/relay/…` and `https://relay.krowk.com` sign alike.
+/// None for anything else, a user name or an empty host included.
+pub fn canonical_origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let (scheme, default) = match scheme.to_ascii_lowercase().as_str() {
+        "ws" | "http" => ("ws", 80),
+        "wss" | "https" => ("wss", 443),
+        _ => return None,
+    };
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.contains('@') {
+        return None;
+    }
+    let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
+        let (h, after) = inner.split_once(']')?;
+        h.parse::<std::net::Ipv6Addr>().ok()?;
+        (format!("[{}]", h.to_ascii_lowercase()), after.strip_prefix(':'))
+    } else {
+        match authority.split_once(':') {
+            Some((h, p)) => (h.to_ascii_lowercase(), Some(p)),
+            None => (authority.to_ascii_lowercase(), None),
+        }
+    };
+    if host.is_empty() || (host.contains(':') && !host.starts_with('[')) || !host.bytes().all(|b| b.is_ascii_alphanumeric() || b".-[]:".contains(&b)) {
+        return None;
+    }
+    let port = match port {
+        None | Some("") => None,
+        Some(p) => Some(p.parse::<u16>().ok().filter(|_| p.bytes().all(|b| b.is_ascii_digit()))?),
+    };
+    Some(match port {
+        Some(p) if p != default => format!("{scheme}://{host}:{p}"),
+        _ => format!("{scheme}://{host}"),
+    })
 }
 
 /// What a relay join signs: `"krowk/relay/v1" ‖ role (1) ‖ session (16) ‖
@@ -736,7 +781,7 @@ mod tests {
         let again = SigningKey::from_secret(&k.secret_bytes()[..]).unwrap();
         assert_eq!(again.public(), k.public());
         let (s, n, d) = ([7u8; 16], [9u8; 32], DeviceId([3u8; 16]));
-        let sig = k.sign_relay_join(RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com");
+        let sig = k.sign_relay_join(RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com").unwrap();
         let p = k.public();
         p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com").unwrap();
         assert!(p.verify_relay_join(&sig, RELAY_ROLE_HOST, &s, &n, &d, "wss://relay.krowk.com").is_err(), "a viewer's signature is not a host's");
@@ -746,7 +791,27 @@ mod tests {
         assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://evil.example").is_err(), "another relay's challenge does not pass through");
         assert!(SigningKey::generate().public().verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com").is_err());
         assert!(p.verify_relay_join(&sig[..63], RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com").is_err());
-        assert!(SigningPublic([0u8; 32]).verify_relay_join(&[0u8; 64], RELAY_ROLE_VIEWER, &s, &n, &d, "").is_err(), "a small-order key verifies nothing");
+        assert!(SigningPublic([0u8; 32]).verify_relay_join(&[0u8; 64], RELAY_ROLE_VIEWER, &s, &n, &d, "wss://x").is_err(), "a small-order key verifies nothing");
+        // The origin is signed canonically: the forms a Worker, a proxy and
+        // a client may each hold of one relay verify alike.
+        for same in ["wss://Relay.Krowk.com", "wss://relay.krowk.com:443", "https://relay.krowk.com/v1/relay/x", "WSS://relay.krowk.com/"] {
+            p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, same).unwrap();
+        }
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "ws://relay.krowk.com").is_err(), "the scheme is signed");
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com:8443").is_err());
+        assert!(k.sign_relay_join(RELAY_ROLE_VIEWER, &s, &n, &d, "relay.krowk.com").is_err());
+    }
+
+    #[test]
+    fn r_relay_1_origins_are_canonical() {
+        let c = |u: &str| canonical_origin(u);
+        assert_eq!(c("ws://127.0.0.1:80").as_deref(), Some("ws://127.0.0.1"));
+        assert_eq!(c("http://LOCALHOST:7790/x?y").as_deref(), Some("ws://localhost:7790"));
+        assert_eq!(c("wss://[::1]:443").as_deref(), Some("wss://[::1]"));
+        assert_eq!(c("ws://[::1]:7790").as_deref(), Some("ws://[::1]:7790"));
+        for bad in ["ftp://x", "ws://", "ws://user@host", "ws://h:port", "ws://h:99999", "ws://[zz]", "ws://a:b:c", "ws://h o"] {
+            assert_eq!(c(bad), None, "{bad}");
+        }
     }
 
     const SESSION: [u8; 16] = *b"0123456789abcdef";
