@@ -82,9 +82,11 @@ const CUT: u8 = 1;
 const FAIL_WRITES: u8 = 2;
 const DROP_ALL: u8 = 2;
 const DROP_BATCHES: u8 = 3;
-/// A registry proxy's mode: every relay ticket after the first waits until
-/// the mode changes, so a viewer's race for a direct path starts when the
-/// test says.
+/// A registry proxy's mode: the second relay ticket asked for — a viewer's
+/// race for a direct path, which starts as the relay's welcome comes —
+/// waits until the mode changes, so the race goes on when the test says.
+/// Every other ticket passes: a viewer whose relay connection drops meanwhile
+/// joins again as it would, rather than hanging on a ticket.
 const HOLD_TICKETS: u8 = 3;
 
 struct Device {
@@ -347,7 +349,7 @@ fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>) -> Soc
 
 /// A registry proxy: `CUT` drops every connection, `FAIL_WRITES` answers
 /// every write (a POST or PUT) 503 — a registry failing, not gone — and
-/// `HOLD_TICKETS` holds every relay ticket but the first.
+/// `HOLD_TICKETS` holds the second relay ticket asked for.
 fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>) -> SocketAddr {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
@@ -391,7 +393,7 @@ fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>) -> SocketAddr {
                         return;
                     }
                     let first = String::from_utf8_lossy(&one[..one.windows(2).position(|w| w == b"\r\n").unwrap_or(0)]).to_string();
-                    if first.starts_with("GET ") && first.contains("/relay_ticket") && tickets.fetch_add(1, Ordering::SeqCst) > 0 {
+                    if first.starts_with("GET ") && first.contains("/relay_ticket") && tickets.fetch_add(1, Ordering::SeqCst) == 1 {
                         while mode.load(Ordering::SeqCst) == HOLD_TICKETS {
                             std::thread::sleep(Duration::from_millis(10));
                         }
@@ -1105,21 +1107,33 @@ async fn r_net_2_moving_to_the_direct_path_mid_session_stalls_nothing_and_shows_
     let (_stop, _cp, _bridge) = w.bridge_direct(&a, &session, w.daemon().await, &ts, false, kill_rx);
     w.synced(&session).await;
     let hold = Arc::new(AtomicU8::new(HOLD_TICKETS));
+    // A failing assertion lets the held ticket go too: the runtime waits
+    // for its blocking tasks as it shuts down, and would sit out the test's
+    // timeout rather than report.
+    struct Release(Arc<AtomicU8>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.store(PASS, Ordering::SeqCst);
+        }
+    }
+    let _release = Release(hold.clone());
     let reg_b = format!("http://{}/v1", registry_proxy(w.registry.addr(), hold.clone()));
     let mut o = w.viewer(&b, &session);
     o.api = Arc::new(krowk_api::Client::new(&reg_b, "krowk_sk_sync_attach_0000000000000000").signed_by(signer(&b)));
     let mut v = viewer::attach(o).await.unwrap();
     let mut frames = Vec::new();
     v.commands.send(w.prompt(Some(&session), "a long answer, queued")).unwrap();
-    let mut got = until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
+    // The long answer takes over 20 seconds on a macOS runner (r_lag_7's
+    // takes 24 there), however quickly it streams on Linux.
+    let mut got = until(&mut v, Duration::from_secs(90), &mut frames, result_of).await;
     assert!(got.iter().any(|u| matches!(u, viewer::Update::Sent { queued: true, .. })), "the prompt waited for the host: {got:?}");
     assert!(!got.iter().any(direct_path), "the race waits on its ticket");
     v.commands.send(w.prompt(Some(&session), "make the file")).unwrap();
-    got.extend(until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(_))))).await);
+    got.extend(until(&mut v, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(_))))).await);
 
     // The race goes on, and B moves with the approval waiting.
     hold.store(PASS, Ordering::SeqCst);
-    got.extend(until(&mut v, Duration::from_secs(15), &mut frames, direct_path).await);
+    got.extend(until(&mut v, Duration::from_secs(30), &mut frames, direct_path).await);
     tokio::time::sleep(Duration::from_millis(300)).await;
     while let Ok(batch) = v.updates.try_recv() {
         got.extend(batch);
@@ -1128,7 +1142,7 @@ async fn r_net_2_moving_to_the_direct_path_mid_session_stalls_nothing_and_shows_
     assert_eq!(asked.len(), 1, "the approval request was shown {} times", asked.len());
     let req = asked[0].clone();
     v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow }).unwrap();
-    got.extend(until(&mut v, Duration::from_secs(15), &mut frames, result_of).await);
+    got.extend(until(&mut v, Duration::from_secs(30), &mut frames, result_of).await);
     assert!(w.repo().join("approved.txt").exists(), "B's answer unblocked A's turn");
 
     let mut ids: Vec<String> = got.iter().flat_map(logged).collect();
