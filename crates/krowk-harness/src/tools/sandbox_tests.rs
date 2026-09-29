@@ -111,6 +111,17 @@ async fn r_perm_3_git_hooks_and_settings_are_read_only_inside_the_sandbox() {
     std::fs::create_dir_all(ws.join("nested")).unwrap();
     let (out, err) = bash(&ws, &scope, "mkdir -p nested/.git/hooks && echo 'echo pwned' > nested/.git/hooks/pre-commit").await;
     assert!(err && out.contains("the sandbox removed") && !ws.join("nested/.git").exists(), "{out}");
+    // A repository that was there before is the person's: renaming the
+    // directory it is in keeps it (its `.git` is the same inode).
+    std::fs::create_dir_all(ws.join("mine/.git")).unwrap();
+    std::fs::write(ws.join("mine/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let (out, _) = bash(&ws, &scope, "mv mine moved").await;
+    assert!(ws.join("moved/.git/HEAD").exists(), "a renamed repository's .git was removed: {out}");
+    // A FIFO where a `.git` or its config would be does not hang the
+    // search the next call makes.
+    let (_, _) = bash(&ws, &scope, "mkdir -p fifo && mkfifo fifo/.git; mkdir -p f2/.git && mkfifo f2/.git/config").await;
+    let r = tokio::time::timeout(Duration::from_secs(10), bash(&ws, &scope, "echo alive")).await;
+    assert!(r.is_ok_and(|(o, _)| o.contains("alive")), "the workspace search hung on a FIFO");
     // Not by a symlink in the workspace either.
     let (out, err) = bash(&ws, &scope, "ln -s .git/hooks h && echo x > h/post-checkout").await;
     assert!(err && !ws.join(".git/hooks/post-checkout").exists(), "{out}");

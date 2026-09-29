@@ -172,6 +172,9 @@ pub struct Plan {
     /// too large to search for every repository in it is refused, since a
     /// `.git` not found is a `.git` not fenced.
     pub refused: Option<String>,
+    /// Every `.git` the workspace search found, as it found them: what
+    /// `Unfenced` compares the workspace with after a call.
+    pub repos: Vec<PathBuf>,
     /// The Rust toolchain's homes, as `RUSTUP_HOME` and `CARGO_HOME` name
     /// them (or `~/.rustup` and `~/.cargo`): readable, never writable, and
     /// named to the command, since its own `HOME` is private. Cargo's
@@ -220,11 +223,12 @@ impl Plan {
         // Every repository in the workspace, nested ones too, and the hooks
         // directory each names: bound read-only, and fenced from the file
         // tools alike.
-        let (repos, refused) = match repositories(&writable, home) {
+        let (fences, refused) = match repositories(&writable, home) {
             Ok(r) => (r, None),
             Err(why) => (Fences::default(), Some(why)),
         };
-        read_only.extend(repos.all());
+        let repos = fences.repos.clone();
+        read_only.extend(fences.all());
         // A settings directory outside the workspace is read-only already
         // (the root is bound read-only, the home is hidden); one inside it
         // is bound back read-only over the writable bind.
@@ -243,7 +247,9 @@ impl Plan {
         let home = home.map(canon);
         let home_entries = match (&home, profile) {
             (Some(h), Profile::Workspace | Profile::ReadOnly) => std::fs::read_dir(h)
-                .map(|rd| rd.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.')).map(|e| e.path()).collect())
+                // Not a symlink: `~/keys -> ~/.ssh` would bind the dot
+                // directory back under another name.
+                .map(|rd| rd.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.') && e.file_type().is_ok_and(|t| !t.is_symlink())).map(|e| e.path()).collect())
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
@@ -259,6 +265,7 @@ impl Plan {
             home_entries,
             readable: readable.iter().map(|d| canon(d)).chain(toolchains.iter().map(|(_, d)| d.clone())).collect(),
             refused,
+            repos,
             toolchains,
         }
     }
@@ -361,17 +368,36 @@ impl Plan {
 /// `git init` in a subdirectory, a clone — is removed the same way: the
 /// workspace is searched again after the call for every `.git` it did not
 /// have before.
+///
+/// A `.git` is known by its device and inode, not its path: a directory
+/// holding a repository that a command renames (`mv sub moved`) keeps its
+/// `.git`'s inode and is left alone, while one made new (`git init`, a
+/// clone, a copy) has an inode the workspace did not have, and goes.
 pub struct Unfenced {
     missing: Vec<PathBuf>,
     writable: Vec<PathBuf>,
     home: Option<PathBuf>,
-    repos: Vec<PathBuf>,
+    repos: Vec<(u64, u64)>,
+}
+
+/// A path's device and inode, not following a symlink.
+fn identity(p: &Path) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::symlink_metadata(p).ok().map(|m| (m.dev(), m.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = p;
+        None
+    }
 }
 
 impl Unfenced {
     pub fn before(plan: &Plan) -> Unfenced {
         let missing = plan.read_only.iter().filter(|p| std::fs::symlink_metadata(p).is_err()).cloned().collect();
-        let repos = repositories(&plan.writable, plan.home.as_deref()).map(|f| f.repos).unwrap_or_default();
+        let repos = plan.repos.iter().filter_map(|r| identity(r)).collect();
         Unfenced { missing, writable: plan.writable.clone(), home: plan.home.clone(), repos }
     }
 
@@ -380,7 +406,7 @@ impl Unfenced {
         let mut out = Vec::new();
         let mut gone = std::mem::take(&mut self.missing);
         if let Ok(now) = repositories(&std::mem::take(&mut self.writable), self.home.as_deref()) {
-            gone.extend(now.repos.into_iter().filter(|r| !self.repos.contains(r)));
+            gone.extend(now.repos.into_iter().filter(|r| identity(r).is_none_or(|id| !self.repos.contains(&id))));
         }
         for p in gone {
             let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
@@ -456,10 +482,28 @@ fn repositories(roots: &[PathBuf], home: Option<&Path>) -> Result<Fences, String
     Ok(f)
 }
 
+/// A small regular file's text, read without following a symlink and
+/// without blocking: the workspace is the model's to write, and a FIFO
+/// named `.git` or `.git/config` must not hang the search.
+fn read_small(p: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    let f = o.open(p).ok()?;
+    if !f.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut s = String::new();
+    f.take(1 << 20).read_to_string(&mut s).ok()?;
+    Some(s)
+}
+
 /// Where a `.git` file (`gitdir: <path>`, a worktree's or a submodule's)
 /// leads, resolved against the repository.
 fn git_file_target(file: &Path, repo: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(file).ok()?;
+    let text = read_small(file)?;
     let target = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
     let p = if Path::new(target).is_absolute() { PathBuf::from(target) } else { repo.join(target) };
     Some(p.canonicalize().unwrap_or(p))
@@ -470,7 +514,7 @@ fn git_file_target(file: &Path, repo: &Path) -> Option<PathBuf> {
 /// written — and resolved as git does: `~/` against the home, a relative
 /// path against the repository's working tree.
 fn hooks_path(gitdir: &Path, repo: &Path, home: Option<&Path>) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(gitdir.join("config")).ok()?;
+    let text = read_small(&gitdir.join("config"))?;
     let mut core = false;
     let mut found = None;
     for line in text.lines().map(str::trim) {
@@ -608,6 +652,8 @@ mod tests {
         std::fs::create_dir_all(base.join("ws")).unwrap();
         std::fs::create_dir_all(base.join("home/.ssh")).unwrap();
         std::fs::create_dir_all(base.join("home/src")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(base.join("home/.ssh"), base.join("home/keys")).unwrap();
         // A nested repository naming its own hooks directory, and one that
         // is a gitdir file (a worktree's, a submodule's).
         std::fs::create_dir_all(base.join("ws/sub/.git")).unwrap();
@@ -632,6 +678,7 @@ mod tests {
         assert!(!args.contains(&"--unshare-net".to_string()), "workspace keeps the network");
         assert!(args.contains(&"/run/systemd/resolve".to_string()), "and its resolver");
         assert!(at("--tmpfs", &base.join("home")) < at("--ro-bind-try", &base.join("home/src")), "the home is hidden, then its non-dot entries come back");
+        assert!(!p.home_entries.contains(&base.join("home/keys")), "a symlink to a dot directory is not bound back");
         assert!(p.hides(&base.join("home/.ssh/id_ed25519")) && !p.hides(&base.join("home/src")));
         let strict = plan(Profile::Strict, &base);
         assert!(strict.bwrap_args().contains(&"--unshare-net".to_string()));
