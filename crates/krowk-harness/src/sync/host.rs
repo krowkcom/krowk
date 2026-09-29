@@ -290,7 +290,10 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let remote_turns: Arc<Mutex<HashSet<String>>> = Arc::default();
     let mut done: HashMap<String, Answer> = HashMap::new();
     let mut done_order: VecDeque<String> = VecDeque::new();
-    let mut running: HashSet<String> = HashSet::new();
+    // Commands being taken, by id, with the link that last sent each: a
+    // viewer that moved between the relay and a direct path while one ran
+    // is answered where it is now, not on the link it left.
+    let mut running: HashMap<String, u64> = HashMap::new();
     // Since when no viewer has been here to answer.
     let mut alone_since = Some(Instant::now());
     // Links the relay said are present since the host last joined; chains
@@ -351,9 +354,9 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                 if let Some(w) = ws.as_mut() && !super::send(w, sealed).await { ws = None; }
             }
             Some(h) = heads.recv() => head = Some(h),
-            Some((to, a)) = answers.recv() => {
+            Some((mut to, a)) = answers.recv() => {
                 if let Answer::Ack { id, .. } = &a && !id.is_empty() {
-                    running.remove(id);
+                    if let Some(now) = running.remove(id) { to = now; }
                     if done.insert(id.clone(), a.clone()).is_none() {
                         done_order.push_back(id.clone());
                         if done_order.len() > REMEMBERED && let Some(old) = done_order.pop_front() { done.remove(&old); }
@@ -369,7 +372,9 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                     break;
                 }
                 if let Some((here, since)) = &present && since.elapsed() > Duration::from_secs(1) {
-                    for l in link.links() { if !here.contains(&l) { link.forget(l); } }
+                    // The relay speaks for its own links only: a viewer on the
+                    // direct path is not one it could have named.
+                    for l in link.links() { if l < super::direct::FIRST_LINK && !here.contains(&l) { link.forget(l); } }
                     present = None;
                 }
                 if link.viewers().is_empty() { alone_since.get_or_insert_with(Instant::now); } else { alone_since = None; }
@@ -489,12 +494,12 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                                 Ok(ViewerFrame::Command(r)) if done.contains_key(&r.id) => {
                                     let _ = answers_tx.send((from, done[&r.id].clone()));
                                 }
-                                Ok(ViewerFrame::Command(r)) if running.contains(&r.id) => {}
+                                Ok(ViewerFrame::Command(r)) if running.contains_key(&r.id) => { running.insert(r.id, from); }
                                 Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &o.session) => {
                                     let _ = answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, and nothing else", o.session)) }));
                                 }
                                 Ok(ViewerFrame::Command(r)) => {
-                                    running.insert(r.id.clone());
+                                    running.insert(r.id.clone(), from);
                                     let command = under_session_settings(r.command, mode);
                                     let (daemon, answers, tx, turns) = (daemon.clone(), answers_tx.clone(), lines_tx.clone(), remote_turns.clone());
                                     tokio::spawn(async move {

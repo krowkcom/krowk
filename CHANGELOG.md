@@ -214,6 +214,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A viewer that moves to the direct path mid-session keeps receiving
+  the session.** The direct listener replays from where the viewer was when
+  it started looking for the direct path. The viewer had already opened
+  those batches through the relay, so it never acked them, and once the
+  listener's window filled, no further event reached the viewer, though
+  its own prompts and their acks still went through. An approval request
+  waiting while the viewer moved is now shown once, not once per path. A
+  command still running when the viewer moved is answered on the path the
+  viewer is on now. A host that reconnects to the relay no longer drops the
+  viewers on its direct path.
 - **A turn sent the moment the host daemon starts no longer stalls every
   other session.** The daemon waited on its thread for the TLS setup a
   turn's first request needs, and read a new directory's configuration
