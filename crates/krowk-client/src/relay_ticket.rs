@@ -103,7 +103,7 @@ fn bad(m: impl Into<String>) -> Refused {
 /// lifetime against `now`. Nothing about what it is presented for: that is
 /// the relay's to compare.
 pub fn verify(hex: &str, keys: &[([u8; 8], [u8; 32])], now: u64) -> Result<Ticket, Refused> {
-    let raw = (hex.len() % 2 == 0 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| e2e::unhex(&hex.to_ascii_lowercase())).flatten().ok_or_else(|| bad("the ticket is not hex"))?;
+    let raw = (hex.len().is_multiple_of(2) && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| e2e::unhex(&hex.to_ascii_lowercase())).flatten().ok_or_else(|| bad("the ticket is not hex"))?;
     if raw.len() < FIXED + 1 + 64 {
         return Err(bad("the ticket is shorter than its layout"));
     }
