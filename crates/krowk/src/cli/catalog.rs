@@ -861,6 +861,9 @@ pub const ALL_ONLY: &[&str] = &[
     "help",
     #[cfg(all(feature = "harness", unix))]
     "relay",
+    // Only for a tailnet whose machines are tagged for krowk.
+    #[cfg(all(feature = "harness", unix))]
+    "hosts",
 ];
 
 #[cfg(test)]
