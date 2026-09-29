@@ -223,6 +223,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The client protocol's types live in `krowk-client`.** The commands,
+  events and log lines, and the daemon's 28-byte frame header, are
+  declared in the crate the desktop app and the phones will link, which
+  pulls in no engine, tokio or reqwest; `krowk_harness::protocol`
+  still names the same types. The generated JSON Schema is unchanged.
 - **The status line's branch and pull request follow the agent.** They are
   read where the agent is at work, not only where krowk started: a
   worktree it makes and works in shows its branch and `#N↗` as soon as it

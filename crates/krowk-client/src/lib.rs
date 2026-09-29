@@ -9,6 +9,8 @@
 //!   and the only way back to it on a fresh machine (R-E2E-4).
 //! - `keystore`: the device key and the wrapped account key in krowk's
 //!   home, `0600`.
+//! - `protocol`: the typed commands, events and log lines every client
+//!   speaks, and the daemon's frame-envelope layout (`protocol::frame`).
 //!
 //! The design, and what a hostile server can and cannot learn from it, is
 //! `engineering/crypto.md` in Canon (R-OSS-1).
@@ -16,6 +18,7 @@
 pub mod e2e;
 pub mod keystore;
 pub mod phrase;
+pub mod protocol;
 
 /// A secret the caller holds for a moment — a typed phrase — wiped on drop.
 pub use zeroize::Zeroizing;
