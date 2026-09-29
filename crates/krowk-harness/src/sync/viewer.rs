@@ -354,8 +354,9 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                             held.push(b);
                         } else {
                             let gap = apply(l, &b, &mut seen, &mut last_id, &mut frame, &mut applied);
-                            // A batch the relay dropped: the host fills the gap.
-                            if gap && !catching_up && let Ok(f) = l.frame(&serde_json::to_vec(&ViewerFrame::CatchUp { after: last_id.clone() }).expect("json"), false) {
+                            // A batch the relay dropped: the host fills the gap,
+                            // from the newest event held before this batch.
+                            if let Some(after) = gap && !catching_up && let Ok(f) = l.frame(&serde_json::to_vec(&ViewerFrame::CatchUp { after }).expect("json"), false) {
                                 catching_up = true;
                                 frame.push(Update::Gap);
                                 if let Some(w) = ws.as_mut() && !super::send(w, f).await { ws = None; }
@@ -386,13 +387,16 @@ fn fresh_only(events: Vec<serde_json::Value>, seen: &mut HashSet<String>, last: 
 }
 
 /// One stream batch: its lines, the log's events among them once each.
-/// Answers whether it skipped past a batch this viewer never opened.
-fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mut Option<String>, frame: &mut Vec<Update>, applied: &mut u64) -> bool {
-    let Ok((body, end, skipped)) = l.open_batch_gap(b) else { return false };
+/// Answers, when it skipped past a batch this viewer never opened, the
+/// newest event held *before* it: what the catch-up asks from, since this
+/// batch's own events are newer than the ones the gap swallowed.
+fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mut Option<String>, frame: &mut Vec<Update>, applied: &mut u64) -> Option<Option<String>> {
+    let before = last.clone();
+    let Ok((body, end, skipped)) = l.open_batch_gap(b) else { return None };
     let seq = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
     // Against the last batch opened, or — the first since joining — the
     // relay's count at the join: either way the batch must be the next.
-    let gap = skipped || seq != *applied + 1;
+    let gap = (skipped || seq != *applied + 1).then_some(before);
     *applied = seq;
     let Ok(batch) = serde_json::from_slice::<Batch>(&body) else { return gap };
     for line in batch.lines {
