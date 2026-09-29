@@ -101,6 +101,26 @@ Everything krowk keeps is in `~/.krowk/` (move it with `KROWK_HOME`): settings i
 | `KROWK_API_URL` | Point at a self-hosted registry |
 | `KROWK_NO_UPDATE_CHECK` | `1` disables release checks |
 
+### MCP servers
+
+krowk's own agent uses the MCP servers you already set up for Claude Code: `mcpServers` in `~/.claude.json` (user and per-project) and in Claude's `settings.json`, plus `mcpServers` in `~/.krowk/config.json`. A repository's `.mcp.json` is used only after you trust the repository, and your own servers of the same name win over it. Each server takes Claude Code's shape, with `${VAR}` and `${VAR:-default}` expanded:
+
+```json
+{
+  "mcpServers": {
+    "github": { "command": "github-mcp-server", "args": ["stdio"], "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" } },
+    "docs":   { "type": "http", "url": "https://mcp.example.com/mcp", "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } }
+  }
+}
+```
+
+| Key | Purpose |
+| --- | --- |
+| `command`, `args`, `env` | A stdio server: the program krowk starts, and its arguments and environment |
+| `type: "http"`, `url`, `headers` | A streamable-HTTP server |
+
+The model sees two tools, `mcp_search` and `mcp_call`, however many MCP tools there are, so they cost no context until one is used. No server starts until the first search. Permission rules name a tool as `Mcp(server:tool)` or `mcp__server__tool`, and `Mcp(server)` names all of a server's tools; a server denied whole is never started.
+
 ## Development
 
 ```bash

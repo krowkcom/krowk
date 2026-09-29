@@ -241,6 +241,10 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
             if !ctx.compat.skills.is_empty() && offered(crate::compat::skills::TOOL) {
                 tool_defs.push(crate::compat::skills::definition());
             }
+            // However many MCP tools there are, two definitions (R-TOOL-3).
+            if !ctx.compat.mcp.is_empty() && offered(crate::mcp::SEARCH) && offered(crate::mcp::CALL) {
+                tool_defs.extend(ctx.compat.mcp.definitions());
+            }
             if let Some(run) = &ctx.agent {
                 system = crate::subagent::system_prompt(&system, run);
             }
@@ -598,6 +602,19 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
     let (call, claude, tool_input) = if let Some(c) = own.clone() {
         let claude = c.call.tool.clone();
         (c.call, claude, c.hook_input)
+    } else if name == crate::mcp::SEARCH && !ctx.compat.mcp.is_empty() {
+        (crate::permissions::Call { tool: "McpSearch".into(), access: crate::permissions::Access::Free, subject: None }, "McpSearch".to_string(), input.clone())
+    } else if name == crate::mcp::CALL && !ctx.compat.mcp.is_empty() {
+        // Judged, and seen by hooks, as the MCP tool itself, under Claude
+        // Code's name for it: `Mcp(server:tool)` and `mcp__server__tool`
+        // rules and hooks hold as they would there.
+        match crate::mcp::target(input) {
+            Ok((server, tool)) => {
+                let claude = format!("mcp__{server}__{tool}");
+                (crate::permissions::Call { tool: claude.clone(), access: crate::permissions::Access::Mcp { server, tool }, subject: None }, claude, crate::mcp::arguments(input))
+            }
+            Err(e) => return e,
+        }
     } else if skill {
         match crate::compat::skills::call(&ctx.compat.skills, input) {
             Ok((call, skill_name)) => (call, "Skill".to_string(), json!({ "skill": skill_name })),
@@ -640,6 +657,8 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
             }
             Err(e) => (e, true),
         },
+        None if name == crate::mcp::SEARCH && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.search(input, &|s, t| mcp_denied(ctx, s, t), &ctx.cancel).await,
+        None if name == crate::mcp::CALL && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.call(input, &|s, t| mcp_denied(ctx, s, t), &ctx.cancel).await,
         None if skill => crate::compat::skills::load(&ctx.compat.skills, input),
         None => tools::execute(name, input, env, ctx.gate.scope(opens)).await,
     };
@@ -651,6 +670,14 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
         output.push_str(&format!("\n\n(a hook adds: {c})"));
     }
     (output, is_error)
+}
+
+/// Whether a deny rule covers an MCP tool — `*` for the whole server:
+/// search leaves such a tool out, as Claude Code leaves it out of the tool
+/// list, and a server denied whole is never started.
+fn mcp_denied(ctx: &TurnContext, server: &str, tool: &str) -> bool {
+    let call = crate::permissions::Call { tool: format!("mcp__{server}__{tool}"), access: crate::permissions::Access::Mcp { server: server.into(), tool: tool.into() }, subject: None };
+    matches!(ctx.gate.verdict(&call, None), crate::permissions::Verdict::Deny(_))
 }
 
 #[cfg(test)]
@@ -741,6 +768,22 @@ mod tests {
         assert_eq!(effort_for(WireApi::OpenaiResponses, Some(None), &claude), Some(Low), "elsewhere none maps like any rung");
         assert_eq!(effort_for(WireApi::AnthropicMessages, Some(Xhigh), &claude), Some(Max));
         assert_eq!(effort_for(WireApi::ChatCompletions, Option::None, &claude), Option::None);
+    }
+
+    #[test]
+    fn r_tool_3_the_mcp_meta_tools_fit_the_context_budget_however_many_tools_the_servers_have() {
+        // Definitions depend on the servers' names alone, never on their
+        // tools: this is the whole cost of any number of MCP tools. Three
+        // servers, measured from `/` as the bench measures.
+        let server = |n: &str| crate::mcp::Server { name: n.into(), config: serde_json::from_value(json!({"command": "x"})).unwrap(), source: "test".into(), cwd: "/".into() };
+        let mcp = crate::mcp::Mcp::new(vec![server("github"), server("linear"), server("sentry")]);
+        let budget = context_tokens_budget();
+        for preset in PRESETS {
+            let ts = Toolset { preset, custom_tools: false };
+            let (s, t, m) = (estimate_tokens(&system_prompt(std::path::Path::new("/"), &ts)), tools_tokens(&tools::definitions(&ts)), tools_tokens(&mcp.definitions()));
+            println!("R-TOOL-3 context tokens: {}: system {s} + tools {t} + MCP {m} = {}", preset.name, s + t + m);
+            assert!(s + t + m <= budget, "{}: {} tokens with MCP servers, over context.tokens' {budget}", preset.name, s + t + m);
+        }
     }
 
     #[test]

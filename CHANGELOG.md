@@ -11,6 +11,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **krowk's own agent uses your MCP servers.** It reads the `mcpServers`
+  you set up for Claude Code (`~/.claude.json`, its `settings.json`), those
+  in `~/.krowk/config.json`, and a repository's `.mcp.json` once you trust
+  the repository, since a `.mcp.json` names programs to run. Stdio and
+  streamable-HTTP servers work. The model gets two tools, `mcp_search` and
+  `mcp_call`, instead of every server's tools, so fifty MCP tools cost each
+  turn about 140 tokens. No server starts until the model searches.
+  `Mcp(server:tool)` permission rules allow, ask about or deny each call,
+  and search leaves out tools a deny rule covers.
+
 - **`krowk sync attach` answers approvals and steers the turn.** Besides
   prompts, a line typed on its stdin can be `/approve REQUEST_ID`,
   `/allow-session REQUEST_ID` or `/deny REQUEST_ID`, answering the tool call

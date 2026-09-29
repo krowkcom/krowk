@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# A stand-in MCP server on stdio for krowk's tests. It lists $FAKE_TOOLS
+# tools (1 by default): `echo` first, then `tool_2`, `tool_3`, … filler.
+# `echo` answers with its `text` argument. Every message it reads is
+# appended to $FAKE_LOG, so a test can see what was — and was not — sent.
+n=${FAKE_TOOLS:-1}
+tools='{"name":"echo","description":"Echo a text back, to test the connection.","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}'
+for ((i = 2; i <= n; i++)); do
+  tools="$tools,{\"name\":\"tool_$i\",\"description\":\"Filler tool number $i, with a description of an ordinary length for an MCP tool.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}}"
+done
+while IFS= read -r line; do
+  [ -n "$FAKE_LOG" ] && printf '%s\n' "$line" >>"$FAKE_LOG"
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+  *'"method":"initialize"'*)
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1"}}}\n' "$id" ;;
+  *'"method":"tools/list"'*)
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[%s]}}\n' "$id" "$tools" ;;
+  *'"method":"tools/call"'*)
+    text=$(printf '%s' "$line" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p')
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"echo: %s"}]}}\n' "$id" "$text" ;;
+  esac
+done
