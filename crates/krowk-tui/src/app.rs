@@ -1482,7 +1482,9 @@ impl App {
                     if first {
                         self.gap();
                     }
-                    for l in done.trim_end_matches('\n').split('\n') {
+                    // Only the newline that ends the last line: a blank line
+                    // before it is the answer's.
+                    for l in done.strip_suffix('\n').unwrap_or(&done).split('\n') {
                         self.push_md(l);
                     }
                 }
@@ -2075,7 +2077,7 @@ impl App {
                 let (mark, style) = match t.status {
                     TodoStatus::Pending => ("☐ ", Style::new()),
                     TodoStatus::InProgress => ("◐ ", bold()),
-                    TodoStatus::Completed => ("☑ ", dim()),
+                    TodoStatus::Completed => ("☒ ", dim()),
                 };
                 Line::from(Span::styled(clip(&format!("{mark}{}", t.content), width), style))
             })
@@ -2827,6 +2829,10 @@ mod tests {
         a.on_line(&delta("i", "rd"));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "first line\nsecond\nthird".into() } }));
         assert_eq!(text(&a.take_pending()), ["third"], "the tail, and nothing twice");
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "j".into(), item: ItemKind::AssistantText }));
+        a.on_line(&delta("j", "Header\n\n"));
+        a.on_line(&delta("j", "- item\n"));
+        assert_eq!(text(&a.take_pending()), ["", "Header", "", "  • item"], "a blank line a delta ends on is kept");
     }
 
     #[test]
@@ -3431,7 +3437,7 @@ mod tests {
         assert_eq!(a.status_bar(), "[2 tasks]", "the open ones: pending or in progress");
         a.overlay = Overlay::Todos;
         let (rows, _) = a.view(Instant::now());
-        assert_eq!(&text(&rows)[..3], ["☑ read", "◐ fix", "☐ test"]);
+        assert_eq!(&text(&rows)[..3], ["☒ read", "◐ fix", "☐ test"]);
         let reminder = format!("{}The todo list has not been updated…</system-reminder>", krowk_harness::todo::REMINDER);
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r".into(), item: Item::UserText { text: reminder } }));
         assert_eq!(text(&a.take_pending()), ["◆ Reminded the model of its todo list"], "never shown as the person's words");

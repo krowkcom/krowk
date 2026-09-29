@@ -12,11 +12,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 ### Added
 
 - The TUI draws markdown tables in an answer the way psql does: indented, with a blank line either side, a bold header, and dim lines between the columns and under the header, but no box. Each cell is in the answer's markdown and wraps inside its column, aligned as the delimiter row says; once a row wraps, rows get a rule between them. On a screen too narrow for the columns, each row is shown as a record of `Header │ value` lines. A table is held while it streams and drawn once it ends.
-- Lists in an answer are easier to read in the TUI: a wrapped item's rows line up under its text rather than under its bullet, a list is indented two columns from the text around it, and a nested list is indented by its depth with its own bullet (`•`, `◦`, `▪`). Numbered lists (`1.`, `1)`) get their number in the accent colour, a task list's `[ ]` and `[x]` show as `☐` and `☑`, and a line that goes on under an item lines up with it. A quote's `│` runs down every row it wraps onto.
+- Lists in an answer are easier to read in the TUI: a wrapped item's rows line up under its text rather than under its bullet, a list is indented two columns from the text around it, and a nested list is indented by its depth with its own bullet (`•`, `◦`, `▪`). Numbered lists (`1.`, `1)`) get their number in the accent colour, a task list's `[ ]` and `[x]` show as `☐` and `☒`, and a line that goes on under an item lines up with it. A quote's `│` runs down every row it wraps onto.
 
 ### Changed
 
 - `@krowk/cli` on npm describes krowk as the coding agent it carries, with publishing as one of the things it does; `@krowk/mcp` says it publishes from any agent. The build-it-yourself line (npm launcher, `prompt.md`) installs the full build (`--features harness`) rather than `sessions`, which left the agent out. The Claude plugin's manifest version, stuck at 0.8.2, is 0.11.0.
+
+### Fixed
+
+- A blank line in an answer no longer goes missing in the TUI when the text streams in with a chunk ending right after it, which ran a heading or a label into the list or paragraph under it.
+- A finished todo is `☒`, not `☑`: `☑` has an emoji form, so many terminals drew it larger than the `☐` beside it.
 
 ## [0.11.0] - 2026-09-28
 
