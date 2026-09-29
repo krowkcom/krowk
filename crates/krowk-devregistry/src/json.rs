@@ -328,6 +328,11 @@ impl<'a> Fields<'a> {
         out
     }
 
+    /// The last value sent under `name`, None when absent or null.
+    pub fn get_value(&self, name: &str) -> Option<&Value> {
+        self.named(name).last().map(|m| &m.value).filter(|v| !matches!(v, Value::Null))
+    }
+
     /// A `json.RawMessage` field: the last member's bytes, whatever they hold.
     pub fn raw(&self, name: &str) -> Option<Range<usize>> {
         self.named(name).last().map(|m| m.raw.clone())

@@ -255,11 +255,11 @@ impl Client {
         Ok(self.request_url("GET", &url, None, MAX_ATTEMPTS, None)?.0)
     }
 
-    fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
+    pub(crate) fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
         Ok(self.call("GET", path, None, MAX_ATTEMPTS, None)?.0)
     }
 
-    fn call<T: DeserializeOwned>(
+    pub(crate) fn call<T: DeserializeOwned>(
         &self,
         method: &str,
         path: &str,
@@ -292,7 +292,7 @@ impl Client {
     }
 
     /// The status and body of a success, retried; the body not read as anything.
-    fn request_raw(&self, method: &str, url: &str, body: Option<Value>, attempts: u32, idempotency: Option<String>) -> Result<(u16, Vec<u8>), Error> {
+    pub(crate) fn request_raw(&self, method: &str, url: &str, body: Option<Value>, attempts: u32, idempotency: Option<String>) -> Result<(u16, Vec<u8>), Error> {
         let payload = body.map(|b| serde_json::to_vec(&b).expect("request body serializes"));
         let mut last = None;
         for attempt in 1..=attempts {
@@ -680,6 +680,25 @@ fn fix_for(code: &str, status: u16) -> String {
             "the registry has no such endpoint — check KROWK_API_URL names the API host and version, and that the method is the one this call uses"
         }
         "parameter_missing" | "invalid" | "bad_request" => "",
+        // Sync's refusals (R-SYNC-1, R-SYNC-2). Everything local keeps
+        // working without an account; what the free plan does not get is
+        // sessions leaving the machine.
+        "sync_requires_paid_plan" => {
+            "syncing sessions between devices needs a paid plan — upgrade this workspace to Pro at https://app.krowk.com; everything else krowk does keeps working locally without it"
+        }
+        // Never "join with the id in this error": a hostile registry could
+        // name a key it holds, and joining with it would hand it every
+        // session this machine syncs. The id to trust is on a machine the
+        // person already syncs from.
+        "account_key_mismatch" => {
+            "the registry says this workspace syncs under another account key — if this key came from `krowk sync recover`, a word of the phrase is wrong: run it again with the right one. Compare with `krowk devices list` on a machine you already sync from, never with an id in an error message; if you have no such machine, do not join this workspace, and its owner can reset sync in the dashboard's settings"
+        }
+        "session_limit_reached" => "this workspace holds as many synced sessions as one may — report it if you need more",
+        "approval_expired" => "the new device's request lapsed before it was approved — run `krowk sync join` on it again",
+        "already_approved" => "this device has already been approved — run `krowk sync join` on it to collect its key, if it has not",
+        "device_revoked" => "this device has been revoked for the workspace — set sync up again on it with `krowk sync recover`",
+        "lease_held" => "another device holds this session's lease — send it commands through that device, or wait for the lease to lapse",
+        "lease_stale" => "this device does not hold the session's lease — another device took it, it lapsed, or the token is not the holder's; acquire it again before writing",
         "method_not_allowed" => {
             "the registry does not answer that HTTP method — read the Allow header on this response, if it carries one, for the methods it does"
         }
@@ -779,7 +798,7 @@ fn escape(s: &str, keep: &[u8]) -> String {
 }
 
 /// The cursor and page size every listing takes.
-fn paged(path: &str, before: &str, limit: i64) -> String {
+pub(crate) fn paged(path: &str, before: &str, limit: i64) -> String {
     let mut query = Vec::new();
     if !before.is_empty() {
         query.push(format!("before={}", escape(before, b"-._~")));
@@ -955,6 +974,17 @@ impl ureq::unversioned::resolver::Resolver for GuardResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hostile registry answering `account_key_mismatch` with a key it
+    /// holds must not be able to talk the person into joining under it: the
+    /// fix never sends them to `join`, and names their own machines as the
+    /// place to read the id.
+    #[test]
+    fn the_account_key_mismatch_fix_never_points_at_join() {
+        let fix = fix_for("account_key_mismatch", 409);
+        assert!(!fix.contains("sync join"), "{fix}");
+        assert!(fix.contains("krowk devices list") && fix.contains("never with an id in an error message"), "{fix}");
+    }
 
     #[test]
     fn reserved_addresses_are_the_ones_inside_a_network() {

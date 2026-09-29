@@ -2,7 +2,8 @@
 //! demoed without Postgres, object storage or a Rails process.
 //!
 //! It implements the contract the real registry does — declare, upload,
-//! finalize; runs; the claim flow; one error envelope — including the parts
+//! finalize; runs; the claim flow; sync's devices, approvals, sessions and
+//! leases; one error envelope — including the parts
 //! that exist to catch a broken client: it refuses a finalize for bytes that
 //! never arrived, and bytes whose length or digest is not what was declared.
 //! A client that passes against this one is exercising the real sequence.
@@ -29,6 +30,7 @@ mod moves;
 mod page;
 mod runs;
 mod store;
+mod sync;
 mod uploads;
 mod view;
 mod xml;
@@ -234,6 +236,18 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         (_, ["v1", "runs", slug]) if get => runs::show(a, req, slug),
         ("PUT" | "PATCH", ["v1", "runs", slug, "completion"]) => runs::finish(a, req, slug),
         (_, ["v1", "runs", slug, "artifacts"]) if get => runs::artifacts(a, req, slug),
+        (_, ["v1", "devices"]) if get => sync::list_devices(a, req),
+        ("POST", ["v1", "devices"]) => sync::register_device(a, req),
+        (_, ["v1", "device_approvals"]) if get => sync::list_approvals(a, req),
+        ("POST", ["v1", "device_approvals"]) => sync::request_approval(a, req),
+        (_, ["v1", "device_approvals", slug]) if get => sync::show_approval(a, req, slug),
+        ("PUT" | "PATCH", ["v1", "device_approvals", slug, "approval"]) => sync::approve(a, req, slug),
+        (_, ["v1", "sessions"]) if get => sync::list_sessions(a, req),
+        (_, ["v1", "sessions", id]) if get => sync::show_session(a, req, id),
+        ("PUT" | "PATCH", ["v1", "sessions", id]) => sync::put_session(a, req, id),
+        ("POST", ["v1", "sessions", id, "lease"]) => sync::acquire_lease(a, req, id),
+        ("PUT" | "PATCH", ["v1", "sessions", id, "lease"]) => sync::renew_lease(a, req, id),
+        ("DELETE", ["v1", "sessions", id, "lease"]) => sync::release_lease(a, req, id),
         (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
         _ => no_such_endpoint(),
     }

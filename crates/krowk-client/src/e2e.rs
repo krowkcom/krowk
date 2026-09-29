@@ -174,6 +174,29 @@ impl std::fmt::Display for DeviceId {
     }
 }
 
+impl DeviceId {
+    /// An id as a person types it back: 32 hex characters, in any case, with
+    /// the spaces or dashes it was shown grouped by ignored.
+    pub fn parse(typed: &str) -> Option<DeviceId> {
+        parse_id(typed).map(DeviceId)
+    }
+
+    /// The id grouped in fours, to be read off one screen and compared with
+    /// another.
+    pub fn grouped(&self) -> String {
+        grouped(&self.to_string())
+    }
+}
+
+fn parse_id(typed: &str) -> Option<[u8; 16]> {
+    let hex: String = typed.chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
+    unhex(&hex.to_ascii_lowercase()).and_then(|b| b.try_into().ok())
+}
+
+fn grouped(hex: &str) -> String {
+    hex.as_bytes().chunks(4).map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>().join(" ")
+}
+
 /// The account key's id: a hash of the key, so a phrase can be checked
 /// against the key a device already holds, and a wrapped key names which
 /// account key it is without saying anything about it.
@@ -183,6 +206,17 @@ pub struct KeyId(pub [u8; 16]);
 impl std::fmt::Display for KeyId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&hex(&self.0))
+    }
+}
+
+impl KeyId {
+    /// As `DeviceId::parse`: 32 hex characters, spaces and dashes ignored.
+    pub fn parse(typed: &str) -> Option<KeyId> {
+        parse_id(typed).map(KeyId)
+    }
+
+    pub fn grouped(&self) -> String {
+        grouped(&self.to_string())
     }
 }
 
@@ -281,6 +315,40 @@ pub fn unwrap_account_key(blob: &[u8], key: KeyId, device: &DeviceKey) -> Result
         return Err(refused());
     }
     Ok(account)
+}
+
+/// The format byte of a sealed session index.
+pub const INDEX_V1: u8 = 1;
+
+/// A session's index — its title and whatever else a listing shows — sealed
+/// under its session key for the registry to hold: `version | suite | nonce
+/// | ciphertext + tag`. The associated data is a label, the version, the
+/// suite and the session's id, so an index moved to another session, or
+/// presented as a wrapped key, does not open.
+///
+/// One message, replaced whenever the holder writes it, so there is no
+/// counter chain to bind: a registry can hand back an older index than the
+/// latest (a rollback), which shows a stale title and nothing more. The
+/// chunks, which carry the log, bind their order (ticket 19).
+pub fn seal_session_index(key: &SessionKey, session: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
+    let head = [INDEX_V1, SUITE_XCHACHA20_POLY1305];
+    let nonce: [u8; NONCE] = random();
+    let aad = [&b"krowk/session-index/v1"[..], &head, session].concat();
+    let sealed = cipher(&key.0).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).expect("an index is far below XChaCha's limit");
+    [&head[..], &nonce, &sealed].concat()
+}
+
+pub fn open_session_index(blob: &[u8], session: &[u8; 16], key: &SessionKey) -> Result<Vec<u8>, Error> {
+    let refused = || err("the session index does not open with this session's key: it was changed, or belongs to another session");
+    if blob.len() < 2 + NONCE + TAG || blob[0] != INDEX_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
+        return Err(match blob.first() {
+            Some(&v) if v > INDEX_V1 => err(format!("the session index is format {v}, newer than this krowk reads — upgrade krowk")),
+            _ => refused(),
+        });
+    }
+    let nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
+    let aad = [&b"krowk/session-index/v1"[..], &blob[..2], session].concat();
+    cipher(&key.0).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())
 }
 
 fn cipher(key: &[u8; KEY]) -> XChaCha20Poly1305 {
@@ -597,5 +665,34 @@ mod tests {
         assert!(unhex("abc").is_none());
         assert!(unhex("zz").is_none());
         assert!(unhex("+f+f").is_none(), "a sign is not a hex digit");
+    }
+    /// R-E2E-1: a session's index — its title — reaches the registry sealed
+    /// under the session key, opens only for that session, and a changed
+    /// byte does not open at all.
+    #[test]
+    fn r_e2e_1_a_session_index_opens_only_for_its_session() {
+        let key = SessionKey::generate();
+        let sealed = seal_session_index(&key, &SESSION, b"fix the flaky test");
+        assert!(!sealed.windows(5).any(|w| w == b"flaky"), "the title is not in the blob");
+        assert_eq!(open_session_index(&sealed, &SESSION, &key).unwrap(), b"fix the flaky test");
+        assert!(open_session_index(&sealed, b"fedcba9876543210", &key).is_err(), "moved to another session");
+        assert!(open_session_index(&sealed, &SESSION, &SessionKey::generate()).is_err(), "another session's key");
+        let mut changed = sealed.clone();
+        *changed.last_mut().unwrap() ^= 1;
+        assert!(open_session_index(&changed, &SESSION, &key).is_err());
+        let mut newer = sealed;
+        newer[0] = INDEX_V1 + 1;
+        assert!(open_session_index(&newer, &SESSION, &key).unwrap_err().0.contains("upgrade krowk"));
+    }
+
+    #[test]
+    fn ids_read_back_as_they_were_shown() {
+        let d = DeviceKey::generate().id();
+        assert_eq!(d.grouped().len(), 32 + 7);
+        assert_eq!(DeviceId::parse(&d.grouped()), Some(d));
+        assert_eq!(DeviceId::parse(&d.grouped().to_uppercase().replace(' ', "-")), Some(d));
+        assert_eq!(DeviceId::parse(&d.to_string()[..30]), None);
+        let k = AccountKey::generate().id();
+        assert_eq!(KeyId::parse(&k.grouped()), Some(k));
     }
 }

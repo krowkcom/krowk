@@ -22,7 +22,7 @@ fn wire_shape_matches_the_registrys_routes() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let failures = Arc::new(Mutex::new(Vec::new()));
-    let proxy = start_proxy(registry.addr(), calls.clone(), failures.clone());
+    let proxy = start_proxy(registry.addr(), calls.clone(), failures.clone(), Arc::new(approve_logins));
 
     let dir = scratch();
     let file = dir.join("shot.png");
@@ -92,6 +92,87 @@ fn wire_shape_matches_the_registrys_routes() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The sync calls (R-SYNC-1, R-E2E-3): a device registered by `krowk sync
+/// recover`, the listing, a new device's `krowk sync join` answered by the
+/// first one's `krowk devices approve` — run by the proxy the moment the
+/// request is opened, so the join polls once — and the session and lease
+/// calls krowk-api makes for the host (ticket 19 puts them behind a command).
+#[cfg(all(feature = "harness", unix))]
+#[test]
+fn sync_wire_shape_matches_the_registrys_routes() {
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let failures = Arc::new(Mutex::new(Vec::new()));
+    // Its own directory: the test beside it clears `scratch()` as it goes.
+    let dir = std::env::temp_dir().join(format!("krowk-wire-sync-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("laptop/home")).unwrap();
+    std::fs::create_dir_all(dir.join("desktop/home")).unwrap();
+    let api = Arc::new(Mutex::new(String::new()));
+    let laptop_home = dir.join("laptop/home");
+    let (hook_api, hook_home) = (api.clone(), laptop_home.clone());
+    let hook: Hook = Arc::new(move |_registry, method: &str, path: &str, answer: &[u8]| {
+        if method != "POST" || path != "/v1/device_approvals" {
+            return Ok(());
+        }
+        let request: Value = serde_json::from_slice(&response_body(answer)).map_err(|e| e.to_string())?;
+        let key: [u8; 32] = krowk_client::e2e::unhex(request["public_key"].as_str().unwrap_or_default()).and_then(|b| b.try_into().ok()).ok_or("no public key")?;
+        let code = krowk_client::e2e::DevicePublic(key).id().to_string();
+        let laptop = Krowk { home: hook_home.clone(), api: hook_api.lock().unwrap().clone() };
+        match laptop.run(&["devices", "approve", &code], true) {
+            (true, _) => Ok(()),
+            (false, out) => Err(format!("approving the new device failed:\n{out}")),
+        }
+    });
+    let proxy = start_proxy(registry.addr(), calls.clone(), failures.clone(), hook);
+    *api.lock().unwrap() = format!("http://{proxy}/v1");
+    let laptop = Krowk { home: laptop_home, api: api.lock().unwrap().clone() };
+    let desktop = Krowk { home: dir.join("desktop/home"), api: api.lock().unwrap().clone() };
+
+    let words = krowk_client::phrase::encode(&krowk_client::e2e::AccountKey::generate());
+    let recovered = laptop.piped(&["sync", "recover"], &format!("{}\n", *words));
+    let account = recovered["data"]["account_key"].as_str().unwrap().to_string();
+    laptop.ok(&["devices", "list"], true);
+    desktop.ok(&["sync", "join", &account], true);
+
+    let client = krowk_api::Client::new(&laptop.api, "krowk_sk_test");
+    let device = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk")).device().unwrap().unwrap().id().to_string();
+    let id = "0190f3a8-7c1e-7a9b-8c2d-3e4f5a6b7c8d";
+    client.put_sync_session(id, &"00".repeat(74), Some(&"00".repeat(40)), None).unwrap();
+    let lease = client.acquire_lease(id, &device, 60).unwrap();
+    client.renew_lease(id, &device, &lease.token, 60).unwrap();
+    client.list_sync_sessions("", 50).unwrap();
+    client.show_sync_session(id).unwrap();
+    client.release_lease(id, &lease.token).unwrap();
+
+    assert!(failures.lock().unwrap().is_empty(), "{:?}", failures.lock().unwrap());
+    let want = [
+        // `recover` with a key registers the device it set up.
+        "POST /v1/devices",
+        "GET /v1/devices",
+        // `join` opens a request; the proxy answers it as `devices approve`
+        // does — registering itself, listing, answering — before the join
+        // hears back, and the join then polls it once.
+        "POST /v1/device_approvals",
+        "POST /v1/devices",
+        "GET /v1/device_approvals",
+        "PUT /v1/device_approvals/{slug}/approval",
+        "GET /v1/device_approvals/{slug}",
+        // A session is PUT under the id its client minted; its lease is a
+        // singular resource: POST acquires, PUT renews or hands over, DELETE
+        // lets go.
+        "PUT /v1/sessions/{id}",
+        "POST /v1/sessions/{id}/lease",
+        "PUT /v1/sessions/{id}/lease",
+        "GET /v1/sessions",
+        "GET /v1/sessions/{id}",
+        "DELETE /v1/sessions/{id}/lease",
+    ];
+    let got = calls.lock().unwrap().clone();
+    assert_eq!(got, want, "calls:\n  {}", got.join("\n  "));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 struct Krowk {
     home: PathBuf,
     api: String,
@@ -107,12 +188,38 @@ impl Krowk {
             .env("HOME", &self.home)
             .env("KROWK_API_URL", &self.api)
             .env("KROWK_NO_UPDATE_CHECK", "1")
+            // The debug build's stand-in for the person saying yes at
+            // `devices approve` and `sync join`.
+            .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
             .current_dir(self.home.parent().unwrap());
         if keyed {
             cmd.env("KROWK_TOKEN", "krowk_sk_test");
         }
         let out = cmd.output().unwrap();
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    }
+
+    /// `run`, keyed, with `input` on stdin.
+    #[cfg(all(feature = "harness", unix))]
+    fn piped(&self, args: &[&str], input: &str) -> Value {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        cmd.args(args)
+            .arg("--json")
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", &self.home)
+            .env("KROWK_API_URL", &self.api)
+            .env("KROWK_NO_UPDATE_CHECK", "1")
+            .env("KROWK_TOKEN", "krowk_sk_test")
+            .current_dir(self.home.parent().unwrap())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "krowk {} failed:\n{}", args.join(" "), String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice(&out.stdout).unwrap()
     }
 
     fn ok(&self, args: &[&str], keyed: bool) -> Value {
@@ -129,17 +236,23 @@ fn scratch() -> PathBuf {
     dir.canonicalize().unwrap()
 }
 
+/// What the proxy does with an answer before handing it on: stand in for
+/// the person on the other side of a flow that waits for one, so the CLI
+/// polls once and the sequence stays exact.
+type HookFn = dyn Fn(SocketAddr, &str, &str, &[u8]) -> Result<(), String> + Send + Sync;
+type Hook = Arc<HookFn>;
+
 /// A proxy of one request per connection — `Connection: close` both ways, so
 /// there is no keep-alive to follow — that records each API call as the pins
-/// read it, and approves a browser login before handing its answer on.
-fn start_proxy(registry: SocketAddr, calls: Arc<Mutex<Vec<String>>>, failures: Arc<Mutex<Vec<String>>>) -> SocketAddr {
+/// read it, and runs `hook` on each answer before handing it on.
+fn start_proxy(registry: SocketAddr, calls: Arc<Mutex<Vec<String>>>, failures: Arc<Mutex<Vec<String>>>, hook: Hook) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     std::thread::spawn(move || {
         for conn in listener.incoming().flatten() {
-            let (calls, failures) = (calls.clone(), failures.clone());
+            let (calls, failures, hook) = (calls.clone(), failures.clone(), hook.clone());
             std::thread::spawn(move || {
-                if let Err(e) = relay(conn, registry, &calls) {
+                if let Err(e) = relay(conn, registry, &calls, &*hook) {
                     failures.lock().unwrap().push(e);
                 }
             });
@@ -148,7 +261,15 @@ fn start_proxy(registry: SocketAddr, calls: Arc<Mutex<Vec<String>>>, failures: A
     addr
 }
 
-fn relay(mut client: TcpStream, registry: SocketAddr, calls: &Mutex<Vec<String>>) -> Result<(), String> {
+/// Approves a browser login the moment it is opened.
+fn approve_logins(registry: SocketAddr, method: &str, path: &str, answer: &[u8]) -> Result<(), String> {
+    if method == "POST" && path == "/v1/cli/authorizations" {
+        approve(registry, answer)?;
+    }
+    Ok(())
+}
+
+fn relay(mut client: TcpStream, registry: SocketAddr, calls: &Mutex<Vec<String>>, hook: &HookFn) -> Result<(), String> {
     let (head, body) = read_request(&mut client)?;
     let mut lines = head.split("\r\n");
     let request_line = lines.next().unwrap_or_default().to_string();
@@ -161,11 +282,9 @@ fn relay(mut client: TcpStream, registry: SocketAddr, calls: &Mutex<Vec<String>>
     }
 
     let answer = exchange(registry, &request_line, &headers, &body)?;
-    // Approved before the answer is handed on, so the CLI can never poll a
-    // login nobody has answered yet and the sequence stays exact.
-    if method == "POST" && path == "/v1/cli/authorizations" {
-        approve(registry, &answer)?;
-    }
+    // Answered before the answer is handed on, so the CLI can never poll a
+    // login or an approval nobody has answered yet.
+    hook(registry, &method, &path, &answer)?;
     client.write_all(&answer).map_err(|e| e.to_string())
 }
 
@@ -179,8 +298,10 @@ fn wire_call(method: &str, path: &str, keyed: bool) -> Option<String> {
     let slugged: Vec<String> = path
         .split('/')
         .map(|seg| {
-            let slug = ["art_", "aut_", "run_", "ws_"].iter().any(|p| seg.starts_with(p) && seg.len() > p.len());
-            if slug { "{slug}".to_string() } else { seg.to_string() }
+            let slug = ["art_", "aut_", "run_", "ws_", "dap_"].iter().any(|p| seg.starts_with(p) && seg.len() > p.len());
+            // A synced session is named by the UUID its client minted.
+            let uuid = seg.len() == 36 && seg.bytes().filter(|b| *b == b'-').count() == 4;
+            if slug { "{slug}".to_string() } else if uuid { "{id}".to_string() } else { seg.to_string() }
         })
         .collect();
     Some(format!("{method} {}{}", slugged.join("/"), if keyed { " +key" } else { "" }))

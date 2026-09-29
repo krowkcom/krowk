@@ -139,6 +139,9 @@ pub struct Store {
     /// three — so one key covers a push's run and artifact, and one client's key
     /// cannot collide with another's.
     pub idempotent: HashMap<String, Answered>,
+    /// Sync's records (`sync.rs`), each keyed by workspace and its own id so
+    /// one tenant's id is never another's.
+    pub sync: crate::sync::SyncStore,
     pub created: usize,
     pub runs_open: usize,
     clock: Clock,
@@ -161,6 +164,7 @@ impl App {
                 objects: HashMap::new(),
                 authorizations: HashMap::new(),
                 idempotent: HashMap::new(),
+                sync: crate::sync::SyncStore::default(),
                 created: 0,
                 runs_open: 0,
                 clock,

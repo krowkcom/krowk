@@ -1051,6 +1051,40 @@ stdout:
           "name": "recover",
           "usage": "krowk sync recover",
           "summary": "Restore the account key here from its recovery phrase"
+        },
+        {
+          "name": "join",
+          "usage": "krowk sync join [ACCOUNT_KEY_ID]",
+          "summary": "Add this machine, approved from one that already syncs",
+          "flags": [
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
+        },
+        {
+          "name": "register",
+          "usage": "krowk sync register [--name NAME]",
+          "summary": "Tell the workspace this machine holds its account key"
+        }
+      ]
+    },
+    {
+      "name": "devices",
+      "summary": "The machines that sync this workspace's sessions",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk devices list",
+          "summary": "The workspace's devices, and the account key this one holds"
+        },
+        {
+          "name": "approve",
+          "usage": "krowk devices approve [CODE]",
+          "summary": "Approve a new device's `krowk sync join`"
         }
       ]
     }
@@ -2272,6 +2306,40 @@ stdout:
           "name": "recover",
           "usage": "krowk sync recover",
           "summary": "Restore the account key here from its recovery phrase"
+        },
+        {
+          "name": "join",
+          "usage": "krowk sync join [ACCOUNT_KEY_ID]",
+          "summary": "Add this machine, approved from one that already syncs",
+          "flags": [
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
+        },
+        {
+          "name": "register",
+          "usage": "krowk sync register [--name NAME]",
+          "summary": "Tell the workspace this machine holds its account key"
+        }
+      ]
+    },
+    {
+      "name": "devices",
+      "summary": "The machines that sync this workspace's sessions",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk devices list",
+          "summary": "The workspace's devices, and the account key this one holds"
+        },
+        {
+          "name": "approve",
+          "usage": "krowk devices approve [CODE]",
+          "summary": "Approve a new device's `krowk sync join`"
         }
       ]
     }
@@ -3507,6 +3575,40 @@ stdout:
           "name": "recover",
           "usage": "krowk sync recover",
           "summary": "Restore the account key here from its recovery phrase"
+        },
+        {
+          "name": "join",
+          "usage": "krowk sync join [ACCOUNT_KEY_ID]",
+          "summary": "Add this machine, approved from one that already syncs",
+          "flags": [
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
+        },
+        {
+          "name": "register",
+          "usage": "krowk sync register [--name NAME]",
+          "summary": "Tell the workspace this machine holds its account key"
+        }
+      ]
+    },
+    {
+      "name": "devices",
+      "summary": "The machines that sync this workspace's sessions",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk devices list",
+          "summary": "The workspace's devices, and the account key this one holds"
+        },
+        {
+          "name": "approve",
+          "usage": "krowk devices approve [CODE]",
+          "summary": "Approve a new device's `krowk sync join`"
         }
       ]
     }
@@ -4742,6 +4844,40 @@ tty:
           "name": "recover",
           "usage": "krowk sync recover",
           "summary": "Restore the account key here from its recovery phrase"
+        },
+        {
+          "name": "join",
+          "usage": "krowk sync join [ACCOUNT_KEY_ID]",
+          "summary": "Add this machine, approved from one that already syncs",
+          "flags": [
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
+        },
+        {
+          "name": "register",
+          "usage": "krowk sync register [--name NAME]",
+          "summary": "Tell the workspace this machine holds its account key"
+        }
+      ]
+    },
+    {
+      "name": "devices",
+      "summary": "The machines that sync this workspace's sessions",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk devices list",
+          "summary": "The workspace's devices, and the account key this one holds"
+        },
+        {
+          "name": "approve",
+          "usage": "krowk devices approve [CODE]",
+          "summary": "Approve a new device's `krowk sync join`"
         }
       ]
     }
