@@ -201,7 +201,17 @@ unit = "bytes"
 # cipher, and the embedded 13 KB BIP-0039 word list; sha2, getrandom and
 # zeroize were linked already. The expectation written here before, that
 # 15 would fit only on ring's primitives, did not hold: it fits on these.
-max = { x86_64-linux = 9_699_328 }
+# Ticket 17, the relay's contract and `krowk relay serve`, takes the
+# umbrella (tickets 16 and 16b merged) from 9,616,008 to 9,767,240 (9.31
+# MiB): 151,232 bytes, 67,912 over 9.25 MiB. One new crate: ed25519-dalek
+# for each device's relay signing key, on the curve25519-dalek that
+# x25519-dalek already links, with its SHA-512 from the sha2 already
+# linked and without `fast`'s precomputed tables; the rest is the relay —
+# the join and its checks, the per-stream ring buffer and resume, routing,
+# windows and token buckets, the roster file and the command. Raised 9.25
+# -> 9.50 MiB by ticket 17, leaving 194,232 bytes for the rest of Harness
+# P1.
+max = { x86_64-linux = 9_961_472 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---
