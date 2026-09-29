@@ -342,12 +342,10 @@ pub fn register_device(app: &App, req: &mut Req) -> Resp {
         let mut f = v.fields();
         let public_key = required(&mut f, "public_key")?;
         let key = blob("public_key", &public_key, Some(PUBLIC_KEY_BYTES), None)?;
-        // Optional, as the registry has it: a CLI from before it registers
-        // without one, and registering again without one keeps it. Set
-        // once: another is refused, since any key of the workspace can
-        // register and the relay trusts joins signed by it.
-        let signing = f.string("signing_key");
-        let signing = if signing.is_empty() { None } else { Some(hex(&blob("signing_key", &signing, Some(PUBLIC_KEY_BYTES), None)?)) };
+        // Required, as the registry has it, and set once: another is
+        // refused, since any key of the workspace can register and the
+        // relay admits joins signed by it.
+        let signing = Some(hex(&blob("signing_key", &required(&mut f, "signing_key")?, Some(PUBLIC_KEY_BYTES), None)?));
         let name = name_field(&mut f)?;
         let account = id_field("account_key_id", &required(&mut f, "account_key_id")?)?;
         let mut s = app.lock();
@@ -409,8 +407,7 @@ pub fn request_approval(app: &App, req: &mut Req) -> Resp {
         let v = body(req, "device_approval")?;
         let mut f = v.fields();
         let key = blob("public_key", &required(&mut f, "public_key")?, Some(PUBLIC_KEY_BYTES), None)?;
-        let signing = f.string("signing_key");
-        let signing = if signing.is_empty() { String::new() } else { hex(&blob("signing_key", &signing, Some(PUBLIC_KEY_BYTES), None)?) };
+        let signing = hex(&blob("signing_key", &required(&mut f, "signing_key")?, Some(PUBLIC_KEY_BYTES), None)?);
         let name = name_field(&mut f)?;
         let mut s = app.lock();
         let now = s.now();

@@ -17,9 +17,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   sync join` sends it with the approval request, so the approval registers
   it. krowk's hosted relay uses it to tell this machine's connections from
   anyone else's. The key is set once: a different one for the same device
-  is refused (`signing_key_mismatch`). A machine that set sync up before
-  this registers its key by itself at the next `krowk devices list`, or
-  when you run `krowk sync register`.
+  is refused (`signing_key_mismatch`).
 - **A relay keeps development sessions apart from production ones.**
   A relay join now says which it is, `env` "production" or "development",
   and `krowk relay serve` gives each its own channel of a session, so a
