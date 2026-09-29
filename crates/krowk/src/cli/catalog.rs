@@ -469,7 +469,30 @@ pub fn catalog(version: &str) -> Catalog {
     c.commands.push(sync_command());
     #[cfg(feature = "harness")]
     c.commands.push(devices_command());
+    #[cfg(all(feature = "harness", unix))]
+    if let Some(sessions) = c.commands.iter_mut().find(|c| c.name == "sessions") {
+        sessions.subcommands.extend(vintage_commands());
+    }
     c
+}
+
+/// `krowk sessions archive`, `restore`, `pin` and `unpin`: native sessions
+/// leaving the machine as weekly vintages, and coming back (R-VINT-1..4).
+#[cfg(all(feature = "harness", unix))]
+fn vintage_commands() -> Vec<Command> {
+    let id = || vec![arg("id", "The session id, an unambiguous id prefix of at least 8 chars", true)];
+    vec![
+        Command {
+            flags: vec![
+                flag("older-than", STRING, "Idle cut-off in days (default 14, or KROWK_ARCHIVE_AFTER_DAYS)"),
+                flag("weekly", BOOL, "Run only a week after the last run: the weekly job"),
+            ],
+            ..cmd("archive", "krowk sessions archive [--older-than DAYS] [--weekly]", "Move idle sessions into encrypted weekly vintages")
+        },
+        Command { args: id(), ..cmd("restore", "krowk sessions restore <id>", "Bring an archived session back from its vintage") },
+        Command { args: id(), ..cmd("pin", "krowk sessions pin <id>", "Never archive this session") },
+        Command { args: id(), ..cmd("unpin", "krowk sessions unpin <id>", "Let a pinned session be archived again") },
+    ]
 }
 
 /// `krowk sync`: this machine's end-to-end keys (R-E2E-3, R-E2E-4).

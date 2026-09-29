@@ -94,3 +94,7 @@ pub mod todo;
 pub mod tools;
 pub mod toolset;
 pub mod trust;
+// The archive compresses with ruzstd, which links on unix only, where
+// `krowk sessions` runs.
+#[cfg(unix)]
+pub mod vintage;

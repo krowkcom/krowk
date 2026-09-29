@@ -61,6 +61,10 @@ AGENT
   sessions rebuild  Delete the local store and re-import every transcript
   sessions budget   Check a session against a spend limit
   sessions sync     Import what changed since the last import, refresh prices
+  sessions archive  Move idle sessions into encrypted weekly vintages
+  sessions restore  Bring an archived session back from its vintage
+  sessions pin      Never archive this session
+  sessions unpin    Let a pinned session be archived again
 
 PUBLISH
   push              Upload files, get a link for each
