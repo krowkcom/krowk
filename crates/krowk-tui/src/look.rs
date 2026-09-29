@@ -411,7 +411,7 @@ impl Markdown {
             Marker::Bullet => (BULLETS[self.items.len() % BULLETS.len()], accent()),
             Marker::Number(n) => (n, accent()),
             Marker::Task(false) => ("☐", accent()),
-            Marker::Task(true) => ("☑", success()),
+            Marker::Task(true) => ("☒", success()),
         };
         let text = at + glyph.width() + 1;
         self.items.push(Item { indent, text });
@@ -702,7 +702,7 @@ mod tests {
 
     #[test]
     fn a_task_is_a_box_ticked_or_not() {
-        assert_eq!(lines("- [ ] todo\n- [x] done\n- [X] also"), ["  ☐ todo", "  ☑ done", "  ☑ also"]);
+        assert_eq!(lines("- [ ] todo\n- [x] done\n- [X] also"), ["  ☐ todo", "  ☒ done", "  ☒ also"]);
         let mut f = Markdown::default();
         assert_eq!(markdown("- [x] done", &mut f).lead[1].style, success());
     }
