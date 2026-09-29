@@ -338,6 +338,13 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let viewer::Update::Attached { events, .. } = &got[0] else { panic!("{got:?}") };
     assert!(events.iter().any(|e| e.to_string().contains("say hello")), "the checkpoint holds the first turn");
 
+    // B may ask nothing of another session, nor start one on A.
+    for other in [None, Some("01a0ec7b-0000-7000-8000-000000000000")] {
+        v.commands.send(w.prompt(other, "not this session")).unwrap();
+        let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+        assert!(got.iter().any(|u| matches!(u, viewer::Update::Acked { error: Some(e), .. } if e.contains("nothing else"))), "{got:?}");
+    }
+
     // B types; A runs it.
     v.commands.send(w.prompt(Some(&session), &format!("make the file {PROMPT_MARKER}"))).unwrap();
     let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(_))))).await;
@@ -350,6 +357,14 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow }).unwrap();
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
     assert!(w.repo().join("approved.txt").exists(), "R-PERM-2: B's answer unblocked A's turn");
+
+    // The prefix check, live: told of a head past what the registry holds,
+    // B refuses the log it is served.
+    let mut o = w.viewer(&b, &session);
+    let head = s.index.head.unwrap();
+    o.known = Some(krowk_harness::sync::store::Head { index: head.index + 5, digest: [0; 32] });
+    let e = viewer::attach(o).await.err().expect("a prefix is refused");
+    assert!(e.contains("prefix"), "{e}");
 
     // R-LAG-7: never two hand-offs inside one display frame.
     let handed = v.handed.lock().unwrap().clone();

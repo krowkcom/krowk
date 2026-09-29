@@ -40,6 +40,8 @@ pub fn renew_every(ttl: u64) -> Duration {
 }
 
 /// How long an approval waits for any client before it is denied.
+/// Only while no viewer is connected: a request the terminal on the host's
+/// own machine is showing waits for its person as it always did.
 pub const APPROVAL_WAIT: Duration = Duration::from_secs(300);
 
 /// Batches kept for the relay while its link is down: past this the oldest
@@ -158,6 +160,18 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
     }
 }
 
+/// What a viewer may ask of the host: its session's prompt, steer,
+/// interrupt and approval, and nothing else. A viewer holds this session's
+/// key and no other, so a command naming another session — or none, which
+/// would start one in the host's directory — is refused, never run.
+fn for_this_session(c: &Command, session: &str) -> bool {
+    match c {
+        Command::Prompt { session_id, .. } => session_id.as_deref() == Some(session),
+        Command::Steer { session_id, .. } | Command::Interrupt { session_id } | Command::Approve { session_id, .. } => session_id == session,
+        _ => false,
+    }
+}
+
 fn worktree(cwd: &str) -> Option<String> {
     let out = std::process::Command::new("git").args(["-C", cwd, "rev-parse", "HEAD"]).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -245,7 +259,9 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
             }
             _ = on_demand.recv() => { let _ = jobs.send(Write::Checkpoint(worktree(&o.cwd))); }
             _ = sweep.tick() => {
-                let late: Vec<_> = approvals.iter().filter(|(_, (_, t))| t.elapsed() > APPROVAL_WAIT).map(|(k, (r, _))| (k.clone(), r.clone())).collect();
+                // Only while no viewer is here to answer: a person at A's own
+                // terminal answering slowly is not overruled.
+                let late: Vec<_> = approvals.iter().filter(|(_, (_, t))| link.viewers().is_empty() && t.elapsed() > APPROVAL_WAIT).map(|(k, (r, _))| (k.clone(), r.clone())).collect();
                 for (k, r) in late {
                     approvals.remove(&k);
                     let (tx, _) = mpsc::channel(1);
@@ -261,7 +277,12 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                 match super::join(j).await {
                     Ok((mut w, joined)) => {
                         let at = joined["seq"].as_u64().unwrap_or(0);
-                        if !link.continues_after(at) {
+                        // A relay holding more of this stream than it was sent, or
+                        // holding less than the oldest batch still kept (a cut
+                        // outlasted what is kept): this stream cannot follow on
+                        // there, so start another, and viewers read the gap from
+                        // the chunks.
+                        if !link.continues_after(at) || (at > 0 && kept.front().is_some_and(|(s, _)| *s > at + 1)) {
                             // A relay holding more of this stream than it was sent: start another.
                             link = HostLink::new(&key, raw);
                             kept.clear();
@@ -299,6 +320,9 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                                 if let (Some(w), Ok(sealed)) = (ws.as_mut(), link.welcome(from, &body)) && !super::send(w, sealed).await { ws = None; }
                             }
                             Ok(Inbound::Frame { body, .. }) => match serde_json::from_slice::<Remote>(&body) {
+                                Ok(r) if !for_this_session(&r.command, &o.session) => {
+                                    let _ = answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, and nothing else", o.session)) }));
+                                }
                                 Ok(r) => {
                                     let (daemon, answers, tx) = (daemon.clone(), answers_tx.clone(), lines_tx.clone());
                                     tokio::spawn(async move {
