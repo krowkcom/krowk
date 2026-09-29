@@ -1160,6 +1160,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A turn sent the moment the host daemon starts no longer stalls every
+  other session.** The daemon waited on its thread for the TLS setup a
+  turn's first request needs, and read a new directory's configuration
+  there too; both now happen off it, so streams and heartbeats keep going.
+  A TLS setup that fails once is tried again, rather than failing every
+  turn until the daemon restarts.
+- **`krowk host stop` straight after a turn keeps that turn on disk.** The
+  daemon waits for the turn's log to be flushed before it exits.
+
 - **A terminal suspended while it follows a long session no longer grows
   the host daemon's memory.** The daemon keeps a few megabytes for each
   client that stops reading, then drops what it held and, once the client
