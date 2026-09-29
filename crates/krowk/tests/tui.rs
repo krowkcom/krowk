@@ -448,7 +448,10 @@ fn new_after_a_resume_at_start_keeps_to_the_directory() {
     let seen = m.seen.lock().unwrap();
     let last = seen.iter().rev().find(|s| s.body["messages"].to_string().contains("summarise the README again")).expect("the prompt was sent");
     assert!(!last.body["messages"].to_string().contains("read README.md and summarise it"), "the resumed turns went to the new session");
-    assert_eq!(last.body["model"], seen[0].body["model"], "on the model the resumed session was on");
+    // The first session's model call, not whatever reached the mock first:
+    // on a slow runner that can be the TUI's connectivity probe.
+    let first = seen.iter().find(|s| s.body["messages"].to_string().contains("read README.md and summarise it")).expect("the first prompt was sent");
+    assert_eq!(last.body["model"], first.body["model"], "on the model the resumed session was on");
 }
 
 /// `/config` (or `/settings`) cycles the default permission mode and saves
@@ -1174,6 +1177,9 @@ fn r_tui_1_a_menu_opened_and_closed_on_a_short_session_puts_nothing_in_scrollbac
     let b = Sandbox::new("short");
     let Some(tm) = Tmux::start_after("short", 80, 40, &b.root.join("repo"), &b.env(&m.url), &[], "seq 1 50;") else { return };
     assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    // Routed first: the header's model row landing while a menu is open is
+    // a race of its own, not what this measures.
+    assert!(tm.wait_for("Model:", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     let gap = |h: &str| {
         let rows: Vec<&str> = h.lines().collect();
         let logo = rows.iter().position(|l| l.contains('▀')).unwrap_or_else(|| panic!("no logo:\n{h}"));
