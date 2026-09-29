@@ -65,6 +65,24 @@ const MAX_OUTPUT: usize = 30_000;
 /// One message from a server may be at most this long: a server that
 /// never ends a line cannot fill the memory.
 const MAX_MESSAGE: u64 = 16 << 20;
+/// What one server's `tools/list` may add up to, over at most this many
+/// pages: the list is held for the session, and a server that pages
+/// forever must not hold the turn until `START_TIMEOUT`.
+const MAX_LISTED: usize = 4 << 20;
+const MAX_PAGES: usize = 100;
+/// A tool whose input schema is bigger than this is left out: search hands
+/// the model its schema whole, and one tool must not fill the context.
+const MAX_SCHEMA: usize = 16 << 10;
+/// All of one search result, and the list of names a search with no match
+/// answers with.
+const MAX_SEARCH: usize = 32 << 10;
+const MAX_NAMES: usize = 4 << 10;
+/// A `.mcp.json` bigger than this is not read.
+const MAX_MCP_JSON: u64 = 1 << 20;
+/// krowk's own credentials, which a stdio server does not inherit unless
+/// its config sets them in `env`: a server is someone else's program, and
+/// the person's provider keys are not its to spend.
+const SCRUBBED: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "XAI_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"];
 
 /// One server's configuration, as `.mcp.json` writes it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -122,7 +140,7 @@ pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> Vec<Server> {
         }
     };
     let read = |p: &Path| std::fs::read(p).ok().and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
-    if trusted && let Some(v) = read(&root.join(".mcp.json")) {
+    if trusted && let Some(v) = read_project(&root) {
         add(v.get("mcpServers"), ".mcp.json");
     }
     if let Some(dir) = cfg.claude_home()
@@ -149,11 +167,27 @@ pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> Vec<Server> {
 /// Whether a repository's `.mcp.json` names a server: one of the things
 /// trust would turn on.
 pub fn project_has_servers(root: &Path) -> bool {
-    std::fs::read(root.join(".mcp.json"))
-        .ok()
-        .and_then(|r| serde_json::from_slice::<Value>(&r).ok())
-        .and_then(|v| v.get("mcpServers").and_then(|m| m.as_object()).map(|m| !m.is_empty()))
-        .unwrap_or(false)
+    project_digest(root).is_some()
+}
+
+/// A repository's `.mcp.json`, read only when it is a plain file of a
+/// sane size: it is read before the trust question, so a FIFO or a device
+/// there must not hang the harness.
+fn read_project(root: &Path) -> Option<Value> {
+    let p = root.join(".mcp.json");
+    let meta = std::fs::symlink_metadata(&p).ok()?;
+    if !meta.is_file() || meta.len() > MAX_MCP_JSON {
+        return None;
+    }
+    serde_json::from_slice(&std::fs::read(&p).ok()?).ok()
+}
+
+/// A digest of the servers a repository's `.mcp.json` names, none when it
+/// names none: what trust is recorded against (`crate::trust`).
+pub fn project_digest(root: &Path) -> Option<String> {
+    use sha2::Digest;
+    let servers = read_project(root)?.get("mcpServers").filter(|m| m.as_object().is_some_and(|m| !m.is_empty()))?.to_string();
+    Some(sha2::Sha256::digest(servers.as_bytes()).iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn expand(mut c: ServerConfig) -> ServerConfig {
@@ -200,12 +234,13 @@ struct Tool {
 }
 
 /// One server once started: its connection and what it listed, or why it
-/// is not running.
+/// is not running, and what of its list was left out.
 struct Live {
     name: String,
     conn: Option<Conn>,
     tools: Vec<Tool>,
     error: Option<String>,
+    left_out: Option<String>,
 }
 
 /// Whether a deny rule covers `server`'s `tool` (`*`: the whole server).
@@ -250,7 +285,8 @@ pub struct CallInput {
 pub fn target(input: &Value) -> Result<(String, String), (String, bool)> {
     let i = CallInput::deserialize(input).map_err(|e| (format!("invalid input for {CALL}: {e}"), true))?;
     match i.tool.split_once(':') {
-        Some((s, t)) if !s.is_empty() && !t.is_empty() => Ok((s.to_string(), t.to_string())),
+        // Checked before the call is judged: an approval prompt names it.
+        Some((s, t)) if good_name(s) && good_tool_name(t) => Ok((s.to_string(), t.to_string())),
         _ => Err((format!("{CALL} takes a tool as `server:tool`, as {SEARCH} returns it — not {:?}", i.tool), true)),
     }
 }
@@ -294,12 +330,12 @@ impl Mcp {
         let start_all = async {
             let starts = self.servers.iter().filter(|s| !denied(&s.name, "*")).map(|s| -> crate::engine::BoxFuture<'_, Live> {
                 Box::pin(async move {
-                    let (conn, tools, error) = match tokio::time::timeout(START_TIMEOUT, start(s)).await {
-                        Ok(Ok((conn, tools))) => (Some(conn), tools, None),
-                        Ok(Err(e)) => (None, Vec::new(), Some(e)),
-                        Err(_) => (None, Vec::new(), Some(format!("it did not start within {}s", START_TIMEOUT.as_secs()))),
+                    let (conn, (tools, left_out), error) = match tokio::time::timeout(START_TIMEOUT, start(s)).await {
+                        Ok(Ok((conn, listed))) => (Some(conn), listed, None),
+                        Ok(Err(e)) => (None, Default::default(), Some(e)),
+                        Err(_) => (None, Default::default(), Some(format!("it did not start within {}s", START_TIMEOUT.as_secs()))),
                     };
-                    Live { name: s.name.clone(), conn, tools, error }
+                    Live { name: s.name.clone(), conn, tools, error, left_out }
                 })
             });
             crate::native::join_all(starts.collect()).await
@@ -334,16 +370,40 @@ impl Mcp {
             }
         }
         hits.sort_by_key(|h| std::cmp::Reverse(h.0));
-        let found: Vec<Value> =
-            hits.iter().take(MATCHES).map(|(_, l, t)| json!({"tool": format!("{}:{}", l.name, t.name), "description": crate::http::clip(&t.description, 1000), "input_schema": t.schema})).collect();
+        // Each schema is at most MAX_SCHEMA (the list refused bigger ones),
+        // and the matches stop before the whole would pass MAX_SEARCH.
+        let mut found: Vec<Value> = Vec::new();
+        let mut size = 0;
+        for (_, l, t) in hits.iter().take(MATCHES) {
+            let hit = json!({"tool": format!("{}:{}", l.name, t.name), "description": crate::http::clip(&t.description, 1000), "input_schema": t.schema});
+            size += hit.to_string().len();
+            if size > MAX_SEARCH && !found.is_empty() {
+                break;
+            }
+            found.push(hit);
+        }
         let mut out = if found.is_empty() {
-            let all: Vec<String> = visible().map(|(l, t)| format!("{}:{}", l.name, t.name)).collect();
-            format!("No MCP tool matches {query:?}. The tools are: {}", if all.is_empty() { "none".into() } else { all.join(", ") })
+            let mut names = String::new();
+            for (l, t) in visible() {
+                let name = format!("{}:{}", l.name, t.name);
+                if names.len() + name.len() > MAX_NAMES {
+                    names.push_str(", … (search by what the tool does to find the rest)");
+                    break;
+                }
+                names.push_str(if names.is_empty() { "" } else { ", " });
+                names.push_str(&name);
+            }
+            format!("No MCP tool matches {query:?}. The tools are: {}", if names.is_empty() { "none" } else { &names })
         } else {
             serde_json::to_string_pretty(&found).expect("matches serialize")
         };
-        for l in live.iter().filter(|l| l.error.is_some()) {
-            out.push_str(&format!("\n(the MCP server {} is not running: {})", l.name, l.error.as_deref().unwrap_or_default()));
+        for l in live {
+            if let Some(e) = &l.error {
+                out.push_str(&format!("\n(the MCP server {} is not running: {e})", l.name));
+            }
+            if let Some(why) = &l.left_out {
+                out.push_str(&format!("\n(the MCP server {}: {why})", l.name));
+            }
         }
         (out, false)
     }
@@ -368,9 +428,17 @@ impl Mcp {
         }
         let mut cancel = cancel.clone();
         let req = conn.request("tools/call", json!({"name": tool, "arguments": arguments(input)}));
+        // `None` when the call timed out or was interrupted: cut off
+        // mid-message, the connection cannot be used again, so its process
+        // group goes now rather than at the turn's end.
         let answer = tokio::select! {
-            r = tokio::time::timeout(CALL_TIMEOUT, req) => r.unwrap_or_else(|_| Err(format!("it did not answer within {}s", CALL_TIMEOUT.as_secs()))),
-            _ = cancel.wait_for(|c| *c) => return (format!("{server}:{tool} was interrupted"), true),
+            r = tokio::time::timeout(CALL_TIMEOUT, req) => r.ok(),
+            _ = cancel.wait_for(|c| *c) => None,
+        };
+        let Some(answer) = answer else {
+            conn.kill().await;
+            let why = if *cancel.borrow() { "was interrupted".to_string() } else { format!("did not answer within {}s, so its server was stopped", CALL_TIMEOUT.as_secs()) };
+            return (format!("{server}:{tool} {why}"), true);
         };
         match answer {
             Ok(r) => render(&r),
@@ -406,26 +474,54 @@ fn render(r: &Value) -> (String, bool) {
 }
 
 /// Connects, initializes and lists the tools, following `nextCursor`.
-async fn start(s: &Server) -> Result<(Conn, Vec<Tool>), String> {
+async fn start(s: &Server) -> Result<(Conn, (Vec<Tool>, Option<String>)), String> {
     let conn = Conn::open(&s.config, &s.cwd)?;
     conn.request("initialize", json!({"protocolVersion": MCP_VERSION, "capabilities": {}, "clientInfo": {"name": "krowk", "version": env!("CARGO_PKG_VERSION")}})).await?;
     conn.notify("notifications/initialized").await?;
-    let mut tools = Vec::new();
+    let (mut tools, mut listed, mut big) = (Vec::new(), 0usize, 0usize);
+    let mut left_out = None;
     let mut cursor: Option<Value> = None;
-    loop {
+    for page in 1..=MAX_PAGES {
         let params = cursor.take().map_or_else(|| json!({}), |c| json!({"cursor": c}));
         let r = conn.request("tools/list", params).await?;
-        for t in r.get("tools").and_then(|t| t.as_array()).into_iter().flatten() {
-            let Some(name) = t.get("name").and_then(|n| n.as_str()) else { continue };
-            let description = t.get("description").and_then(|d| d.as_str()).unwrap_or_default().into();
-            tools.push(Tool { name: name.into(), description, schema: t.get("inputSchema").cloned().unwrap_or_else(|| json!({"type": "object"})) });
+        let got = r.get("tools").and_then(|t| t.as_array()).map_or(&[][..], |t| t.as_slice());
+        for t in got {
+            let Some(name) = t.get("name").and_then(|n| n.as_str()).filter(|n| good_tool_name(n)) else { continue };
+            let schema = t.get("inputSchema").cloned().unwrap_or_else(|| json!({"type": "object"}));
+            let description: String = t.get("description").and_then(|d| d.as_str()).unwrap_or_default().into();
+            let schema_len = schema.to_string().len();
+            if schema_len > MAX_SCHEMA {
+                big += 1;
+                continue;
+            }
+            listed += name.len() + description.len() + schema_len;
+            if listed > MAX_LISTED {
+                left_out = Some(format!("its tools add up to more than {} MiB, so the rest were left out", MAX_LISTED >> 20));
+                break;
+            }
+            tools.push(Tool { name: name.into(), description, schema });
         }
+        // A page with no tools that still names a next one is a server
+        // paging forever.
         match r.get("nextCursor") {
-            Some(c) if !c.is_null() && tools.len() < 10_000 => cursor = Some(c.clone()),
+            Some(c) if !c.is_null() && !got.is_empty() && left_out.is_none() => cursor = Some(c.clone()),
             _ => break,
         }
+        if page == MAX_PAGES {
+            left_out = Some(format!("it listed more than {MAX_PAGES} pages of tools, so the rest were left out"));
+        }
     }
-    Ok((conn, tools))
+    if big > 0 {
+        let note = format!("{big} tool(s) with an input schema over {} KiB were left out", MAX_SCHEMA >> 10);
+        left_out = Some(left_out.map_or(note.clone(), |l| format!("{l}; {note}")));
+    }
+    Ok((conn, (tools, left_out)))
+}
+
+/// A tool name as a server lists it, or the model gives it: printable, so
+/// the approval prompt that names it shows what it is.
+fn good_tool_name(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 128 && !n.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
 /// A connection to one server.
@@ -442,8 +538,26 @@ enum Conn {
 struct StdioIo {
     stdin: tokio::process::ChildStdin,
     stdout: BufReader<tokio::process::ChildStdout>,
-    /// Dropping it kills the server (`kill_on_drop`).
-    _child: tokio::process::Child,
+    /// Dropping it kills the server (`kill_on_drop`), and on unix its whole
+    /// process group: `npx` and `uvx` start the real server as a child.
+    child: tokio::process::Child,
+}
+
+impl StdioIo {
+    fn kill(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.child.id() {
+            // The group the server leads (`process_group(0)` below).
+            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+        }
+        let _ = self.child.start_kill();
+    }
+}
+
+impl Drop for StdioIo {
+    fn drop(&mut self) {
+        self.kill();
+    }
 }
 
 impl Conn {
@@ -456,7 +570,16 @@ impl Conn {
             }
             (Some("sse"), ..) => Err("the SSE transport is not supported; use a stdio or streamable-HTTP server".into()),
             (Some("stdio") | None, Some(cmd), _) => {
-                let mut child = tokio::process::Command::new(cmd)
+                let mut command = tokio::process::Command::new(program(cmd, cwd)?);
+                for (k, _) in std::env::vars_os() {
+                    let Some(k) = k.to_str() else { continue };
+                    if (SCRUBBED.contains(&k) || k.starts_with("KROWK_")) && !c.env.contains_key(k) {
+                        command.env_remove(k);
+                    }
+                }
+                #[cfg(unix)]
+                command.process_group(0);
+                let mut child = command
                     .args(&c.args)
                     .envs(&c.env)
                     .current_dir(cwd)
@@ -469,9 +592,17 @@ impl Conn {
                     .map_err(|e| format!("{cmd} could not be started: {e}"))?;
                 let stdin = child.stdin.take().ok_or("no stdin")?;
                 let stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
-                Ok(Conn::Stdio { io: tokio::sync::Mutex::new(StdioIo { stdin, stdout, _child: child }), next, cut: AtomicBool::new(false) })
+                Ok(Conn::Stdio { io: tokio::sync::Mutex::new(StdioIo { stdin, stdout, child }), next, cut: AtomicBool::new(false) })
             }
             (kind, ..) => Err(format!("it names neither a command nor a url for its transport ({})", kind.unwrap_or("stdio"))),
+        }
+    }
+
+    /// Stops a stdio server and its process group; it is not used again.
+    async fn kill(&self) {
+        if let Conn::Stdio { io, cut, .. } = self {
+            cut.store(true, Ordering::Release);
+            io.lock().await.kill();
         }
     }
 
@@ -548,21 +679,22 @@ impl Conn {
         }
         let status = resp.status();
         let sse = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|t| t.starts_with("text/event-stream"));
+        // An SSE stream is parsed as it arrives and only its unfinished
+        // line is kept, so the cap is per event, however long the stream;
+        // any other body is capped whole.
         let mut body: Vec<u8> = Vec::new();
-        let mut scanned = 0;
+        let streaming = sse && status.is_success();
         while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
             body.extend_from_slice(&chunk);
-            if body.len() as u64 > MAX_MESSAGE {
-                return Err(format!("the server sent a message over {} MiB", MAX_MESSAGE >> 20));
-            }
-            if let (true, true, Some(id)) = (sse, status.is_success(), id) {
-                // Every whole line so far, from where the last look ended.
+            if streaming && let Some(id) = id {
                 let whole = body.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-                let lines = String::from_utf8_lossy(&body[scanned..whole.max(scanned)]).into_owned();
-                scanned = whole.max(scanned);
-                if let Some(v) = sse_answer(&lines, id) {
+                let lines: Vec<u8> = body.drain(..whole).collect();
+                if let Some(v) = sse_answer(&String::from_utf8_lossy(&lines), id) {
                     return Ok(Some(v));
                 }
+            }
+            if body.len() as u64 > MAX_MESSAGE {
+                return Err(format!("the server sent a message over {} MiB", MAX_MESSAGE >> 20));
             }
         }
         let body = String::from_utf8_lossy(&body);
@@ -575,6 +707,34 @@ impl Conn {
         }
         serde_json::from_str::<Value>(&body).map(|v| Some(v).filter(|v| is_answer(v, id))).map_err(|e| format!("the answer is not JSON: {e}"))
     }
+}
+
+/// The program a stdio server's `command` names, resolved here rather than
+/// by the OS: a relative path against the server's own working directory
+/// (never krowk's, which may be a repository nobody trusted), and a bare
+/// name through the absolute directories of `PATH` only, since a relative
+/// entry there (`.`) would also resolve against krowk's.
+fn program(cmd: &str, cwd: &Path) -> Result<PathBuf, String> {
+    let p = Path::new(cmd);
+    if p.is_absolute() {
+        return Ok(p.to_path_buf());
+    }
+    if p.components().count() > 1 || cmd.starts_with('.') {
+        return Ok(cwd.join(p));
+    }
+    #[cfg(unix)]
+    if let Some(found) = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path).filter(|d| d.is_absolute()).map(|d| d.join(cmd)).find(|f| {
+            use std::os::unix::fs::PermissionsExt;
+            f.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+    }) {
+        return Ok(found);
+    }
+    #[cfg(unix)]
+    return Err(format!("{cmd} is not on the PATH (only its absolute directories are searched)"));
+    #[cfg(not(unix))]
+    Ok(p.to_path_buf())
 }
 
 /// The answer to `id` among an SSE stream's `data:` lines.
@@ -609,6 +769,14 @@ mod tests {
         assert!(good_name("github") && good_name("my-server_2"));
         for bad in ["a__b", "a:b", "", "s_", "_s", "a b"] {
             assert!(!good_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn r_tool_3_a_call_naming_a_control_character_is_refused_before_it_is_judged() {
+        assert_eq!(target(&json!({"tool": "fake:echo"})).unwrap(), ("fake".into(), "echo".into()));
+        for bad in ["fake:echo\u{1b}[2J", "fake:a\nb", "fa ke:echo", "fake:", ":echo", "s_:x"] {
+            assert!(target(&json!({"tool": bad})).is_err(), "{bad:?}");
         }
     }
 

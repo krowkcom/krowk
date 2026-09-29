@@ -19,7 +19,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `mcp_call`, instead of every server's tools, so fifty MCP tools cost each
   turn about 140 tokens. No server starts until the model searches.
   `Mcp(server:tool)` permission rules allow, ask about or deny each call,
-  and search leaves out tools a deny rule covers.
+  and search leaves out tools a deny rule covers. A repository's servers
+  are asked about again when its `.mcp.json` changes after you trusted it,
+  and no server inherits your provider keys unless its config sets them.
 
 - **`krowk sync attach` answers approvals and steers the turn.** Besides
   prompts, a line typed on its stdin can be `/approve REQUEST_ID`,

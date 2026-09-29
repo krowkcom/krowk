@@ -83,6 +83,12 @@ pub fn untrusted(root: &Path, how: &str) -> EngineError {
 struct Listed {
     #[serde(default)]
     directories: Vec<String>,
+    /// For each trusted repository whose `.mcp.json` named servers when it
+    /// was trusted, a digest of those servers. Trust covers the servers the
+    /// person was shown: one added or changed since — a `git pull` — puts
+    /// the repository back to untrusted until it is asked about again.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    mcp: std::collections::BTreeMap<String, String>,
 }
 
 /// Why `root` may not be remembered as trusted, if it may not: it is `/`,
@@ -127,7 +133,9 @@ impl Store {
     /// the home directory or `/`, however it got there.
     pub fn trusts(&self, root: &Path) -> bool {
         let Ok(listed) = self.read() else { return false };
-        unrecordable(root, self.home.as_deref()).is_none() && listed.directories.iter().any(|d| Path::new(d) == root)
+        unrecordable(root, self.home.as_deref()).is_none()
+            && listed.directories.iter().any(|d| Path::new(d) == root)
+            && listed.mcp.get(&root.display().to_string()).cloned() == crate::mcp::project_digest(root)
     }
 
     /// Why `root` cannot be remembered, if it cannot.
@@ -141,12 +149,19 @@ impl Store {
             return Err(format!("{} is not remembered as trusted: {why}", root.display()));
         }
         let mut listed = self.read()?;
+        let digest = crate::mcp::project_digest(root);
         let root = root.display().to_string();
-        if listed.directories.contains(&root) {
+        if listed.directories.contains(&root) && listed.mcp.get(&root) == digest.as_ref() {
             return Ok(());
         }
-        listed.directories.push(root);
-        listed.directories.sort();
+        match digest {
+            Some(d) => listed.mcp.insert(root.clone(), d),
+            None => listed.mcp.remove(&root),
+        };
+        if !listed.directories.contains(&root) {
+            listed.directories.push(root);
+            listed.directories.sort();
+        }
         let path = self.path.as_ref().ok_or("there is no home directory to remember it in — set HOME, or KROWK_HOME to an absolute path")?;
         let dir = path.parent().ok_or_else(|| format!("{} has no directory", path.display()))?;
         crate::log::private_dir(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
@@ -213,6 +228,18 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(base.join("config/trusted.json")).unwrap().permissions().mode() & 0o777, 0o600);
         }
+        // R-TOOL-3: trust covers the MCP servers the repository named when
+        // it was trusted; one added or changed later is asked about again.
+        std::fs::write(base.join("config/trusted.json"), "{}").unwrap();
+        std::fs::remove_file(repo.join(".mcp.json")).unwrap();
+        store.trust(&repo).unwrap();
+        assert!(store.trusts(&repo));
+        std::fs::write(repo.join(".mcp.json"), r#"{"mcpServers": {"x": {"command": "x"}}}"#).unwrap();
+        assert!(!store.trusts(&repo), "r_tool_3: a .mcp.json that appeared after trust is asked about");
+        store.trust(&repo).unwrap();
+        assert!(store.trusts(&repo));
+        std::fs::write(repo.join(".mcp.json"), r#"{"mcpServers": {"x": {"command": "y"}}}"#).unwrap();
+        assert!(!store.trusts(&repo), "r_tool_3: a changed .mcp.json is asked about");
         std::fs::write(base.join("config/trusted.json"), "not json").unwrap();
         assert!(!store.trusts(&repo), "a file that cannot be read trusts nothing");
         let _ = std::fs::remove_dir_all(&base);
