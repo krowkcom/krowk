@@ -136,8 +136,11 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     laptop.ok(&["devices", "list"], true);
     desktop.ok(&["sync", "join", &account], true);
 
-    let client = krowk_api::Client::new(&laptop.api, "krowk_sk_test");
-    let device = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk")).device().unwrap().unwrap().id().to_string();
+    let store = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk"));
+    let device_id = store.device().unwrap().unwrap().id();
+    let signer = krowk_client::e2e::DeviceSigner::new(device_id, store.signing_key().unwrap()).shared();
+    let client = krowk_api::Client::new(&laptop.api, "krowk_sk_test").signed_by(signer);
+    let device = device_id.to_string();
     let id = "0190f3a8-7c1e-7a9b-8c2d-3e4f5a6b7c8d";
     client.put_sync_session(id, &"00".repeat(74), Some(&"00".repeat(40)), None).unwrap();
     let lease = client.acquire_lease(id, &device, 60, "production").unwrap();
@@ -155,35 +158,37 @@ fn sync_wire_shape_matches_the_registrys_routes() {
 
     assert!(failures.lock().unwrap().is_empty(), "{:?}", failures.lock().unwrap());
     let want = [
-        // `recover` with a key registers the device it set up.
-        "POST /v1/devices",
+        // `recover` with a key registers the device it set up. +signed marks
+        // the calls that act as a device, signed by its key (crypto.md →
+        // Signed registry requests), and only they are.
+        "POST /v1/devices +signed",
         "GET /v1/devices",
         // `join` opens a request; the proxy answers it as `devices approve`
         // does — registering itself, listing, answering — before the join
         // hears back, and the join then polls it once.
         "POST /v1/device_approvals",
-        "POST /v1/devices",
+        "POST /v1/devices +signed",
         "GET /v1/device_approvals",
-        "PUT /v1/device_approvals/{slug}/approval",
+        "PUT /v1/device_approvals/{slug}/approval +signed",
         "GET /v1/device_approvals/{slug}",
         // A session is PUT under the id its client minted; its lease is a
         // singular resource: POST acquires, PUT renews or hands over, DELETE
         // lets go.
-        "PUT /v1/sessions/{id}",
-        "POST /v1/sessions/{id}/lease",
-        "PUT /v1/sessions/{id}/lease",
+        "PUT /v1/sessions/{id} +signed",
+        "POST /v1/sessions/{id}/lease +signed",
+        "PUT /v1/sessions/{id}/lease +signed",
         // A viewer's relay ticket (relay.md → Tickets); a host's comes
         // with the lease.
-        "GET /v1/sessions/{id}/relay_ticket",
+        "GET /v1/sessions/{id}/relay_ticket +signed",
         "GET /v1/sessions",
         "GET /v1/sessions/{id}",
         // A chunk of the session's log: declared under an Idempotency-Key,
         // its bytes put to storage (not pinned, as for an artifact), then
         // finalized; read back through the listing and storage.
-        "POST /v1/sessions/{id}/chunks +key",
-        "PUT /v1/sessions/{id}/chunks/0/finalization",
+        "POST /v1/sessions/{id}/chunks +key +signed",
+        "PUT /v1/sessions/{id}/chunks/0/finalization +signed",
         "GET /v1/sessions/{id}/chunks",
-        "DELETE /v1/sessions/{id}/lease",
+        "DELETE /v1/sessions/{id}/lease +signed",
     ];
     let got = calls.lock().unwrap().clone();
     assert_eq!(got, want, "calls:\n  {}", got.join("\n  "));
@@ -293,8 +298,10 @@ fn relay(mut client: TcpStream, registry: SocketAddr, calls: &Mutex<Vec<String>>
     let mut parts = request_line.split(' ');
     let (method, path) = (parts.next().unwrap_or_default().to_string(), parts.next().unwrap_or_default().to_string());
     let headers: Vec<&str> = lines.filter(|l| !l.is_empty()).collect();
-    let keyed = headers.iter().any(|h| h.to_ascii_lowercase().starts_with("idempotency-key:"));
-    if let Some(call) = wire_call(&method, &path, keyed) {
+    let has = |name: &str| headers.iter().any(|h| h.to_ascii_lowercase().starts_with(name));
+    let keyed = has("idempotency-key:");
+    let signed = has("x-krowk-device:") && has("x-krowk-timestamp:") && has("x-krowk-signature:");
+    if let Some(call) = wire_call(&method, &path, keyed, signed) {
         calls.lock().unwrap().push(call);
     }
 
@@ -307,7 +314,7 @@ fn relay(mut client: TcpStream, registry: SocketAddr, calls: &Mutex<Vec<String>>
 
 /// The request as the pins name it; None for what is not the API surface —
 /// object storage, and the approval page the stand-in serves for the app.
-fn wire_call(method: &str, path: &str, keyed: bool) -> Option<String> {
+fn wire_call(method: &str, path: &str, keyed: bool, signed: bool) -> Option<String> {
     let path = path.split('?').next().unwrap_or_default();
     if path.starts_with("/_storage") || path.starts_with("/_approve") {
         return None;
@@ -321,7 +328,7 @@ fn wire_call(method: &str, path: &str, keyed: bool) -> Option<String> {
             if slug { "{slug}".to_string() } else if uuid { "{id}".to_string() } else { seg.to_string() }
         })
         .collect();
-    Some(format!("{method} {}{}", slugged.join("/"), if keyed { " +key" } else { "" }))
+    Some(format!("{method} {}{}{}", slugged.join("/"), if keyed { " +key" } else { "" }, if signed { " +signed" } else { "" }))
 }
 
 /// One request to the registry, with `Connection: close`; the whole raw answer.

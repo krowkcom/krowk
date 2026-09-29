@@ -243,24 +243,24 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         ("PUT" | "PATCH", ["v1", "runs", slug, "completion"]) => runs::finish(a, req, slug),
         (_, ["v1", "runs", slug, "artifacts"]) if get => runs::artifacts(a, req, slug),
         (_, ["v1", "devices"]) if get => sync::list_devices(a, req),
-        ("POST", ["v1", "devices"]) => sync::register_device(a, req),
+        ("POST", ["v1", "devices"]) => sync::signed(a, req, sync::register_device),
         (_, ["v1", "device_approvals"]) if get => sync::list_approvals(a, req),
         ("POST", ["v1", "device_approvals"]) => sync::request_approval(a, req),
         (_, ["v1", "device_approvals", slug]) if get => sync::show_approval(a, req, slug),
-        ("PUT" | "PATCH", ["v1", "device_approvals", slug, "approval"]) => sync::approve(a, req, slug),
+        ("PUT" | "PATCH", ["v1", "device_approvals", slug, "approval"]) => sync::signed(a, req, |a, req, by| sync::approve(a, req, slug, by)),
         (_, ["v1", "sessions"]) if get => sync::list_sessions(a, req),
         (_, ["v1", "sessions", id]) if get => sync::show_session(a, req, id),
-        ("PUT" | "PATCH", ["v1", "sessions", id]) => sync::put_session(a, req, id),
-        (_, ["v1", "sessions", id, "relay_ticket"]) if get => sync::viewer_ticket(a, req, id),
-        ("POST", ["v1", "sessions", id, "lease"]) => sync::acquire_lease(a, req, id),
-        ("PUT" | "PATCH", ["v1", "sessions", id, "lease"]) => sync::renew_lease(a, req, id),
-        ("DELETE", ["v1", "sessions", id, "lease"]) => sync::release_lease(a, req, id),
+        ("PUT" | "PATCH", ["v1", "sessions", id]) => sync::signed(a, req, |a, req, by| sync::put_session(a, req, id, by)),
+        (_, ["v1", "sessions", id, "relay_ticket"]) if get => sync::signed(a, req, |a, req, by| sync::viewer_ticket(a, req, id, by)),
+        ("POST", ["v1", "sessions", id, "lease"]) => sync::signed(a, req, |a, req, by| sync::acquire_lease(a, req, id, by)),
+        ("PUT" | "PATCH", ["v1", "sessions", id, "lease"]) => sync::signed(a, req, |a, req, by| sync::renew_lease(a, req, id, by)),
+        ("DELETE", ["v1", "sessions", id, "lease"]) => sync::signed(a, req, |a, req, by| sync::release_lease(a, req, id, by)),
         ("POST", ["v1", "sessions", id, "chunks"]) => {
             let site = site(req, &a.site);
-            sync::declare_chunk(a, req, id, &site)
+            sync::signed(a, req, |a, req, by| sync::declare_chunk(a, req, id, &site, by))
         }
         (_, ["v1", "sessions", id, "chunks"]) if get => sync::list_chunks(a, req, id, &site(req, &a.site)),
-        ("PUT" | "PATCH", ["v1", "sessions", id, "chunks", index, "finalization"]) => sync::finalize_chunk(a, req, id, index),
+        ("PUT" | "PATCH", ["v1", "sessions", id, "chunks", index, "finalization"]) => sync::signed(a, req, |a, req, by| sync::finalize_chunk(a, req, id, index, by)),
         ("POST", ["_reset", "sync"]) => sync::reset(a, req),
         (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
         _ => no_such_endpoint(),

@@ -11,6 +11,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Sync calls that act as this machine are signed by its own key.**
+  Registering or approving a device, a lease call, writing a session or
+  its log, and asking for a relay ticket now carry `X-Krowk-Device`,
+  `X-Krowk-Timestamp` and `X-Krowk-Signature`, an Ed25519 signature by
+  this machine's signing key. The registry refuses them unsigned, signed by
+  another key, more than five minutes off its clock, or sent twice, so a
+  workspace API key alone can no longer act as one of its devices. A
+  clock more than five minutes out makes these calls fail with
+  `signature_stale`.
 - **A file a session publishes now says what made it.** Besides the session
   (`krowk.session`), each artifact `publish` pushes records the engine that
   ran the turn (`krowk.engine`: `krowk`, `claude-code` or
