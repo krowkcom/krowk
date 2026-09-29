@@ -42,7 +42,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     // Bound before it is announced, so a script keying off the banner
     // finds it listening.
     let _ = ctx.io.stdout.write_all(banner(&bound, origin.as_deref()).as_bytes()).and_then(|_| ctx.io.stdout.flush());
-    relay::run(listener, Config { roster, origin, limits: Limits::default(), state }).map_err(|e| if e.starts_with("--state") { fail("bad_state", e) } else { fail("relay_unavailable", e) })
+    relay::run(listener, Config { roster, origin, limits: Limits::default(), state, origins: Vec::new(), whois: None }).map_err(|e| if e.starts_with("--state") { fail("bad_state", e) } else { fail("relay_unavailable", e) })
 }
 
 /// `--origin` in the form devices sign it.

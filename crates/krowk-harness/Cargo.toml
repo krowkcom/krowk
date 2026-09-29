@@ -67,6 +67,12 @@ libc = "0.2"
 # tungstenite handshake, no TLS connector, so it adds no crate.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake", "connect"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+# Direct paths over Tailscale (ticket 20) read tailscaled's LocalAPI —
+# `status` and `whois`, HTTP/1.0 on its unix socket — with the std socket
+# and serde_json already here (sync/tailscale.rs), not the
+# `tailscale-localapi` crate, which brings hyper, its body and connection
+# crates and chrono for two GETs. So Tailscale costs no crate, and nothing
+# of it links on Windows, where `sync` is not built.
 # Batches are zstd-compressed before they would be encrypted (R-LAG-5).
 # Pure Rust at level "fastest" (about zstd's 1): no C toolchain for a
 # cross build, and one crate against zstd-sys's libzstd; the batches are

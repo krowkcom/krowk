@@ -448,6 +448,8 @@ pub fn catalog(version: &str) -> Catalog {
     c.commands.push(host_command());
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(relay_command());
+    #[cfg(all(feature = "harness", unix))]
+    c.commands.push(cmd("hosts", "krowk hosts", "The tailnet's machines tagged tag:krowk-host, from Tailscale"));
     #[cfg(feature = "harness")]
     c.commands.push(sync_command());
     #[cfg(feature = "harness")]
@@ -831,6 +833,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "providers",
             #[cfg(all(feature = "harness", unix))]
             "host",
+            #[cfg(all(feature = "harness", unix))]
+            "hosts",
             #[cfg(all(feature = "harness", unix))]
             "relay",
             #[cfg(feature = "harness")]

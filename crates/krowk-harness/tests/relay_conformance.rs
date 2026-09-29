@@ -138,7 +138,7 @@ fn relay_url() -> &'static str {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let roster = krowk_harness::relay::Roster::parse(FIXTURE).unwrap();
-        std::thread::spawn(move || krowk_harness::relay::run(listener, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None }));
+        std::thread::spawn(move || krowk_harness::relay::run(listener, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None }));
         url
     })
 }

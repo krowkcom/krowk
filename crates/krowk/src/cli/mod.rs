@@ -307,6 +307,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(all(feature = "harness", unix))]
         ["host", "disable", ..] => host::enable(ctx, false),
         #[cfg(all(feature = "harness", unix))]
+        ["hosts", ..] => synced::hosts(ctx),
+        #[cfg(all(feature = "harness", unix))]
         ["relay"] => show_help(ctx, p),
         #[cfg(all(feature = "harness", unix))]
         ["relay", "serve", ..] => relay::serve(ctx),

@@ -13,6 +13,7 @@
 //! display frame is handed on as one `Vec<Update>`, never a message a batch.
 
 use super::store::{self, Attached, Head};
+use super::direct::Candidate;
 use super::{Answer, Batch, In, Join, Remote, Welcome, DEAD, FRAME, PING};
 use crate::protocol::{Command, StreamLine};
 use krowk_api::Client;
@@ -78,6 +79,9 @@ pub enum Update {
     Acked { id: String, error: Option<String> },
     /// Events the chunks held that the live stream could not bring.
     CaughtUp(Vec<serde_json::Value>),
+    /// The path the session now comes by: `relay`, `direct over Tailscale`
+    /// or `direct over LAN`, and the address when direct (R-NET-2).
+    Path { path: String, via: Option<String> },
     /// Something the viewer cannot go on from.
     Failed(String),
 }
@@ -145,6 +149,17 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
     let mut retry = Instant::now();
     let mut heard = Instant::now();
     let mut next_id = 0u64;
+    // Direct paths (R-NET-2): the candidates the host's welcome named, a
+    // race of them against the relay in flight, the one being moved onto
+    // (its hello said, its welcome awaited, the relay's connection still
+    // read meanwhile), and the one the session is on.
+    let mut candidates: Vec<Candidate> = Vec::new();
+    let (won_tx, mut won) = mpsc::unbounded_channel::<Option<(Candidate, super::Ws, serde_json::Value)>>();
+    let mut probing = false;
+    let mut reprobe = Instant::now();
+    let mut moving: Option<Candidate> = None;
+    let mut leaving: Option<super::Ws> = None;
+    let mut on: Option<Candidate> = None;
     // The first frame went with the attach; the next is a frame after it,
     // and a late tick waits a whole frame rather than firing twice.
     let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + FRAME, FRAME);
@@ -187,6 +202,7 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                 let j = Join { relay: &o.relay, session: &o.session, env: &o.env, ticket: &ticket, device: o.device, signing: &o.signing, role: e2e::RELAY_ROLE_VIEWER, extra };
                 match super::join(j).await {
                     Ok((mut w, joined)) => {
+                        (on, moving, leaving) = (None, None, None);
                         let n = joined["link"].as_u64().unwrap_or(0);
                         let mut l = match link.take() { Some(l) => l.reconnect(n), None => ViewerLink::new(&key, raw, n) };
                         host = joined["host"].as_bool().unwrap_or(false);
@@ -200,9 +216,59 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                     Err(_) => retry = Instant::now() + Duration::from_secs(1),
                 }
             }
+            _ = tokio::time::sleep_until(reprobe.into()), if on.is_none() && moving.is_none() && !probing && !candidates.is_empty() && link.as_ref().is_some_and(|l| l.welcomed()) => {
+                probing = true;
+                tokio::spawn(race(o.clone(), candidates.clone(), link.as_ref().and_then(|l| l.cursor()), won_tx.clone()));
+            }
+            Some(w) = won.recv() => {
+                probing = false;
+                match w {
+                    // The first candidate to join, with the host there: the
+                    // same hello and welcome as on the relay, over it. The
+                    // relay's connection is read until the welcome comes, and
+                    // what it brings meanwhile waits with what the direct one
+                    // does, so nothing between the two is lost.
+                    Some((c, mut dw, joined)) if on.is_none() && moving.is_none() && ws.is_some() && joined["host"].as_bool() == Some(true) => {
+                        let n = joined["link"].as_u64().unwrap_or(0);
+                        let Some(old) = link.take() else { continue };
+                        let mut l = old.reconnect(n);
+                        let said = match l.hello(b"{}") {
+                            Ok(h) => super::send(&mut dw, h).await,
+                            Err(_) => false,
+                        };
+                        match said {
+                            true => {
+                                leaving = ws.take();
+                                ws = Some(dw);
+                                heard = Instant::now();
+                                moving = Some(c);
+                            }
+                            false => { ws = None; retry = Instant::now(); reprobe = Instant::now() + REPROBE; }
+                        }
+                        link = Some(l);
+                    }
+                    Some(_) => {}
+                    None => reprobe = Instant::now() + REPROBE,
+                }
+            }
+            m = async { match leaving.as_mut() { Some(w) => super::recv(w).await, None => std::future::pending().await } } => {
+                // The relay's connection, while the session moves off it:
+                // its batches are the stream's too.
+                match m {
+                    In::Closed => leaving = None,
+                    In::Envelope(b) if b[1] == KIND_BATCH && b[20..28] != [0; 8] => match link.as_mut() {
+                        Some(l) if l.welcomed() => apply(l, &b, &mut seen, &mut frame, &mut at_rest),
+                        _ => held.push(b),
+                    },
+                    _ => {}
+                }
+            }
             m = async { match ws.as_mut() { Some(w) => super::recv(w).await, None => std::future::pending().await } } => {
                 heard = Instant::now();
                 match m {
+                    // A direct path gone falls back to the relay at once, from
+                    // the cursor, which the relay's buffer fills (R-NET-2).
+                    In::Closed if on.is_some() || moving.is_some() => { ws = None; retry = Instant::now(); reprobe = Instant::now() + REPROBE; }
                     In::Closed => { ws = None; retry = Instant::now() + Duration::from_secs(1); }
                     In::Alive => {}
                     In::Control(v) if v["type"] == "host" => {
@@ -230,6 +296,13 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                             match l.open_routed(&b) {
                                 Ok(Outbound::Welcome { body, .. }) => {
                                     let w: Welcome = serde_json::from_slice(&body).unwrap_or_default();
+                                    if let Some(c) = moving.take() {
+                                        leaving = None;
+                                        on = Some(c);
+                                    } else if on.is_none() {
+                                        candidates = w.candidates.clone();
+                                    }
+                                    frame.push(match &on { Some(c) => Update::Path { path: c.path().into(), via: Some(c.url.clone()) }, None => Update::Path { path: "relay".into(), via: None } });
                                     // The prefix check: the chunks must reach the head the host sealed.
                                     let (api, key2, id, want) = (o.api.clone(), key.clone(), o.session.clone(), w.head);
                                     let mut a = at_rest.clone();
@@ -275,6 +348,47 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
             }
         }
     }
+}
+
+/// How long after a race nobody won, or a direct path lost, the candidates
+/// are tried again: the network may have changed meanwhile.
+pub const REPROBE: Duration = Duration::from_secs(10);
+
+/// How long one candidate has to answer the join.
+pub const PROBE: Duration = Duration::from_secs(3);
+
+/// Races every candidate: joins each, at the viewer's cursor, with a fresh
+/// ticket, and hands on the first that joins, or None when none does. The
+/// rest are dropped as it returns.
+async fn race(o: Arc<Options>, candidates: Vec<Candidate>, cursor: Option<([u8; 16], u64)>, won: mpsc::UnboundedSender<Option<(Candidate, super::Ws, serde_json::Value)>>) {
+    let api = o.api.clone();
+    let (id, device, env) = (o.session.clone(), o.device.to_string(), o.env.clone());
+    let Ok(Ok(ticket)) = tokio::task::spawn_blocking(move || api.relay_ticket(&id, &device, &env)).await else {
+        let _ = won.send(None);
+        return;
+    };
+    let ticket = ticket.relay_ticket;
+    let extra = match cursor {
+        Some((s, n)) => json!({"stream": e2e::hex(&s), "afterSeq": n}),
+        None => json!({}),
+    };
+    let mut set = tokio::task::JoinSet::new();
+    for c in candidates {
+        let (o, ticket, extra) = (o.clone(), ticket.clone(), extra.clone());
+        set.spawn(async move {
+            let signing = SigningKey::from_secret(&*o.signing.secret_bytes()).map_err(|e| e.to_string())?;
+            let j = Join { relay: &c.url, session: &o.session, env: &o.env, ticket: &ticket, device: o.device, signing: &signing, role: e2e::RELAY_ROLE_VIEWER, extra };
+            let (w, joined) = tokio::time::timeout(PROBE, super::join(j)).await.map_err(|_| "timed out".to_string())??;
+            Ok::<_, String>((c, w, joined))
+        });
+    }
+    while let Some(r) = set.join_next().await {
+        if let Ok(Ok(w)) = r {
+            let _ = won.send(Some(w));
+            return;
+        }
+    }
+    let _ = won.send(None);
 }
 
 /// One stream batch: its lines, the log's events among them once each.

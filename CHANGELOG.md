@@ -11,6 +11,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A synced session goes direct over Tailscale when it can.** `krowk sync
+  host` reads this machine's tailnet address, MagicDNS name and LAN address
+  from the local `tailscaled`, listens there, and names the addresses to
+  each viewer inside the sealed channel. A viewer tries them all beside the
+  relay and moves onto the first that passes the same ticket, challenge and
+  handshake the relay does, mid-session and without losing a frame; if the
+  direct path goes, it falls back to the relay by itself and tries again
+  later. `krowk sync attach` prints the path in use (`sync.path`: `relay`,
+  `direct over Tailscale` or `direct over LAN`). Being on the tailnet lets
+  nobody in: direct paths are on only with the registry's ticket keys in
+  `KROWK_RELAY_TICKET_KEYS`, and `KROWK_TAILSCALE_SAME_USER=1` also turns
+  away a connection from another tailnet user. `krowk hosts` lists the
+  tailnet's machines tagged `tag:krowk-host`.
 - **A file a session publishes now says what made it.** Besides the session
   (`krowk.session`), each artifact `publish` pushes records the engine that
   ran the turn (`krowk.engine`: `krowk`, `claude-code` or

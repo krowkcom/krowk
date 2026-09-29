@@ -74,7 +74,7 @@ async fn r_relay_1_a_channel_forgets_its_fence_only_after_every_older_ticket_exp
     let limits = krowk_harness::relay::Limits { ticket_lifetime: 2, ticket_skew: 1, idle_margin: 1, ..Default::default() };
     assert_eq!(limits.idle(), Duration::from_secs(4));
     let roster = krowk_harness::relay::Roster::parse(FIXTURE).unwrap();
-    std::thread::spawn(move || krowk_harness::relay::run(listener, krowk_harness::relay::Config { roster, origin: None, limits, state: None }));
+    std::thread::spawn(move || krowk_harness::relay::run(listener, krowk_harness::relay::Config { roster, origin: None, limits, state: None, origins: Vec::new(), whois: None }));
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let s = f["sessions"].as_array().unwrap().iter().find(|s| s["name"] == "idle").unwrap();
@@ -123,7 +123,7 @@ fn start(limits: krowk_harness::relay::Limits, state: Option<std::path::PathBuf>
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("ws://{}", listener.local_addr().unwrap());
     let roster = krowk_harness::relay::Roster::parse(FIXTURE).unwrap();
-    std::thread::spawn(move || krowk_harness::relay::run(listener, krowk_harness::relay::Config { roster, origin: None, limits, state }));
+    std::thread::spawn(move || krowk_harness::relay::run(listener, krowk_harness::relay::Config { roster, origin: None, limits, state, origins: Vec::new(), whois: None }));
     url
 }
 
@@ -243,7 +243,7 @@ fn refused_to_start(dir: &std::path::Path) -> Option<String> {
     let dir = dir.to_path_buf();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let r = krowk_harness::relay::run(listener, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: Some(dir) });
+        let r = krowk_harness::relay::run(listener, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: Some(dir), origins: Vec::new(), whois: None });
         let _ = tx.send(r.err());
     });
     rx.recv_timeout(Duration::from_millis(500)).ok().flatten()

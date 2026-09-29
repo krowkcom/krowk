@@ -7,8 +7,10 @@
 //! `krowk_client::relay_link`'s chains, so the relay and the registry only
 //! ever hold ciphertext (R-E2E-1).
 
+pub mod direct;
 pub mod host;
 pub mod store;
+pub mod tailscale;
 pub mod viewer;
 
 use futures_util::{SinkExt, StreamExt};
@@ -145,6 +147,11 @@ pub struct Welcome {
     /// Approvals waiting for an answer, sent again to each viewer that
     /// arrives (R-PERM-2).
     pub approvals: Vec<crate::protocol::ApprovalRequest>,
+    /// Where else the viewer may reach the host directly (R-NET-1): sealed
+    /// in the welcome under the session key and bound to this connection's
+    /// challenge, so only the host could have sent it.
+    #[serde(default)]
+    pub candidates: Vec<direct::Candidate>,
 }
 
 /// A batch's body: the frames the host sent in one display frame.
@@ -203,6 +210,7 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                             viewer::Update::Host(h) => json!({"type": "sync.host", "present": h}).to_string(),
                             viewer::Update::Sent { id, queued } => json!({"type": "sync.sent", "id": id, "queued": queued}).to_string(),
                             viewer::Update::Acked { id, error } => json!({"type": "sync.acked", "id": id, "error": error}).to_string(),
+                            viewer::Update::Path { path, via } => json!({"type": "sync.path", "path": path, "via": via}).to_string(),
                             viewer::Update::Failed(e) => return Err(e),
                         };
                         if !line.is_empty() {
