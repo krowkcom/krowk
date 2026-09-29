@@ -18,6 +18,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   it. krowk's hosted relay uses it to tell this machine's connections from
   anyone else's. The key is set once: a different one for the same device
   is refused (`signing_key_mismatch`).
+- **The code `krowk sync join` shows to approve a machine changed.** It
+  now covers both of the new machine's keys, so a request that copied its
+  device key with someone else's signing key shows a different code, and
+  `krowk devices approve` approves only the one request whose code is
+  exactly the one you typed. Only one approval request per machine may
+  wait at a time.
+- **Relays admit devices on tickets the registry signs.** A device joins
+  a relay with a short-lived ticket, which comes with the session's lease
+  for the host and on request for a viewer. `krowk relay serve` now takes
+  `--ticket-keys FILE`, the registry's ticket-signing public keys, instead
+  of `--roster`.
 - **A relay keeps development sessions apart from production ones.**
   A relay join now says which it is, `env` "production" or "development",
   and `krowk relay serve` gives each its own channel of a session, so a

@@ -16,9 +16,9 @@
 //! - **Joining** is a challenge and a signature: the relay sends a random
 //!   nonce, the device signs it with its Ed25519 signing key
 //!   (`krowk_client::e2e::SigningKey::sign_relay_join`), binding the role,
-//!   the session, its device id and the relay it dialed. Who is trusted
-//!   comes from a roster (`Roster`): the registry's device records and
-//!   leases in ticket 18, a file here.
+//!   the session, its device id and the relay it dialed, under the
+//!   signing key a registry-signed ticket names (`Roster` holds the
+//!   registry's ticket keys; `krowk_client::relay_ticket`).
 //! - **Fan-out**: the host's batches go to every viewer; a viewer's frames
 //!   go to the host alone, routed so the host knows whose they are.
 //! - **The ring buffer** (R-LAG-6): each channel keeps the current
@@ -350,6 +350,9 @@ struct Channel {
     empty_since: Option<Instant>,
     /// The workspace of the first join it admitted.
     workspace: Option<String>,
+    /// The highest fence a host has been admitted at: a ticket from before
+    /// the lease moved on is refused.
+    fence: Option<u64>,
 }
 
 impl Channel {
@@ -617,6 +620,10 @@ struct Join {
     env: Option<Env>,
     /// The session's workspace, once admitted: what its channel holds to.
     workspace: String,
+    /// The registry's ticket, hex.
+    ticket: String,
+    /// A host's ticket's fence, once admitted.
+    ticket_fence: u64,
 }
 
 fn read_join(b: &[u8]) -> Result<Join, Refusal> {
@@ -656,38 +663,50 @@ fn read_join(b: &[u8]) -> Result<Join, Refusal> {
         Some(Value::String(e)) => Env::parse(Some(e)),
         Some(_) => None,
     };
-    Ok(Join { role, device, signature, fence, stream, after, env, workspace: String::new() })
+    let ticket = v["ticket"].as_str().unwrap_or_default().to_string();
+    Ok(Join { role, device, signature, fence, stream, after, env, workspace: String::new(), ticket, ticket_fence: 0 })
 }
 
-/// Who may join: a device the roster knows, not revoked, whose signature
-/// verifies, of the session's workspace, and — to host — the holder of
-/// its lease, naming the lease's current fence. The signature proves the
-/// device; the fence says it knows the lease is still its own, so a host
-/// displaced by another device's takeover is refused rather than let
-/// back in. The lease token stays between the holder and the registry: a
-/// relay never needs it, so never holds it. Checked in that order, so a
-/// device the relay does not trust learns nothing about the session.
+/// Who may join (relay.md → What the relay checks): a device with a
+/// ticket the registry signed for this session, env and role, answering the
+/// challenge with the signing key the ticket names; and to host, the lease
+/// holder's ticket, at a fence no lower than the channel has seen. Nothing
+/// is asked of anyone: the ticket carries what the registry vouched for,
+/// so a stranger costs a signature check and nothing more.
 fn admit(relay: &Relay, key: Key, nonce: &[u8; 32], origin: &str, mut j: Join) -> Result<(DeviceId, u8, Join), Refusal> {
     let session = key.1;
-    let ring = &relay.config.roster;
-    let Some(device) = ring.device(&j.device) else {
-        return Err(refuse("unknown_device", format!("device {} is not one this relay trusts", j.device), "register the device (krowk sync init, or krowk sync join and approve it), then connect again"));
-    };
-    if device.revoked {
-        return Err(refuse("device_revoked", format!("device {} was removed from its workspace", j.device), "approve this machine again from one that syncs: krowk sync join here, krowk devices approve there"));
+    if j.ticket.is_empty() {
+        return Err(refuse("bad_ticket", "the join carries no ticket", "ask the registry for a relay ticket (the lease's, or the session's relay_ticket), then join with it"));
     }
-    if device.signing.verify_relay_join(&j.signature, j.role, &session, nonce, &j.device, origin).is_err() {
-        return Err(refuse("bad_signature", "the join's signature does not verify under the device's signing key", "sign this challenge's nonce with the device's own signing key, for the role, session and relay origin you dialed"));
+    let t = krowk_client::relay_ticket::verify(&j.ticket, &relay.config.roster.keys, krowk_client::relay_ticket::now()).map_err(|r| {
+        let fix = if r.code == "ticket_expired" { "ask the registry for a fresh ticket, then join again" } else { "join with the ticket the registry issued for this device, session, role and env" };
+        refuse(r.code, r.message, fix)
+    })?;
+    let env = if key.0 == Env::Production { krowk_client::relay_ticket::ENV_PRODUCTION } else { krowk_client::relay_ticket::ENV_DEVELOPMENT };
+    let bad = |what: &str| refuse("bad_ticket", format!("the ticket is for {what}"), "join with the ticket the registry issued for this device, session, role and env");
+    if t.session != session {
+        return Err(bad("another session"));
     }
-    // Another workspace's session reads as no session: a device of one
-    // workspace learns nothing of another's session ids.
-    // And a channel holds to the workspace it was first joined under, so no
-    // other workspace's session of the same id ever shares it.
+    if t.env != env {
+        return Err(bad("another env"));
+    }
+    if t.device != j.device.0 {
+        return Err(bad("another device"));
+    }
+    if t.role == RELAY_ROLE_HOST && j.role == RELAY_ROLE_VIEWER {
+        return Err(bad("hosting, and this join is a viewer's"));
+    }
+    if e2e::SigningPublic(t.signing_key).verify_relay_join(&j.signature, j.role, &session, nonce, &j.device, origin).is_err() {
+        return Err(refuse("bad_signature", "the join's signature does not verify under the signing key the ticket names", "sign this challenge's nonce with the device's own signing key, for the role, session and relay origin you dialed"));
+    }
+    // A channel holds to the workspace it was first joined under, so no
+    // other workspace's session of the same id ever shares it; the ticket
+    // says which workspace the registry issued it for.
     let pinned = relay.channels.borrow().get(&key).and_then(|c| c.workspace.clone());
-    let Some(entry) = ring.session(&session, &device.workspace).filter(|e| pinned.as_ref().is_none_or(|w| *w == e.workspace)) else {
+    if pinned.as_ref().is_some_and(|w| *w != t.workspace) {
         return Err(refuse("unknown_session", "the relay has no such session for this device", "open a session of your own workspace that syncs; its lease names the host"));
-    };
-    j.workspace = entry.workspace.clone();
+    }
+    j.workspace = t.workspace.clone();
     let limits = &relay.config.limits;
     let mut channels = relay.channels.borrow_mut();
     let channel = channels.entry(key).or_default();
@@ -695,15 +714,19 @@ fn admit(relay: &Relay, key: Key, nonce: &[u8; 32], origin: &str, mut j: Join) -
         return Err(refuse("rate_limited", format!("device {} joined this session more than {} times this minute", j.device, limits.joins_per_device), "wait a minute, and reconnect with backoff"));
     }
     if j.role == RELAY_ROLE_HOST {
-        if entry.holder != j.device.0 {
-            return Err(refuse("not_lease_holder", "only the device holding the session's lease may host it", "take the session's lease (krowk resumes it on this device), or join as a viewer"));
+        // A viewer's ticket, or a lease the channel has since seen move on:
+        // the registry said this device held the lease once, and a host
+        // with a higher fence has joined since.
+        if t.role != RELAY_ROLE_HOST || channel.fence.is_some_and(|f| t.fence < f) {
+            return Err(refuse("not_lease_holder", "only the device holding the session's lease may host it, and the lease has moved on from this ticket's", "take the session's lease (krowk resumes it on this device), or join as a viewer"));
         }
-        if j.fence != Some(entry.fence) {
-            return Err(refuse("stale_lease", format!("the lease's fence is {}, not {}", entry.fence, j.fence.map_or("absent".into(), |f| f.to_string())), "read the session's lease from the registry again; if another device took it, join as a viewer"));
+        if j.fence != Some(t.fence) {
+            return Err(refuse("stale_lease", format!("the ticket's fence is {}, not {}", t.fence, j.fence.map_or("absent".into(), |f| f.to_string())), "send the fence of the lease the ticket came with"));
         }
         if j.stream.is_none() {
             return Err(refuse("bad_join", "a host's join names no stream", "send the stream epoch the host seals batches under, 32 hex characters"));
         }
+        j.ticket_fence = t.fence;
     } else {
         // Full is checked before the join is counted, so being refused as
         // full costs the session nothing.
@@ -726,6 +749,9 @@ fn enter(relay: &Relay, session: Key, link: &Rc<Link>, role: u8, j: Join) {
     let ch = channels.entry(session).or_default();
     ch.empty_since = None;
     ch.workspace.get_or_insert_with(|| j.workspace.clone());
+    if role == RELAY_ROLE_HOST {
+        ch.fence = Some(ch.fence.map_or(j.ticket_fence, |f| f.max(j.ticket_fence)));
+    }
     if role == RELAY_ROLE_HOST {
         let stream = j.stream.expect("admitted with a stream");
         if let Some(old) = ch.host.take() {

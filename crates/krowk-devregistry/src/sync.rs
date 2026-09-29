@@ -64,6 +64,7 @@ pub struct Approval {
     pub wrapped_account_key: String,
 }
 
+#[derive(Clone)]
 pub struct Session {
     pub id: String,
     pub wrapped_key: String,
@@ -277,8 +278,63 @@ fn leased(s: &Session, now: Timestamp) -> bool {
     !s.holder.is_empty() && s.lease_expires_at.is_some_and(|e| e > now)
 }
 
-/// A lease call's answer. `token` only from the call that minted it.
-fn serialize_lease(s: &Session, token: Option<&str>) -> Json {
+/// The stand-in's relay ticket key: a fixed test seed, published here on
+/// purpose, like the conformance suite's. A relay under test trusts its
+/// public half (`TICKET_KID`, `ticket_public_key`); nothing real does.
+pub const TICKET_SEED: [u8; 32] = [0x5e; 32];
+pub const TICKET_KID: [u8; 8] = *b"standin1";
+const TICKET_TTL: i64 = 300;
+
+pub fn ticket_public_key() -> [u8; 32] {
+    ed25519_dalek::SigningKey::from_bytes(&TICKET_SEED).verifying_key().to_bytes()
+}
+
+/// A relay ticket, in the registry's layout (relay.md → Tickets;
+/// krowk_client::relay_ticket reads it), with its expiry.
+fn relay_ticket(role: u8, env: u8, session: &str, device: &Device, workspace: &str, fence: u64, now: Timestamp) -> (String, Timestamp) {
+    use ed25519_dalek::Signer as _;
+    let iat = now.as_second() as u64;
+    let exp = iat + TICKET_TTL as u64;
+    let uuid = unhex(&session.replace('-', "")).unwrap_or_default();
+    let mut b = vec![1u8];
+    b.extend_from_slice(&TICKET_KID);
+    b.push(role);
+    b.push(env);
+    b.extend_from_slice(&uuid);
+    b.extend_from_slice(&unhex(&device.id).unwrap_or_default());
+    b.extend_from_slice(&unhex(&device.signing_key).unwrap_or_default());
+    b.extend_from_slice(&fence.to_be_bytes());
+    b.extend_from_slice(&iat.to_be_bytes());
+    b.extend_from_slice(&exp.to_be_bytes());
+    b.push(workspace.len() as u8);
+    b.extend_from_slice(workspace.as_bytes());
+    let sig = ed25519_dalek::SigningKey::from_bytes(&TICKET_SEED).sign(&[&b"krowk/relay-ticket/v1"[..], &b].concat());
+    b.extend_from_slice(&sig.to_bytes());
+    (hex(&b), now + SignedDuration::from_secs(TICKET_TTL))
+}
+
+/// `env` as a lease or ticket call names it: production when absent.
+fn env_field(f: &Fields) -> Result<u8, Resp> {
+    match f.get_value("env") {
+        None | Some(Value::Null) => Ok(1),
+        Some(Value::Str(e)) if e == "production" => Ok(1),
+        Some(Value::Str(e)) if e == "development" => Ok(2),
+        _ => Err(invalid("env", "must be production or development")),
+    }
+}
+
+/// A lease call's answer, with the holder's host ticket when it has a
+/// signing key. `token` only from the call that minted it.
+fn serialize_lease_with(s: &Session, token: Option<&str>, ticket: Option<(String, Timestamp)>) -> Json {
+    let mut pairs = lease_pairs(s, token);
+    if let Some((t, exp)) = ticket {
+        pairs.push(("relay_ticket".to_owned(), Json::str(&t)));
+        pairs.push(("relay_ticket_expires_at".to_owned(), Json::str(rfc3339_nano(exp))));
+    }
+    Json::map_of(pairs)
+}
+
+fn lease_pairs(s: &Session, token: Option<&str>) -> Vec<(String, Json)> {
     let mut pairs = vec![
         ("session".to_owned(), Json::str(&s.id)),
         ("device".to_owned(), Json::str(&s.holder)),
@@ -288,7 +344,7 @@ fn serialize_lease(s: &Session, token: Option<&str>) -> Json {
         pairs.push(("token".to_owned(), Json::str(t)));
     }
     pairs.push(("expires_at".to_owned(), s.lease_expires_at.map_or(Json::Null, |e| Json::str(rfc3339_nano(e)))));
-    Json::map_of(pairs)
+    pairs
 }
 
 /// A session: never the fence or the token, and in a listing not the
@@ -412,6 +468,18 @@ pub fn request_approval(app: &App, req: &mut Req) -> Resp {
         let mut s = app.lock();
         let now = s.now();
         burst(&mut s.sync, &caller(req), "device_approval_requests", now)?;
+        // One waiting request per device key: a second — the same X25519 key
+        // with another signing key, which any holder of the workspace's key
+        // could post — is refused, so the approver never chooses between
+        // two. The same request again is the one waiting, as the registry
+        // answers it.
+        let id = fingerprint(&key);
+        if let Some(open) = s.sync.approvals.values().find(|a| a.workspace == workspace && a.id == id && !a.approved && a.expires_at > now) {
+            if open.signing_key == signing {
+                return Ok(Resp::json(200, &serialize_approval(open)));
+            }
+            return Err(error(409, "approval_pending", &format!("device {id} already has a request waiting to be approved — approve or let that one lapse first"), None));
+        }
         let a = Approval {
             slug: generate_slug("dap"),
             workspace,
@@ -473,6 +541,14 @@ pub fn approve(app: &App, req: &mut Req, slug: &str) -> Resp {
             return Err(error(409, "already_approved", &format!("{slug} is already approved — the new device has an account key to collect"), None));
         }
         acting(sync, &workspace, &device)?;
+        // The signing key the device asked with rides onto it; one already
+        // set to another is refused, as the registry refuses it.
+        if let Some(d) = sync.devices.get(&(workspace.clone(), a.id.clone()))
+            && !d.signing_key.is_empty()
+            && d.signing_key != a.signing_key
+        {
+            return Err(error(409, "signing_key_mismatch", &format!("device {} already registered another signing key, and a signing key is set once", d.id), None));
+        }
         adopt_account_key(sync, &workspace, &account)?;
         let a = sync.approvals.get_mut(slug).unwrap();
         a.approved = true;
@@ -495,11 +571,7 @@ pub fn approve(app: &App, req: &mut Req, slug: &str) -> Resp {
         });
         d.name = name;
         d.wrapped_account_key = wrapped;
-        // The signing key the device asked with, so it arrives by the
-        // approval, not by whichever register comes first.
-        if d.signing_key.is_empty() {
-            d.signing_key = signing;
-        }
+        d.signing_key = signing;
         if fresh {
             sync.seq = seq;
         }
@@ -669,6 +741,7 @@ pub fn acquire_lease(app: &App, req: &mut Req, id: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let (mut s, key, device, v) = lease_call(app, req, id, true)?;
         let ttl = ttl(&v.fields())?;
+        let env = env_field(&v.fields())?;
         let now = s.now();
         let x = s.sync.sessions.get_mut(&key).unwrap();
         if leased(x, now) {
@@ -685,7 +758,9 @@ pub fn acquire_lease(app: &App, req: &mut Req, id: &str) -> Resp {
         x.lease_expires_at = Some(now + ttl);
         x.updated_at = now;
         let token = mint(x);
-        let resp = Resp::json(201, &serialize_lease(x, Some(&token)));
+        let x = x.clone();
+        let ticket = s.sync.devices.get(&(key.0.clone(), device.clone())).filter(|d| !d.signing_key.is_empty()).map(|d| relay_ticket(1, env, &key.1, d, &key.0, x.fence, now));
+        let resp = Resp::json(201, &serialize_lease_with(&x, Some(&token), ticket));
         touch(&mut s.sync, &key.0, &device, now);
         Ok(resp)
     };
@@ -698,6 +773,7 @@ pub fn renew_lease(app: &App, req: &mut Req, id: &str) -> Resp {
         let mut f = v.fields();
         let token = required(&mut f, "token")?;
         let ttl = ttl(&f)?;
+        let env = env_field(&f)?;
         let now = s.now();
         let x = s.sync.sessions.get_mut(&key).unwrap();
         holder(x, &token, now)?;
@@ -710,9 +786,40 @@ pub fn renew_lease(app: &App, req: &mut Req, id: &str) -> Resp {
         };
         x.lease_expires_at = Some(now + ttl);
         x.updated_at = now;
-        let resp = Resp::json(200, &serialize_lease(x, minted.as_deref()));
+        let x = x.clone();
+        let ticket = s.sync.devices.get(&(key.0.clone(), device.clone())).filter(|d| !d.signing_key.is_empty()).map(|d| relay_ticket(1, env, &key.1, d, &key.0, x.fence, now));
+        let resp = Resp::json(200, &serialize_lease_with(&x, minted.as_deref(), ticket));
         touch(&mut s.sync, &key.0, &device, now);
         Ok(resp)
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// A viewer's relay ticket, for a device of the workspace that is not
+/// revoked and has a signing key.
+pub fn viewer_ticket(app: &App, req: &Req, id: &str) -> Resp {
+    let run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        let id = session_id(id).ok_or_else(not_found)?;
+        let q = |name: &str| req.query_get(name);
+        let device = id_field("device", &q("device"))?;
+        let env = match q("env").as_str() {
+            "" | "production" => 1,
+            "development" => 2,
+            _ => return Err(invalid("env", "must be production or development")),
+        };
+        let s = app.lock();
+        let now = s.now();
+        if !s.sync.sessions.contains_key(&(workspace.clone(), id.clone())) {
+            return Err(not_found());
+        }
+        acting(&s.sync, &workspace, &device)?;
+        let d = s.sync.devices.get(&(workspace.clone(), device.clone())).ok_or_else(not_found)?;
+        if d.signing_key.is_empty() {
+            return Err(error(409, "signing_key_missing", &format!("device {device} has registered no signing key — run krowk sync register on it"), None));
+        }
+        let (t, exp) = relay_ticket(2, env, &id, d, &workspace, 0, now);
+        Ok(Resp::json(200, &Json::map([("relay_ticket", Json::str(&t)), ("expires_at", Json::str(rfc3339_nano(exp)))])))
     };
     run().unwrap_or_else(|r| r)
 }

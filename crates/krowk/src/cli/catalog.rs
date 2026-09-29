@@ -481,10 +481,10 @@ fn relay_command() -> Command {
         subcommands: vec![Command {
             flags: vec![
                 flag("addr", STRING, "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"),
-                flag("roster", STRING, "The JSON file of trusted devices and session leases (relay.md → The reference relay)"),
+                flag("ticket-keys", STRING, "The JSON file of the registry's ticket-signing public keys (relay.md → Tickets)"),
                 flag("origin", STRING, "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"),
             ],
-            ..cmd("serve", "krowk relay serve --roster FILE [--addr HOST:PORT] [--origin URL]", "Carry sealed sessions between their host and viewers")
+            ..cmd("serve", "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL]", "Carry sealed sessions between their host and viewers")
         }],
         ..cmd("relay", "", "The relay other devices reach a session through")
     }

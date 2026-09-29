@@ -281,7 +281,7 @@ impl Flags {
             #[cfg(feature = "harness")]
             "addr" => text(&mut self.addr),
             #[cfg(feature = "harness")]
-            "roster" => text(&mut self.roster),
+            "ticket-keys" => text(&mut self.roster),
             #[cfg(feature = "harness")]
             "origin" => text(&mut self.origin),
             _ => {

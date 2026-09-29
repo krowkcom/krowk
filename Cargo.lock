@@ -1613,6 +1613,7 @@ dependencies = [
 name = "krowk-devregistry"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
  "jiff",
  "serde_json",
  "sha2 0.11.0",

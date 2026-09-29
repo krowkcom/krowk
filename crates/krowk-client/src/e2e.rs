@@ -164,6 +164,16 @@ impl DevicePublic {
     }
 }
 
+/// The code a person compares when a device is approved: a hash of both
+/// of the new device's public keys, X25519 and Ed25519 signing. It covers
+/// the signing key too, so a request carrying the new device's X25519 key
+/// but another signing key — which anyone holding the workspace's API key
+/// could post — shows another code, and is never approved by mistake for
+/// the real one (`crypto.md` → Adding a device).
+pub fn approval_code(device: &DevicePublic, signing: &SigningPublic) -> DeviceId {
+    DeviceId(id(b"krowk/approval-code/v1", &[&device.0[..], &signing.0[..]].concat()))
+}
+
 /// A device's id: a hash of its public key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceId(pub [u8; 16]);

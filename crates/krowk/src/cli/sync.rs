@@ -294,7 +294,7 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let _ = writeln!(
         ctx.io.stderr,
         "This device's code:\n\n    {}\n\nOn a machine that already syncs, run `krowk devices approve` and type this code there. Waiting…",
-        device.id().grouped()
+        e2e::approval_code(&device.public(), &signing.public()).grouped()
     );
     let _ = ctx.io.stderr.flush();
     let approved = loop {

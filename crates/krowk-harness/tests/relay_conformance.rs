@@ -23,6 +23,7 @@
 
 use futures_util::{SinkExt, StreamExt};
 use krowk_client::e2e::{self, DeviceId, SigningKey, RELAY_ROLE_HOST, RELAY_ROLE_VIEWER};
+use krowk_client::relay_ticket::{self, Ticket};
 use krowk_harness::daemon::ws::{Envelope, ENC_NONE, ENC_XCHACHA20_POLY1305, KIND_ACK, KIND_BATCH, KIND_FRAME, KIND_RELAY, KIND_ROUTED};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -38,7 +39,7 @@ const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/
 /// Every test, its devices and its session: `<test>-host` holds the lease
 /// of session `<test>`, `<test>-viewer` and `<test>-viewer2` watch it, all
 /// in workspace A.
-const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs", "xws"];
+const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs", "xws", "tickets"];
 
 /// How long anything the relay should answer may take, and how long to
 /// wait to be sure nothing comes.
@@ -73,6 +74,17 @@ fn device(name: &str, workspace: &str, revoked: bool) -> Value {
     json!({"name": name, "id": device_id(name).to_string(), "seed": e2e::hex(&seed(name)), "signingKey": e2e::hex(&key.public().0), "workspace": workspace, "revoked": revoked})
 }
 
+/// The registry's ticket-signing key for the suite: a published test key,
+/// like the devices' seeds. Another relay loads its public half from the
+/// fixture's `ticketKeys`; the suite mints every ticket with it.
+fn ticket_seed() -> [u8; 32] {
+    seed("ticket-signing-key")
+}
+
+fn ticket_kid() -> [u8; 8] {
+    seed("ticket-kid")[..8].try_into().unwrap()
+}
+
 /// The fixture, generated: what `roster.json` must hold.
 fn fixture() -> Value {
     let mut devices = Vec::new();
@@ -96,6 +108,8 @@ fn fixture() -> Value {
         "devices": devices,
         "sessions": sessions,
         "unregistered": [stranger],
+        "ticketKeys": {e2e::hex(&ticket_kid()): e2e::hex(&SigningKey::from_secret(&ticket_seed()).unwrap().public().0)},
+        "ticketSeed": e2e::hex(&ticket_seed()),
     })
 }
 
@@ -114,7 +128,7 @@ fn the_checked_in_roster_is_the_generated_one() {
 
 /// The relay under test: `KROWK_RELAY_URL`, or the reference relay started
 /// in this process on a loopback port with the fixture — the same
-/// `relay::run` that `krowk relay serve --roster` runs.
+/// `relay::run` that `krowk relay serve --ticket-keys` runs.
 fn relay_url() -> &'static str {
     static URL: OnceLock<String> = OnceLock::new();
     URL.get_or_init(|| {
@@ -328,16 +342,53 @@ struct As<'a> {
     origin: Option<&'a str>,
     /// The env dialed and named in the join; None for neither.
     env: Option<&'a str>,
+    /// The ticket the join carries.
+    ticket: Tk,
+}
+
+/// Which ticket a join carries: what the registry would issue this device
+/// for this session (`Auto`: none for a device or session it does not know,
+/// a host's for the lease holder, else a viewer's), none, or one given.
+#[derive(Clone)]
+enum Tk {
+    Auto,
+    Absent,
+    Given(String),
+}
+
+/// What the registry issues: a ticket for a device of the fixture, not
+/// revoked, for a session of its workspace — a host's, at the lease's
+/// fence, when it holds the lease and asks to host.
+fn issue(test: &str, name: &str, role: u8, env: Option<&str>) -> Option<Ticket> {
+    static FIXTURE_JSON: OnceLock<Value> = OnceLock::new();
+    let f = FIXTURE_JSON.get_or_init(|| serde_json::from_str(FIXTURE).unwrap());
+    let d = f["devices"].as_array().unwrap().iter().find(|d| d["name"] == name && d["revoked"] == false)?;
+    let sid = session_id(test);
+    let s = f["sessions"].as_array().unwrap().iter().find(|s| s["id"] == sid && s["workspace"] == d["workspace"])?;
+    let host = role == RELAY_ROLE_HOST && s["holder"] == d["id"];
+    let now = relay_ticket::now();
+    Some(Ticket {
+        kid: ticket_kid(),
+        role: if host { RELAY_ROLE_HOST } else { RELAY_ROLE_VIEWER },
+        env: if env == Some("development") { relay_ticket::ENV_DEVELOPMENT } else { relay_ticket::ENV_PRODUCTION },
+        session: krowk_harness::daemon::ws::uuid(&sid),
+        device: device_id(name).0,
+        signing_key: e2e::unhex(d["signingKey"].as_str().unwrap()).unwrap().try_into().unwrap(),
+        fence: if host { s["fence"].as_u64().unwrap() } else { 0 },
+        iat: now,
+        exp: now + relay_ticket::TTL,
+        workspace: d["workspace"].as_str().unwrap().to_string(),
+    })
 }
 
 fn host(test: &str) -> As<'static> {
     let name: &'static str = Box::leak(format!("{test}-host").into_boxed_str());
-    As { name, role: RELAY_ROLE_HOST, fence: Some(fence(test)), stream: Some(stream_id(test, 1)), after: None, key_of: None, origin: None, env: None }
+    As { name, role: RELAY_ROLE_HOST, fence: Some(fence(test)), stream: Some(stream_id(test, 1)), after: None, key_of: None, origin: None, env: None, ticket: Tk::Auto }
 }
 
 fn viewer(test: &str, which: &str) -> As<'static> {
     let name: &'static str = Box::leak(format!("{test}-{which}").into_boxed_str());
-    As { name, role: RELAY_ROLE_VIEWER, fence: None, stream: None, after: None, key_of: None, origin: None, env: None }
+    As { name, role: RELAY_ROLE_VIEWER, fence: None, stream: None, after: None, key_of: None, origin: None, env: None, ticket: Tk::Auto }
 }
 
 fn stream_id(test: &str, n: u8) -> [u8; 16] {
@@ -362,6 +413,14 @@ async fn join_as(test: &str, a: &As<'_>) -> (Conn, Value) {
     }
     if let Some(e) = a.env {
         join["env"] = e.into();
+    }
+    let ticket = match &a.ticket {
+        Tk::Auto => issue(test, a.name, a.role, a.env).map(|t| t.sign(&ticket_seed())),
+        Tk::Absent => None,
+        Tk::Given(t) => Some(t.clone()),
+    };
+    if let Some(t) = ticket {
+        join["ticket"] = t.into();
     }
     c.send_control(join).await;
     let answer = c.control().await;
@@ -393,7 +452,9 @@ async fn refused_join(test: &str, a: &As<'_>, code: &str) {
 #[tokio::test]
 async fn r_relay_1_only_a_trusted_device_with_its_own_signature_joins_and_only_the_lease_holder_hosts() {
     let t = "auth";
-    refused_join(t, &As { name: "stranger", ..viewer(t, "viewer") }, "unknown_device").await;
+    // No ticket: the registry issues none for a device it does not know, a
+    // revoked one, another workspace's, or a session it does not have.
+    refused_join(t, &As { name: "stranger", ..viewer(t, "viewer") }, "bad_ticket").await;
     refused_join(t, &As { key_of: Some("auth-viewer2"), ..viewer(t, "viewer") }, "bad_signature").await;
     refused_join(t, &As { origin: Some("wss://another-relay.example"), ..viewer(t, "viewer") }, "bad_signature").await;
     // A viewer's signature presented as a host's does not verify either:
@@ -403,7 +464,8 @@ async fn r_relay_1_only_a_trusted_device_with_its_own_signature_joins_and_only_t
         let nonce: [u8; 32] = e2e::unhex(challenge["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
         let key = SigningKey::from_secret(&seed("auth-host")).unwrap();
         let sig = key.sign_relay_join(RELAY_ROLE_VIEWER, &c.session, &nonce, &device_id("auth-host"), &origin()).unwrap();
-        c.send_control(json!({"type": "join", "role": "host", "device": device_id("auth-host").to_string(), "signature": e2e::hex(&sig), "fence": fence(t), "stream": e2e::hex(&stream_id(t, 1))})).await;
+        let ticket = issue(t, "auth-host", RELAY_ROLE_HOST, None).unwrap().sign(&ticket_seed());
+        c.send_control(json!({"type": "join", "role": "host", "device": device_id("auth-host").to_string(), "signature": e2e::hex(&sig), "fence": fence(t), "stream": e2e::hex(&stream_id(t, 1)), "ticket": ticket})).await;
         c.refused("bad_signature").await;
     }
     // A viewer asking to host, knowing the lease's fence (it is public).
@@ -413,9 +475,9 @@ async fn r_relay_1_only_a_trusted_device_with_its_own_signature_joins_and_only_t
     refused_join(t, &As { fence: Some(fence(t) - 1), ..host(t) }, "stale_lease").await;
     refused_join(t, &As { fence: None, ..host(t) }, "stale_lease").await;
     // Another workspace's session reads as none at all.
-    refused_join(t, &As { name: "outsider", ..viewer(t, "viewer") }, "unknown_session").await;
+    refused_join(t, &As { name: "outsider", ..viewer(t, "viewer") }, "bad_ticket").await;
     // A session the relay does not know, asked by a device it does.
-    refused_join("nowhere", &viewer(t, "viewer"), "unknown_session").await;
+    refused_join("nowhere", &viewer(t, "viewer"), "bad_ticket").await;
     // Anything but a join first, and a join missing what it needs.
     {
         let (mut c, _) = dial(t).await;
@@ -429,7 +491,7 @@ async fn r_relay_1_only_a_trusted_device_with_its_own_signature_joins_and_only_t
         c.ws.send(Message::Text("hello".into())).await.unwrap();
         c.refused("not_joined").await;
     }
-    refused_join(t, &As { name: "revoked", ..viewer(t, "viewer") }, "device_revoked").await;
+    refused_join(t, &As { name: "revoked", ..viewer(t, "viewer") }, "bad_ticket").await;
     // A signature answers one challenge: the nonce is fresh each time.
     let (_a, one) = dial(t).await;
     let (_b, two) = dial(t).await;
@@ -992,4 +1054,38 @@ async fn r_relay_1_a_device_of_another_workspace_holding_the_same_session_id_can
     // The workspace's own host was not displaced.
     h.batch(1).await;
     v.batch_in(1).await;
+}
+
+/// R-RELAY-1: a join is admitted only on a ticket the registry signed, for
+/// this session, env, device and role, still in its lifetime, under a key
+/// the relay holds — and a host's only at a fence no lower than a host the
+/// channel has already admitted. No other ticket is ever let in.
+#[tokio::test]
+async fn r_relay_1_a_join_needs_a_live_ticket_the_registry_signed_for_it() {
+    let t = "tickets";
+    let good = || issue(t, "tickets-viewer", RELAY_ROLE_VIEWER, None).unwrap();
+    let with = |ticket: Ticket, seed: [u8; 32]| As { ticket: Tk::Given(ticket.sign(&seed)), ..viewer(t, "viewer") };
+    let now = relay_ticket::now();
+    refused_join(t, &with(Ticket { iat: now - 400, exp: now - 100, ..good() }, ticket_seed()), "ticket_expired").await;
+    refused_join(t, &with(Ticket { session: krowk_harness::daemon::ws::uuid(&session_id("auth")), ..good() }, ticket_seed()), "bad_ticket").await;
+    refused_join(t, &with(good(), seed("not-the-registry")), "bad_ticket").await;
+    refused_join(t, &with(Ticket { kid: [0xee; 8], ..good() }, ticket_seed()), "bad_ticket").await;
+    refused_join(t, &with(Ticket { env: relay_ticket::ENV_DEVELOPMENT, ..good() }, ticket_seed()), "bad_ticket").await;
+    refused_join(t, &with(Ticket { device: device_id("tickets-viewer2").0, ..good() }, ticket_seed()), "bad_ticket").await;
+    let truncated = good().sign(&ticket_seed());
+    refused_join(t, &As { ticket: Tk::Given(truncated[..truncated.len() - 2].to_string()), ..viewer(t, "viewer") }, "bad_ticket").await;
+    refused_join(t, &As { ticket: Tk::Given("not a ticket".into()), ..viewer(t, "viewer") }, "bad_ticket").await;
+    refused_join(t, &As { ticket: Tk::Absent, ..viewer(t, "viewer") }, "bad_ticket").await;
+    // The right one is let in.
+    let (_v, j) = joined(t, &with(good(), ticket_seed())).await;
+    assert_eq!(j["role"], "viewer");
+    // A host at the lease's fence; then the ticket of a lease from before
+    // it moved on — the registry did issue it, to the holder of the time —
+    // is not the lease holder's any more.
+    let (_h, _) = joined(t, &host(t)).await;
+    let before = Ticket { fence: fence(t) - 1, ..issue(t, "tickets-host", RELAY_ROLE_HOST, None).unwrap() };
+    refused_join(t, &As { fence: Some(fence(t) - 1), ticket: Tk::Given(before.sign(&ticket_seed())), ..host(t) }, "not_lease_holder").await;
+    // A host's ticket does not make a viewer of anyone either.
+    let hosts = issue(t, "tickets-host", RELAY_ROLE_HOST, None).unwrap().sign(&ticket_seed());
+    refused_join(t, &As { ticket: Tk::Given(hosts), ..viewer(t, "host") }, "bad_ticket").await;
 }

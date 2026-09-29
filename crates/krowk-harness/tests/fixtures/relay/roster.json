@@ -482,6 +482,30 @@
       "revoked": false
     },
     {
+      "name": "tickets-host",
+      "id": "5cb61e0945836443e9607195e933c9a1",
+      "seed": "3ffceb8eb101bd3ae17ed430ac9afeb713cd4ddc567d038e3b66690d12918d9f",
+      "signingKey": "11f2c350c3d1830a0d668c73e5a46a5378772030fa3e7d31531992aed2658849",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "tickets-viewer",
+      "id": "b92acb9814c34e1dd7d553b9910f82c5",
+      "seed": "6a8ebcd7d5cc2a0ab40a689a64e259e5111eb38b101bb632b18653f5237a89d6",
+      "signingKey": "dfd1e4aed28ad6741c0eb4685c364beb84ade032f3574a46ac25b5443c1dcaac",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "tickets-viewer2",
+      "id": "4e13ede7c1c797102e6be3feb97988e1",
+      "seed": "da03d30203244ef6348de4b997fc729a379d53783a5afa36b1d9695fb930ff33",
+      "signingKey": "a708b2cd37c0c8cc1e135ddb735f993a8adafbe55bbfb60be08b5dadc01c5a78",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
       "name": "outsider",
       "id": "efc5fa16d87af0fe9215049762a334ac",
       "seed": "238e38bd09339bbfe7d2ce99c28792a6f411ea15b4aa219c9f6845c00740036c",
@@ -648,6 +672,13 @@
       "fence": 236
     },
     {
+      "name": "tickets",
+      "id": "2e645b6e-4d0e-74c7-83de-69058279e3de",
+      "workspace": "ws_conformance_a",
+      "holder": "5cb61e0945836443e9607195e933c9a1",
+      "fence": 65
+    },
+    {
       "name": "xws-b",
       "id": "764363f6-8ceb-7a58-89ec-5a6c564a575f",
       "workspace": "ws_conformance_b",
@@ -664,5 +695,9 @@
       "workspace": "ws_conformance_a",
       "revoked": false
     }
-  ]
+  ],
+  "ticketKeys": {
+    "93c52cc769115e8c": "7ffd5e98d9a786a41cc872ee487670c13e561d9206a14b24347ee56b7c07bb5a"
+  },
+  "ticketSeed": "b8d8592331d59248eecea2251a30636c7e61ce4b58198c4d437807b0cb58d9eb"
 }

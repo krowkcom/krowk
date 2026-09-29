@@ -104,6 +104,12 @@ pub struct Lease {
     pub token: String,
     #[serde(default, deserialize_with = "nullable")]
     pub expires_at: String,
+    /// The holder's host ticket for the relay (relay.md → Tickets), at
+    /// this lease's fence; empty when the holder has no signing key.
+    #[serde(default, deserialize_with = "nullable")]
+    pub relay_ticket: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub relay_ticket_expires_at: String,
 }
 
 /// Who holds a session's lease, as a session reports it: never the fence or
@@ -112,6 +118,15 @@ pub struct Lease {
 pub struct LeaseHolder {
     #[serde(default, deserialize_with = "nullable")]
     pub device: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub expires_at: String,
+}
+
+/// A relay ticket, hex, and when it lapses.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct RelayTicket {
+    #[serde(default, deserialize_with = "nullable")]
+    pub relay_ticket: String,
     #[serde(default, deserialize_with = "nullable")]
     pub expires_at: String,
 }
@@ -284,8 +299,9 @@ impl Client {
     /// Takes a lease nobody holds. Once: acquiring moves the fence on, so an
     /// acquire retried after a lost response would be refused as held — by
     /// this device, under the fence it never heard.
-    pub fn acquire_lease(&self, id: &str, device: &str, ttl_seconds: u64) -> Result<Lease, Error> {
-        let body = json!({ "lease": { "device": device, "ttl": ttl_seconds } });
+    /// `env` is the relay env its host ticket is for (`crate::relay_env`).
+    pub fn acquire_lease(&self, id: &str, device: &str, ttl_seconds: u64, env: &str) -> Result<Lease, Error> {
+        let body = json!({ "lease": { "device": device, "ttl": ttl_seconds, "env": env } });
         Ok(self.call("POST", &format!("/sessions/{}/lease", slug_path(id)), Some(body), 1, None)?.0)
     }
 
@@ -293,9 +309,16 @@ impl Client {
     /// to `device`, which mints the next holder's token. Sent once: a
     /// hand-over whose answer was lost has minted a token nobody holds, and a
     /// retry would present the old one and be refused as stale.
-    pub fn renew_lease(&self, id: &str, device: &str, token: &str, ttl_seconds: u64) -> Result<Lease, Error> {
-        let body = json!({ "lease": { "device": device, "token": token, "ttl": ttl_seconds } });
+    pub fn renew_lease(&self, id: &str, device: &str, token: &str, ttl_seconds: u64, env: &str) -> Result<Lease, Error> {
+        let body = json!({ "lease": { "device": device, "token": token, "ttl": ttl_seconds, "env": env } });
         Ok(self.call("PUT", &format!("/sessions/{}/lease", slug_path(id)), Some(body), 1, None)?.0)
+    }
+
+    /// A viewer's relay ticket for `device` on session `id`, in `env`: what
+    /// a device joins a relay channel with (relay.md → Tickets). Good for
+    /// five minutes; ask again for the next join after that.
+    pub fn relay_ticket(&self, id: &str, device: &str, env: &str) -> Result<RelayTicket, Error> {
+        self.get(&format!("/sessions/{}/relay_ticket?device={}&env={}", slug_path(id), slug_path(device), slug_path(env)))
     }
 
     pub fn release_lease(&self, id: &str, token: &str) -> Result<(), Error> {

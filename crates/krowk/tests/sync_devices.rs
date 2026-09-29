@@ -153,7 +153,7 @@ fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
     let wrapped = e2e::hex(&e2e::wrap_session_key(&session_key, &id, &account));
     let sealed = e2e::hex(&e2e::seal_session_index(&session_key, &id, TITLE.as_bytes()));
     client.put_sync_session(&uuid(&id), &wrapped, Some(&sealed), None).unwrap();
-    let lease = client.acquire_lease(&uuid(&id), &laptop_device, 60).unwrap();
+    let lease = client.acquire_lease(&uuid(&id), &laptop_device, 60, "production").unwrap();
     let resealed = e2e::hex(&e2e::seal_session_index(&session_key, &id, TITLE.as_bytes()));
     client.put_sync_session(&uuid(&id), &wrapped, Some(&resealed), Some(&lease.token)).unwrap();
 
@@ -165,7 +165,7 @@ fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
     let wrong = run(&laptop, api, token, &["devices", "approve", &"0".repeat(32), "--json"], "");
     assert!(!wrong.status.success() && String::from_utf8_lossy(&wrong.stderr).contains("no_such_device_code"), "{}", String::from_utf8_lossy(&wrong.stderr));
     let approved = json(&run(&laptop, api, token, &["devices", "approve", &code, "--json"], ""));
-    assert_eq!(approved["data"]["device"], code.replace(' ', ""), "{approved}");
+    assert_eq!(approved["data"]["code"], code.replace(' ', ""), "{approved}");
 
     let mut out = String::new();
     join.stdout.take().unwrap().read_to_string(&mut out).unwrap();
@@ -282,18 +282,18 @@ fn r_sync_2_a_stale_lease_holders_write_is_refused() {
     let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &id, &account));
     client.put_sync_session(&uuid(&id), &wrapped, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"one"))), None).unwrap();
 
-    let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60).unwrap();
+    let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap();
     assert_eq!(held.token.len(), 32, "the acquirer, and only it, is handed a token");
-    let refused = client.acquire_lease(&uuid(&id), &b.id().to_string(), 60).unwrap_err();
+    let refused = client.acquire_lease(&uuid(&id), &b.id().to_string(), 60, "production").unwrap_err();
     assert_eq!(refused.code(), "lease_held");
     assert!(!format!("{:?}", refused.body).contains(&held.token));
     // Knowing the fence is not holding the lease.
-    assert_eq!(client.renew_lease(&uuid(&id), &b.id().to_string(), &held.fence.to_string(), 60).unwrap_err().code(), "lease_stale");
+    assert_eq!(client.renew_lease(&uuid(&id), &b.id().to_string(), &held.fence.to_string(), 60, "production").unwrap_err().code(), "lease_stale");
     let listed = client.list_sync_sessions("", 50).unwrap();
     assert_eq!(listed.sessions[0].lease.as_ref().unwrap().device, a.id().to_string());
     assert!(listed.sessions[0].sealed_index.is_empty(), "a listing carries no sealed index");
 
-    let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60).unwrap();
+    let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60, "production").unwrap();
     assert!(moved.fence > held.fence && !moved.token.is_empty() && moved.token != held.token);
 
     let stale = client.put_sync_session(&uuid(&id), &wrapped, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"two"))), Some(&held.token)).unwrap_err();
@@ -361,8 +361,8 @@ fn r_sync_2_a_chunk_with_a_stale_or_missing_lease_token_is_refused() {
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
     client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&key, &id, &account)), None, None).unwrap();
-    let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60).unwrap();
-    let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60).unwrap();
+    let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap();
+    let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60, "production").unwrap();
 
     let sealed = e2e::ChunkSealer::new(&key, id, 0, e2e::NO_PREVIOUS_CHUNK, held.fence).seal(b"a stale holder's turn", false).unwrap();
     for token in [held.token.as_str(), ""] {
@@ -406,11 +406,11 @@ fn the_stand_in_models_the_session_cap_the_burst_ceiling_and_revocation() {
     let mut answer = String::new();
     conn.read_to_string(&mut answer).unwrap();
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
-    assert_eq!(client.acquire_lease(&uuid(&first), &device.id().to_string(), 60).unwrap_err().code(), "device_revoked");
+    assert_eq!(client.acquire_lease(&uuid(&first), &device.id().to_string(), 60, "production").unwrap_err().code(), "device_revoked");
     // The reset cleared the pin too, so registering again may pin another key.
     let fresh = AccountKey::generate().id().to_string();
     client.register_device(&public, &e2e::hex(&[7; 32]), "laptop", &fresh).unwrap();
-    client.acquire_lease(&uuid(&first), &device.id().to_string(), 60).unwrap();
+    client.acquire_lease(&uuid(&first), &device.id().to_string(), 60, "production").unwrap();
 
     // 120 creates a minute, then 429 (two spent above).
     let refused = (0..125).find_map(|_| client.register_device(&public, &e2e::hex(&[7; 32]), "laptop", &fresh).err()).expect("the ceiling was met");
@@ -435,14 +435,14 @@ fn r_sync_2_a_displaced_holders_pending_chunk_is_replaced_not_finalized() {
     client.put_sync_session(&session, &e2e::hex(&e2e::wrap_session_key(&key, &id, &account)), None, None).unwrap();
 
     // A declares chunk 0 by hand and is displaced before finalizing it.
-    let held = client.acquire_lease(&session, &a.id().to_string(), 60).unwrap();
+    let held = client.acquire_lease(&session, &a.id().to_string(), 60, "production").unwrap();
     let stale = e2e::ChunkSealer::new(&key, id, 0, e2e::NO_PREVIOUS_CHUNK, held.fence).seal(b"A's", false).unwrap();
     let declare = |token: &str, blob: &[u8], size: usize| {
         let body = serde_json::json!({ "chunk": { "index": 0, "byte_size": size, "checksum": e2e::hex(&sha(blob)), "lease_token": token } });
         raw(registry.addr(), "POST", &format!("/v1/sessions/{session}/chunks"), &body.to_string())
     };
     assert!(declare(&held.token, &stale, stale.len()).starts_with("HTTP/1.1 201"));
-    let moved = client.renew_lease(&session, &b.id().to_string(), &held.token, 60).unwrap();
+    let moved = client.renew_lease(&session, &b.id().to_string(), &held.token, 60, "production").unwrap();
     let fin = raw(registry.addr(), "PUT", &format!("/v1/sessions/{session}/chunks/0/finalization"), &serde_json::json!({ "chunk": { "lease_token": moved.token } }).to_string());
     assert!(fin.starts_with("HTTP/1.1 409") && fin.contains("lease_stale"), "{fin}");
 
@@ -497,5 +497,78 @@ fn r_relay_1_a_signing_key_is_required_and_set_once() {
     let refused = client.register_device(&public, &e2e::hex(&[9; 32]), "laptop", &account).unwrap_err();
     assert_eq!((refused.status, refused.code().to_string()), (409, "signing_key_mismatch".to_string()), "{refused:?}");
     assert_eq!(client.list_devices().unwrap()[0].signing_key, held);
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// R-RELAY-1: the registry vouches for a device at the relay with tickets
+/// (relay.md → Tickets): a host's comes with the lease, at its fence, and
+/// goes to the new holder at a hand-over; a viewer's is asked for, by a
+/// device of the workspace that is not revoked. Each verifies under the
+/// registry's key and names the device's own signing key.
+#[test]
+fn r_relay_1_leases_and_viewers_are_issued_tickets_the_relay_can_check() {
+    use krowk_client::relay_ticket;
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let client = krowk_api::Client::new(&format!("{}/v1", registry.url()), TOKEN);
+    let keys = vec![(krowk_devregistry::TICKET_KID, krowk_devregistry::ticket_public_key())];
+    let account = AccountKey::generate();
+    let (a, b) = (e2e::DeviceKey::generate(), e2e::DeviceKey::generate());
+    let (sa, sb) = (e2e::SigningKey::generate(), e2e::SigningKey::generate());
+    for (d, s) in [(&a, &sa), (&b, &sb)] {
+        client.register_device(&e2e::hex(&d.public().0), &e2e::hex(&s.public().0), "machine", &account.id().to_string()).unwrap();
+    }
+    let id: [u8; 16] = e2e::random();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &account)), None, None).unwrap();
+
+    let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "development").unwrap();
+    let t = relay_ticket::verify(&held.relay_ticket, &keys, relay_ticket::now()).unwrap();
+    assert_eq!((t.role, t.env, t.fence, t.device, t.signing_key, t.session), (e2e::RELAY_ROLE_HOST, relay_ticket::ENV_DEVELOPMENT, held.fence, a.id().0, sa.public().0, id));
+    let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60, "production").unwrap();
+    let t = relay_ticket::verify(&moved.relay_ticket, &keys, relay_ticket::now()).unwrap();
+    assert_eq!((t.device, t.fence, t.env), (b.id().0, held.fence + 1, relay_ticket::ENV_PRODUCTION), "the new holder's, at the new fence");
+
+    let watch = client.relay_ticket(&uuid(&id), &a.id().to_string(), "production").unwrap();
+    let t = relay_ticket::verify(&watch.relay_ticket, &keys, relay_ticket::now()).unwrap();
+    assert_eq!((t.role, t.fence, t.signing_key), (e2e::RELAY_ROLE_VIEWER, 0, sa.public().0));
+    assert_eq!(client.relay_ticket(&uuid(&id), &a.id().to_string(), "staging").unwrap_err().code(), "invalid");
+    let other: [u8; 16] = e2e::random();
+    assert_eq!(client.relay_ticket(&uuid(&other), &a.id().to_string(), "production").unwrap_err().status, 404);
+}
+
+/// R-RELAY-1, R-E2E-3: one waiting approval request per device key, and
+/// the code a person compares covers the signing key too — a request with
+/// the new device's X25519 key and another signing key is refused while
+/// the first waits, and would show another code anyway; the approving
+/// machine approves only the request whose code is exactly the one typed.
+#[test]
+fn r_relay_1_an_approval_request_cannot_be_doubled_or_approved_by_its_device_key_alone() {
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let client = krowk_api::Client::new(&api, TOKEN);
+    let device = e2e::DeviceKey::generate();
+    let (own, other) = (e2e::SigningKey::generate(), e2e::SigningKey::generate());
+    let public = e2e::hex(&device.public().0);
+    client.request_device_approval(&public, &e2e::hex(&own.public().0), "desktop").unwrap();
+    // Asked again the same way: the same request.
+    client.request_device_approval(&public, &e2e::hex(&own.public().0), "desktop").unwrap();
+    let doubled = client.request_device_approval(&public, &e2e::hex(&other.public().0), "desktop").unwrap_err();
+    assert_eq!((doubled.status, doubled.code().to_string()), (409, "approval_pending".to_string()), "{doubled:?}");
+    assert_eq!(client.list_device_approvals().unwrap().len(), 1);
+    assert_ne!(e2e::approval_code(&device.public(), &own.public()), e2e::approval_code(&device.public(), &other.public()));
+    assert_ne!(e2e::approval_code(&device.public(), &own.public()), device.public().id(), "the code is not the device id");
+
+    // The laptop that approves: the device id alone, the code before
+    // signing keys, is no code at all.
+    let r = root("doubled");
+    let laptop = r.join("laptop");
+    let words = krowk_client::phrase::encode(&AccountKey::generate());
+    json(&run(&laptop, &api, TOKEN, &["sync", "recover", "--json"], &format!("{}\n", *words)));
+    let by_id = run(&laptop, &api, TOKEN, &["devices", "approve", &device.public().id().to_string(), "--json"], "");
+    assert!(!by_id.status.success() && String::from_utf8_lossy(&by_id.stderr).contains("no_such_device_code"), "{}", String::from_utf8_lossy(&by_id.stderr));
+    let code = e2e::approval_code(&device.public(), &own.public()).to_string();
+    let approved = json(&run(&laptop, &api, TOKEN, &["devices", "approve", &code, "--json"], ""));
+    assert_eq!(approved["data"]["device"], device.public().id().to_string(), "{approved}");
+    let row = client.list_devices().unwrap().into_iter().find(|d| d.id == device.public().id().to_string()).unwrap();
+    assert_eq!(row.signing_key, e2e::hex(&own.public().0), "the approval registered the requesting device's own signing key");
     let _ = std::fs::remove_dir_all(&r);
 }
