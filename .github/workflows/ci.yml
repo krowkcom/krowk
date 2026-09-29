@@ -44,6 +44,12 @@ jobs:
         with:
           version: 1.19.0
 
+      # `make test` runs on nextest. The version moves with the one in
+      # mise.toml.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.146
+
       # The opencode fixture is built from SQL at case time.
       - name: Ensure sqlite3
         if: runner.os == 'Linux'
@@ -55,8 +61,20 @@ jobs:
         if: runner.os == 'Linux'
         run: command -v tmux || (sudo apt-get update && sudo apt-get install -y tmux)
 
+      # The relay's per-address limits are tested from other loopback
+      # addresses, which macOS does not answer for until lo0 is given them.
+      - name: Loopback aliases
+        if: runner.os == 'macOS'
+        run: |
+          sudo ifconfig lo0 alias 127.0.0.2 up
+          sudo ifconfig lo0 alias 127.0.0.9 up
+
+      # The ci profile retries a failed test twice: one that then passes is
+      # reported FLAKY instead of failing the job.
       - name: Lint, unit tests and golden cases
         run: make check
+        env:
+          NEXTEST_PROFILE: ci
 
   # R-BACK-3: krowk drives `codex app-server`, and the schema of that
   # protocol is pinned in crates/krowk-harness/schema/codex/ for the Codex

@@ -12,8 +12,12 @@
 # keeps cargo's own behaviour: the workspace crates still build incrementally,
 # per checkout, and a build it cannot model runs uncached. Each build ends with
 # an `mbx[cache]:` line; `mbx stats` and `mbx tui` show the rest.
+#
+# cargo-nextest runs `make test` (.config/nextest.toml says how). CI installs
+# the same version.
 [tools]
 rust = { version = "1.97", mr_boxington = true }
 mr-boxington = "1.19.0"
+"aqua:nextest-rs/nextest/cargo-nextest" = "0.9.146"
 zig = "0.16.0"
 node = "22"

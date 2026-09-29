@@ -815,6 +815,22 @@ async fn r_relay_1_viewers_joining_in_a_loop_cannot_lock_the_host_out() {
     assert_eq!(j["role"], "host");
 }
 
+/// Binds `sock` to `ip`, a loopback address other than 127.0.0.1, so the
+/// relay sees another address. Linux answers for all of 127/8; macOS only
+/// for the addresses lo0 is given (`sudo ifconfig lo0 alias 127.0.0.2 up`,
+/// as CI does). False, with a line saying so, on a machine without it —
+/// except under CI, which must run the check.
+fn other_loopback(sock: &tokio::net::TcpSocket, ip: &str) -> bool {
+    match sock.bind(format!("{ip}:0").parse().unwrap()) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrNotAvailable && std::env::var_os("CI").is_none() => {
+            eprintln!("skipped: {ip} is not a loopback address here (`sudo ifconfig lo0 alias {ip} up` makes it one)");
+            false
+        }
+        Err(e) => panic!("binding {ip}: {e}"),
+    }
+}
+
 /// The reference relay's own defence before a join, beyond the contract:
 /// connections that never finish the upgrade, from one address, cannot
 /// crowd out another's, and a connection sending past the pre-join budget
@@ -832,7 +848,9 @@ async fn r_relay_1_the_reference_relay_bounds_what_comes_before_a_join() {
     let mut idle = Vec::new();
     for _ in 0..70 {
         let sock = tokio::net::TcpSocket::new_v4().unwrap();
-        sock.bind("127.0.0.2:0".parse().unwrap()).unwrap();
+        if !other_loopback(&sock, "127.0.0.2") {
+            return;
+        }
         if let Ok(s) = sock.connect(format!("127.0.0.1:{port}").parse().unwrap()).await {
             idle.push(s);
         }
@@ -867,8 +885,8 @@ async fn r_relay_1_idle_connections_to_a_channel_cannot_lock_its_devices_out() {
     let mut idle = Vec::new();
     for _ in 0..24 {
         let sock = if target.is_ipv4() { tokio::net::TcpSocket::new_v4() } else { tokio::net::TcpSocket::new_v6() }.unwrap();
-        if target.ip().is_loopback() && target.is_ipv4() {
-            sock.bind("127.0.0.9:0".parse().unwrap()).unwrap();
+        if target.ip().is_loopback() && target.is_ipv4() && !other_loopback(&sock, "127.0.0.9") {
+            return;
         }
         let stream = sock.connect(target).await.unwrap();
         if let Ok((ws, _)) = tokio_tungstenite::client_async(url.as_str(), stream).await {
