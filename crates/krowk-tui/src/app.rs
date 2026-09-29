@@ -14,6 +14,7 @@ use crate::help;
 use crate::look::{self, SEP};
 use crate::pr::State as PrState;
 use crate::settings::{ContentWidth, Item as StatusItem, Settings};
+use crate::table;
 use krowk_harness::host::Pricer;
 use krowk_harness::log::Recent;
 use krowk_harness::protocol::{
@@ -555,6 +556,8 @@ pub struct App {
     calls: Vec<Call>,
     /// Whether the answer being shown has a fenced code block open.
     fence: bool,
+    /// The rows of a table in the answer, held until it ends (`table`).
+    table: Vec<String>,
     /// What a backend reported its session is billed to, and on which
     /// instance (R-INST-3).
     billing: Option<(String, Billing)>,
@@ -683,6 +686,7 @@ impl App {
             replay_model: None,
             calls: Vec::new(),
             fence: false,
+            table: Vec::new(),
             billing: None,
             vendor_instances: Vec::new(),
             skills: Vec::new(),
@@ -1007,9 +1011,38 @@ impl App {
         self.push_wrapped("  ", "  ", &format!("({})", e.code), dim(), dim());
     }
 
-    /// One line of an answer, in light markdown, wrapped on its way out.
+    /// One line of an answer, in light markdown, wrapped on its way out. A
+    /// table's rows are held until the first line that is not one.
     fn push_md(&mut self, text: &str) {
-        let line = look::markdown_line(&clean(text), &mut self.fence);
+        let text = clean(text);
+        if !self.fence && table::is_row(&text) {
+            self.table.push(text);
+            return;
+        }
+        self.end_table();
+        let line = look::markdown_line(&text, &mut self.fence);
+        self.push_answer(line);
+    }
+
+    /// The end of an answer's text: a table it ended on is drawn.
+    fn end_md(&mut self) {
+        self.end_table();
+        self.fence = false;
+    }
+
+    /// The table held, drawn to the width; as typed when it is none.
+    fn end_table(&mut self) {
+        let rows = std::mem::take(&mut self.table);
+        if rows.is_empty() {
+            return;
+        }
+        let lines = table::render(&rows, usize::from(self.width)).unwrap_or_else(|| rows.iter().map(|r| look::markdown_line(r, &mut false)).collect());
+        for line in lines {
+            self.push_answer(line);
+        }
+    }
+
+    fn push_answer(&mut self, line: Line<'static>) {
         self.last_blank = line.width() == 0;
         self.after_tool = false;
         self.pending.push(line);
@@ -1204,7 +1237,7 @@ impl App {
                 }
                 let kind = match item {
                     ItemKind::AssistantText => {
-                        self.fence = false;
+                        self.end_md();
                         LiveKind::Text
                     }
                     ItemKind::Reasoning => LiveKind::Reasoning,
@@ -1616,10 +1649,11 @@ impl App {
                         self.answer.push_str(text);
                     }
                     self.gap();
-                    self.fence = false;
+                    self.end_md();
                     for l in text.split('\n') {
                         self.push_md(l);
                     }
+                    self.end_md();
                 }
                 self.live = None;
             }
@@ -1672,6 +1706,7 @@ impl App {
                 self.push_md(l);
             }
         }
+        self.end_md();
     }
 
     fn on_result(&mut self, r: &RunResult) {
@@ -2171,6 +2206,7 @@ impl App {
         self.unsent_steers.clear();
         self.replay_model = None;
         self.fence = false;
+        self.table.clear();
         self.billing = None;
         self.approvals.clear();
         self.answer.clear();
@@ -2747,6 +2783,19 @@ mod tests {
         a.on_line(&delta("i", "rd"));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "first line\nsecond\nthird".into() } }));
         assert_eq!(text(&a.take_pending()), ["third"], "the tail, and nothing twice");
+    }
+
+    #[test]
+    fn a_streamed_table_is_held_until_it_ends_then_drawn() {
+        let mut a = app();
+        a.start_turn(Instant::now());
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "i".into(), item: ItemKind::AssistantText }));
+        a.on_line(&delta("i", "Sizes:\n| a | b |\n|---|---|\n| 1 | 2 |\n"));
+        assert_eq!(text(&a.take_pending()), ["Sizes:"], "the table is held while it may go on");
+        a.on_line(&delta("i", "Done.\n```\n| in | code |\n```\n| x |"));
+        assert_eq!(text(&a.take_pending()), ["┌───┬───┐", "│ a │ b │", "├───┼───┤", "│ 1 │ 2 │", "└───┴───┘", "Done.", "```", "| in | code |", "```"]);
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: String::new() } }));
+        assert_eq!(text(&a.take_pending()), ["| x |"], "a table the answer ends on is drawn with it, as typed when it is none");
     }
 
     #[test]
