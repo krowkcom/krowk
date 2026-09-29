@@ -894,6 +894,18 @@ impl App {
         self.dirty = true;
     }
 
+    /// What the person said, on a band across the width: a thin bar down
+    /// its left edge, the text in the ink, an empty row of it above and below.
+    fn push_said(&mut self, text: &str) {
+        let width = usize::from(self.width);
+        let room = width.saturating_sub(look::SAID.width()).max(1);
+        let rows = wrap(&clean(text), room);
+        for row in std::iter::once(String::new()).chain(rows).chain([String::new()]) {
+            let fill = " ".repeat(room.saturating_sub(row.width()));
+            self.push_line(Line::from(vec![Span::styled(look::SAID, look::said_bar()), Span::styled(row + &fill, look::said_band())]));
+        }
+    }
+
     /// A dim line of its own, after a gap: what the client did, not the model.
     pub fn gap_say(&mut self, text: &str) {
         self.gap();
@@ -1663,7 +1675,7 @@ impl App {
                 }
                 self.finish_live();
                 self.gap();
-                self.push_wrapped(look::PROMPT, "  ", text, look::prompt(), bold());
+                self.push_said(text);
             }
             Item::AssistantText { text } => {
                 // What streamed is on screen already. A message a backend
@@ -2829,7 +2841,7 @@ mod tests {
     }
 
     fn text(lines: &[Line]) -> Vec<String> {
-        lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect()
+        lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim_end().to_string()).collect()
     }
 
     fn live(ev: LiveEvent) -> StreamLine {
@@ -2932,7 +2944,7 @@ mod tests {
         let call = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolCall { call_id: id.into(), name: "read".into(), input: serde_json::json!({"path": "README.md"}) } }));
         let back = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolResult { call_id: id.into(), output: "x".into(), is_error: false } }));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::UserText { text: "hi".into() } }));
-        assert_eq!(text(&a.take_pending()), ["❯ hi"]);
+        assert_eq!(text(&a.take_pending()), ["▎", "▎ hi", "▎"]);
         call(&mut a, "1");
         assert_eq!(text(&a.view(Instant::now()).0)[..2], ["", "◆ Read README.md"], "a gap under the prompt while it runs");
         back(&mut a, "1");
@@ -3092,7 +3104,7 @@ mod tests {
             ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 1200, ..Usage::default() }, duration_ms: 1500, error: None, reported_cost_usd: None }),
         ];
         a.replay(&evs.iter().collect::<Vec<_>>());
-        assert_eq!(text(&a.take_pending()), ["❯ hi", "", "◆ Read README.md (2 lines)", "", "It is a CLI.", "", "Worked for 1.5s · 1.2k tokens"]);
+        assert_eq!(text(&a.take_pending()), ["▎", "▎ hi", "▎", "", "◆ Read README.md (2 lines)", "", "It is a CLI.", "", "Worked for 1.5s · 1.2k tokens"]);
         assert_eq!(a.model, Some(model), "the session's model is the one shown");
     }
 
