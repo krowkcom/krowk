@@ -13,7 +13,7 @@
 
 use super::absent;
 use crate::engine::EngineError;
-use crate::protocol::{ClientFrame, Command, ErrorInfo, HostStatus, LiveEvent, LogBody, ModelRef, RunResult, ServerFrame, StreamLine, TurnStatus, Usage, PROTOCOL_VERSION};
+use crate::protocol::{ClientFrame, Command, ErrorInfo, HostStatus, LiveEvent, RunResult, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -57,55 +57,6 @@ pub struct Resume {
     /// And its last `line.seq`, within `epoch`.
     pub after_seq: u64,
     pub epoch: u64,
-    /// What its log said of the turn under way: carried to the next
-    /// connection, whose catch-up starts after it.
-    pub turn: Option<Box<TurnSoFar>>,
-}
-
-/// A session's latest turn as its logged events tell it: enough to answer
-/// its result from the log when the turn ended while the connection was
-/// down, and the `done` that carried the result went with it.
-#[derive(Debug, Clone, Default)]
-pub struct TurnSoFar {
-    turn_id: String,
-    model: Option<ModelRef>,
-    /// Its last assistant text: the result's answer.
-    text: String,
-    calls: u32,
-    ended: Option<(TurnStatus, Usage, u64, Option<ErrorInfo>)>,
-}
-
-impl TurnSoFar {
-    fn saw(&mut self, body: &LogBody) {
-        match body {
-            LogBody::TurnStarted { turn_id, model, .. } => *self = TurnSoFar { turn_id: turn_id.clone(), model: Some(model.clone()), ..TurnSoFar::default() },
-            LogBody::ItemCompleted { turn_id, item: crate::protocol::Item::AssistantText { text }, .. } if *turn_id == self.turn_id => self.text.clone_from(text),
-            LogBody::ResponseCompleted { turn_id, .. } if *turn_id == self.turn_id => self.calls += 1,
-            LogBody::TurnCompleted { turn_id, status, usage, duration_ms, error, .. } if *turn_id == self.turn_id => self.ended = Some((*status, *usage, *duration_ms, error.clone())),
-            _ => {}
-        }
-    }
-
-    /// The result of a turn the log says has ended. Its cost is not in the
-    /// log, so it is unknown (null) rather than guessed.
-    fn result(&self, session_id: &str) -> Option<RunResult> {
-        let (status, usage, duration_ms, error) = self.ended.clone()?;
-        Some(RunResult {
-            session_id: session_id.to_string(),
-            turn_id: self.turn_id.clone(),
-            status,
-            is_error: status == TurnStatus::Failed,
-            result: self.text.clone(),
-            model: self.model.clone()?,
-            usage,
-            cost_usd: None,
-            duration_ms,
-            num_model_calls: self.calls,
-            error,
-            unread_steers: Vec::new(),
-            switch_offer: None,
-        })
-    }
 }
 
 /// Why a command or follow did not answer.
@@ -137,8 +88,6 @@ struct Inner {
     cursors: HashMap<String, (u64, Option<String>)>,
     /// The session each streaming command's lines named.
     sessions: HashMap<u64, String>,
-    /// Each session's latest turn, as its logged events handed on tell it.
-    turns: HashMap<String, TurnSoFar>,
 }
 
 /// A stream to open with a request: its session, where its lines go, and
@@ -268,7 +217,6 @@ impl Client {
                                 && ev.session_id == key
                             {
                                 c.1 = Some(ev.id.clone());
-                                i.turns.entry(key.clone()).or_default().saw(&ev.body);
                             }
                             if let Some(c) = cmd {
                                 i.sessions.entry(c).or_insert_with(|| key.clone());
@@ -338,7 +286,7 @@ impl Client {
     fn resume_of(&self, session: &str) -> Resume {
         let i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let (after_seq, after_event_id) = i.cursors.get(session).cloned().unwrap_or_default();
-        Resume { session_id: session.to_string(), after_event_id, after_seq, epoch: self.epoch, turn: i.turns.get(session).cloned().map(Box::new) }
+        Resume { session_id: session.to_string(), after_event_id, after_seq, epoch: self.epoch }
     }
 
     fn ask_id(&self, frame: impl FnOnce(u64) -> ClientFrame, sink: Option<NewSink>) -> Result<(u64, oneshot::Receiver<ServerFrame>), EngineError> {
@@ -403,7 +351,7 @@ impl Client {
     /// turn is running, or the session settles without one. What the TUI
     /// reattaches with (R-HOST-1).
     pub async fn follow(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
-        let from = Resume { session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: 0, epoch: 0, turn: None };
+        let from = Resume { session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: 0, epoch: 0 };
         self.resume(&from, out).await.map_err(Cut::into_error)
     }
 
@@ -412,18 +360,6 @@ impl Client {
     /// turn after its last `seq` — when the same daemon numbered it — then
     /// live. A turn no longer running by then answers none.
     pub async fn resume(&self, from: &Resume, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, Cut> {
-        self.resume_as(from, out, false).await
-    }
-
-    /// `resume` of a turn this client's side ran and was cut from: one that
-    /// ended while the connection was down answers the result its log
-    /// gives — what the `done` lost with the connection would have said —
-    /// once the lines caught up before it are handed on.
-    pub async fn resume_turn(&self, from: &Resume, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, Cut> {
-        self.resume_as(from, out, true).await
-    }
-
-    async fn resume_as(&self, from: &Resume, out: mpsc::Sender<StreamLine>, turn: bool) -> Result<Option<RunResult>, Cut> {
         let session_id = from.session_id.as_str();
         {
             // Where a second cut resumes from, should one come.
@@ -432,17 +368,6 @@ impl Client {
                 i.cursors.insert(session_id.to_string(), (from.after_seq, from.after_event_id.clone()));
             } else {
                 i.cursors.insert(session_id.to_string(), (0, from.after_event_id.clone()));
-            }
-            // What the last connection's log said of the turn, which this
-            // one's catch-up goes on from.
-            if let Some(t) = &from.turn {
-                i.turns.insert(session_id.to_string(), (**t).clone());
-            }
-            // A turn that had ended before the cut is an earlier one: the
-            // cut one had not logged its start yet, and only an end caught
-            // up from here is its.
-            if turn && i.turns.get(session_id).is_some_and(|t| t.ended.is_some()) {
-                i.turns.remove(session_id);
             }
         }
         let (utx, urx) = oneshot::channel();
@@ -457,20 +382,8 @@ impl Client {
         };
         if !running {
             let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            // The turn ended while the connection was down: its result, as
-            // the log caught up gives it, behind the lines that brought it.
-            let ended = if turn { i.turns.get(session_id).and_then(|t| t.result(session_id)) } else { None };
-            let Some(r) = ended else {
-                i.sinks.retain(|s| !(s.follow && s.session.as_deref() == Some(session_id)));
-                return Ok(None);
-            };
-            match i.sinks.iter().position(|s| s.follow && s.session.as_deref() == Some(session_id)) {
-                Some(n) => {
-                    let _ = i.sinks.remove(n).q.send(Item::End(Some(r)));
-                    i.sinks.retain(|s| !(s.follow && s.session.as_deref() == Some(session_id)));
-                }
-                None => return Ok(Some(r)),
-            }
+            i.sinks.retain(|s| !(s.follow && s.session.as_deref() == Some(session_id)));
+            return Ok(None);
         }
         urx.await.map_err(|_| Cut::Dropped(self.resume_of(session_id)))
     }

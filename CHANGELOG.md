@@ -1236,9 +1236,6 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **A slow disk no longer stalls every session in the host daemon.** Each
   event a turn logs, and its context record, is written off the thread all
   sessions and heartbeats share, and still before any client sees it.
-- **A turn that ends while the TUI is cut off from the daemon shows its
-  result when it reconnects,** read from the log it catches up, instead of
-  saying the host went away.
 
 ## [0.10.0] - 2026-09-24
 

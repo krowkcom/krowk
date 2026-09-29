@@ -85,7 +85,7 @@ impl Remote {
 
     pub async fn follow(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
         let c = self.fresh().await?;
-        let from = super::client::Resume { session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: 0, epoch: 0, turn: None };
+        let from = super::client::Resume { session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: 0, epoch: 0 };
         let r = c.resume(&from, out.clone()).await;
         self.carry_on(r, out, false).await
     }
@@ -100,12 +100,11 @@ impl Remote {
                 other => return other.map_err(Cut::into_error),
             };
             let c = self.fresh().await?;
-            let resumed = if turn { c.resume_turn(&from, out.clone()).await } else { c.resume(&from, out.clone()).await };
-            r = match resumed {
-                // Caught up, and the turn is not running there any more, with
-                // no end in its log: its daemon took it along. One that ended
-                // while the stream was cut answers its result from the log
-                // (`Client::resume_turn`).
+            r = match c.resume(&from, out.clone()).await {
+                // Caught up, and the turn is not running there any more: its
+                // daemon took it along, or it ended while the stream was cut
+                // — its finished items are in what was caught up, its result
+                // is not.
                 Ok(None) if turn => Err(Cut::Failed(EngineError::new("host_gone", "the connection to the host daemon went during the turn; what it logged is caught up, and it is no longer running there"))),
                 other => other,
             };
