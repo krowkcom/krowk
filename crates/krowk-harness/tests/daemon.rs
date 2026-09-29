@@ -760,3 +760,58 @@ fn r_lag_4_a_remote_let_go_mid_turn_resumes_from_its_cursor_with_no_gap_or_dupli
     drop(rt);
     daemon.join().unwrap().unwrap();
 }
+
+/// A turn that ends while its client's connection is down answers its
+/// result on the next connection, from the log caught up there — the
+/// `done` that carried it went with the connection — where it said
+/// `host_gone` and the result was lost.
+#[test]
+fn r_lag_4_a_turn_that_ends_while_the_connection_is_down_answers_its_result_from_the_log() {
+    let answer: String = (1..=120).map(|i| format!("w{i} ")).collect();
+    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(4))) };
+    let home = Home::new("ended-cut", &m.url);
+    let kick = Arc::new(tokio::sync::Notify::new());
+    let daemon = home.serve_with(Some(Duration::from_millis(300)), Some(kick.clone()));
+    let rt = rt();
+    rt.block_on(async {
+        let connect = || async { match Client::connect(&home.socket(), &home.repo(), "test", true).await { Ok(c) => c, Err(_) => panic!("no daemon answered") } };
+        let a = connect().await;
+        let (tx, mut rx) = mpsc::channel(1 << 16);
+        let watch = tokio::spawn(async move {
+            let mut typed = 0;
+            while let Some(line) = rx.recv().await {
+                if let StreamLine::Live(LiveEvent::ItemDelta { delta: Delta::Text { text }, .. }) = line {
+                    typed += text.len();
+                    if typed > 40 {
+                        kick.notify_one();
+                        return;
+                    }
+                }
+            }
+        });
+        let from = match a.execute_or_cut(home.prompt("count"), tx).await {
+            Err(daemon::client::Cut::Dropped(from)) => from,
+            other => panic!("the connection was let go mid-turn: {other:?}"),
+        };
+        watch.await.unwrap();
+        // The turn ends on the daemon while nothing is connected for it.
+        let path = log::sessions_dir(&home.env()).unwrap().join(&from.session_id).join(log::EVENTS_FILE);
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !log::read_events(&path).unwrap_or_default().iter().any(|e| matches!(e.body, LogBody::TurnCompleted { .. })) {
+            assert!(std::time::Instant::now() < deadline, "the turn never ended");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let b = connect().await;
+        let (tx, mut rx) = mpsc::channel(1 << 16);
+        let r = b.resume_turn(&from, tx).await.expect("caught up").expect("and the result, from the log");
+        assert_eq!((r.status, r.session_id.as_str(), r.result.as_str()), (TurnStatus::Completed, from.session_id.as_str(), answer.as_str()));
+        assert!(r.num_model_calls >= 1 && r.usage.output_tokens > 0, "the log's calls and usage: {r:?}");
+        let mut ended = 0;
+        while let Ok(l) = rx.try_recv() {
+            ended += usize::from(matches!(l, StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. })));
+        }
+        assert_eq!(ended, 1, "the turn's end is handed on before its result, once");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
