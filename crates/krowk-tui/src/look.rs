@@ -3,15 +3,15 @@
 //!
 //! The vocabulary follows Grok Build's (xAI, Apache-2.0: its
 //! `xai-grok-pager-render` glyphs and "Terminal" theme, its minimal inline
-//! mode's commit rules, its turn-status block): `❯` for what the person
-//! said, `◆` for a tool, a tool shown once with its outcome,
+//! mode's commit rules, its turn-status block): `◆` for a tool, a tool shown once with its outcome,
 //! `Worked for 12s` after a turn,
 //! ` │ ` between status items. Written here from those ideas; no code was
 //! copied (see THIRD-PARTY-NOTICES).
 //!
 //! Colours are the terminal's own sixteen, so a person's theme decides what
 //! they look like and a phone terminal shows them; the diff bands are two
-//! 256-colour indexes that stay red and green where 256 colours degrade.
+//! 256-colour indexes that stay red and green where 256 colours degrade,
+//! and what the person said is on a third, a faint grey.
 //! Most of what is shown is ink on the terminal's paper — its foreground,
 //! full or washed (dim) — never the white or black slots, which are
 //! surfaces in one mode or the other; a hue is for what needs the eye.
@@ -21,7 +21,8 @@ use ratatui::text::{Line, Span};
 use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
 
-pub const PROMPT: &str = "❯ ";
+/// Before each row of what the person said, down the band's left edge.
+pub const SAID: &str = "▎ ";
 /// Before the prompt's first row, inside its box.
 pub const ARROW: &str = "→ ";
 pub const TOOL: &str = "◆ ";
@@ -184,6 +185,15 @@ pub fn border() -> Style {
 
 pub fn prompt() -> Style {
     Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD)
+}
+
+/// What the person said: a faint band across the width, its bar blue.
+pub fn said_band() -> Style {
+    Style::new().bg(Color::Indexed(236))
+}
+
+pub fn said_bar() -> Style {
+    said_band().fg(Color::Blue)
 }
 
 pub fn insert_band() -> Style {
