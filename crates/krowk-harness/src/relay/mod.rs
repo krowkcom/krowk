@@ -292,11 +292,11 @@ pub fn run_until(listeners: Vec<std::net::TcpListener>, config: Config, mut stop
 
 /// The tailnet check, when there is one, then the connection.
 async fn admitted(stream: TcpStream, peer: std::net::SocketAddr, relay: Rc<Relay>) {
-    if let Some(same) = relay.config.whois.clone() {
-        if !tokio::task::spawn_blocking(move || same.admits(peer)).await.unwrap_or(false) {
-            record("join", None, None, "not_same_tailnet_user");
-            return;
-        }
+    if let Some(same) = relay.config.whois.clone()
+        && !tokio::task::spawn_blocking(move || same.admits(peer)).await.unwrap_or(false)
+    {
+        record("join", None, None, "not_same_tailnet_user");
+        return;
     }
     connection(stream, peer.ip(), relay).await
 }
