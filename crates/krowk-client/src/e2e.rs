@@ -478,6 +478,11 @@ impl ChunkReader {
         self.next
     }
 
+    /// The fence of the last chunk opened: the next may not be lower.
+    pub fn fence(&self) -> u64 {
+        self.fence
+    }
+
     /// The digest the next chunk must bind: what a holder resuming the log
     /// hands its `ChunkSealer`.
     pub fn previous(&self) -> [u8; 32] {

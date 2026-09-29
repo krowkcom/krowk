@@ -84,6 +84,8 @@ pub mod readiness;
 pub mod relay;
 pub mod schema;
 pub mod subagent;
+#[cfg(unix)]
+pub mod sync;
 pub mod sse;
 pub mod todo;
 pub mod tools;
