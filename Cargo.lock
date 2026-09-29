@@ -1639,6 +1639,7 @@ dependencies = [
  "jsonschema",
  "krowk-api",
  "krowk-client",
+ "krowk-harness",
  "krowk-import",
  "krowk-store",
  "libc",

@@ -308,21 +308,40 @@ fn put(f: &File, line: &str, what: &str) -> Result<(), LogError> {
     f.write_all(line.as_bytes()).map_err(|e| io(what, e))
 }
 
-/// For tests: how long, in µs, each append and each read of a log takes on
-/// top of its own time — a disk that stalls. Whichever thread does the
-/// write waits it out, so a write left on the host daemon's thread shows
-/// on its lateness probe (R-LAG-9).
+/// For tests (`test-hooks`): how long, in µs, each append and each read of
+/// a log takes on top of its own time — a disk that stalls. Whichever
+/// thread does the write waits it out, so a write left on the host
+/// daemon's thread shows on its lateness probe (R-LAG-9).
+#[cfg(feature = "test-hooks")]
 static SLOW_DISK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// For tests: makes every log append and read take `d` longer from here on.
-pub fn simulate_slow_disk(d: std::time::Duration) {
+/// For tests (`test-hooks`): makes every log append and read take `d`
+/// longer until the guard goes.
+#[cfg(feature = "test-hooks")]
+#[must_use = "the disk is slow only while the guard lives"]
+pub fn simulate_slow_disk(d: std::time::Duration) -> SlowDisk {
     SLOW_DISK.store(d.as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+    SlowDisk(())
+}
+
+/// The disk is slow while this lives (`simulate_slow_disk`).
+#[cfg(feature = "test-hooks")]
+pub struct SlowDisk(());
+
+#[cfg(feature = "test-hooks")]
+impl Drop for SlowDisk {
+    fn drop(&mut self) {
+        SLOW_DISK.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 fn slow_disk() {
-    let us = SLOW_DISK.load(std::sync::atomic::Ordering::Relaxed);
-    if us > 0 {
-        std::thread::sleep(std::time::Duration::from_micros(us));
+    #[cfg(feature = "test-hooks")]
+    {
+        let us = SLOW_DISK.load(std::sync::atomic::Ordering::Relaxed);
+        if us > 0 {
+            std::thread::sleep(std::time::Duration::from_micros(us));
+        }
     }
 }
 

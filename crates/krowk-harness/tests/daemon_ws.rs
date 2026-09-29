@@ -657,7 +657,7 @@ fn r_lag_9_a_turn_on_a_stalling_disk_leaves_the_daemon_thread_on_time() {
     let home = Home::new("slow-disk", &m.url);
     let daemon = home.serve(Duration::from_millis(100), Caps::default());
     const STALL: Duration = Duration::from_millis(40);
-    log::simulate_slow_disk(STALL);
+    let slow = log::simulate_slow_disk(STALL);
     rt().block_on(async {
         let (addr, token) = home.websocket().await;
         let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
@@ -679,13 +679,13 @@ fn r_lag_9_a_turn_on_a_stalling_disk_leaves_the_daemon_thread_on_time() {
         }
         let took = started.elapsed();
         when.push((took, home.lateness()));
-        log::simulate_slow_disk(Duration::ZERO);
         let late = when.iter().map(|(_, l)| *l).max().unwrap();
         let held: Vec<String> = when.iter().filter(|(_, l)| *l >= Duration::from_millis(5)).map(|(at, l)| format!("{l:?} by {at:?}")).collect();
         assert!(logged >= 6, "the turn logged its events: {logged}");
         assert!(took >= STALL * logged as u32, "each write waited out the stalling disk: {took:?} for {logged}");
         assert!(late < STALL * 3 / 4, "the daemon's thread was held {late:?} during the turn — a write on it? held {held:?}");
     });
+    drop(slow);
     daemon.join().unwrap().unwrap();
 }
 
