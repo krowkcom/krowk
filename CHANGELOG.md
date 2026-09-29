@@ -17,7 +17,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `codex-app-server`), the model (`gen_ai.request.model`) and its provider
   (`gen_ai.system`), so its card on krowk.com can link back to the session
   with a `krowk --resume` command. A subagent's file names the subagent's
-  model. Nothing about the session's content is sent.
+  model. Nothing from the session's log is sent; the session id, engine,
+  model and provider are, in the clear, even for a synced session.
 - **`krowk relay serve` runs a relay of your own.** It carries a synced
   session between the machine running it and the devices watching it, and
   only ever sealed bytes: it refuses anything not encrypted, and never

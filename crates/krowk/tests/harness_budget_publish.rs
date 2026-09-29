@@ -230,6 +230,7 @@ fn r_evid_1_publish_pushes_a_screenshot_tagged_with_the_session_under_its_run() 
     // R-EVID-2: what the card's session line reads — the engine and the
     // model, off the artifact itself.
     assert_eq!(artifact["metadata"]["krowk.engine"], "krowk", "{shown}");
+    assert_eq!(artifact["metadata"]["krowk.harness"], "krowk", "the harness is krowk on the artifact too, whatever shell it ran in");
     assert_eq!(artifact["metadata"]["gen_ai.request.model"], "claude-sonnet-4-6", "{shown}");
     assert_eq!(artifact["metadata"]["gen_ai.system"], "anthropic", "{shown}");
     assert_eq!(artifact["run"]["slug"], run.as_str(), "{shown}");

@@ -325,7 +325,10 @@ impl Server<'_> {
                 metadata.insert("krowk.caption", c.clone());
             }
         }
-        let args = json!({ "files": req.files, "run": run.clone().unwrap_or_default(), "metadata": metadata });
+        // The harness is krowk, as on the run: left to detection it names
+        // whatever shell krowk was started from, and the artifact's key wins
+        // over the run's on a card, so it would contradict `krowk.engine`.
+        let args = json!({ "files": req.files, "run": run.clone().unwrap_or_default(), "metadata": metadata, "agent": "krowk" });
         let (_, pushed) = self.push_from(&req.root, &args)?;
         // A keyless upload's claim token is a secret the person spends:
         // what the model reads is logged, sent to the provider on every

@@ -213,4 +213,24 @@ mod tests {
         assert_eq!((asked[0].session_id.as_str(), asked[0].caption.as_deref(), asked[0].root.as_path()), ("s-1", Some("the fix"), Path::new("/repo")));
         assert_eq!(asked[0].producer, producer, "R-EVID-2: each publish carries what did the work");
     }
+
+    /// R-EVID-2: a subagent's file names the subagent's model, under its
+    /// parent's session.
+    #[test]
+    fn r_evid_2_a_subagents_publish_carries_its_own_producer() {
+        let asked: Arc<Mutex<Vec<PublishRequest>>> = Arc::default();
+        let seen = asked.clone();
+        let publisher: Publisher = Arc::new(move |r: &PublishRequest| {
+            seen.lock().unwrap().push(r.clone());
+            Ok(Published { text: "ok".into(), run: Some("run_1".into()), for_person: Vec::new() })
+        });
+        let parent = Producer { engine: "krowk".into(), model: "parent-model".into(), provider: "anthropic".into() };
+        let child = Producer { engine: "codex-app-server".into(), model: "child-model".into(), provider: "openai".into() };
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let ev = Evidence::new(publisher, "s-1", Some("run_1".into()), parent).for_subagent(tx.clone(), child.clone());
+        rt.block_on(ev.publish(Path::new("/repo"), &serde_json::json!({"files": ["a.png"]}), &tx));
+        let asked = asked.lock().unwrap();
+        assert_eq!((asked[0].session_id.as_str(), &asked[0].producer), ("s-1", &child));
+    }
 }
