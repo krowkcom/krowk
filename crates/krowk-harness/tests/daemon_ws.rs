@@ -274,12 +274,18 @@ fn r_proto_1_a_websocket_client_runs_a_turn_and_one_without_the_token_is_refused
 /// R-LAG-1: while the model types, nothing under krowk's home is written —
 /// neither the log nor krowk.db nor anything else: the deltas go from the
 /// provider's stream to the socket through memory alone, and only the
-/// finished item is logged.
+/// finished item is logged. The stream is held open after its last word
+/// until every word is read, so the finished item's write, one pace behind
+/// it, cannot land before a slow client has looked.
 #[test]
 fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let answer = words(60);
-    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(10))) };
+    let gate = mock::Gate::default();
+    let m = {
+        let (a, g) = (answer.clone(), gate.clone());
+        mock::serve(move |_, _| mock::Reply { hold: Some(("content_block_stop", g.clone())), ..mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(10)) })
+    };
     let home = Home::new("nowrite", &m.url);
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
     fn written(dir: &Path, into: &mut Vec<(PathBuf, u64, std::time::SystemTime)>) {
@@ -322,8 +328,20 @@ fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
         }
         assert_eq!(typed, answer);
         assert!(deltas > 10, "the answer streamed in pieces: {deltas}");
-        let events = first.unwrap().iter().filter(|(p, ..)| p.ends_with(log::EVENTS_FILE)).count();
+        let first = first.unwrap();
+        let events = first.iter().filter(|(p, ..)| p.ends_with(log::EVENTS_FILE)).count();
         assert_eq!(events, 1, "the log was there all along, and did not move");
+        // The stream ends, and the finished item is logged: the one write,
+        // and one the snapshots would have seen.
+        gate.open();
+        while let Some(got) = c.next().await {
+            let Got::Batch(_, frames) = got else { continue };
+            if frames.iter().any(|f| matches!(f, ServerFrame::Done { id: 1, .. })) {
+                break;
+            }
+        }
+        let grown = |v: &[(PathBuf, u64, std::time::SystemTime)]| v.iter().find(|(p, ..)| p.ends_with(log::EVENTS_FILE)).map(|(_, len, _)| *len);
+        assert!(grown(&snapshot()) > grown(&first), "the finished item is logged once the stream ends");
     });
     daemon.join().unwrap().unwrap();
 }

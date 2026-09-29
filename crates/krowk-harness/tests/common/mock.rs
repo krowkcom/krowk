@@ -38,6 +38,27 @@ pub struct Reply {
     /// Sent one SSE event at a time with this pause between, rather than
     /// whole: a model typing at a known rate.
     pub pace: Option<std::time::Duration>,
+    /// A paced reply stops before its first event holding this, until the
+    /// gate opens: a model mid-answer for as long as the test looks.
+    pub hold: Option<(&'static str, Gate)>,
+}
+
+/// Shut until opened, then open for good.
+#[derive(Clone, Default)]
+pub struct Gate(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+impl Gate {
+    pub fn open(&self) {
+        *self.0.0.lock().unwrap() = true;
+        self.0.1.notify_all();
+    }
+
+    fn wait(&self) {
+        let mut open = self.0.0.lock().unwrap();
+        while !*open {
+            open = self.0.1.wait(open).unwrap();
+        }
+    }
 }
 
 impl Reply {
@@ -46,7 +67,7 @@ impl Reply {
     }
 
     pub fn status(status: u16, body: &str) -> Reply {
-        Reply { status, body: body.to_string(), content_type: None, headers: Vec::new(), pace: None }
+        Reply { status, body: body.to_string(), content_type: None, headers: Vec::new(), pace: None, hold: None }
     }
 
     pub fn json(status: u16, body: &serde_json::Value) -> Reply {
@@ -155,6 +176,11 @@ pub fn serve_seen_on(listener: TcpListener, answer: impl Fn(&Seen, usize) -> Rep
                 Some(pace) => {
                     std::thread::spawn(move || {
                         for event in reply.body.split_inclusive("\n\n") {
+                            if let Some((at, gate)) = &reply.hold
+                                && event.contains(at)
+                            {
+                                gate.wait();
+                            }
                             if conn.write_all(event.as_bytes()).and_then(|()| conn.flush()).is_err() {
                                 return;
                             }
