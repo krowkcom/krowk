@@ -9,6 +9,8 @@
 
 #[path = "common/mock.rs"]
 mod mock;
+#[path = "common/scratch.rs"]
+mod scratch;
 
 use futures_util::{SinkExt, StreamExt};
 use krowk_harness::daemon::outbox::Caps;
@@ -35,8 +37,7 @@ struct Home {
 
 impl Home {
     fn new(name: &str, url: &str) -> Home {
-        let root = std::env::temp_dir().join(format!("krowk-ws-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = scratch::root(&format!("ws-{name}"));
         for d in ["home", "run", "repo/.git"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
