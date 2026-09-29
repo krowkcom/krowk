@@ -16,6 +16,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- Quitting the TUI is instant. On a Claude Code model it took most of a second, waiting on Claude Code to flush its telemetry as it exited; krowk now starts Claude Code with telemetry off (an instance can turn it back on by setting `DISABLE_TELEMETRY` in its `env`). The screen is also handed back before anything else is tidied up, and the session is saved into `krowk sessions` after each turn instead of on the way out, so leaving has nothing left to wait on. A quit now takes about 30 ms, down from 0.9 s.
 - A session resumed in the TUI shows what it has cost so far. On a model models.dev has no price for yet, such as a new Claude through Claude Code, the status bar showed `$—` until the next turn ran; it now counts what the backend reported for each past turn, the way the live figure does.
 
 ## [0.11.2] - 2026-09-29

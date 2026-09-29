@@ -115,6 +115,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         permissions,
         agents: prompt::agents_config(ctx.io.env),
     };
+    let projector = Projector::default();
     let outcome = krowk_tui::run(krowk_tui::Options {
         host,
         resume,
@@ -131,11 +132,14 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         notices: notices.into_iter().chain(mode_notices).collect(),
         version: super::VERSION.into(),
         config: Some(super::providers::config_path()?),
+        project: Some(projector.after_turns()),
     });
     // As after `krowk -p`: the log is the session, krowk.db its listing —
     // each session `/sessions` moved away from, and the one shown last.
+    // Projected after each turn already, so only a log that has grown
+    // since is read again on the way out.
     for id in outcome.left.iter().chain(&outcome.session_id) {
-        if let Err(e) = sessions::project_native(ctx, id) {
+        if let Err(e) = projector.project(ctx.io.env, id) {
             let _ = writeln!(ctx.io.stderr, "! session {id} is saved, but krowk.db was not updated: {} — `krowk sessions sync` retries", e.fix());
         }
     }
@@ -148,6 +152,42 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
     match outcome.error {
         Some(e) => Err(fail("tui_failed", e)),
         None => Ok(()),
+    }
+}
+
+/// Projects sessions into krowk.db, remembering how long each log was when
+/// it last was, so a log that has not grown since is not read again.
+#[derive(Clone, Default)]
+struct Projector {
+    done: Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+}
+
+impl Projector {
+    /// Projects `id` unless its log has not grown since it last was. The
+    /// length is taken before the log is read: what is
+    /// appended while it is read is read again next time, never missed.
+    fn project(&self, env: krowk_import::Env, id: &str) -> Result<(), Error> {
+        let len = log::sessions_dir(env).ok().and_then(|d| std::fs::metadata(d.join(id).join(log::EVENTS_FILE)).ok()).map(|m| m.len());
+        let done = || self.done.lock().unwrap_or_else(|e| e.into_inner());
+        if len.is_some() && done().get(id) == len.as_ref() {
+            return Ok(());
+        }
+        sessions::project_native(env, id)?;
+        if let Some(len) = len {
+            done().insert(id.to_string(), len);
+        }
+        Ok(())
+    }
+
+    /// For the TUI to run after each turn, on its own thread. That thread
+    /// outlives `ctx`, so it reads the process's environment, which is what
+    /// `ctx.io.env` is whenever the TUI runs (only `main` opens it). A
+    /// failure is left for the projection on the way out to report.
+    fn after_turns(&self) -> krowk_tui::Project {
+        let me = self.clone();
+        Arc::new(move |id: &str| {
+            let _ = me.project(&|k| std::env::var(k).unwrap_or_default(), id);
+        })
     }
 }
 

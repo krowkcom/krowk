@@ -111,7 +111,13 @@ pub struct Options {
     /// krowk's config.json, which `/connect` writes definitions into; none
     /// (no home directory) and `/connect` says so.
     pub config: Option<PathBuf>,
+    /// Brings a session's rows in krowk.db up to date from its log. Run on
+    /// a thread of its own after each turn, while the person reads the
+    /// answer, so leaving has little or nothing left to write.
+    pub project: Option<Project>,
 }
+
+pub type Project = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// What the TUI routes once it is up (`Host::route_model`).
 pub struct Route {
@@ -319,21 +325,14 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
     ui.turn = None;
     ui.rx = None;
-    // A backend's process (Claude Code, Codex) is let go cleanly, and
-    // whatever it started with it, before the terminal is handed back —
-    // unless the person left without waiting (a second Ctrl-C, SIGTERM),
-    // when every backend's process group is killed at once instead.
-    if ui.abandoned {
-        krowk_harness::group::kill_all();
-    } else {
-        host.shutdown().await;
-    }
+    // The screen is left first, so leaving shows at once whatever is still
+    // to be let go.
     let _ = term.finish();
     ui.presence.finish();
     let mut out = term.into_inner();
@@ -341,6 +340,15 @@ async fn session(opts: Options) -> Outcome {
         let _ = write!(out, "\x1b[2mresume this session with: krowk --resume {id}\x1b[0m\r\n");
     }
     let _ = out.flush();
+    // A backend's process (Claude Code, Codex) is let go cleanly, and
+    // whatever it started with it — unless the person left without waiting
+    // (a second Ctrl-C, SIGTERM), when every backend's process group is
+    // killed at once instead.
+    if ui.abandoned {
+        krowk_harness::group::kill_all();
+    } else {
+        host.shutdown().await;
+    }
     app.left.retain(|id| app.session_id.as_ref() != Some(id));
     Outcome { session_id: app.session_id.clone(), left: std::mem::take(&mut app.left), error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
 }
@@ -429,6 +437,7 @@ struct Ui<'h> {
     last_prompt: String,
     /// The window title and herdr's agent state.
     presence: presence::Presence,
+    project: Option<Project>,
 }
 
 /// Two signals as one stream, registered once for the TUI's life.
@@ -740,6 +749,10 @@ impl<'h> Ui<'h> {
                         }
                     }
                     self.follow(app);
+                    if let (Some(project), Some(id)) = (&self.project, &app.session_id) {
+                        let (project, id) = (project.clone(), id.clone());
+                        std::thread::spawn(move || project(&id));
+                    }
                     // What the engine never read, as the host says on the
                     // result (its own queue, so nothing is guessed), and what
                     // was never accepted at all.
