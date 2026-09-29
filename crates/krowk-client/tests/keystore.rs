@@ -121,3 +121,19 @@ fn r_e2e_3_the_key_files_are_0600_and_hold_no_plain_account_key() {
     assert!(!account.contains(&*phrase::encode(&setup.account)));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// R-RELAY-1: the relay signing key is made once, `0600`, beside the
+/// device key, and read back as the same key.
+#[cfg(unix)]
+#[test]
+fn r_relay_1_the_signing_key_is_made_once_and_kept_0600() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = scratch("signing");
+    let store = Keystore::new(&root.join("home"));
+    let first = store.signing_key().unwrap();
+    assert_eq!(std::fs::metadata(store.signing_path()).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(store.signing_key().unwrap().public(), first.public());
+    std::fs::write(store.signing_path(), "{\"version\":2,\"secret\":\"00\"}").unwrap();
+    assert!(store.signing_key().unwrap_err().contains("move it aside"));
+    let _ = std::fs::remove_dir_all(&root);
+}

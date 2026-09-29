@@ -446,6 +446,8 @@ pub fn catalog(version: &str) -> Catalog {
     c.commands.push(cmd("status", "krowk status", "What's connected, and whether each is ready"));
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(host_command());
+    #[cfg(all(feature = "harness", unix))]
+    c.commands.push(relay_command());
     #[cfg(feature = "harness")]
     c.commands.push(sync_command());
     #[cfg(feature = "harness")]
@@ -467,6 +469,24 @@ fn sync_command() -> Command {
             cmd("register", "krowk sync register [--name NAME]", "Tell the workspace this machine holds its account key"),
         ],
         ..cmd("sync", "", "End-to-end encryption keys for syncing sessions")
+    }
+}
+
+/// `krowk relay`: the reference relay (R-RELAY-1), the contract of Canon's
+/// engineering/relay.md in Rust — the hermetic stand-in and a self-hosting
+/// path.
+#[cfg(all(feature = "harness", unix))]
+fn relay_command() -> Command {
+    Command {
+        subcommands: vec![Command {
+            flags: vec![
+                flag("addr", STRING, "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"),
+                flag("roster", STRING, "The JSON file of trusted devices and session leases (relay.md → The reference relay)"),
+                flag("origin", STRING, "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"),
+            ],
+            ..cmd("serve", "krowk relay serve --roster FILE [--addr HOST:PORT] [--origin URL]", "Carry sealed sessions between their host and viewers")
+        }],
+        ..cmd("relay", "", "The relay other devices reach a session through")
     }
 }
 
@@ -804,6 +824,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "providers",
             #[cfg(all(feature = "harness", unix))]
             "host",
+            #[cfg(all(feature = "harness", unix))]
+            "relay",
             #[cfg(feature = "harness")]
             "sync",
             #[cfg(feature = "harness")]
@@ -821,8 +843,14 @@ pub const GROUPS: &[(&str, &[&str])] = &[
 ];
 
 /// Listed by `krowk help --all` alone: the long forms of what the overview
-/// already lists, and help itself.
-pub const ALL_ONLY: &[&str] = &["auth", "help"];
+/// already lists, help itself, and the relay, which a person runs only to
+/// host one.
+pub const ALL_ONLY: &[&str] = &[
+    "auth",
+    "help",
+    #[cfg(all(feature = "harness", unix))]
+    "relay",
+];
 
 #[cfg(test)]
 mod tests {

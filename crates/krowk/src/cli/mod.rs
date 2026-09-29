@@ -16,6 +16,8 @@ mod devices;
 mod host;
 #[cfg(feature = "harness")]
 mod prompt;
+#[cfg(all(feature = "harness", unix))]
+mod relay;
 #[cfg(feature = "harness")]
 mod providers;
 #[cfg(feature = "sessions")]
@@ -284,6 +286,10 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["host", "enable", ..] => host::enable(ctx, true),
         #[cfg(all(feature = "harness", unix))]
         ["host", "disable", ..] => host::enable(ctx, false),
+        #[cfg(all(feature = "harness", unix))]
+        ["relay"] => show_help(ctx, p),
+        #[cfg(all(feature = "harness", unix))]
+        ["relay", "serve", ..] => relay::serve(ctx),
         #[cfg(feature = "harness")]
         ["sync"] => show_help(ctx, p),
         #[cfg(feature = "harness")]

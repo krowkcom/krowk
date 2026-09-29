@@ -76,8 +76,14 @@ pub const V: u8 = 1;
 pub const KIND_BATCH: u8 = 1;
 pub const KIND_FRAME: u8 = 2;
 pub const KIND_ACK: u8 = 3;
+/// A relay's own control message, JSON, never sealed (engineering/relay.md).
+pub const KIND_RELAY: u8 = 4;
+/// A sealed envelope the relay carries between the host and one viewer,
+/// whose link the header's `seq` names (engineering/relay.md).
+pub const KIND_ROUTED: u8 = 5;
 pub const FLAG_ZSTD: u8 = 1;
 pub const ENC_NONE: u8 = 0;
+pub const ENC_XCHACHA20_POLY1305: u8 = krowk_client::e2e::ENC_XCHACHA20_POLY1305;
 
 /// One WebSocket message of the protocol.
 #[derive(Debug, Clone, PartialEq)]
