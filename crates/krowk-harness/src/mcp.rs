@@ -489,7 +489,7 @@ impl Conn {
             Conn::Stdio { io, cut, .. } => {
                 let mut io = io.lock().await;
                 if cut.swap(true, Ordering::AcqRel) {
-                    return Err("an interrupt cut an earlier call off mid-message, so the server is not used again this turn".into());
+                    return Err("an earlier call to this server was cut off mid-message (an interrupt, or a pipe that broke), so it is not used again this turn".into());
                 }
                 write_line(&mut io.stdin, &msg).await?;
                 let answer = loop {

@@ -657,6 +657,10 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
             }
             Err(e) => (e, true),
         },
+        // Searching starts the servers, each a command: plan mode runs none.
+        None if name == crate::mcp::SEARCH && ctx.permission_mode == crate::protocol::PermissionMode::Plan => {
+            (format!("{name} was not run: it starts the MCP servers, and plan mode runs no commands — search for MCP tools once the plan is approved"), true)
+        }
         None if name == crate::mcp::SEARCH && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.search(input, &|s, t| mcp_denied(ctx, s, t), &ctx.cancel).await,
         None if name == crate::mcp::CALL && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.call(input, &|s, t| mcp_denied(ctx, s, t), &ctx.cancel).await,
         None if skill => crate::compat::skills::load(&ctx.compat.skills, input),
@@ -701,6 +705,16 @@ mod tests {
     /// tool: the JSON budget plus the grammar (about 125 tokens) with
     /// headroom. Ticket 10 measured 1,617 with a long working directory.
     const FREEFORM_CONTEXT_TOKENS: u64 = 1650;
+
+    /// The ceiling with no MCP servers, which is what the bench measures:
+    /// `context.tokens` in budgets.toml was raised to 1,625 for the two MCP
+    /// meta-tools (ticket 25), and this keeps the core toolset held to the
+    /// 1,500 it had before, so that headroom is MCP's alone.
+    const BASE_CONTEXT_TOKENS: u64 = 1500;
+
+    fn freeform_or(ts: &Toolset) -> bool {
+        tools::definitions(ts).iter().any(|d| d.grammar.is_some())
+    }
 
     #[test]
     fn r_switch_1_downgraded_reasoning_cannot_close_its_frame() {
@@ -796,6 +810,7 @@ mod tests {
                 let ts = Toolset { preset, custom_tools };
                 let system = system_prompt(cwd, &ts);
                 let (s, t) = (estimate_tokens(&system), tools_tokens(&tools::definitions(&ts)));
+                assert!(freeform_or(&ts) || s + t <= BASE_CONTEXT_TOKENS, "{}: system + tools is {} tokens with no MCP servers, over {BASE_CONTEXT_TOKENS}", preset.name, s + t);
                 println!("R-TOOL-1 context tokens: {} (custom tools {custom_tools}): system {s} + tools {t} = {}", preset.name, s + t);
                 assert!(s < 150, "the system prompt is {s} tokens: keep it a few lines");
                 // The freeform apply_patch carries its Lark grammar, which

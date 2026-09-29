@@ -56,7 +56,7 @@ impl Home {
     /// A `.mcp.json` naming the stand-in server as `fake`, listing `tools`.
     fn mcp_json(&self, tools: usize) {
         let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/fake-mcp");
-        let body = json!({"mcpServers": {"fake": {"command": fake, "args": [], "env": {"FAKE_TOOLS": tools.to_string(), "FAKE_LOG": self.fake_log()}}}});
+        let body = json!({"mcpServers": {"fake": {"command": "bash", "args": [fake], "env": {"FAKE_TOOLS": tools.to_string(), "FAKE_LOG": self.fake_log()}}}});
         std::fs::write(self.repo().join(".mcp.json"), body.to_string()).unwrap();
     }
 
@@ -299,6 +299,20 @@ fn r_tool_3_fifty_mcp_tools_cost_the_context_two_definitions_within_the_ticket_3
             total <= budget,
             "{total} tokens with 50 MCP tools configured, over context.tokens' {budget}"
         );
+    }
+}
+
+#[test]
+fn r_tool_3_plan_mode_and_a_whole_server_deny_start_no_server() {
+    for (mode, user) in [(PermissionMode::Plan, json!({})), (PermissionMode::BypassPermissions, json!({"permissions": {"deny": ["Mcp(fake)"]}}))] {
+        let m = mock::serve(script(vec![("mcp_search", json!({"query": "echo"}))]));
+        let h = Home::new("nostart", &m.url);
+        h.mcp_json(1);
+        let host = h.host(true, user.clone());
+        let r = run(&host, prompt(mode));
+        assert_eq!(r.result, "Done.");
+        assert!(!h.fake_log().exists(), "{mode:?} {user}: the server was started");
+        assert!(!results(&m)[0].contains("fake:echo"), "{mode:?}: {}", results(&m)[0]);
     }
 }
 
