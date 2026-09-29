@@ -205,7 +205,10 @@ async fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_ses
     // SAFETY: the descriptor was just opened here and is closed below.
     unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
     let (base, ws, scope) = setup("sbx-fd", Profile::Workspace);
-    let (out, err) = bash(&ws, &scope, "ls /proc/$$/fd | sort -n | tr '\\n' ' '; echo; ps -o sid= -p $$; echo $$").await;
+    // The descriptors of a process the shell starts outside any pipeline —
+    // listing the shell's own from inside one would catch that pipeline's
+    // pipe, still open while it forks — written to a file, not a pipe.
+    let (out, err) = bash(&ws, &scope, "sleep 5 & p=$!; ls /proc/$p/fd > /tmp/fds; ls -l /proc/$p/fd > /tmp/fdl; kill $p; sort -n /tmp/fds | tr '\\n' ' '; echo; ps -o sid= -p $$; echo $$; cat /tmp/fdl").await;
     unsafe { libc::close(fd) };
     let mut lines = out.lines();
     assert_eq!(lines.next(), Some("0 1 2 "), "{out}");
