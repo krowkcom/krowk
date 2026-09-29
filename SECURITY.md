@@ -111,7 +111,8 @@ sha256sum --check --ignore-missing checksums.txt
 The first command proves the checksums came from this repository's release
 workflow at that tag; the second that your archive is one of them. An SBOM
 verifies the same way, with its own bundle. The npm packages are published
-with npm provenance, which `npm audit signatures` checks.
+with npm provenance (npm 9.5 or later), which `npm audit signatures`
+checks.
 
 `krowk upgrade` and the installer check the archive against `checksums.txt`
 over HTTPS; they do not verify the signature yet. For a machine where that
@@ -130,9 +131,18 @@ cargo-zigbuild 0.23.4 (the versions in `.github/workflows/dist.yml`):
 git clone https://github.com/krowkcom/krowk && cd krowk && git checkout "$tag"
 rustup target add x86_64-unknown-linux-musl
 scripts/dist.sh build x86_64-unknown-linux-musl "${tag#v}"
+curl -fsSLO "https://github.com/krowkcom/krowk/releases/download/$tag/krowk_${tag#v}_linux_amd64.tar.gz"
 tar -xzOf "krowk_${tag#v}_linux_amd64.tar.gz" krowk | sha256sum   # the release's
 sha256sum dist/x86_64-unknown-linux-musl/krowk                   # yours
 ```
+
+The release's archive lands in the checkout's root, beside `dist/`, which
+holds your own build and its archive under the same name.
+
+The first release built with this in place is a release candidate
+(`v0.x.y-rc1`): its `reproduce` job is the first proof that the full,
+size-tuned release build is byte-identical across runners. Until one has
+run, reproducibility is shown for the fast profile only.
 
 Every dependency is checked by [`cargo deny`](deny.toml) on every pull
 request and again at the tag: a crate with a RustSec advisory, a licence
