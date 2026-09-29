@@ -558,6 +558,9 @@ pub struct App {
     fence: bool,
     /// The rows of a table in the answer, held until it ends (`table`).
     table: Vec<String>,
+    /// Whether the answer's last line was a table's: a blank line after it
+    /// is the one it already has.
+    tabled: bool,
     /// What a backend reported its session is billed to, and on which
     /// instance (R-INST-3).
     billing: Option<(String, Billing)>,
@@ -687,6 +690,7 @@ impl App {
             calls: Vec::new(),
             fence: false,
             table: Vec::new(),
+            tabled: false,
             billing: None,
             vendor_instances: Vec::new(),
             skills: Vec::new(),
@@ -1020,6 +1024,9 @@ impl App {
             return;
         }
         self.end_table();
+        if std::mem::take(&mut self.tabled) && self.last_blank && text.trim().is_empty() {
+            return;
+        }
         let line = look::markdown_line(&text, &mut self.fence);
         self.push_answer(line);
     }
@@ -1028,18 +1035,30 @@ impl App {
     fn end_md(&mut self) {
         self.end_table();
         self.fence = false;
+        self.tabled = false;
     }
 
-    /// The table held, drawn to the width; as typed when it is none.
+    /// The table held, drawn to the width with a blank line either side;
+    /// as typed when it is none.
     fn end_table(&mut self) {
         let rows = std::mem::take(&mut self.table);
         if rows.is_empty() {
             return;
         }
-        let lines = table::render(&rows, usize::from(self.width)).unwrap_or_else(|| rows.iter().map(|r| look::markdown_line(r, &mut false)).collect());
+        let Some(lines) = table::render(&rows, usize::from(self.width)) else {
+            for r in &rows {
+                self.push_answer(look::markdown_line(r, &mut false));
+            }
+            return;
+        };
+        self.gap();
         for line in lines {
             self.push_answer(line);
         }
+        // An empty last row is the table's, not the blank line after it.
+        self.last_blank = false;
+        self.gap();
+        self.tabled = true;
     }
 
     fn push_answer(&mut self, line: Line<'static>) {
@@ -2795,9 +2814,12 @@ mod tests {
         a.on_line(&delta("i", "Sizes:\n| a | b |\n|---|---|\n| 1 | 2 |\n"));
         assert_eq!(text(&a.take_pending()), ["Sizes:"], "the table is held while it may go on");
         a.on_line(&delta("i", "Done.\n```\n| in | code |\n```\n| x |"));
-        assert_eq!(text(&a.take_pending()), ["a  b", "─  ─", "1  2", "Done.", "```", "| in | code |", "```"]);
+        assert_eq!(text(&a.take_pending()), ["", "  a │ b", " ───┼───", "  1 │ 2", "", "Done.", "```", "| in | code |", "```"]);
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: String::new() } }));
         assert_eq!(text(&a.take_pending()), ["| x |"], "a table the answer ends on is drawn with it, as typed when it is none");
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "j".into(), item: ItemKind::AssistantText }));
+        a.on_line(&delta("j", "Sizes:\n\n| a |\n|---|\n| 1 |\n\nDone.\n\nNext.\n"));
+        assert_eq!(text(&a.take_pending()), ["", "Sizes:", "", "  a", " ───", "  1", "", "Done.", "", "Next."], "a blank line either side, never two");
     }
 
     #[test]
