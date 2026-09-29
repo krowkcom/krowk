@@ -697,6 +697,46 @@ impl SigningKey {
     }
 }
 
+/// A device's signing key, signing the registry calls that act as the
+/// device (canon, engineering/crypto.md → Signed registry requests): what
+/// `krowk_api::Client::signed_by` takes. krowk-api builds the lines; the
+/// key and the signature stay here (R-E2E-2). The lines begin with their
+/// own label, `krowk/registry/v1`, so a registry signature is never a
+/// relay join's and one is never the other's.
+pub struct DeviceSigner {
+    device: DeviceId,
+    key: SigningKey,
+}
+
+impl DeviceSigner {
+    pub fn new(device: DeviceId, key: SigningKey) -> DeviceSigner {
+        DeviceSigner { device, key }
+    }
+
+    /// This signer, as the registry client takes one.
+    pub fn shared(self) -> std::sync::Arc<dyn krowk_api::client::RequestSigner> {
+        std::sync::Arc::new(self)
+    }
+}
+
+impl krowk_api::client::RequestSigner for DeviceSigner {
+    fn device(&self) -> String {
+        self.device.to_string()
+    }
+
+    fn sign(&self, message: &[u8]) -> [u8; 64] {
+        use ed25519_dalek::Signer as _;
+        self.key.0.sign(message).to_bytes()
+    }
+}
+
+/// Checks a signed registry call's signature, strictly, as the registry
+/// does: for the stand-in registry the client's tests run against.
+pub fn verify_registry_request(signing_key: &[u8], signature: &[u8], message: &[u8]) -> bool {
+    let (Ok(key), Ok(sig)) = (<[u8; 32]>::try_from(signing_key), <[u8; 64]>::try_from(signature)) else { return false };
+    ed25519_dalek::VerifyingKey::from_bytes(&key).is_ok_and(|k| k.verify_strict(message, &ed25519_dalek::Signature::from_bytes(&sig)).is_ok())
+}
+
 impl std::fmt::Debug for SigningKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SigningKey({})", hex(&self.public().0))

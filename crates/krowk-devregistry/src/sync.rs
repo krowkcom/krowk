@@ -121,6 +121,101 @@ pub struct SyncStore {
     pub approvals: HashMap<String, Approval>,
     pub sessions: HashMap<(String, String), Session>,
     pub seq: usize,
+    /// The signed requests accepted in the last few minutes, by digest,
+    /// until their window closes: a replay is refused (SignedRequest).
+    pub signed: HashMap<[u8; 32], Timestamp>,
+}
+
+/// How far a signed request's timestamp may be from this clock, in
+/// milliseconds: the registry's SignedRequest::SKEW.
+const SIGNATURE_SKEW_MS: i64 = 5 * 60 * 1000;
+
+/// A call that acts as a device (canon, engineering/crypto.md → Signed
+/// registry requests), checked as the registry checks it, and then `act`
+/// with the device that signed it: after the key and the paid gate, the
+/// three headers, the timestamp within five minutes, the signature by the
+/// device's key on record over the request's lines, and not seen before.
+/// A registration may come from a device with no key on record yet, and is
+/// checked against the signing key in its body instead.
+pub fn signed(app: &App, req: &mut Req, act: impl FnOnce(&App, &mut Req, &str) -> Resp) -> Resp {
+    let workspace = match gate(req) {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let bytes = match req.read_body(4 << 20) {
+        Ok(b) => b,
+        Err(_) => return error(400, "bad_request", "the body could not be read", None),
+    };
+    let signer = match verify_signed(app, req, &workspace, &bytes) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let mut body = std::io::Cursor::new(bytes);
+    let mut inner = Req {
+        method: req.method.clone(),
+        path: req.path.clone(),
+        query: req.query.clone(),
+        headers: req.headers.clone(),
+        host: req.host.clone(),
+        remote: req.remote.clone(),
+        body: &mut body,
+    };
+    act(app, &mut inner, &signer)
+}
+
+fn verify_signed(app: &App, req: &Req, workspace: &str, body: &[u8]) -> Result<String, Resp> {
+    let refused = |code: &str, message: &str| error(401, code, message, None);
+    let (Some(device), Some(at), Some(signature)) = (req.header("X-Krowk-Device"), req.header("X-Krowk-Timestamp"), req.header("X-Krowk-Signature")) else {
+        return Err(refused("signature_required", "this call acts as a device and must be signed by its signing key (X-Krowk-Device, X-Krowk-Timestamp, X-Krowk-Signature)"));
+    };
+    let device = device.to_ascii_lowercase();
+    let millis: i64 = at.parse().map_err(|_| refused("signature_invalid", "X-Krowk-Timestamp is not Unix milliseconds"))?;
+    if (Timestamp::now().as_millisecond() - millis).abs() > SIGNATURE_SKEW_MS {
+        return Err(refused("signature_stale", "the request was signed more than 5 minutes from the registry's clock — check this machine's clock"));
+    }
+    let signature = unhex(signature).ok_or_else(|| refused("signature_invalid", "X-Krowk-Signature is not hex"))?;
+    let mut s = app.lock();
+    // The key on record; for a registration of a device with none yet, the
+    // one its body registers.
+    // A row on record with no key is not claimable by registering one.
+    let key = match s.sync.devices.get(&(workspace.to_owned(), device.clone())) {
+        Some(d) => d.signing_key.clone(),
+        None if req.path == "/v1/devices" => presented_signing_key(body).unwrap_or_default(),
+        None => String::new(),
+    };
+    let target = if req.query.is_empty() { req.path.clone() } else { format!("{}?{}", req.path, req.query) };
+    let message = format!("krowk/registry/v1\n{}\n{target}\n{at}\n{}", req.method, hex(&Sha256::digest(body)));
+    if !krowk_client::e2e::verify_registry_request(&unhex(&key).unwrap_or_default(), &signature, message.as_bytes()) {
+        return Err(refused("signature_invalid", &format!("the signature is not device {device}'s over this request")));
+    }
+    let now = Timestamp::now();
+    s.sync.signed.retain(|_, until| *until > now);
+    let digest: [u8; 32] = Sha256::digest(format!("{device}\n{message}")).into();
+    if s.sync.signed.insert(digest, now + SignedDuration::from_millis(2 * SIGNATURE_SKEW_MS)).is_some() {
+        return Err(refused("signature_replayed", "this signed request was already accepted once — sign it again to send it again"));
+    }
+    if req.path != "/v1/devices" && revoked(&s.sync, workspace, &device) {
+        return Err(device_revoked(&device));
+    }
+    Ok(device)
+}
+
+/// A registration's `device.signing_key`, which its signature is checked
+/// against when the device has none on record.
+fn presented_signing_key(body: &[u8]) -> Option<String> {
+    let v = crate::json::parse(body)?;
+    let key = v.fields().nested("device").string("signing_key");
+    (!key.is_empty()).then(|| key.to_ascii_lowercase())
+}
+
+/// A call naming `device` and signed by another is refused: naming a
+/// device is not a way to act as it.
+fn signed_as(device: &str, signer: &str) -> Result<(), Resp> {
+    if device == signer {
+        Ok(())
+    } else {
+        Err(error(403, "device_mismatch", &format!("the request names device {device} but is signed by device {signer}"), None))
+    }
 }
 
 /// crypto.md's device id: the first 16 bytes of
@@ -386,7 +481,7 @@ pub fn list_devices(app: &App, req: &Req) -> Resp {
 
 /// A device that set sync up itself says so, with the account key it holds.
 /// The same public key again is the same device, renamed.
-pub fn register_device(app: &App, req: &mut Req) -> Resp {
+pub fn register_device(app: &App, req: &mut Req, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let workspace = gate(req)?;
         let v = body(req, "device")?;
@@ -404,6 +499,7 @@ pub fn register_device(app: &App, req: &mut Req) -> Resp {
         burst(&mut s.sync, &caller(req), "device_registrations", now)?;
         adopt_account_key(&mut s.sync, &workspace, &account)?;
         let id = fingerprint(&key);
+        signed_as(&id, signer)?;
         if let (Some(new), Some(held)) = (&signing, s.sync.devices.get(&(workspace.clone(), id.clone())))
             && !held.signing_key.is_empty()
             && held.signing_key != *new
@@ -516,7 +612,7 @@ pub fn show_approval(app: &App, req: &Req, slug: &str) -> Resp {
 
 /// The answer: the account key wrapped to the request's public key, from a
 /// device of the workspace. Leaves the new device registered with its wrap.
-pub fn approve(app: &App, req: &mut Req, slug: &str) -> Resp {
+pub fn approve(app: &App, req: &mut Req, slug: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let workspace = gate(req)?;
         let v = body(req, "approval")?;
@@ -536,6 +632,7 @@ pub fn approve(app: &App, req: &mut Req, slug: &str) -> Resp {
             return Err(error(409, "already_approved", &format!("{slug} is already approved — the new device has an account key to collect"), None));
         }
         acting(sync, &workspace, &device)?;
+        signed_as(&device, signer)?;
         // The signing key the device asked with rides onto it; one already
         // set to another is refused, as the registry refuses it.
         if let Some(d) = sync.devices.get(&(workspace.clone(), a.id.clone()))
@@ -624,9 +721,12 @@ fn lease_stale(s: &Session, now: Timestamp) -> Resp {
 }
 
 /// Whether `token` is the live lease's, compared as digests.
-fn holder(s: &Session, token: &str, now: Timestamp) -> Result<(), Resp> {
+/// The lease holder's token, presented by the holder itself: the request
+/// is signed by the device holding the lease (`signed`), so a token copied
+/// to another device writes nothing.
+fn holder(s: &Session, token: &str, now: Timestamp, signer: &str) -> Result<(), Resp> {
     let presented = crate::store::sha256_hex(token.as_bytes());
-    if leased(s, now) && !s.token_digest.is_empty() && presented == s.token_digest { Ok(()) } else { Err(lease_stale(s, now)) }
+    if leased(s, now) && !s.token_digest.is_empty() && presented == s.token_digest && s.holder == signer { Ok(()) } else { Err(lease_stale(s, now)) }
 }
 
 /// A new lease token, and its digest to keep.
@@ -639,7 +739,7 @@ fn mint(s: &mut Session) -> String {
 /// Creates the session under its id, or writes its sealed index — the
 /// latter the lease holder's, presenting its token. The wrapped key never
 /// changes; a body naming no `sealed_index` leaves it as it is.
-pub fn put_session(app: &App, req: &mut Req, id: &str) -> Resp {
+pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let workspace = gate(req)?;
         let id = session_id(id).ok_or_else(not_found)?;
@@ -675,7 +775,7 @@ pub fn put_session(app: &App, req: &mut Req, id: &str) -> Resp {
             if token.is_empty() {
                 return Err(parameter_missing("lease_token"));
             }
-            holder(x, &token, now)?;
+            holder(x, &token, now, signer)?;
             if holder_revoked {
                 return Err(device_revoked(&x.holder));
             }
@@ -732,9 +832,10 @@ fn lease_call<'a>(app: &'a App, req: &mut Req, id: &str, needs_device: bool) -> 
     Ok((s, key, device, v))
 }
 
-pub fn acquire_lease(app: &App, req: &mut Req, id: &str) -> Resp {
+pub fn acquire_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let (mut s, key, device, v) = lease_call(app, req, id, true)?;
+        signed_as(&device, signer)?;
         let ttl = ttl(&v.fields())?;
         let env = env_field(&v.fields())?;
         let now = s.now();
@@ -762,7 +863,7 @@ pub fn acquire_lease(app: &App, req: &mut Req, id: &str) -> Resp {
     run().unwrap_or_else(|r| r)
 }
 
-pub fn renew_lease(app: &App, req: &mut Req, id: &str) -> Resp {
+pub fn renew_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let (mut s, key, device, v) = lease_call(app, req, id, true)?;
         let mut f = v.fields();
@@ -771,7 +872,7 @@ pub fn renew_lease(app: &App, req: &mut Req, id: &str) -> Resp {
         let env = env_field(&f)?;
         let now = s.now();
         let x = s.sync.sessions.get_mut(&key).unwrap();
-        holder(x, &token, now)?;
+        holder(x, &token, now, signer)?;
         let minted = if x.holder != device {
             x.fence += 1;
             x.holder = device.clone();
@@ -792,7 +893,7 @@ pub fn renew_lease(app: &App, req: &mut Req, id: &str) -> Resp {
 
 /// A viewer's relay ticket, for a device of the workspace that is not
 /// revoked and has a signing key.
-pub fn viewer_ticket(app: &App, req: &Req, id: &str) -> Resp {
+pub fn viewer_ticket(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     let run = || -> Result<Resp, Resp> {
         let workspace = gate(req)?;
         let id = session_id(id).ok_or_else(not_found)?;
@@ -809,6 +910,7 @@ pub fn viewer_ticket(app: &App, req: &Req, id: &str) -> Resp {
             return Err(not_found());
         }
         acting(&s.sync, &workspace, &device)?;
+        signed_as(&device, signer)?;
         let d = s.sync.devices.get(&(workspace.clone(), device.clone())).ok_or_else(not_found)?;
         if d.signing_key.is_empty() {
             return Err(error(409, "signing_key_missing", &format!("device {device} has registered no signing key — run krowk sync register on it"), None));
@@ -819,13 +921,13 @@ pub fn viewer_ticket(app: &App, req: &Req, id: &str) -> Resp {
     run().unwrap_or_else(|r| r)
 }
 
-pub fn release_lease(app: &App, req: &mut Req, id: &str) -> Resp {
+pub fn release_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let (mut s, key, _, v) = lease_call(app, req, id, false)?;
         let token = required(&mut v.fields(), "token")?;
         let now = s.now();
         let x = s.sync.sessions.get_mut(&key).unwrap();
-        holder(x, &token, now)?;
+        holder(x, &token, now, signer)?;
         x.holder.clear();
         x.token_digest.clear();
         x.lease_expires_at = None;
@@ -894,7 +996,7 @@ fn whole(f: &Fields, name: &str) -> Option<i64> {
 
 /// The holder's declare of a chunk: the lease token, then an Idempotency-Key
 /// replay or a new chunk with a presigned PUT under `/_storage`.
-pub fn declare_chunk(app: &App, req: &mut Req, id: &str, site: &str) -> Resp {
+pub fn declare_chunk(app: &App, req: &mut Req, id: &str, site: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let workspace = gate(req)?;
         let id = session_id(id).ok_or_else(not_found)?;
@@ -921,7 +1023,7 @@ pub fn declare_chunk(app: &App, req: &mut Req, id: &str, site: &str) -> Resp {
         if token.is_empty() {
             return Err(lease_token_missing());
         }
-        holder(x, &token, now)?;
+        holder(x, &token, now, signer)?;
         if revoked(&s.sync, &workspace, &x.holder) {
             return Err(device_revoked(&x.holder));
         }
@@ -1034,7 +1136,7 @@ pub fn put_chunk_object(app: &App, req: &mut Req, key: &str) -> Option<Resp> {
 
 /// The holder's confirmation that a chunk landed: the token again, then
 /// what storage holds checked against the declare. Idempotent.
-pub fn finalize_chunk(app: &App, req: &mut Req, id: &str, index: &str) -> Resp {
+pub fn finalize_chunk(app: &App, req: &mut Req, id: &str, index: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let workspace = gate(req)?;
         let id = session_id(id).ok_or_else(not_found)?;
@@ -1049,7 +1151,7 @@ pub fn finalize_chunk(app: &App, req: &mut Req, id: &str, index: &str) -> Resp {
         if token.is_empty() {
             return Err(lease_token_missing());
         }
-        holder(x, &token, now)?;
+        holder(x, &token, now, signer)?;
         if revoked(&s.sync, &workspace, &x.holder) {
             return Err(device_revoked(&x.holder));
         }
