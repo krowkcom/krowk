@@ -18,7 +18,7 @@
 //! | 0 | 1 | `v` | 1 |
 //! | 1 | 1 | `kind` | 1 batch (daemon → client), 2 frame (client → daemon), 3 ack (client → daemon) |
 //! | 2 | 1 | `flags` | bit 0: the payload is zstd-compressed |
-//! | 3 | 1 | `enc` | 0 none; 1 is XChaCha20-Poly1305 under the session key (`krowk_client::e2e::ENC_XCHACHA20_POLY1305`, applied after compressing), which frames carry from the relay on (tickets 17 and 19); until then any value but 0 is refused |
+//! | 3 | 1 | `enc` | 0 none; 1 is XChaCha20-Poly1305 under the session key (`krowk_client::protocol::frame::ENC_XCHACHA20_POLY1305`, applied after compressing), which frames carry from the relay on (tickets 17 and 19); until then any value but 0 is refused |
 //! | 4 | 16 | `session` | the session's UUID, all zero for none |
 //! | 20 | 8 | `seq` | big-endian: a batch's last `line.seq`, or an ack's count of batches applied |
 //!
@@ -71,19 +71,9 @@ const MAX_IN: usize = 4 << 20;
 /// How long a client has to finish the handshake and say hello.
 const HELLO_WAIT: Duration = Duration::from_secs(5);
 
-pub const HEADER: usize = 28;
-pub const V: u8 = 1;
-pub const KIND_BATCH: u8 = 1;
-pub const KIND_FRAME: u8 = 2;
-pub const KIND_ACK: u8 = 3;
-/// A relay's own control message, JSON, never sealed (engineering/relay.md).
-pub const KIND_RELAY: u8 = 4;
-/// A sealed envelope the relay carries between the host and one viewer,
-/// whose link the header's `seq` names (engineering/relay.md).
-pub const KIND_ROUTED: u8 = 5;
-pub const FLAG_ZSTD: u8 = 1;
-pub const ENC_NONE: u8 = 0;
-pub const ENC_XCHACHA20_POLY1305: u8 = krowk_client::e2e::ENC_XCHACHA20_POLY1305;
+/// The envelope's header layout and byte values are the protocol's, so
+/// they live with its types in `krowk-client` (R-CLIENT-1).
+pub use krowk_client::protocol::frame::{ENC_NONE, ENC_XCHACHA20_POLY1305, FLAG_ZSTD, HEADER, KIND_ACK, KIND_BATCH, KIND_FRAME, KIND_RELAY, KIND_ROUTED, V};
 
 /// One WebSocket message of the protocol.
 #[derive(Debug, Clone, PartialEq)]

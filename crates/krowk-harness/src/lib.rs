@@ -76,7 +76,9 @@ pub mod oauth;
 pub mod openai;
 pub mod permissions;
 pub mod project;
-pub mod protocol;
+/// Declared in `krowk-client`, which every client links without the
+/// engine (R-CLIENT-1); re-exported so `crate::protocol` paths hold.
+pub use krowk_client::protocol;
 pub mod readiness;
 #[cfg(unix)]
 pub mod relay;

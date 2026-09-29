@@ -22,34 +22,12 @@
 use crate::catalog::ModelInfo;
 use crate::protocol::Effort;
 
-pub const LADDER: [Effort; 7] = [Effort::None, Effort::Minimal, Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh, Effort::Max];
+/// The ladder and a rung's name live with `Effort` in the protocol, which
+/// `krowk-client` declares (R-CLIENT-1); the mapping onto a model is here.
+pub use crate::protocol::LADDER;
 
-impl Effort {
-    /// The name on the ladder, which is also the wire value every provider
-    /// that takes the rung uses for it.
-    pub fn name(self) -> &'static str {
-        match self {
-            Effort::None => "none",
-            Effort::Minimal => "minimal",
-            Effort::Low => "low",
-            Effort::Medium => "medium",
-            Effort::High => "high",
-            Effort::Xhigh => "xhigh",
-            Effort::Max => "max",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Effort> {
-        LADDER.into_iter().find(|e| e.name() == s.trim().to_ascii_lowercase())
-    }
-
-    pub fn names() -> Vec<&'static str> {
-        LADDER.iter().map(|e| e.name()).collect()
-    }
-
-    fn rung(self) -> i32 {
-        LADDER.iter().position(|e| *e == self).expect("every effort is on the ladder") as i32
-    }
+fn rung(e: Effort) -> i32 {
+    LADDER.iter().position(|r| *r == e).expect("every effort is on the ladder") as i32
 }
 
 /// The rungs a family takes when the catalog does not know the model: what
@@ -101,7 +79,7 @@ pub fn map(want: Effort, takes: &[Effort]) -> Option<Effort> {
     }
     let candidates: Vec<Effort> = if want == Effort::None { takes.to_vec() } else { takes.iter().copied().filter(|e| *e != Effort::None).collect() };
     let candidates = if candidates.is_empty() { takes.to_vec() } else { candidates };
-    candidates.into_iter().min_by_key(|e| ((e.rung() - want.rung()).abs(), -e.rung()))
+    candidates.into_iter().min_by_key(|e| ((rung(*e) - rung(want)).abs(), -rung(*e)))
 }
 
 #[cfg(test)]
