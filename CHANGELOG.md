@@ -32,6 +32,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   WebSocket upgrade, and a connection without a good one is turned away
   before it takes any room on the channel, so a flood of connections
   cannot keep a session's devices off it.
+- **`krowk relay serve --state DIR` keeps each channel's fence across
+  restarts.** It is required when `--addr` is reachable from the network,
+  like `--origin`, so a restart never lets a machine that lost the lease
+  host again. On loopback the relay may keep it in memory.
 - **A relay keeps development sessions apart from production ones.**
   A relay join now says which it is, `env` "production" or "development",
   and `krowk relay serve` gives each its own channel of a session, so a

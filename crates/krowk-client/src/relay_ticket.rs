@@ -151,7 +151,9 @@ pub fn verify_within(hex: &str, keys: &[([u8; 8], [u8; 32])], now: u64, max_life
     let key = VerifyingKey::from_bytes(key).map_err(|_| bad("the registry key is not an Ed25519 key"))?;
     let sig = ed25519_dalek::Signature::from_bytes(sig.try_into().expect("64"));
     key.verify_strict(&[LABEL, body].concat(), &sig).map_err(|_| bad("the ticket's signature is not the registry's"))?;
-    if now >= t.exp || t.iat > now + skew {
+    // Not yet valid, or expired; and never alive longer from now than a
+    // lifetime and the skew, whatever the ticket's own times say.
+    if now >= t.exp || t.iat > now + skew || t.exp > now + max_lifetime + skew {
         return Err(Refused { code: "ticket_expired", message: "the ticket has expired, or is not yet valid".into() });
     }
     Ok(t)
@@ -199,16 +201,29 @@ mod tests {
         }
     }
 
-    /// The registry's own ticket (its Ruby `RelayTicket`, recorded in
-    /// registry test `relay_ticket_test.rb`'s golden) reads and verifies
-    /// here byte for byte, and this module signs the same bytes.
+    /// The registry's own ticket, from the golden both repos carry
+    /// (`tests/fixtures/relay_ticket.golden`, the registry's
+    /// `test/fixtures/relay_ticket.golden`), whose SHA-256 relay.md records:
+    /// it reads and verifies here byte for byte, and this module signs the
+    /// same bytes. A golden regenerated on one side fails the hash here.
     #[test]
     fn r_relay_1_the_registrys_ticket_is_this_layout() {
-        let wire = "01010203040506070801010190f3a87c1e7a9b8c2d3e4f5a6b7c8d0123456789abcdef0123456789abcdefabababababababababababababababababababababababababababababababab0000000000000009000000006ab13b80000000006ab13cac1977735f676f6c64656e3030303030303030303030303030303099480842721987bd48bf813d542c5e3acbf403ac5708dc51a01cc5aeb161d6bc84e4d75403efb0c95b1f5550d6ee4974c98bc8adff77ad101dd311db95b8da01";
-        let keys = vec![([1, 2, 3, 4, 5, 6, 7, 8], SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes())];
-        let t = verify(wire, &keys, 1_790_000_100).unwrap();
-        assert_eq!((t.role, t.env, t.fence, t.workspace.as_str()), (RELAY_ROLE_HOST, ENV_PRODUCTION, 9, "ws_golden0000000000000000"));
-        assert_eq!(e2e::hex(&t.device), "0123456789abcdef0123456789abcdef");
-        assert_eq!(t.sign(&[1; 32]), wire);
+        use sha2::{Digest, Sha256};
+        const GOLDEN: &str = include_str!("../tests/fixtures/relay_ticket.golden");
+        assert_eq!(e2e::hex(&Sha256::digest(GOLDEN.as_bytes())), "0676411b37dc8cf591afacfb4f8df02462f9e6a10042ef71ac0c59f9383d5b55", "relay.md's recorded golden");
+        let field = |name: &str| {
+            let at = GOLDEN.find(&format!("\"{name}\"")).unwrap_or_else(|| panic!("the golden names {name}"));
+            let rest = GOLDEN[at..].split_once(':').unwrap().1.trim_start();
+            rest.trim_start_matches('"').split(['"', ',', '\n']).next().unwrap().trim().to_string()
+        };
+        let wire = field("ticket");
+        let seed: [u8; 32] = e2e::unhex(&field("seed")).unwrap().try_into().unwrap();
+        let kid: [u8; 8] = e2e::unhex(&field("kid")).unwrap().try_into().unwrap();
+        let keys = vec![(kid, SigningKey::from_bytes(&seed).verifying_key().to_bytes())];
+        let iat: u64 = field("iat").parse().unwrap();
+        let t = verify(&wire, &keys, iat + 100).unwrap();
+        assert_eq!((t.role, t.env, t.fence, t.workspace.clone()), (RELAY_ROLE_HOST, ENV_PRODUCTION, field("fence").parse().unwrap(), field("workspace")));
+        assert_eq!(e2e::hex(&t.device), field("device"));
+        assert_eq!(t.sign(&seed), wire);
     }
 }

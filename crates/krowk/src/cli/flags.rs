@@ -113,6 +113,7 @@ pub struct Flags {
     pub roster: String,
     #[cfg(feature = "harness")]
     pub origin: String,
+    pub relay_state: String,
     /// Which flags were typed, by canonical name — a different question from
     /// what they carry: `--jq "$UNSET"` was given and is empty.
     pub given: BTreeSet<String>,
@@ -284,6 +285,7 @@ impl Flags {
             "ticket-keys" => text(&mut self.roster),
             #[cfg(feature = "harness")]
             "origin" => text(&mut self.origin),
+            "state" => text(&mut self.relay_state),
             _ => {
                 let b = parse_bool(name, v)?;
                 *match name {

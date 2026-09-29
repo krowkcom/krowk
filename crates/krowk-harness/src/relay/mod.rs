@@ -216,6 +216,12 @@ pub struct Config {
     /// (`krowk relay serve` refuses another address without `--origin`).
     pub origin: Option<String>,
     pub limits: Limits,
+    /// Where each channel's admission facts — its workspace, its fence and
+    /// that fence's ticket expiry — are kept across restarts, so a restart
+    /// never lets a displaced lease holder host again (relay.md → Tickets).
+    /// None keeps them in memory, for loopback only (`krowk relay serve`
+    /// refuses another address without `--state`).
+    pub state: Option<std::path::PathBuf>,
 }
 
 /// Runs a relay on `listener` until the process ends.
@@ -232,7 +238,8 @@ pub fn run(listener: std::net::TcpListener, config: Config) -> Result<(), String
 
 /// Accepts connections for ever. Inside a `LocalSet`.
 pub async fn serve(listener: TcpListener, config: Config) {
-    let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0) });
+    let channels = config.state.as_deref().map(load_state).unwrap_or_default();
+    let relay = Rc::new(Relay { config, channels: RefCell::new(channels), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0) });
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
@@ -262,9 +269,22 @@ struct Pending {
     id: u64,
     peer: std::net::IpAddr,
     session: Option<Key>,
-    /// The device its ticket names, once the upgrade carried a good one.
-    device: Option<[u8; 16]>,
+    /// The device and role its ticket names, once the upgrade carried a
+    /// good one: a device's viewer tickets never take its host's places.
+    device: Option<([u8; 16], u8)>,
     kill: Rc<tokio::sync::Notify>,
+}
+
+/// The address a pre-request cap counts by: an IPv4 address itself, an
+/// IPv6 one by its /64, which one subscriber typically holds whole.
+fn peer_bucket(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip.to_canonical() {
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            std::net::IpAddr::V6(std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+        }
+        v4 => v4,
+    }
 }
 
 impl Relay {
@@ -278,13 +298,24 @@ impl Relay {
     }
 
     /// A new pending connection, room made for it under the caps.
+    ///
+    /// Two tiers: a connection that has shown no ticket yet is always let
+    /// go before one whose ticket was verified, so no number of strangers
+    /// holding connections open, from any number of addresses, pushes out
+    /// a device answering its challenge. Ticketed connections are bounded
+    /// already, two per device and role and 64 a channel (`names`).
     fn arrive(&self, peer: std::net::IpAddr) -> (u64, Rc<tokio::sync::Notify>) {
         let limits = &self.config.limits;
-        if self.pending.borrow().iter().filter(|p| p.peer == peer).count() >= limits.unjoined_per_peer {
-            self.evict(|p| p.peer == peer);
+        let peer = peer_bucket(peer);
+        if self.pending.borrow().iter().filter(|p| p.peer == peer && p.device.is_none()).count() >= limits.unjoined_per_peer {
+            self.evict(|p| p.peer == peer && p.device.is_none());
         }
         if self.pending.borrow().len() >= limits.unjoined {
-            self.evict(|_| true);
+            if self.pending.borrow().iter().any(|p| p.device.is_none()) {
+                self.evict(|p| p.device.is_none());
+            } else {
+                self.evict(|_| true);
+            }
         }
         let id = self.pending_ids.get() + 1;
         self.pending_ids.set(id);
@@ -298,8 +329,9 @@ impl Relay {
     /// verified: room made there, first among that device's own pending
     /// connections, so a replayed ticket costs only the device it names and
     /// no stranger (who has no ticket) is ever counted on a channel.
-    fn names(&self, id: u64, session: Key, device: [u8; 16]) {
+    fn names(&self, id: u64, session: Key, device: [u8; 16], role: u8) {
         let limits = &self.config.limits;
+        let device = (device, role);
         if self.pending.borrow().iter().filter(|p| p.session == Some(session) && p.device == Some(device)).count() >= limits.unjoined_per_device {
             self.evict(|p| p.session == Some(session) && p.device == Some(device));
         }
@@ -384,6 +416,11 @@ struct Channel {
     /// The highest fence a host has been admitted at: a ticket from before
     /// the lease moved on is refused.
     fence: Option<u64>,
+    /// The latest expiry of a ticket admitted at that fence, on the
+    /// registry's clock: every ticket from before the lease moved on
+    /// expires no later, so the channel keeps its fence at least until the
+    /// relay's own clock has passed it (relay.md → Tickets).
+    fence_exp: u64,
 }
 
 impl Channel {
@@ -545,7 +582,14 @@ async fn handshake(stream: Metered, relay: &Rc<Relay>, pending: u64, kill: &toki
         // is refused as a bad join once the challenge is out.
         let env = Env::parse(req.uri().query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("env="))));
         // The ticket rides the upgrade (`X-Krowk-Ticket`), never the URL.
-        let ticket = req.headers().get("x-krowk-ticket").and_then(|t| t.to_str().ok()).map(str::to_string);
+        // Exactly one, or it is no ticket at all: two are refused, not
+        // read by which comes first.
+        let all: Vec<_> = req.headers().get_all("x-krowk-ticket").iter().collect();
+        let ticket = match all.as_slice() {
+            [] => None,
+            [one] => Some(one.to_str().map(str::to_string).unwrap_or_else(|_| "\u{0}".into())),
+            _ => Some("\u{0}duplicate".into()),
+        };
         *into.borrow_mut() = (Some(session), host, env, ticket);
         Ok(resp)
     };
@@ -567,7 +611,7 @@ async fn handshake(stream: Metered, relay: &Rc<Relay>, pending: u64, kill: &toki
         }
     };
     let env = env.expect("checked with the ticket");
-    relay.names(pending, (env, session), ticket.1.device);
+    relay.names(pending, (env, session), ticket.1.device, ticket.1.role);
     let result = challenge(&mut ws, relay, session, Some(env), &host, ticket, kill).await;
     let (device, role, join) = result?;
     Some((ws, (env, session), device, role, join))
@@ -689,6 +733,7 @@ struct Join {
     ticket: Option<String>,
     /// A host's ticket's fence, once admitted.
     ticket_fence: u64,
+    ticket_exp: u64,
 }
 
 fn read_join(b: &[u8]) -> Result<Join, Refusal> {
@@ -733,7 +778,7 @@ fn read_join(b: &[u8]) -> Result<Join, Refusal> {
         Some(Value::String(t)) if t.len() <= 512 => Some(t.clone()),
         Some(_) => return Err(bad("has a ticket that is not a hex string")),
     };
-    Ok(Join { role, device, signature, fence, stream, after, env, workspace: String::new(), ticket, ticket_fence: 0 })
+    Ok(Join { role, device, signature, fence, stream, after, env, workspace: String::new(), ticket, ticket_fence: 0, ticket_exp: 0 })
 }
 
 /// Who may join (relay.md → What the relay checks): a device with a
@@ -798,6 +843,7 @@ fn admit(relay: &Relay, key: Key, nonce: &[u8; 32], origin: &str, mut j: Join, t
             return Err(refuse("bad_join", "a host's join names no stream", "send the stream epoch the host seals batches under, 32 hex characters"));
         }
         j.ticket_fence = t.fence;
+        j.ticket_exp = t.exp;
     } else {
         // Full is checked before the join is counted, so being refused as
         // full costs the session nothing.
@@ -816,13 +862,26 @@ fn enter(relay: &Relay, session: Key, link: &Rc<Link>, role: u8, j: Join) {
     let mut channels = relay.channels.borrow_mut();
     // A channel nobody has been on for a while is forgotten, its buffer
     // with it: a host coming back starts it afresh.
-    let idle = relay.config.limits.idle();
-    channels.retain(|id, c| *id == session || c.empty_since.is_none_or(|t| t.elapsed() < idle));
+    let limits = &relay.config.limits;
+    let now = krowk_client::relay_ticket::now();
+    channels.retain(|id, c| *id == session || !forgettable(c, limits, now));
     let ch = channels.entry(session).or_default();
     ch.empty_since = None;
     ch.workspace.get_or_insert_with(|| j.workspace.clone());
     if role == RELAY_ROLE_HOST {
-        ch.fence = Some(ch.fence.map_or(j.ticket_fence, |f| f.max(j.ticket_fence)));
+        match ch.fence {
+            Some(f) if f > j.ticket_fence => {}
+            Some(f) if f == j.ticket_fence => ch.fence_exp = ch.fence_exp.max(j.ticket_exp),
+            _ => {
+                ch.fence = Some(j.ticket_fence);
+                ch.fence_exp = j.ticket_exp;
+            }
+        }
+        // Kept before the host is told it joined, so a restart after it
+        // cannot let a displaced holder in.
+        if let Some(dir) = &relay.config.state {
+            save_state(dir, session, ch);
+        }
     }
     if role == RELAY_ROLE_HOST {
         let stream = j.stream.expect("admitted with a stream");
@@ -1089,6 +1148,56 @@ fn leave(relay: &Relay, session: Key, link: &Rc<Link>, role: u8) {
     if ch.host.is_none() && ch.viewers.is_empty() {
         ch.empty_since = Some(Instant::now());
     }
+}
+
+/// Whether a channel nobody is on may be forgotten, its fence with it: only
+/// once it has been empty for the idle time *and* the relay's own clock has
+/// passed its fence's ticket expiry by the margin, so every ticket from
+/// before the lease last moved is expired by the relay's own check —
+/// whatever the registry's clock reads against the relay's.
+fn forgettable(c: &Channel, limits: &Limits, now: u64) -> bool {
+    c.empty_since.is_some_and(|t| t.elapsed() >= limits.idle()) && now >= c.fence_exp + limits.idle_margin
+}
+
+/// The admission facts of every channel that has any, one JSON line each,
+/// the last line for a channel the one that counts.
+const STATE_FILE: &str = "relay-channels.jsonl";
+
+fn save_state(dir: &std::path::Path, key: Key, ch: &Channel) {
+    use std::io::Write as _;
+    let line = json!({"env": key.0.as_str(), "session": e2e::hex(&key.1), "workspace": ch.workspace, "fence": ch.fence, "fenceExp": ch.fence_exp}).to_string() + "\n";
+    let written = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(STATE_FILE)).and_then(|mut f| {
+        f.write_all(line.as_bytes())?;
+        f.sync_data()
+    });
+    if let Err(e) = written {
+        // Not kept is not safe: the relay stops rather than carry on
+        // with a fence a restart would forget.
+        eprintln!("relay state {}: {e}; stopping", dir.display());
+        std::process::exit(1);
+    }
+}
+
+/// The admission facts kept under `--state`, each channel's as empty since
+/// now, and the file rewritten with one line a channel.
+fn load_state(dir: &std::path::Path) -> HashMap<Key, Channel> {
+    let mut channels: HashMap<Key, Channel> = HashMap::new();
+    let text = std::fs::read_to_string(dir.join(STATE_FILE)).unwrap_or_default();
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let (Some(env), Some(session)) = (Env::parse(v["env"].as_str()), v["session"].as_str().and_then(e2e::unhex).and_then(|b| <[u8; 16]>::try_from(b).ok())) else { continue };
+        let ch = channels.entry((env, session)).or_default();
+        ch.workspace = v["workspace"].as_str().map(str::to_string);
+        ch.fence = v["fence"].as_u64();
+        ch.fence_exp = v["fenceExp"].as_u64().unwrap_or(0);
+        ch.empty_since = Some(Instant::now());
+    }
+    let compact: String = channels.iter().map(|(k, c)| json!({"env": k.0.as_str(), "session": e2e::hex(&k.1), "workspace": c.workspace, "fence": c.fence, "fenceExp": c.fence_exp}).to_string() + "\n").collect();
+    let tmp = dir.join(format!("{STATE_FILE}.tmp"));
+    if std::fs::write(&tmp, compact).and_then(|_| std::fs::rename(&tmp, dir.join(STATE_FILE))).is_err() {
+        eprintln!("relay state {} could not be rewritten; carrying on with the longer file", dir.display());
+    }
+    channels
 }
 
 /// A session id's sixteen bytes, from its canonical UUID form.

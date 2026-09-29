@@ -530,6 +530,54 @@
       "revoked": false
     },
     {
+      "name": "pool-host",
+      "id": "528c315247e3d5c5e0f9d0b61419e858",
+      "seed": "d6f3c9438ea2a374486943839c783cfa5b2c204127b593ee2daad9a9ce32bd6a",
+      "signingKey": "f3728204d0e5b0c7b1356d87461b1281eb86e2838d4b1792580be4bbbe9468ed",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "pool-viewer",
+      "id": "9ddea673742c2c40dd7a21b0914b1cd4",
+      "seed": "9d20322d1828a5ce2071b91a9b26fe4aea8c36c719bfb534b8749d41d926c0f8",
+      "signingKey": "a52dd7186352cb17bcab64447e0995baa49c3684a5f1ef2a61b6a8ccddac4ec1",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "pool-viewer2",
+      "id": "9c4b5a4186d581b3e4f450e98ce5e7f1",
+      "seed": "6a5792f7d3e5dc89eeee568178968bb103d454ac087f485ad15b9d7ec8c574a7",
+      "signingKey": "9237ef0071e3681c220495240c6c52f90b1833fd4e05c2b9bfa2acae9642d1ea",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "hostvt-host",
+      "id": "2d27190a5972e239bcc4e9370579de95",
+      "seed": "d19f92de6c0f71ff9a016b43d63c9097ba4980ca40372777818a3a0205f2296b",
+      "signingKey": "5a926527f2636e8bdd5be05dc3bf405be5c1ba95fda481a456e26b7eb5255f29",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "hostvt-viewer",
+      "id": "9344261eb6974d7d8f886130e75b5a2c",
+      "seed": "a8678fb2332ee77a4f0fd4f08feec6bd7e853c549fb6930e32d982ca5e76d8e0",
+      "signingKey": "9181df5d796a97c28083021d4bcd2b813c02f890d97d94dd920b1f721e28e0b6",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "hostvt-viewer2",
+      "id": "85ce80ea12292455077fa48eb0bca8a7",
+      "seed": "61f8561fc81e7dd0012a3c85d986fa0149c58656191c7180c8a84a17bd7b16f4",
+      "signingKey": "70c3a9782020c3c2f1bd90fac2976e8d31151353b71ec509413c9bf18d83b6df",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
       "name": "outsider",
       "id": "efc5fa16d87af0fe9215049762a334ac",
       "seed": "238e38bd09339bbfe7d2ce99c28792a6f411ea15b4aa219c9f6845c00740036c",
@@ -708,6 +756,20 @@
       "workspace": "ws_conformance_a",
       "holder": "16de082721b82c3869eef5bf7cce0d87",
       "fence": 209
+    },
+    {
+      "name": "pool",
+      "id": "c43795d9-a4de-7af2-bc29-4430100e1be6",
+      "workspace": "ws_conformance_a",
+      "holder": "528c315247e3d5c5e0f9d0b61419e858",
+      "fence": 176
+    },
+    {
+      "name": "hostvt",
+      "id": "07cdee64-b60c-7274-9a2a-0cf76d45f709",
+      "workspace": "ws_conformance_a",
+      "holder": "2d27190a5972e239bcc4e9370579de95",
+      "fence": 63
     },
     {
       "name": "xws-b",
