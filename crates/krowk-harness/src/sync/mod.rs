@@ -210,30 +210,32 @@ pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path:
 
 /// What a line typed into `krowk sync attach` asks of the session: a
 /// prompt, unless it is one of the slash commands `krowk help sync attach`
-/// lists. A line that starts with `/` but names none of them is refused
-/// rather than sent as a prompt, so a mistyped `/aprove` never reaches the
-/// model.
+/// lists. Any other line starting with `/` is a prompt as typed, so a skill
+/// (`/review x`) or a path still reaches the model; `//text` sends `/text`
+/// for a prompt that would otherwise read as a command.
 pub fn typed(session: &str, line: String) -> Result<crate::protocol::Command, String> {
     use crate::protocol::{ApprovalDecision, Command};
     let session_id = session.to_string();
-    let Some(rest) = line.trim().strip_prefix('/') else {
-        return Ok(Command::Prompt { session_id: Some(session_id), text: line, model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None });
-    };
+    let prompt = |text: String| Ok(Command::Prompt { session_id: Some(session.to_string()), text, model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None });
+    let trimmed = line.trim();
+    if let Some(literal) = trimmed.strip_prefix("//") {
+        return prompt(format!("/{literal}"));
+    }
+    let Some(rest) = trimmed.strip_prefix('/') else { return prompt(line) };
     let (word, arg) = rest.split_once(char::is_whitespace).map(|(w, a)| (w, a.trim())).unwrap_or((rest, ""));
     let decision = match word {
-        "approve" => Some(ApprovalDecision::Allow),
-        "allow-session" => Some(ApprovalDecision::AllowSession),
-        "deny" => Some(ApprovalDecision::Deny),
-        _ => None,
+        "approve" => ApprovalDecision::Allow,
+        "allow-session" => ApprovalDecision::AllowSession,
+        "deny" => ApprovalDecision::Deny,
+        "interrupt" if arg.is_empty() => return Ok(Command::Interrupt { session_id }),
+        "steer" if !arg.is_empty() => return Ok(Command::Steer { session_id, text: arg.to_string() }),
+        "interrupt" | "steer" => return Err(format!("`/{word}` is `/interrupt` alone, or `/steer TEXT`")),
+        _ => return prompt(line),
     };
-    match (word, decision) {
-        (_, Some(_)) if arg.is_empty() || arg.contains(char::is_whitespace) => Err(format!("`/{word}` takes the requestId an approval.requested line names")),
-        (_, Some(decision)) => Ok(Command::Approve { session_id, request_id: arg.to_string(), decision }),
-        ("interrupt", _) if arg.is_empty() => Ok(Command::Interrupt { session_id }),
-        ("steer", _) if !arg.is_empty() => Ok(Command::Steer { session_id, text: arg.to_string() }),
-        ("interrupt" | "steer", _) => Err(format!("`/{word}` is `/interrupt` alone, or `/steer TEXT`")),
-        _ => Err(format!("`/{word}` is not a command here — /approve, /allow-session, /deny, /interrupt and /steer are (`krowk help sync attach`)")),
+    if arg.is_empty() || arg.contains(char::is_whitespace) {
+        return Err(format!("`/{word}` takes the requestId an approval.requested line names"));
     }
+    Ok(Command::Approve { session_id, request_id: arg.to_string(), decision })
 }
 
 /// `krowk sync attach`: follows a synced session, writing each update as
@@ -288,4 +290,41 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::typed;
+    use crate::protocol::{ApprovalDecision, Command};
+
+    fn prompt_text(c: Command) -> String {
+        match c {
+            Command::Prompt { text, session_id, .. } => {
+                assert_eq!(session_id.as_deref(), Some("s"));
+                text
+            }
+            other => panic!("not a prompt: {other:?}"),
+        }
+    }
+
+    /// The five commands, each to its `Command`; anything else starting
+    /// with `/` is a prompt as typed, and `//` escapes a command's name.
+    #[test]
+    fn typed_lines_are_the_five_commands_or_else_prompts() {
+        let t = |l: &str| typed("s", l.to_string());
+        for (line, want) in [("/approve r1", ApprovalDecision::Allow), ("/allow-session r1", ApprovalDecision::AllowSession), ("/deny  r1 ", ApprovalDecision::Deny)] {
+            let Ok(Command::Approve { session_id, request_id, decision }) = t(line) else { panic!("{line}") };
+            assert_eq!((session_id.as_str(), request_id.as_str(), decision), ("s", "r1", want), "{line}");
+        }
+        assert!(matches!(t("/interrupt"), Ok(Command::Interrupt { session_id }) if session_id == "s"));
+        assert!(matches!(t("/steer go on"), Ok(Command::Steer { text, .. }) if text == "go on"));
+        for bad in ["/approve", "/deny a b", "/interrupt now", "/steer"] {
+            assert!(t(bad).is_err(), "{bad}");
+        }
+        assert_eq!(prompt_text(t("say hi").unwrap()), "say hi");
+        assert_eq!(prompt_text(t("/review x").unwrap()), "/review x");
+        assert_eq!(prompt_text(t("/usr/bin is where").unwrap()), "/usr/bin is where");
+        assert_eq!(prompt_text(t("//approve r1").unwrap()), "/approve r1");
+        assert_eq!(prompt_text(t("//etc").unwrap()), "/etc");
+    }
 }

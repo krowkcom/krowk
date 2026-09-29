@@ -16,9 +16,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `/allow-session REQUEST_ID` or `/deny REQUEST_ID`, answering the tool call
   an `approval.requested` line names, `/interrupt`, which stops the running
   turn, or `/steer TEXT`, which adds to it. Each `approval.requested` line
-  carries its `requestId`, and stderr says which command answers it. A line
-  starting with `/` that names none of these is refused, never sent as a
-  prompt. `krowk help sync attach` lists them.
+  carries its `requestId`, and stderr says which command answers it. Any
+  other line starting with `/` goes as a prompt, so skills and paths still
+  work, and `//TEXT` sends `/TEXT`. `krowk help sync attach` lists them.
 
 - **A synced session goes direct over Tailscale when it can.** `krowk sync
   host` reads this machine's tailnet address, MagicDNS name and LAN address

@@ -118,6 +118,7 @@ prompt to it, queued while no host is online, except these:
   /interrupt                 stop the running turn
   /steer TEXT                add TEXT to the running turn without stopping it
 
+Any other line starting with / is a prompt as typed; //TEXT sends /TEXT.
 Each approval.requested line carries its requestId, and a hint on stderr
 names the command that answers it.";
 
