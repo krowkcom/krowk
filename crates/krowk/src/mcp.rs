@@ -309,13 +309,26 @@ impl Server<'_> {
         let mut metadata = BTreeMap::new();
         if keyed {
             metadata.insert("krowk.session", req.session_id.clone());
+            // What did the work, so the artifact's card can say which engine
+            // and model its session ran on (R-EVID-2) without the registry
+            // ever reading the session: a synced session is sealed, and the
+            // card shows what the artifact carries and nothing else.
+            let p = &req.producer;
+            for (key, value) in [("krowk.engine", &p.engine), ("gen_ai.request.model", &p.model), ("gen_ai.system", &p.provider)] {
+                if !value.is_empty() {
+                    metadata.insert(key, value.clone());
+                }
+            }
             // Pushed by krowk's engine, through its MCP server's code.
             metadata.insert("krowk.client", format!("krowk/{}", self.version));
             if let Some(c) = &req.caption {
                 metadata.insert("krowk.caption", c.clone());
             }
         }
-        let args = json!({ "files": req.files, "run": run.clone().unwrap_or_default(), "metadata": metadata });
+        // The harness is krowk, as on the run: left to detection it names
+        // whatever shell krowk was started from, and the artifact's key wins
+        // over the run's on a card, so it would contradict `krowk.engine`.
+        let args = json!({ "files": req.files, "run": run.clone().unwrap_or_default(), "metadata": metadata, "agent": "krowk" });
         let (_, pushed) = self.push_from(&req.root, &args)?;
         // A keyless upload's claim token is a secret the person spends:
         // what the model reads is logged, sent to the provider on every

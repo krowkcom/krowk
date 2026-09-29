@@ -11,6 +11,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A file a session publishes now says what made it.** Besides the session
+  (`krowk.session`), each artifact `publish` pushes records the engine that
+  ran the turn (`krowk.engine`: `krowk`, `claude-code` or
+  `codex-app-server`), the model (`gen_ai.request.model`) and its provider
+  (`gen_ai.system`), so its card on krowk.com can link back to the session
+  with a `krowk --resume` command. A subagent's file names the subagent's
+  model. Nothing from the session's log is sent; the session id, engine,
+  model and provider are, in the clear, even for a synced session.
 - **Setting up sync now registers this machine's relay signing key.**
   `krowk sync init`, `recover` and `register`, and `krowk devices approve`,
   send the public half of the signing key beside the device key, and `krowk
@@ -254,6 +262,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The client protocol's types live in `krowk-client`.** The commands,
+  events and log lines, and the daemon's 28-byte frame header, are
+  declared in the crate the desktop app and the phones will link, which
+  pulls in no engine, tokio or reqwest; `krowk_harness::protocol`
+  still names the same types. The generated JSON Schema is unchanged.
 - **The status line's branch and pull request follow the agent.** They are
   read where the agent is at work, not only where krowk started: a
   worktree it makes and works in shows its branch and `#N↗` as soon as it
@@ -1190,6 +1203,30 @@ the versions are the `v*` tags a release is cut from. Entries land under
   report says how many of each it found.
 
 ### Fixed
+
+- **A turn sent the moment the host daemon starts no longer stalls every
+  other session.** The daemon waited on its thread for the TLS setup a
+  turn's first request needs, and read a new directory's configuration
+  there too; both now happen off it, so streams and heartbeats keep going.
+  A TLS setup that fails once is tried again, rather than failing every
+  turn until the daemon restarts.
+- **A turn caught up after its client fell behind no longer loses its
+  answer.** A terminal or phone that stopped reading, and was caught up
+  from where it stood just as the turn ended, could get the typing and the
+  end of the turn but not the finished answer. It now always gets it.
+- **A terminal whose connection to the host daemon drops mid-turn picks the
+  turn up where it left off.** It reconnects and follows on from the last
+  thing it had, with nothing shown twice and nothing skipped, instead of
+  reporting the turn lost. A model switch caught up by another terminal
+  also no longer shows up twice.
+- **`krowk host stop` straight after a turn keeps that turn on disk.** The
+  daemon waits for the turn's log to be flushed before it exits, for up to
+  ten seconds. Stopped by SIGTERM or Ctrl-C, it first interrupts the
+  running turns, a turn still starting included, so each is logged as
+  interrupted and flushed too. The waits add up: up to ten seconds for the
+  turns to end, ten for each backend to close, and ten for the flush. A
+  second SIGTERM or Ctrl-C exits at once. A prompt sent while it exits is
+  refused rather than lost, an idle exit's included.
 
 - **A terminal suspended while it follows a long session no longer grows
   the host daemon's memory.** The daemon keeps a few megabytes for each

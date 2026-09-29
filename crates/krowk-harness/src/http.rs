@@ -31,8 +31,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// (R-LAG-9). The client itself is made per engine, on the runtime that
 /// uses it, since its connection pool belongs to that runtime.
 pub fn client() -> Result<reqwest::Client, EngineError> {
-    let tls = tls()
-        .clone()
+    let tls = tls(!WARM_ONLY.load(std::sync::atomic::Ordering::Relaxed))
         .map_err(|e| EngineError::new("tls_unavailable", format!("the TLS configuration could not be built: {e}")))?;
     reqwest::Client::builder()
         .use_preconfigured_tls(tls)
@@ -43,20 +42,88 @@ pub fn client() -> Result<reqwest::Client, EngineError> {
         .map_err(|e| EngineError::new("tls_unavailable", format!("the HTTP client could not be built: {e}")))
 }
 
-static TLS: std::sync::OnceLock<Result<rustls::ClientConfig, String>> = std::sync::OnceLock::new();
+/// Only a configuration that was built is kept: a failure — the platform's
+/// roots unreadable for a moment — is tried again rather than failing every
+/// turn the process runs.
+static TLS: std::sync::OnceLock<rustls::ClientConfig> = std::sync::OnceLock::new();
 
-fn tls() -> &'static Result<rustls::ClientConfig, String> {
-    TLS.get_or_init(|| {
+/// Held while a build runs, so builds asked for at once wait for the one
+/// under way and take what it made, and the last failure with when it
+/// happened: asked again within `RETRY`, the answer is that failure, not
+/// another build — which the host daemon's thread would pay for.
+static BUILD: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
+
+const RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Set by the host daemon: `client` never builds the configuration, only
+/// `warm` does, off the daemon's thread. On the thread a build — or a wait
+/// on one under way — would stall every session; `client` there takes the
+/// configuration built, or fails at once with why it is not.
+static WARM_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// From here on, only `warm` builds the TLS configuration (the host
+/// daemon, which calls `warm` off its thread before each turn that finds it
+/// unbuilt).
+pub fn warm_only() {
+    WARM_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The shared configuration; built now when `build`, else only what a
+/// build made, or why there is none.
+fn tls(build: bool) -> Result<rustls::ClientConfig, String> {
+    if let Some(tls) = TLS.get() {
+        return Ok(tls.clone());
+    }
+    if !build {
+        return match BUILD.try_lock() {
+            Ok(failed) => match (TLS.get(), failed.as_ref()) {
+                (Some(tls), _) => Ok(tls.clone()),
+                // A failure of any age: the next turn's `warm` tries again.
+                (None, Some((_, why))) => Err(why.clone()),
+                (None, None) => Err("it has not been built yet".into()),
+            },
+            Err(std::sync::TryLockError::Poisoned(p)) => Err(p.into_inner().as_ref().map_or_else(|| "a build failed".into(), |(_, why)| why.clone())),
+            Err(std::sync::TryLockError::WouldBlock) => Err("it is being built".into()),
+        };
+    }
+    let mut failed = BUILD.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(tls) = TLS.get() {
+        return Ok(tls.clone());
+    }
+    if let Some((at, why)) = failed.as_ref()
+        && at.elapsed() < RETRY
+    {
+        return Err(why.clone());
+    }
+    let built = (|| {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let tls = rustls::ClientConfig::builder_with_provider(provider).with_safe_default_protocol_versions().map_err(|e| e.to_string())?;
-        Ok(rustls_platform_verifier::BuilderVerifierExt::with_platform_verifier(tls).map_err(|e| e.to_string())?.with_no_client_auth())
-    })
+        Ok::<_, String>(rustls_platform_verifier::BuilderVerifierExt::with_platform_verifier(tls).map_err(|e| e.to_string())?.with_no_client_auth())
+    })();
+    match built {
+        Ok(built) => {
+            *failed = None;
+            Ok(TLS.get_or_init(|| built).clone())
+        }
+        Err(why) => {
+            *failed = Some((std::time::Instant::now(), why.clone()));
+            Err(why)
+        }
+    }
 }
 
 /// Builds the shared TLS configuration now: the host daemon calls it off
-/// its thread as it starts, so no turn pays for it there.
+/// its thread as it starts, and before a turn when it is not built yet, so
+/// no turn pays for it there.
 pub fn warm() {
-    let _ = tls();
+    let _ = tls(true);
+}
+
+/// Whether the shared TLS configuration is built: a turn the host daemon
+/// runs before its start has built it waits for `warm` off the thread
+/// rather than building it on the thread (R-LAG-9).
+pub fn warmed() -> bool {
+    TLS.get().is_some()
 }
 
 /// Who a request went to, for the words of a failure.

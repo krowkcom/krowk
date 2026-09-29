@@ -216,7 +216,7 @@ mod tests {
         let publisher: evidence::Publisher = std::sync::Arc::new(|r: &evidence::PublishRequest| {
             Ok(evidence::Published { text: format!("{} from {} for {}", r.files.join(","), r.root.display(), r.session_id), run: Some("run_x".into()), for_person: Vec::new() })
         });
-        let ev = Evidence::new(publisher, "s-1", None);
+        let ev = Evidence::new(publisher, "s-1", None, Default::default());
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let accept = crate::permissions::Gate::modes_only(Path::new("/repo"), crate::protocol::PermissionMode::AcceptEdits);
         let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", krowk_version: "test", gate: &accept, cancel: None, evidence: Some((&ev, &tx)) };

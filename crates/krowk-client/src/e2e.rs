@@ -37,12 +37,9 @@ pub type Kdf = hpke::kdf::HkdfSha256;
 /// ChaCha20-Poly1305 (HPKE's AEAD id 0x0003).
 pub type HpkeAead = hpke::aead::ChaCha20Poly1305;
 
-/// The WebSocket frame header's `enc` byte (crates/krowk-harness's
-/// `daemon::ws`, offset 3) for a payload sealed with `seal`:
-/// XChaCha20-Poly1305 under the session key, a random 24-byte nonce first,
-/// the 28-byte header as associated data. 0 stays "none". Frames start
-/// carrying it with the relay (tickets 17 and 19).
-pub const ENC_XCHACHA20_POLY1305: u8 = 1;
+/// The frame header's `enc` byte for a payload sealed with `seal`, declared
+/// with the rest of the header in `protocol::frame`.
+pub use crate::protocol::frame::ENC_XCHACHA20_POLY1305;
 
 /// Every blob's first byte.
 pub const BLOB_V1: u8 = 1;
@@ -551,7 +548,7 @@ pub enum Direction {
 }
 
 /// The frame header's length: `enc` is its byte 3.
-pub const HEADER: usize = 28;
+pub use crate::protocol::frame::HEADER;
 /// A sealed payload: counter (8, big-endian), nonce (24), ciphertext, tag.
 pub const SEALED_OVERHEAD: usize = 8 + NONCE + TAG;
 
@@ -972,7 +969,7 @@ mod tests {
 
     #[test]
     fn r_e2e_2_the_enc_byte_is_the_one_the_frame_header_reserves() {
-        // 0 is "none" in the header (daemon::ws::ENC_NONE); this is the
+        // 0 is "none" in the header (protocol::frame::ENC_NONE); this is the
         // first value the transport was told to wait for.
         assert_eq!(ENC_XCHACHA20_POLY1305, 1);
         assert_eq!(header(0)[3], ENC_XCHACHA20_POLY1305);

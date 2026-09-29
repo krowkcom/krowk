@@ -57,12 +57,19 @@ jobs:
           rustup toolchain install 1.97 --profile minimal --component clippy
           rustup default 1.97
 
+      # `make test` runs on nextest, the version in mise.toml.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.146
+
       # The opencode fixture is built from SQL at case time.
       - name: Ensure sqlite3
         run: command -v sqlite3 || (sudo apt-get update && sudo apt-get install -y sqlite3)
 
       - name: Check
         run: make check
+        env:
+          NEXTEST_PROFILE: ci
 
   dist:
     needs: check

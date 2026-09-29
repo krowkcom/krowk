@@ -59,6 +59,11 @@ impl Home {
 
     /// Starts the daemon on a thread of its own; joined, it has exited.
     fn serve(&self, idle: Option<Duration>) -> std::thread::JoinHandle<Result<(), String>> {
+        self.serve_with(idle, None)
+    }
+
+    /// `serve`, every client let go each time `kick` is notified.
+    fn serve_with(&self, idle: Option<Duration>, kick: Option<Arc<tokio::sync::Notify>>) -> std::thread::JoinHandle<Result<(), String>> {
         let (env, socket) = (self.env(), self.socket());
         let credentials = self.root.join("home/.krowk/credentials.json");
         let made = self.made.clone();
@@ -79,7 +84,7 @@ impl Home {
                     agents: krowk_harness::subagent::AgentsConfig::none(),
                 })
             });
-            server::run(server::Options { socket, idle, krowk_version: "test".into(), ..Default::default() }, factory)
+            server::run(server::Options { socket, idle, krowk_version: "test".into(), kick, ..Default::default() }, factory)
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::os::unix::net::UnixStream::connect(self.socket()).is_err() {
@@ -702,6 +707,55 @@ fn r_host_1_following_after_the_replays_last_event_misses_and_repeats_nothing() 
         }
         let whole: Vec<String> = log::read_events(&path).unwrap().into_iter().map(|e| e.id).collect();
         assert_eq!(got, whole, "the log, each event once, in order");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-4: a TUI's connection let go mid-turn — as the daemon lets go of a
+/// client it cannot catch up without a gap — is re-followed on the next
+/// from its cursor, its last `seq` and logged event: the turn's typing
+/// comes on where it stopped, nothing twice and nothing skipped, and the
+/// turn answers its result as though nothing had happened.
+#[test]
+fn r_lag_4_a_remote_let_go_mid_turn_resumes_from_its_cursor_with_no_gap_or_duplicate() {
+    let answer: String = (1..=300).map(|i| format!("w{i} ")).collect();
+    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(4))) };
+    let home = Home::new("resume", &m.url);
+    let kick = Arc::new(tokio::sync::Notify::new());
+    let daemon = home.serve_with(Some(Duration::from_millis(300)), Some(kick.clone()));
+    let rt = rt();
+    rt.block_on(async {
+        let spawn: Box<daemon::Spawn<'static>> = Box::new(|| Err("the daemon runs; none is to be started".into()));
+        let r = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "test".into(), true, spawn).await.unwrap();
+        let (tx, mut rx) = mpsc::channel(1 << 16);
+        let collect = tokio::spawn(async move {
+            let (mut typed, mut logged, mut kicked) = (String::new(), Vec::new(), false);
+            while let Some(line) = rx.recv().await {
+                match line {
+                    StreamLine::Live(LiveEvent::ItemDelta { delta: Delta::Text { text }, .. }) => {
+                        typed.push_str(&text);
+                        if !kicked && typed.len() > 200 {
+                            kicked = true;
+                            kick.notify_one();
+                        }
+                    }
+                    StreamLine::Log(ev) => logged.push(ev),
+                    _ => {}
+                }
+            }
+            (typed, logged, kicked)
+        });
+        let result = r.execute(home.prompt("count"), tx).await.expect("the turn resumed on the next connection").expect("and answered");
+        assert_eq!(result.status, TurnStatus::Completed);
+        let (typed, logged, kicked) = collect.await.unwrap();
+        assert!(kicked, "the connection was let go mid-turn");
+        assert!(r.take_note().is_some_and(|n| n.contains("reconnected")), "on a connection of its own");
+        assert!(typed == answer, "every word once, in order: {} of {} bytes", typed.len(), answer.len());
+        let ids: std::collections::HashSet<&str> = logged.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids.len(), logged.len(), "no logged event twice");
+        let finished = logged.iter().filter(|e| matches!(&e.body, LogBody::ItemCompleted { item: Item::AssistantText { .. }, .. })).count();
+        assert_eq!(finished, 1, "the finished item once");
     });
     drop(rt);
     daemon.join().unwrap().unwrap();
