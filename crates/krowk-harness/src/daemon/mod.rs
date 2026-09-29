@@ -346,17 +346,16 @@ mod tests {
         move |k| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone()).unwrap_or_default()
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("krowk-daemon-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
-
     #[test]
     fn r_host_1_the_socket_is_in_the_runtime_dir_or_a_private_tmp_one() {
         use std::os::unix::fs::PermissionsExt;
-        let root = scratch("paths");
+        // Under /tmp rather than the temp dir: macOS's per-user TMPDIR is
+        // already ~50 bytes, and with this test's own directory on top the
+        // socket path runs past what sun_path holds, which is the refusal
+        // the last step checks for, not the answer the first steps expect.
+        let root = PathBuf::from("/tmp").join(format!("krowk-dp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
         let e = [("XDG_RUNTIME_DIR", root.display().to_string()), ("HOME", "/home/ada".to_string())];
         let key = home_key(Path::new("/home/ada/.krowk"));
         assert_eq!(socket(&env(&e)).unwrap(), root.join("krowk").join(&key).join("host.sock"));
