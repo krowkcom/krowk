@@ -9,6 +9,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Changed
+
+- In the TUI, a read, search or command that runs while earlier ones are counted on one line (`◆ Ran 3 commands, searched for 2 patterns`) stands under that line as a branch, with the bullet orange until it is back. The chat no longer jumps as each call finishes and is taken into the count.
+
 ## [0.11.1] - 2026-09-29
 
 Answers in the TUI are easier to read: markdown tables are drawn as tables,
