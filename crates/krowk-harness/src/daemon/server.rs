@@ -65,11 +65,15 @@ pub struct Options {
     /// late for a 5 ms tick since this was last set to 0 — how long
     /// something blocked every session and heartbeat at once (R-LAG-9).
     pub lateness: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    /// For tests: each time it is notified, every client is let go, as
+    /// one is that falls past what a catch-up can read (`extent`), so a
+    /// client's re-following from its cursor can be seen.
+    pub kick: Option<std::sync::Arc<Notify>>,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None }
+        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None }
     }
 }
 
@@ -101,7 +105,14 @@ pub fn run(opts: Options, factory: Factory) -> Result<(), String> {
     // blocking pool (R-LAG-9).
     log::off_thread();
     let local = tokio::task::LocalSet::new();
-    local.block_on(&rt, serve(opts, factory))
+    let r = local.block_on(&rt, serve(opts, factory));
+    // What `serve` must see done — the turns' syncs — it has waited for;
+    // a blocking task still running (a directory's configuration on a
+    // dead disk) is not waited for, or a second signal would not exit at
+    // once.
+    drop(local);
+    rt.shutdown_background();
+    r
 }
 
 pub(super) struct State {
@@ -221,8 +232,23 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     }));
     eprintln!("krowk host {} listening on {} (pid {}, idle exit {})", state.borrow().opts.krowk_version, socket.display(), std::process::id(), idle.map_or("never".into(), |d| format!("{d:?}")));
     // The TLS configuration every engine shares, built off the thread
-    // before any turn needs it.
+    // before any turn needs it, and never on it: an engine made here takes
+    // what `warm` built, or fails with why there is none.
+    crate::http::warm_only();
     tokio::task::spawn_blocking(crate::http::warm);
+    if let Some(kick) = state.borrow().opts.kick.clone() {
+        let state = state.clone();
+        tokio::task::spawn_local(async move {
+            loop {
+                kick.notified().await;
+                let mut s = state.borrow_mut();
+                let all: Vec<u64> = s.clients.keys().copied().collect();
+                for c in all {
+                    s.drop_client(c);
+                }
+            }
+        });
+    }
     if let Some(probe) = state.borrow().opts.lateness.clone() {
         tokio::task::spawn_local(async move {
             const TICK: Duration = Duration::from_millis(5);
@@ -256,6 +282,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     }
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|e| e.to_string())?;
     let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(|e| e.to_string())?;
+    let mut signalled = false;
     loop {
         let (quiet, stopping) = {
             let s = state.borrow();
@@ -281,33 +308,49 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
             }
             _ = term.recv() => {
                 eprintln!("terminated: interrupting the running turns, then exiting");
-                wind_down(&state).await;
+                signalled = true;
                 break;
             }
             _ = int.recv() => {
                 eprintln!("interrupted: interrupting the running turns, then exiting");
-                wind_down(&state).await;
+                signalled = true;
                 break;
             }
         }
     }
+    // Every way out takes no new turn from here, an idle exit's included:
+    // a prompt that arrives while the engines are let go is refused.
+    state.borrow_mut().stopping = true;
     // Only the socket this daemon bound: one a newer daemon put in its
     // place is that one's.
     // blocking: on the way out, with nobody left to serve.
     if inode(&socket).is_some() && inode(&socket) == ours {
         let _ = std::fs::remove_file(&socket);
     }
-    let hosts: Vec<Rc<Host>> = state.borrow().hosts.values().cloned().collect();
-    for h in hosts {
-        h.shutdown().await;
-    }
-    // The turns' syncs, still on the blocking pool: a runtime dropped with
-    // them queued drops them unrun, and a `krowk host stop` straight after
-    // a turn would leave that turn in the page cache alone. Bounded like
-    // the engines' shutdown: a sync stuck on a dead mount must not keep
-    // the daemon from exiting.
-    if tokio::time::timeout(crate::host::SHUTDOWN_GRACE, log::synced()).await.is_err() {
-        eprintln!("{} session log sync(s) had not finished after {:?}: exiting without them", log::pending_syncs(), crate::host::SHUTDOWN_GRACE);
+    // The way out waits on turns, engines and syncs — up to
+    // `SHUTDOWN_GRACE` for each — and a second signal cuts it short: a
+    // person who presses Ctrl-C again means now.
+    let out = async {
+        if signalled {
+            wind_down(&state).await;
+        }
+        let hosts: Vec<Rc<Host>> = state.borrow().hosts.values().cloned().collect();
+        for h in hosts {
+            h.shutdown().await;
+        }
+        // The turns' syncs, still on the blocking pool: a runtime dropped
+        // with them queued drops them unrun, and a `krowk host stop`
+        // straight after a turn would leave that turn in the page cache
+        // alone. Bounded like the engines' shutdown: a sync stuck on a dead
+        // mount must not keep the daemon from exiting.
+        if tokio::time::timeout(crate::host::SHUTDOWN_GRACE, log::synced()).await.is_err() {
+            eprintln!("{} session log sync(s) had not finished after {:?}: exiting without them", log::pending_syncs(), crate::host::SHUTDOWN_GRACE);
+        }
+    };
+    tokio::select! {
+        () = out => {}
+        _ = term.recv() => eprintln!("terminated again: exiting now"),
+        _ = int.recv() => eprintln!("interrupted again: exiting now"),
     }
     Ok(())
 }
@@ -320,22 +363,38 @@ fn stopping_error() -> EngineError {
 /// interrupted the way a person interrupts them, and each is given until
 /// `SHUTDOWN_GRACE` to end — its `turn.completed` logged and its sync
 /// queued for `synced` — rather than being dropped with the runtime.
+///
+/// The sessions under way are looked at again on every change and every
+/// few milliseconds, not once: a turn still setting up when the signal came
+/// — its engine being made, its first request not sent — has no turn to
+/// interrupt yet, and is interrupted once it has, rather than running on
+/// until the grace is up.
 async fn wind_down(state: &Shared) {
-    let running: Vec<(String, Rc<Host>)> = {
-        let mut s = state.borrow_mut();
-        s.stopping = true;
-        s.hubs.iter().filter(|(_, h)| h.running).map(|(id, h)| (id.clone(), h.host.clone())).collect()
-    };
-    for (session_id, host) in running {
-        tokio::task::spawn_local(async move {
-            let (tx, _rx) = mpsc::channel::<StreamLine>(16);
-            let _ = host.execute(Command::Interrupt { session_id }, tx).await;
-        });
-    }
     let wake = state.borrow().wake.clone();
+    let mut interrupted: HashSet<String> = HashSet::new();
     let _ = tokio::time::timeout(crate::host::SHUTDOWN_GRACE, async {
-        while state.borrow().working > 0 {
-            wake.notified().await;
+        loop {
+            let running: Vec<(String, Rc<Host>)> = {
+                let s = state.borrow();
+                if s.working == 0 {
+                    return;
+                }
+                // Interrupted once a turn: a session whose turn has ended
+                // is looked at again, should another start in it.
+                interrupted.retain(|id| s.hubs.get(id).is_some_and(|h| h.running));
+                s.hubs.iter().filter(|(id, h)| h.running && !interrupted.contains(*id)).map(|(id, h)| (id.clone(), h.host.clone())).collect()
+            };
+            for (session_id, host) in running {
+                interrupted.insert(session_id.clone());
+                tokio::task::spawn_local(async move {
+                    let (tx, _rx) = mpsc::channel::<StreamLine>(16);
+                    let _ = host.execute(Command::Interrupt { session_id }, tx).await;
+                });
+            }
+            tokio::select! {
+                _ = wake.notified() => {}
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
         }
     })
     .await;
@@ -804,6 +863,13 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     let Some((cwd, answers)) = state.borrow().clients.get(&client).map(|c| (c.cwd.clone(), c.answers)) else { return };
     let mut root = named(&cmd).map(String::from);
     let turn = matches!(cmd, Command::Prompt { .. } | Command::Continue { .. });
+    // Commands that log to the session they name before they publish it —
+    // a turn, and a model switch's `model.switched` — register with its hub
+    // (`in_flight`, `base`): a catch-up read that lands between the write
+    // and the publish then stops at what was sent live, and the event
+    // comes once, live, rather than in the page and again after it.
+    let switch = matches!(cmd, Command::SwitchModel { .. });
+    let registers = turn || switch;
     // A turn runs on the host of the client that asks for it — its
     // directory, and whether it answers approvals; the rest go to the host
     // running the session.
@@ -835,7 +901,7 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
             return s.send(client, "", control(&ServerFrame::Done { id, result: None, error: Some(error_info(&e)) }));
         }
     };
-    if turn {
+    if registers {
         // Counted before it registers: nothing it writes is in the count.
         let dir = state.borrow().sessions_dir.clone();
         let base = match (&root, dir) {
@@ -862,7 +928,11 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     // fails is remembered for a few seconds (`http::tls`), so the engine's
     // own call right after is refused at once rather than built again on
     // the thread; a turn that needs no TLS (a backend's) runs as it did.
-    if turn && !crate::http::warmed() {
+    // A model switch too, which makes an engine to check the model: the
+    // daemon's `client` never builds the configuration itself
+    // (`http::warm_only`). Nothing else waits for it — an interrupt least
+    // of all.
+    if registers && !crate::http::warmed() {
         let _ = tokio::task::spawn_blocking(crate::http::warm).await;
     }
     let (tx, mut rx) = mpsc::channel::<StreamLine>(1024);
@@ -893,6 +963,8 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     let mut s = state.borrow_mut();
     if turn {
         s.working -= 1;
+    }
+    if registers {
         if let Some(r) = &root
             && let Some(h) = s.hubs.get_mut(r)
         {
@@ -975,42 +1047,89 @@ async fn page(state: &Shared, client: u64, session: &str, cursor: outbox::Cursor
         let p = path.clone();
         let events = match tokio::task::spawn_blocking(move || log::read_events(&p)).await {
             Ok(Ok(e)) => e,
+            // A log there that does not read whole: its last line caught
+            // half written, as a turn appends a large event. Not yet
+            // written, rather than no session: read again.
+            Ok(Err(_)) if path.is_file() && tries < MAX_READS => {
+                tokio::time::sleep(READ_GAP).await;
+                continue;
+            }
             _ => return Err(EngineError::new("no_session", format!("there is no session {session} — `krowk sessions` lists them"))),
         };
         if decide(state, client, session, &host, events, tries, &cursor) {
             return Ok(());
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(READ_GAP).await;
     }
 }
+
+/// How much of a read of `session`'s log a page may replay, matched
+/// against its hub as it is now: `under_way` whether a turn runs or a
+/// streaming command is registered, `head` the last of its own events sent
+/// live, `base` what the log held when the command registered. `Ok(None)`:
+/// the read is behind what was sent live, and is to be read again.
+///
+/// The read ran on the blocking pool while the daemon's thread went on, so
+/// the session may have moved past it — a turn may even have ended — and
+/// every event it published meanwhile was dropped for this client, which
+/// was behind. A read that does not reach the head misses them, under way
+/// or not: taken as the whole log once the turn had ended, it lost the
+/// turn's last logged events for good (R-LAG-4). With the head in the read
+/// it has all that was sent live: up to the head while a turn runs, since
+/// what lies beyond it comes live in order; all of it once none runs,
+/// since nothing more comes.
+///
+/// `Ok(Some((upto, live)))`: replay the read up to `upto`, then — when
+/// `live` — the running turn's frames after the head. `Err`: a read that
+/// has not reached the head in `MAX_READS` — a page from it could have a
+/// gap, so the client is let go instead, to re-follow from its cursor
+/// (fail closed; `daemon::remote`).
+fn extent(under_way: bool, head: Option<&str>, base: usize, events: &[crate::protocol::LogEvent], tries: u32) -> Result<Option<(usize, bool)>, ()> {
+    let n = events.len();
+    let at = head.and_then(|h| events.iter().position(|e| e.id == h));
+    Ok(match (head, at) {
+        // Nothing sent live: the log as it was before the command, all of
+        // which is history, or all of it when none is under way.
+        (None, _) if under_way => Some((base.min(n), false)),
+        (None, _) => Some((n, false)),
+        (Some(_), Some(at)) if under_way => Some((at + 1, true)),
+        (Some(_), Some(_)) => Some((n, false)),
+        // The read is behind what was sent: read again, and past that,
+        // give up on this client rather than hand it a gap.
+        (Some(_), None) if tries < MAX_READS => None,
+        (Some(_), None) => return Err(()),
+    })
+}
+
+/// Reads of the log, `READ_GAP` apart, a page waits for to reach the head.
+const MAX_READS: u32 = 100;
+const READ_GAP: Duration = Duration::from_millis(10);
 
 /// Matches a read of the log against the hub as it is now, and hands the
 /// client's outbox the next page, with the control frames it held put back
 /// at their places — false when the read is behind what was sent live, and
 /// is to be read again.
 fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: Vec<crate::protocol::LogEvent>, tries: u32, cursor: &outbox::Cursor) -> bool {
-    let n = events.len();
     let mut s = state.borrow_mut();
-    let decided = match s.hubs.get(session).filter(|h| h.in_flight > 0 || h.running) {
-        None => Some((n, Vec::new(), false)),
-        Some(hub) => {
-            // Under way: `running` from its `turn.started`, or a
-            // command registered whose first frame is on its way.
-            let running = hub.running || hub.in_flight > 0;
-            let at = hub.head.as_ref().and_then(|h| events.iter().position(|e| &e.id == h));
-            match (&hub.head, at) {
-                // Nothing sent live yet: the log as it was before the
-                // command, all of which is history.
-                (None, _) => Some((hub.base.min(n), Vec::new(), running)),
-                (Some(_), Some(at)) => Some((at + 1, hub.turn.after(cursor.seq), running)),
-                // The read is behind what was sent: read again, and
-                // past that, only what cannot come twice.
-                (Some(_), None) if tries < 100 => None,
-                (Some(_), None) => Some((hub.base.min(n), Vec::new(), running)),
-            }
+    let hub = s.hubs.get(session);
+    // Under way: `running` from its `turn.started`, or a command registered
+    // whose first frame is on its way.
+    let under_way = hub.is_some_and(|h| h.running || h.in_flight > 0);
+    let Some((upto, live)) = (match extent(under_way, hub.and_then(|h| h.head.as_deref()), hub.map_or(0, |h| h.base), &events, tries) {
+        Ok(page) => page,
+        Err(()) => {
+            eprintln!("client {client}: the log of session {session} never reached what was sent live: letting it go, to reconnect from its cursor");
+            s.drop_client(client);
+            return true;
         }
+    }) else {
+        return false;
     };
-    let Some((upto, tail, running)) = decided else { return false };
+    let running = under_way;
+    let tail = match hub {
+        Some(h) if live => h.turn.after(cursor.seq),
+        _ => Vec::new(),
+    };
     // Gone, or it left the session while the log was read.
     let Some(outbox) = s.clients.get(&client).map(|c| c.outbox.clone()) else { return true };
     if !outbox.expects(session) {
@@ -1077,4 +1196,57 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: V
         s.send(client, session, control(&ServerFrame::Attached { id, session_id: session.to_string(), running, error: None }));
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{Item, LogEvent};
+
+    fn said(id: &str) -> LogEvent {
+        LogEvent { id: id.into(), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::AssistantText { text: id.into() } } }
+    }
+
+    fn ex(under_way: bool, head: Option<&str>, base: usize, events: &[LogEvent], tries: u32) -> Option<(usize, bool)> {
+        extent(under_way, head, base, events, tries).expect("under the cap")
+    }
+
+    /// R-LAG-4: the interleaving that lost a turn's last logged events. A
+    /// client behind is paged from a read of the log taken while its turn
+    /// ran; before the read is back the turn logs `item.completed` and
+    /// `turn.completed` (dropped for the client, which is behind), and
+    /// ends. The read, matched against the hub as it is now — nothing under
+    /// way, its head the `turn.completed` the read does not have — is read
+    /// again, where it was taken as the whole log: the last page, after
+    /// which nothing brought those events back.
+    ///
+    /// And one that never reaches the head, however often it is read,
+    /// lets the client go to reconnect from its cursor, rather than
+    /// paging it with a gap.
+    #[test]
+    fn r_lag_4_a_read_taken_before_the_turn_ended_is_read_again_after_it() {
+        let stale = [said("root"), said("user"), said("started")];
+        let whole = [said("root"), said("user"), said("started"), said("item"), said("completed")];
+        // The turn has ended since the read began.
+        assert_eq!(ex(false, Some("completed"), 1, &stale, 1), None, "a read behind the head is read again, the turn over or not");
+        assert_eq!(ex(false, Some("completed"), 1, &whole, 2), Some((5, false)), "all of it once it reaches the head");
+        // Still under way: up to the head, the turn's frames after it.
+        assert_eq!(ex(true, Some("started"), 1, &whole, 1), Some((3, true)));
+        assert_eq!(ex(true, Some("item"), 1, &stale, 1), None);
+        // Nothing sent live: the log before the command while one is under
+        // way, all of it when none is.
+        assert_eq!(ex(true, None, 2, &whole, 1), Some((2, false)));
+        assert_eq!(ex(false, None, 2, &whole, 1), Some((5, false)));
+        // A model switch registered (under way) whose `model.switched` is
+        // written but not yet published: the read has it, the head is
+        // before it, and the page stops at the head — it comes live, once.
+        let switched = [said("root"), said("user"), said("done"), said("switched")];
+        assert_eq!(ex(true, Some("done"), 3, &switched, 1), Some((3, true)));
+        assert_eq!(ex(true, None, 3, &switched, 1), Some((3, false)), "nothing sent live yet: the log before the switch");
+        // A head never reached: the client is let go after the last read,
+        // under way or not, rather than paged with a gap.
+        assert_eq!(ex(true, Some("gone"), 2, &whole, MAX_READS - 1), None);
+        assert_eq!(extent(true, Some("gone"), 2, &whole, MAX_READS), Err(()));
+        assert_eq!(extent(false, Some("gone"), 2, &whole, MAX_READS), Err(()));
+    }
 }

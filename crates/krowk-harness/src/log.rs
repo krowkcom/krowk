@@ -268,6 +268,11 @@ pub async fn synced() {
     }
 }
 
+/// How many syncs have been handed to the blocking pool.
+pub fn queued_syncs() -> u64 {
+    QUEUED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// How many syncs handed to the blocking pool have not run.
 pub fn pending_syncs() -> u64 {
     QUEUED.load(std::sync::atomic::Ordering::SeqCst).saturating_sub(DONE.load(std::sync::atomic::Ordering::SeqCst))

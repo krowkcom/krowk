@@ -4,19 +4,26 @@
 //! old daemon killed, a crash — and the TUI's next command then reaches the
 //! next one, started when none runs (`daemon::ensure`), rather than failing
 //! with `host_gone` until krowk is restarted. A turn under way when its
-//! daemon goes is lost with it, and says so; the reconnect is between turns.
+//! connection goes — the daemon let it go for falling past what it can
+//! catch up, or the daemon itself went — is re-followed on the next one
+//! from where its stream stood: the log after its last logged event, the
+//! running turn after its last `seq` (R-LAG-4). A turn its daemon took with
+//! it is caught up from the log, and says it is no longer running.
 //!
 //! The frames of followed sessions arriving between turns (`watch`) come
 //! through one channel of this client's, whichever connection they came
 //! on.
 
-use super::client::Client;
+use super::client::{Client, Cut};
 use super::Spawn;
 use crate::engine::EngineError;
 use crate::protocol::{Command, HostStatus, RunResult, StreamLine};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc};
+
+/// How many times one stream is re-followed after its connection went.
+const RESUMES: usize = 3;
 
 pub struct Remote {
     env: Box<dyn Fn(&str) -> String>,
@@ -71,11 +78,38 @@ impl Remote {
     }
 
     pub async fn execute(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
-        self.fresh().await?.execute(cmd, out).await
+        let streams = matches!(cmd, Command::Prompt { .. } | Command::Continue { .. });
+        let r = self.fresh().await?.execute_or_cut(cmd, out.clone()).await;
+        self.carry_on(r, out, streams).await
     }
 
     pub async fn follow(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
-        self.fresh().await?.follow(session_id, after, out).await
+        let c = self.fresh().await?;
+        let from = super::client::Resume { session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: 0, epoch: 0 };
+        let r = c.resume(&from, out.clone()).await;
+        self.carry_on(r, out, false).await
+    }
+
+    /// A stream cut with its connection, re-followed on the next from where
+    /// it stood — a few times, not forever: a daemon that lets it go again
+    /// and again says so.
+    async fn carry_on(&self, mut r: Result<Option<RunResult>, Cut>, out: mpsc::Sender<StreamLine>, turn: bool) -> Result<Option<RunResult>, EngineError> {
+        for _ in 0..RESUMES {
+            let from = match r {
+                Err(Cut::Dropped(from)) => from,
+                other => return other.map_err(Cut::into_error),
+            };
+            let c = self.fresh().await?;
+            r = match c.resume(&from, out.clone()).await {
+                // Caught up, and the turn is not running there any more: its
+                // daemon took it along, or it ended while the stream was cut
+                // — its finished items are in what was caught up, its result
+                // is not.
+                Ok(None) if turn => Err(Cut::Failed(EngineError::new("host_gone", "the connection to the host daemon went during the turn; what it logged is caught up, and it is no longer running there"))),
+                other => other,
+            };
+        }
+        r.map_err(Cut::into_error)
     }
 
     pub async fn status(&self) -> Result<HostStatus, EngineError> {

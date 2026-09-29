@@ -41,7 +41,40 @@ pub struct Client {
     /// The daemon's pid and version, from its welcome.
     pub pid: u32,
     pub krowk_version: String,
+    /// The daemon run its `seq`s are numbered within (`welcome.epoch`).
+    epoch: u64,
     lines: broadcast::Sender<StreamLine>,
+}
+
+/// Where a stream this client had stood when its connection went: what it
+/// re-follows from on the next (`Client::resume`), so a turn under way
+/// comes on with no gap and nothing twice (R-LAG-4).
+#[derive(Debug, Clone)]
+pub struct Resume {
+    pub session_id: String,
+    /// The session's own last logged event handed on.
+    pub after_event_id: Option<String>,
+    /// And its last `line.seq`, within `epoch`.
+    pub after_seq: u64,
+    pub epoch: u64,
+}
+
+/// Why a command or follow did not answer.
+#[derive(Debug)]
+pub enum Cut {
+    Failed(EngineError),
+    /// The connection went while it streamed: re-followed from here, it
+    /// goes on where it stopped.
+    Dropped(Resume),
+}
+
+impl Cut {
+    pub fn into_error(self) -> EngineError {
+        match self {
+            Cut::Failed(e) => e,
+            Cut::Dropped(_) => gone(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -50,6 +83,11 @@ struct Inner {
     /// Where each session's lines go.
     sinks: Vec<Sink>,
     closed: bool,
+    /// Each session's cursor: its last `seq` and own logged event handed
+    /// to a stream.
+    cursors: HashMap<String, (u64, Option<String>)>,
+    /// The session each streaming command's lines named.
+    sessions: HashMap<u64, String>,
 }
 
 /// A stream to open with a request: its session, where its lines go, and
@@ -147,8 +185,8 @@ impl Client {
             Ok(Err(e)) => return Err(fail(e)),
             Err(_) => return Err(ConnectError::Failed(EngineError::new("host_unavailable", format!("the host daemon on {} did not answer in {} s", path.display(), HELLO_WAIT.as_secs())))),
         };
-        let (pid, krowk_version) = match serde_json::from_str::<ServerFrame>(&first) {
-            Ok(ServerFrame::Welcome { pid, krowk_version, .. }) => (pid, krowk_version),
+        let (pid, krowk_version, epoch) = match serde_json::from_str::<ServerFrame>(&first) {
+            Ok(ServerFrame::Welcome { pid, krowk_version, epoch, .. }) => (pid, krowk_version, epoch),
             Ok(ServerFrame::Refused { code, message, fix }) => return Err(ConnectError::Failed(EngineError::new(&code, format!("{message} — {fix}")))),
             _ => return Err(ConnectError::Failed(EngineError::new("host_unavailable", format!("{} answered with something that is not a welcome", path.display())))),
         };
@@ -168,9 +206,21 @@ impl Client {
                 while let Ok(Some(line)) = lines.next_line().await {
                     let Ok(f) = serde_json::from_str::<ServerFrame>(&line) else { continue };
                     match f {
-                        ServerFrame::Line { line, session, cmd, .. } => {
+                        ServerFrame::Line { line, session, cmd, seq, .. } => {
                             let key = if session.is_empty() { line.session_id().to_string() } else { session };
                             let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
+                            let c = i.cursors.entry(key.clone()).or_default();
+                            if let Some(n) = seq {
+                                c.0 = c.0.max(n);
+                            }
+                            if let StreamLine::Log(ev) = &line
+                                && ev.session_id == key
+                            {
+                                c.1 = Some(ev.id.clone());
+                            }
+                            if let Some(c) = cmd {
+                                i.sessions.entry(c).or_insert_with(|| key.clone());
+                            }
                             match i.sink_for(&key, cmd) {
                                 Some(n) => {
                                     let ends = i.sinks[n].follow && matches!(&line, StreamLine::Live(LiveEvent::Result(r)) if r.session_id == key);
@@ -218,7 +268,7 @@ impl Client {
                 i.waiting.clear();
             });
         }
-        Ok(Client { tx, inner, next: AtomicU64::new(1), pid, krowk_version, lines: lines_tx })
+        Ok(Client { tx, inner, next: AtomicU64::new(1), pid, krowk_version, epoch, lines: lines_tx })
     }
 
     /// Frames of a followed session that arrive while no turn of this
@@ -228,6 +278,18 @@ impl Client {
     }
 
     fn ask(&self, frame: impl FnOnce(u64) -> ClientFrame, sink: Option<NewSink>) -> Result<oneshot::Receiver<ServerFrame>, EngineError> {
+        self.ask_id(frame, sink).map(|(_, rx)| rx)
+    }
+
+    /// Where `session`'s streams stood, to be re-followed from on another
+    /// connection.
+    fn resume_of(&self, session: &str) -> Resume {
+        let i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let (after_seq, after_event_id) = i.cursors.get(session).cloned().unwrap_or_default();
+        Resume { session_id: session.to_string(), after_event_id, after_seq, epoch: self.epoch }
+    }
+
+    fn ask_id(&self, frame: impl FnOnce(u64) -> ClientFrame, sink: Option<NewSink>) -> Result<(u64, oneshot::Receiver<ServerFrame>), EngineError> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         {
@@ -241,22 +303,33 @@ impl Client {
             }
         }
         self.tx.send(frame(id)).map_err(|_| gone())?;
-        Ok(rx)
+        Ok((id, rx))
     }
 
     /// `Host::execute`, over the socket: a `prompt` or `continue` streams
     /// its session's lines to `out` until it ends.
     pub async fn execute(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
+        self.execute_or_cut(cmd, out).await.map_err(Cut::into_error)
+    }
+
+    /// `execute`, telling a connection that went while the turn streamed
+    /// (`Cut::Dropped`) — its session named, where it stood — from any
+    /// other failure.
+    pub async fn execute_or_cut(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, Cut> {
         let session = match &cmd {
             Command::Prompt { session_id, .. } => Some(session_id.clone()),
             Command::Continue { session_id, .. } => Some(Some(session_id.clone())),
             _ => None,
         };
-        let rx = self.ask(|id| ClientFrame::Execute { id, command: cmd }, session.map(|s| (s, out, None)))?;
+        let known = session.clone().flatten();
+        let (id, rx) = self.ask_id(|id| ClientFrame::Execute { id, command: cmd }, session.map(|s| (s, out, None))).map_err(Cut::Failed)?;
         match rx.await {
-            Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
+            Ok(ServerFrame::Done { error: Some(e), .. }) => Err(Cut::Failed(engine_error(e))),
             Ok(ServerFrame::Done { result, .. }) => Ok(result),
-            _ => Err(gone()),
+            _ => {
+                let named = self.inner.lock().unwrap_or_else(|e| e.into_inner()).sessions.get(&id).cloned().or(known);
+                Err(named.map_or(Cut::Failed(gone()), |s| Cut::Dropped(self.resume_of(&s))))
+            }
         }
     }
 
@@ -278,19 +351,41 @@ impl Client {
     /// turn is running, or the session settles without one. What the TUI
     /// reattaches with (R-HOST-1).
     pub async fn follow(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
+        let from = Resume { session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: 0, epoch: 0 };
+        self.resume(&from, out).await.map_err(Cut::into_error)
+    }
+
+    /// `follow` from where a stream stood on a connection that went
+    /// (`Cut::Dropped`): the log after its last logged event, the running
+    /// turn after its last `seq` — when the same daemon numbered it — then
+    /// live. A turn no longer running by then answers none.
+    pub async fn resume(&self, from: &Resume, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, Cut> {
+        let session_id = from.session_id.as_str();
+        {
+            // Where a second cut resumes from, should one come.
+            let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if from.epoch == self.epoch {
+                i.cursors.insert(session_id.to_string(), (from.after_seq, from.after_event_id.clone()));
+            } else {
+                i.cursors.insert(session_id.to_string(), (0, from.after_event_id.clone()));
+            }
+        }
         let (utx, urx) = oneshot::channel();
-        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: None, epoch: None }, Some((Some(session_id.to_string()), out, Some(utx))))?;
+        let (after_seq, epoch) = if from.epoch == 0 { (None, None) } else { (Some(from.after_seq), Some(from.epoch)) };
+        let rx = self
+            .ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: from.after_event_id.clone(), after_seq, epoch }, Some((Some(session_id.to_string()), out, Some(utx))))
+            .map_err(Cut::Failed)?;
         let running = match rx.await {
-            Ok(ServerFrame::Attached { error: Some(e), .. }) => return Err(engine_error(e)),
+            Ok(ServerFrame::Attached { error: Some(e), .. }) => return Err(Cut::Failed(engine_error(e))),
             Ok(ServerFrame::Attached { running, .. }) => running,
-            _ => return Err(gone()),
+            _ => return Err(Cut::Dropped(self.resume_of(session_id))),
         };
         if !running {
             let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             i.sinks.retain(|s| !(s.follow && s.session.as_deref() == Some(session_id)));
             return Ok(None);
         }
-        urx.await.map_err(|_| gone())
+        urx.await.map_err(|_| Cut::Dropped(self.resume_of(session_id)))
     }
 
     /// `reload`, not waited for: a client that must not stop for it (the

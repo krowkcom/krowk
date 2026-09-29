@@ -77,6 +77,11 @@ impl Home {
                 if cwd.ends_with("slow") {
                     std::thread::sleep(Duration::from_secs(1));
                 }
+                // One named `stuck` takes longer than anyone waits: a dead
+                // mount.
+                if cwd.ends_with("stuck") {
+                    std::thread::sleep(Duration::from_secs(8));
+                }
                 Ok(HostConfig {
                     sessions_dir: log::sessions_dir(&env).unwrap(),
                     cwd: cwd.to_path_buf(),
@@ -293,6 +298,7 @@ fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
         mock::serve(move |_, _| mock::Reply { hold: Some(("content_block_stop", g.clone())), ..mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(10)) })
     };
     let home = Home::new("nowrite", &m.url);
+    let queued = log::queued_syncs();
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
     fn written(dir: &Path, into: &mut Vec<(PathBuf, u64, std::time::SystemTime)>) {
         for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -352,6 +358,7 @@ fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
     daemon.join().unwrap().unwrap();
     // The turn's sync ran before the daemon's runtime went: `serve` waits
     // for it on its way out.
+    assert!(log::queued_syncs() > queued, "the turn's sync was handed to the blocking pool");
     assert_eq!(log::pending_syncs(), 0, "a sync was dropped unrun as the daemon exited");
 }
 
@@ -927,6 +934,7 @@ fn r_lag_9_a_sigterm_interrupts_the_running_turn_syncs_it_and_takes_no_new_one()
     let answer = words(3000);
     let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(2))) };
     let home = Home::new("sigterm", &m.url);
+    let queued = log::queued_syncs();
     let slow = home.root.join("slow");
     std::fs::create_dir_all(slow.join(".git")).unwrap();
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
@@ -952,6 +960,33 @@ fn r_lag_9_a_sigterm_interrupts_the_running_turn_syncs_it_and_takes_no_new_one()
     assert!(refused(two.last().unwrap(), 2), "{:?}", two.last());
     daemon.join().unwrap().unwrap();
     assert!(signalled.elapsed() < krowk_harness::host::SHUTDOWN_GRACE, "exited in {:?}", signalled.elapsed());
+    assert!(log::queued_syncs() > queued, "the interrupted turn's sync was handed to the blocking pool");
     assert_eq!(log::pending_syncs(), 0, "the interrupted turn's sync ran before the daemon exited");
     drop((a, b));
+}
+
+/// A second SIGTERM while the daemon waits on its way out — here for a
+/// turn whose directory's configuration is stuck on a dead mount — exits at
+/// once, rather than after every wait's grace has run out.
+#[test]
+fn r_lag_9_a_second_sigterm_exits_at_once() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
+    let home = Home::new("sigterm2", &m.url);
+    let stuck = home.root.join("stuck");
+    std::fs::create_dir_all(stuck.join(".git")).unwrap();
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    let mut a = Raw::connect_in(&home, &stuck);
+    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one") });
+    std::thread::sleep(Duration::from_millis(200));
+    let term = || assert!(std::process::Command::new("kill").args(["-TERM", &std::process::id().to_string()]).status().unwrap().success());
+    term();
+    // The first waits for the turn it took.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!daemon.is_finished(), "the first signal waits for the turn under way");
+    let again = Instant::now();
+    term();
+    daemon.join().unwrap().unwrap();
+    assert!(again.elapsed() < Duration::from_secs(2), "a second signal exits at once, not in {:?}", again.elapsed());
+    drop(a);
 }
