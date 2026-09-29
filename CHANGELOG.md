@@ -16,6 +16,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
 ### Changed
 
 - What you say in the TUI is shown on a faint grey band across the width, with a thin blue bar down its left edge and an empty row of it above and below, in normal weight rather than bold after a `❯`. Your messages are easy to find when scrolling back, and long ones read as text rather than as a heading.
+- A prompt sent in the TUI is shown the moment you press Enter. Before, it appeared only after krowk had chosen the model, read its key and started the backend, which could take a noticeable moment.
 - In the TUI, a read, search or command that runs while earlier ones are counted on one line (`◆ Ran 3 commands, searched for 2 patterns`) stands under that line as a branch, with the bullet orange until it is back. The chat no longer jumps as each call finishes and is taken into the count.
 
 ## [0.11.1] - 2026-09-29

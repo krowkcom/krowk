@@ -555,6 +555,9 @@ pub struct App {
     pub steers: Vec<String>,
     /// Steering typed before the turn could take it; sent when it can.
     pub unsent_steers: Vec<String>,
+    /// The prompt on screen since Enter, before the host has routed, keyed
+    /// and logged it; the log's copy, when it comes, is not drawn again.
+    echoed: Option<String>,
     /// The mode the next prompt runs in, as the client sends it: the
     /// picker's `now` and the details overlay. Never a `turn.started`'s —
     /// a resumed session's last turn, or one a backend began, ran in its own.
@@ -694,6 +697,7 @@ impl App {
             settings,
             steers: Vec::new(),
             unsent_steers: Vec::new(),
+            echoed: None,
             permission_mode: "default".into(),
             log_dir: None,
             quit: false,
@@ -1702,6 +1706,7 @@ impl App {
                 self.finish_live();
                 self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(format!("Loaded the {} skill", clean(name)), dim().add_modifier(Modifier::ITALIC))]));
             }
+            Item::UserText { text } if live && self.echoed.as_ref() == Some(text) => self.echoed = None,
             Item::UserText { text } => {
                 if let Some(i) = self.steers.iter().position(|s| s == text) {
                     self.steers.remove(i);
@@ -1845,6 +1850,11 @@ impl App {
         if let Some(live) = &self.live {
             match &live.kind {
                 LiveKind::Text if !live.tail.is_empty() => {
+                    // The gap its first whole line will take (`on_text`),
+                    // so the answer does not start stuck to what is above.
+                    if !live.committed && !rows.last().map_or(self.last_blank, |l| l.width() == 0) {
+                        rows.push(Line::default());
+                    }
                     let wrapped = wrap(&clean(&live.tail), width);
                     let skip = wrapped.len().saturating_sub(MAX_LIVE_ROWS);
                     rows.extend(wrapped.into_iter().skip(skip).map(Line::from));
@@ -2375,6 +2385,15 @@ impl App {
         self.dirty = true;
     }
 
+    /// `text`, sent as a prompt, on screen now: the host logs it only once
+    /// the model is routed and its key read.
+    pub fn echo(&mut self, text: &str) {
+        self.finish_live();
+        self.gap();
+        self.push_said(text);
+        self.echoed = Some(text.to_string());
+    }
+
     /// A turn has started: `Command::Prompt` is on its way.
     pub fn start_turn(&mut self, now: Instant) {
         self.answer.clear();
@@ -2395,6 +2414,7 @@ impl App {
     /// refused it, or the turn ended first).
     pub fn end_turn_parts(&mut self) -> (Vec<String>, Vec<String>) {
         self.turn = None;
+        self.echoed = None;
         self.finish_live();
         // A subagent whose call was never answered is shown as it stood.
         for s in std::mem::take(&mut self.subs) {
@@ -3982,6 +4002,34 @@ mod tests {
         assert_eq!(help::canonical("/clear"), "/new");
         assert!(help::unlisted("/resume"));
         assert_eq!(help::slash("/sessions", &[]).first().map(|s| s.name.as_str()), Some("sessions"));
+    }
+
+    #[test]
+    fn a_prompt_is_on_screen_at_enter_and_once() {
+        let mut a = app();
+        a.set_width(60);
+        a.echo("fix the parser");
+        a.start_turn(Instant::now());
+        let said = |lines: &[Line]| text(lines).iter().filter(|r| r.contains("fix the parser")).count();
+        assert_eq!(said(&a.take_pending()), 1, "before the host has logged it");
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::UserText { text: "fix the parser".into() } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "s".into(), item: Item::UserText { text: "fix the parser".into() } }));
+        assert_eq!(said(&a.take_pending()), 1, "the log's copy is not drawn again; the same words sent again are");
+    }
+
+    #[test]
+    fn an_answer_starts_a_blank_line_under_the_prompt_before_its_first_line_is_whole() {
+        let mut a = app();
+        a.set_width(60);
+        a.echo("fix the parser");
+        a.start_turn(Instant::now());
+        a.take_pending();
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "i".into(), item: ItemKind::AssistantText }));
+        a.on_line(&delta("i", "Looking"));
+        assert_eq!(text(&a.view(Instant::now()).0)[..2], ["", "Looking"]);
+        a.on_line(&delta("i", " at it\nthen"));
+        assert_eq!(text(&a.take_pending()), ["", "Looking at it"], "the same gap once the line is whole");
+        assert_eq!(text(&a.view(Instant::now()).0)[0], "then", "and not a second one");
     }
 
     #[test]

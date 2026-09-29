@@ -533,11 +533,11 @@ fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() 
     assert!(t.wait_for("Claude Opus 5.5 (anthropic) |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"wait forever\r");
     assert!(t.wait_for("esc to interrupt", Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    // The prompt drawn back as the log's `❯` line: the turn has started,
+    // The prompt drawn back as the log's `▎` band: the turn has started,
     // so the TUI knows the session it is to record. The working line
     // alone comes before that, and two Ctrl-Cs sent then, on a loaded
     // machine, left before any session existed.
-    assert!(t.wait_for("❯ ", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    assert!(t.wait_for("▎ ", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"\x03\x03");
     let st = t.wait(Duration::from_secs(10)).expect("krowk exits on the second Ctrl-C");
     assert_eq!(st.code(), Some(130), "{st}");
@@ -708,7 +708,7 @@ fn r_tui_1_a_10k_token_answer_lands_in_tmux_scrollback_exactly_once() {
     assert_eq!(got.len(), want.len(), "every line once, none twice");
     assert!(got.iter().zip(&want).all(|(g, w)| g == w), "in order, byte for byte");
     // The prompt line is in scrollback once too, and the live region is not.
-    assert_eq!(history.matches("❯ write it all out").count(), 1, "{history}");
+    assert_eq!(history.matches("▎ write it all out").count(), 1, "{history}");
     assert_eq!(history.matches("esc to interrupt").count(), 0, "a live row leaked into scrollback");
 }
 
@@ -802,8 +802,8 @@ fn r_tui_1_a_menu_opened_and_closed_leaves_no_gap_in_scrollback_and_no_space_und
         }
     }
     tm.keys(&["again", "Enter"]);
-    assert!(tm.wait_for("❯ again", Duration::from_secs(10)).is_some(), "{}", tm.screen());
-    let history = tm.wait_still(|s| s.split("❯ again").nth(1).is_some_and(|after| after.contains("tokens")) && at_bottom(s), Duration::from_secs(30)).unwrap_or_else(|| panic!("the second turn never finished:\n{}", tm.screen()));
+    assert!(tm.wait_for("▎ again", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    let history = tm.wait_still(|s| s.split("▎ again").nth(1).is_some_and(|after| after.contains("tokens")) && at_bottom(s), Duration::from_secs(30)).unwrap_or_else(|| panic!("the second turn never finished:\n{}", tm.screen()));
     let rows: Vec<&str> = history.lines().collect();
     let logo: Vec<usize> = rows.iter().enumerate().filter(|(_, l)| l.contains('▀')).map(|(i, _)| i).collect();
     assert!(logo.len() > 1 && logo.windows(2).all(|w| w[1] == w[0] + 1), "the logo in one piece:\n{history}");
@@ -812,7 +812,7 @@ fn r_tui_1_a_menu_opened_and_closed_leaves_no_gap_in_scrollback_and_no_space_und
     assert!(lines[..12].windows(2).all(|w| w[1] == w[0] + 1) && lines[12..].windows(2).all(|w| w[1] == w[0] + 1), "each answer without a gap in it:\n{history}");
     // Between the first answer and the second prompt: its token line, set
     // off by one blank row each side, and nothing else.
-    let between: Vec<&str> = rows[lines[11] + 1..].iter().take_while(|l| !l.contains("❯ again")).map(|l| l.trim()).collect();
+    let between: Vec<&str> = rows[lines[11] + 1..].iter().take_while(|l| !l.contains("▎ again")).map(|l| l.trim()).collect();
     assert_eq!(between.iter().filter(|l| l.is_empty()).count(), 2, "no blank rows the menus left behind: {between:?}");
 }
 
@@ -849,7 +849,7 @@ fn r_tui_3_a_resize_mid_stream_never_repeats_a_line_or_leaves_the_live_region_be
     for live in ["esc to interrupt", "type to steer"] {
         assert!(!history.contains(live), "the old live region was left in scrollback:\n{history}");
     }
-    assert_eq!(history.matches("❯ go").count(), 1, "{history}");
+    assert_eq!(history.matches("▎ go").count(), 1, "{history}");
     let bars = tm.screen().matches("? help").count();
     assert_eq!(bars, 1, "one status bar on screen after two resizes:\n{}", tm.screen());
 }
