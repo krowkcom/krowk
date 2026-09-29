@@ -28,6 +28,9 @@ struct Seen {
     /// When each frame started and ended arriving.
     frames: Vec<Instant>,
     frame_ends: Vec<Instant>,
+    /// The master side read to its end: every process on the terminal
+    /// has let go of it, and all it wrote is in `out`.
+    closed: bool,
 }
 
 pub struct Pty {
@@ -102,7 +105,10 @@ impl Pty {
             let mut buf = [0u8; 64 * 1024];
             loop {
                 let n = match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => return,
+                    Ok(0) | Err(_) => {
+                        log.lock().unwrap().closed = true;
+                        return;
+                    }
                     Ok(n) => n,
                 };
                 let now = Instant::now();
@@ -181,20 +187,40 @@ impl Pty {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if let Ok(Some(st)) = self.child.try_wait() {
+                // Exited is not read: the last bytes it wrote can still be
+                // on their way through the reader thread, and a loaded
+                // machine lets a test look before they land. The terminal
+                // closing is what says they have — bounded, since a process
+                // it started may hold it open a while longer.
+                let drained = Instant::now() + Duration::from_secs(2);
+                while !self.seen.lock().unwrap().closed && Instant::now() < drained {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
                 return Some(st);
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+        self.kill();
+        None
+    }
+
+    /// Kills the child and everything it started. It leads a session and
+    /// process group of its own (`setsid`), so the group goes with it: a
+    /// backend or helper left running would outlive the test, reparented
+    /// to init, holding a sandbox that no longer exists.
+    fn kill(&mut self) {
+        // SAFETY: a signal to the process group our own child leads.
+        unsafe {
+            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
-        None
     }
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.kill();
     }
 }
 
