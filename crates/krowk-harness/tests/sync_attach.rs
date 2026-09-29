@@ -21,7 +21,7 @@ use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::log;
 use krowk_harness::protocol::{ApprovalDecision, Command, LiveEvent, PermissionMode, StreamLine};
-use krowk_harness::sync::{host, viewer};
+use krowk_harness::sync::{direct, host, viewer};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -104,7 +104,7 @@ impl World {
         let relay_addr = relay.local_addr().unwrap();
         let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
         let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
-        std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None }));
+        std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None }));
         let seen = Arc::new(Mutex::new(Vec::new()));
         let cut = Arc::new(AtomicBool::new(false));
         let relay_a = proxy(relay_addr, seen.clone(), cut.clone());
@@ -213,7 +213,33 @@ impl World {
             cwd: self.repo().display().to_string(),
             ttl,
             keep,
+            direct: None,
         };
+        self.run_bridge(o, daemon)
+    }
+
+    /// A's bridge with a direct listener, reading this node from a fake
+    /// tailscaled at `ts`; `stop` kills the listener.
+    fn bridge_direct(&self, a: &Device, session: &str, daemon: Arc<Client>, ts: &FakeTailscale, same_user: bool, stop: watch::Receiver<bool>) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
+        let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
+        let o = host::Options {
+            relay: self.relay_a.clone(),
+            env: "development".into(),
+            api: self.a_client(a),
+            device: a.key.id(),
+            signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
+            account: AccountKey::from_bytes(*self.account.as_bytes()),
+            session: session.into(),
+            title: "the title is sealed too".into(),
+            cwd: self.repo().display().to_string(),
+            ttl: host::LEASE_TTL,
+            keep: host::KEEP,
+            direct: Some(direct::Config { socket: ts.socket.clone(), roster: krowk_harness::relay::Roster::parse(&roster).unwrap(), same_user, lan: false, stop: Some(stop) }),
+        };
+        self.run_bridge(o, daemon)
+    }
+
+    fn run_bridge(&self, o: host::Options, daemon: Arc<Client>) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
         let (stop, stop_rx) = watch::channel(false);
         let (cp, cp_rx) = mpsc::unbounded_channel();
         (stop, cp, tokio::spawn(host::run(o, daemon, stop_rx, cp_rx)))
@@ -898,6 +924,183 @@ async fn r_off_2_a_new_stream_after_a_long_cut_loses_nothing() {
     let missing: Vec<_> = want.iter().filter(|i| !ids.contains(i)).collect();
     assert!(missing.is_empty(), "B never got {missing:?}");
 }
+
+/// A stand-in `tailscaled`: its LocalAPI on a unix socket, answering
+/// `status` with this machine on 127.0.0.1 as tailnet user 1 and a peer
+/// tagged `tag:krowk-host`, and `whois` with whichever user `whois` holds.
+struct FakeTailscale {
+    socket: PathBuf,
+    whois: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl FakeTailscale {
+    fn start(root: &Path) -> FakeTailscale {
+        let socket = root.join("ts.sock");
+        let l = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let whois = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let w = whois.clone();
+        std::thread::spawn(move || {
+            for mut c in l.incoming().flatten() {
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match c.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => raw.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let req = String::from_utf8_lossy(&raw).to_string();
+                let body = if req.starts_with("GET /localapi/v0/status") {
+                    serde_json::json!({"BackendState": "Running", "Self": {"HostName": "a", "DNSName": "localhost.", "TailscaleIPs": ["127.0.0.1"], "Addrs": [], "UserID": 1, "Online": true},
+                        "Peer": {"k": {"HostName": "b", "DNSName": "b.tail.ts.net.", "TailscaleIPs": ["100.64.0.2"], "Online": true, "Tags": ["tag:krowk-host"]}}}).to_string()
+                } else if req.starts_with("GET /localapi/v0/whois?addr=127.0.0.1:") {
+                    serde_json::json!({"Node": {"User": w.load(Ordering::SeqCst)}, "UserProfile": {"ID": w.load(Ordering::SeqCst), "LoginName": "someone@example.com"}}).to_string()
+                } else {
+                    let _ = c.write_all(b"HTTP/1.0 404 Not Found\r\n\r\nno such page");
+                    continue;
+                };
+                let _ = write!(c, "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{body}");
+            }
+        });
+        FakeTailscale { socket, whois }
+    }
+}
+
+fn direct_path(u: &viewer::Update) -> bool {
+    matches!(u, viewer::Update::Path { path, .. } if path.starts_with("direct"))
+}
+
+fn relay_path(u: &viewer::Update) -> bool {
+    matches!(u, viewer::Update::Path { path, .. } if path == "relay")
+}
+
+/// Round trips of a command to A and its ack, the median.
+async fn ack_rtt(v: &mut viewer::Viewer, session: &str, frames: &mut Vec<Instant>) -> Duration {
+    let mut rtts = Vec::new();
+    for _ in 0..15 {
+        let t = Instant::now();
+        v.commands.send(Command::Interrupt { session_id: session.into() }).unwrap();
+        until(v, Duration::from_secs(5), frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+        rtts.push(t.elapsed());
+    }
+    rtts.sort();
+    rtts[rtts.len() / 2]
+}
+
+/// R-NET-1, R-NET-2: A reads its tailnet address from tailscaled, listens
+/// there and names it to B inside the welcome, sealed — the relay never
+/// sees the address — and B moves onto it, after which B's live frames no
+/// longer cross the relay. `krowk hosts`' reading of the peers (R-NET-4)
+/// rides the same fake LocalAPI.
+#[tokio::test]
+async fn r_net_2_the_session_moves_to_the_direct_path_and_live_frames_leave_the_relay() {
+    let w = World::new("direct");
+    let ts = FakeTailscale::start(&w.root);
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_kill, kill_rx) = watch::channel(false);
+    let (_stop, _cp, _bridge) = w.bridge_direct(&a, &session, w.daemon().await, &ts, true, kill_rx);
+    w.synced(&session).await;
+
+    let status = krowk_harness::sync::tailscale::status(&ts.socket).unwrap();
+    assert_eq!(status.hosts().iter().map(|h| h.host_name.as_str()).collect::<Vec<_>>(), ["b"], "R-NET-4");
+
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, direct_path).await;
+    let via = got.iter().find_map(|u| if let viewer::Update::Path { via: Some(via), .. } = u { Some(via.clone()) } else { None }).unwrap();
+    assert!(via.starts_with("ws://127.0.0.1:") || via.starts_with("ws://localhost:"), "{via}");
+    assert!(got.iter().any(relay_path), "B came by the relay first: {got:?}");
+
+    // A turn, live, with B on the direct path: not a byte of it to B by the relay.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let before = w.b_batches.load(Ordering::SeqCst);
+    v.commands.send(w.prompt(Some(&session), "over the direct path")).unwrap();
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
+    assert!(got.iter().any(|u| matches!(u, viewer::Update::Line(_))), "the turn streamed to B");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(w.b_batches.load(Ordering::SeqCst), before, "live frames still went to B through the relay");
+
+    // R-NET-1: the candidates went sealed.
+    let port = via.rsplit(':').next().unwrap().to_string();
+    let cap = w.captured();
+    let needle = format!("127.0.0.1:{port}");
+    assert!(!cap.windows(needle.len()).any(|x| x == needle.as_bytes()), "the direct address crossed the relay in the clear");
+}
+
+/// R-NET-2: the direct listener killed mid-turn, B falls back to the relay
+/// by itself, and holds every event A's log holds, none twice. Records the
+/// command round trip over each path.
+#[tokio::test]
+async fn r_net_2_killing_the_direct_listener_falls_back_to_the_relay_with_no_gap() {
+    let w = World::new("fallback");
+    let ts = FakeTailscale::start(&w.root);
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (kill, kill_rx) = watch::channel(false);
+    let (_stop, _cp, _bridge) = w.bridge_direct(&a, &session, w.daemon().await, &ts, false, kill_rx);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    let mut ids: Vec<String> = Vec::new();
+    for u in until(&mut v, Duration::from_secs(15), &mut frames, direct_path).await {
+        ids.extend(logged(&u));
+    }
+    let direct_rtt = ack_rtt(&mut v, &session, &mut frames).await;
+
+    v.commands.send(w.prompt(Some(&session), "the direct path goes mid-turn")).unwrap();
+    let mut got = until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Line(_))).await;
+    kill.send(true).unwrap();
+    got.extend(until(&mut v, Duration::from_secs(15), &mut frames, relay_path).await);
+    // The turn may have ended before the relay's welcome, or in its frame.
+    if !got.iter().any(result_of) {
+        got.extend(until(&mut v, Duration::from_secs(20), &mut frames, result_of).await);
+    }
+    ids.extend(got.iter().flat_map(logged));
+    let relay_rtt = ack_rtt(&mut v, &session, &mut frames).await;
+    println!("R-NET-2 latency (command round trip, median of 15, loopback): direct {direct_rtt:?}, relay {relay_rtt:?}");
+
+    let want = log_ids(&w, &session);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while want.iter().any(|i| !ids.contains(i)) && Instant::now() < deadline {
+        if let Ok(Some(batch)) = tokio::time::timeout(Duration::from_millis(300), v.updates.recv()).await {
+            ids.extend(batch.iter().flat_map(logged));
+        }
+    }
+    let missing: Vec<_> = want.iter().filter(|i| !ids.contains(i)).collect();
+    assert!(missing.is_empty(), "B never got {missing:?}");
+    let mut dedup = ids.clone();
+    dedup.sort();
+    dedup.dedup();
+    assert_eq!(dedup.len(), ids.len(), "no event arrived twice");
+}
+
+/// R-NET-3: with the same-user check on, tailscaled naming the far end as
+/// another tailnet user turns the direct connection away, and B stays on
+/// the relay, where its ticket and keys still let it in.
+#[tokio::test]
+async fn r_net_3_with_whois_on_another_tailnet_user_is_refused_and_stays_on_the_relay() {
+    let w = World::new("whois");
+    let ts = FakeTailscale::start(&w.root);
+    ts.whois.store(2, Ordering::SeqCst);
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_kill, kill_rx) = watch::channel(false);
+    let (_stop, _cp, _bridge) = w.bridge_direct(&a, &session, w.daemon().await, &ts, true, kill_rx);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(15), &mut frames, relay_path).await;
+    let deadline = Instant::now() + viewer::PROBE + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if let Ok(Some(batch)) = tokio::time::timeout(Duration::from_millis(200), v.updates.recv()).await {
+            assert!(!batch.iter().any(direct_path), "another tailnet user's connection was let in: {batch:?}");
+        }
+    }
+    v.commands.send(w.prompt(Some(&session), "still by the relay")).unwrap();
+    until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
+}
+
 
 /// R-OFF-2: the relay drops every batch of a whole turn to B, and B sees
 /// the gap only when a later turn's batch arrives. The catch-up asks from

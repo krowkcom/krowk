@@ -117,6 +117,10 @@ pub struct Limits {
     pub join_wait: Duration,
     /// The relay's own pings, and silence past three of them closes a link.
     pub heartbeat: Duration,
+    /// Links are numbered from past this. A host's direct listener starts
+    /// far past the relay's own numbers, so the two relays a host is on at
+    /// once never name two viewers alike to its one set of chains.
+    pub first_link: u64,
 }
 
 impl Default for Limits {
@@ -148,6 +152,7 @@ impl Default for Limits {
             upgrade_wait: Duration::from_secs(3),
             join_wait: Duration::from_secs(10),
             heartbeat: crate::daemon::ws::HEARTBEAT,
+            first_link: 0,
         }
     }
 }
@@ -231,6 +236,21 @@ pub struct Config {
     /// None keeps them in memory, for loopback only (`krowk relay serve`
     /// refuses another address without `--state`).
     pub state: Option<std::path::PathBuf>,
+    /// A host's direct listener (R-NET-1): the origins it may be dialed as,
+    /// its tailnet address, its MagicDNS name and its LAN address, each the
+    /// host published sealed to its viewers. The request's `Host` picks one
+    /// and anything else is refused, so one listener answers every name
+    /// without trusting a `Host` it did not publish. Empty: `origin` rules.
+    pub origins: Vec<String>,
+    /// The optional tailnet hardening (R-NET-3): a connection whose far end
+    /// tailscaled does not name as this tailnet user is closed before the
+    /// upgrade. The ticket and the challenge still decide who joins.
+    pub whois: Option<crate::sync::tailscale::SameUser>,
+    /// A host's direct listener carries its one session, and only its own
+    /// device hosts there: a ticket for another session, or a host ticket
+    /// of another device — a former lease holder's, not yet expired — is
+    /// refused, since this relay's fences start afresh with its bridge.
+    pub pin: Option<([u8; 16], DeviceId)>,
 }
 
 /// Runs a relay on `listener` until the process ends.
@@ -263,6 +283,45 @@ pub fn run_opened(listener: std::net::TcpListener, config: Config, Opened(state)
     })
 }
 
+/// Runs a relay on every one of `listeners` until `stop` turns true: a
+/// host's direct listener (R-NET-1), which goes with the bridge that runs
+/// it. Every connection it holds closes as it stops.
+pub fn run_until(listeners: Vec<std::net::TcpListener>, config: Config, mut stop: tokio::sync::watch::Receiver<bool>) -> Result<(), String> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("the async runtime could not start: {e}"))?;
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&rt, async move {
+        let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0) });
+        for l in listeners {
+            l.set_nonblocking(true).map_err(|e| e.to_string())?;
+            let l = TcpListener::from_std(l).map_err(|e| e.to_string())?;
+            let relay = relay.clone();
+            tokio::task::spawn_local(async move {
+                loop {
+                    match l.accept().await {
+                        Ok((stream, peer)) => {
+                            tokio::task::spawn_local(admitted(stream, peer, relay.clone()));
+                        }
+                        Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+                    }
+                }
+            });
+        }
+        let _ = stop.wait_for(|s| *s).await;
+        Ok(())
+    })
+}
+
+/// The tailnet check, when there is one, then the connection.
+async fn admitted(stream: TcpStream, peer: std::net::SocketAddr, relay: Rc<Relay>) {
+    if let Some(same) = relay.config.whois.clone()
+        && !tokio::task::spawn_blocking(move || same.admits(peer)).await.unwrap_or(false)
+    {
+        record("join", None, None, "not_same_tailnet_user");
+        return;
+    }
+    connection(stream, peer.ip(), relay).await
+}
+
 /// Accepts connections for ever. Inside a `LocalSet`.
 pub async fn serve(listener: TcpListener, config: Config) {
     serve_with(listener, config, None).await
@@ -278,7 +337,7 @@ async fn serve_with(listener: TcpListener, config: Config, state: Option<(std::f
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
-                tokio::task::spawn_local(connection(stream, peer.ip(), relay.clone()));
+                tokio::task::spawn_local(admitted(stream, peer, relay.clone()));
             }
             Err(e) => {
                 eprintln!("relay accept: {e}");
@@ -627,7 +686,7 @@ async fn connection(stream: TcpStream, peer: std::net::IpAddr, relay: Rc<Relay>)
     let session = key;
     left.set(usize::MAX);
     let (tx, rx) = mpsc::unbounded_channel();
-    let id = relay.links.get() + 1;
+    let id = relay.links.get().max(limits.first_link) + 1;
     relay.links.set(id);
     let link = Rc::new(Link { id, device, env: key.0, tx, queued: Rc::default(), limit: relay.config.limits.link_queue });
     let (sink, incoming) = ws.split();
@@ -734,6 +793,11 @@ async fn refused(ws: &mut Ws, env: Option<Env>, r: &Refusal) {
 async fn challenge(ws: &mut Ws, relay: &Rc<Relay>, session: [u8; 16], env: Option<Env>, host: &str, ticket: (String, krowk_client::relay_ticket::Ticket), kill: &tokio::sync::Notify) -> Option<(DeviceId, u8, Join)> {
     let limits = &relay.config.limits;
     let given = relay.config.origin.clone().unwrap_or_else(|| format!("ws://{host}"));
+    let listed = relay.config.origins.iter().filter_map(|o| e2e::canonical_origin(o)).collect::<Vec<_>>();
+    if !listed.is_empty() && !e2e::canonical_origin(&given).is_some_and(|o| listed.contains(&o)) {
+        refused(ws, env, &refuse("bad_origin", format!("{given:?} is not an address this host published"), "dial one of the candidate addresses the host sent")).await;
+        return None;
+    }
     let Some(origin) = e2e::canonical_origin(&given) else {
         refused(ws, env, &refuse("bad_origin", format!("{given:?} is no origin a device can sign"), "dial the relay by a host name or address, or start it with --origin")).await;
         return None;
@@ -892,6 +956,14 @@ fn admit(relay: &Relay, key: Key, nonce: &[u8; 32], origin: &str, mut j: Join, t
     }
     if t.device != j.device.0 {
         return Err(bad("another device"));
+    }
+    if let Some((only, host)) = relay.config.pin {
+        if session != only {
+            return Err(bad("a session this host's direct listener does not carry"));
+        }
+        if j.role == RELAY_ROLE_HOST && j.device != host {
+            return Err(bad("hosting on another device's direct listener"));
+        }
     }
     if t.role == RELAY_ROLE_HOST && j.role == RELAY_ROLE_VIEWER {
         return Err(bad("hosting, and this join is a viewer's"));

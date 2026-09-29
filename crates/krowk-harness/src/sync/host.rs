@@ -68,6 +68,9 @@ pub struct Options {
     pub ttl: u64,
     /// Batches kept for the relay while its link is down (`KEEP`).
     pub keep: usize,
+    /// Direct paths, offered beside the relay (R-NET-1); None for the
+    /// relay alone.
+    pub direct: Option<super::direct::Config>,
 }
 
 /// The lease as the bridge holds it: the token only the holder has, its
@@ -296,6 +299,20 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let mut ws: Option<super::Ws> = None;
     let mut heard = Instant::now();
     let mut retry = Instant::now();
+    // The direct listener, when tailscaled gives this machine an address:
+    // a second uplink, sent every batch the relay is, never in its place.
+    let listening = match o.direct.as_ref().map(|c| super::direct::listen(c, crate::daemon::ws::uuid(&o.session), o.device)) {
+        Some(Ok(l)) => Some(l),
+        Some(Err(e)) => {
+            eprintln!("krowk: no direct path ({e}); the session goes by the relay");
+            None
+        }
+        None => None,
+    };
+    let candidates = listening.as_ref().map(|l| l.candidates.clone()).unwrap_or_default();
+    let mut dws: Option<super::Ws> = None;
+    let mut dheard = Instant::now();
+    let mut dretry = Instant::now();
     let (answers_tx, mut answers) = mpsc::unbounded_channel::<(u64, Answer)>();
     let mut tick = tokio::time::interval(FRAME);
     let mut beat = tokio::time::interval(PING);
@@ -330,6 +347,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                 let sealed = link.batch(&body, false).map_err(|e| e.to_string())?;
                 kept.push_back((link.last_seq(), sealed.clone()));
                 if kept.len() > o.keep.max(1) { kept.pop_front(); }
+                if let Some(w) = dws.as_mut() && !super::send(w, sealed.clone()).await { dws = None; dretry = Instant::now() + Duration::from_secs(1); }
                 if let Some(w) = ws.as_mut() && !super::send(w, sealed).await { ws = None; }
             }
             Some(h) = heads.recv() => head = Some(h),
@@ -341,7 +359,8 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                         if done_order.len() > REMEMBERED && let Some(old) = done_order.pop_front() { done.remove(&old); }
                     }
                 }
-                if let Some(w) = ws.as_mut() && let Ok(b) = link.to_viewer(to, &serde_json::to_vec(&a).expect("json"), false) && !super::send(w, b).await { ws = None; }
+                let sock = if to >= super::direct::FIRST_LINK { &mut dws } else { &mut ws };
+                if let Some(w) = sock.as_mut() && let Ok(b) = link.to_viewer(to, &serde_json::to_vec(&a).expect("json"), false) && !super::send(w, b).await { *sock = None; }
             }
             _ = on_demand.recv() => { let _ = jobs.send(Write::Checkpoint(worktree(&o.cwd))); }
             _ = sweep.tick() => {
@@ -367,6 +386,25 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
             }
             _ = beat.tick() => {
                 if let Some(w) = ws.as_mut() && (heard.elapsed() > DEAD || !super::ping(w).await) { ws = None; }
+                if let Some(w) = dws.as_mut() && (dheard.elapsed() > DEAD || !super::ping(w).await) { dws = None; }
+            }
+            _ = tokio::time::sleep_until(dretry.into()), if dws.is_none() && listening.is_some() => {
+                // The direct listener, joined as the relay is: the same
+                // ticket, the same stream. What the relay has not yet
+                // acknowledged seeds it, so a viewer moving over resumes
+                // from its cursor there.
+                let ticket = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let dial = listening.as_ref().expect("listening").dial.clone();
+                let j = Join { relay: &dial, session: &o.session, env: &o.env, ticket: &ticket.ticket, device: o.device, signing: &o.signing, role: e2e::RELAY_ROLE_HOST, extra: json!({"fence": ticket.fence, "stream": e2e::hex(&link.stream())}) };
+                dretry = Instant::now() + Duration::from_secs(2);
+                if let Ok((mut w, joined)) = super::join(j).await && link.continues_after(joined["seq"].as_u64().unwrap_or(0)) {
+                    let at = joined["seq"].as_u64().unwrap_or(0);
+                    let mut ok = true;
+                    for (_, b) in kept.iter().filter(|(s, _)| *s > at) {
+                        if !super::send(&mut w, b.clone()).await { ok = false; break; }
+                    }
+                    if ok { dws = Some(w); dheard = Instant::now(); }
+                }
             }
             _ = tokio::time::sleep_until(retry.into()), if ws.is_none() => {
                 let ticket = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -402,9 +440,16 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                     Err(_) => retry = Instant::now() + Duration::from_secs(1),
                 }
             }
-            m = async { match ws.as_mut() { Some(w) => super::recv(w).await, None => std::future::pending().await } } => {
-                heard = Instant::now();
+            (direct, m) = async {
+                tokio::select! {
+                    m = async { match ws.as_mut() { Some(w) => super::recv(w).await, None => std::future::pending().await } } => (false, m),
+                    m = async { match dws.as_mut() { Some(w) => super::recv(w).await, None => std::future::pending().await } } => (true, m),
+                }
+            } => {
+                if direct { dheard = Instant::now(); } else { heard = Instant::now(); }
+                let sock = if direct { &mut dws } else { &mut ws };
                 match m {
+                    In::Closed if direct => { dws = None; dretry = Instant::now() + Duration::from_secs(1); }
                     In::Closed => { ws = None; retry = Instant::now() + Duration::from_secs(1); }
                     In::Alive => {}
                     In::Control(v) => {
@@ -413,7 +458,9 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                             if v["event"] == "joined" && let Some((here, _)) = present.as_mut() { here.insert(l); }
                         }
                     }
-                    In::Envelope(b) if b[1] == KIND_ACK => {
+                    // The direct listener's acks free nothing: what is kept
+                    // is kept for the relay.
+                    In::Envelope(b) if b[1] == KIND_ACK && !direct => {
                         let upto = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
                         while kept.front().is_some_and(|(s, _)| *s <= upto) { kept.pop_front(); }
                     }
@@ -421,8 +468,8 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                         let from = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
                         match link.open(from, &b[HEADER..]) {
                             Ok(Inbound::Hello { .. }) => {
-                                let body = serde_json::to_vec(&Welcome { head, approvals: approvals.values().map(|(r, _)| r.clone()).collect() }).expect("json");
-                                if let (Some(w), Ok(sealed)) = (ws.as_mut(), link.welcome(from, &body)) && !super::send(w, sealed).await { ws = None; }
+                                let body = serde_json::to_vec(&Welcome { head, approvals: approvals.values().map(|(r, _)| r.clone()).collect(), candidates: candidates.clone() }).expect("json");
+                                if let (Some(w), Ok(sealed)) = (sock.as_mut(), link.welcome(from, &body)) && !super::send(w, sealed).await { *sock = None; }
                             }
                             Ok(Inbound::Frame { body, .. }) => match serde_json::from_slice::<ViewerFrame>(&body) {
                                 Ok(ViewerFrame::CatchUp { after }) => {
@@ -488,9 +535,15 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     }
     // The stream's end, sealed: a viewer that sees the link stop without it
     // knows it was cut short.
-    if let Some(w) = ws.as_mut() && let Ok(end) = link.batch(&serde_json::to_vec(&Batch { lines: std::mem::take(&mut waiting), head }).expect("json"), true) {
-        let _ = super::send(w, end).await;
+    if let Ok(end) = link.batch(&serde_json::to_vec(&Batch { lines: std::mem::take(&mut waiting), head }).expect("json"), true) {
+        if let Some(w) = dws.as_mut() {
+            let _ = super::send(w, end.clone()).await;
+        }
+        if let Some(w) = ws.as_mut() {
+            let _ = super::send(w, end).await;
+        }
     }
+    drop(listening);
     let _ = jobs.send(Write::Flush);
     drop(jobs);
     halt.store(true, Ordering::Relaxed);

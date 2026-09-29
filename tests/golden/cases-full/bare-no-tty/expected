@@ -1076,6 +1076,11 @@ stdout:
       ]
     },
     {
+      "name": "hosts",
+      "usage": "krowk hosts",
+      "summary": "The tailnet's machines tagged tag:krowk-host, from Tailscale"
+    },
+    {
       "name": "sync",
       "summary": "End-to-end encryption keys for syncing sessions",
       "subcommands": [
@@ -2381,6 +2386,11 @@ stdout:
           ]
         }
       ]
+    },
+    {
+      "name": "hosts",
+      "usage": "krowk hosts",
+      "summary": "The tailnet's machines tagged tag:krowk-host, from Tailscale"
     },
     {
       "name": "sync",
@@ -3704,6 +3714,11 @@ stdout:
       ]
     },
     {
+      "name": "hosts",
+      "usage": "krowk hosts",
+      "summary": "The tailnet's machines tagged tag:krowk-host, from Tailscale"
+    },
+    {
       "name": "sync",
       "summary": "End-to-end encryption keys for syncing sessions",
       "subcommands": [
@@ -5023,6 +5038,11 @@ tty:
           ]
         }
       ]
+    },
+    {
+      "name": "hosts",
+      "usage": "krowk hosts",
+      "summary": "The tailnet's machines tagged tag:krowk-host, from Tailscale"
     },
     {
       "name": "sync",

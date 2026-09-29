@@ -49,6 +49,44 @@ fn relay(ctx: &Ctx) -> String {
     if r.trim().is_empty() { format!("ws://{}", super::relay::DEFAULT_ADDR) } else { r.trim().to_string() }
 }
 
+/// Direct paths beside the relay (R-NET-1): on when this machine can check
+/// a viewer's ticket as the relay does, with the registry's ticket-signing
+/// keys in `KROWK_RELAY_TICKET_KEYS` (the file `krowk relay serve
+/// --ticket-keys` reads). Without them there is no direct listener: nothing
+/// but a ticket may let a device in. `KROWK_TAILSCALE_SAME_USER=1` also
+/// requires tailscaled to name the far end as this tailnet user (R-NET-3).
+/// The LAN address is offered only with `KROWK_DIRECT_LAN=1`: it is off the
+/// tailnet, so plain `ws://` there is reachable by the whole network.
+fn direct(ctx: &Ctx) -> Result<Option<krowk_harness::sync::direct::Config>, Error> {
+    let keys = ctx.env("KROWK_RELAY_TICKET_KEYS");
+    if keys.trim().is_empty() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(keys.trim()).map_err(|e| fail("bad_ticket_keys", format!("KROWK_RELAY_TICKET_KEYS names {}, which could not be read: {e}", keys.trim())))?;
+    let roster = krowk_harness::relay::Roster::parse(&text).map_err(|e| fail("bad_ticket_keys", e))?;
+    Ok(Some(krowk_harness::sync::direct::Config { socket: krowk_harness::sync::tailscale::socket(ctx.io.env), roster, same_user: ctx.env("KROWK_TAILSCALE_SAME_USER") == "1", lan: ctx.env("KROWK_DIRECT_LAN") == "1", stop: None }))
+}
+
+/// `krowk hosts`: the tailnet's machines tagged `tag:krowk-host`, from the
+/// local tailscaled, with no pairing step (R-NET-4).
+pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
+    use krowk_harness::sync::tailscale;
+    let s = tailscale::status(&tailscale::socket(ctx.io.env)).map_err(|e| fail("tailscale_unavailable", format!("{e} — start Tailscale, or name its socket in KROWK_TAILSCALE_SOCKET")))?;
+    let hosts = s.hosts();
+    if ctx.format == crate::output::Format::Json {
+        let rows: Vec<_> = hosts.iter().map(|h| json!({"name": h.host_name, "dnsName": h.dns_name.trim_end_matches('.'), "addresses": h.tailscale_ips, "online": h.online})).collect();
+        return ctx.emit(&json!({"hosts": rows}).to_string());
+    }
+    for h in &hosts {
+        let ip = h.tailscale_ips.first().map(|i| i.to_string()).unwrap_or_default();
+        let _ = writeln!(ctx.io.stdout, "{}  {}  {}  {}", super::sync::printable(&h.host_name), super::sync::printable(h.dns_name.trim_end_matches('.')), ip, if h.online { "online" } else { "offline" });
+    }
+    if hosts.is_empty() {
+        let _ = writeln!(ctx.io.stdout, "no machine on this tailnet is tagged {}", tailscale::HOST_TAG);
+    }
+    Ok(())
+}
+
 fn one(args: &[String], what: &str) -> Result<String, Error> {
     match args {
         [s] => Ok(s.clone()),
@@ -81,7 +119,7 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let spawn = super::host::spawner(ctx)?;
-    let o = host::Options { relay: relay(ctx), env, api, device: k.device, signing: k.signing, account: k.account, session, title: String::new(), cwd: cwd.display().to_string(), ttl: host::LEASE_TTL, keep: host::KEEP };
+    let o = host::Options { relay: relay(ctx), env, api, device: k.device, signing: k.signing, account: k.account, session, title: String::new(), cwd: cwd.display().to_string(), ttl: host::LEASE_TTL, keep: host::KEEP, direct: direct(ctx)? };
     krowk_harness::sync::run_host(o, ctx.io.env, &cwd, super::VERSION, &spawn).map_err(|(code, message)| fail(&code, message))
 }
 
