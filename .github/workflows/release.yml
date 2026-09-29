@@ -58,6 +58,17 @@ jobs:
           rustup toolchain install 1.97 --profile minimal --component clippy
           rustup default 1.97
 
+      # R-OSS-3: the same advisory and licence check as a pull request, run
+      # again at the tag, because an advisory published since the last merge
+      # is exactly what should stop a release. First, so it
+      # stops one in seconds rather than after the suite.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2,cargo-cyclonedx@0.5.9
+
+      - name: Advisories, licences and sources
+        run: cargo deny check
+
       # `make test` runs on nextest, the version in mise.toml.
       - uses: taiki-e/install-action@v2
         with:
@@ -71,16 +82,6 @@ jobs:
         run: make check
         env:
           NEXTEST_PROFILE: ci
-
-      # R-OSS-3: the same advisory and licence check as a pull request, run
-      # again at the tag, because an advisory published since the last merge
-      # is exactly what should stop a release.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny@0.20.2,cargo-cyclonedx@0.5.9
-
-      - name: Advisories, licences and sources
-        run: cargo deny check
 
       # R-OSS-3: a CycloneDX SBOM of each build, over every target the
       # release ships. It is a superset of what a binary links — the tool
@@ -197,7 +198,11 @@ jobs:
           name: sbom
           path: dist
 
-      - uses: sigstore/cosign-installer@v3
+      # Pinned like every other tool here: the bundle `sign-blob` writes and
+      # the `verify-blob` command SECURITY.md gives are cosign 3's.
+      - uses: sigstore/cosign-installer@v4
+        with:
+          cosign-release: v3.1.3
 
       # R-OSS-3: checksums.txt names every archive's SHA-256, so its signature
       # covers them all; each SBOM is signed on its own. A bundle carries the
