@@ -1180,6 +1180,7 @@ async fn r_relay_1_a_join_needs_a_live_ticket_the_registry_signed_for_it() {
 /// can: both join. A stranger is refused at the upgrade and takes no room,
 /// and a replayed ticket crowds out only the device it names.
 #[tokio::test]
+#[cfg_attr(not(target_os = "linux"), ignore = "dials from 127.0.1.x, and only Linux routes all of 127/8 to loopback; macOS holds 127.0.0.1 alone")]
 async fn r_relay_1_a_flood_of_upgrades_cannot_keep_the_host_off_its_channel() {
     let t = "flood";
     let replayed = issue(t, "flood-viewer2", RELAY_ROLE_VIEWER, None).unwrap().sign(&ticket_seed());
@@ -1284,6 +1285,7 @@ async fn join_after(t: &str, a: &As<'_>, delay: Duration) -> Value {
 /// another relay unless KROWK_RELAY_REFERENCE says it is one: a Worker has
 /// no such pool, since it sees nothing before the upgrade.
 #[tokio::test]
+#[cfg_attr(not(target_os = "linux"), ignore = "dials from 127.0.1.x, and only Linux routes all of 127/8 to loopback; macOS holds 127.0.0.1 alone")]
 async fn r_relay_1_idle_connections_without_a_ticket_never_push_out_one_with_a_ticket() {
     if std::env::var_os("KROWK_RELAY_URL").is_some() && std::env::var_os("KROWK_RELAY_REFERENCE").is_none() {
         return;
@@ -1312,6 +1314,7 @@ async fn r_relay_1_idle_connections_without_a_ticket_never_push_out_one_with_a_t
 /// which any key of the workspace can mint — replayed at five a second
 /// never takes the host's place: pending places are the device's per role.
 #[tokio::test]
+#[cfg_attr(not(target_os = "linux"), ignore = "dials from 127.0.1.x, and only Linux routes all of 127/8 to loopback; macOS holds 127.0.0.1 alone")]
 async fn r_relay_1_the_host_devices_viewer_ticket_replayed_never_locks_the_host_out() {
     let t = "hostvt";
     let replayed = issue(t, "hostvt-host", RELAY_ROLE_VIEWER, None).unwrap().sign(&ticket_seed());
