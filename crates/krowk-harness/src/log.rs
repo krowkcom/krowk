@@ -142,13 +142,13 @@ impl SessionLog {
     fn write(&mut self, ev: &LogEvent) -> Result<(), LogError> {
         let mut line = serde_json::to_string(ev).expect("an event serializes");
         line.push('\n');
-        (&*self.events).write_all(line.as_bytes()).map_err(|e| io("append to the session log", e))
+        put(&self.events, &line, "append to the session log")
     }
 
     pub fn record_context(&mut self, rec: &ContextRecord) -> Result<(), LogError> {
         let mut line = serde_json::to_string(rec).expect("a context record serializes");
         line.push('\n');
-        (&*self.context).write_all(line.as_bytes()).map_err(|e| io("append to the session's context record", e))
+        put(&self.context, &line, "append to the session's context record")
     }
 
     /// Flushed to the disk at the end of a turn, not per event: an event is
@@ -185,7 +185,7 @@ impl SessionLog {
         let mut line = serde_json::to_string(&ev).expect("an event serializes");
         line.push('\n');
         let f = self.events.clone();
-        off(move || (&*f).write_all(line.as_bytes()).map_err(|e| io("append to the session log", e))).await?;
+        off(move || put(&f, &line, "append to the session log")).await?;
         self.head = Some(ev.id.clone());
         Ok(ev)
     }
@@ -195,7 +195,7 @@ impl SessionLog {
         let mut line = serde_json::to_string(rec).expect("a context record serializes");
         line.push('\n');
         let f = self.context.clone();
-        off(move || (&*f).write_all(line.as_bytes()).map_err(|e| io("append to the session's context record", e))).await
+        off(move || put(&f, &line, "append to the session's context record")).await
     }
 
     /// `sync`, off the thread.
@@ -294,10 +294,62 @@ async fn off<T: Send + 'static>(f: impl FnOnce() -> Result<T, LogError> + Send +
     tokio::task::spawn_blocking(f).await.map_err(|e| LogError::Io(format!("the session log's writer failed: {e}")))?
 }
 
+/// `read_events`, off the thread in the host daemon.
+pub async fn read_events_off(path: &Path) -> Result<Vec<LogEvent>, LogError> {
+    let path = path.to_path_buf();
+    off(move || read_events(&path)).await
+}
+
+/// One line appended whole: a single buffer written to a file opened
+/// O_APPEND lands in one piece.
+fn put(f: &File, line: &str, what: &str) -> Result<(), LogError> {
+    slow_disk();
+    let mut f = f;
+    f.write_all(line.as_bytes()).map_err(|e| io(what, e))
+}
+
+/// For tests (`test-hooks`): how long, in µs, each append and each read of
+/// a log takes on top of its own time — a disk that stalls. Whichever
+/// thread does the write waits it out, so a write left on the host
+/// daemon's thread shows on its lateness probe (R-LAG-9).
+#[cfg(feature = "test-hooks")]
+static SLOW_DISK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// For tests (`test-hooks`): makes every log append and read take `d`
+/// longer until the guard goes.
+#[cfg(feature = "test-hooks")]
+#[must_use = "the disk is slow only while the guard lives"]
+pub fn simulate_slow_disk(d: std::time::Duration) -> SlowDisk {
+    SLOW_DISK.store(d.as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+    SlowDisk(())
+}
+
+/// The disk is slow while this lives (`simulate_slow_disk`).
+#[cfg(feature = "test-hooks")]
+pub struct SlowDisk(());
+
+#[cfg(feature = "test-hooks")]
+impl Drop for SlowDisk {
+    fn drop(&mut self) {
+        SLOW_DISK.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn slow_disk() {
+    #[cfg(feature = "test-hooks")]
+    {
+        let us = SLOW_DISK.load(std::sync::atomic::Ordering::Relaxed);
+        if us > 0 {
+            std::thread::sleep(std::time::Duration::from_micros(us));
+        }
+    }
+}
+
 /// Every event in a log file. A line that does not parse — the torn tail of
 /// a crash, or an event type this build does not know — is an error, not a
 /// skip: a log read with a hole in it would continue the wrong branch.
 pub fn read_events(path: &Path) -> Result<Vec<LogEvent>, LogError> {
+    slow_disk();
     let f = File::open(path).map_err(|e| io(format_args!("open {}", path.display()), e))?;
     let mut out = Vec::new();
     for (n, line) in BufReader::new(f).lines().enumerate() {

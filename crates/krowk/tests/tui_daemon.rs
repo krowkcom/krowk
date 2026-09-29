@@ -10,6 +10,10 @@
 mod mock;
 #[path = "common/pty.rs"]
 mod pty;
+#[path = "common/tmux.rs"]
+mod tmux;
+
+use tmux::Tmux;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -174,3 +178,27 @@ fn r_proto_1_two_tuis_on_one_session_show_the_same_reply() {
     }
 }
 
+
+/// R-LAG-9, R-TUI-1: the 10k-token answer of `tui.rs`, with the session in
+/// the host daemon — where each event's append and each context record go
+/// to the blocking pool and are awaited before the event is sent, so the
+/// frames reach the TUI at the pace of the pool, not the engine's. Every
+/// line is in scrollback once and in order, the prompt once, and no live
+/// row with them.
+#[test]
+fn r_lag_9_a_10k_token_answer_from_the_daemon_lands_in_tmux_scrollback_exactly_once() {
+    let body = mock::text_stream(&mock::numbered_lines(850));
+    let m = mock::serve(move |_, _| mock::Reply::paced(body.clone(), Duration::from_micros(100)));
+    let d = Daemon::new("scroll");
+    let Some(tm) = Tmux::start("dscroll", 100, 30, &d.sandbox.root.join("repo"), &d.env(&m.url), &[]) else { return };
+    assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["write it all out", "Enter"]);
+    assert!(tm.wait_for("tokens", Duration::from_secs(60)).is_some(), "the answer never finished:\n{}", tm.screen());
+    let history = tm.history();
+    let got: Vec<&str> = history.lines().map(str::trim).filter(|l| l.starts_with("line ")).collect();
+    let want: Vec<String> = mock::numbered_lines(850).lines().map(String::from).collect();
+    assert_eq!(got.len(), want.len(), "every line once, none twice");
+    assert!(got.iter().zip(&want).all(|(g, w)| g == w), "in order, byte for byte");
+    assert_eq!(history.matches("❯ write it all out").count(), 1, "{history}");
+    assert_eq!(history.matches("esc to interrupt").count(), 0, "a live row leaked into scrollback");
+}

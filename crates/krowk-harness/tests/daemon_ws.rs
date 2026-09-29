@@ -637,6 +637,58 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
     daemon.join().unwrap().unwrap();
 }
 
+/// R-LAG-9: no file I/O on the daemon's thread during a turn. Every log
+/// append, context record and log read is made to take 40 ms, as on a disk
+/// that stalls; the turn, a tool call and an answer, writes a dozen of them.
+/// One of those left on the thread shows on the lateness probe (5 ms ticks)
+/// as 40 ms or more; off it, the thread stays on time while the turn waits
+/// for its writes.
+#[test]
+fn r_lag_9_a_turn_on_a_stalling_disk_leaves_the_daemon_thread_on_time() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let m = mock::serve(|body, _| {
+        let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();
+        if last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result")) {
+            mock::Reply::sse(&mock::text_stream(&words(200)))
+        } else {
+            mock::Reply::sse(&mock::tool_use("toolu_01True", "bash", &serde_json::json!({"command": "true"})))
+        }
+    });
+    let home = Home::new("slow-disk", &m.url);
+    let daemon = home.serve(Duration::from_millis(100), Caps::default());
+    const STALL: Duration = Duration::from_millis(40);
+    let slow = log::simulate_slow_disk(STALL);
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        let started = Instant::now();
+        home.lateness();
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("run true, then talk", PermissionMode::BypassPermissions) }).await;
+        let (mut logged, mut when) = (0, Vec::new());
+        let mut ask = tokio::time::interval(Duration::from_millis(50));
+        loop {
+            tokio::select! {
+                _ = ask.tick() => when.push((started.elapsed(), home.lateness())),
+                got = c.next() => if let Got::Batch(_, frames) = got.expect("the connection stayed up") {
+                    logged += frames.iter().filter(|f| matches!(f, ServerFrame::Line { line: StreamLine::Log(_), .. })).count();
+                    if frames.iter().any(|f| matches!(f, ServerFrame::Done { id: 1, .. })) {
+                        break;
+                    }
+                },
+            }
+        }
+        let took = started.elapsed();
+        when.push((took, home.lateness()));
+        let late = when.iter().map(|(_, l)| *l).max().unwrap();
+        let held: Vec<String> = when.iter().filter(|(_, l)| *l >= Duration::from_millis(5)).map(|(at, l)| format!("{l:?} by {at:?}")).collect();
+        assert!(logged >= 6, "the turn logged its events: {logged}");
+        assert!(took >= STALL * logged as u32, "each write waited out the stalling disk: {took:?} for {logged}");
+        assert!(late < STALL * 3 / 4, "the daemon's thread was held {late:?} during the turn — a write on it? held {held:?}");
+    });
+    drop(slow);
+    daemon.join().unwrap().unwrap();
+}
+
 /// R-LAG-9's other half: a peer that has gone — nothing heard, not even a
 /// pong, for three beats — is let go by the daemon, however long TCP would
 /// take to notice.
