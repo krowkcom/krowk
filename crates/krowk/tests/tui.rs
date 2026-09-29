@@ -903,7 +903,7 @@ fn narrowing(name: &str, before: &str, steps: &[&str]) {
     tm.tmux(&args);
     std::thread::sleep(Duration::from_millis(800));
     let history = tm.history();
-    for row in ["⚠ no network connectivity", "→ quit", "offline |  ?  help"] {
+    for row in ["⚠ no network connectivity", "→ quit", "offline | ? help"] {
         assert_eq!(history.matches(row).count(), 1, "{row:?} is in scrollback twice — the old live region was left behind:\n{history}");
     }
     assert_eq!(history.matches("Model:     anthropic/claude-opus-5-5").count(), 1, "the header is still there, once:\n{history}");
@@ -915,7 +915,7 @@ fn narrowing(name: &str, before: &str, steps: &[&str]) {
     let screen = tm.screen();
     let mut rows = screen.lines().map(str::trim_end).filter(|l| !l.is_empty()).rev();
     let (cost, bar) = (rows.next().unwrap_or_default(), rows.next().unwrap_or_default());
-    assert!(bar.starts_with("    Claude Opus") && bar.ends_with(" | offline |  ?  help") && bar.chars().count() <= 40 && !bar.contains('$'), "{bar:?}\n{screen}");
+    assert!(bar.starts_with("    Claude Opus") && bar.ends_with(" | offline | ? help") && bar.chars().count() <= 40 && !bar.contains('$'), "{bar:?}\n{screen}");
     assert_eq!(cost, "    $0.00", "{screen}");
     if !before.is_empty() {
         // What was on the terminal is kept: the open scrolls it into
@@ -1067,7 +1067,7 @@ fn r_off_1_a_cut_network_shows_the_notice_within_two_seconds_and_nothing_hangs()
     relay.cut.store(true, Ordering::SeqCst);
     let shown = tm.wait_for("no network connectivity", Duration::from_secs(5)).unwrap_or_else(|| panic!("no notice:\n{}", tm.screen()));
     assert!(shown <= Duration::from_secs(2), "the notice took {shown:?}");
-    assert!(tm.screen().contains("| offline |  ?  help"), "the status line says so too, just before the help:\n{}", tm.screen());
+    assert!(tm.screen().contains("| offline | ? help"), "the status line says so too, just before the help:\n{}", tm.screen());
 
     // Nothing hangs: Esc stops the stalled turn, and what arrived is kept.
     tm.keys(&["Escape"]);
@@ -1626,7 +1626,7 @@ fn model_lists_what_is_ready_in_the_background_and_disconnect_asks_first() {
     tm.wait_still(|s| row(s, "claude").is_empty(), Duration::from_secs(15)).unwrap_or_else(|| panic!("claude dropped once its check is back: {}", tm.screen()));
     // What is typed filters the rows.
     tm.keys(&["zzz"]);
-    assert!(tm.wait_for("nothing matches ·  enter  runs /model zzz", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    assert!(tm.wait_for("nothing matches · enter runs /model zzz", Duration::from_secs(5)).is_some(), "{}", tm.screen());
     tm.keys(&["Escape"]);
     std::thread::sleep(Duration::from_millis(300));
     // /disconnect of the built-in asks before it signs the person out of

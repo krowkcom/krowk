@@ -206,21 +206,20 @@ pub fn said_bar() -> Style {
     said_band().fg(Color::Blue)
 }
 
-/// A key to press: white on a dark chip whatever the theme, so the keys a
-/// hint names stand out of the grey it is in.
+/// A key to press: white, so the keys a hint names stand out of the grey
+/// (or the colour) it is in.
 pub fn key() -> Style {
-    Style::new().fg(Color::Indexed(255)).bg(Color::Indexed(238))
+    Style::new().fg(Color::White)
 }
 
 /// A hint whose keys are marked with backticks (`` `esc` closes this ``):
-/// each key a `key()` chip, a space either side of it, the rest in
-/// `style`. The spaces take the backticks' place, so the text is as wide
-/// marked as drawn, and wraps and clips the same.
+/// each key in `key()`, the rest in `style`. What measures the hint
+/// measures it `unmarked`.
 pub fn keys(text: &str, style: Style) -> Vec<Span<'static>> {
     text.split('`')
         .enumerate()
         .filter(|(_, s)| !s.is_empty())
-        .map(|(i, s)| if i % 2 == 1 { Span::styled(format!(" {s} "), key()) } else { Span::styled(s.to_string(), style) })
+        .map(|(i, s)| Span::styled(s.to_string(), if i % 2 == 1 { key() } else { style }))
         .collect()
 }
 
