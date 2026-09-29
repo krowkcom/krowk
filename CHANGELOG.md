@@ -48,6 +48,23 @@ the versions are the `v*` tags a release is cut from. Entries land under
   session's log — follows it there. The relay is `KROWK_RELAY_URL`, or
   `krowk relay serve` on this machine.
 
+- **Sync calls that act as this machine are signed by its own key.**
+  Registering or approving a device, a lease call, writing a session or
+  its log, and asking for a relay ticket now carry `X-Krowk-Device`,
+  `X-Krowk-Timestamp` and `X-Krowk-Signature`, an Ed25519 signature by
+  this machine's signing key. The registry refuses them unsigned, signed by
+  another key, more than five minutes off its clock, or sent twice, so a
+  workspace API key alone can no longer act as one of its devices. A
+  clock more than five minutes out makes these calls fail with
+  `signature_stale`.
+- **A file a session publishes now says what made it.** Besides the session
+  (`krowk.session`), each artifact `publish` pushes records the engine that
+  ran the turn (`krowk.engine`: `krowk`, `claude-code` or
+  `codex-app-server`), the model (`gen_ai.request.model`) and its provider
+  (`gen_ai.system`), so its card on krowk.com can link back to the session
+  with a `krowk --resume` command. A subagent's file names the subagent's
+  model. Nothing from the session's log is sent; the session id, engine,
+  model and provider are, in the clear, even for a synced session.
 - **Setting up sync now registers this machine's relay signing key.**
   `krowk sync init`, `recover` and `register`, and `krowk devices approve`,
   send the public half of the signing key beside the device key, and `krowk

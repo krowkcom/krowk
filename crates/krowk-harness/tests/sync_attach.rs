@@ -88,6 +88,10 @@ struct Device {
     signing: SigningKey,
 }
 
+fn signer(d: &Device) -> Arc<dyn krowk_api::client::RequestSigner> {
+    e2e::DeviceSigner::new(d.key.id(), SigningKey::from_secret(&*d.signing.secret_bytes()).unwrap()).shared()
+}
+
 impl World {
     fn new(name: &str) -> World {
         let root = scratch::root(&format!("sync-{name}"));
@@ -114,9 +118,15 @@ impl World {
         World { root, registry, api, account: AccountKey::generate(), seen, cut, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
     }
 
-    /// A's registry client, through A's own proxy.
-    fn a_client(&self) -> Arc<krowk_api::Client> {
-        let mut c = krowk_api::Client::new(&self.reg_a, "krowk_sk_sync_attach_0000000000000000");
+    /// A device's own registry client: its calls that act as the device
+    /// signed by its key, as the registry requires.
+    fn as_device(&self, d: &Device) -> Arc<krowk_api::Client> {
+        Arc::new(krowk_api::Client::new(&self.api, "krowk_sk_sync_attach_0000000000000000").signed_by(signer(d)))
+    }
+
+    /// A's registry client, through A's own proxy, signed by A.
+    fn a_client(&self, a: &Device) -> Arc<krowk_api::Client> {
+        let mut c = krowk_api::Client::new(&self.reg_a, "krowk_sk_sync_attach_0000000000000000").signed_by(signer(a));
         c.sleep = |_| std::thread::sleep(Duration::from_millis(50));
         Arc::new(c)
     }
@@ -128,7 +138,7 @@ impl World {
     /// A device of the workspace, registered with its signing key.
     fn device(&self, name: &str) -> Device {
         let d = Device { key: DeviceKey::generate(), signing: SigningKey::generate() };
-        self.client().register_device(&e2e::hex(&d.key.public().0), &e2e::hex(&d.signing.public().0), name, &self.account.id().to_string()).unwrap();
+        self.as_device(&d).register_device(&e2e::hex(&d.key.public().0), &e2e::hex(&d.signing.public().0), name, &self.account.id().to_string()).unwrap();
         d
     }
 
@@ -194,7 +204,7 @@ impl World {
         let o = host::Options {
             relay: self.relay_a.clone(),
             env: "development".into(),
-            api: self.a_client(),
+            api: self.a_client(a),
             device: a.key.id(),
             signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
             account: AccountKey::from_bytes(*self.account.as_bytes()),
@@ -239,7 +249,7 @@ impl World {
         viewer::Options {
             relay: self.relay_b.clone(),
             env: "development".into(),
-            api: self.client(),
+            api: self.as_device(b),
             device: b.key.id(),
             signing: SigningKey::from_secret(&*b.signing.secret_bytes()).unwrap(),
             account: AccountKey::from_bytes(*self.account.as_bytes()),
@@ -248,17 +258,22 @@ impl World {
         }
     }
 
-    /// Waits until the session's sealed index names a checkpoint: the
-    /// bridge has taken the session up.
+    /// Waits until the session's sealed index names a checkpoint and a head:
+    /// the bridge has taken the session up and written it.
     async fn synced(&self, session: &str) {
-        let api = self.client();
-        let id = session.to_string();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let (api, account, id) = (self.client(), AccountKey::from_bytes(*self.account.as_bytes()), session.to_string());
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            let (api, id) = (api.clone(), id.clone());
-            let s = tokio::task::spawn_blocking(move || api.show_sync_session(&id)).await.unwrap();
-            if s.is_ok_and(|s| !s.sealed_index.is_empty() && s.lease.is_some()) {
-                tokio::time::sleep(Duration::from_millis(300)).await;
+            let (api, id, account) = (api.clone(), id.clone(), AccountKey::from_bytes(*account.as_bytes()));
+            let ready = tokio::task::spawn_blocking(move || -> Option<bool> {
+                let s = api.show_sync_session(&id).ok()?;
+                let key = e2e::unwrap_session_key(&e2e::unhex(&s.wrapped_key)?, &krowk_harness::daemon::ws::uuid(&id), &account).ok()?;
+                let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index).ok()?;
+                Some(s.lease.is_some() && index.checkpoint.is_some() && index.head.is_some())
+            })
+            .await
+            .unwrap();
+            if ready == Some(true) {
                 return;
             }
             assert!(Instant::now() < deadline, "the bridge never synced the session");
@@ -339,48 +354,55 @@ fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>) -> SocketAddr {
             }
             let mode = mode.clone();
             std::thread::spawn(move || {
-                // One request a connection, so each is judged as it comes.
-                let mut req = Vec::new();
+                // Each request on the connection is judged as it comes and
+                // sent upstream on a connection of its own; the client may
+                // keep this one alive.
                 let mut buf = [0u8; 16384];
-                c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut req = Vec::new();
+                c.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
                 loop {
-                    let Ok(n) = c.read(&mut buf) else { return };
-                    if n == 0 {
+                    let whole = loop {
+                        if let Some(end) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&req[..end]).to_ascii_lowercase();
+                            let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+                            if req.len() >= end + 4 + len {
+                                break Some((end, end + 4 + len));
+                            }
+                        }
+                        match c.read(&mut buf) {
+                            Ok(0) | Err(_) => break None,
+                            Ok(n) => req.extend_from_slice(&buf[..n]),
+                        }
+                    };
+                    let Some((end, total)) = whole else { return };
+                    let one: Vec<u8> = req.drain(..total).collect();
+                    let m = mode.load(Ordering::SeqCst);
+                    if m == CUT {
                         return;
                     }
-                    req.extend_from_slice(&buf[..n]);
-                    let Some(end) = req.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
-                    let head = String::from_utf8_lossy(&req[..end]).to_ascii_lowercase();
-                    let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
-                    if req.len() >= end + 4 + len {
-                        break;
+                    if m == FAIL_WRITES && (one.starts_with(b"POST ") || one.starts_with(b"PUT ")) {
+                        let _ = c.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                        return;
+                    }
+                    // Bytes, not text: a chunk upload's body is ciphertext.
+                    let line = one.windows(2).position(|w| w == b"\r\n").unwrap_or(0);
+                    let head = String::from_utf8_lossy(&one[..end]).to_ascii_lowercase();
+                    let one = if head.contains("\r\nconnection:") { one } else { [&one[..line + 2], b"Connection: close\r\n", &one[line + 2..]].concat() };
+                    let Ok(mut up) = TcpStream::connect(to) else { return };
+                    if up.write_all(&one).is_err() {
+                        return;
+                    }
+                    let mut resp = Vec::new();
+                    let _ = up.read_to_end(&mut resp);
+                    // The answer closes: the client opens another for its next.
+                    if c.write_all(&resp).is_err() {
+                        return;
+                    }
+                    let rhead = resp.windows(4).position(|w| w == b"\r\n\r\n").map(|e| String::from_utf8_lossy(&resp[..e]).to_ascii_lowercase()).unwrap_or_default();
+                    if rhead.contains("connection: close") {
+                        return;
                     }
                 }
-                let m = mode.load(Ordering::SeqCst);
-                if m == CUT {
-                    return;
-                }
-                if m == FAIL_WRITES && (req.starts_with(b"POST ") || req.starts_with(b"PUT ")) {
-                    let _ = c.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
-                    return;
-                }
-                // Asked to close after, so the next request is a connection of its own.
-                // Bytes, not text: the body of a chunk upload is ciphertext.
-                let end = req.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(0);
-                let head = String::from_utf8_lossy(&req[..end]).to_ascii_lowercase();
-                let req = if head.contains("\r\nconnection:") {
-                    req
-                } else {
-                    let line = req.windows(2).position(|w| w == b"\r\n").unwrap_or(0);
-                    [&req[..line + 2], b"Connection: close\r\n", &req[line + 2..]].concat()
-                };
-                let Ok(mut up) = TcpStream::connect(to) else { return };
-                if up.write_all(&req).is_err() {
-                    return;
-                }
-                let mut resp = Vec::new();
-                let _ = up.read_to_end(&mut resp);
-                let _ = c.write_all(&resp);
             });
         }
     });
@@ -742,8 +764,11 @@ async fn r_off_2_a_registry_gone_or_failing_across_a_turn_end_loses_nothing() {
     stop.send(true).unwrap();
     bridge.await.unwrap().unwrap();
     // The next holder reads the whole chain and writes on from it.
-    let (stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
-    w.synced(&session).await;
+    let (stop, _cp, mut bridge) = w.bridge(&a, &session, w.daemon().await);
+    tokio::select! {
+        () = w.synced(&session) => {}
+        r = &mut bridge => panic!("the second bridge ended before it synced: {r:?}"),
+    }
     stop.send(true).unwrap();
     bridge.await.unwrap().expect("a second bridge takes the session up");
 }
@@ -778,11 +803,11 @@ async fn r_sync_2_a_bridge_whose_lease_another_device_took_stops() {
     w.synced(&session).await;
     w.reg_mode.store(CUT, Ordering::SeqCst);
     tokio::time::sleep(Duration::from_secs(11)).await;
-    let (api, id, dev) = (w.client(), session.clone(), c.key.id().to_string());
+    let (api, id, dev) = (w.as_device(&c), session.clone(), c.key.id().to_string());
     tokio::task::spawn_blocking(move || api.acquire_lease(&id, &dev, 60, "development")).await.unwrap().expect("C takes the lapsed lease");
     w.reg_mode.store(PASS, Ordering::SeqCst);
     let ended = tokio::time::timeout(Duration::from_secs(20), bridge).await.expect("the bridge stops").unwrap();
-    assert!(ended.is_err_and(|e| e.contains("lease")), "it says the lease moved");
+    assert!(ended.as_ref().is_err_and(|e| e.contains("lease")), "it says the lease moved: {ended:?}");
 }
 
 /// R-LAG-7, R-LAG-4 over the relay: a session of well over 16 batches —

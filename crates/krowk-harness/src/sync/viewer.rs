@@ -93,6 +93,10 @@ pub enum Update {
 pub struct Options {
     pub relay: String,
     pub env: String,
+    /// Signed by this device (`Client::signed_by` with an
+    /// `e2e::DeviceSigner` of `device` and `signing`): its lease, chunk,
+    /// index and relay-ticket calls act as the device, and a registry
+    /// refuses them unsigned.
     pub api: Arc<Client>,
     pub device: DeviceId,
     pub signing: SigningKey,
@@ -222,7 +226,10 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                     acked = applied;
                     if !super::send(w, ack(&raw, applied)).await { ws = None; }
                 }
-                if !frame.is_empty() {
+                // Never two hand-offs inside one display frame, however late
+                // the last tick ran (R-LAG-7).
+                let last = handed.lock().unwrap_or_else(|e| e.into_inner()).last().copied();
+                if !frame.is_empty() && last.is_none_or(|t| t.elapsed() >= FRAME) {
                     handed.lock().unwrap_or_else(|e| e.into_inner()).push(Instant::now());
                     if out.send(std::mem::take(&mut frame)).await.is_err() { break; }
                 }

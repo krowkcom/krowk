@@ -69,11 +69,13 @@ pub(super) fn approve(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let (Some(device), Some(account)) = (device, account) else {
         return Err(fail("no_account_key", "this machine holds no account key to approve with — set sync up here first: `krowk sync init`, `krowk sync recover` or `krowk sync join`"));
     };
-    let client = keyed_client(ctx, "`krowk devices approve`")?;
     // Registered first, so the registry knows the device the answer is
-    // from; the same key again is the same row.
+    // from; the same key again is the same row. Both calls act as this
+    // device, and are signed by its key.
     let signing = store.signing_key().map_err(|e| fail("sync_setup_failed", e))?;
-    client.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), &device_name(ctx), &account.id().to_string())?;
+    let signing_public = e2e::hex(&signing.public().0);
+    let client = keyed_client(ctx, "`krowk devices approve`")?.signed_by(e2e::DeviceSigner::new(device.id(), signing).shared());
+    client.register_device(&e2e::hex(&device.public().0), &signing_public, &device_name(ctx), &account.id().to_string())?;
     let pending = client.list_device_approvals()?;
     // Each request's code computed here, from both keys it carries — the
     // X25519 key this machine would wrap to and the signing key the approval
