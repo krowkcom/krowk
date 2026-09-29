@@ -71,6 +71,12 @@ impl Home {
         let late = self.late.clone();
         let t = std::thread::spawn(move || {
             let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {
+                // A directory named `slow` takes a second to read, as one
+                // on a slow disk would: a turn there is working, not yet
+                // running, for that long.
+                if cwd.ends_with("slow") {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
                 Ok(HostConfig {
                     sessions_dir: log::sessions_dir(&env).unwrap(),
                     cwd: cwd.to_path_buf(),
@@ -344,6 +350,9 @@ fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
         assert!(grown(&snapshot()) > grown(&first), "the finished item is logged once the stream ends");
     });
     daemon.join().unwrap().unwrap();
+    // The turn's sync ran before the daemon's runtime went: `serve` waits
+    // for it on its way out.
+    assert_eq!(log::pending_syncs(), 0, "a sync was dropped unrun as the daemon exited");
 }
 
 /// The acceptance load (R-LAG-2: one queue per session; R-LAG-3: batches by
@@ -579,10 +588,16 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
         home.lateness();
         c.send(&ClientFrame::Execute { id: 1, command: home.prompt("sleep", PermissionMode::BypassPermissions) }).await;
         let (mut pings, mut rtts, mut asked) = (Vec::new(), Vec::new(), None::<Instant>);
+        // The thread's lateness a beat at a time, so a failure says when in
+        // the turn the thread was held: at its start (the host's setup, the
+        // tool's spawn) or in the middle of the tool's sleep, where the
+        // daemon has nothing to do and only the machine can hold it.
+        let mut when = Vec::new();
         let mut ask = tokio::time::interval(Duration::from_millis(100));
         loop {
             tokio::select! {
                 _ = ask.tick() => {
+                    when.push((started.elapsed(), home.lateness()));
                     if asked.is_none() {
                         c.wire.send(Message::Ping(Vec::new().into())).await.unwrap();
                         asked = Some(Instant::now());
@@ -600,9 +615,11 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
             }
         }
         let took = started.elapsed();
-        let late = home.lateness();
+        when.push((took, home.lateness()));
+        let late = when.iter().map(|(_, l)| *l).max().unwrap();
+        let held: Vec<String> = when.iter().filter(|(_, l)| *l >= Duration::from_millis(5)).map(|(at, l)| format!("{l:?} by {at:?}")).collect();
         assert!(took >= Duration::from_secs(5), "the tool ran its five seconds: {took:?}");
-        assert!(late < Duration::from_millis(30), "the daemon's thread was blocked {late:?} during the turn");
+        assert!(late < Duration::from_millis(30), "the daemon's thread was blocked {late:?} during the turn — held {held:?}");
         let gap = pings.windows(2).map(|w| w[1] - w[0]).max().unwrap();
         let rtt = rtts.iter().max().unwrap();
         eprintln!("{} pings, longest gap {gap:?}; {} pongs, slowest {rtt:?}", pings.len(), rtts.len());
@@ -644,11 +661,15 @@ struct Raw {
 
 impl Raw {
     fn connect(home: &Home) -> Raw {
+        Raw::connect_in(home, &home.repo())
+    }
+
+    fn connect_in(home: &Home, cwd: &Path) -> Raw {
         use std::io::Write;
         let s = std::os::unix::net::UnixStream::connect(home.socket()).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
         let mut raw = Raw { w: s.try_clone().unwrap(), r: std::io::BufReader::new(s), epoch: 0 };
-        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: home.repo().display().to_string(), krowk_version: "test".into(), answers_approvals: false, token: None };
+        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: "test".into(), answers_approvals: false, token: None };
         writeln!(raw.w, "{}", serde_json::to_string(&hello).unwrap()).unwrap();
         match raw.next() {
             ServerFrame::Welcome { epoch, .. } => raw.epoch = epoch,
@@ -891,4 +912,46 @@ fn r_proto_1_nothing_is_said_before_the_token_and_browsers_are_refused() {
         assert!(matches!(&f[0], ServerFrame::Status { id: 3, .. }), "{:?}", f[0]);
     });
     daemon.join().unwrap().unwrap();
+}
+
+/// SIGTERM with a turn running: the daemon takes no new turn — neither one
+/// sent after the signal nor one whose new directory was still being read
+/// when it came (`host_stopping`) — interrupts the running one the way a
+/// person does, so it logs its end, and exits within `SHUTDOWN_GRACE` with
+/// that turn's sync run, not dropped with its runtime (R-LAG-9's syncs off
+/// the thread, made durable).
+#[test]
+fn r_lag_9_a_sigterm_interrupts_the_running_turn_syncs_it_and_takes_no_new_one() {
+    use krowk_harness::protocol::{LogBody, LogEvent, TurnStatus};
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let answer = words(3000);
+    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(2))) };
+    let home = Home::new("sigterm", &m.url);
+    let slow = home.root.join("slow");
+    std::fs::create_dir_all(slow.join(".git")).unwrap();
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    let mut a = Raw::connect(&home);
+    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one") });
+    let mut seen = a.until(|f| delta_text(f).is_some());
+    // A turn in a new directory whose configuration is still being read.
+    let mut b = Raw::connect_in(&home, &slow);
+    b.send(&ClientFrame::Execute { id: 2, command: prompt_in(&home, None, "two") });
+    std::thread::sleep(Duration::from_millis(200));
+    let signalled = Instant::now();
+    assert!(std::process::Command::new("kill").args(["-TERM", &std::process::id().to_string()]).status().unwrap().success());
+    seen.extend(a.until(|f| matches!(f, ServerFrame::Done { id: 1, .. })));
+    let interrupted = seen.iter().any(|f| matches!(f, ServerFrame::Line { line: StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { status: TurnStatus::Interrupted, .. }, .. }), .. }));
+    assert!(interrupted, "the running turn was interrupted and logged its end");
+    // Stopping, and still up while the slow read holds it: a new turn is
+    // refused, and so is the one whose read the signal overtook.
+    a.send(&ClientFrame::Execute { id: 3, command: prompt_in(&home, None, "three") });
+    let refused = |f: &ServerFrame, want: u64| matches!(f, ServerFrame::Done { id, error: Some(e), .. } if *id == want && e.code == "host_stopping");
+    let three = a.until(|f| matches!(f, ServerFrame::Done { id: 3, .. }));
+    assert!(refused(three.last().unwrap(), 3), "{:?}", three.last());
+    let two = b.until(|f| matches!(f, ServerFrame::Done { id: 2, .. }));
+    assert!(refused(two.last().unwrap(), 2), "{:?}", two.last());
+    daemon.join().unwrap().unwrap();
+    assert!(signalled.elapsed() < krowk_harness::host::SHUTDOWN_GRACE, "exited in {:?}", signalled.elapsed());
+    assert_eq!(log::pending_syncs(), 0, "the interrupted turn's sync ran before the daemon exited");
+    drop((a, b));
 }
