@@ -261,6 +261,12 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         }
         (_, ["v1", "sessions", id, "chunks"]) if get => sync::list_chunks(a, req, id, &site(req, &a.site)),
         ("PUT" | "PATCH", ["v1", "sessions", id, "chunks", index, "finalization"]) => sync::signed(a, req, |a, req, by| sync::finalize_chunk(a, req, id, index, by)),
+        ("POST", ["v1", "vintages"]) => {
+            let site = site(req, &a.site);
+            sync::signed(a, req, |a, req, by| sync::declare_vintage(a, req, &site, by))
+        }
+        (_, ["v1", "vintages"]) if get => sync::list_vintages(a, req, &site(req, &a.site)),
+        ("PUT" | "PATCH", ["v1", "vintages", slug, "finalization"]) => sync::signed(a, req, |a, req, by| sync::finalize_vintage(a, req, slug, by)),
         ("POST", ["_reset", "sync"]) => sync::reset(a, req),
         (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
         _ => no_such_endpoint(),

@@ -42,6 +42,10 @@ pub struct Flags {
     pub worktree: String,
     pub all: bool,
     pub thinking: bool,
+    /// `krowk sessions archive`: the idle cut-off in days, and whether to
+    /// run only when a week has passed.
+    pub older_than: String,
+    pub weekly: bool,
     pub max_usd: String,
     pub max_tokens: String,
     /// `-p`: run one prompt headless.
@@ -251,6 +255,7 @@ impl Flags {
             "worktree" => text(&mut self.worktree),
             "max-usd" => text(&mut self.max_usd),
             "max-tokens" => text(&mut self.max_tokens),
+            "older-than" => text(&mut self.older_than),
             #[cfg(feature = "harness")]
             "output-format" => text(&mut self.output_format),
             #[cfg(feature = "harness")]
@@ -302,6 +307,7 @@ impl Flags {
                     "no-network" => &mut self.no_network,
                     "all" => &mut self.all,
                     "thinking" => &mut self.thinking,
+                    "weekly" => &mut self.weekly,
                     #[cfg(feature = "harness")]
                     "print" => &mut self.print,
                     #[cfg(feature = "harness")]
