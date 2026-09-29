@@ -1156,14 +1156,18 @@ fn r_tui_1_a_menu_opened_and_closed_on_a_short_session_puts_nothing_in_scrollbac
         let logo = rows.iter().position(|l| l.contains('▀')).unwrap_or_else(|| panic!("no logo:\n{h}"));
         logo - rows.iter().position(|l| l.trim() == "50").unwrap_or_else(|| panic!("no shell output:\n{h}"))
     };
-    let before = gap(&tm.history());
+    // The model is routed after the header is printed, and its `Model:` row
+    // comes in a later frame: a menu opened in that same frame grows the
+    // region under a printed line, which scrolls instead of taking the blank
+    // rows. Measured once it is in and the TUI has stopped drawing.
+    let before = gap(&tm.wait_still(|s| s.contains("Model:"), Duration::from_secs(10)).unwrap_or_else(|| panic!("the model never routed:\n{}", tm.screen())));
     for _ in 0..3 {
         tm.keys(&["?"]);
-        std::thread::sleep(Duration::from_millis(300));
+        assert!(tm.wait_for("Send the prompt", Duration::from_secs(5)).is_some(), "the help never opened:\n{}", tm.screen());
         tm.keys(&["Escape"]);
-        std::thread::sleep(Duration::from_millis(300));
+        assert!(tm.wait_gone("Send the prompt", Duration::from_secs(5)).is_some(), "the help never closed:\n{}", tm.screen());
     }
-    let history = tm.history();
+    let history = tm.wait_still(|s| s.lines().nth_back(1).is_some_and(|l| l.contains("? help")), Duration::from_secs(5)).unwrap_or_else(|| panic!("never settled:\n{}", tm.screen()));
     assert_eq!(gap(&history), before, "rows between the shell's output and the logo:\n{history}");
     let screen = tm.screen();
     assert!(screen.lines().nth_back(1).is_some_and(|l| l.contains("? help")), "the status line on the last rows:\n{screen}");
