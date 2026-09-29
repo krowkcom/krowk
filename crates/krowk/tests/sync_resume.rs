@@ -26,7 +26,6 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
     std::fs::create_dir_all(&root).unwrap();
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
     let api_url = format!("{}/v1", registry.url());
-    let api = Arc::new(krowk_api::Client::new(&api_url, TOKEN));
     let relay = TcpListener::bind("127.0.0.1:0").unwrap();
     let relay_url = format!("ws://{}", relay.local_addr().unwrap());
     let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
@@ -36,6 +35,8 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
     // Machine A wrote the session to the registry and went away.
     let account = AccountKey::generate();
     let (a, a_signing) = (DeviceKey::generate(), SigningKey::generate());
+    // A's calls act as A, signed by its key.
+    let api = Arc::new(krowk_api::Client::new(&api_url, TOKEN).signed_by(e2e::DeviceSigner::new(a.id(), SigningKey::from_secret(&*a_signing.secret_bytes()).unwrap()).shared()));
     api.register_device(&e2e::hex(&a.public().0), &e2e::hex(&a_signing.public().0), "machine-a", &account.id().to_string()).unwrap();
     let id = "01a0ec7b-1111-7000-8000-000000000019".to_string();
     let raw = krowk_harness::daemon::ws::uuid(&id);
@@ -56,7 +57,8 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
     ks.recover(AccountKey::from_bytes(*account.as_bytes())).unwrap();
     let b = ks.device().unwrap().unwrap();
     let b_signing = ks.signing_key().unwrap();
-    api.register_device(&e2e::hex(&b.public().0), &e2e::hex(&b_signing.public().0), "machine-b", &account.id().to_string()).unwrap();
+    let b_api = krowk_api::Client::new(&api_url, TOKEN).signed_by(e2e::DeviceSigner::new(b.id(), SigningKey::from_secret(&*b_signing.secret_bytes()).unwrap()).shared());
+    b_api.register_device(&e2e::hex(&b.public().0), &e2e::hex(&b_signing.public().0), "machine-b", &account.id().to_string()).unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_krowk"))
         .args(["--resume", &id])

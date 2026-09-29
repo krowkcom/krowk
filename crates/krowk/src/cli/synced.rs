@@ -17,7 +17,7 @@
 
 use super::sync::{keyed_client, keystore};
 use super::Ctx;
-use krowk_api::{fail, Error};
+use krowk_api::{fail, Client, Error};
 use krowk_client::e2e::{AccountKey, DeviceId, SigningKey};
 use krowk_harness::sync::{host, viewer};
 use serde_json::json;
@@ -35,6 +35,13 @@ fn keys(ctx: &Ctx) -> Result<Keys, Error> {
     let account = ks.account().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine holds no account key — run `krowk sync join` or `recover` first"))?;
     let signing = ks.signing_key().map_err(|e| fail("keys_unreadable", e))?;
     Ok(Keys { device, signing, account })
+}
+
+/// The registry client for this machine's sync calls, signed by its own
+/// key: leases, chunks, the index and relay tickets act as this device.
+fn signed(ctx: &Ctx, k: &Keys, what: &str) -> Result<Client, Error> {
+    let key = SigningKey::from_secret(&*k.signing.secret_bytes()).map_err(|e| fail("keys_unreadable", e.to_string()))?;
+    Ok(keyed_client(ctx, what)?.signed_by(krowk_client::e2e::DeviceSigner::new(k.device, key).shared()))
 }
 
 fn relay(ctx: &Ctx) -> String {
@@ -70,7 +77,7 @@ pub(super) fn sessions(ctx: &mut Ctx) -> Result<(), Error> {
 pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let session = one(args, "host")?;
     let k = keys(ctx)?;
-    let api = Arc::new(keyed_client(ctx, "krowk sync host")?);
+    let api = Arc::new(signed(ctx, &k, "krowk sync host")?);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let spawn = super::host::spawner(ctx)?;
@@ -81,7 +88,7 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
 pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let session = one(args, "attach")?;
     let k = keys(ctx)?;
-    let api = Arc::new(keyed_client(ctx, "krowk sync attach")?);
+    let api = Arc::new(signed(ctx, &k, "krowk sync attach")?);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let o = viewer::Options { relay: relay(ctx), env, api, device: k.device, signing: k.signing, account: k.account, session: session.clone(), known: None };
     krowk_harness::sync::run_attach(o, &mut *ctx.io.stdout).map_err(|e| fail("sync_failed", e))

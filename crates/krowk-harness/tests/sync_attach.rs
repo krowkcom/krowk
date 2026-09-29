@@ -88,6 +88,10 @@ struct Device {
     signing: SigningKey,
 }
 
+fn signer(d: &Device) -> Arc<dyn krowk_api::client::RequestSigner> {
+    e2e::DeviceSigner::new(d.key.id(), SigningKey::from_secret(&*d.signing.secret_bytes()).unwrap()).shared()
+}
+
 impl World {
     fn new(name: &str) -> World {
         let root = scratch::root(&format!("sync-{name}"));
@@ -114,9 +118,15 @@ impl World {
         World { root, registry, api, account: AccountKey::generate(), seen, cut, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
     }
 
-    /// A's registry client, through A's own proxy.
-    fn a_client(&self) -> Arc<krowk_api::Client> {
-        let mut c = krowk_api::Client::new(&self.reg_a, "krowk_sk_sync_attach_0000000000000000");
+    /// A device's own registry client: its calls that act as the device
+    /// signed by its key, as the registry requires.
+    fn as_device(&self, d: &Device) -> Arc<krowk_api::Client> {
+        Arc::new(krowk_api::Client::new(&self.api, "krowk_sk_sync_attach_0000000000000000").signed_by(signer(d)))
+    }
+
+    /// A's registry client, through A's own proxy, signed by A.
+    fn a_client(&self, a: &Device) -> Arc<krowk_api::Client> {
+        let mut c = krowk_api::Client::new(&self.reg_a, "krowk_sk_sync_attach_0000000000000000").signed_by(signer(a));
         c.sleep = |_| std::thread::sleep(Duration::from_millis(50));
         Arc::new(c)
     }
@@ -128,7 +138,7 @@ impl World {
     /// A device of the workspace, registered with its signing key.
     fn device(&self, name: &str) -> Device {
         let d = Device { key: DeviceKey::generate(), signing: SigningKey::generate() };
-        self.client().register_device(&e2e::hex(&d.key.public().0), &e2e::hex(&d.signing.public().0), name, &self.account.id().to_string()).unwrap();
+        self.as_device(&d).register_device(&e2e::hex(&d.key.public().0), &e2e::hex(&d.signing.public().0), name, &self.account.id().to_string()).unwrap();
         d
     }
 
@@ -194,7 +204,7 @@ impl World {
         let o = host::Options {
             relay: self.relay_a.clone(),
             env: "development".into(),
-            api: self.a_client(),
+            api: self.a_client(a),
             device: a.key.id(),
             signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
             account: AccountKey::from_bytes(*self.account.as_bytes()),
@@ -213,7 +223,7 @@ impl World {
         viewer::Options {
             relay: self.relay_b.clone(),
             env: "development".into(),
-            api: self.client(),
+            api: self.as_device(b),
             device: b.key.id(),
             signing: SigningKey::from_secret(&*b.signing.secret_bytes()).unwrap(),
             account: AccountKey::from_bytes(*self.account.as_bytes()),
@@ -767,7 +777,7 @@ async fn r_sync_2_a_bridge_whose_lease_another_device_took_stops() {
     w.synced(&session).await;
     w.reg_mode.store(CUT, Ordering::SeqCst);
     tokio::time::sleep(Duration::from_secs(11)).await;
-    let (api, id, dev) = (w.client(), session.clone(), c.key.id().to_string());
+    let (api, id, dev) = (w.as_device(&c), session.clone(), c.key.id().to_string());
     tokio::task::spawn_blocking(move || api.acquire_lease(&id, &dev, 60, "development")).await.unwrap().expect("C takes the lapsed lease");
     w.reg_mode.store(PASS, Ordering::SeqCst);
     let ended = tokio::time::timeout(Duration::from_secs(20), bridge).await.expect("the bridge stops").unwrap();

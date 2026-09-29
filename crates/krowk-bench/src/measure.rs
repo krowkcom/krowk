@@ -207,10 +207,11 @@ pub fn remote_attach(runs: usize) -> Outcome {
         Ok(r) => r,
         Err(e) => return Outcome::Error(e.to_string()),
     };
-    let api = std::sync::Arc::new(krowk_api::Client::new(&format!("{}/v1", reg.url()), "krowk_sk_bench_remote_attach_000000000"));
     let account = AccountKey::generate();
     let device = DeviceKey::generate();
     let signing = e2e::SigningKey::generate();
+    let signer = e2e::DeviceSigner::new(device.id(), e2e::SigningKey::from_secret(&*signing.secret_bytes()).expect("a key")).shared();
+    let api = std::sync::Arc::new(krowk_api::Client::new(&format!("{}/v1", reg.url()), "krowk_sk_bench_remote_attach_000000000").signed_by(signer));
     let setup = || -> Result<(String, SessionKey), String> {
         api.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), "bench", &account.id().to_string()).map_err(|e| e.to_string())?;
         let id = "01a0ec7b-0000-7000-8000-00000000be0c".to_string();

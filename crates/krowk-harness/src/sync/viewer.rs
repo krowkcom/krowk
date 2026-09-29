@@ -89,6 +89,10 @@ pub enum Update {
 pub struct Options {
     pub relay: String,
     pub env: String,
+    /// Signed by this device (`Client::signed_by` with an
+    /// `e2e::DeviceSigner` of `device` and `signing`): its lease, chunk,
+    /// index and relay-ticket calls act as the device, and a registry
+    /// refuses them unsigned.
     pub api: Arc<Client>,
     pub device: DeviceId,
     pub signing: SigningKey,
