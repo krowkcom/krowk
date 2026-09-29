@@ -38,7 +38,7 @@ const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/
 /// Every test, its devices and its session: `<test>-host` holds the lease
 /// of session `<test>`, `<test>-viewer` and `<test>-viewer2` watch it, all
 /// in workspace A.
-const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle"];
+const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs"];
 
 /// How long anything the relay should answer may take, and how long to
 /// wait to be sure nothing comes.
@@ -294,8 +294,14 @@ fn origin() -> String {
 
 /// Dials `test`'s channel and reads the challenge.
 async fn dial(test: &str) -> (Conn, Value) {
+    dial_env(test, None).await
+}
+
+/// Dials `test`'s channel under an env (`?env=`), or none for production.
+async fn dial_env(test: &str, env: Option<&str>) -> (Conn, Value) {
     let sid = session_id(test);
-    let (ws, _) = tokio_tungstenite::connect_async(format!("{}/v1/relay/{sid}", relay_url())).await.expect("the relay accepts a WebSocket");
+    let query = env.map_or(String::new(), |e| format!("?env={e}"));
+    let (ws, _) = tokio_tungstenite::connect_async(format!("{}/v1/relay/{sid}{query}", relay_url())).await.expect("the relay accepts a WebSocket");
     let session = krowk_harness::daemon::ws::uuid(&sid);
     let mut c = Conn { ws, session };
     let challenge = c.control().await;
@@ -315,16 +321,18 @@ struct As<'a> {
     /// Sign with another device's key, or for another origin.
     key_of: Option<&'a str>,
     origin: Option<&'a str>,
+    /// The env dialed and named in the join; None for neither.
+    env: Option<&'a str>,
 }
 
 fn host(test: &str) -> As<'static> {
     let name: &'static str = Box::leak(format!("{test}-host").into_boxed_str());
-    As { name, role: RELAY_ROLE_HOST, fence: Some(fence(test)), stream: Some(stream_id(test, 1)), after: None, key_of: None, origin: None }
+    As { name, role: RELAY_ROLE_HOST, fence: Some(fence(test)), stream: Some(stream_id(test, 1)), after: None, key_of: None, origin: None, env: None }
 }
 
 fn viewer(test: &str, which: &str) -> As<'static> {
     let name: &'static str = Box::leak(format!("{test}-{which}").into_boxed_str());
-    As { name, role: RELAY_ROLE_VIEWER, fence: None, stream: None, after: None, key_of: None, origin: None }
+    As { name, role: RELAY_ROLE_VIEWER, fence: None, stream: None, after: None, key_of: None, origin: None, env: None }
 }
 
 fn stream_id(test: &str, n: u8) -> [u8; 16] {
@@ -332,7 +340,7 @@ fn stream_id(test: &str, n: u8) -> [u8; 16] {
 }
 
 async fn join_as(test: &str, a: &As<'_>) -> (Conn, Value) {
-    let (mut c, challenge) = dial(test).await;
+    let (mut c, challenge) = dial_env(test, a.env).await;
     let nonce: [u8; 32] = e2e::unhex(challenge["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
     let key = SigningKey::from_secret(&seed(a.key_of.unwrap_or(a.name))).unwrap();
     let dialed = origin();
@@ -346,6 +354,9 @@ async fn join_as(test: &str, a: &As<'_>) -> (Conn, Value) {
     }
     if let Some(n) = a.after {
         join["afterSeq"] = n.into();
+    }
+    if let Some(e) = a.env {
+        join["env"] = e.into();
     }
     c.send_control(join).await;
     let answer = c.control().await;
@@ -911,4 +922,52 @@ async fn r_lag_6_the_ring_buffer_survives_an_idle_channel() {
     }
     h.batch(17).await;
     v.batch_in(17).await;
+}
+
+/// R-RELAY-1: a session's channel is named by its env as well as its id, so
+/// the same session joined as "development" and as "production" (or with no
+/// env, which is production) is two channels that share no host, buffer or
+/// viewer; an env that is neither, or a join naming another env than it
+/// was dialed with, is refused.
+#[tokio::test]
+async fn r_relay_1_the_same_session_under_two_envs_is_two_channels() {
+    let t = "envs";
+    let dev = |a: As<'static>| As { env: Some("development"), ..a };
+    let (mut prod_host, _) = joined(t, &host(t)).await;
+    for seq in 1..=8 {
+        prod_host.batch(seq).await;
+    }
+    prod_host.acked(8).await;
+    let (mut dev_viewer, j) = joined(t, &dev(viewer(t, "viewer"))).await;
+    assert_eq!((j["host"].as_bool(), j["seq"].as_u64(), j["stream"].is_null()), (Some(false), Some(0), true), "development sees nothing of production: {j}");
+    let (mut prod_viewer, j) = joined(t, &As { env: Some("production"), stream: Some(stream_id(t, 1)), after: Some(4), ..viewer(t, "viewer2") }).await;
+    assert_eq!(j["seq"], 8, "an explicit production is the same channel as none: {j}");
+    for seq in 5..=8 {
+        prod_viewer.batch_in(seq).await;
+    }
+    // A development host of its own, on its own stream, reaches only the
+    // development viewer, and replaces nobody.
+    let (mut dev_host, j) = joined(t, &As { stream: Some(stream_id(t, 2)), ..dev(host(t)) }).await;
+    assert_eq!(j["seq"], 0, "{j}");
+    // The viewer joined before any stream, so it is told of this one.
+    assert_eq!(dev_viewer.expect("resync").await["reason"], "stream");
+    dev_host.batch(1).await;
+    dev_viewer.batch_in(1).await;
+    prod_viewer.quiet().await;
+    prod_host.batch(9).await;
+    prod_viewer.batch_in(9).await;
+    dev_viewer.quiet().await;
+    // Neither name, or another env than the URL's, is not a join.
+    refused_join(t, &As { env: Some("staging"), ..viewer(t, "viewer") }, "bad_join").await;
+    let (mut c, challenge) = dial_env(t, Some("development")).await;
+    let nonce: [u8; 32] = e2e::unhex(challenge["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let key = SigningKey::from_secret(&seed("envs-viewer")).unwrap();
+    let sig = key.sign_relay_join(RELAY_ROLE_VIEWER, &c.session, &nonce, &device_id("envs-viewer"), &origin()).unwrap();
+    c.send_control(json!({"type": "join", "role": "viewer", "device": device_id("envs-viewer").to_string(), "signature": e2e::hex(&sig), "env": "production"})).await;
+    c.refused("bad_join").await;
+    let (mut c, challenge) = dial(t).await;
+    let nonce: [u8; 32] = e2e::unhex(challenge["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let sig = key.sign_relay_join(RELAY_ROLE_VIEWER, &c.session, &nonce, &device_id("envs-viewer"), &origin()).unwrap();
+    c.send_control(json!({"type": "join", "role": "viewer", "device": device_id("envs-viewer").to_string(), "signature": e2e::hex(&sig), "env": 1})).await;
+    c.refused("bad_join").await;
 }

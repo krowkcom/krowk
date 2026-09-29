@@ -434,6 +434,30 @@
       "revoked": false
     },
     {
+      "name": "envs-host",
+      "id": "f78f952a4ce010c4e353685a4498b96c",
+      "seed": "dd33436ed7c48ddd8c61f392e1995b67fa4f45e6f4321529541772487d358a4e",
+      "signingKey": "f38f6af4db3e47ae438544dd192ee6e3f942e538eab14cfe01bb23382bad1b8f",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "envs-viewer",
+      "id": "90ae1427d36f70f08a1d92b3e660e5ca",
+      "seed": "45670a3b9c8d42df08a70928aa753bedd67408909a22a3b3f1058c76caafb9dd",
+      "signingKey": "f4a1aabda9ec01e88759a7aadc49e85e42bd88a3f911fdffbfb3b29a926ba81a",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "envs-viewer2",
+      "id": "e7e83c336237c502e04fd869977b3ab3",
+      "seed": "43f5be2a72612afa4a378b9c5a05f5dd59b5cc6d925b77bcddba3f6ec78c1fe5",
+      "signingKey": "290182060341a6d7056612661e827618ea6d008aefa9b67faa1f84946030fde1",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
       "name": "outsider",
       "id": "efc5fa16d87af0fe9215049762a334ac",
       "seed": "238e38bd09339bbfe7d2ce99c28792a6f411ea15b4aa219c9f6845c00740036c",
@@ -576,6 +600,13 @@
       "workspace": "ws_conformance_a",
       "holder": "cb5f451aef58b6b4df2f7b4f6915fcb2",
       "fence": 241
+    },
+    {
+      "name": "envs",
+      "id": "ed30b1b6-ecc4-7372-acb7-33ec89ec0d1a",
+      "workspace": "ws_conformance_a",
+      "holder": "f78f952a4ce010c4e353685a4498b96c",
+      "fence": 105
     }
   ],
   "unregistered": [

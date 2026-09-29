@@ -129,6 +129,51 @@ impl Default for Limits {
     }
 }
 
+/// Which relay environment a connection is of (relay.md → Joining, `env`):
+/// dialed as `?env=` and repeated in the join, "production" when absent.
+/// A channel is named by the env and the session, so the two never share a
+/// channel, a buffer or a viewer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Env {
+    Production,
+    Development,
+}
+
+impl Env {
+    /// None for anything but the two names; absent is production.
+    pub fn parse(s: Option<&str>) -> Option<Env> {
+        match s {
+            None | Some("production") => Some(Env::Production),
+            Some("development") => Some(Env::Development),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Env::Production => "production",
+            Env::Development => "development",
+        }
+    }
+}
+
+/// A channel's name: its env and its session.
+type Key = (Env, [u8; 16]);
+
+/// What the upgrade request said: the session, the `Host`, and the env.
+type Dialed = (Option<[u8; 16]>, String, Option<Env>);
+
+/// One structured line per join and per refusal, and nothing a device sent
+/// in it: no session, no device, no payload.
+fn record(event: &str, env: Option<Env>, role: Option<u8>, outcome: &str) {
+    let role = match role {
+        Some(RELAY_ROLE_HOST) => Value::from("host"),
+        Some(_) => Value::from("viewer"),
+        None => Value::Null,
+    };
+    eprintln!("{}", json!({"event": event, "env": env.map_or("invalid", Env::as_str), "role": role, "outcome": outcome}));
+}
+
 /// The largest whole number a JSON field carries: what a JavaScript number
 /// holds exactly (relay.md → Joining).
 pub const MAX_JSON_INT: u64 = (1 << 53) - 1;
@@ -183,7 +228,7 @@ pub async fn serve(listener: TcpListener, config: Config) {
 
 struct Relay {
     config: Config,
-    channels: RefCell<HashMap<[u8; 16], Channel>>,
+    channels: RefCell<HashMap<Key, Channel>>,
     /// Connections not yet joined, oldest first. At any cap the oldest
     /// is let go to make room, never the newcomer refused: someone
     /// holding connections open must then outpace honest clients, who
@@ -196,7 +241,7 @@ struct Relay {
 struct Pending {
     id: u64,
     peer: std::net::IpAddr,
-    session: Option<[u8; 16]>,
+    session: Option<Key>,
     kill: Rc<tokio::sync::Notify>,
 }
 
@@ -227,7 +272,7 @@ impl Relay {
     }
 
     /// Its channel, once the upgrade names it: room made there too.
-    fn names(&self, id: u64, session: [u8; 16]) {
+    fn names(&self, id: u64, session: Key) {
         if self.pending.borrow().iter().filter(|p| p.session == Some(session)).count() >= self.config.limits.unjoined_per_channel {
             self.evict(|p| p.session == Some(session));
         }
@@ -324,6 +369,8 @@ struct Viewer {
 struct Link {
     id: u64,
     device: DeviceId,
+    /// The env it joined under, recorded with it.
+    env: Env,
     tx: mpsc::UnboundedSender<Message>,
     queued: Rc<Cell<usize>>,
     limit: usize,
@@ -419,12 +466,13 @@ async fn connection(stream: TcpStream, peer: std::net::IpAddr, relay: Rc<Relay>)
     let left = Rc::new(Cell::new(limits.prejoin_bytes));
     let joined = handshake(Metered { inner: stream, left: left.clone() }, &relay, pending, &kill).await;
     relay.done(pending);
-    let Some((ws, session, device, role, join)) = joined else { return };
+    let Some((ws, key, device, role, join)) = joined else { return };
+    let session = key;
     left.set(usize::MAX);
     let (tx, rx) = mpsc::unbounded_channel();
     let id = relay.links.get() + 1;
     relay.links.set(id);
-    let link = Rc::new(Link { id, device, tx, queued: Rc::default(), limit: relay.config.limits.link_queue });
+    let link = Rc::new(Link { id, device, env: key.0, tx, queued: Rc::default(), limit: relay.config.limits.link_queue });
     let (sink, incoming) = ws.split();
     let writer = tokio::task::spawn_local(write(sink, rx, link.queued.clone()));
     enter(&relay, session, &link, role, join);
@@ -441,12 +489,12 @@ async fn close(ws: &mut Ws, r: &Refusal) {
 }
 
 /// The WebSocket handshake, the challenge and the join.
-async fn handshake(stream: Metered, relay: &Rc<Relay>, pending: u64, kill: &tokio::sync::Notify) -> Option<(Ws, [u8; 16], DeviceId, u8, Join)> {
+async fn handshake(stream: Metered, relay: &Rc<Relay>, pending: u64, kill: &tokio::sync::Notify) -> Option<(Ws, Key, DeviceId, u8, Join)> {
     use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
     let _ = stream.inner.set_nodelay(true);
     let limits = &relay.config.limits;
     let config = WebSocketConfig::default().max_message_size(Some(limits.max_message)).max_frame_size(Some(limits.max_message));
-    let seen: Rc<RefCell<(Option<[u8; 16]>, String)>> = Rc::default();
+    let seen: Rc<RefCell<Dialed>> = Rc::default();
     let into = seen.clone();
     #[allow(clippy::result_large_err)]
     let route = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
@@ -457,7 +505,10 @@ async fn handshake(stream: Metered, relay: &Rc<Relay>, pending: u64, kill: &toki
             *refused.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::NOT_FOUND;
             return Err(refused);
         };
-        *into.borrow_mut() = (Some(session), host);
+        // The env it is dialed under routes it; one the relay does not know
+        // is refused as a bad join once the challenge is out.
+        let env = Env::parse(req.uri().query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("env="))));
+        *into.borrow_mut() = (Some(session), host, env);
         Ok(resp)
     };
     let upgrade = tokio::time::timeout(limits.upgrade_wait, tokio_tungstenite::accept_hdr_async_with_config(stream, route, Some(config)));
@@ -465,20 +516,28 @@ async fn handshake(stream: Metered, relay: &Rc<Relay>, pending: u64, kill: &toki
         _ = kill.notified() => return None,
         r = upgrade => r.ok()?.ok()?,
     };
-    let (session, host) = seen.borrow().clone();
+    let (session, host, env) = seen.borrow().clone();
     let session = session?;
-    relay.names(pending, session);
-    let result = challenge(&mut ws, relay, session, &host, kill).await;
+    // An unknown env is held with production's pending connections until
+    // its join is refused, so it can take no other channel's room.
+    relay.names(pending, (env.unwrap_or(Env::Production), session));
+    let result = challenge(&mut ws, relay, session, env, &host, kill).await;
     let (device, role, join) = result?;
-    Some((ws, session, device, role, join))
+    Some((ws, (env?, session), device, role, join))
+}
+
+/// A refusal before the join, recorded.
+async fn refused(ws: &mut Ws, env: Option<Env>, r: &Refusal) {
+    record("join", env, None, r.code);
+    close(ws, r).await;
 }
 
 /// The challenge, and the join that answers it.
-async fn challenge(ws: &mut Ws, relay: &Rc<Relay>, session: [u8; 16], host: &str, kill: &tokio::sync::Notify) -> Option<(DeviceId, u8, Join)> {
+async fn challenge(ws: &mut Ws, relay: &Rc<Relay>, session: [u8; 16], env: Option<Env>, host: &str, kill: &tokio::sync::Notify) -> Option<(DeviceId, u8, Join)> {
     let limits = &relay.config.limits;
     let given = relay.config.origin.clone().unwrap_or_else(|| format!("ws://{host}"));
     let Some(origin) = e2e::canonical_origin(&given) else {
-        close(ws, &refuse("bad_origin", format!("{given:?} is no origin a device can sign"), "dial the relay by a host name or address, or start it with --origin")).await;
+        refused(ws, env, &refuse("bad_origin", format!("{given:?} is no origin a device can sign"), "dial the relay by a host name or address, or start it with --origin")).await;
         return None;
     };
     let nonce: [u8; 32] = e2e::random();
@@ -489,44 +548,57 @@ async fn challenge(ws: &mut Ws, relay: &Rc<Relay>, session: [u8; 16], host: &str
     let join = loop {
         let next = tokio::select! {
             _ = kill.notified() => {
-                close(ws, &refuse("join_timeout", "the oldest connection not yet joined made way for a newer one", "send the join as soon as the challenge arrives")).await;
+                refused(ws, env, &refuse("join_timeout", "the oldest connection not yet joined made way for a newer one", "send the join as soon as the challenge arrives")).await;
                 return None;
             }
             r = tokio::time::timeout_at(deadline, ws.next()) => r,
         };
         match next {
             Err(_) => {
-                close(ws, &refuse("join_timeout", "no join arrived in time", "send the join within ten seconds of the challenge")).await;
+                refused(ws, env, &refuse("join_timeout", "no join arrived in time", "send the join within ten seconds of the challenge")).await;
                 return None;
             }
             Ok(Some(Ok(Message::Binary(b)))) => break b,
             Ok(Some(Ok(Message::Text(t)))) if t.as_str() == "ping" => {
                 pings += 1;
                 if pings > limits.prejoin_pings {
-                    close(ws, &refuse("rate_limited", "more heartbeats than a join takes to sign", "join, then beat")).await;
+                    refused(ws, env, &refuse("rate_limited", "more heartbeats than a join takes to sign", "join, then beat")).await;
                     return None;
                 }
                 let _ = ws.send(Message::Text("pong".into())).await;
             }
             Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
             Ok(Some(Err(_))) => {
-                close(ws, &refuse("too_large", format!("at most {} bytes may come before the join", limits.prejoin_bytes), "send the join, at most 64 KiB, and nothing larger before it")).await;
+                refused(ws, env, &refuse("too_large", format!("at most {} bytes may come before the join", limits.prejoin_bytes), "send the join, at most 64 KiB, and nothing larger before it")).await;
                 return None;
             }
             Ok(Some(Ok(_))) => {
-                close(ws, &refuse("not_joined", "the first message after the challenge must be a join", "answer the challenge with a join control message")).await;
+                refused(ws, env, &refuse("not_joined", "the first message after the challenge must be a join", "answer the challenge with a join control message")).await;
                 return None;
             }
             Ok(_) => return None,
         }
     };
     let parsed = if join.len() > limits.max_control { Err(refuse("too_large", "a join is at most 64 KiB", "send a join, nothing larger")) } else { read_join(&join) };
-    match parsed.and_then(|j| admit(relay, session, &nonce, &origin, j)) {
+    let role = parsed.as_ref().ok().map(|j| j.role);
+    let checked = parsed.and_then(|j| {
+        // The join names the env it was dialed under, absent meaning
+        // production on both sides; anything else is not a join.
+        match (env, j.env) {
+            (Some(dialed), Some(said)) if dialed == said => Ok(j),
+            _ => Err(refuse("bad_join", "the join's env is not \"production\" or \"development\", or not the one its URL was dialed with", "dial ?env= and send env alike: \"production\" or \"development\", or neither for production")),
+        }
+    });
+    match checked.and_then(|j| admit(relay, (env.unwrap_or(Env::Production), session), &nonce, &origin, j)) {
         Err(r) => {
+            record("join", env, role, r.code);
             close(ws, &r).await;
             None
         }
-        Ok(found) => Some(found),
+        Ok(found) => {
+            record("join", env, Some(found.1), "joined");
+            Some(found)
+        }
     }
 }
 
@@ -538,6 +610,9 @@ struct Join {
     fence: Option<u64>,
     stream: Option<[u8; 16]>,
     after: Option<u64>,
+    /// `env`: None for a value that is neither name, refused once the
+    /// dialed env is known to compare it with.
+    env: Option<Env>,
 }
 
 fn read_join(b: &[u8]) -> Result<Join, Refusal> {
@@ -572,7 +647,12 @@ fn read_join(b: &[u8]) -> Result<Join, Refusal> {
         None => None,
         Some(s) => Some(s.as_u64().filter(|n| *n <= MAX_JSON_INT).ok_or_else(|| bad("has a fence that is not a whole number up to 2^53 - 1"))?),
     };
-    Ok(Join { role, device, signature, fence, stream, after })
+    let env = match v.get("env") {
+        None | Some(Value::Null) => Env::parse(None),
+        Some(Value::String(e)) => Env::parse(Some(e)),
+        Some(_) => None,
+    };
+    Ok(Join { role, device, signature, fence, stream, after, env })
 }
 
 /// Who may join: a device the roster knows, not revoked, whose signature
@@ -583,7 +663,8 @@ fn read_join(b: &[u8]) -> Result<Join, Refusal> {
 /// back in. The lease token stays between the holder and the registry: a
 /// relay never needs it, so never holds it. Checked in that order, so a
 /// device the relay does not trust learns nothing about the session.
-fn admit(relay: &Relay, session: [u8; 16], nonce: &[u8; 32], origin: &str, j: Join) -> Result<(DeviceId, u8, Join), Refusal> {
+fn admit(relay: &Relay, key: Key, nonce: &[u8; 32], origin: &str, j: Join) -> Result<(DeviceId, u8, Join), Refusal> {
+    let session = key.1;
     let ring = &relay.config.roster;
     let Some(device) = ring.device(&j.device) else {
         return Err(refuse("unknown_device", format!("device {} is not one this relay trusts", j.device), "register the device (krowk sync init, or krowk sync join and approve it), then connect again"));
@@ -601,7 +682,7 @@ fn admit(relay: &Relay, session: [u8; 16], nonce: &[u8; 32], origin: &str, j: Jo
     };
     let limits = &relay.config.limits;
     let mut channels = relay.channels.borrow_mut();
-    let channel = channels.entry(session).or_default();
+    let channel = channels.entry(key).or_default();
     if !channel.device_joins.entry(j.device.0).or_default().take(limits.joins_per_device) {
         return Err(refuse("rate_limited", format!("device {} joined this session more than {} times this minute", j.device, limits.joins_per_device), "wait a minute, and reconnect with backoff"));
     }
@@ -629,7 +710,7 @@ fn admit(relay: &Relay, session: [u8; 16], nonce: &[u8; 32], origin: &str, j: Jo
 }
 
 /// Puts a joined link on its channel, and says so.
-fn enter(relay: &Relay, session: [u8; 16], link: &Rc<Link>, role: u8, j: Join) {
+fn enter(relay: &Relay, session: Key, link: &Rc<Link>, role: u8, j: Join) {
     let mut channels = relay.channels.borrow_mut();
     // A channel nobody has been on for a while is forgotten, its buffer
     // with it: a host coming back starts it afresh.
@@ -726,7 +807,7 @@ async fn write(mut sink: futures_util::stream::SplitSink<Ws, Message>, mut rx: m
 }
 
 /// Reads a joined link until it goes, answering heartbeats itself.
-async fn read(mut incoming: futures_util::stream::SplitStream<Ws>, relay: Rc<Relay>, session: [u8; 16], link: Rc<Link>, role: u8) {
+async fn read(mut incoming: futures_util::stream::SplitStream<Ws>, relay: Rc<Relay>, session: Key, link: Rc<Link>, role: u8) {
     let limits = relay.config.limits.clone();
     let (mut messages, mut bytes) = if role == RELAY_ROLE_HOST { (Bucket::new(limits.host_messages), Bucket::new(limits.host_bytes)) } else { (Bucket::new(limits.viewer_messages), Bucket::new(limits.viewer_bytes)) };
     let pinger = {
@@ -782,6 +863,7 @@ async fn read(mut incoming: futures_util::stream::SplitStream<Ws>, relay: Rc<Rel
     };
     pinger.abort();
     if let Some(r) = refusal {
+        record("refusal", Some(link.env), Some(role), r.code);
         link.control(r.json());
         link.send(Message::Close(Some(CloseFrame { code: CloseCode::Policy, reason: r.code.into() })));
     }
@@ -802,9 +884,10 @@ fn sealed(e: &Envelope, session: [u8; 16]) -> Result<(), Refusal> {
     Ok(())
 }
 
-fn from_host(relay: &Relay, session: [u8; 16], link: &Rc<Link>, e: Envelope, raw: &[u8], sent: &mut u64) -> Result<(), Refusal> {
+fn from_host(relay: &Relay, key: Key, link: &Rc<Link>, e: Envelope, raw: &[u8], sent: &mut u64) -> Result<(), Refusal> {
+    let session = key.1;
     let mut channels = relay.channels.borrow_mut();
-    let ch = channels.get_mut(&session).expect("joined");
+    let ch = channels.get_mut(&key).expect("joined");
     if !ch.host.as_ref().is_some_and(|h| h.id == link.id) {
         return Ok(());
     }
@@ -853,9 +936,10 @@ fn from_host(relay: &Relay, session: [u8; 16], link: &Rc<Link>, e: Envelope, raw
     }
 }
 
-fn from_viewer(relay: &Relay, session: [u8; 16], link: &Rc<Link>, e: Envelope, raw: &[u8]) -> Result<(), Refusal> {
+fn from_viewer(relay: &Relay, key: Key, link: &Rc<Link>, e: Envelope, raw: &[u8]) -> Result<(), Refusal> {
+    let session = key.1;
     let mut channels = relay.channels.borrow_mut();
-    let ch = channels.get_mut(&session).expect("joined");
+    let ch = channels.get_mut(&key).expect("joined");
     match e.kind {
         KIND_FRAME => {
             sealed(&e, session)?;
@@ -880,7 +964,7 @@ fn from_viewer(relay: &Relay, session: [u8; 16], link: &Rc<Link>, e: Envelope, r
     }
 }
 
-fn leave(relay: &Relay, session: [u8; 16], link: &Rc<Link>, role: u8) {
+fn leave(relay: &Relay, session: Key, link: &Rc<Link>, role: u8) {
     let mut channels = relay.channels.borrow_mut();
     let Some(ch) = channels.get_mut(&session) else { return };
     if role == RELAY_ROLE_HOST {
