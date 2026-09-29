@@ -81,8 +81,10 @@ const BATCH_BYTES: usize = 256 * 1024;
 /// Makes the host configuration for clients in one working directory,
 /// whose turns ask a person (`true`) or refuse what would be asked: the
 /// caller's, which owns the config, the keys and the price cache. It sets
-/// `permissions.approvals` from the flag.
-pub type Factory = Box<dyn Fn(&Path, bool) -> Result<HostConfig, EngineError>>;
+/// `permissions.approvals` from the flag. It reads the config and the
+/// environment, so it runs on the blocking pool, not the daemon's thread
+/// (R-LAG-9): hence `Send + Sync`.
+pub type Factory = Box<dyn Fn(&Path, bool) -> Result<HostConfig, EngineError> + Send + Sync>;
 
 /// Serves until idle or told to stop (SIGTERM, SIGINT), on a runtime of its
 /// own.
@@ -101,7 +103,7 @@ pub fn run(opts: Options, factory: Factory) -> Result<(), String> {
 }
 
 pub(super) struct State {
-    factory: Factory,
+    factory: std::sync::Arc<dyn Fn(&Path, bool) -> Result<HostConfig, EngineError> + Send + Sync>,
     /// The WebSocket listener's address and token, when it listens.
     pub(super) websocket: Option<(SocketAddr, String)>,
     hosts: HashMap<(PathBuf, bool), Rc<Host>>,
@@ -192,7 +194,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         None => None,
     };
     let state: Shared = Rc::new(RefCell::new(State {
-        factory,
+        factory: std::sync::Arc::from(factory),
         websocket: websocket.as_ref().map(|(l, t)| (l.local_addr().expect("a bound listener has an address"), t.clone())),
         hosts: HashMap::new(),
         sessions_dir: None,
@@ -284,6 +286,10 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     for h in hosts {
         h.shutdown().await;
     }
+    // The turns' syncs, still on the blocking pool: a runtime dropped with
+    // them queued drops them unrun, and a `krowk host stop` straight after
+    // a turn would leave that turn in the page cache alone.
+    log::synced().await;
     Ok(())
 }
 
@@ -511,12 +517,23 @@ fn status(s: &State) -> HostStatus {
 /// The host for clients in `cwd` that do or do not answer approvals, made
 /// on first need. Its between-turns frames (`Host::watch`) go to each
 /// session's followers.
-fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>, EngineError> {
+///
+/// A new directory's configuration is read on the blocking pool: the
+/// config file, the instances and the keys' paths are file reads, and on a
+/// slow disk they would stall every other session's stream (R-LAG-9). Two
+/// clients asking for the same new directory at once each read it; the
+/// first back makes the host and the second takes that one.
+async fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>, EngineError> {
     let key = (cwd.to_path_buf(), answers);
     if let Some(h) = state.borrow().hosts.get(&key) {
         return Ok(h.clone());
     }
-    let cfg = (state.borrow().factory)(cwd, answers)?;
+    let factory = state.borrow().factory.clone();
+    let dir = cwd.to_path_buf();
+    let cfg = tokio::task::spawn_blocking(move || factory(&dir, answers)).await.map_err(|e| EngineError::new("host_failed", format!("the host's configuration could not be read: {e}")))??;
+    if let Some(h) = state.borrow().hosts.get(&key) {
+        return Ok(h.clone());
+    }
     let dir = cfg.sessions_dir.clone();
     let host = Rc::new(Host::new(cfg));
     let mut s = state.borrow_mut();
@@ -726,7 +743,11 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     // directory, and whether it answers approvals; the rest go to the host
     // running the session.
     let known = if turn { None } else { root.as_ref().and_then(|r| state.borrow().hubs.get(r).map(|h| h.host.clone())) };
-    let host = match known.map(Ok).unwrap_or_else(|| host_for(&state, &cwd, answers)) {
+    let host = match known {
+        Some(h) => Ok(h),
+        None => host_for(&state, &cwd, answers).await,
+    };
+    let host = match host {
         Ok(h) => h,
         Err(e) => return state.borrow_mut().send(client, "", control(&ServerFrame::Done { id, result: None, error: Some(error_info(&e)) })),
     };
@@ -752,6 +773,13 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
             }
             hub.in_flight += 1;
         }
+    }
+    // The engine a turn makes needs the TLS configuration, whose build
+    // reads the platform's roots: tens of milliseconds, a hundred on a
+    // slow macOS runner. A turn sent as the daemon starts, before `warm`
+    // is done, waits for it off the thread instead (R-LAG-9).
+    if turn && !crate::http::warmed() {
+        let _ = tokio::task::spawn_blocking(crate::http::warm).await;
     }
     let (tx, mut rx) = mpsc::channel::<StreamLine>(1024);
     let exec = host.execute(cmd, tx);
@@ -845,7 +873,10 @@ fn attach(state: &Shared, client: u64, id: u64, session: String, after: Option<S
 async fn page(state: &Shared, client: u64, session: &str, cursor: outbox::Cursor) -> Result<(), EngineError> {
     let Some((cwd, answers)) = state.borrow().clients.get(&client).map(|c| (c.cwd.clone(), c.answers)) else { return Ok(()) };
     let known = state.borrow().hubs.get(session).map(|h| h.host.clone());
-    let host = known.map(Ok).unwrap_or_else(|| host_for(state, &cwd, answers))?;
+    let host = match known {
+        Some(h) => h,
+        None => host_for(state, &cwd, answers).await?,
+    };
     let Some(dir) = state.borrow().sessions_dir.clone() else { return Err(EngineError::new("no_session", "the daemon has no sessions directory")) };
     let path = dir.join(session).join(log::EVENTS_FILE);
     // Read off the daemon's thread, which every other stream shares; then

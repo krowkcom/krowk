@@ -579,10 +579,16 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
         home.lateness();
         c.send(&ClientFrame::Execute { id: 1, command: home.prompt("sleep", PermissionMode::BypassPermissions) }).await;
         let (mut pings, mut rtts, mut asked) = (Vec::new(), Vec::new(), None::<Instant>);
+        // The thread's lateness a beat at a time, so a failure says when in
+        // the turn the thread was held: at its start (the host's setup, the
+        // tool's spawn) or in the middle of the tool's sleep, where the
+        // daemon has nothing to do and only the machine can hold it.
+        let mut when = Vec::new();
         let mut ask = tokio::time::interval(Duration::from_millis(100));
         loop {
             tokio::select! {
                 _ = ask.tick() => {
+                    when.push((started.elapsed(), home.lateness()));
                     if asked.is_none() {
                         c.wire.send(Message::Ping(Vec::new().into())).await.unwrap();
                         asked = Some(Instant::now());
@@ -600,9 +606,11 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
             }
         }
         let took = started.elapsed();
-        let late = home.lateness();
+        when.push((took, home.lateness()));
+        let late = when.iter().map(|(_, l)| *l).max().unwrap();
+        let held: Vec<String> = when.iter().filter(|(_, l)| *l >= Duration::from_millis(5)).map(|(at, l)| format!("{l:?} by {at:?}")).collect();
         assert!(took >= Duration::from_secs(5), "the tool ran its five seconds: {took:?}");
-        assert!(late < Duration::from_millis(30), "the daemon's thread was blocked {late:?} during the turn");
+        assert!(late < Duration::from_millis(30), "the daemon's thread was blocked {late:?} during the turn — held {held:?}");
         let gap = pings.windows(2).map(|w| w[1] - w[0]).max().unwrap();
         let rtt = rtts.iter().max().unwrap();
         eprintln!("{} pings, longest gap {gap:?}; {} pongs, slowest {rtt:?}", pings.len(), rtts.len());
