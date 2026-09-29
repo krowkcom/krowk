@@ -9,6 +9,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-09-29
+
+Code in the TUI is in colour, and the chat is calmer: your messages stand
+on a band of their own, and running calls no longer make it jump.
+
 ### Added
 
 - Code in the TUI is in colour. A fenced block in an answer is highlighted by its language, on a faint band across the width with a row of it above and below; its ```` ``` ```` fences are no longer shown, and its language is named at the right of the band's top row. Long lines break at the width and keep their spacing. A file a call writes shows its first lines, highlighted, under the call, and, in a terminal with 24-bit colour, an edit's removed and added lines are highlighted on muted red and green bands (GitHub's dark-mode tints) that keep the code readable. The colours are the terminal's own, so they follow its theme.
@@ -611,7 +616,8 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/krowkcom/krowk/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/krowkcom/krowk/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/krowkcom/krowk/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/krowkcom/krowk/compare/v0.9.0...v0.10.0
