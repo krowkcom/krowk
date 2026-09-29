@@ -2053,6 +2053,13 @@ impl App {
         rows.push(Line::from(Span::styled(across, edge)));
         // A question of `/connect`'s takes the keys, and the caret with them.
         let caret = flow_caret.unwrap_or((ccol + 2, top + (crow as usize - first) as u16));
+        // A flash shows with the status bar off too: "Press Ctrl-C again to
+        // exit" unseen would make the key look broken.
+        if !self.settings.status_bar
+            && let Some(f) = &self.flash
+        {
+            rows.push(Line::from(vec![Span::raw(" ".repeat(STATUS_INDENT.min(inner))), Span::styled(clip(f, inner.saturating_sub(STATUS_INDENT)), dim())]));
+        }
         if self.settings.status_bar {
             // Right under the prompt's bottom rule, nothing between.
             let [first, second] = self.status_parts();

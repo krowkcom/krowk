@@ -73,6 +73,9 @@ const STALL: Duration = Duration::from_millis(700);
 const APPROVAL_SETTLE: Duration = Duration::from_millis(400);
 /// How often an interrupt the host could not take yet is asked again.
 const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
+/// How long a Ctrl-C or Ctrl-D that would leave krowk waits for the second
+/// that does.
+const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
 /// How many earlier sessions `/sessions` lists.
 const RESUMABLE: usize = 30;
 
@@ -316,7 +319,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
@@ -417,6 +420,10 @@ struct Ui<'h> {
     rx: Option<mpsc::Receiver<StreamLine>>,
     /// Set to leave now, without the running turn's end.
     abandoned: bool,
+    /// The key (`c` or `d`, with Ctrl) that would have left krowk, and
+    /// when: the same key again within `QUIT_CONFIRM` leaves, any other
+    /// key forgets it.
+    quit_armed: Option<(char, Instant)>,
     /// The last prompt sent: what a yes to a limit's offer sends again on
     /// the instance it moves to (R-INST-7).
     last_prompt: String,
@@ -679,7 +686,8 @@ impl<'h> Ui<'h> {
             let stall_at = (app.waiting_on_model() && probe.is_none() && app.offline.is_none() && self.target.is_some())
                 .then(|| (last_activity + STALL).max(stall_quiet_until.unwrap_or(now)));
             let retry_at = app.turn.as_ref().filter(|t| (t.want_interrupt && !t.interrupt_sent) || !app.unsent_steers.is_empty()).map(|_| now + INTERRUPT_RETRY);
-            let wake = [frame_at, tick_at, stall_at, retry_at, probe_at].into_iter().flatten().min();
+            let quit_at = self.quit_armed.map(|(_, t)| t + QUIT_CONFIRM);
+            let wake = [frame_at, tick_at, stall_at, retry_at, probe_at, quit_at].into_iter().flatten().min();
             tokio::select! {
                 biased;
                 // Ctrl-C or Ctrl-\ on the terminal a vendor's login has: that
@@ -849,6 +857,12 @@ impl<'h> Ui<'h> {
                     }
                     if retry_at.is_some_and(|t| t <= now) {
                         self.flush_requests(app).await;
+                    }
+                    // The second press never came: its hint goes.
+                    if quit_at.is_some_and(|t| t <= now) {
+                        self.quit_armed = None;
+                        app.flash = None;
+                        app.touch();
                     }
                 }
             }
@@ -1301,6 +1315,7 @@ impl<'h> Ui<'h> {
         let alt = k.modifiers.contains(KeyModifiers::ALT);
         app.touch();
         app.flash = None;
+        let armed = self.quit_armed.take().filter(|(_, t)| t.elapsed() < QUIT_CONFIRM).map(|(c, _)| c);
         // A call waiting for the person's say takes the keys that answer it
         // (R-PERM-2): y once, s for the session, p for the project, n or
         // Esc no, v to print a request that was cut to fit (its y/s/p work
@@ -1359,16 +1374,9 @@ impl<'h> Ui<'h> {
                     app.overlay = Overlay::None;
                 }
                 // Leaves krowk whatever the prompt under the overlay holds,
-                // as it does on an empty prompt; with a turn running, it
-                // stops that turn first, as there.
-                KeyCode::Char('d') if ctrl => {
-                    if app.running() {
-                        *quitting = true;
-                        self.interrupt(app).await;
-                    } else {
-                        app.quit = true;
-                    }
-                }
+                // as it does on an empty prompt: pressed twice, and with a
+                // turn running, stopping that turn first, as there.
+                KeyCode::Char('d') if ctrl => self.ask_to_leave(app, 'd', armed, quitting).await,
                 KeyCode::Up if !typing => f.step(-1),
                 KeyCode::Down if !typing => f.step(1),
                 KeyCode::Enter if settled => f.enter(),
@@ -1383,12 +1391,28 @@ impl<'h> Ui<'h> {
             }
             return false;
         }
-        self.on_prompt_key(app, k, quitting).await
+        self.on_prompt_key(app, k, quitting, armed).await
+    }
+
+    /// Ctrl-C or Ctrl-D asked to leave krowk: the first press asks for a
+    /// second, the second (the same key, within `QUIT_CONFIRM`) leaves,
+    /// stopping a running turn first. One stray key is not a lost session.
+    async fn ask_to_leave(&mut self, app: &mut App, key: char, armed: Option<char>, quitting: &mut bool) {
+        if armed != Some(key) {
+            self.quit_armed = Some((key, Instant::now()));
+            app.flash = Some(format!("Press Ctrl-{} again to exit", key.to_ascii_uppercase()));
+        } else if app.running() {
+            *quitting = true;
+            self.interrupt(app).await;
+        } else {
+            app.quit = true;
+        }
     }
 
     /// A key no question or overlay took: the prompt's, the menus' and the
-    /// commands'.
-    async fn on_prompt_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool) -> bool {
+    /// commands'. `armed`: the key before this one that asked for a second
+    /// to leave krowk.
+    async fn on_prompt_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool, armed: Option<char>) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         // Shift-enter is alt-enter: a new line wherever alt-enter makes one.
         // Only a terminal that took KEYS_PUSH tells the two enters apart.
@@ -1679,22 +1703,17 @@ impl<'h> Ui<'h> {
                     app.editor.clear();
                 } else if self.held.is_some() || app.trust_question.is_some() {
                     // What is waiting on the route or the trust question
-                    // comes back unsent; a second Ctrl-C then quits.
+                    // comes back unsent; Ctrl-C twice more then quits.
                     app.trust_question = None;
                     self.unhold(app);
                     app.notice("not sent — it is back in the prompt");
                 } else {
-                    app.quit = true;
+                    self.ask_to_leave(app, 'c', armed, quitting).await;
                 }
             }
             KeyCode::Char('d') if ctrl => {
                 if e.is_empty() {
-                    if app.running() {
-                        *quitting = true;
-                        self.interrupt(app).await;
-                    } else {
-                        app.quit = true;
-                    }
+                    self.ask_to_leave(app, 'd', armed, quitting).await;
                 } else {
                     e.delete();
                 }

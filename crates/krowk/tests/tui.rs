@@ -87,6 +87,33 @@ impl Drop for Sandbox {
 
 // ---- a bare pseudo-terminal -------------------------------------------------
 
+/// Ctrl-C or Ctrl-D on an idle, empty prompt asks for a second press of
+/// the same key before it leaves; one too late, or the other key, asks
+/// again. Only what changed is drawn, so the hint is looked for in part.
+#[test]
+fn ctrl_c_or_ctrl_d_on_an_empty_prompt_leaves_only_when_pressed_twice() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("quit-twice");
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 80, 24);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "no prompt: {:?}", t.text());
+    let at = t.output().len();
+    t.write(b"\x03");
+    assert!(wait_after(&t, at, "Press Ctrl-C again", Duration::from_secs(5)), "{:?}", t.text());
+    // Past the window, the first Ctrl-C is forgotten.
+    std::thread::sleep(Duration::from_millis(1800));
+    assert!(t.alive(), "one Ctrl-C left krowk");
+    let at = t.output().len();
+    t.write(b"\x03");
+    assert!(wait_after(&t, at, "Press Ctrl-C again", Duration::from_secs(5)), "{:?}", t.text());
+    // Ctrl-D does not answer Ctrl-C: it asks for itself.
+    t.write(b"\x04");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(t.alive(), "Ctrl-C then Ctrl-D left krowk");
+    t.write(b"\x04");
+    let st = t.wait(Duration::from_secs(10)).expect("krowk exits on the second Ctrl-D");
+    assert!(st.success(), "{st}");
+}
+
 #[test]
 fn r_pkg_1_r_tui_3_bare_krowk_on_a_terminal_opens_the_prompt_with_only_portable_sequences() {
     let m = mock::serve(mock::readme_script);
@@ -98,8 +125,8 @@ fn r_pkg_1_r_tui_3_bare_krowk_on_a_terminal_opens_the_prompt_with_only_portable_
     // arrive whole.
     assert!(t.wait_for("anywhere.", Duration::from_secs(10)).is_some(), "no answer: {:?}", t.text());
     assert!(t.wait_for("tokens", Duration::from_secs(5)).is_some());
-    // Ctrl-D on an empty prompt quits, and says how to come back.
-    t.write(b"\x04");
+    // Ctrl-D twice on an empty prompt quits, and says how to come back.
+    t.write(b"\x04\x04");
     let st = t.wait(Duration::from_secs(10)).expect("krowk exits on Ctrl-D");
     assert!(st.success(), "{st}");
     let out = t.text();
@@ -133,7 +160,7 @@ fn shift_enter_starts_a_new_line_and_enter_sends_both() {
     // shift-enter (CSI 13;2u), with plain enter still a CR.
     t.write(b"read README.md\x1b[13;2uand summarise it\r");
     assert!(t.wait_for("anywhere.", Duration::from_secs(10)).is_some(), "no answer: {:?}", t.text());
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let seen = m.seen.lock().unwrap();
     assert!(seen.iter().any(|s| s.body["messages"][0].to_string().contains("read README.md\\nand summarise it")), "no prompt of two lines was sent");
@@ -154,7 +181,7 @@ fn ctrl_z_pops_the_keyboard_protocol_for_the_shell_and_pushes_it_again_on_the_wa
     while !back() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let out = t.text();
     let keys: std::collections::BTreeMap<usize, &str> = out.match_indices("\x1b[>1u").chain(out.match_indices("\x1b[<u")).collect();
@@ -251,7 +278,7 @@ fn r_inst_7_the_tui_offers_the_next_instance_and_y_continues_there() {
     t.write(b"/model anthropic:nokey/claude-sonnet-4-6\r");
     assert!(t.wait_for("NO_SUCH_KEY", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     assert!(t.wait_for("stays", Duration::from_secs(5)).is_some(), "{:?}", t.text());
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
 }
 
@@ -293,7 +320,7 @@ fn the_mode_picker_sets_the_mode_the_next_turn_runs_in() {
     assert!(t.wait_for("permission mode plan", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"read README.md and summarise it\r");
     assert!(t.wait_for("anywhere.", Duration::from_secs(20)).is_some(), "{:?}", t.text());
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let logs = walk(&b.root.join("home"));
     assert!(logs.iter().any(|p| std::fs::read_to_string(p).is_ok_and(|s| s.contains("\"turn.started\"") && s.contains("\"permissionMode\":\"plan\""))), "no turn ran in plan: {logs:?}");
@@ -312,7 +339,7 @@ fn resume_continues_an_earlier_session_from_the_slash_menu() {
     t.write(b"read README.md and summarise it\r");
     assert!(t.wait_for("anywhere.", Duration::from_secs(20)).is_some(), "{:?}", t.text());
     assert!(t.wait_for("tokens", Duration::from_secs(5)).is_some());
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let out = t.text();
     let at = out.find("krowk --resume ").expect("the resume line") + "krowk --resume ".len();
@@ -336,7 +363,7 @@ fn resume_continues_an_earlier_session_from_the_slash_menu() {
     let from = t.output().len();
     t.write(b"and what else is in it?\r");
     assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     assert!(t.text().contains(&format!("krowk --resume {id}")), "{:?}", t.text());
     // One request carried both prompts: the turn continued the session.
@@ -371,7 +398,7 @@ fn new_starts_a_fresh_session_and_keeps_the_one_left() {
     let from = t.output().len();
     t.write(b"summarise the README again\r");
     assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let seen = m.seen.lock().unwrap();
     assert!(!seen.iter().any(|s| s.body["messages"].to_string().contains("/clear") || s.body["messages"].to_string().contains("kumquat")), "the command went to the model");
@@ -391,7 +418,7 @@ fn new_after_a_resume_at_start_keeps_to_the_directory() {
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"read README.md and summarise it\r");
     assert!(t.wait_for("tokens", Duration::from_secs(20)).is_some(), "{:?}", t.text());
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let out = t.text();
     let at = out.find("krowk --resume ").expect("the resume line") + "krowk --resume ".len();
@@ -405,7 +432,7 @@ fn new_after_a_resume_at_start_keeps_to_the_directory() {
     assert!(t.wait_for(&format!("resumed session {id}"), Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"/new\r");
     assert!(t.wait_for("for a new one", Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
 
     let mut t = pty::Pty::spawn(b.command(&m.url, &["--resume", &id]), 120, 30);
@@ -416,7 +443,7 @@ fn new_after_a_resume_at_start_keeps_to_the_directory() {
     let from = t.output().len();
     t.write(b"summarise the README again\r");
     assert!(wait_after(&t, from, "tokens", Duration::from_secs(20)), "{:?}", t.text());
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let seen = m.seen.lock().unwrap();
     let last = seen.iter().rev().find(|s| s.body["messages"].to_string().contains("summarise the README again")).expect("the prompt was sent");
@@ -462,7 +489,7 @@ fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     assert_eq!(saved().as_deref(), Some("unhinged"), "the mode stays as chosen");
     t.write(b"\x1b");
     std::thread::sleep(Duration::from_millis(100));
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap()).unwrap();
     assert_eq!(config["permissions"]["defaultMode"], "unhinged", "{config}");
@@ -470,7 +497,7 @@ fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"read README.md and summarise it\r");
     assert!(t.wait_for("anywhere.", Duration::from_secs(20)).is_some(), "{:?}", t.text());
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let logs = walk(&b.root.join("home"));
     assert!(logs.iter().any(|p| std::fs::read_to_string(p).is_ok_and(|s| s.contains("\"turn.started\"") && s.contains("\"permissionMode\":\"unhinged\""))), "no turn ran unhinged: {logs:?}");
@@ -951,7 +978,7 @@ fn ctrl_z_suspends_to_the_shell_and_fg_brings_the_prompt_back() {
     assert!(!stopped.contains("Plan, search, build anything"), "the live region was cleared before stopping:\n{stopped}");
     tmux(&["send-keys", "-t", "t", "fg", "Enter"]);
     assert!(wait("Plan, search, build anything"), "fg did not bring the prompt back:\n{}", screen());
-    tmux(&["send-keys", "-t", "t", "C-d"]);
+    tmux(&["send-keys", "-t", "t", "C-d", "C-d"]);
     assert!(wait("krowk --resume") || wait("sh$"), "{}", screen());
     tmux(&["kill-server"]);
 }
@@ -1287,7 +1314,9 @@ fn prompts_held_for_the_route_are_joined_and_come_back_on_a_failed_route_or_ctrl
     std::thread::sleep(Duration::from_millis(300));
     assert!(t.alive(), "Ctrl-C with a prompt waiting quits nothing");
     assert!(!t.text().contains("claude/claude-opus-5-5"), "the route is still being asked: {:?}", t.text());
-    // Quitting while the route is still being asked does not wait for it.
+    // Quitting while the route is still being asked does not wait for it:
+    // one Ctrl-C clears the prompt, two more leave.
+    t.write(b"\x03");
     t.write(b"\x03");
     t.write(b"\x03");
     let asked = Instant::now();
@@ -1420,7 +1449,7 @@ fn the_first_run_card_connects_a_claude_subscription_and_the_prompt_runs_on_it()
     t.write(b"once more\r");
     assert!(says(&t, at, "Worked for", Duration::from_secs(15)), "{:?}", t.text());
     assert_eq!(fake_turns(&b).lines().count(), 1, "one Claude process for both turns: {}", fake_turns(&b));
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
 }
 
@@ -1470,7 +1499,7 @@ fn a_key_pasted_in_connect_is_never_shown_and_the_prompt_runs_on_it() {
     assert!(says(&t, at, "anywhere.", Duration::from_secs(15)), "no answer: {:?}", t.text());
     let sent = m.seen.lock().unwrap().iter().filter_map(|s| s.header("x-api-key").map(String::from)).collect::<Vec<_>>();
     assert!(!sent.is_empty() && sent.iter().all(|k| k == KEY), "the stored key went to the API: {sent:?}");
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     assert!(!t.text().contains(KEY) && !t.text().contains("4242"), "the key was drawn");
     let history = std::fs::read_to_string(b.root.join("home/.krowk/sessions/tui-history.jsonl")).unwrap_or_default();
@@ -1520,7 +1549,7 @@ fn rename_in_the_tui_moves_the_session_onto_the_new_name() {
     let at = t.output().len();
     t.write(b"what language is it written in?\r");
     assert!(says(&t, at, "It is written in Rust.", Duration::from_secs(15)), "no answer on the new name: {:?}", t.text());
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(config.join("config.json")).unwrap()).unwrap();
     assert!(cfg["instances"].get("anthropic:job").is_some() && cfg["instances"].get("anthropic:work").is_none(), "{cfg}");
@@ -1644,7 +1673,7 @@ fn ctrl_c_during_a_vendor_login_stops_the_login_and_krowk_takes_the_terminal_bac
     assert!(t.alive(), "Ctrl-C ended krowk with the login");
     assert!(!b.root.join("home/.krowk/config.json").exists() || !std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap().contains("claude"), "nothing was written");
     // Raw again: Ctrl-D is a key, and quits cleanly.
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
 }
 
@@ -1682,7 +1711,7 @@ fn nothing_typed_or_pasted_at_the_connect_overlay_reaches_the_prompt() {
     let at = t.output().len();
     t.write(b"\x1b");
     assert!(says(&t, at, "nothing connected", Duration::from_secs(5)), "{:?}", t.text());
-    t.write(b"\x04");
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
     let out = t.text();
     assert!(!out.contains(KEY) && !out.contains("7777") && !out.contains("typed"), "it reached the screen: {out:?}");
