@@ -468,3 +468,38 @@ fn raw(addr: std::net::SocketAddr, method: &str, path: &str, body: &str) -> Stri
     conn.read_to_string(&mut answer).unwrap();
     answer
 }
+
+/// R-RELAY-1: a device's signing key is set once — a register naming
+/// another is refused, so no other key of the workspace can swap in a key
+/// it holds and pose as the device at the relay — and a device registered
+/// before signing keys existed gains its own at the next `krowk devices
+/// list`, under the name it already has.
+#[test]
+fn r_relay_1_a_signing_key_is_set_once_and_a_keyless_device_gains_its_own() {
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let r = root("signing");
+    let laptop = r.join("laptop");
+    // Set up offline, then registered the way a CLI from before signing
+    // keys did: without one.
+    let words = krowk_client::phrase::encode(&AccountKey::generate());
+    json(&run(&laptop, "http://127.0.0.1:9/v1", TOKEN, &["sync", "recover", "--json"], &format!("{}\n", *words)));
+    let keys = Keystore::new(&laptop.join(".krowk"));
+    let device = keys.device().unwrap().unwrap();
+    let account = keys.account_id().unwrap().unwrap().to_string();
+    let public = e2e::hex(&device.public().0);
+    let answer = raw(registry.addr(), "POST", "/v1/devices", &serde_json::json!({"device": {"public_key": public, "name": "old laptop", "account_key_id": account}}).to_string());
+    assert!(answer.starts_with("HTTP/1.1 201"), "{answer}");
+    let client = krowk_api::Client::new(&api, TOKEN);
+    assert_eq!(client.list_devices().unwrap()[0].signing_key, "");
+
+    json(&run(&laptop, &api, TOKEN, &["devices", "list", "--json"], ""));
+    let row = client.list_devices().unwrap().remove(0);
+    assert_eq!(row.signing_key, e2e::hex(&keys.signing_key().unwrap().public().0), "the listing registered this device's key");
+    assert_eq!(row.name, "old laptop", "under the name it had");
+
+    let refused = client.register_device(&public, &e2e::hex(&[9; 32]), "old laptop", &account).unwrap_err();
+    assert_eq!((refused.status, refused.code().to_string()), (409, "signing_key_mismatch".to_string()), "{refused:?}");
+    assert_eq!(client.list_devices().unwrap()[0].signing_key, row.signing_key);
+    let _ = std::fs::remove_dir_all(&r);
+}

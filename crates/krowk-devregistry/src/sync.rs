@@ -54,6 +54,8 @@ pub struct Approval {
     pub id: String,
     pub public_key: String,
     pub name: String,
+    /// The signing key the device asked with, hex; carried onto it.
+    pub signing_key: String,
     pub approved: bool,
     pub created_at: Timestamp,
     pub expires_at: Timestamp,
@@ -260,6 +262,7 @@ fn serialize_approval(a: &Approval) -> Json {
         ("slug", Json::str(&a.slug)),
         ("id", Json::str(&a.id)),
         ("public_key", Json::str(&a.public_key)),
+        ("signing_key", opt(&a.signing_key)),
         ("name", Json::str(&a.name)),
         ("state", Json::str(if a.approved { "approved" } else { "pending" })),
         ("expires_at", Json::str(rfc3339_nano(a.expires_at))),
@@ -340,7 +343,9 @@ pub fn register_device(app: &App, req: &mut Req) -> Resp {
         let public_key = required(&mut f, "public_key")?;
         let key = blob("public_key", &public_key, Some(PUBLIC_KEY_BYTES), None)?;
         // Optional, as the registry has it: a CLI from before it registers
-        // without one, and registering again without one keeps it.
+        // without one, and registering again without one keeps it. Set
+        // once: another is refused, since any key of the workspace can
+        // register and the relay trusts joins signed by it.
         let signing = f.string("signing_key");
         let signing = if signing.is_empty() { None } else { Some(hex(&blob("signing_key", &signing, Some(PUBLIC_KEY_BYTES), None)?)) };
         let name = name_field(&mut f)?;
@@ -350,6 +355,12 @@ pub fn register_device(app: &App, req: &mut Req) -> Resp {
         burst(&mut s.sync, &caller(req), "device_registrations", now)?;
         adopt_account_key(&mut s.sync, &workspace, &account)?;
         let id = fingerprint(&key);
+        if let (Some(new), Some(held)) = (&signing, s.sync.devices.get(&(workspace.clone(), id.clone())))
+            && !held.signing_key.is_empty()
+            && held.signing_key != *new
+        {
+            return Err(error(409, "signing_key_mismatch", &format!("device {id} already registered another signing key, and a signing key is set once"), None));
+        }
         let seq = s.sync.seq + 1;
         let fresh = !s.sync.devices.contains_key(&(workspace.clone(), id.clone()));
         let d = s.sync.devices.entry((workspace, id.clone())).or_insert_with(|| Device {
@@ -398,6 +409,8 @@ pub fn request_approval(app: &App, req: &mut Req) -> Resp {
         let v = body(req, "device_approval")?;
         let mut f = v.fields();
         let key = blob("public_key", &required(&mut f, "public_key")?, Some(PUBLIC_KEY_BYTES), None)?;
+        let signing = f.string("signing_key");
+        let signing = if signing.is_empty() { String::new() } else { hex(&blob("signing_key", &signing, Some(PUBLIC_KEY_BYTES), None)?) };
         let name = name_field(&mut f)?;
         let mut s = app.lock();
         let now = s.now();
@@ -408,6 +421,7 @@ pub fn request_approval(app: &App, req: &mut Req) -> Resp {
             id: fingerprint(&key),
             public_key: hex(&key),
             name,
+            signing_key: signing,
             approved: false,
             created_at: now,
             expires_at: now + APPROVAL_LIFETIME,
@@ -468,7 +482,7 @@ pub fn approve(app: &App, req: &mut Req, slug: &str) -> Resp {
         a.approved_by = device;
         a.account_key_id = account;
         a.wrapped_account_key = hex(&wrapped);
-        let (id, public_key, name, wrapped) = (a.id.clone(), a.public_key.clone(), a.name.clone(), a.wrapped_account_key.clone());
+        let (id, public_key, name, wrapped, signing) = (a.id.clone(), a.public_key.clone(), a.name.clone(), a.wrapped_account_key.clone(), a.signing_key.clone());
         let resp = Resp::json(200, &serialize_approval(a));
         let fresh = !sync.devices.contains_key(&(workspace.clone(), id.clone()));
         let d = sync.devices.entry((workspace, id.clone())).or_insert_with(|| Device {
@@ -484,6 +498,11 @@ pub fn approve(app: &App, req: &mut Req, slug: &str) -> Resp {
         });
         d.name = name;
         d.wrapped_account_key = wrapped;
+        // The signing key the device asked with, so it arrives by the
+        // approval, not by whichever register comes first.
+        if d.signing_key.is_empty() {
+            d.signing_key = signing;
+        }
         if fresh {
             sync.seq = seq;
         }

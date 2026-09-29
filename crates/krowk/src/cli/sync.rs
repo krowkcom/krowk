@@ -141,16 +141,8 @@ fn register(ctx: &Ctx, s: &Setup) -> Result<Option<krowk_api::sync::Device>, Err
 
 fn report(ctx: &mut Ctx, s: &Setup, how: &str, replaced: Option<KeyId>) -> Result<(), Error> {
     let recovered = how == "recover";
-    // A joined device's row was made by its approval, so it is registered
-    // either way; registering here as well sends its relay signing key,
-    // which the approval does not carry. If that fails, `krowk sync
-    // register` sends it later, and nothing but the relay needs it.
-    let registered = if how == "join" {
-        let _ = register(ctx, s);
-        true
-    } else {
-        register(ctx, s)?.is_some()
-    };
+    // A joined device's row, signing key and all, was made by its approval.
+    let registered = if how == "join" { true } else { register(ctx, s)?.is_some() };
     let data = json!({
         "device": s.device.id().to_string(),
         "device_created": s.device_created,
@@ -297,7 +289,8 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let client = keyed_client(ctx, "`krowk sync join`")?;
     let device = store.device_key().map_err(|e| fail("sync_setup_failed", e))?;
-    let request = client.request_device_approval(&e2e::hex(&device.public().0), &device_name(ctx))?;
+    let signing = store.signing_key().map_err(|e| fail("sync_setup_failed", e))?;
+    let request = client.request_device_approval(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), &device_name(ctx))?;
     let _ = writeln!(
         ctx.io.stderr,
         "This device's code:\n\n    {}\n\nOn a machine that already syncs, run `krowk devices approve` and type this code there. Waiting…",

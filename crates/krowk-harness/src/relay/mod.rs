@@ -348,6 +348,8 @@ struct Channel {
     viewer_joins: Minute,
     /// Since when nobody has been on the channel.
     empty_since: Option<Instant>,
+    /// The workspace of the first join it admitted.
+    workspace: Option<String>,
 }
 
 impl Channel {
@@ -613,6 +615,8 @@ struct Join {
     /// `env`: None for a value that is neither name, refused once the
     /// dialed env is known to compare it with.
     env: Option<Env>,
+    /// The session's workspace, once admitted: what its channel holds to.
+    workspace: String,
 }
 
 fn read_join(b: &[u8]) -> Result<Join, Refusal> {
@@ -652,7 +656,7 @@ fn read_join(b: &[u8]) -> Result<Join, Refusal> {
         Some(Value::String(e)) => Env::parse(Some(e)),
         Some(_) => None,
     };
-    Ok(Join { role, device, signature, fence, stream, after, env })
+    Ok(Join { role, device, signature, fence, stream, after, env, workspace: String::new() })
 }
 
 /// Who may join: a device the roster knows, not revoked, whose signature
@@ -663,7 +667,7 @@ fn read_join(b: &[u8]) -> Result<Join, Refusal> {
 /// back in. The lease token stays between the holder and the registry: a
 /// relay never needs it, so never holds it. Checked in that order, so a
 /// device the relay does not trust learns nothing about the session.
-fn admit(relay: &Relay, key: Key, nonce: &[u8; 32], origin: &str, j: Join) -> Result<(DeviceId, u8, Join), Refusal> {
+fn admit(relay: &Relay, key: Key, nonce: &[u8; 32], origin: &str, mut j: Join) -> Result<(DeviceId, u8, Join), Refusal> {
     let session = key.1;
     let ring = &relay.config.roster;
     let Some(device) = ring.device(&j.device) else {
@@ -677,9 +681,13 @@ fn admit(relay: &Relay, key: Key, nonce: &[u8; 32], origin: &str, j: Join) -> Re
     }
     // Another workspace's session reads as no session: a device of one
     // workspace learns nothing of another's session ids.
-    let Some(entry) = ring.session(&session).filter(|e| e.workspace == device.workspace) else {
+    // And a channel holds to the workspace it was first joined under, so no
+    // other workspace's session of the same id ever shares it.
+    let pinned = relay.channels.borrow().get(&key).and_then(|c| c.workspace.clone());
+    let Some(entry) = ring.session(&session, &device.workspace).filter(|e| pinned.as_ref().is_none_or(|w| *w == e.workspace)) else {
         return Err(refuse("unknown_session", "the relay has no such session for this device", "open a session of your own workspace that syncs; its lease names the host"));
     };
+    j.workspace = entry.workspace.clone();
     let limits = &relay.config.limits;
     let mut channels = relay.channels.borrow_mut();
     let channel = channels.entry(key).or_default();
@@ -717,6 +725,7 @@ fn enter(relay: &Relay, session: Key, link: &Rc<Link>, role: u8, j: Join) {
     channels.retain(|id, c| *id == session || c.empty_since.is_none_or(|t| t.elapsed() < IDLE_CHANNEL));
     let ch = channels.entry(session).or_default();
     ch.empty_since = None;
+    ch.workspace.get_or_insert_with(|| j.workspace.clone());
     if role == RELAY_ROLE_HOST {
         let stream = j.stream.expect("admitted with a stream");
         if let Some(old) = ch.host.take() {

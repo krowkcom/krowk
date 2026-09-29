@@ -38,7 +38,7 @@ const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/
 /// Every test, its devices and its session: `<test>-host` holds the lease
 /// of session `<test>`, `<test>-viewer` and `<test>-viewer2` watch it, all
 /// in workspace A.
-const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs"];
+const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs", "xws"];
 
 /// How long anything the relay should answer may take, and how long to
 /// wait to be sure nothing comes.
@@ -84,6 +84,11 @@ fn fixture() -> Value {
         sessions.push(json!({"name": t, "id": session_id(t), "workspace": "ws_conformance_a", "holder": device_id(&format!("{t}-host")).to_string(), "fence": fence(t)}));
     }
     devices.push(device("outsider", "ws_conformance_b", false));
+    // A trusted device of workspace B whose workspace holds a session under
+    // the same id as workspace A's `xws` — which the registry refuses to
+    // let happen, and which a relay must hold apart all the same.
+    devices.push(device("xws-intruder", "ws_conformance_b", false));
+    sessions.push(json!({"name": "xws-b", "id": session_id("xws"), "workspace": "ws_conformance_b", "holder": device_id("xws-intruder").to_string(), "fence": fence("xws")}));
     devices.push(device("revoked", "ws_conformance_a", true));
     let stranger = device("stranger", "ws_conformance_a", false);
     json!({
@@ -970,4 +975,21 @@ async fn r_relay_1_the_same_session_under_two_envs_is_two_channels() {
     let sig = key.sign_relay_join(RELAY_ROLE_VIEWER, &c.session, &nonce, &device_id("envs-viewer"), &origin()).unwrap();
     c.send_control(json!({"type": "join", "role": "viewer", "device": device_id("envs-viewer").to_string(), "signature": e2e::hex(&sig), "env": 1})).await;
     c.refused("bad_join").await;
+}
+
+/// R-RELAY-1: a channel holds to the workspace it was first joined under.
+/// A trusted device of another workspace whose own session has the same id
+/// — which the registry refuses, and a relay must not rely on — is told
+/// there is no such session, whether it asks to watch or, holding its own
+/// session's lease, to host.
+#[tokio::test]
+async fn r_relay_1_a_device_of_another_workspace_holding_the_same_session_id_cannot_join_its_channel() {
+    let t = "xws";
+    let (mut h, _) = joined(t, &host(t)).await;
+    let (mut v, _) = joined(t, &viewer(t, "viewer")).await;
+    refused_join(t, &As { name: "xws-intruder", ..viewer(t, "viewer") }, "unknown_session").await;
+    refused_join(t, &As { name: "xws-intruder", ..host(t) }, "unknown_session").await;
+    // The workspace's own host was not displaced.
+    h.batch(1).await;
+    v.batch_in(1).await;
 }

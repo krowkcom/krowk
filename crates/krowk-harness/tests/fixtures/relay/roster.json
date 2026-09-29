@@ -458,10 +458,42 @@
       "revoked": false
     },
     {
+      "name": "xws-host",
+      "id": "bae8d5e9edbe307d8bd81c1c1c5d731d",
+      "seed": "6df2fbd052ad4d7fa91f74394ce572021cd43960a9e7b9ab70df0105c1349855",
+      "signingKey": "0a2c2a992ad591237d2daaed85c3d8b2b02358ecd72e50091caf7bb3c0b0988c",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "xws-viewer",
+      "id": "16b539db09bbb075a00824810502897d",
+      "seed": "6e1c977f54fb4d774a46382a9acc2cc8cae0009eb963a72d4267e1c59e3a8021",
+      "signingKey": "d300ba5f84ad77bbf6fb40e77a0606247c112e35a4cbad1ab4104a27e8a25b65",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "xws-viewer2",
+      "id": "9cd17daac73ccee93836d4995801e463",
+      "seed": "77100d9157858f20525cfa0e08ec5ff4a47468ce8d047f2d01199fbc0603933f",
+      "signingKey": "553a66f129e2422324afc2c776774561cd382bd49d8331768a2e070a7fb44e39",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
       "name": "outsider",
       "id": "efc5fa16d87af0fe9215049762a334ac",
       "seed": "238e38bd09339bbfe7d2ce99c28792a6f411ea15b4aa219c9f6845c00740036c",
       "signingKey": "3c544a568b4878b42409c1e05629b36a148e3a1a8fbd56a2c27b2289b07817c6",
+      "workspace": "ws_conformance_b",
+      "revoked": false
+    },
+    {
+      "name": "xws-intruder",
+      "id": "0e15eaed6097e0bd8e7962c5eac4a998",
+      "seed": "76ffb351f071e7114f1304ebcffe0b74b44333f94edd74f232704d38d49ae74b",
+      "signingKey": "d7cdea5a18d5936ba953ed4563f3448b2f047b787321f45f45dbdcfdae2fd93a",
       "workspace": "ws_conformance_b",
       "revoked": false
     },
@@ -607,6 +639,20 @@
       "workspace": "ws_conformance_a",
       "holder": "f78f952a4ce010c4e353685a4498b96c",
       "fence": 105
+    },
+    {
+      "name": "xws",
+      "id": "764363f6-8ceb-7a58-89ec-5a6c564a575f",
+      "workspace": "ws_conformance_a",
+      "holder": "bae8d5e9edbe307d8bd81c1c1c5d731d",
+      "fence": 236
+    },
+    {
+      "name": "xws-b",
+      "id": "764363f6-8ceb-7a58-89ec-5a6c564a575f",
+      "workspace": "ws_conformance_b",
+      "holder": "0e15eaed6097e0bd8e7962c5eac4a998",
+      "fence": 236
     }
   ],
   "unregistered": [

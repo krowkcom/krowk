@@ -163,9 +163,6 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         "GET /v1/device_approvals",
         "PUT /v1/device_approvals/{slug}/approval",
         "GET /v1/device_approvals/{slug}",
-        // Then the joined device registers itself, which sends its relay
-        // signing key; the approval made its row without one.
-        "POST /v1/devices",
         // A session is PUT under the id its client minted; its lease is a
         // singular resource: POST acquires, PUT renews or hands over, DELETE
         // lets go.

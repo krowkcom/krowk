@@ -26,12 +26,27 @@ fn public_key(hex: &str) -> Option<DevicePublic> {
     e2e::unhex(hex).and_then(|b| <[u8; 32]>::try_from(b).ok()).map(DevicePublic)
 }
 
+/// A machine that set sync up before relay signing keys existed is
+/// registered without one, and the relay refuses it as unknown until it has
+/// one. When the listing shows this device keyless, its key is registered
+/// now, under the name it already has. Best effort: the listing is what was
+/// asked for, and `krowk sync register` does the same by hand. The registry
+/// sets a signing key once, so this only ever fills a gap.
+fn register_signing_key_if_missing(store: &krowk_client::keystore::Keystore, client: &krowk_api::Client, devices: &[krowk_api::sync::Device]) {
+    let (Ok(Some(device)), Ok(Some(account))) = (store.device(), store.account_id()) else { return };
+    let id = device.id().to_string();
+    let Some(row) = devices.iter().find(|d| d.id == id && d.signing_key.is_empty() && d.revoked_at.is_empty()) else { return };
+    let Ok(signing) = store.signing_key() else { return };
+    let _ = client.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), &row.name, &account.to_string());
+}
+
 pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
     let store = keystore(ctx)?;
     let mine = store.device().map_err(|e| fail("sync_setup_failed", e))?.map(|d| d.id().to_string());
     let account = store.account_id().map_err(|e| fail("sync_setup_failed", e))?;
     let client = keyed_client(ctx, "`krowk devices list`")?;
     let devices = client.list_devices()?;
+    register_signing_key_if_missing(&store, &client, &devices);
     let rows: Vec<_> = devices
         .iter()
         .map(|d| json!({ "id": d.id, "name": printable(&d.name), "this_device": mine.as_deref() == Some(d.id.as_str()), "created_at": d.created_at, "last_seen_at": d.last_seen_at, "revoked_at": if d.revoked_at.is_empty() { None } else { Some(&d.revoked_at) } }))

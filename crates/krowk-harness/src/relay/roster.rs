@@ -16,7 +16,10 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Default)]
 pub struct Roster {
     devices: HashMap<[u8; 16], Device>,
-    sessions: HashMap<[u8; 16], Session>,
+    /// Every workspace's session of an id. The registry keeps ids unique
+    /// across workspaces; a roster may name one id twice to check that a
+    /// relay holds a channel to its first workspace all the same.
+    sessions: HashMap<[u8; 16], Vec<Session>>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,7 +79,7 @@ impl Roster {
         for s in f.sessions {
             let id = super::parse_uuid(&s.id).ok_or_else(|| format!("session {:?} is not a UUID", s.id))?;
             let holder = DeviceId::parse(&s.holder).ok_or_else(|| format!("session {}'s holder is not a device id", s.id))?;
-            ring.sessions.insert(id, Session { workspace: s.workspace, holder: holder.0, fence: s.fence });
+            ring.sessions.entry(id).or_default().push(Session { workspace: s.workspace, holder: holder.0, fence: s.fence });
         }
         Ok(ring)
     }
@@ -85,7 +88,8 @@ impl Roster {
         self.devices.get(&id.0)
     }
 
-    pub fn session(&self, id: &[u8; 16]) -> Option<&Session> {
-        self.sessions.get(id)
+    /// The session of `id` in `workspace`, if it has one.
+    pub fn session(&self, id: &[u8; 16], workspace: &str) -> Option<&Session> {
+        self.sessions.get(id)?.iter().find(|s| s.workspace == workspace)
     }
 }

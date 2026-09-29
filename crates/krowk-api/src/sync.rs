@@ -61,6 +61,8 @@ pub struct DeviceApproval {
     #[serde(default, deserialize_with = "nullable")]
     pub slug: String,
     #[serde(default, deserialize_with = "nullable")]
+    pub signing_key: String,
+    #[serde(default, deserialize_with = "nullable")]
     pub id: String,
     #[serde(default, deserialize_with = "nullable")]
     pub public_key: String,
@@ -232,8 +234,10 @@ impl Client {
 
     /// A new device asks to be approved. Once: a retried create is a second
     /// request, and only the one whose id the person was shown is answered.
-    pub fn request_device_approval(&self, public_key: &str, name: &str) -> Result<DeviceApproval, Error> {
-        let body = json!({ "device_approval": { "public_key": public_key, "name": name } });
+    /// It carries the device's relay signing key, which the approval then
+    /// registers for it.
+    pub fn request_device_approval(&self, public_key: &str, signing_key: &str, name: &str) -> Result<DeviceApproval, Error> {
+        let body = json!({ "device_approval": { "public_key": public_key, "signing_key": signing_key, "name": name } });
         Ok(self.call("POST", "/device_approvals", Some(body), 1, None)?.0)
     }
 
