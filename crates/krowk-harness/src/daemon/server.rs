@@ -101,7 +101,14 @@ pub fn run(opts: Options, factory: Factory) -> Result<(), String> {
     // blocking pool (R-LAG-9).
     log::off_thread();
     let local = tokio::task::LocalSet::new();
-    local.block_on(&rt, serve(opts, factory))
+    let r = local.block_on(&rt, serve(opts, factory));
+    // What `serve` must see done — the turns' syncs — it has waited for;
+    // a blocking task still running (a directory's configuration on a
+    // dead disk) is not waited for, or a second signal would not exit at
+    // once.
+    drop(local);
+    rt.shutdown_background();
+    r
 }
 
 pub(super) struct State {
@@ -1035,10 +1042,13 @@ async fn page(state: &Shared, client: u64, session: &str, cursor: outbox::Cursor
 /// what lies beyond it comes live in order; all of it once none runs,
 /// since nothing more comes.
 /// With it, whether the running turn's frames after the head follow.
-fn extent(under_way: bool, head: Option<&str>, base: usize, events: &[crate::protocol::LogEvent], tries: u32) -> Option<(usize, bool)> {
+/// `Err`: a read that has not reached the head in `MAX_READS` — a page
+/// from it could have a gap, so the client is let go instead, and
+/// reconnects from its cursor (fail closed).
+fn extent(under_way: bool, head: Option<&str>, base: usize, events: &[crate::protocol::LogEvent], tries: u32) -> Result<Option<(usize, bool)>, ()> {
     let n = events.len();
     let at = head.and_then(|h| events.iter().position(|e| e.id == h));
-    match (head, at) {
+    Ok(match (head, at) {
         // Nothing sent live: the log as it was before the command, all of
         // which is history, or all of it when none is under way.
         (None, _) if under_way => Some((base.min(n), false)),
@@ -1046,12 +1056,14 @@ fn extent(under_way: bool, head: Option<&str>, base: usize, events: &[crate::pro
         (Some(_), Some(at)) if under_way => Some((at + 1, true)),
         (Some(_), Some(_)) => Some((n, false)),
         // The read is behind what was sent: read again, and past that,
-        // only what cannot come twice.
-        (Some(_), None) if tries < 100 => None,
-        (Some(_), None) if under_way => Some((base.min(n), false)),
-        (Some(_), None) => Some((n, false)),
-    }
+        // give up on this client rather than hand it a gap.
+        (Some(_), None) if tries < MAX_READS => None,
+        (Some(_), None) => return Err(()),
+    })
 }
+
+/// Reads of the log, 10 ms apart, a page waits for to reach the head.
+const MAX_READS: u32 = 100;
 
 /// Matches a read of the log against the hub as it is now, and hands the
 /// client's outbox the next page, with the control frames it held put back
@@ -1063,7 +1075,16 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: V
     // Under way: `running` from its `turn.started`, or a command registered
     // whose first frame is on its way.
     let under_way = hub.is_some_and(|h| h.running || h.in_flight > 0);
-    let Some((upto, live)) = extent(under_way, hub.and_then(|h| h.head.as_deref()), hub.map_or(0, |h| h.base), &events, tries) else { return false };
+    let Some((upto, live)) = (match extent(under_way, hub.and_then(|h| h.head.as_deref()), hub.map_or(0, |h| h.base), &events, tries) {
+        Ok(page) => page,
+        Err(()) => {
+            eprintln!("client {client}: the log of session {session} never reached what was sent live: letting it go, to reconnect from its cursor");
+            s.drop_client(client);
+            return true;
+        }
+    }) else {
+        return false;
+    };
     let running = under_way;
     let tail = match hub {
         Some(h) if live => h.turn.after(cursor.seq),
@@ -1146,6 +1167,10 @@ mod tests {
         LogEvent { id: id.into(), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::AssistantText { text: id.into() } } }
     }
 
+    fn ex(under_way: bool, head: Option<&str>, base: usize, events: &[LogEvent], tries: u32) -> Option<(usize, bool)> {
+        extent(under_way, head, base, events, tries).expect("under the cap")
+    }
+
     /// R-LAG-4: the interleaving that lost a turn's last logged events. A
     /// client behind is paged from a read of the log taken while its turn
     /// ran; before the read is back the turn logs `item.completed` and
@@ -1154,22 +1179,28 @@ mod tests {
     /// way, its head the `turn.completed` the read does not have — is read
     /// again, where it was taken as the whole log: the last page, after
     /// which nothing brought those events back.
+    ///
+    /// And one that never reaches the head, however often it is read,
+    /// lets the client go to reconnect from its cursor, rather than
+    /// paging it with a gap.
     #[test]
     fn r_lag_4_a_read_taken_before_the_turn_ended_is_read_again_after_it() {
         let stale = [said("root"), said("user"), said("started")];
         let whole = [said("root"), said("user"), said("started"), said("item"), said("completed")];
         // The turn has ended since the read began.
-        assert_eq!(extent(false, Some("completed"), 1, &stale, 1), None, "a read behind the head is read again, the turn over or not");
-        assert_eq!(extent(false, Some("completed"), 1, &whole, 2), Some((5, false)), "all of it once it reaches the head");
+        assert_eq!(ex(false, Some("completed"), 1, &stale, 1), None, "a read behind the head is read again, the turn over or not");
+        assert_eq!(ex(false, Some("completed"), 1, &whole, 2), Some((5, false)), "all of it once it reaches the head");
         // Still under way: up to the head, the turn's frames after it.
-        assert_eq!(extent(true, Some("started"), 1, &whole, 1), Some((3, true)));
-        assert_eq!(extent(true, Some("item"), 1, &stale, 1), None);
+        assert_eq!(ex(true, Some("started"), 1, &whole, 1), Some((3, true)));
+        assert_eq!(ex(true, Some("item"), 1, &stale, 1), None);
         // Nothing sent live: the log before the command while one is under
         // way, all of it when none is.
-        assert_eq!(extent(true, None, 2, &whole, 1), Some((2, false)));
-        assert_eq!(extent(false, None, 2, &whole, 1), Some((5, false)));
-        // A head never reached is given up on after a hundred reads, at
-        // what cannot come twice.
-        assert_eq!(extent(true, Some("gone"), 2, &whole, 100), Some((2, false)));
+        assert_eq!(ex(true, None, 2, &whole, 1), Some((2, false)));
+        assert_eq!(ex(false, None, 2, &whole, 1), Some((5, false)));
+        // A head never reached: the client is let go after the last read,
+        // under way or not, rather than paged with a gap.
+        assert_eq!(ex(true, Some("gone"), 2, &whole, MAX_READS - 1), None);
+        assert_eq!(extent(true, Some("gone"), 2, &whole, MAX_READS), Err(()));
+        assert_eq!(extent(false, Some("gone"), 2, &whole, MAX_READS), Err(()));
     }
 }
