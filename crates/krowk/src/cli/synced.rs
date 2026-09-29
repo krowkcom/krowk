@@ -6,10 +6,12 @@
 //! - `sessions`: the synced sessions this machine can open, from their
 //!   sealed indexes.
 //! - `host <session>`: this machine's daemon runs the session, and the
-//!   bridge holds its lease and syncs it until interrupted.
+//!   bridge holds its lease and syncs it until interrupted. The session is
+//!   one this machine already has; any other id is refused up front.
 //! - `attach <session>`: follows it from another machine as stream-json on
 //!   stdout; each line typed on stdin is a prompt to it, queued while no
-//!   host is online.
+//!   host is online, or a command: `/approve`, `/allow-session` and `/deny`
+//!   a request, `/interrupt` or `/steer` the turn.
 //!
 //! The relay is `KROWK_RELAY_URL`, else the reference relay on this
 //! machine (`krowk relay serve`), until the hosted relay has a published
@@ -114,6 +116,16 @@ pub(super) fn sessions(ctx: &mut Ctx) -> Result<(), Error> {
 
 pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let session = one(args, "host")?;
+    // The daemon runs only sessions it has a log of. Asked for any other,
+    // the bridge would take the session's lease in the registry and then
+    // have nothing to follow: said here, before anything is written there.
+    if !krowk_harness::log::valid_id(&session) {
+        return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sessions` lists this machine's")));
+    }
+    let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    if !dir.join(&session).join(krowk_harness::log::EVENTS_FILE).is_file() {
+        return Err(fail("no_session", format!("this machine has no session {session} to host — start one here (`krowk`, or `krowk -p \"...\"`), then `krowk sync host <its id>`; `krowk sessions` lists this machine's")));
+    }
     let k = keys(ctx)?;
     let api = Arc::new(signed(ctx, &k, "krowk sync host")?);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
