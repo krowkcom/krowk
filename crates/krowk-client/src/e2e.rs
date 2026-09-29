@@ -351,6 +351,118 @@ pub fn open_session_index(blob: &[u8], session: &[u8; 16], key: &SessionKey) -> 
     cipher(&key.0).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())
 }
 
+/// The format byte of a sealed chunk.
+pub const CHUNK_V1: u8 = 1;
+/// A chunk's flag byte: this is the last chunk of the log.
+const CHUNK_FINAL: u8 = 1;
+/// `version | suite | flags | index (8, big-endian)`, then the nonce.
+const CHUNK_HEAD: usize = 3 + 8;
+/// What sealing adds to a chunk's plaintext.
+pub const CHUNK_OVERHEAD: usize = CHUNK_HEAD + NONCE + TAG;
+
+/// A session's chunk epoch: fixed by the session key, so every device that
+/// holds the key agrees on it without storing it, and a chunk sealed under
+/// another session's key never has this chain's associated data.
+fn chunk_epoch(key: &SessionKey) -> [u8; 16] {
+    id(b"krowk/chunk-epoch/v1", &key.0)
+}
+
+fn chunk_aad(head: &[u8], session: &[u8; 16], epoch: &[u8; 16]) -> Vec<u8> {
+    [&b"krowk/chunk/v1"[..], head, session, epoch].concat()
+}
+
+/// A session's log at rest, sealed chunk by chunk for R2 (crypto.md →
+/// chunks at rest): the chunk's index is its counter, the epoch is the
+/// session's own (derived from the session key when it is made), and the
+/// last chunk says it is the last, so a log with its tail cut off is told
+/// from a finished one. `version | suite | flags | index | nonce |
+/// ciphertext + tag`, the associated data a label, those first eleven bytes,
+/// the session id and the epoch.
+pub struct ChunkSealer {
+    key: SessionKey,
+    session: [u8; 16],
+    next: u64,
+    finished: bool,
+}
+
+impl ChunkSealer {
+    /// Sealing from index `next` — 0 for a new log, the next free index for
+    /// a holder taking up a log another device wrote.
+    pub fn new(key: &SessionKey, session: [u8; 16], next: u64) -> ChunkSealer {
+        ChunkSealer { key: key.clone(), session, next, finished: false }
+    }
+
+    /// The index the next chunk is sealed at.
+    pub fn next(&self) -> u64 {
+        self.next
+    }
+
+    /// Seals the next chunk; `last` ends the log, and nothing seals after it.
+    pub fn seal(&mut self, plaintext: &[u8], last: bool) -> Result<Vec<u8>, Error> {
+        if self.finished {
+            return Err(err("this log has been ended by its final chunk; nothing is sealed after it"));
+        }
+        let head = [&[CHUNK_V1, SUITE_XCHACHA20_POLY1305, if last { CHUNK_FINAL } else { 0 }][..], &self.next.to_be_bytes()].concat();
+        let nonce: [u8; NONCE] = random();
+        let aad = chunk_aad(&head, &self.session, &chunk_epoch(&self.key));
+        let sealed = cipher(&self.key.0).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).map_err(|_| err("the chunk is too large to seal"))?;
+        self.next = self.next.checked_add(1).ok_or_else(|| err("a session's chunk index ran out"))?;
+        self.finished = last;
+        Ok([&head[..], &nonce, &sealed].concat())
+    }
+}
+
+/// Reads a session's log back, chunk by chunk, in order: index 0 first and
+/// each one after it exactly one more, so a repeated, reordered or skipped
+/// chunk is refused rather than opened out of place, and nothing is opened
+/// after the final chunk. `finished` says whether the final one arrived — a
+/// log that stops without it was cut short.
+pub struct ChunkReader {
+    key: SessionKey,
+    session: [u8; 16],
+    next: u64,
+    finished: bool,
+}
+
+impl ChunkReader {
+    pub fn new(key: &SessionKey, session: [u8; 16]) -> ChunkReader {
+        ChunkReader { key: key.clone(), session, next: 0, finished: false }
+    }
+
+    pub fn finished(&self) -> bool {
+        self.finished
+    }
+
+    /// The index the next chunk must have.
+    pub fn next(&self) -> u64 {
+        self.next
+    }
+
+    pub fn open(&mut self, blob: &[u8]) -> Result<Vec<u8>, Error> {
+        let refused = || err("the chunk does not open with this session's key: it was changed, or belongs to another session");
+        if blob.len() < CHUNK_OVERHEAD || blob[1] != SUITE_XCHACHA20_POLY1305 || blob[0] != CHUNK_V1 || blob[2] & !CHUNK_FINAL != 0 {
+            return Err(match blob.first() {
+                Some(&v) if v > CHUNK_V1 => err(format!("the chunk is format {v}, newer than this krowk reads — upgrade krowk")),
+                _ => refused(),
+            });
+        }
+        if self.finished {
+            return Err(err("a chunk arrived after the log's final chunk, refused"));
+        }
+        let index = u64::from_be_bytes(blob[3..CHUNK_HEAD].try_into().expect("eight bytes"));
+        if index != self.next {
+            return Err(err(format!("chunk {index} arrived where chunk {} belongs: a replay, a reordering or a gap, refused", self.next)));
+        }
+        let nonce: [u8; NONCE] = blob[CHUNK_HEAD..CHUNK_HEAD + NONCE].try_into().expect("24 bytes");
+        let aad = chunk_aad(&blob[..CHUNK_HEAD], &self.session, &chunk_epoch(&self.key));
+        let plain = cipher(&self.key.0).decrypt(&XNonce::from(nonce), Payload { msg: &blob[CHUNK_HEAD + NONCE..], aad: &aad }).map_err(|_| refused())?;
+        // Only an authentic chunk moves the reader on.
+        self.next += 1;
+        self.finished = blob[2] & CHUNK_FINAL != 0;
+        Ok(plain)
+    }
+}
+
 fn cipher(key: &[u8; KEY]) -> XChaCha20Poly1305 {
     XChaCha20Poly1305::new(&(*key).into())
 }
@@ -694,5 +806,47 @@ mod tests {
         assert_eq!(DeviceId::parse(&d.to_string()[..30]), None);
         let k = AccountKey::generate().id();
         assert_eq!(KeyId::parse(&k.grouped()), Some(k));
+    }
+    /// R-E2E-1: a session's log at rest opens in order under its session key,
+    /// and a replayed, reordered, skipped, moved or changed chunk does not; a
+    /// log without its final chunk reads as cut short.
+    #[test]
+    fn r_e2e_1_chunks_open_in_order_and_only_for_their_session() {
+        let key = SessionKey::generate();
+        let mut sealer = ChunkSealer::new(&key, SESSION, 0);
+        let (a, b, c) = (sealer.seal(b"turn one", false).unwrap(), sealer.seal(b"turn two", false).unwrap(), sealer.seal(b"end", true).unwrap());
+        assert!(sealer.seal(b"after", false).is_err(), "nothing seals after the final chunk");
+        assert!(!a.windows(4).any(|w| w == b"turn"), "the plaintext is not in the chunk");
+
+        let mut reader = ChunkReader::new(&key, SESSION);
+        assert_eq!(reader.open(&a).unwrap(), b"turn one");
+        assert!(reader.open(&a).is_err(), "a replay");
+        assert!(reader.open(&c).unwrap_err().0.contains("chunk 2 arrived where chunk 1 belongs"), "a gap");
+        assert!(!reader.finished());
+        assert_eq!(reader.open(&b).unwrap(), b"turn two");
+        assert_eq!(reader.open(&c).unwrap(), b"end");
+        assert!(reader.finished());
+
+        assert!(ChunkReader::new(&key, *b"fedcba9876543210").open(&a).is_err(), "moved to another session");
+        assert!(ChunkReader::new(&SessionKey::generate(), SESSION).open(&a).is_err(), "another session's key");
+        let mut changed = a.clone();
+        changed[2] = CHUNK_FINAL;
+        assert!(ChunkReader::new(&key, SESSION).open(&changed).is_err(), "the final flag is bound");
+        let mut newer = a;
+        newer[0] = CHUNK_V1 + 1;
+        assert!(ChunkReader::new(&key, SESSION).open(&newer).unwrap_err().0.contains("upgrade krowk"));
+    }
+
+    /// A holder taking up a log another device wrote seals from the next
+    /// free index, and a reader reads the two devices' chunks as one log.
+    #[test]
+    fn a_log_continues_across_holders() {
+        let key = SessionKey::generate();
+        let first = ChunkSealer::new(&key, SESSION, 0).seal(b"one", false).unwrap();
+        let second = ChunkSealer::new(&key, SESSION, 1).seal(b"two", true).unwrap();
+        let mut reader = ChunkReader::new(&key, SESSION);
+        assert_eq!(reader.open(&first).unwrap(), b"one");
+        assert_eq!(reader.open(&second).unwrap(), b"two");
+        assert!(reader.finished());
     }
 }
