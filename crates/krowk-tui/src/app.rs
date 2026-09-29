@@ -895,11 +895,12 @@ impl App {
     }
 
     /// What the person said, on a band across the width: a thin bar down
-    /// its left edge, the text in the ink.
+    /// its left edge, the text in the ink, an empty row of it above and below.
     fn push_said(&mut self, text: &str) {
         let width = usize::from(self.width);
         let room = width.saturating_sub(look::SAID.width()).max(1);
-        for row in wrap(&clean(text), room) {
+        let rows = wrap(&clean(text), room);
+        for row in std::iter::once(String::new()).chain(rows).chain([String::new()]) {
             let fill = " ".repeat(room.saturating_sub(row.width()));
             self.push_line(Line::from(vec![Span::styled(look::SAID, look::said_bar()), Span::styled(row + &fill, look::said_band())]));
         }
@@ -2943,7 +2944,7 @@ mod tests {
         let call = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolCall { call_id: id.into(), name: "read".into(), input: serde_json::json!({"path": "README.md"}) } }));
         let back = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolResult { call_id: id.into(), output: "x".into(), is_error: false } }));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::UserText { text: "hi".into() } }));
-        assert_eq!(text(&a.take_pending()), ["▎ hi"]);
+        assert_eq!(text(&a.take_pending()), ["▎", "▎ hi", "▎"]);
         call(&mut a, "1");
         assert_eq!(text(&a.view(Instant::now()).0)[..2], ["", "◆ Read README.md"], "a gap under the prompt while it runs");
         back(&mut a, "1");
@@ -3103,7 +3104,7 @@ mod tests {
             ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 1200, ..Usage::default() }, duration_ms: 1500, error: None, reported_cost_usd: None }),
         ];
         a.replay(&evs.iter().collect::<Vec<_>>());
-        assert_eq!(text(&a.take_pending()), ["▎ hi", "", "◆ Read README.md (2 lines)", "", "It is a CLI.", "", "Worked for 1.5s · 1.2k tokens"]);
+        assert_eq!(text(&a.take_pending()), ["▎", "▎ hi", "▎", "", "◆ Read README.md (2 lines)", "", "It is a CLI.", "", "Worked for 1.5s · 1.2k tokens"]);
         assert_eq!(a.model, Some(model), "the session's model is the one shown");
     }
 
