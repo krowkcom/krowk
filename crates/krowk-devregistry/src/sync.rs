@@ -116,6 +116,9 @@ pub struct SyncStore {
     /// Workspace and slug → a vintage: its ISO week, and its bytes' upload,
     /// which is a chunk's with no place in a log (index and fence 0).
     pub vintages: HashMap<(String, String), (String, Chunk)>,
+    /// Workspace and slug → the slug of the vintage a pending one replaces
+    /// ("" for none), which its finalize checks again.
+    pub vintage_replaces: HashMap<(String, String), String>,
     /// Key and create → the minute its count began, and the count.
     pub bursts: HashMap<(String, &'static str), (Timestamp, usize)>,
     /// 0 is MAX_SESSIONS.
@@ -1309,6 +1312,7 @@ pub fn declare_vintage(app: &App, req: &mut Req, site: &str, signer: &str) -> Re
         if let Some(attempt) = &attempt {
             s.remember("vintage", &workspace, attempt, crate::store::Answered { request_hash: hash, artifact: c.slug.clone(), run: String::new() });
         }
+        s.sync.vintage_replaces.insert((workspace.clone(), c.slug.clone()), replaces);
         s.sync.vintages.insert((workspace, c.slug.clone()), (week, c));
         Ok(resp)
     };
@@ -1338,6 +1342,12 @@ pub fn finalize_vintage(app: &App, req: &mut Req, slug: &str, signer: &str) -> R
             None => return Err(error(409, "upload_missing", &format!("nothing uploaded for {} yet", c.slug), None)),
             Some(sum) if *sum != c.checksum => return Err(error(422, "checksum_mismatch", "what was uploaded does not match the declared checksum", None)),
             Some(_) => {}
+        }
+        // The compare-and-swap again, as the registry runs it under its
+        // lock: another machine may have replaced the week since the declare.
+        let replaces = s.sync.vintage_replaces.get(&(workspace.clone(), slug.to_owned())).cloned().unwrap_or_default();
+        if current_vintage(&s.sync, &workspace, &week).unwrap_or_default() != replaces {
+            return Err(vintage_conflict(&week));
         }
         if let Some(old) = current_vintage(&s.sync, &workspace, &week)
             && let Some((_, gone)) = s.sync.vintages.remove(&(workspace.clone(), old))

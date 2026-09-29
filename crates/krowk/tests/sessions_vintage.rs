@@ -131,5 +131,18 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     assert!(v.to_string().contains("answering the idle session"), "shown in full: {out}");
     assert_eq!(std::fs::read(sessions.join(&old).join(log::EVENTS_FILE)).unwrap(), original);
     assert!(!sessions.join(&old).join(krowk_harness::vintage::STUB_FILE).exists());
+
+    // R-VINT-1: a second session last active in the same week joins the
+    // week's vintage: the old one is read and merged, then replaced.
+    let sibling = session(&sessions, &root, "a sibling from the same week", 20);
+    let (ok, v, out) = m.krowk(&["sessions", "archive"]);
+    assert!(ok, "{out}");
+    assert!(v.to_string().contains(&sibling) && v.to_string().contains(&old), "{out}");
+    let merged = api.week_vintage(&week).unwrap().expect("the week's vintage");
+    assert_ne!(merged.slug, vintage.slug, "replaced");
+    let plain = krowk_harness::vintage::unpack(&e2e::open_vintage(&api.read_vintage(&merged).unwrap(), &week, &account).unwrap()).unwrap();
+    assert!(plain.contains_key(&old) && plain.contains_key(&sibling), "one vintage holds the week's sessions");
+    // A replacement that did not read the week's latest is refused.
+    assert_eq!(api.put_vintage(&week, b"stale", Some(&vintage.slug)).unwrap_err().code(), "vintage_conflict");
     let _ = std::fs::remove_dir_all(&root);
 }
