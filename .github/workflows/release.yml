@@ -2,9 +2,10 @@ name: Release
 
 # A tag is the whole trigger. `git tag -a v0.1.0 -m ... && git push origin v0.1.0`
 # checks the tag, builds both builds of krowk (full and lean) and krowk-mcp for
-# five platforms in parallel (dist.yml), opens the GitHub Release with the
-# archives and checksums on it,
-# and publishes the seven npm packages.
+# five platforms in parallel (dist.yml), rebuilds one platform on a second
+# runner and refuses to go on unless the bytes match, signs the checksums and
+# the SBOMs, opens the GitHub Release with all of it on it, and publishes the
+# seven npm packages with provenance. SECURITY.md says how to verify each.
 #
 # Three components, deliberately: the moving major tag this workflow pushes at
 # the end is also `v*`, and a release run for `v0` would cut a release of
@@ -71,18 +72,112 @@ jobs:
         env:
           NEXTEST_PROFILE: ci
 
+      # R-OSS-3: the same advisory and licence check as a pull request, run
+      # again at the tag, because an advisory published since the last merge
+      # is exactly what should stop a release.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2,cargo-cyclonedx@0.5.9
+
+      - name: Advisories, licences and sources
+        run: cargo deny check
+
+      # R-OSS-3: a CycloneDX SBOM of each build, over every target the
+      # release ships. It is a superset of what a binary links — the tool
+      # resolves the workspace's features together — so it may name a crate
+      # one build leaves out, never the other way round; the exact list for
+      # the lean build is crates/krowk/lean-deps.txt. The timestamp is the
+      # tagged commit's, so a rerun writes the same file.
+      - name: SBOM
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          mkdir -p sbom
+          for build in full lean; do
+            features=()
+            [[ "$build" == full ]] && features=(--features harness)
+            cargo cyclonedx --manifest-path crates/krowk/Cargo.toml --format json --spec-version 1.5 \
+              --target all --no-build-deps "${features[@]}" --override-filename sbom
+            name="krowk"
+            [[ "$build" == lean ]] && name="krowk-lean"
+            mv crates/krowk/sbom.json "sbom/${name}_${VERSION}.cdx.json"
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: sbom/
+
   dist:
     needs: check
     uses: ./.github/workflows/dist.yml
     with:
       version: ${{ needs.check.outputs.version }}
 
-  publish:
+  # R-OSS-3: two independent builds of the same tag produce identical
+  # binaries. One target is built again here, on another runner, from a
+  # checkout at another path (so the path remapping in scripts/dist.sh is
+  # what makes them match, not a shared directory), and the release stops
+  # unless every binary matches the one dist built byte for byte. Linux x86-64
+  # is the one rebuilt: the build most people and every container fetch.
+  reproduce:
     needs: [check, dist]
+    runs-on: ubuntu-latest
+    env:
+      TARGET: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          path: rebuild
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.97 --profile minimal --target "$TARGET"
+          rustup default 1.97
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild@0.23.4
+
+      - name: Build again
+        working-directory: rebuild
+        run: scripts/dist.sh build "$TARGET" ${{ needs.check.outputs.version }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: released
+
+      - name: The same bytes
+        run: |
+          set -euo pipefail
+          for bin in "$TARGET/krowk" "$TARGET/krowk-mcp" "$TARGET-lean/krowk"; do
+            want=$(sha256sum "released/$bin" | cut -d' ' -f1)
+            got=$(sha256sum "rebuild/dist/$bin" | cut -d' ' -f1)
+            echo "$bin  released $want  rebuilt $got"
+            [[ "$want" == "$got" ]] || { echo "::error::$bin did not build reproducibly" >&2; exit 1; }
+            echo "- \`$bin\` \`$want\`, rebuilt identically" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  publish:
+    needs: [check, dist, reproduce]
     runs-on: ubuntu-latest
     permissions:
       # Creates the release and uploads the archives to it.
       contents: write
+      # Sigstore's keyless signing: GitHub's OIDC token names this workflow at
+      # this tag, Fulcio certifies a one-use key for that identity, and the
+      # signature is logged in Rekor. No signing key exists to leak. npm's
+      # provenance takes the same token.
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -96,6 +191,24 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: release-notes
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sbom
+          path: dist
+
+      - uses: sigstore/cosign-installer@v3
+
+      # R-OSS-3: checksums.txt names every archive's SHA-256, so its signature
+      # covers them all; each SBOM is signed on its own. A bundle carries the
+      # signature, the certificate and the transparency-log entry together,
+      # so `cosign verify-blob --bundle` needs nothing else (SECURITY.md).
+      - name: Sign
+        run: |
+          set -euo pipefail
+          for file in dist/checksums.txt dist/*.cdx.json; do
+            cosign sign-blob --yes --bundle "$file.sigstore.json" "$file"
+          done
 
       # A tag like v0.1.0-rc1 becomes a GitHub pre-release, and npm publishes
       # it under the `next` dist-tag rather than `latest`. Re-running on a tag
@@ -131,9 +244,22 @@ jobs:
           cargo install --locked --git https://github.com/$GITHUB_REPOSITORY --tag $tag --features harness krowk
           \`\`\`
 
-          \`checksums.txt\` covers every archive on this release.
+          \`checksums.txt\` covers every archive on this release, and
+          \`checksums.txt.sigstore.json\` is its signature. To verify a
+          download (with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)):
+
+          \`\`\`bash
+          cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \\
+            --certificate-identity https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/$tag \\
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          sha256sum --check --ignore-missing checksums.txt
+          \`\`\`
+
+          The \`.cdx.json\` files are CycloneDX SBOMs of the full and lean
+          builds, each signed the same way. SECURITY.md in the repository says
+          how to rebuild a release and compare the bytes.
           EOF
-          assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt)
+          assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt dist/*.cdx.json dist/*.sigstore.json)
           prerelease=()
           case "$tag" in *-*) prerelease=(--prerelease) ;; esac
           if gh release view "$tag" >/dev/null 2>&1; then
@@ -156,9 +282,12 @@ jobs:
 
       # Skips with a notice when NPM_TOKEN is unset, which it is until somebody
       # claims the names. The release above has already happened by then.
+      # With provenance: npm records, from the OIDC token above, which
+      # workflow at which commit published each package, and shows it.
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
         run: node npm/publish.mjs
 
       # The moving major tag, so `uses: krowkcom/krowk@v0` follows the 0.x line
