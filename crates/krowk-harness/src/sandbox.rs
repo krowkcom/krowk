@@ -21,7 +21,9 @@
 //! `.claude/settings.json` could run anything the next time git or an
 //! agent starts. `/tmp` is private to the call, and `/run` — where the
 //! ssh agent, the session bus and the Docker socket live — is empty but
-//! for the resolver.
+//! for the resolver. The command's environment is an allowlist (`env`),
+//! it inherits no descriptor past stdio, and it runs in a session, IPC,
+//! UTS and pid namespace of its own.
 //!
 //! It fails closed: a profile this machine cannot enforce refuses to run
 //! anything, with a `fix`, rather than running unsandboxed. On Linux it is
@@ -29,6 +31,9 @@
 //! user namespaces the kernel or AppArmor forbids is as good as none. On
 //! macOS it will be Seatbelt (`sandbox-exec`), which is not built yet; on
 //! Windows there is none. Both refuse.
+//!
+//! Inside a container (`By::Container`) the container holds the commands,
+//! and krowk adds only the file tools' fences.
 //!
 //! The file tools run in krowk's own process, not in the sandbox: under
 //! one they hold the same lines themselves (`tools::Scope::edit_path`,
@@ -75,6 +80,29 @@ impl Profile {
     }
 }
 
+/// What holds a session's tools to a profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum By {
+    /// bubblewrap, around every command; the file tools hold the same lines.
+    Bubblewrap,
+    /// The container krowk runs in, which is the command's boundary: the
+    /// commands run as they are, and the file tools hold the profile's
+    /// lines themselves all the same — the container does not keep them
+    /// out of `.git/hooks` or the person's credentials.
+    Container,
+}
+
+/// A session's sandbox: its profile, and what enforces it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sandbox {
+    pub profile: Profile,
+    pub by: By,
+}
+
+/// Where a sandboxed command's home is: a directory of its private `/tmp`,
+/// so what it keeps there — and what it would read there — is its own.
+pub const HOME: &str = "/tmp/home";
+
 /// Directories under the home holding what signs, logs in or decrypts as
 /// the person: hidden in every profile.
 const CREDENTIALS: [&str; 8] = [".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".config/gcloud", ".config/gh"];
@@ -88,6 +116,9 @@ const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".krowk"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     pub profile: Profile,
+    /// Whether commands run inside bubblewrap; false inside a container,
+    /// where only the file tools' own fences are krowk's to add.
+    pub kernel: bool,
     pub cwd: PathBuf,
     /// Bound read-write (read-only under the read-only profile).
     pub writable: Vec<PathBuf>,
@@ -108,7 +139,7 @@ impl Plan {
     /// directory and added directories (`roots`), the skills it reads
     /// (`readable`), the settings directories it keeps (`protected`) and
     /// krowk's home (`secrets`).
-    pub fn new(profile: Profile, cwd: &Path, roots: &[PathBuf], readable: &[PathBuf], protected: &[PathBuf], secrets: &[PathBuf], home: Option<&Path>) -> Plan {
+    pub fn new(sandbox: Sandbox, cwd: &Path, roots: &[PathBuf], readable: &[PathBuf], protected: &[PathBuf], secrets: &[PathBuf], home: Option<&Path>) -> Plan {
         // As they lead: a bind mount is of the real directory, and a
         // symlinked working directory would otherwise leave `.git` where
         // the mount never reaches.
@@ -124,8 +155,10 @@ impl Plan {
         let mut hidden: Vec<PathBuf> = home.map(|h| CREDENTIALS.iter().map(|c| canon(&h.join(c))).collect()).unwrap_or_default();
         hidden.extend(secrets.iter().map(|d| canon(d)));
         hidden.dedup();
+        let profile = sandbox.profile;
         Plan {
             profile,
+            kernel: sandbox.by == By::Bubblewrap,
             cwd: canon(cwd),
             writable,
             read_only,
@@ -187,6 +220,17 @@ impl Plan {
         }
         // Its own pid namespace, with bubblewrap as its first process: when
         // the call is killed, everything the command started goes with it.
+        // The command's environment is the allowlist `env` names, nothing
+        // inherited: no provider key, token or agent socket reaches it.
+        a.push("--clearenv".into());
+        for (k, v) in env() {
+            a.extend(["--setenv".into(), k, v]);
+        }
+        a.extend(["--dir".into(), HOME.into()]);
+        // A session of its own, so it cannot push keystrokes into the
+        // terminal krowk runs in (TIOCSTI); its own IPC, host name and
+        // cgroup view.
+        a.extend(["--new-session", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try"].map(String::from));
         a.extend(["--unshare-pid", "--die-with-parent", "--chdir"].map(String::from));
         a.push(s(&self.cwd));
         a
@@ -226,6 +270,24 @@ impl Drop for Unfenced {
     }
 }
 
+/// The environment a sandboxed command gets, and bubblewrap itself: the
+/// search path, the terminal, the locale and the user's name from krowk's
+/// own, the private home and `/tmp`. Everything else — `*_API_KEY`,
+/// `*_TOKEN`, `KROWK_*`, `AWS_*`, `SSH_AUTH_SOCK`, `GPG_AGENT_INFO` — is
+/// left out, allowlisted rather than denylisted, so a variable krowk has
+/// never heard of is left out too.
+pub fn env() -> Vec<(String, String)> {
+    let keep = |k: &str| matches!(k, "PATH" | "TERM" | "LANG" | "USER" | "LOGNAME") || k.starts_with("LC_");
+    let mut out: Vec<(String, String)> = std::env::vars().filter(|(k, _)| keep(k)).collect();
+    if !out.iter().any(|(k, _)| k == "PATH") {
+        out.push(("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()));
+    }
+    out.push(("HOME".into(), HOME.into()));
+    out.push(("TMPDIR".into(), "/tmp".into()));
+    out.sort();
+    out
+}
+
 /// The program that enforces a plan here, or why none can: the `fix` a
 /// sandboxed run refuses with. Probed once per process.
 pub fn enforcer() -> Result<&'static Path, String> {
@@ -247,7 +309,7 @@ fn probe_in(path: &str) -> Result<PathBuf, String> {
     // The flags every profile uses, so a kernel that forbids one (a user
     // or network namespace) is found here and not on the first call.
     let out = std::process::Command::new(&bwrap)
-        .args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-net", "--unshare-pid", "--die-with-parent", "--", "true"])
+        .args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-net", "--unshare-pid", "--die-with-parent", "--new-session", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try", "--clearenv", "--", "true"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -294,7 +356,7 @@ mod tests {
 
     fn plan(profile: Profile, base: &Path) -> Plan {
         let home = base.join("home");
-        Plan::new(profile, &base.join("ws"), &[], &[], &[home.join(".claude")], &[home.join(".krowk")], Some(&home))
+        Plan::new(Sandbox { profile, by: By::Bubblewrap }, &base.join("ws"), &[], &[], &[home.join(".claude")], &[home.join(".krowk")], Some(&home))
     }
 
     /// R-PERM-3: `.git` and its kind, the settings directories and the

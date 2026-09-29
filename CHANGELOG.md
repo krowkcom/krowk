@@ -11,7 +11,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
-- **`krowk -p` runs its tools in an OS sandbox on Linux.** `--sandbox
+- **On Linux, `krowk -p` now makes edits without asking, inside a sandbox.**
+  A `-p` run with no `--permission-mode` and no `defaultMode` used to refuse
+  every edit; where bubblewrap works it now runs in `acceptEdits`, with its
+  commands inside the `workspace` sandbox below, and inside a container in
+  `acceptEdits` with the file tools held to the same fences. Pass
+  `--permission-mode default` to keep the old behaviour. `--sandbox
   workspace|read-only|strict|off` puts the `bash` tool inside bubblewrap:
   `workspace` lets it write the working directory and its added directories
   and nothing else, hides `~/.ssh`, `~/.gnupg`, `~/.aws` and similar
@@ -20,7 +25,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   whole home outside the workspace. In every profile `.git`, `.claude`,
   `.codex`, `.krowk` and krowk's and Claude Code's settings directories stay
   read-only, and the file tools hold the same lines whatever the permission
-  mode says. A run with no `--permission-mode` and no `defaultMode` takes
+  mode says. A sandboxed command gets only `PATH`, `TERM`, the locale,
+  `USER`, a private `HOME` and `TMPDIR` — no provider key, token or agent
+  socket — no inherited file descriptor, and a session of its own.
+  `PreToolUse` hooks are the person's own and run outside it. A run with no `--permission-mode` and no `defaultMode` takes
   the workspace sandbox and `acceptEdits` where bubblewrap works (or inside
   a container), and keeps asking — so refusing edits — where it does not. A
   sandbox that cannot be enforced refuses the run with a fix instead of

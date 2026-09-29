@@ -802,11 +802,13 @@ impl Shared {
         // R-PERM-3, fail closed: a sandbox this machine cannot enforce, or
         // a backend that runs its own tools outside it, refuses the turn
         // rather than running it unsandboxed.
-        if let Some(profile) = policy.sandbox {
+        if let Some(crate::sandbox::Sandbox { profile, by }) = policy.sandbox {
             if instance.backend.is_some() {
                 return Err(staying(EngineError::new("sandbox_unsupported", format!("{} runs {} as a backend, which runs its own tools outside krowk's {} sandbox — pick a model krowk runs natively, or run without --sandbox", instance.name, instance.vendor, profile.name()))));
             }
-            crate::sandbox::enforcer().map_err(|fix| staying(EngineError::new("sandbox_unavailable", fix)))?;
+            if by == crate::sandbox::By::Bubblewrap {
+                crate::sandbox::enforcer().map_err(|fix| staying(EngineError::new("sandbox_unavailable", fix)))?;
+            }
         }
         let mut compat = compat::Compat::load(&self.cfg.permissions, &cwd, policy.loaded.hooks.clone());
         policy.read_dirs = compat.skills.iter().map(|k| k.dir.clone()).collect();

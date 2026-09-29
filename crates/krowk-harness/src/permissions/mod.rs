@@ -93,7 +93,7 @@ pub struct Policy {
     /// home, its keys, logins, sessions and settings (`Scope::secrets`).
     pub secrets: Vec<PathBuf>,
     /// The OS sandbox the session's tools run in (R-PERM-3).
-    pub sandbox: Option<crate::sandbox::Profile>,
+    pub sandbox: Option<crate::sandbox::Sandbox>,
 }
 
 impl Policy {
@@ -147,8 +147,8 @@ impl Policy {
             hidden: Hidden::default(),
             sandbox: None,
         };
-        if let Some(profile) = self.sandbox {
-            let plan = crate::sandbox::Plan::new(profile, &scope.cwd, &scope.roots, &scope.read_roots, &scope.protected, &scope.secrets, self.home.as_deref());
+        if let Some(sandbox) = self.sandbox {
+            let plan = crate::sandbox::Plan::new(sandbox, &scope.cwd, &scope.roots, &scope.read_roots, &scope.protected, &scope.secrets, self.home.as_deref());
             // What the sandbox hides, a search skips as it skips krowk's home.
             scope.secrets.extend(plan.hidden.iter().cloned());
             scope.sandbox = Some(Arc::new(plan));

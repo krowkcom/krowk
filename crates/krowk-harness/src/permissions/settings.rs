@@ -75,7 +75,7 @@ pub struct Config {
     pub approvals: bool,
     /// The OS sandbox every native turn's tools run in (R-PERM-3); none
     /// runs them unsandboxed.
-    pub sandbox: Option<crate::sandbox::Profile>,
+    pub sandbox: Option<crate::sandbox::Sandbox>,
 }
 
 impl std::fmt::Debug for Config {

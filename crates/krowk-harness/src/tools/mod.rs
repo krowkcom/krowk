@@ -853,7 +853,7 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
     let timeout = i.timeout_ms.map_or(BASH_DEFAULT_TIMEOUT, Duration::from_millis).min(BASH_MAX_TIMEOUT);
     // Inside the sandbox when the session has one, or not at all: a plan
     // this machine cannot enforce refuses the command (R-PERM-3).
-    let mut cmd = match sandbox.map(|p| crate::sandbox::bash(p, &i.command)) {
+    let mut cmd = match sandbox.filter(|p| p.kernel).map(|p| crate::sandbox::bash(p, &i.command)) {
         None => {
             let mut c = tokio::process::Command::new("bash");
             c.arg("-c").arg(&i.command);
@@ -861,12 +861,34 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
         }
         Some(Ok((program, args))) => {
             let mut c = tokio::process::Command::new(program);
-            c.args(args);
+            // bubblewrap's own environment is the allowlist too: its
+            // process inside the namespace is pid 1, whose environ the
+            // command can read.
+            c.args(args).env_clear().envs(crate::sandbox::env());
+            // Nothing krowk inherited reaches the sandbox open: every
+            // descriptor past stdio is closed when bubblewrap starts.
+            // SAFETY: close_range(2) with CLOSE_RANGE_CLOEXEC only marks
+            // descriptors, allocates nothing, and is async-signal-safe;
+            // run after the child's stdio is in place.
+            #[cfg(target_os = "linux")]
+            unsafe {
+                c.pre_exec(|| {
+                    const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
+                    if libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, libc::c_uint::MAX, CLOSE_RANGE_CLOEXEC) != 0 {
+                        // Before Linux 5.11: one by one, up to the limit.
+                        let max = libc::sysconf(libc::_SC_OPEN_MAX).clamp(1024, 1 << 20) as libc::c_int;
+                        for fd in 3..max {
+                            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+                        }
+                    }
+                    Ok(())
+                });
+            }
             c
         }
         Some(Err(fix)) => return (format!("the command was not run: {fix}"), true),
     };
-    let mut unfenced = sandbox.map(crate::sandbox::Unfenced::before);
+    let mut unfenced = sandbox.filter(|p| p.kernel).map(crate::sandbox::Unfenced::before);
     cmd.current_dir(cwd);
     cmd.stdin(std::process::Stdio::null());
     // One pipe for both streams, as a terminal would have it: the model

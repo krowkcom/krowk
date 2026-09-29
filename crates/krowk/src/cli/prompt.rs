@@ -13,7 +13,7 @@ use krowk_harness::log;
 use krowk_harness::readiness;
 use krowk_harness::evidence::{PublishRequest, Publisher};
 use krowk_harness::permissions;
-use krowk_harness::sandbox::{self, Profile};
+use krowk_harness::sandbox::{self, By, Profile, Sandbox};
 use krowk_harness::protocol::{BudgetLimits, Effort, PermissionMode, TurnStatus, Usage};
 use std::collections::HashMap;
 use krowk_harness::subagent::{AgentsConfig, Models};
@@ -196,9 +196,10 @@ struct Here {
 /// holds no sandbox of this process's, refuses the run. Without the flag,
 /// a run whose mode nobody chose (`mode_chosen`: no `--permission-mode`,
 /// no `defaultMode`) accepts edits only where a sandbox holds its tools —
-/// the workspace sandbox where bubblewrap works, or a container — and
+/// the workspace sandbox where bubblewrap works, or a container with the
+/// file tools held to the workspace profile's fences — and
 /// otherwise keeps asking, which headless refuses.
-fn sandbox_and_mode(flag: &str, daemon: bool, mode_chosen: bool, mode: PermissionMode, runs_native: bool, here: &Here) -> Result<(Option<Profile>, PermissionMode), Error> {
+fn sandbox_and_mode(flag: &str, daemon: bool, mode_chosen: bool, mode: PermissionMode, runs_native: bool, here: &Here) -> Result<(Option<Sandbox>, PermissionMode), Error> {
     let asked = match flag {
         "" => None,
         "off" => Some(None),
@@ -215,11 +216,14 @@ fn sandbox_and_mode(flag: &str, daemon: bool, mode_chosen: bool, mode: Permissio
                 return Err(fail("sandbox_unsupported", "the model runs on a backend (Claude Code or Codex), which runs its own tools outside krowk's sandbox — pick a model krowk runs natively with --model, or drop --sandbox"));
             }
             here.enforcer.clone().map_err(|fix| fail("sandbox_unavailable", fix))?;
-            (Some(p), chosen(PermissionMode::AcceptEdits))
+            (Some(Sandbox { profile: p, by: By::Bubblewrap }), chosen(PermissionMode::AcceptEdits))
         }
         None if mode_chosen || daemon || !runs_native => (None, mode),
-        None if here.enforcer.is_ok() => (Some(Profile::Workspace), PermissionMode::AcceptEdits),
-        None if here.container => (None, PermissionMode::AcceptEdits),
+        None if here.enforcer.is_ok() => (Some(Sandbox { profile: Profile::Workspace, by: By::Bubblewrap }), PermissionMode::AcceptEdits),
+        // The container holds the commands; the file tools hold the
+        // workspace profile's fences themselves, which is what lets its
+        // edits be accepted.
+        None if here.container => (Some(Sandbox { profile: Profile::Workspace, by: By::Container }), PermissionMode::AcceptEdits),
         None => (None, mode),
     })
 }
@@ -565,13 +569,14 @@ mod sandbox_tests {
         let (bwrap, none) = (Here { enforcer: Ok(()), container: false }, Here { enforcer: Err("install bubblewrap".into()), container: false });
         let d = PermissionMode::Default;
         let ok = |flag: &str, daemon, chosen, native, here: &Here| sandbox_and_mode(flag, daemon, chosen, d, native, here).map_err(|e| e.fix());
-        assert_eq!(ok("", false, false, true, &bwrap), Ok((Some(Profile::Workspace), PermissionMode::AcceptEdits)));
+        let (bw, ct) = (|p| Some(Sandbox { profile: p, by: By::Bubblewrap }), Some(Sandbox { profile: Profile::Workspace, by: By::Container }));
+        assert_eq!(ok("", false, false, true, &bwrap), Ok((bw(Profile::Workspace), PermissionMode::AcceptEdits)));
         assert_eq!(ok("", false, false, true, &none), Ok((None, d)), "no sandbox: edits are still asked about, so refused");
-        assert_eq!(ok("", false, false, true, &Here { container: true, enforcer: Err("install bubblewrap".into()) }), Ok((None, PermissionMode::AcceptEdits)), "a container is a sandbox");
+        assert_eq!(ok("", false, false, true, &Here { container: true, enforcer: Err("install bubblewrap".into()) }), Ok((ct, PermissionMode::AcceptEdits)), "a container is a sandbox, and the file tools keep its fences");
         assert_eq!(ok("", false, true, true, &bwrap), Ok((None, d)), "a chosen mode stands");
         assert_eq!(ok("", false, false, false, &bwrap), Ok((None, d)), "a backend runs its own tools");
         assert_eq!(ok("", true, false, true, &bwrap), Ok((None, d)), "the daemon has no sandbox yet");
-        assert_eq!(ok("strict", false, true, true, &bwrap), Ok((Some(Profile::Strict), d)));
+        assert_eq!(ok("strict", false, true, true, &bwrap), Ok((bw(Profile::Strict), d)));
         assert_eq!(ok("off", false, false, true, &bwrap), Ok((None, d)));
         let refused = ok("workspace", false, false, true, &none).unwrap_err();
         assert!(refused.contains("install bubblewrap"), "{refused}");

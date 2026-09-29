@@ -5,16 +5,20 @@
 
 use super::tests::dir;
 use super::*;
-use crate::sandbox::{Plan, Profile};
+use crate::sandbox::{By, Plan, Profile, Sandbox};
 use serde_json::json;
 use std::sync::Arc;
 
 /// Whether this machine enforces a sandbox; the reason goes to stderr
 /// when it does not.
+/// On CI, which installs bubblewrap and allows it its namespaces, a
+/// missing sandbox fails the test instead: a sandbox whose escape tests
+/// skip everywhere is untested.
 fn enforced(test: &str) -> bool {
     match crate::sandbox::enforcer() {
         Ok(_) => true,
         Err(why) => {
+            assert!(std::env::var_os("CI").is_none(), "{test}: CI on Linux must run the sandbox's escape tests, and {why}");
             eprintln!("{test} skipped: {why}");
             false
         }
@@ -25,6 +29,10 @@ fn enforced(test: &str) -> bool {
 /// the scope a sandboxed session gets, wide open otherwise: as bypass
 /// would leave it, so what holds is the sandbox's doing.
 fn setup(name: &str, profile: Profile) -> (PathBuf, PathBuf, Scope) {
+    setup_by(name, profile, By::Bubblewrap)
+}
+
+fn setup_by(name: &str, profile: Profile, by: By) -> (PathBuf, PathBuf, Scope) {
     let base = dir(name).canonicalize().unwrap();
     let (ws, home) = (base.join("ws"), base.join("home"));
     std::fs::create_dir_all(ws.join(".git/hooks")).unwrap();
@@ -33,7 +41,7 @@ fn setup(name: &str, profile: Profile) -> (PathBuf, PathBuf, Scope) {
     let mut scope = Scope::within(&ws);
     scope.outside = true;
     scope.open = true;
-    let plan = Plan::new(profile, &ws, &[], &[], &[], &[], Some(&home));
+    let plan = Plan::new(Sandbox { profile, by }, &ws, &[], &[], &[], &[], Some(&home));
     scope.secrets.extend(plan.hidden.iter().cloned());
     scope.sandbox = Some(Arc::new(plan));
     (base, ws, scope)
@@ -150,4 +158,89 @@ async fn r_perm_3_strict_and_read_only_have_no_network_and_read_only_writes_noth
     assert!(err && out.contains("hidden by the strict sandbox"), "{out}");
     let _ = std::fs::remove_dir_all(base);
     let _ = std::fs::remove_dir_all(base2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn r_perm_3_a_sandboxed_command_gets_only_the_allowlisted_environment() {
+    if !enforced("r_perm_3_a_sandboxed_command_gets_only_the_allowlisted_environment") {
+        return;
+    }
+    let planted = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "GITHUB_TOKEN", "KROWK_SYNC_TOKEN", "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK", "GPG_AGENT_INFO"];
+    let (base, ws, scope) = setup("sbx-env", Profile::Workspace);
+    let dump = "env; tr '\\0' '\\n' < /proc/1/environ";
+    // bubblewrap started with a parent's keys in its environment, as
+    // krowk's would be: none reaches the command (`--clearenv`). Set on the
+    // child only, so no other test's environment moves.
+    let (program, args) = crate::sandbox::bash(scope.sandbox.as_deref().unwrap(), "env").unwrap();
+    let mut direct = std::process::Command::new(&program);
+    direct.args(&args).current_dir(&ws);
+    for k in planted {
+        direct.env(k, "sk-planted-secret");
+    }
+    let got = String::from_utf8_lossy(&direct.output().unwrap().stdout).into_owned();
+    assert!(got.contains("PATH=") && !got.contains("sk-planted-secret"), "{got}");
+    for k in planted {
+        assert!(!got.contains(&format!("{k}=")), "{k} reached the sandbox: {got}");
+    }
+    // And through the tool: the command's environment and bubblewrap's own
+    // (pid 1's, which the command can read) are both the allowlist.
+    let (out, err) = bash(&ws, &scope, dump).await;
+    assert!(!err, "{out}");
+    let names: std::collections::BTreeSet<&str> = out.lines().filter_map(|l| l.split_once('=').map(|(k, _)| k)).collect();
+    let allowed = |k: &&str| ["PATH", "HOME", "TERM", "LANG", "USER", "LOGNAME", "TMPDIR", "PWD", "SHLVL", "_", "OLDPWD"].contains(k) || k.starts_with("LC_");
+    assert!(names.iter().all(allowed), "only the allowlist: {names:?}");
+    assert!(out.contains(&format!("HOME={}", crate::sandbox::HOME)), "{out}");
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_session() {
+    if !enforced("r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_session") {
+        return;
+    }
+    // A descriptor this process holds without close-on-exec, as one handed
+    // down by krowk's own parent would be.
+    let f = std::fs::File::open("/dev/null").unwrap();
+    let fd = std::os::fd::IntoRawFd::into_raw_fd(f);
+    // SAFETY: the descriptor was just opened here and is closed below.
+    unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
+    let (base, ws, scope) = setup("sbx-fd", Profile::Workspace);
+    let (out, err) = bash(&ws, &scope, "ls /proc/$$/fd | sort -n | tr '\\n' ' '; echo; ps -o sid= -p $$; echo $$").await;
+    unsafe { libc::close(fd) };
+    let mut lines = out.lines();
+    assert_eq!(lines.next(), Some("0 1 2 "), "{out}");
+    // Its own session: the shell leads none of krowk's.
+    let (sid, pid) = (lines.next().unwrap_or("").trim().to_string(), lines.next().unwrap_or("").trim().to_string());
+    // SAFETY: getsid(0) reads this process's session id.
+    let ours = unsafe { libc::getsid(0) };
+    assert!(!err && sid != ours.to_string() && !pid.is_empty(), "{out}");
+    // A timeout still kills what the command started, inside its own
+    // session and namespace.
+    let started = std::time::Instant::now();
+    let env = ToolEnv { cwd: &ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None };
+    let (out, err) = execute(BASH, &json!({"command": "sleep 7.31 & sleep 7.31", "timeout_ms": 300}), &env, scope.clone()).await;
+    assert!(err && out.contains("timed out") && started.elapsed() < Duration::from_secs(3), "{out}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let alive = std::process::Command::new("pgrep").args(["-f", "sleep 7.31"]).output().map(|o| o.status.success()).unwrap_or(false);
+    assert!(!alive, "a sandboxed command outlived its timeout");
+    let _ = std::fs::remove_dir_all(base);
+}
+
+/// R-PERM-3: inside a container, where commands run as they are, the file
+/// tools still hold the profile's lines — no mode opens `.git/hooks`, a
+/// path outside the workspace or a hidden `~/.ssh` to them.
+#[tokio::test(flavor = "current_thread")]
+async fn r_perm_3_in_a_container_the_file_tools_keep_the_sandboxes_fences() {
+    let (base, ws, scope) = setup_by("sbx-container", Profile::Workspace, By::Container);
+    for target in [ws.join(".git/hooks/pre-commit"), base.join("outside.txt")] {
+        let (out, err) = tool(&ws, &scope, WRITE, json!({"path": target, "content": "x"})).await;
+        assert!(err && out.contains("sandbox") && !target.exists(), "{}: {out}", target.display());
+    }
+    let (out, err) = tool(&ws, &scope, READ, json!({ "path": base.join("home/.ssh/id_ed25519") })).await;
+    assert!(err && !out.contains("PRIVATE KEY"), "{out}");
+    assert_eq!(tool(&ws, &scope, WRITE, json!({"path": "a.txt", "content": "x"})).await.1, false);
+    // Commands run as they are: the container is their boundary, and no
+    // bubblewrap is needed for them.
+    assert_eq!(bash(&ws, &scope, "echo hi").await, ("hi\nexit code 0".into(), false));
+    let _ = std::fs::remove_dir_all(base);
 }
