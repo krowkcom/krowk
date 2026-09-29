@@ -358,7 +358,7 @@ pub fn markdown_line(text: &str, md: &mut Markdown) -> Line<'static> {
 }
 
 /// One line of an answer in light markdown: headings bold and coloured,
-/// list items indented with their marker in the accent, quotes behind a
+/// list items indented behind a washed marker, quotes behind a
 /// rule, `code` and fenced blocks in the code colour, `**bold**` bold.
 /// Line by line, so it streams: `md` carries what is open across lines.
 pub fn markdown(text: &str, md: &mut Markdown) -> MdLine {
@@ -407,15 +407,15 @@ impl Markdown {
     fn item(&mut self, indent: usize, marker: Marker, rest: &str) -> MdLine {
         self.close(indent);
         let at = self.items.last().map_or(LIST_INDENT, |i| i.text);
-        let (glyph, style) = match marker {
-            Marker::Bullet => (BULLETS[self.items.len() % BULLETS.len()], accent()),
-            Marker::Number(n) => (n, accent()),
-            Marker::Task(false) => ("☐", accent()),
-            Marker::Task(true) => ("☒", success()),
+        let glyph = match marker {
+            Marker::Bullet => BULLETS[self.items.len() % BULLETS.len()],
+            Marker::Number(n) => n,
+            Marker::Task(false) => "☐",
+            Marker::Task(true) => "☒",
         };
         let text = at + glyph.width() + 1;
         self.items.push(Item { indent, text });
-        MdLine { lead: vec![Span::raw(" ".repeat(at)), Span::styled(format!("{glyph} "), style)], body: inline(rest), hang: vec![Span::raw(" ".repeat(text))] }
+        MdLine { lead: vec![Span::raw(" ".repeat(at)), Span::styled(format!("{glyph} "), dim())], body: inline(rest), hang: vec![Span::raw(" ".repeat(text))] }
     }
 
     /// Where a line that is no item, at `indent`, is shown: under the text
@@ -704,7 +704,7 @@ mod tests {
     fn a_task_is_a_box_ticked_or_not() {
         assert_eq!(lines("- [ ] todo\n- [x] done\n- [X] also"), ["  ☐ todo", "  ☒ done", "  ☒ also"]);
         let mut f = Markdown::default();
-        assert_eq!(markdown("- [x] done", &mut f).lead[1].style, success());
+        assert_eq!(markdown("- [x] done", &mut f).lead[1].style, dim(), "a marker is washed, not coloured");
     }
 
     #[test]
