@@ -217,9 +217,8 @@ impl SessionLog {
     /// while it runs; a sync that fails is said on stderr, since the turn it
     /// would have failed has ended.
     ///
-    /// Not waited for by the turn, but by the daemon on its way out
-    /// (`synced`): tokio drops blocking tasks still queued when its runtime
-    /// goes, and a turn is not over until its sync is.
+    /// The daemon waits for it on its way out (`synced`), not the turn:
+    /// tokio drops blocking tasks still queued when its runtime goes.
     pub fn sync_behind(&self) {
         self.sync_behind_on(tokio::runtime::Handle::try_current().ok().filter(|_| OFF_THREAD.load(std::sync::atomic::Ordering::Relaxed)));
     }
@@ -232,10 +231,12 @@ impl SessionLog {
             }
             return;
         };
+        QUEUED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let handle = rt.spawn_blocking(move || {
             if let Err(err) = File::open(&e).and_then(|f| f.sync_data()).and_then(|()| File::open(&c)).and_then(|f| f.sync_data()) {
                 eprintln!("session {id}: the log could not be synced: {err}");
             }
+            DONE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
         let mut pending = SYNCS.lock().unwrap_or_else(|p| p.into_inner());
         pending.retain(|h| !h.is_finished());
@@ -247,13 +248,29 @@ impl SessionLog {
 /// once done.
 static SYNCS: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>> = std::sync::Mutex::new(Vec::new());
 
-/// Waits for every sync `sync_behind` has handed the blocking pool: the
-/// host daemon's last step before its runtime goes.
+/// Syncs handed to the blocking pool, and those that have run: a sync the
+/// runtime dropped unrun is the difference.
+static QUEUED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static DONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Waits for every sync `sync_behind` has handed the blocking pool, those
+/// queued while it waits included: the host daemon's last step before its
+/// runtime goes.
 pub async fn synced() {
-    let pending = std::mem::take(&mut *SYNCS.lock().unwrap_or_else(|p| p.into_inner()));
-    for h in pending {
-        let _ = h.await;
+    loop {
+        let pending = std::mem::take(&mut *SYNCS.lock().unwrap_or_else(|p| p.into_inner()));
+        if pending.is_empty() {
+            return;
+        }
+        for h in pending {
+            let _ = h.await;
+        }
     }
+}
+
+/// How many syncs handed to the blocking pool have not run.
+pub fn pending_syncs() -> u64 {
+    QUEUED.load(std::sync::atomic::Ordering::SeqCst).saturating_sub(DONE.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 static OFF_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -416,11 +433,12 @@ mod tests {
         // The pool's one thread is busy, so the sync waits in its queue.
         let busy = rt.spawn_blocking(|| std::thread::sleep(std::time::Duration::from_millis(150)));
         log.sync_behind_on(Some(rt.handle().clone()));
+        let done = DONE.load(std::sync::atomic::Ordering::SeqCst);
         let started = std::time::Instant::now();
         rt.block_on(synced());
         assert!(started.elapsed() >= std::time::Duration::from_millis(100), "waited for the sync queued behind the busy pool");
+        assert!(DONE.load(std::sync::atomic::Ordering::SeqCst) > done, "and the sync ran");
         drop((busy, rt));
-        assert!(SYNCS.lock().unwrap().iter().all(|h| h.is_finished()), "nothing left pending");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

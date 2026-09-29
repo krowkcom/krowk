@@ -120,8 +120,12 @@ pub(super) struct State {
     pub(super) opts: Options,
     /// Rung whenever what idleness depends on changes.
     wake: Rc<Notify>,
-    /// A client asked it to exit (`stop`).
+    /// A client asked it to exit (`stop`), or a signal did.
     stopping: bool,
+    /// Moved by every `reload`: a new directory's configuration read
+    /// across one is read again, so no host is made with the instances
+    /// the reload replaced.
+    generation: u64,
     /// Times a client fell behind, to be caught up from its cursor.
     caught_up: u64,
     /// The last `line.seq` given out in each session: kept when a session
@@ -205,6 +209,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         next_client: 0,
         next_hub: 0,
         stopping: false,
+        generation: 0,
         caught_up: 0,
         seqs: HashMap::new(),
         epoch: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64),
@@ -274,8 +279,16 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
                 eprintln!("idle for {:?} with no session running: exiting", idle.unwrap_or_default());
                 break;
             }
-            _ = term.recv() => break,
-            _ = int.recv() => break,
+            _ = term.recv() => {
+                eprintln!("terminated: interrupting the running turns, then exiting");
+                wind_down(&state).await;
+                break;
+            }
+            _ = int.recv() => {
+                eprintln!("interrupted: interrupting the running turns, then exiting");
+                wind_down(&state).await;
+                break;
+            }
         }
     }
     // Only the socket this daemon bound: one a newer daemon put in its
@@ -290,9 +303,38 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     }
     // The turns' syncs, still on the blocking pool: a runtime dropped with
     // them queued drops them unrun, and a `krowk host stop` straight after
-    // a turn would leave that turn in the page cache alone.
-    log::synced().await;
+    // a turn would leave that turn in the page cache alone. Bounded like
+    // the engines' shutdown: a sync stuck on a dead mount must not keep
+    // the daemon from exiting.
+    if tokio::time::timeout(crate::host::SHUTDOWN_GRACE, log::synced()).await.is_err() {
+        eprintln!("{} session log sync(s) had not finished after {:?}: exiting without them", log::pending_syncs(), crate::host::SHUTDOWN_GRACE);
+    }
     Ok(())
+}
+
+/// On SIGTERM or SIGINT: no new turn is taken, the running ones are
+/// interrupted the way a person interrupts them, and each is given until
+/// `SHUTDOWN_GRACE` to end — its `turn.completed` logged and its sync
+/// queued for `synced` — rather than being dropped with the runtime.
+async fn wind_down(state: &Shared) {
+    let running: Vec<(String, Rc<Host>)> = {
+        let mut s = state.borrow_mut();
+        s.stopping = true;
+        s.hubs.iter().filter(|(_, h)| h.running).map(|(id, h)| (id.clone(), h.host.clone())).collect()
+    };
+    for (session_id, host) in running {
+        tokio::task::spawn_local(async move {
+            let (tx, _rx) = mpsc::channel::<StreamLine>(16);
+            let _ = host.execute(Command::Interrupt { session_id }, tx).await;
+        });
+    }
+    let wake = state.borrow().wake.clone();
+    let _ = tokio::time::timeout(crate::host::SHUTDOWN_GRACE, async {
+        while state.borrow().working > 0 {
+            wake.notified().await;
+        }
+    })
+    .await;
 }
 
 // blocking: at start and on the way out, like `bind`.
@@ -401,6 +443,12 @@ async fn connection(stream: UnixStream, state: Shared) {
 pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
     match frame {
         ClientFrame::Execute { id: cmd_id, command } => {
+            // Stopping: a turn begun now would end after the syncs were
+            // waited for, or not at all.
+            if state.borrow().stopping {
+                let e = EngineError::new("host_stopping", "the host daemon is exiting — send it again, and the next daemon runs it");
+                return state.borrow_mut().send(id, "", control(&ServerFrame::Done { id: cmd_id, result: None, error: Some(error_info(&e)) }));
+            }
             tokio::task::spawn_local(execute(state.clone(), id, cmd_id, command));
         }
         ClientFrame::Attach { id: cmd_id, session_id, after_event_id, after_seq, epoch } => {
@@ -530,12 +578,22 @@ async fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>,
     if let Some(h) = state.borrow().hosts.get(&key) {
         return Ok(h.clone());
     }
-    let factory = state.borrow().factory.clone();
-    let dir = cwd.to_path_buf();
-    let cfg = tokio::task::spawn_blocking(move || factory(&dir, answers)).await.map_err(|e| EngineError::new("host_failed", format!("the host's configuration could not be read: {e}")))??;
-    if let Some(h) = state.borrow().hosts.get(&key) {
-        return Ok(h.clone());
-    }
+    let cfg = loop {
+        let (factory, generation) = {
+            let s = state.borrow();
+            (s.factory.clone(), s.generation)
+        };
+        let dir = cwd.to_path_buf();
+        let cfg = tokio::task::spawn_blocking(move || factory(&dir, answers)).await.map_err(|e| EngineError::new("host_failed", format!("the host's configuration could not be read: {e}")))??;
+        if let Some(h) = state.borrow().hosts.get(&key) {
+            return Ok(h.clone());
+        }
+        // A reload ran while it was read: what was read may be what the
+        // reload replaced.
+        if state.borrow().generation == generation {
+            break cfg;
+        }
+    };
     let dir = cfg.sessions_dir.clone();
     let host = Rc::new(Host::new(cfg));
     let mut s = state.borrow_mut();
@@ -566,6 +624,7 @@ async fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>,
 
 /// `reload`: every host's instances read again, the way each was made.
 fn reload(state: &Shared, changed: Option<&str>, renamed: Option<(String, String)>) -> Result<(), EngineError> {
+    state.borrow_mut().generation += 1;
     let hosts: Vec<((PathBuf, bool), Rc<Host>)> = state.borrow().hosts.iter().map(|(k, h)| (k.clone(), h.clone())).collect();
     let Some(((cwd, answers), _)) = hosts.first() else { return Ok(()) };
     // The instances are the config's and the environment's, not a
@@ -789,7 +848,10 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     // The engine a turn makes needs the TLS configuration, whose build
     // reads the platform's roots: tens of milliseconds, a hundred on a
     // slow macOS runner. A turn sent as the daemon starts, before `warm`
-    // is done, waits for it off the thread instead (R-LAG-9).
+    // is done, waits for it off the thread instead (R-LAG-9). A build that
+    // fails is remembered for a few seconds (`http::tls`), so the engine's
+    // own call right after is refused at once rather than built again on
+    // the thread; a turn that needs no TLS (a backend's) runs as it did.
     if turn && !crate::http::warmed() {
         let _ = tokio::task::spawn_blocking(crate::http::warm).await;
     }

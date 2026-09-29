@@ -1167,7 +1167,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   A TLS setup that fails once is tried again, rather than failing every
   turn until the daemon restarts.
 - **`krowk host stop` straight after a turn keeps that turn on disk.** The
-  daemon waits for the turn's log to be flushed before it exits.
+  daemon waits for the turn's log to be flushed before it exits, for up to
+  ten seconds. Stopped by SIGTERM or Ctrl-C, it first interrupts the
+  running turns, so each is logged as interrupted and flushed too. A
+  prompt sent while it exits is refused rather than lost.
 
 - **A terminal suspended while it follows a long session no longer grows
   the host daemon's memory.** The daemon keeps a few megabytes for each

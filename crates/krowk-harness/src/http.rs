@@ -43,22 +43,51 @@ pub fn client() -> Result<reqwest::Client, EngineError> {
 }
 
 /// Only a configuration that was built is kept: a failure — the platform's
-/// roots unreadable for a moment — is tried again by the next turn rather
-/// than failing every turn the process runs.
+/// roots unreadable for a moment — is tried again rather than failing every
+/// turn the process runs.
 static TLS: std::sync::OnceLock<rustls::ClientConfig> = std::sync::OnceLock::new();
+
+/// Held while a build runs, so builds asked for at once wait for the one
+/// under way and take what it made, and the last failure with when it
+/// happened: asked again within `RETRY`, the answer is that failure, not
+/// another build — which the host daemon's thread would pay for.
+static BUILD: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
+
+const RETRY: std::time::Duration = std::time::Duration::from_secs(5);
 
 fn tls() -> Result<rustls::ClientConfig, String> {
     if let Some(tls) = TLS.get() {
         return Ok(tls.clone());
     }
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let tls = rustls::ClientConfig::builder_with_provider(provider).with_safe_default_protocol_versions().map_err(|e| e.to_string())?;
-    let built = rustls_platform_verifier::BuilderVerifierExt::with_platform_verifier(tls).map_err(|e| e.to_string())?.with_no_client_auth();
-    Ok(TLS.get_or_init(|| built).clone())
+    let mut failed = BUILD.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(tls) = TLS.get() {
+        return Ok(tls.clone());
+    }
+    if let Some((at, why)) = failed.as_ref()
+        && at.elapsed() < RETRY
+    {
+        return Err(why.clone());
+    }
+    let built = (|| {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let tls = rustls::ClientConfig::builder_with_provider(provider).with_safe_default_protocol_versions().map_err(|e| e.to_string())?;
+        Ok::<_, String>(rustls_platform_verifier::BuilderVerifierExt::with_platform_verifier(tls).map_err(|e| e.to_string())?.with_no_client_auth())
+    })();
+    match built {
+        Ok(built) => {
+            *failed = None;
+            Ok(TLS.get_or_init(|| built).clone())
+        }
+        Err(why) => {
+            *failed = Some((std::time::Instant::now(), why.clone()));
+            Err(why)
+        }
+    }
 }
 
 /// Builds the shared TLS configuration now: the host daemon calls it off
-/// its thread as it starts, so no turn pays for it there.
+/// its thread as it starts, and before a turn when it is not built yet, so
+/// no turn pays for it there.
 pub fn warm() {
     let _ = tls();
 }

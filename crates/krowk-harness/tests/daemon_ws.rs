@@ -344,6 +344,9 @@ fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
         assert!(grown(&snapshot()) > grown(&first), "the finished item is logged once the stream ends");
     });
     daemon.join().unwrap().unwrap();
+    // The turn's sync ran before the daemon's runtime went: `serve` waits
+    // for it on its way out.
+    assert_eq!(log::pending_syncs(), 0, "a sync was dropped unrun as the daemon exited");
 }
 
 /// The acceptance load (R-LAG-2: one queue per session; R-LAG-3: batches by
