@@ -22,6 +22,8 @@
 
 mod edit;
 mod patch;
+#[cfg(all(test, target_os = "linux"))]
+mod sandbox_tests;
 pub(crate) mod search;
 
 use crate::permissions::{Access, Call};
@@ -328,7 +330,7 @@ pub async fn execute(name: &str, input: &Value, env: &ToolEnv<'_>, scope: Scope)
             Err(e) => e,
         },
         BASH => match parse_input::<BashInput>(name, input) {
-            Ok(i) => bash(&i, env.cwd).await,
+            Ok(i) => bash(&i, env.cwd, scope.sandbox.as_deref()).await,
             Err(e) => e,
         },
         // krowk_push's rules keep it in the working directory and away from
@@ -400,6 +402,10 @@ pub struct Scope {
     /// keys, logins, sessions and settings.
     pub secrets: Vec<PathBuf>,
     pub hidden: Hidden,
+    /// The OS sandbox the session runs in (R-PERM-3): `bash` runs inside
+    /// it, and the file tools hold its lines themselves — no rule, grant,
+    /// person or mode opens them.
+    pub sandbox: Option<std::sync::Arc<crate::sandbox::Plan>>,
 }
 
 /// Where one path leads, for the evaluator.
@@ -423,7 +429,7 @@ const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".krowk"];
 impl Scope {
     /// Only the working directory, nothing opened.
     pub fn within(cwd: &Path) -> Scope {
-        Scope { cwd: cwd.to_path_buf(), roots: Vec::new(), read_roots: Vec::new(), outside: false, open: false, protected: Vec::new(), secrets: Vec::new(), hidden: Hidden::default() }
+        Scope { cwd: cwd.to_path_buf(), roots: Vec::new(), read_roots: Vec::new(), outside: false, open: false, protected: Vec::new(), secrets: Vec::new(), hidden: Hidden::default(), sandbox: None }
     }
 
     /// Where `p` (absolute) leads against the tools' reach, for a read or an
@@ -521,6 +527,11 @@ impl Scope {
     /// asked for; the check is on where it leads.
     pub fn path(&self, path: &str) -> Result<PathBuf, String> {
         let p = resolve(&self.cwd, path);
+        if let Some(plan) = &self.sandbox
+            && plan.hides(&real_path(&p, 0).unwrap_or_else(|_| p.clone()))
+        {
+            return Err(format!("{} is hidden by the {} sandbox, which keeps credentials and krowk's home out of reach: nothing opens it while krowk runs sandboxed", p.display(), plan.profile.name()));
+        }
         if self.outside {
             return Ok(p);
         }
@@ -530,10 +541,31 @@ impl Scope {
         }
     }
 
+    /// Whether the sandbox hides `p` from a search walking `root`: judged
+    /// by where the root leads, so a root reached through a symlink skips
+    /// what the sandbox hides as the real one does.
+    pub(crate) fn walk_hides(&self, root: &Path) -> impl Fn(&Path) -> bool + '_ {
+        let real = self.sandbox.as_ref().map(|_| real_path(root, 0).unwrap_or_else(|_| root.to_path_buf()));
+        move |rel: &Path| match (&self.sandbox, &real) {
+            (Some(plan), Some(real)) => plan.hides(&real.join(rel)),
+            _ => false,
+        }
+    }
+
     /// `path`, for a tool that changes the file: also never inside a fenced
     /// or `protected` directory unless the scope is open.
     pub fn edit_path(&self, path: &str) -> Result<PathBuf, String> {
         let p = resolve(&self.cwd, path);
+        if let Some(plan) = &self.sandbox {
+            // The sandbox's lines, which nothing opens: the file tools write
+            // where a sandboxed command could, and nowhere else.
+            let why = match self.reach(&p, true) {
+                _ if !plan.profile.writes() => format!("the {} sandbox writes nothing", plan.profile.name()),
+                Reach::Inside => return Ok(p),
+                Reach::Fenced(why) | Reach::Outside(why) => why,
+            };
+            return Err(format!("{why} — krowk runs in the {} sandbox, which no rule, person or mode opens (R-PERM-3)", plan.profile.name()));
+        }
         match self.reach(&p, true) {
             Reach::Inside => Ok(p),
             Reach::Fenced(_) if self.open => Ok(p),
@@ -809,11 +841,25 @@ impl Drop for GroupKill {
     }
 }
 
-async fn bash(i: &BashInput, cwd: &Path) -> (String, bool) {
+async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
     use tokio::io::AsyncReadExt;
     let timeout = i.timeout_ms.map_or(BASH_DEFAULT_TIMEOUT, Duration::from_millis).min(BASH_MAX_TIMEOUT);
-    let mut cmd = tokio::process::Command::new("bash");
-    cmd.arg("-c").arg(&i.command).current_dir(cwd);
+    // Inside the sandbox when the session has one, or not at all: a plan
+    // this machine cannot enforce refuses the command (R-PERM-3).
+    let mut cmd = match sandbox.map(|p| crate::sandbox::bash(p, &i.command)) {
+        None => {
+            let mut c = tokio::process::Command::new("bash");
+            c.arg("-c").arg(&i.command);
+            c
+        }
+        Some(Ok((program, args))) => {
+            let mut c = tokio::process::Command::new(program);
+            c.args(args);
+            c
+        }
+        Some(Err(fix)) => return (format!("the command was not run: {fix}"), true),
+    };
+    cmd.current_dir(cwd);
     cmd.stdin(std::process::Stdio::null());
     // One pipe for both streams, as a terminal would have it: the model
     // reads what the command printed in the order it printed it, which two
@@ -919,11 +965,11 @@ async fn bash(i: &BashInput, cwd: &Path) -> (String, bool) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
-    pub(super) fn dir(name: &str) -> PathBuf {
+    pub(crate) fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("krowk-harness-tools-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();

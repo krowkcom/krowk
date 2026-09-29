@@ -82,6 +82,7 @@ pub use krowk_client::protocol;
 pub mod readiness;
 #[cfg(unix)]
 pub mod relay;
+pub mod sandbox;
 pub mod schema;
 pub mod subagent;
 #[cfg(unix)]

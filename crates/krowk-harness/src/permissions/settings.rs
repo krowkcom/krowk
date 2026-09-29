@@ -73,6 +73,9 @@ pub struct Config {
     /// host without one — `krowk -p` — never waits on a person: what would
     /// be asked is refused, with the reason.
     pub approvals: bool,
+    /// The OS sandbox every native turn's tools run in (R-PERM-3); none
+    /// runs them unsandboxed.
+    pub sandbox: Option<crate::sandbox::Profile>,
 }
 
 impl std::fmt::Debug for Config {

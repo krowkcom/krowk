@@ -184,12 +184,13 @@ pub(super) fn glob(i: &GlobInput, scope: &Scope) -> (String, bool) {
     let deadline = Instant::now() + WALK_DEADLINE;
     let mut w = walk(&root, deadline);
     let mut hits: Vec<&PathBuf> = Vec::new();
+    let sandboxed = scope.walk_hides(&root);
     for f in &w.files {
         if Instant::now() > deadline {
             w.truncated = true;
             break;
         }
-        if matcher.matches(f) && !scope.hidden.hides(&root.join(f)) {
+        if matcher.matches(f) && !scope.hidden.hides(&root.join(f)) && !sandboxed(f) {
             hits.push(f);
         }
     }
@@ -253,6 +254,7 @@ pub(super) fn grep(i: &GrepInput, scope: &Scope) -> (String, bool) {
     };
     let mut out = String::new();
     let (mut matches, mut full) = (0usize, false);
+    let sandboxed = scope.walk_hides(&root);
     for rel in &files {
         if Instant::now() > deadline {
             truncated = true;
@@ -262,7 +264,7 @@ pub(super) fn grep(i: &GrepInput, scope: &Scope) -> (String, bool) {
             continue;
         }
         let path = root.join(rel);
-        if scope.hidden.hides(&path) {
+        if scope.hidden.hides(&path) || sandboxed(rel) {
             continue;
         }
         let Ok((f, size)) = open_regular(&path) else { continue };

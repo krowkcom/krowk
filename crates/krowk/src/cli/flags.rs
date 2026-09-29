@@ -58,6 +58,8 @@ pub struct Flags {
     pub resume_pick: bool,
     #[cfg(feature = "harness")]
     pub permission_mode: String,
+    /// `--sandbox`: the OS sandbox profile a `-p` run's tools run in, or `off`.
+    pub sandbox: String,
     #[cfg(feature = "harness")]
     pub toolset: String,
     #[cfg(feature = "harness")]
@@ -259,6 +261,7 @@ impl Flags {
             "resume" => text(&mut self.resume),
             #[cfg(feature = "harness")]
             "permission-mode" => text(&mut self.permission_mode),
+            "sandbox" => text(&mut self.sandbox),
             #[cfg(feature = "harness")]
             "toolset" => text(&mut self.toolset),
             #[cfg(feature = "harness")]

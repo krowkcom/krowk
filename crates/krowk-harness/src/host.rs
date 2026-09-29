@@ -799,6 +799,15 @@ impl Shared {
         // runs. A settings file that does not parse refuses the prompt: a
         // deny rule it held would otherwise silently stop holding.
         let mut policy = permissions::Policy::load(&self.cfg.permissions, &cwd).map_err(|e| EngineError::new("bad_settings", format!("{e} — fix the file, then send the prompt again")))?;
+        // R-PERM-3, fail closed: a sandbox this machine cannot enforce, or
+        // a backend that runs its own tools outside it, refuses the turn
+        // rather than running it unsandboxed.
+        if let Some(profile) = policy.sandbox {
+            if instance.backend.is_some() {
+                return Err(staying(EngineError::new("sandbox_unsupported", format!("{} runs {} as a backend, which runs its own tools outside krowk's {} sandbox — pick a model krowk runs natively, or run without --sandbox", instance.name, instance.vendor, profile.name()))));
+            }
+            crate::sandbox::enforcer().map_err(|fix| staying(EngineError::new("sandbox_unavailable", fix)))?;
+        }
         let mut compat = compat::Compat::load(&self.cfg.permissions, &cwd, policy.loaded.hooks.clone());
         policy.read_dirs = compat.skills.iter().map(|k| k.dir.clone()).collect();
         let (log, events) = match opened {

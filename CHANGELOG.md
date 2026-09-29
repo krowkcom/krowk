@@ -11,6 +11,22 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk -p` runs its tools in an OS sandbox on Linux.** `--sandbox
+  workspace|read-only|strict|off` puts the `bash` tool inside bubblewrap:
+  `workspace` lets it write the working directory and its added directories
+  and nothing else, hides `~/.ssh`, `~/.gnupg`, `~/.aws` and similar
+  credential directories and krowk's home, and keeps the network;
+  `read-only` writes nothing and has no network; `strict` also hides the
+  whole home outside the workspace. In every profile `.git`, `.claude`,
+  `.codex`, `.krowk` and krowk's and Claude Code's settings directories stay
+  read-only, and the file tools hold the same lines whatever the permission
+  mode says. A run with no `--permission-mode` and no `defaultMode` takes
+  the workspace sandbox and `acceptEdits` where bubblewrap works (or inside
+  a container), and keeps asking — so refusing edits — where it does not. A
+  sandbox that cannot be enforced refuses the run with a fix instead of
+  running unsandboxed: bubblewrap missing or blocked, a Claude Code or Codex
+  backend, `--daemon`, macOS (Seatbelt is not built yet) and Windows.
+
 - **`krowk sync attach` answers approvals and steers the turn.** Besides
   prompts, a line typed on its stdin can be `/approve REQUEST_ID`,
   `/allow-session REQUEST_ID` or `/deny REQUEST_ID`, answering the tool call
