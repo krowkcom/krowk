@@ -104,6 +104,8 @@ pub const MAX_SESSIONS: usize = 10_000;
 const CHUNK_CONTENT_TYPE: &str = "application/octet-stream";
 /// The registry's Artifact::MAX_CHUNK_BYTES, and krowk-api's read limit.
 const MAX_CHUNK_BYTES: i64 = 64 << 20;
+/// The registry's Artifact::MAX_VINTAGE_BYTES, and krowk-api's read limit.
+const MAX_VINTAGE_BYTES: i64 = 256 << 20;
 /// The registry's SyncSession::MAX_CHUNKS.
 const MAX_CHUNKS: usize = 100_000;
 
@@ -111,6 +113,9 @@ const MAX_CHUNKS: usize = 100_000;
 pub struct SyncStore {
     /// Workspace, session id and index → the chunk.
     pub chunks: HashMap<(String, String, u64), Chunk>,
+    /// Workspace and slug → a vintage: its ISO week, and its bytes' upload,
+    /// which is a chunk's with no place in a log (index and fence 0).
+    pub vintages: HashMap<(String, String), (String, Chunk)>,
     /// Key and create → the minute its count began, and the count.
     pub bursts: HashMap<(String, &'static str), (Timestamp, usize)>,
     /// 0 is MAX_SESSIONS.
@@ -1106,7 +1111,9 @@ fn declared_chunk(c: &Chunk, site: &str) -> Json {
 pub fn put_chunk_object(app: &App, req: &mut Req, key: &str) -> Option<Resp> {
     let found = {
         let s = app.lock();
-        s.sync.chunks.iter().find(|(_, c)| c.storage_key == key).map(|(k, c)| (k.clone(), c.upload_tok.clone(), c.checksum.clone(), c.byte_size, c.upload_til, c.ready))
+        s.sync.chunks.iter().find(|(_, c)| c.storage_key == key).map(|(k, c)| (Ok(k.clone()), c.upload_tok.clone(), c.checksum.clone(), c.byte_size, c.upload_til, c.ready)).or_else(|| {
+            s.sync.vintages.iter().find(|(_, (_, c))| c.storage_key == key).map(|(k, (_, c))| (Err(k.clone()), c.upload_tok.clone(), c.checksum.clone(), c.byte_size, c.upload_til, c.ready))
+        })
     };
     let (ck, token, sum, size, until, ready) = found?;
     if ready || token.is_empty() || req.query_get("upload_token") != token {
@@ -1127,7 +1134,11 @@ pub fn put_chunk_object(app: &App, req: &mut Req, key: &str) -> Option<Resp> {
         return Some(Resp::xml(400, "BadDigest"));
     }
     let mut s = app.lock();
-    if let Some(c) = s.sync.chunks.get_mut(&ck) {
+    let c = match &ck {
+        Ok(ck) => s.sync.chunks.get_mut(ck),
+        Err(vk) => s.sync.vintages.get_mut(vk).map(|(_, c)| c),
+    };
+    if let Some(c) = c {
         c.uploaded_sum = Some(got);
     }
     s.objects.insert(key.to_owned(), bytes);
@@ -1211,4 +1222,154 @@ pub fn list_chunks(app: &App, req: &Req, id: &str, site: &str) -> Resp {
         })
         .collect();
     Resp::json(200, &Json::map([("chunks", Json::Arr(page)), ("next", next)]))
+}
+
+fn serialize_vintage(week: &str, c: &Chunk) -> Vec<(String, Json)> {
+    let mut out = serialize_chunk(c);
+    out.retain(|(k, _)| k != "index");
+    out.insert(1, ("week".to_owned(), Json::str(week)));
+    out
+}
+
+/// The week's ready vintage in a workspace: its slug.
+fn current_vintage(s: &SyncStore, workspace: &str, week: &str) -> Option<String> {
+    s.vintages.iter().find(|((w, _), (wk, c))| w == workspace && wk == week && c.ready).map(|((_, slug), _)| slug.clone())
+}
+
+fn vintage_conflict(week: &str) -> Resp {
+    error(409, "vintage_conflict", &format!("the vintage for {week} was replaced since it was read — read it again and merge"), None)
+}
+
+/// A device's declare of a week's vintage (the registry's
+/// VintagesController#create): an Idempotency-Key replay, or a new
+/// vintage with a presigned PUT, refused as `vintage_conflict` unless
+/// `replaces` names the week's ready vintage, or there is none and it
+/// names nothing.
+pub fn declare_vintage(app: &App, req: &mut Req, site: &str, signer: &str) -> Resp {
+    let mut run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        let attempt = crate::artifacts::idempotency_key(req)?;
+        let v = body(req, "vintage")?;
+        let mut f = v.fields();
+        let week = f.string("week");
+        let b = week.as_bytes();
+        let valid = b.len() == 8 && b[..4].iter().all(u8::is_ascii_digit) && &b[4..6] == b"-W" && b[6..].iter().all(u8::is_ascii_digit) && (1..=53).contains(&week[6..].parse::<u32>().unwrap_or(0));
+        if !valid {
+            return Err(invalid("week", "must be an ISO week, like 2026-W38"));
+        }
+        let byte_size = whole(&f, "byte_size").ok_or_else(|| invalid("byte_size", "must be a whole number"))?;
+        if byte_size <= 0 {
+            return Err(invalid("byte_size", "must be greater than 0"));
+        }
+        if byte_size > MAX_VINTAGE_BYTES {
+            return Err(invalid("byte_size", &format!("must be at most {MAX_VINTAGE_BYTES} bytes")));
+        }
+        let checksum = f.string("checksum").to_ascii_lowercase();
+        if checksum.len() != 64 || !checksum.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid("checksum", "must be a lowercase hex SHA-256"));
+        }
+        let replaces = f.string("replaces");
+        let mut s = app.lock();
+        let now = s.now();
+        acting(&s.sync, &workspace, signer)?;
+        burst(&mut s.sync, &caller(req), "vintage_declares", now)?;
+        let hash = crate::store::sha256_hex(format!("{week}\n{byte_size}\n{checksum}\n{replaces}").as_bytes());
+        if let Some(attempt) = &attempt
+            && let Some((found, matches)) = s.replay("vintage", &workspace, attempt, &hash)
+        {
+            let slug = found.artifact.clone();
+            if !matches {
+                return Err(crate::errors::key_reused(&slug));
+            }
+            let (wk, c) = s.sync.vintages.get_mut(&(workspace.clone(), slug)).ok_or_else(not_found)?;
+            if c.ready {
+                return Err(crate::errors::already_finalized(&c.slug));
+            }
+            c.upload_tok = crate::store::random_token();
+            c.upload_til = now + crate::store::UPLOAD_URL_LIFETIME;
+            return Ok(Resp::json(201, &declared_vintage(&wk.clone(), c, site)));
+        }
+        if current_vintage(&s.sync, &workspace, &week).unwrap_or_default() != replaces {
+            return Err(vintage_conflict(&week));
+        }
+        let c = Chunk {
+            slug: generate_slug("art"),
+            index: 0,
+            fence: 0,
+            byte_size,
+            checksum,
+            storage_key: format!("{}/{}/vintage-{week}.bin", crate::store::ARTIFACT_REGION, crate::store::random_base36()),
+            upload_tok: crate::store::random_token(),
+            upload_til: now + crate::store::UPLOAD_URL_LIFETIME,
+            uploaded_sum: None,
+            ready: false,
+            created_at: now,
+        };
+        let resp = Resp::json(201, &declared_vintage(&week, &c, site));
+        if let Some(attempt) = &attempt {
+            s.remember("vintage", &workspace, attempt, crate::store::Answered { request_hash: hash, artifact: c.slug.clone(), run: String::new() });
+        }
+        s.sync.vintages.insert((workspace, c.slug.clone()), (week, c));
+        Ok(resp)
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+fn declared_vintage(week: &str, c: &Chunk, site: &str) -> Json {
+    let mut out = serialize_vintage(week, c);
+    let Json::Obj(upload) = declared_chunk(c, site) else { unreachable!("a declare is an object") };
+    out.extend(upload.into_iter().filter(|(k, _)| k == "upload"));
+    Json::map_of(out)
+}
+
+/// A vintage's bytes landed: checked against the declare, then it is the
+/// week's, and the one it replaced is erased with its bytes. Idempotent.
+pub fn finalize_vintage(app: &App, req: &mut Req, slug: &str, signer: &str) -> Resp {
+    let run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        let mut s = app.lock();
+        acting(&s.sync, &workspace, signer)?;
+        let (week, c) = s.sync.vintages.get(&(workspace.clone(), slug.to_owned())).ok_or_else(not_found)?;
+        let week = week.clone();
+        if c.ready {
+            return Ok(Resp::json(200, &Json::map_of(serialize_vintage(&week, c))));
+        }
+        match &c.uploaded_sum {
+            None => return Err(error(409, "upload_missing", &format!("nothing uploaded for {} yet", c.slug), None)),
+            Some(sum) if *sum != c.checksum => return Err(error(422, "checksum_mismatch", "what was uploaded does not match the declared checksum", None)),
+            Some(_) => {}
+        }
+        if let Some(old) = current_vintage(&s.sync, &workspace, &week)
+            && let Some((_, gone)) = s.sync.vintages.remove(&(workspace.clone(), old))
+        {
+            s.objects.remove(&gone.storage_key);
+        }
+        let (_, c) = s.sync.vintages.get_mut(&(workspace, slug.to_owned())).ok_or_else(not_found)?;
+        c.ready = true;
+        c.upload_tok.clear();
+        Ok(Resp::json(200, &Json::map_of(serialize_vintage(&week, c))))
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// The workspace's ready vintages, the week's alone when `week` is given,
+/// each with the URL its bytes are read from.
+pub fn list_vintages(app: &App, req: &Req, site: &str) -> Resp {
+    let workspace = match gate(req) {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let week = req.query_get("week");
+    let s = app.lock();
+    let mut ready: Vec<(&String, &Chunk)> = s.sync.vintages.iter().filter(|((w, _), (wk, c))| *w == workspace && c.ready && (week.is_empty() || *wk == week)).map(|(_, (wk, c))| (wk, c)).collect();
+    ready.sort_by(|a, b| a.0.cmp(b.0));
+    let page = ready
+        .into_iter()
+        .map(|(wk, c)| {
+            let mut j = serialize_vintage(wk, c);
+            j.push(("url".to_owned(), Json::str(format!("{site}/_storage/{}", c.storage_key))));
+            Json::map_of(j)
+        })
+        .collect();
+    Resp::json(200, &Json::map([("vintages", Json::Arr(page))]))
 }
