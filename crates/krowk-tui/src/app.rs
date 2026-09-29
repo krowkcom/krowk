@@ -2525,9 +2525,13 @@ fn branches(rows: Vec<Span<'static>>) -> Vec<Line<'static>> {
 }
 
 /// An answer's line wrapped to `width`: its `lead` before the first row,
-/// its `hang` before each row after.
+/// its `hang` before each row after, unless that would take over half of it.
 fn hung(md: look::MdLine, width: usize) -> Vec<Line<'static>> {
     let hang = md.hang.iter().map(Span::width).sum::<usize>();
+    // Nested past half the width, a hang leaves too little to read.
+    if hang * 2 > width {
+        return wrap_line(md.line(), width);
+    }
     wrap_line(Line::from(md.body), width.saturating_sub(hang).max(1))
         .into_iter()
         .enumerate()

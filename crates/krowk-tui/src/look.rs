@@ -388,13 +388,16 @@ pub fn markdown(text: &str, md: &mut Markdown) -> MdLine {
     if let Some((marker, rest)) = list_marker(trimmed) {
         return md.item(indent, marker, rest);
     }
-    let at = md.within(indent);
-    match trimmed.strip_prefix("> ") {
-        Some(rest) => {
-            let rule = [Span::raw(" ".repeat(at)), Span::styled("│ ", dim())];
+    let within = md.within(indent);
+    match (trimmed.strip_prefix("> "), within) {
+        (Some(rest), _) => {
+            let rule = [Span::raw(" ".repeat(within.unwrap_or(indent))), Span::styled("│ ", dim())];
             MdLine { lead: rule.to_vec(), body: inline(rest), hang: rule.to_vec() }
         }
-        None => MdLine::indented(at, inline(trimmed)),
+        (None, Some(at)) => MdLine::indented(at, inline(trimmed)),
+        // Indented as typed, and wrapped as it was: an unfenced block of
+        // JSON is not squeezed into what is left of the width.
+        (None, None) => MdLine::indented(0, MdLine::indented(indent, inline(trimmed)).line().spans),
     }
 }
 
@@ -416,10 +419,10 @@ impl Markdown {
     }
 
     /// Where a line that is no item, at `indent`, is shown: under the text
-    /// of the item it goes on, or as indented as it was typed.
-    fn within(&mut self, indent: usize) -> usize {
+    /// of the item it goes on, if it goes on one.
+    fn within(&mut self, indent: usize) -> Option<usize> {
         self.close(indent);
-        self.items.last().map_or(indent, |i| i.text)
+        self.items.last().map(|i| i.text)
     }
 
     /// Closes each open item a line at `indent` is not inside.
@@ -712,6 +715,7 @@ mod tests {
         assert_eq!(hang(markdown("  12. b", &mut f)), "        ", "nested in the item before it");
         assert_eq!(hang(markdown("> c", &mut f)), "│ ");
         assert_eq!(hang(markdown("plain", &mut f)), "");
+        assert_eq!(hang(markdown("    \"key\": 1,", &mut f)), "", "an indent typed outside a list does not hang");
     }
 
     #[test]
