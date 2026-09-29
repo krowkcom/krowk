@@ -23,6 +23,22 @@ the versions are the `v*` tags a release is cut from. Entries land under
   are asked about again when its `.mcp.json` changes after you trusted it,
   and no server inherits your provider keys unless its config sets them.
 
+- **Releases are signed, come with an SBOM, and are proven reproducible.**
+  Each release carries `checksums.txt.sigstore.json`, a keyless Sigstore
+  signature over the checksums of every archive, bound to the release
+  workflow at that tag, and a CycloneDX SBOM of the full and lean builds,
+  each signed the same way. Before anything is published, the release builds
+  Linux x86-64 a second time on another runner from another path and stops
+  unless every binary matches byte for byte. The npm packages carry npm
+  provenance. `SECURITY.md` says how to verify a download and rebuild one.
+
+- **`SECURITY.md`**: where to report a vulnerability (security@krowk.com),
+  what happens then, what is in scope, and every network call krowk makes
+  without being asked. krowk has no telemetry and no crash reporting.
+
+- **`cargo deny` on every pull request and at every tag.** A dependency
+  with a RustSec advisory, a licence outside `deny.toml`'s list, or a
+  source other than crates.io fails CI and stops a release.
 - **Idle sessions move off the machine as weekly vintages.** `krowk sessions
   archive` takes every native session idle for more than 14 days
   (`--older-than DAYS`, or `KROWK_ARCHIVE_AFTER_DAYS`) and stores each ISO
@@ -249,6 +265,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - Keys the TUI suggests stand out: in hints, the help menu, the status line, approvals and questions, each key (`esc`, `enter`, `y`, `ctrl-g`, `?`) is white instead of grey like the words around it.
 
 ### Fixed
+
+- **Two quick Ctrl-Cs right after a prompt still print the resume line.**
+  Leaving that fast could beat the session's start to the TUI, so krowk
+  exited 130 without `krowk --resume <id>` although the host had already
+  started the session. The TUI now reads what the host already sent before it leaves.
 
 - **A viewer that moves to the direct path mid-session keeps receiving
   the session.** The direct listener replays from where the viewer was when
