@@ -1,6 +1,6 @@
 {
   "name": "krowk",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "See what your agent built without spinning it up — publish screenshots, recordings and reports to permalinks that unfurl in GitHub, Slack, Basecamp and Linear.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {

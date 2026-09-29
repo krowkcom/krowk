@@ -9,6 +9,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-09-29
+
+Answers in the TUI are easier to read: markdown tables are drawn as tables,
+and lists hang under their text.
+
 ### Added
 
 - The TUI draws markdown tables in an answer the way psql does: indented, with a blank line either side, a bold header, and dim lines between the columns and under the header, but no box. Each cell is in the answer's markdown and wraps inside its column, aligned as the delimiter row says; once a row wraps, rows get a rule between them. On a screen too narrow for the columns, each row is shown as a record of `Header │ value` lines. A table is held while it streams and drawn once it ends.
@@ -596,7 +601,9 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/krowkcom/krowk/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/krowkcom/krowk/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/krowkcom/krowk/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/krowkcom/cli/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/krowkcom/cli/compare/v0.8.1...v0.8.2
