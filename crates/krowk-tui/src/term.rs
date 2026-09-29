@@ -1038,7 +1038,7 @@ mod tests {
     #[test]
     fn a_link_reaches_scrollback_as_a_hyperlink_to_its_url() {
         let mut t = Term::new(Vec::new(), Size { width: 60, height: 10 }, 0, 2).unwrap();
-        let mut fence = false;
+        let mut fence = crate::look::Markdown::default();
         t.frame(&[crate::look::markdown_line("see [docs](https://krowk.com/d)", &mut fence)], &[Line::from("❯ "), Line::default()], (2, 0)).unwrap();
         let out = String::from_utf8_lossy(&t.into_inner()).into_owned();
         assert!(out.contains("\x1b]8;;https://krowk.com/d\x1b\\\x1b[4;36mdocs\x1b[0m\x1b]8;;\x1b\\"), "{out:?}");

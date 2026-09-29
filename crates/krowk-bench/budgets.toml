@@ -220,7 +220,25 @@ unit = "bytes"
 # `krowk sync sessions|host|attach` and `--resume` of a synced session)
 # adds 426,304 bytes on ticket 18's 9,840,744: 10,267,048 (9.79 MiB).
 # Raised 9.50 -> 10.00 MiB by ticket 19, leaving 218,712 bytes.
-max = { x86_64-linux = 10_485_760 }
+# Main measured 8,648,392 before code in colour (syntect and two-face,
+# bat's grammars: fenced blocks in answers, written files and edits
+# highlighted in the TUI), which adds 2,225,888 bytes: 10,874,280
+# (10.37 MiB), 2,223,528 over 8.25 MiB. About 0.95 MB is the grammars'
+# dump; the rest is syntect, fancy-regex and the dump's decoding. Loaded
+# lazily (2 ms on the first code shown), so startup and idle RSS do not
+# move. Raised 8.25 -> 10.50 MiB for it, leaving 135,768 bytes.
+# Raised again 10.50 -> 11.00 MiB so the next features do not each raise
+# it: 660,056 bytes of room over 10,874,280. Still light for what it is:
+# the other agent CLIs ship a 242 MB (Claude Code) or 287 MB (Codex)
+# binary, and Cursor Agent a 547 MB install. A curated grammar set could
+# win back some of the highlighter's share later.
+# Main merged into the umbrella again (code in colour, whose 11 MiB
+# ceiling main raised to; the two-press quit, the per-turn krowk.db
+# projection) measures 12,703,304 (12.11 MiB): the umbrella's daemon, sync
+# and relay on top of main's highlighter, 1,168,968 over 11.00 MiB. Raised
+# 11.00 -> 12.50 MiB by the merge, leaving 403,896 bytes for the rest of
+# Harness P1.
+max = { x86_64-linux = 13_107_200 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---

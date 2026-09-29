@@ -201,113 +201,6 @@ the versions are the `v*` tags a release is cut from. Entries land under
   idle exit; `krowk host disable` stops and removes it. A service has no
   shell variables, so give it keys with `krowk connect` rather than an
   exported `ANTHROPIC_API_KEY`.
-- **`/new` in the TUI (or `/clear`) starts a fresh session**, as `/clear`
-  does in Claude Code: the screen and its scrollback are cleared, the header
-  is printed again, and the next prompt goes on the same model without the
-  earlier turns. The session left is kept, and `/sessions` continues it.
-- **The TUI's status line is two rows, and links the branch's pull request.**
-  The first row is the model, the device, the task and subagent counts and
-  `? help`; the second is the branch checked out, `#133↗`, its pull request
-  as a link (green while open, purple once merged, grey as a draft, red if
-  closed), and the cost. Both are read again after every turn, so a branch
-  the agent switches to or a pull request it opens shows up on its own.
-  Without `gh`, or on a branch with no pull request, the link is left out.
-  The `statusItems` setting takes `branch` and `pr`, and `branch`, `pr` and
-  `cost` always sit on the second row.
-- **Links in the TUI's answers can be clicked.** A markdown link,
-  `[the docs](https://…)`, shows as its text, underlined in the link colour
-  with a `↗` after it, and the URL itself no longer clutters the line; a
-  bare `https://…` or `<https://…>` gets the same colour and arrow. Each is
-  a terminal hyperlink (OSC 8), so the terminal opens it: Ctrl+click in most
-  (Ghostty, WezTerm, VS Code, GNOME Terminal), Cmd+click on macOS, and a
-  plain click in kitty. A link wrapped across rows opens from either. Only
-  http and https links are made clickable; any other link, and one in
-  `code`, is shown as typed. Inside tmux, links need tmux 3.4 or later with
-  `set -as terminal-features ",*:hyperlinks"`; a terminal without hyperlinks
-  shows the text and the arrow, not clickable.
-- **`/sessions` in the TUI (or `/resume`)** picks up an earlier session
-  without leaving krowk. It lists the last 30 sessions started in this
-  directory, newest first, each by its first prompt and when it was last
-  active; enter continues the chosen one. Its conversation is replayed under
-  what is already on screen, the status line and `ctrl-o` start counting
-  from that session, and the next prompt goes to it on the model it last ran
-  on. It waits for a running turn, and for agents Claude Code runs in the
-  background, to finish. `/sessions <id>` continues one of this
-  directory's sessions by its full id; `krowk --resume <id>` opens any.
-- **A content width for the TUI**: `tui.contentWidth` in config.json is
-  `prose`, at most 80 columns, `prose-wide`, at most 120, or
-  `full-width`, the terminal's whole width. It is a maximum: a terminal
-  narrower than it still gets all of its width. `/settings` now has two
-  rows, chosen with ↑ and ↓; the content width applies as soon as it is
-  changed, to what is printed from then on. The default is `prose`, so a
-  wide terminal now reads in a column of 80; set `prose-wide` for a wider
-  column, or `full-width` for the old layout. The width is the
-  conversation's: the prompt and the status line under it take the
-  terminal's whole width either way.
-- **Connected instances can be renamed**: `krowk providers rename
-  claude:work claude:personal` on the command line, or in the TUI from
-  `/connect`'s account picker — "Rename an account…", beside
-  "+ Add account…" — which asks the new name with the provider's prefix
-  already typed. The new name is always the whole name, exactly as
-  given, and keeps the provider's prefix: a bare `personal` is refused with
-  the name it would need to be. An OpenAI-compatible server's name has no
-  prefix, as before. The instance's
-  login or stored key moves with it, and so does every place config.json
-  names it: `defaultModel`, `rolloverOrder` and `subagents.model`. The old
-  name is kept in config.json's new `renamed` map, so a session that ran on
-  it resumes on the new name and `--model <old>/<model>` still works. A
-  named account's directory and a key's environment variable keep their
-  names; krowk says so when the variable was made from the old name. The
-  built-in instances (`claude`, `codex`, `anthropic`, …) keep their names.
-  The TUI's `/` menu now shows ten entries, so skills still show below
-  krowk's own commands.
-
-- **Shift+Enter starts a new line in the TUI prompt**, as Alt+Enter,
-  Ctrl+J and a `\` before Enter already do. Windows consoles report
-  Shift+Enter on their own; elsewhere krowk now asks the terminal for the
-  first level of the kitty keyboard protocol, which reports it apart from
-  Enter (kitty, Ghostty, foot, Alacritty, iTerm2; WezTerm with
-  `enable_kitty_keyboard = true`), and takes the request back on exit, on
-  Ctrl+Z and while a sign-in has the terminal. There, Ctrl+Backspace now
-  deletes a word, as its binding always meant, rather than one character.
-  A terminal without the protocol ignores it, sends Shift+Enter as a plain
-  Enter, and the other new-line keys still work. Inside tmux, Shift+Enter
-  needs `set -g extended-keys always` and `set -g extended-keys-format
-  csi-u` in its config. If krowk is killed outright (`kill -9`), the
-  terminal can be left reporting keys this way; `reset` puts it back.
-- **`/mode` in the TUI (or `/permission-mode`)** switches the running
-  session's permission mode: a picker lists `default`, `acceptEdits`,
-  `plan`, `bypassPermissions` and `unhinged`, each with what it asks about,
-  or `/mode plan` names one outright. The next prompt runs in it; a turn
-  already running keeps the mode it started in, and so does a turn Claude
-  Code begins by itself when a background agent finishes. Nothing is saved:
-  the next session starts in `--permission-mode` or the configured default
-  again.
-- **`/settings` in the TUI (or `/config`)** opens the settings krowk saves
-  to `~/.krowk/config.json`. The first is the default permission mode:
-  ← and → choose `default` or `unhinged`, written to
-  `permissions.defaultMode` at once, every other key kept as it was. The
-  next session starts in it; the running one keeps its mode, which `/mode`
-  changes. When `~/.claude/settings.json` or a trusted repository's settings
-  set another mode, which come after config.json, the overlay says which one
-  a new session starts in instead. `/config`, `/quit` and `/permission-mode`
-  typed whole now always run the command, never a skill with a similar name.
-- **`--permission-mode unhinged` runs everything the agent asks to**, with
-  no approval: krowk's deny and ask rules, a hook's `ask`, and the protected
-  directories (`.git`, `.claude`, `.codex`, `.krowk`, krowk's own config) no
-  longer hold anything back. `bypassPermissions` still stops at a deny rule
-  and still asks where an ask rule or a hook says so; `unhinged` is for when
-  you trust the model with everything krowk can reach. Set it for good with
-  `"permissions": {"defaultMode": "unhinged"}` in
-  `~/.krowk/config.json`; a repository's settings can never choose
-  it, and neither can `~/.claude/settings.json` (Claude Code would skip that
-  whole file, deny rules and hooks included, so krowk reads it as `default`
-  and says so). What still holds: a `PreToolUse` hook that blocks a call; `publish`
-  refusing credential files; on a Claude Code instance, the deny rules in
-  Claude Code's own settings files, which Claude Code applies itself; on a
-  Codex instance, Codex's own rules (it runs in full access, as under
-  `bypassPermissions`). A refusal that only `unhinged` gets past now says
-  so.
 
 ### Changed
 
@@ -316,940 +209,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   declared in the crate the desktop app and the phones will link, which
   pulls in no engine, tokio or reqwest; `krowk_harness::protocol`
   still names the same types. The generated JSON Schema is unchanged.
-- **The status line's branch and pull request follow the agent.** They are
-  read where the agent is at work, not only where krowk started: a
-  worktree it makes and works in shows its branch and `#N↗` as soon as it
-  runs a command there or writes a file in it. Where the agent works
-  outside any repository, or in a worktree since removed, they are read
-  where the session runs, as before.
-- **The status line names the model the way a person does.** It reads
-  `Claude Opus 5.5 (claude:primevise)` rather than
-  `claude:primevise/claude-opus-5-5`, with the instance's limit after it
-  once it is near: `Claude Sonnet 4.6 (claude:work, 82% of 5-hour)`.
-- **`/model` lists only what can run, and filters as you type.** An
-  instance whose check says it cannot run here (no key, not signed in) is
-  left out, and a subscription still being checked says `checking…` until
-  it is kept or dropped. Typing narrows the rows to those with every word
-  typed; enter with nothing matching runs `/model <what was typed>`. The
-  picker is the help menu's table, scrolling past 12 rows, each row saying
-  `current`, `used in this session` or the account in words (`Claude
-  subscription`), and an instance of another kind starts on its default
-  model rather than `…`. A switch of model is a line of its own, with a
-  blank row above and below and a green, bold `⇄`.
-- **`/settings`, `/model` and `/mode` in the TUI read as one table**: each
-  row is a name, its value and what that means, in fixed columns, with the
-  meaning dimmed; they were all one colour, blue, and the chosen row all
-  pink. The chosen row is a bold `❯` and bold text, and in `/settings`
-  `‹ ›` round the value ←→ changes. Every description and warning shows
-  whichever row is chosen, and a warning sits under the value it is about.
-  The only colours left are a model's `✓ ready` or `✗ …` and a warning's
-  yellow. A narrow terminal puts the description, then the value, under the
-  name rather than cutting it. `/model` says `current` of the model in use
-  (was `now`), the word `/mode` uses; the todo list, `ctrl-o`'s details and the
-  `/` menu's chosen row lose their blue too.
-- **Tool calls in the TUI are quieter**: a call's bullet and name are the
-  terminal's own text colour and what it acts on (a path, a command, a
-  pattern) is dimmed, where they were green, bold and cyan; the bullet
-  still turns red when a call fails. Calls one after another stack with no
-  blank line between them, and a command shows how many lines it printed
-  and its last one, where it showed the first two and the last three. An
-  edit's count of lines added and removed reads `+9 -3`, where it was
-  `+9/-3`.
-- **Thinking leaves no line in the TUI's scrollback**: `◆ Thought for 4.2s`
-  is gone. The status line still says `Thinking… 3.2s` while it happens,
-  and `Worked for 12s` at the end of a turn counts it.
-- **The TUI names the skill a call loads**: `Skill: basecamp`, where it
-  showed a bare `skill`, for krowk's own skills and Claude Code's alike. A
-  tool krowk has no name of its own for reads as words, `ListAgents` as
-  `List Agents`, set off from what it acts on by a colon
-  (`Web Fetch: https://…`).
-- **`krowk --help` fits on one screen**: about 40 lines at 80 columns, where
-  it was 217. It leads with the agent (`krowk`, `krowk -p "…"`, `--model`,
-  `--resume`), lists each command once with a one-line summary under AGENT,
-  PUBLISH, ACCOUNT and OTHER, and ends by pointing at the rest; the agent
-  build, which has no agent, shows neither the AGENT group nor its flags.
-  `krowk help --all` lists every command and subcommand, one line each, the
-  `auth …` long forms included. What the overview used to carry moved beside
-  what it is about: the upload flags, the anonymous upload and claim, and the
-  takedown into `krowk help push`, `claim` and `uploads delete`; logging in
-  into `krowk help login`; which key a command uses into `krowk help
-  workspaces`. Exit codes, the environment and where files live, links, and
-  the global and agent flags are topics: `krowk help topics` lists them,
-  `krowk help exit-codes` shows one. A command's page wraps at 80 columns and
-  names the global flags in one line instead of listing them. `krowk help
-  --json` keeps its shape, with the short summaries; a topic's `--json` is
-  its text as one JSON string. Both builds come out a little smaller.
-
-- **Everything krowk keeps is in one place, `~/.krowk/`, and your config
-  and keys move there by themselves.** The config, the registry keys, the provider
-  logins and stored keys, named Claude Code and Codex accounts, sessions,
-  krowk.db and the price cache were spread over `~/.config/krowk`,
-  `~/.local/share/krowk` and `~/.cache/krowk` (or wherever the XDG
-  variables put them); now they are `~/.krowk/config.json`,
-  `credentials.json`, `accounts/<name>/`, `sessions/` (krowk.db beside the
-  logs), `cache/` and `readiness/`, in a `0700` directory that keeps
-  secrets out of a dotfiles repository that tracks `~/.config`. The first
-  krowk you run after upgrading brings your config and keys in — one line
-  on stderr, `krowk: moved krowk's config and keys to ~/.krowk` — then
-  deletes the old key files, config and price cache (fetched again), so
-  no secret is left where a dotfiles repository may track it. The move is
-  built whole in `~/.krowk.migrating` and renamed into place in one step:
-  a crash before that leaves nothing half-made, and a crash after it is
-  finished on the next start. Nothing else is moved: old files krowk no
-  longer reads — `krowk.db`, a dev build's named accounts and sessions —
-  stay where they are and are named once on stderr, each with what to do
-  (`krowk sessions rebuild` for the session index; `mv` plus its
-  `configDir`, or a fresh `krowk connect`, for an account). Only krowk's
-  own files are deleted, by name — never a directory whole, so XDG
-  variables that put the config, data and cache in one directory lose
-  nothing else — and an old key file that is a link loses only the link,
-  the file it led to named for you to delete. The two old key files are
-  merged entry by entry; one entry they name differently stops the move
-  (`migration_failed`), both kept. A `~/.krowk` that already exists is
-  never merged into; old key files are deleted beside it only when it
-  holds every key in them as it is. A relative `XDG_CONFIG_HOME`, which
-  0.10 followed from the directory you ran in, is not looked at. An old
-  key file krowk cannot
-  read stops the move (`migration_failed`), naming the file with a line
-  and column only, until it is fixed or moved
-  aside. `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` no longer
-  move anything; set
-  `KROWK_HOME` (an absolute path; a relative one is refused) to keep all of
-  it somewhere else — a sandbox, a test — and nothing is moved into it. A
-  `~/.krowk` that is a symlink, or another user's, is refused rather than
-  used.
-
-- **One credentials file**, `~/.krowk/credentials.json` (`0600`): the
-  registry keys `krowk login` stores, the SuperGrok login and stored API
-  keys used to be two files; they are one, written by one locked
-  read-modify-write, so a `krowk login` never drops a provider token and a
-  token refresh never drops a key. A file krowk cannot read is named with
-  its line and column, never its contents.
-
-- **The file tools never read, search or change krowk's home unasked** —
-  any of it, not just the key files: `read`, `grep`, `glob`, `write` and
-  the edit tools ask first even under allow rules (and are refused with
-  no one to ask), judged by where a path really leads (`..`, symlinks,
-  case), and a search of the directory around it skips it. `krowk_push`
-  refuses any file in the home, wherever `KROWK_HOME` puts it, and any
-  `.krowk` directory.
-
-- **With `HOME` unset, krowk no longer uses `.krowk` beside you as its
-  home** — that made a repository's own `.krowk/` its config, trust list
-  and credentials. In every build, `krowk config set --global` and `krowk
-  login` now refuse with `no_home`, `doctor` shows "(no home directory)",
-  nothing is read from or written to a home, and `krowk status`, `-p`, the
-  TUI and `connect` refuse with `no_home`. On Windows, which sets no
-  `HOME`, krowk's home is `%USERPROFILE%\.krowk`.
-
-- **`krowk status` names a key's variable as `env ANTHROPIC_API_KEY`**, where
-  it said `$ANTHROPIC_API_KEY` (and `env ROUTER_KEY, handed to Claude Code`
-  for a backend's key), so a variable the instance reads and a stored
-  reference to one (`stored ($VAR)`) read apart. A missing key's fix line
-  offers storing one: "set OPENAI_API_KEY, or store a key with `krowk
-  connect openai --method api-key`".
-
-- **Every "sign in with …" now says `krowk connect`**: `krowk status`,
-  `providers list`, a refused switch and a failed turn name the connect
-  command for that instance (`krowk connect anthropic --method
-  subscription --name work`) instead of `krowk providers add claude
-  --name work`. `providers add|list|remove` work as before, on the same
-  sign-in code as `connect` — except that adding an instance that exists
-  no longer resets a key variable you set to the one its name implies.
-  Instances are listed with a plain label beside their names — Claude
-  subscription, Anthropic API key, ChatGPT subscription, SuperGrok, … — in
-  the pickers, and in place of the kind in the `krowk status` and
-  `providers list` tables; `--json` keeps `kind`, and `krowk status --json`
-  rows gain `label`.
-
-- **A bare `--model` runs on an instance that can run it here, and krowk
-  never guesses between a key and a subscription.** `--model sonnet` (or
-  `gpt-5.5`, `grok-4.7`, a bare `defaultModel`, the TUI's `/model haiku`)
-  used to go to the family's API instance whether it had a key or not, and
-  no model at all to `anthropic/claude-opus-5-5`, so a person with only a
-  Claude subscription failed. Now a bare id runs on the session's own
-  instance, then on the one `defaultModel` names, when that serves it and
-  is ready; else on the one instance ready here that serves it —
-  `claude/sonnet` with only a Claude subscription signed in. With several
-  ready — an Anthropic API key and a Claude subscription — the prompt is
-  refused (`ambiguous_model`, exit 1) with each one named ("Anthropic API
-  key", "Claude subscription") and the `--model <instance>/<id>` that picks
-  it, or `krowk connect <vendor> --default`; with none, `none_ready` (exit
-  3): "no connected instance serves Claude models — run `krowk connect
-  anthropic --method api-key` … or `krowk connect anthropic --method
-  subscription` …", with what each one needs. No
-  model at all is the default model of the one ready instance, refused the
-  same way. Claude Code's aliases go to a Claude Code instance as they are
-  and to the API as the newest model of their family the catalog lists.
-  `<instance>/<model>` is never rerouted. Routing asks each vendor once, in
-  parallel, from the minute-long cache, and never in a repository nobody
-  trusted. The TUI routes once its first frame is up, so its prompt never
-  waits on a vendor's status check, and when the model it routes runs on
-  Claude Code or Codex in a repository not yet trusted it asks the trust
-  question itself when a prompt is sent, holding it until it is answered:
-  `y` or `n` (Esc) on an empty prompt, once the question has been up for
-  400 ms — keys typed ahead go to the prompt and answer nothing. A no, a
-  refused route or Ctrl-C puts the held prompts back in the editor.
-- **The TUI's status line is one line in one order**:
-  `<user>/<host> | <instance>/<model> | $cost | [N tasks] | [N subagents] | ? help`,
-  under the prompt box. The task count is the todo list's open items and
-  shows only while there are any; the subagent count only while they run;
-  `offline`, in yellow, comes before `? help` while the API cannot be
-  reached, and an instance near its rate limit says so beside its model
-  (`claude:work/haiku (78% of 7-day)`). Whether an instance runs on a
-  subscription or an API key moved to the session details (Ctrl-O), and
-  online, `connecting…` and the key hints are no longer shown. On a narrow
-  terminal the device goes first, then the counts and the cost, then the
-  model is cut short; `? help` stays. `tui.statusItems` takes `device`,
-  `model`, `cost`, `tasks`, `subagents` and `help`; a config with the old
-  names still reads — `todos` is `tasks`, `instance` is `model`, and
-  `connectivity` and `session` are ignored.
-- **The working line says what runs, and one duration**: `Running Read
-  README.md…` or `Waiting on 2 subagents…`, with the turn's clock on the
-  right — no longer `Running for 10s… 10s`.
-- **A tool call's output hangs under it as a tree**: each line on a `├─`
-  branch and the last on `└─`, the way `tree` draws a directory.
-- **The status line sits right under the prompt box**, without the blank
-  row that was above it.
-
-- **Edits into `.git`, `.claude`, `.codex` and `.krowk` are asked about
-  instead of refused**, and so is anything in krowk's own config directory
-  or a backend's: the TUI shows the request, and `krowk -p` still refuses
-  it. No allow rule or remembered grant opens those directories — only a
-  yes for that one call, or `bypassPermissions`. Reading outside the
-  working directory is asked about the same way, where it used to be
-  refused.
-
-- **The release ships two builds of krowk, and the installer picks.** The
-  full build — krowk's agent and its TUI, the session store, everything —
-  keeps the archive name every release has used (`krowk_<version>_…`), so
-  links, npm and `krowk upgrade` from an earlier release get it. The lean
-  agent-container build is `krowk-lean_<version>_…` beside it.
-  `curl -fsSL https://krowk.com/install | bash` installs the full build on a
-  workstation and the lean one in CI (`CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, …)
-  and containers (`/.dockerenv`, `/run/.containerenv`, `$container`, a
-  Kubernetes pod, or no terminal at all, as in a Dockerfile `RUN`); a
-  pinned release from before the lean build installs its one build; `bash -s -- --lean` / `--full`, or `KROWK_LEAN=1` / `0`,
-  choose either way. `krowk upgrade` stays on the build it is, and the
-  GitHub Action installs the lean build. **Toolbox and distrobox count as
-  containers: pass `--full` there** for the agent.
-- **Network failures say "no network connectivity".** When the Anthropic
-  API cannot be reached, `krowk -p` now fails with that sentence first,
-  still under `network_unreachable`.
-- **Costs are priced per turn, by the model each turn ran on.** A session
-  that switched models mid-way, or a ledger with three models in it, is no
-  longer priced entirely at its last model's rates. `sessions show` prints
-  each turn's cost (and a per-model subtotal when there is more than one),
-  and a turn whose source reported its own dollars — opencode, a provider
-  ledger — shows that figure, marked `reported`. Stores imported before
-  this release price every turn by the session's model until
-  `krowk sessions rebuild` re-reads the transcripts.
-- **A missing price reads —, never $0.** A session with any tokens krowk
-  cannot price shows — for its cost, with `unpriced` naming the models in
-  `--json`, and `sessions import` names every unpriced model once at the
-  end. Every listing and `show` footnotes where the rates came from (the
-  refreshed cache's fetch date, or the snapshot embedded in the build):
-  costs are today's rates, not the ones in force when the tokens were
-  spent. JSON costs are unrounded; costs under a cent print to three
-  significant digits, so $0.00007 and $0.00012 no longer both read $0.0001.
-- **JSON changes** for anyone reading costs programmatically: `sessions
-  show` turns drop `cost_unknown` and gain `cost_usd` (null when unknown),
-  `cost_source` (`priced` or `reported`), `model`, `provider` and the
-  reasoning and cache token counts; the session's `priced_cost_usd` is now
-  `cost_usd`, and `priced_with` reads as a footnote. `sessions` rows gain
-  `unpriced`, the list gains `priced_with`, and the import report gains
-  `unpriced_models`. `cost_display` prints sub-cent figures to three
-  significant digits (`$0.00500`), and a ledger session whose rows all
-  sit in transcripts reads `counted elsewhere`. A reported cost of 0 is
-  treated as no report — opencode writes 0 for models it cannot price.
-- **Claude usage is counted once per API message.** Claude Code writes one
-  transcript line per content block and repeats the message's usage on
-  each; turns summed every line, overstating tokens and cost (about 1.8×
-  on a real session). Each message now counts once, at its final usage.
-  Claude turns also keep thinking tokens apart from output
-  (`output_tokens_details.thinking_tokens` → reasoning), as opencode and
-  ledger turns already did. opencode subagents are now linked to their
-  parent session even though opencode lists them first. Run `krowk
-  sessions rebuild` to apply all three to sessions already imported —
-  `sync` does not re-read them.
-- **You can see how old the prices are.** `krowk doctor` has a `pricing`
-  check naming when models.dev prices were last fetched and how many days
-  ago — a warning past 30 days, or when only the snapshot built into
-  krowk answers — with the command that fixes it; `pricing refresh`
-  reports `fetched_at_ms` and `age_days` too. `sessions sync` still
-  refreshes prices once they are a day old, now judged by the recorded
-  fetch time rather than a file's mtime. Nothing else touches the
-  network, and there is no background timer. A cache that is missing or
-  holds no prices is fetched whole again rather than confirmed by a stale
-  ETag. Audio rates stay unread: no
-  transcript krowk imports carries audio tokens, and in a provider ledger
-  they are priced at the text rate inside input and output — an
-  undercount to revisit when one reports audio at all.
-- `sessions` lists in ~25 ms on a machine whose price cache holds the whole
-  models.dev file (was ~80 ms): the cache is parsed without building the
-  fields pricing never reads.
-
-### Added
-
-- **The TUI connects a provider itself: `/connect`, `/disconnect`, and a
-  "Connect a provider" card on the first run.** Before, a fresh machine's
-  first prompt failed against `anthropic` with `not_authenticated`, and the
-  way out was to quit and run `krowk connect`. Now, when nothing here can
-  run a model, bare `krowk` opens on a card that walks the same steps as
-  `krowk connect` — vendor, way in, account, each account marked ready or
-  not — and `/connect` (or `/connect claude:work`) does it any time. A
-  Claude or ChatGPT subscription is still signed in by the vendor's own
-  `claude auth login` or `codex login`: the TUI gives that command the
-  terminal, as Ctrl-Z would, and takes it back after, redrawn at whatever
-  size the window is by then; Ctrl-C there stops that login, not krowk. A
-  SuperGrok sign-in's page (a link) and device code, and a pasted API key,
-  stay in the TUI; the key is shown as bullets and never reaches the
-  screen, the prompt's history or config.json — while the overlay is up,
-  nothing typed or pasted reaches the prompt, and a question that comes up
-  while it is hidden waits for `/connect` to open it rather than taking
-  what is being typed. The result reads as `krowk connect`'s (`✓ Connected
-  claude`, then what it is), and when it is the first connection, or the
-  session had nothing ready to run on, the session moves onto it.
-  `/disconnect` signs the session's instance, or one picked, out, and asks
-  before signing you out of Claude Code or Codex itself. After either, a
-  Claude Code or Codex process already running on the instance it
-  connected or signed out is not reused: the next turn asks the vendor
-  again and starts a new one, so a sign-out takes effect at once. A
-  cancelled or failed one, or one of another instance, keeps it. `/model` marks
-  each instance `✓ ready` or what it lacks (`✗ not signed in`), checking
-  the vendors in the background so a slow `claude` never holds up a key;
-  picking one that is not ready offers `/connect` for it. Both commands are
-  in the `/` menu and the help menu.
-
-- **An API key can be stored, not only read from the environment.**
-  `krowk connect anthropic --method api-key` (or `openai`, `xai`,
-  `openrouter`, `openai-compatible`) at a terminal asks "Paste a key, or
-  reference one ($VAR or !command)" without echoing it; Enter alone keeps
-  reading the key from its variable, as before. Without a terminal,
-  `--key-stdin` stores a key piped in, and `--key-ref '$VAR'` or
-  `--key-ref '!pass show anthropic'` stores a reference — the variable read
-  when krowk starts, or the command's output (one line, run once per krowk
-  process once it works — a failure is not kept, so unlocking the password
-  manager and trying again works — its errors never shown since they may
-  hold the key). The command
-  runs with no terminal — 30 seconds at most, so a password manager that
-  would ask for a passphrase fails at once, saying to unlock it first —
-  except when `krowk connect` runs it at a terminal, where you can type the
-  passphrase. There is no `--key <value>`: it would be in your shell's
-  history. A key, `$VAR` or `!command` over more than one line is refused,
-  so a pasted command never runs as two. The key goes in `~/.krowk/credentials.json`
-  (0600), the file SuperGrok's login is in; `config.json` still names only
-  a variable. A stored key is used before the variable, and when it cannot
-  be had — its variable unset, its command failing — the instance has no
-  key and says why, rather than falling back to the environment's.
-  `krowk status` says where each key comes from (`stored`, `stored
-  ($VAR)`, `stored (!pass …)`, `env ANTHROPIC_API_KEY`), never the key;
-  `krowk status` runs a stored command to check it, and one that fails is
-  `unknown`. `krowk disconnect` deletes a stored key and says whether the
-  variable is set too. The file tools no longer read or search krowk's
-  credentials files without asking, even inside the working directory, by
-  whatever path leads there.
-
-
-- **`krowk connect` connects a model provider, by vendor and method**
-  (in the `harness` build). `krowk connect anthropic` offers a Claude
-  subscription — a Claude Code account, signed in by Claude Code's own
-  `claude auth login` — or an API key; `openai` a ChatGPT subscription
-  (Codex's own `codex login`, or `--method device` for a code typed into
-  any browser) or an API key; `xai` SuperGrok (a browser or a device code)
-  or an API key; `openrouter` and `openai-compatible` an API key. With no
-  vendor on a terminal it asks — vendor, method, then which account: each
-  one there is, with whether it is ready, to reconnect, or a new one by
-  name. Without a terminal nothing is guessed: `--method
-  subscription|api-key` is required where a vendor has more than one, and
-  the error says so. `--name work` adds a second account (`claude:work`,
-  `anthropic:work` — the method picks the prefix, so the two never
-  clash); without it the default-named one is made, or renewed. A new
-  name keeps its method's prefix, holds no `:` after it, and is refused
-  when it differs from one there only in case, would take a built-in of
-  another kind (`claude`), another account's directory, or another
-  instance's key variable (`my-work` and `my_work` would both read
-  `$ANTHROPIC_MY_WORK_API_KEY`; name one with `--api-key-env`). A
-  relative `--config-dir` is kept as the absolute directory it means, with
-  any `..` taken out, and a failed sign-in removes only the directory it
-  made — never an account another connection made beside it. Definitions
-  you wrote by hand that share a directory still renew. Connecting an
-  instance that exists renews its login, and `krowk connect claude:work`
-  does it by name. A sign-in that fails writes nothing. **The first
-  connection becomes the default model** (`defaultModel` in config.json,
-  e.g. `claude:work/claude-opus-5-5`) and says so; later ones leave it
-  alone unless given `--default`. krowk still never signs in to a Claude
-  or ChatGPT subscription itself, nor reads those logins: the vendor's own
-  CLI does, and now starts in krowk's own empty directory rather than the
-  repository you run it in, whose settings nobody trusted.
-- **`krowk disconnect <instance>` signs one out, the way it was signed
-  in**: SuperGrok's tokens are deleted from krowk's credentials file, a
-  Claude Code or Codex account runs `claude auth logout` or `codex logout`
-  with its own directory, and an API-key instance names the variable to
-  unset, since krowk never stores the key. **The built-in `claude` and
-  `codex` are your own Claude Code and Codex login** (`~/.claude`,
-  `~/.codex`), and signing them out signs you out of Claude Code or Codex
-  itself, for every tool: `krowk disconnect` says so and asks at a
-  terminal, and without one refuses unless given `--sign-out-vendor`.
-  The pickers mark them "your own Claude Code login". The definition stays, showing
-  `not signed in` in `krowk status`, unless `--remove` — which also clears
-  `defaultModel` when it ran on that instance (not when a built-in of that
-  name still serves it). With no instance on a
-  terminal it asks which; without one it lists them.
-- **`krowk login`, `krowk logout` and `krowk whoami`** are short for your
-  krowk account: `krowk auth login`, the new `krowk auth logout` (takes the
-  key that resolves here off this machine — the key keeps working until it
-  is revoked in the dashboard), and `krowk auth verify`. `krowk auth`
-  works as before. `krowk login anthropic` and the like say that a model
-  provider is `krowk connect`; `krowk logout` takes no argument, and
-  `krowk logout anthropic` says `krowk disconnect` instead of removing your
-  krowk key; and the account's own errors now say
-  `krowk login` and `krowk whoami`.
-
-- **`krowk status` says which providers can run a turn here, and how to
-  fix the rest** (in the `harness` build). One row per instance — the
-  seven built in and every one you configured — with its kind, its state
-  (`ready`, `key not set`, `not signed in`, `expired`, `not installed`,
-  `unknown`), where its key or login comes from (`$ANTHROPIC_API_KEY`,
-  `Claude Code's own login in ~/.claude`, krowk's SuperGrok login file —
-  never the key itself), and the one command or variable that makes it
-  ready. It exits 0 when at least one instance is ready and 3
-  (`none_ready`) when none is; `--json` gives the rows with the same keys
-  on every row, and on exit 3 the rows are the error's `details`.
-  **`providers list` and `krowk doctor` now use the same check**: doctor
-  gains a `providers` line, and `providers list` rows carry `source` and
-  `fix` in place of `auth`, with `state` spelled as `krowk status` spells
-  it (`key_not_set`, `not_signed_in`, …). Claude Code and Codex are asked
-  at the same time instead of one after the other, so a listing takes as
-  long as the slowest vendor (at most 10 seconds, after which it and
-  anything it started are stopped) rather than their sum;
-  Codex is asked through `codex app-server`'s `account/read`, falling back
-  to `codex login status`. A SuperGrok login whose token expired and
-  cannot be refreshed now shows as `expired` instead of ready.
-- **A switch to a signed-out Claude Code or Codex account is refused
-  before anything starts.** `/model claude:work/sonnet`, `--model` on a
-  resumed session, and a rollover or its offer now ask the vendor whether
-  the account is signed in first, and refuse with the command that signs
-  it in (`krowk providers add claude --name work`); the session stays on
-  its model. Before, Claude Code was started and the turn failed. A
-  signed-in answer is remembered for a minute in the TUI, so switching
-  back and forth does not re-ask; a signed-out one is asked again every
-  time, so signing in in another terminal works at once. Before a turn the
-  vendor is asked in the session's own directory, once its repository is
-  trusted — where the turn will start it — so a project that signs
-  Claude Code in through its own settings — Bedrock, Vertex, an
-  `apiKeyHelper` — still runs; `krowk status` and `providers list` ask in
-  a directory of krowk's own, where such an account shows `not signed
-  in`.
-
-- **Claude Code's background agents are followed between turns, and the
-  turn Claude Code begins for them no longer answers your next prompt.**
-  An agent the model starts with Claude Code's `Agent` tool
-  (`run_in_background`) is counted in the TUI's `[N subagents]` and listed,
-  read-only, in the Agents overlay (Ctrl-G) until it finishes; what it asks
-  while no turn runs is answered under your last turn's permissions. If
-  Claude Code is let go while it runs — the session moved to another
-  account — krowk says the agents stopped. When it finishes, Claude Code begins a turn by itself to
-  answer it: the TUI now runs that turn at once — in the mode Claude Code
-  is in, default after a plan you approved — and shows it as Claude
-  Code's (`Claude Code began this turn by itself: background agent “…”
-  completed`), and it is logged as a turn of the session, the agent's calls
-  counted once toward the cost and the budget (by that next turn: what an
-  agent spends between turns is held to `--max-usd` only then). Before, that turn's output
-  sat unread, and your next prompt ended at its answer — the wrong one. A
-  prompt that arrives first runs it ahead of itself, and one Claude Code
-  begins as a prompt is on its way is read inside that prompt's turn,
-  which still ends at its own answer. An idle session's Claude Code is not
-  let go while an agent runs. `krowk -p` does not wait for background
-  agents, and says on stderr which ones stop with the run. For clients:
-  the `backend.agents` and `turn.unprompted` frames, the `continue`
-  command (refused `nothing_pending` when nothing waits), and
-  `Host::watch` for what is sent between turns. The TUI also shows a
-  backend's answer that arrives whole rather than streamed, which it used
-  to leave out.
-- **Switch model, instance or engine at any time, without losing the
-  thread.** In the TUI, `/model` opens a picker of the models the session
-  has run on and every instance you have, and `/model <instance>/<model>`
-  switches directly; `krowk -p --resume <id> --model <instance>/<model>`
-  does the same headless. Between the native APIs (Anthropic, OpenAI,
-  xAI, OpenRouter, anything compatible) nothing is lost but another
-  provider's private reasoning, which arrives as marked plain text. **Into
-  Claude Code or Codex**, the backend is seeded with krowk's handoff — the
-  earlier turns summarized, the last three as they happened, then your
-  prompt — and a backend that ran earlier in the session is caught up on
-  only what it missed; **back from one** the native model reads its turns
-  whole. **Between two accounts of the same vendor** (`claude:work` →
-  `claude:personal`, `codex:team` → `codex:personal`) krowk copies the
-  vendor's own transcript into the other account's config directory and
-  resumes it there, so the context is whole, falling back to the handoff
-  when the copy or the resume fails. A switch that cannot run — no key, no
-  login, no binary — is refused with the fix, and the session stays on the
-  model it was on; one that fails on its first turn goes back by itself.
-  Switching never loosens the permission mode, and a session's budget
-  counts what it spent on every model.
-- **Rate limits are detected on every engine, and offered around.** A
-  turn that hits its instance's limit (an API's 429, Claude Code's plan
-  limit, Codex's usage limit) ends with an offer — "claude:work limited
-  until 14:00, continue on claude:personal? [y/N]" — which `y` accepts in
-  the TUI and `krowk -p` prints as a `--resume … --model …` fix. It is
-  never taken silently. With `"rollover": "auto"` and an ordered
-  `"rolloverOrder"` in `config.json`, krowk moves to the next instance by
-  itself, tells every client, and logs where from, where to and why. It is
-  off by default, and stacking one plan's limits across accounts is your
-  own call: Anthropic's plan limits assume ordinary, individual usage.
-  Each instance's usage and how near its limit it last said it was show in
-  the TUI's session details (Ctrl-O), and in the status bar once it is
-  close.
-- **krowk's agent follows Claude Code's permission rules, so a repository
-  set up for Claude Code needs nothing new.** `permissions.allow`, `ask`
-  and `deny` are read in Claude Code's syntax — `Bash(git:*)`,
-  `Bash(npm test)`, `Read(./secrets/**)`, `Edit(src/**)`,
-  `WebFetch(domain:docs.rs)`, `Mcp(github:create_issue)` — from
-  `.claude/settings.json` and `.claude/settings.local.json`, your own
-  `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`), the `permissions` key
-  of krowk's `config.json`, and a repository's `.krowk/config.json`, along
-  with `defaultMode` and `additionalDirectories`. **A deny rule wins in every
-  mode, `bypassPermissions` included**, and a command line is judged the way
-  the shell runs it: `git status && rm -rf x` is two commands, `sudo rm`,
-  `bash -c 'rm …'` and `find -delete` still meet `Bash(rm:*)`, and an allow
-  rule never covers a line that writes a file through `>`. **Git is
-  allowed fail-closed**: `Bash(git:*)` covers a git command only when its
-  global options, and the options of any subcommand that can run a program
-  or install hooks (`clone`, `fetch`, `push`, `rebase`, `grep`, `config`,
-  …), are all on a known-safe list — anything else, abbreviated or
-  bundled, is asked about. `git log`, `git status`, `git commit -m`,
-  `git push -u origin main`, `git clone <url>`, `git grep x` and
-  `git config --get` are still covered; `--git-dir`, `--work-tree`, bare
-  repositories, and a git after `cd` are not. A command whose program name the shell computes (`$X`,
-  `$(printf rm)`, `r{m,}`) is asked about whenever a `Bash` deny rule
-  applies, even under `bypassPermissions`, and refused by `krowk -p`. Plan mode
-  refuses every edit and command. `bash` now runs in `default` and
-  `acceptEdits` when a rule allows the command. Claude Code backends are
-  started with your deny rules as `--disallowedTools`, and Codex's
-  commands and patches are judged by the same rules. **A repository's own
-  allow rules, extra directories, `defaultMode` and hooks count only once
-  you trust it** (the same trust list and `--trust` as a backend's); its
-  deny and ask rules always count. `publish` is judged by the same rules:
-  it runs where an edit does, and a file a `Read` deny rule covers is never
-  uploaded. A settings file that does not parse stops the prompt and names
-  the file.
-- **The TUI asks before a call its rules do not allow.** A command, an
-  edit in the default mode, or anything reaching outside the working
-  directory shows over the prompt with why it is asked (a long one cut to
-  fit is printed whole with `v` before it can be allowed): `y` allows it once,
-  `s` for the rest of the session, `p` for this project from now on
-  (remembered in krowk's own `permissions.json`), `n` or Esc refuses it.
-  The request is part of krowk's protocol (`approval.requested`, answered
-  by `approve`), so any client can answer it — the phone, once the daemon
-  lands. **`krowk -p` never waits on a question**: the call is refused, and
-  the model is told which allow rule or `--permission-mode` would have
-  allowed it.
-- **Instructions, skills and hooks from Claude Code, Codex and Cursor load
-  as they are.** krowk's agent reads `AGENTS.md`, then `CLAUDE.md` and
-  `CLAUDE.local.md`, then `.cursor/rules` and `.cursorrules`, in every
-  directory from the repository root down to where it runs (deeper files
-  win), after your own `~/.claude/CLAUDE.md`. Claude-format skills
-  (`SKILL.md` in `.claude/skills`, `~/.claude/skills` or krowk's config
-  directory) are listed by their description, and a skill's full text is
-  loaded only when the model uses it. Claude-format command hooks run for
-  `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and
-  `Stop`, with Claude Code's JSON on stdin; a hook that exits 2 blocks, and
-  the model reads its reason.
-
-- **Bare `krowk` on a terminal opens krowk's own agent.** It opens on a
-  clean window — what was on screen scrolls up into scrollback, kept — with
-  one header line (`krowk · opus via claude · ~/project`), the prompt in a
-  box (`→ Plan, search, build anything`) and one row under it for the
-  model, the keys worth knowing and the cost. A repository it has not
-  trusted yet is asked about as a short card answered with one key — `y`
-  trusts it; any other key, or anything typed before the card showed,
-  does not; Ctrl-C leaves. The
-  window title says what it is doing (`✳ krowk` waiting, `◑ <what you
-  asked>` working, `✋` when a call waits for your yes), and inside herdr
-  krowk reports the same to its pane, so herdr lists it as an agent with
-  live status and notifications. An inline prompt
-  at the bottom of the terminal, with the conversation going into the
-  terminal's normal scrollback as it finishes — no alternate screen, so it
-  scrolls, copies and searches like any other output, and works over SSH,
-  in tmux and in phone terminals. Answers stream at up to 60 frames a
-  second, each frame one synchronized update, and an idle prompt uses no
-  CPU at all. Enter sends; Alt-Enter, Ctrl-J or a trailing `\` adds a line,
-  and ↑/↓ walk the prompt history. Esc or Ctrl-C interrupts a turn and
-  keeps what arrived; typing while it runs steers it, and the model reads
-  it before its next step. `krowk --resume` picks a krowk session to
-  continue from a list (`--resume <id>` names one), `--model` and
-  `--permission-mode` work as they do for `-p`. A status bar shows the
-  model, the instance, the session's cost and connectivity — configurable,
-  or off, under `"tui"` in `config.json` (see the README) — and `?` and
-  Ctrl-O toggle the keys and the session's details. When the model's API
-  cannot be reached, a persistent **no network connectivity** notice
-  appears within two seconds and clears when it answers again (behind a
-  proxy — `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` — the proxy is what is
-  checked). Ctrl-Z stops to the shell and `fg` brings the prompt back;
-  SIGTERM and SIGHUP leave the terminal as they found it. Each tool call
-  is shown once, with its outcome (`◆ Read README.md (3 lines)`, an edit's
-  removed and added lines on red and green bands, a command's head and
-  tail), thinking as `◆ Thought for 4.2s`, and answers in light markdown;
-  the look follows xAI's Grok Build. Everything sits two columns in from
-  both edges; the left padding is moved over, never written, as Claude
-  Code does it, and krowk wraps answers inside it itself, so lines already
-  printed keep their width when the window changes. Ctrl-Y copies the
-  last answer as the model wrote it, without the padding or the wrapping,
-  to the clipboard (OSC 52, and `wl-copy`, `xclip` or `pbcopy` where
-  there is one). The prompt sits
-  at the bottom of the terminal, what was on screen moved down to meet
-  it, so narrowing the window never leaves a copy of it in scrollback.
-  Resizing mid-answer neither repeats nor drops the line being streamed:
-  every frame moves from the cursor rather than to numbered rows, so one
-  the terminal reads after it has changed size still lands where it
-  should, and a shorter window scrolls the conversation up rather than
-  clearing a line of it. **Known limits:** a resize the terminal takes in
-  the middle of a single frame can still cost that line, and a frame read
-  after the window narrowed (the prompt box spans the window) can blank
-  the line above the prompt area; krowk takes a terminal to reflow on
-  resize unless it is real xterm (`XTERM_VERSION`) or the Linux console;
-  one that is taken wrongly can leave a copy of the prompt area in
-  scrollback, or blank a few lines above it. A live region that reflows
-  taller than the whole screen (a very narrow window under a long overlay)
-  leaves its top rows in scrollback. Steering an interrupted turn never read comes back into the
-  prompt, and on `-p`'s result as `unreadSteers`. With stdin
-  or stdout not a terminal, bare `krowk` prints exactly what it always has.
-- **`krowk -p "…"` runs krowk's own agent, headless, on the Anthropic API.**
-  The release's full build carries it; the lean agent build does not. The prompt comes from the arguments, or from stdin when there
-  are none; the key from `ANTHROPIC_API_KEY`, and `ANTHROPIC_BASE_URL`
-  points it at a router or a stand-in. `--output-format text` prints the
-  answer, `json` the `result` event, and `stream-json` every event as it
-  happens — `item.started`/`item.delta`/`item.completed` per item, then a
-  `result` with usage (input, output, cache read, cache write, reasoning),
-  the cost at models.dev prices, the duration and the session id.
-  `--model <instance>/<model>` picks the model (a bare Claude id runs on
-  the `anthropic` instance; `claude-opus-5-5` by default), `--resume <id>`
-  continues a session by the id its result named or its `krowk sessions`
-  id, and Ctrl-C stops a turn and keeps what it made. Its `bash` tool runs
-  only under `--permission-mode bypassPermissions` until permission rules
-  land, and is refused with a reason the model can read otherwise (its
-  other tools are below). Its output is the command's stdout and stderr
-  through one pipe, in the order they were written. Prompt caching is on by default.
-- **`krowk -p`'s agent can change files, in the edit format its model was
-  trained on.** Beside `read` and `bash` it now has `write`, `grep`, `glob`
-  and one edit tool: `str_replace` for Claude models, `apply_patch` (the
-  Codex patch envelope) for GPT and Codex models, and `search_replace` for
-  Grok models, picked from the model's family in the models.dev cache, or
-  from its id when the cache does not know it. `--toolset claude|gpt|grok`
-  picks one for a prompt, and `"toolset"` in `config.json` for every
-  model. An edit that matches twice, or no longer matches the file, and a
-  patch that does not apply, change nothing and tell the model why. `grep`
-  and `glob` skip what `.gitignore` excludes and never search binary
-  files. `write` and the edit tools run only under `--permission-mode
-  acceptEdits` or `bypassPermissions` until permission rules land; in the
-  default mode the model is told it may not. Every file tool — `read`,
-  `grep` and `glob` included — reaches only inside the working directory,
-  judged by where a path really leads (`..`, absolute paths and symlinks
-  that point out are refused), unless krowk runs with `bypassPermissions`.
-  Nothing inside a `.git` directory is changed by them either (git runs
-  what its config and hooks name), and a read-only file is refused rather
-  than replaced. Edits are written to a temporary file and renamed into
-  place, keeping the file's permissions, so a failure never leaves half a
-  file. Each turn's `context.jsonl`
-  record now names its `toolset` and estimates the system prompt's and
-  tools' size in tokens (`systemTokens`, `toolsTokens`, at four bytes a
-  token).
-- **`krowk -p` runs on OpenAI, xAI, OpenRouter and any Chat Completions
-  server, and on a SuperGrok subscription.** `--model openai/gpt-5.4`
-  reads `OPENAI_API_KEY` (and `OPENAI_BASE_URL`), `xai/…` reads
-  `XAI_API_KEY`, `openrouter/…` reads `OPENROUTER_API_KEY`, and a bare
-  `gpt-…`, `o3` or `grok-…` id now runs on `openai` or `xai` rather than
-  `anthropic` — pass `anthropic/<id>` for a router that serves them there.
-  GPT models go through OpenAI's Responses API, stateless (`store:
-  false`): their encrypted reasoning is kept in the session log and sent
-  back as it came, every call carries the session as `prompt_cache_key` so
-  a second turn reads the cache, and `apply_patch` is offered to GPT-5 and
-  Codex models as a freeform tool, in their own patch format. xAI,
-  OpenRouter and compatible servers go through Chat Completions, with each
-  vendor's reasoning fields (`reasoning_content`, `reasoning_details`) sent
-  back to it unmodified. Which API a model is served on, and which
-  reasoning efforts it takes, come from the models.dev cache. Reasoning
-  another provider produced is passed to the next model as plain text,
-  marked as an earlier model's, never as its own words.
-- **`--effort none|minimal|low|medium|high|xhigh|max`** sets how hard the
-  model thinks, on one ladder for every provider: the rung is mapped onto
-  the nearest one the model takes (`max` on a model that tops out at
-  `xhigh` sends `xhigh`), and a model that takes none is sent none.
-  `"effort"` on an instance in `config.json` sets it for every prompt.
-- **`krowk providers add|list|remove`** manages the engine's instances
-  (in the `harness` build). `krowk providers add openai --name work
-  --base-url https://gateway.example/v1` writes an `openai:work` instance
-  that reads its key from `$OPENAI_WORK_API_KEY` — the variable's name is
-  stored, never the key. `openai-compatible --name local --base-url …`
-  adds any Chat Completions server. `krowk providers add supergrok` signs
-  in to xAI with a SuperGrok or X Premium subscription in the browser
-  (`--device` prints a code to enter anywhere instead) and keeps the
-  tokens in `~/.krowk/credentials.json`, created `0600`
-  and refreshed as they expire; `krowk -p --model supergrok/grok-4.7`
-  then runs on the subscription. `list` shows which instances have their
-  key or login; `remove` takes a definition and its login away.
-- **`krowk -p` can run Claude Code on your Claude subscription, with as
-  many accounts as you like.** `--model claude/sonnet` drives the `claude`
-  already on your PATH, signed in the way you signed it in; `krowk
-  providers add claude --name work` makes a second account, `claude:work`,
-  with a config directory of its own (under
-  `~/.krowk/accounts/`, or `--config-dir`) and signs it in by
-  running `claude auth login` — Anthropic's own login, on your terminal.
-  krowk never reads Claude's credentials or keychain entry; `providers
-  list` asks `claude auth status`. One `claude` process serves the whole
-  session: its turns stream into the same log and `krowk sessions` listing
-  as native ones, Ctrl-C interrupts the turn and keeps the session, `-p
-  --resume` continues it on `claude --resume`, and the log records the
-  Claude session id, its transcript's path and whether it ran on the
-  subscription or an API key (`backend.session`). Claude Code runs in
-  its `default` mode (`plan` under `--permission-mode plan`) whatever its
-  settings' `defaultMode` says, and a turn it reports in a looser mode is
-  stopped before it runs anything. Tool calls Claude Code asks about are
-  answered by krowk's `--permission-mode` (edits need `acceptEdits` and
-  never reach `.git`, `.claude` — in any case, as macOS and Windows would
-  open it — or the account's config directory; Bash and anything else
-  need `bypassPermissions`). The native edit tools keep out of `.claude`
-  the same way. **Claude Code's own allow
-  rules (`permissions.allow` in your or the project's settings) and its
-  hooks still apply first**: what they approve runs without krowk being
-  asked, as it does when you run `claude` yourself. `ANTHROPIC_API_KEY`,
-  `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` set for krowk's native
-  engine are not passed to Claude Code, so an exported key never moves a
-  subscription account onto it. A router is an instance of its own:
-  `krowk providers add claude --name router --base-url
-  https://openrouter.ai/api --api-key-env OPENROUTER_API_KEY` stores the
-  variable's name, and krowk hands its key to Claude Code as
-  `ANTHROPIC_AUTH_TOKEN` (as `ANTHROPIC_API_KEY` without a base URL, for a
-  Console key); no Claude login is run for it. Stopping
-  a session stops everything Claude Code started with it, and a host that
-  keeps sessions lets an idle one's process go after 15 minutes. krowk's
-  own tools reach Claude Code as the `krowk` MCP server: `session_info`
-  and `publish`.
-- **`krowk -p --max-usd 0.50` (or `--max-tokens N`) stops the session
-  before the model call that would take it past the limit.** The check runs
-  inside krowk's engine before every call, from what the provider metered —
-  never from the `max_tokens` a request was sent with, which providers
-  overshoot — over the session and every subagent it spawned, and the
-  next call is counted at the least it can cost (its prompt resent from
-  cache and one token), so a call that could fit is never refused. A
-  stopped session exits 4 with `budget_exceeded`, as `krowk sessions
-  budget` does, keeps what it made, and says how to go on (`krowk -p
-  --resume <id> --max-usd <more>`); a model with no price trips
-  `--max-usd` rather than passing it. A limit holds the invocation it is
-  given to — it is not stored with the session, so a `--resume` without the
-  flag runs with none — and counts the session's whole spend, earlier turns
-  included. Claude Code sessions are checked before each turn and
-  interrupted as soon as a metered call goes over; what Claude Code's own
-  subagents (`Task`) spend counts too, and so does Claude Code's reported
-  total for a turn when it is more than krowk priced (or when the model is
-  an alias like `sonnet` that the price list does not name).
-  Bare `krowk` takes the same flags for its TUI, whose cost item now shows
-  the session's spend after every call, subagents included. For krowk's
-  own sessions this replaces a `krowk sessions budget` hook; the command
-  still checks imported Claude Code and opencode sessions.
-- **krowk's agent can publish evidence: `publish` pushes screenshots,
-  diffs and logs as krowk artifacts.** Like an edit, it runs only under
-  `--permission-mode acceptEdits` or `bypassPermissions` — an artifact is
-  readable by anyone with its link — and elsewhere the model is told which
-  mode it needs. It is `krowk_push`, run with the
-  session's working directory as the root — the same refusals of paths
-  outside it, credential files and hard links — and it answers with each
-  artifact's card URL and markdown embed. With an API key, a session's
-  first publish opens a krowk run recording the session, every artifact is
-  tagged `krowk.session` and attached to that run, and a resumed session
-  keeps publishing under it (`run.opened` in the log). Without a key the
-  upload is anonymous and belongs to no run, and the answer points at
-  `krowk doctor`; the claim command that keeps such an upload is printed
-  for you on stderr (shown on screen in the TUI) and never given to the
-  model, written to the session log or printed by `stream-json`, because its
-  token is a secret. Detecting the run's repository and commit runs git with
-  the repository's `core.fsmonitor` switched off, in the session's own
-  directory, so a repository's config cannot make it run a command — this
-  holds for `krowk push` and krowk-mcp too. **`krowk.vcs.dirty` is left
-  out wherever a git filter is configured** (a `filter.<name>` in the
-  repository's or your git config, git-lfs's included): telling whether a
-  file changed can mean running its clean filter, and a repository can name
-  any command as one. `--dev` publishes to the stand-in registry. Claude Code
-  sessions get the same tool as `mcp__krowk__publish`.
-- **krowk's agent can hand work to subagents, several at once.** The
-  model's new `subagent` tool starts a child session with a fresh context
-  — only the prompt it is given — that does one task and hands back only
-  its final summary, so a search or a review that reads fifty files costs
-  the main conversation a paragraph. The subagent calls of one response run
-  in parallel, four at a time (`"subagents": {"maxParallel": N}` in
-  `config.json`), and each runs on a cheaper model by default: the
-  catalog's tier below the session's (Opus to Sonnet, Sonnet to Haiku, a
-  GPT to its mini), or `"subagents": {"model": "…"}`. A subagent runs in
-  the session's permission mode, never a looser one, with the same file
-  fences, on krowk's own loop, and starts no subagents of its own. Its
-  calls are judged by the session's permission rules and hooks like the
-  session's own — a deny rule holds in it, an approval it needs is asked
-  in the TUI under its own line (and refused at once under `krowk -p`),
-  and a session grant covers it. `subagent` and `todo_write` need no mode,
-  but a deny or ask rule on Claude Code's names for them (`Task`,
-  `Task(<agent>)`, `TodoWrite`) refuses or asks, and hooks see them under
-  those names — an agent's name matched regardless of case, and a `Task`
-  hook reading Claude Code's `{description, prompt, subagent_type}`. As in
-  Claude Code, a subagent fires `SubagentStop` when it
-  is done — not `Stop` or `UserPromptSubmit` — and its hooks get the
-  parent's `session_id`, with the subagent's as `agent_session_id`. Its
-  spend counts toward the session's `--max-usd` and `--max-tokens`: a
-  subagent's calls are held to the parent's limit, and the parent's next
-  call counts what its subagents spent; subagents running at once can
-  together end up to one call each past the limit. A turn's `costUsd`
-  includes its subagents'. In the TUI each subagent is one
-  line — what it is doing, how long, its tokens and cost — and Ctrl-G
-  selects among them: Enter expands a line to what that subagent did last,
-  `x` interrupts that one alone, and its siblings carry on; Ctrl-C still
-  interrupts the whole turn, subagents included. Each subagent is a session of its own in
-  `krowk sessions`, listed under the session that started it, and
-  `krowk sessions rebuild` restores the tree from the logs. `-p
-  --output-format stream-json` now carries the subagents' lines too, each
-  under its own `sessionId`. Codex's own subagent threads are metered into
-  the session's spend as well, as Claude Code's already were.
-- **Agent definitions, krowk's and Claude Code's.** A Markdown file with a
-  `name`, a `description` (when the model should use it), a `model` and a
-  `tools` allowlist, the body being its instructions, in the repository's
-  `.krowk/agents/` or `.claude/agents/`, or your own
-  (`~/.krowk/agents/`, `~/.claude/agents/`), is offered to the model
-  by name. Claude Code's files work as they are: `tools: Read, Grep, Bash`
-  maps to krowk's tools (what krowk has no tool for, like `WebFetch`, is
-  left out), and `model: haiku`, `sonnet`, `opus` or `inherit` pick the
-  newest of that family the catalog lists (`krowk pricing refresh` fills
-  it) or the session's own model. A definition only narrows: the
-  permission mode is always the session's. **A repository's definitions
-  can pick a model only on the session's own instance until you trust the
-  repository** (the list `krowk -p` asks about for Claude Code and Codex,
-  or `--trust`); otherwise the subagent runs on the default and you are
-  told. They are never read through a symlink out of the repository, and
-  the agent cannot write `.krowk/` (like `.claude/`) below
-  `bypassPermissions`.
-- **`todo_write`: the agent keeps a todo list.** One tool that replaces the
-  whole list each time (up to 50 items; Claude Code's `activeForm` and
-  similar fields are accepted and dropped), for work of three or more
-  steps; the list is in the
-  session's log, so it survives `--resume` and a switch of model. Ctrl-T
-  shows it in the TUI, and the status bar counts it (`todos 2/5`, and
-  `2 agents` while subagents run; both are `tui.statusItems`). When items
-  have stayed open for ten model calls without an update, the model is
-  reminded of the list — shown in the TUI as krowk's reminder, not as your
-  words.
-- **krowk asks before Claude Code runs in a repository you have not
-  trusted.** `claude -p` runs a repository's hooks and MCP servers without
-  its usual trust prompt, so krowk shows its own on a terminal — `krowk
-  -p`, and bare `krowk` before the TUI opens — and
-  remembers a yes in `~/.krowk/trusted.json` for that repository
-  alone (not for repositories inside it); without a terminal it refuses
-  (exit 4, `untrusted_directory`) unless you pass `--trust`, which lasts
-  for that run. Your home directory and `/` are never trusted for good —
-  in a home kept in git, every plain directory is part of that repository
-  — so only `--trust` runs Claude Code there. A native model runs nothing
-  of the repository's and is never asked about. Steering (typing while a
-  turn runs, in the TUI) is not taken by a Claude Code turn: it comes back
-  into the prompt, unsent.
-- **`krowk -p` can run Codex on your ChatGPT subscription, with as many
-  accounts as you like.** krowk drives OpenAI's own `codex app-server` —
-  the interface OpenAI built for other programs to use Codex — with the
-  `codex` already on your PATH: `--model codex/gpt-5.5` runs it signed in
-  the way you signed it in. `krowk providers add codex --name team` makes
-  a second account, `codex:team`, with a `CODEX_HOME` of its own (under
-  `~/.krowk/accounts/`, or `--config-dir`) that links in your
-  Codex `config.toml`, `AGENTS.md`, prompts, skills and rules, so the
-  accounts share one configuration while each keeps its own login and
-  threads, and signs it in by running `codex login` — OpenAI's own login,
-  on your terminal (`--device` for its device code). krowk never reads
-  Codex's login file or uses Codex's OAuth client; `providers list` asks
-  Codex itself (`account/read`, else `codex login status`). One `codex app-server` serves the whole session:
-  its turns stream into the same log and `krowk sessions` listing as
-  native ones, with the commands Codex ran and the patches it applied as
-  tool calls; typing while a turn runs steers it; Ctrl-C interrupts it
-  and keeps the session; `-p --resume` continues the same Codex thread;
-  and the log records the thread, its transcript's path and whether it
-  ran on ChatGPT or an API key, which the TUI's status bar shows beside
-  the instance. Codex runs in its read-only sandbox with every approval
-  routed to krowk — whatever its config's `sandbox_mode` or
-  `approvals_reviewer` say; a thread it opens looser is stopped before a
-  turn runs — and krowk answers by `--permission-mode`: a patch needs
-  `acceptEdits` and never reaches `.git`, `.codex`, `.claude`, the
-  account's home or your own Codex home — a move judged by where it lands;
-  a command beyond the sandbox needs `bypassPermissions`, which is Codex's
-  full access. **The MCP servers your Codex config names do not run
-  outside `bypassPermissions`**: krowk turns each off on the thread, as it
-  keeps Claude Code's out with `--strict-mcp-config` (servers an
-  installed Codex plugin brings may not be listed, and are not covered
-  yet). **What the sandbox lets a command do
-  without asking — read your disk, not write it — and what your own Codex
-  rules allow, still apply first.** `OPENAI_API_KEY`, `OPENAI_BASE_URL`,
-  `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, `CODEX_SQLITE_HOME` and Codex's
-  other identity and endpoint overrides in krowk's environment are not
-  passed to Codex. Writes Codex makes to its config (trusting a project)
-  land in your own `config.toml`, which the accounts share; its bundled
-  skills stay in each account's home. A skill you add to your own Codex
-  later reaches every account the next time it starts. A router is an instance of its own: `--api-key-env NAME` hands
-  that variable's key to Codex under the same name, for the model
-  provider its `args` name. krowk's own tools reach Codex as its dynamic
-  tools — today `session_info` — and the trust question above covers a
-  repository's `.codex` too. The native edit tools keep out of `.codex`
-  the way they keep out of `.git`. The app-server's schema is pinned for
-  the Codex version in `crates/krowk-harness/schema/codex/VERSION`, and
-  `scripts/codex_schema.sh --check` fails CI when it goes stale.
-- **A second Ctrl-C leaves at once during a Claude Code or Codex turn,
-  and takes the backend with it.** Headless or in the TUI, the vendor
-  process and everything it started are killed rather than left running,
-  and the TUI no longer hangs waiting on the turn it was asked to abandon.
-- **Native sessions are logs you own, listed beside imported ones.** Each
-  session is an append-only JSONL log under
-  `~/.krowk/sessions/<id>/` (with each turn's exact system
-  prompt and tool definitions beside it in `context.jsonl`), and it lists
-  in `krowk sessions` as harness `krowk` next to Claude, Cursor and
-  opencode sessions. `krowk sessions rebuild` re-derives them from the logs
-  like any other transcript, and `sessions import --from krowk` reads them
-  alone. The event format is generated as JSON Schema in
-  `crates/krowk-harness/schema/`.
-- **Instances in `config.json`.** An `"instances"` map names provider
-  accounts — `{"anthropic:work": {"kind": "anthropic-api", "apiKeyEnv":
-  "WORK_ANTHROPIC_KEY"}}` — and `"defaultModel"` the model `-p` uses. A key
-  is never stored in the file, only the variable it is read from.
-- **The performance and size promises fail CI when broken.** Every number
-  krowk promises is in `crates/krowk-bench/budgets.toml`, and `make bench`
-  (run by CI on every pull request, on one pinned runner) holds the release
-  builds to it: the agent build's size (3.76 MiB, budget 4.00 MiB) and its
-  136 crates, the full build's size, `krowk --version` and `krowk sessions`
-  startup, a session log append (under 1 ms; ~8 µs today), and `krowk -p`
-  waiting on a provider using no CPU, no wakeups and under 30 MB. Each is
-  the median of repeated runs against the absolute number, never against
-  the last run. The TUI, redraw and remote-attach budgets are listed and
-  shown as pending until the features they measure exist.
-- **`krowk sessions budget <id> --max-usd N --max-tokens N`** checks a
-  session against a spend limit by what the provider metered, never by the
-  `max_tokens` its requests asked for — providers do not strictly enforce
-  it (a call capped at 1,200 has metered 3,422). It re-reads the session's
-  transcripts, and its subagents', when they moved — importing a session
-  the store has not seen yet, by its Claude or opencode id — and waits
-  for a running import rather than answering stale (after 15 s it gives
-  up with `import_locked`, exit 6 — which the hook recipe below lets
-  through; test `-ne 0` instead to block on that too). `--max-tokens`
-  holds generated tokens (output and reasoning); input and cache tokens are reported and priced. Within
-  its limits it prints the report and exits 0; over one it exits 4 with
-  `budget_exceeded` and the report under `error.details` (on stderr). A
-  cost krowk cannot price trips `--max-usd`, with the priced part as a
-  lower bound. krowk cancels nothing — the hook or wrapper that runs the
-  check stops the run. A Claude Code hook blocks only on exit 2, so block
-  on a trip alone: `krowk sessions budget "$ID" --max-usd 5; [ $? -ne 4 ]
-  || exit 2`. A provider-ledger row nobody saw an answer to is budgeted
-  with its ledger's session: nothing ties it to the run that sent it.
-- **Provider usage ledgers.** A request your agent gave up on — a timeout,
-  a killed shell, a Ctrl-C — can still finish and bill on the provider's
-  side, and no transcript ever sees it. Drop the provider's per-request
-  usage export as JSONL into `~/.krowk/ledger/<name>.jsonl`
-  (one execution per line: `id`, `provider`, `model`, token counts,
-  optional `cost_usd` and `time`) and `sessions import --from ledger`
-  (or `all`, `sync`, `rebuild`) reads it. Every import then reconciles the
-  ledger against your transcripts: a row a transcript already accounts for
-  is counted once, from the transcript; the same execution in two exports
-  is counted once; a row nothing local saw shows up as its own
-  `unobserved` turn in `krowk sessions` and `sessions show`. The import
-  report says how many of each it found.
+- Leaving the TUI takes two presses, as in Claude Code, so one stray key no longer ends a session. On an empty prompt, Ctrl-C or Ctrl-D shows "Press Ctrl-C again to exit" (or Ctrl-D) under the prompt, and the same key again within 1.5 seconds quits.
+- Keys the TUI suggests stand out: in hints, the help menu, the status line, approvals and questions, each key (`esc`, `enter`, `y`, `ctrl-g`, `?`) is white instead of grey like the words around it.
 
 ### Fixed
 
@@ -1283,39 +244,176 @@ the versions are the `v*` tags a release is cut from. Entries land under
   reads again, sends what it missed from where it stopped — nothing twice,
   nothing lost. `krowk host status --json` counts the bytes waiting for
   clients and how often one was caught up.
-- **Closing a menu no longer leaves blank rows in the conversation or under
-  the prompt.** Once the conversation reached scrollback, a menu, picker or
-  approval that opened and closed moved what was above the prompt down to
-  meet it, and the blank rows that opened at the top of the screen went
-  into scrollback with the next line — gaps between lines, and the logo
-  split in two. A line printed as a menu closed (a slash command run from
-  it) left the prompt floating with blank rows under it. Now the prompt
-  stays on the bottom rows, and rows a closed menu used stay blank above
-  it until the next lines printed fill them.
-- **An answer a backend sends whole is shown in the TUI.** A Claude Code
-  turn whose text arrived as one message, with no streamed pieces (an older
-  `claude`, or one that drops its partial messages), ran and was logged but
-  showed nothing between the prompt and `Worked for`, and Ctrl-Y copied
-  nothing of it.
-
-- **A Claude Code `defaultMode` krowk does not run no longer refuses every
-  prompt.** `"defaultMode": "auto"` in `~/.claude/settings.json` (or any
-  mode krowk does not know) used to fail the settings with `bad_settings`,
-  even with `--permission-mode` given. Such a mode now sets nothing: a
-  mode in krowk's own config (`permissions.defaultMode` in
-  `~/.krowk/config.json`) or `--permission-mode` wins without a
-  word, and with neither krowk runs in `default` and says so in one line.
-  That is Claude Code's `auto`; any other mode krowk does not run
-  (`dontAsk`, a value that is not a mode) is read as `default`, so it
-  still narrows a looser mode set before it. A rule that does not parse
-  still refuses the prompt, and the TUI now says so before it asks the
-  trust question rather than after saving the answer.
-
-### Fixed
-
 - **A slow disk no longer stalls every session in the host daemon.** Each
   event a turn logs, and its context record, is written off the thread all
   sessions and heartbeats share, and still before any client sees it.
+- Quitting the TUI is instant. On a Claude Code model it took most of a second, waiting on Claude Code to flush its telemetry as it exited; krowk now starts Claude Code with telemetry off (an instance can turn it back on by setting `DISABLE_TELEMETRY` in its `env`). The screen is also handed back before anything else is tidied up, and the session is saved into `krowk sessions` after each turn instead of on the way out, so leaving has nothing left to wait on. A quit now takes about 30 ms, down from 0.9 s.
+- A session resumed in the TUI shows what it has cost so far. On a model models.dev has no price for yet, such as a new Claude through Claude Code, the status bar showed `$—` until the next turn ran; it now counts what the backend reported for each past turn, the way the live figure does.
+
+## [0.11.2] - 2026-09-29
+
+Code in the TUI is in colour, and the chat is calmer: your messages stand
+on a band of their own, and running calls no longer make it jump.
+
+### Added
+
+- Code in the TUI is in colour. A fenced block in an answer is highlighted by its language, on a faint band across the width with a row of it above and below; its ```` ``` ```` fences are no longer shown, and its language is named at the right of the band's top row. Long lines break at the width and keep their spacing. A file a call writes shows its first lines, highlighted, under the call, and, in a terminal with 24-bit colour, an edit's removed and added lines are highlighted on muted red and green bands (GitHub's dark-mode tints) that keep the code readable. The colours are the terminal's own, so they follow its theme.
+
+### Changed
+
+- What you say in the TUI is shown on a faint grey band across the width, with a thin blue bar down its left edge and an empty row of it above and below, in normal weight rather than bold after a `❯`. Your messages are easy to find when scrolling back, and long ones read as text rather than as a heading.
+- A prompt sent in the TUI is shown the moment you press Enter. Before, it appeared only after krowk had chosen the model, read its key and started the backend, which could take a noticeable moment.
+- In the TUI, a read, search or command that runs while earlier ones are counted on one line (`◆ Ran 3 commands, searched for 2 patterns`) stands under that line as a branch, with the bullet orange until it is back. The chat no longer jumps as each call finishes and is taken into the count.
+
+## [0.11.1] - 2026-09-29
+
+Answers in the TUI are easier to read: markdown tables are drawn as tables,
+and lists hang under their text.
+
+### Added
+
+- The TUI draws markdown tables in an answer the way psql does: indented, with a blank line either side, a bold header, and dim lines between the columns and under the header, but no box. Each cell is in the answer's markdown and wraps inside its column, aligned as the delimiter row says; once a row wraps, rows get a rule between them. On a screen too narrow for the columns, each row is shown as a record of `Header │ value` lines. A table is held while it streams and drawn once it ends.
+- Lists in an answer are easier to read in the TUI: a wrapped item's rows line up under its text rather than under its bullet, a list is indented two columns from the text around it, and a nested list is indented by its depth with its own bullet (`•`, `◦`, `▪`). Markers are washed so the text leads: numbered lists (`1.`, `1)`) keep their number, a task list's `[ ]` and `[x]` show as `☐` and `☒`, and a line that goes on under an item lines up with it. A quote's `│` runs down every row it wraps onto.
+
+### Changed
+
+- `@krowk/cli` on npm describes krowk as the coding agent it carries, with publishing as one of the things it does; `@krowk/mcp` says it publishes from any agent. The build-it-yourself line (npm launcher, `prompt.md`) installs the full build (`--features harness`) rather than `sessions`, which left the agent out. The Claude plugin's manifest version, stuck at 0.8.2, is 0.11.0.
+
+### Fixed
+
+- A blank line in an answer no longer goes missing in the TUI when the text streams in with a chunk ending right after it, which ran a heading or a label into the list or paragraph under it.
+- A finished todo is `☒`, not `☑`: `☑` has an emoji form, so many terminals drew it larger than the `☐` beside it.
+
+## [0.11.0] - 2026-09-28
+
+krowk is a coding agent now. Bare `krowk` opens its TUI, `krowk -p` runs it
+headless, and it runs on an API key or on the Claude and ChatGPT
+subscriptions you already have.
+
+### Upgrading
+
+- **Everything krowk keeps moves to `~/.krowk/`**, on the first run after
+  upgrading. Config, keys, logins, named accounts, sessions and the price
+  cache were spread over `~/.config/krowk`, `~/.local/share/krowk` and
+  `~/.cache/krowk`. krowk moves your config and keys in one step, says so
+  on stderr, and then deletes the old key files so no secret is left where
+  a dotfiles repository may track it. Only krowk's own files are deleted,
+  by name. Anything it does not move (the old `krowk.db`, a dev build's
+  accounts) is named once with what to do. `XDG_*` variables no longer
+  move anything; set `KROWK_HOME` (an absolute path) to keep it all
+  elsewhere.
+- **Run `krowk sessions rebuild` once.** Costs are now priced per turn by
+  the model each turn ran on, and Claude usage is no longer counted once
+  per content block (it overstated tokens and cost by about 1.8×).
+  `sync` does not re-read sessions already imported.
+- **JSON changes for anyone reading costs**: `sessions show` turns drop
+  `cost_unknown` and gain `cost_usd` (null when unknown), `cost_source`,
+  `model`, `provider` and reasoning and cache token counts. A session's
+  `priced_cost_usd` is now `cost_usd`. `sessions` rows gain `unpriced`,
+  and the import report gains `unpriced_models`.
+- **The release ships two builds, and the installer picks.** The full
+  build (agent, TUI, session store) keeps the archive name every release
+  has used, so npm and `krowk upgrade` get it. The lean build,
+  `krowk-lean_<version>_…`, is installed in CI and containers, and by the
+  GitHub Action. `--full` / `--lean` (or `KROWK_LEAN=1` / `0`) choose;
+  toolbox and distrobox count as containers, so pass `--full` there.
+- **`krowk --help` fits on one screen.** Everything it used to carry is in
+  `krowk help <command>`, `krowk help topics` and `krowk help --all`.
+  `krowk help --json` keeps its shape.
+- With `HOME` unset, krowk no longer uses a `.krowk` beside you as its
+  home; commands that need one refuse with `no_home`. On Windows the home
+  is `%USERPROFILE%\.krowk`.
+
+### Added
+
+- **The TUI.** Bare `krowk` on a terminal opens an inline prompt with the
+  conversation in your terminal's own scrollback, so it scrolls, copies
+  and searches like any output, over SSH and in tmux. Answers stream in
+  light markdown with clickable links; tool calls are one quiet line each,
+  with an edit's lines added and removed and a command's last line of
+  output. Typing while a turn runs steers it; Esc or Ctrl-C interrupts.
+  Shift+Enter (or Alt+Enter, Ctrl-J) adds a line, Ctrl-Y copies the last
+  answer, Ctrl-Z suspends.
+  - Commands: `/model`, `/mode`, `/settings`, `/connect`, `/disconnect`,
+    `/sessions` (or `/resume`), `/new` (or `/clear`), and your skills.
+  - A two-row status line: model, device, task and subagent counts, then
+    the branch, its pull request as a link, and the cost. The branch
+    follows the agent into the worktree it works in.
+  - `tui.contentWidth` sets the column the conversation reads in:
+    `prose` (80, the default), `prose-wide` (120) or `full-width`.
+  - The window title and herdr show whether it is waiting, working or
+    needs your yes.
+- **`krowk -p "…"` runs the agent headless**, with `--output-format
+  text|json|stream-json`, `--resume <id>`, `--model <instance>/<model>`,
+  `--effort` and `--permission-mode`. It never waits on a question: a call
+  its rules do not allow is refused, and the model is told why.
+- **Every major model, on a key or a subscription.** Native engines for
+  Anthropic, OpenAI (Responses API), xAI, OpenRouter and any Chat
+  Completions server, plus a SuperGrok subscription. `--model claude/…`
+  drives your own Claude Code on your Claude subscription, and
+  `--model codex/…` drives OpenAI's `codex app-server` on your ChatGPT
+  subscription. krowk never reads either vendor's login; their own CLIs
+  sign in. A bare `--model sonnet` runs on whichever instance is ready
+  here, and when a key and a subscription could both run it, krowk asks
+  you to pick (`ambiguous_model`) rather than guessing.
+- **`krowk connect` and `krowk disconnect`** sign providers in and out by
+  vendor and method, with as many accounts as you like (`--name work`),
+  and the TUI does the same with `/connect`. The first connection becomes
+  the default model. An API key can be stored in
+  `~/.krowk/credentials.json`, or as a `$VAR` or `!command` reference.
+  `krowk providers rename` renames an instance and everything that names
+  it.
+- **`krowk status`** says which providers can run a turn here and the one
+  command that fixes each of the rest. `providers list` and `doctor` use
+  the same check.
+- **Switch model, instance or engine mid-session without losing the
+  thread**, with `/model` or `-p --resume … --model …`. Between accounts
+  of the same vendor, krowk moves the vendor's own transcript across.
+- **Rate limits are detected on every engine**, and a limited turn ends
+  with an offer to continue on another instance. `"rollover": "auto"`
+  with a `rolloverOrder` does it by itself; it is off by default.
+- **Claude Code's setup works as it is.** Permission rules
+  (`permissions.allow`, `ask`, `deny` in Claude Code's syntax), `AGENTS.md`,
+  `CLAUDE.md` and Cursor rules, `SKILL.md` skills, command hooks, and agent
+  definitions in `.claude/agents/` are all read. A deny rule wins in every
+  mode. A repository's own allow rules, hooks and agents count only once
+  you trust it, and krowk asks before Claude Code or Codex runs in a
+  repository you have not trusted.
+- **Permission modes**: `default`, `acceptEdits`, `plan`,
+  `bypassPermissions`, and `unhinged`, which runs everything with no
+  approval. The TUI asks before a call its rules do not allow: once, for
+  the session, or for the project.
+- **Tools in the model's own edit format**: `read`, `write`, `grep`,
+  `glob`, `bash`, and `str_replace`, `apply_patch` or `search_replace` by
+  model family. The file tools stay inside the working directory and out
+  of `.git`, `.claude`, `.codex` and `~/.krowk` unless you allow it.
+- **Subagents**, several at once on a cheaper model by default, each a
+  session of its own under its parent. Ctrl-G lists them and `x`
+  interrupts one. Claude Code's background agents are followed too.
+- **`todo_write`**, a todo list the agent keeps, counted in the status
+  line and shown with Ctrl-T.
+- **`publish`**: the agent can push screenshots, diffs and logs as krowk
+  artifacts, attached to a krowk run for the session.
+- **Budgets**: `--max-usd` and `--max-tokens` stop a session before the
+  call that would pass the limit, subagents included (exit 4,
+  `budget_exceeded`). `krowk sessions budget` checks any imported session
+  the same way, for use in a hook.
+- **Native sessions are logs you own**, JSONL under `~/.krowk/sessions/`,
+  listed in `krowk sessions` beside imported ones.
+- **Provider usage ledgers**: drop a provider's per-request usage export
+  in `~/.krowk/ledger/` and imports reconcile it against your transcripts,
+  so a request your agent gave up on but was still billed for shows up.
+- `krowk login`, `logout` and `whoami`, short for your krowk account.
+- `krowk doctor` reports how old the model prices are.
+
+### Changed
+
+- A missing price reads `—`, never $0, and every listing says where the
+  rates came from. Costs under a cent print to three significant digits.
+- Claude turns keep thinking tokens apart from output, and opencode
+  subagents are linked to their parent session.
+- `sessions` lists in about 25 ms with a full price cache (was about
+  80 ms).
 
 ## [0.10.0] - 2026-09-24
 
@@ -1759,7 +857,10 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/krowkcom/krowk/compare/v0.11.1...v0.11.2
+[0.11.1]: https://github.com/krowkcom/krowk/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/krowkcom/krowk/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/krowkcom/krowk/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/krowkcom/cli/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/krowkcom/cli/compare/v0.8.1...v0.8.2

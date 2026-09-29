@@ -98,7 +98,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // now so the listing has it. A store that cannot take it costs the
     // listing, never the answer — `krowk sessions sync` catches up.
     if let Some(id) = &outcome.session_id
-        && let Err(e) = sessions::project_native(ctx, id)
+        && let Err(e) = sessions::project_native(ctx.io.env, id)
     {
         let _ = writeln!(ctx.io.stderr, "! the session is saved, but krowk.db was not updated: {} — `krowk sessions sync` retries", e.fix());
     }
