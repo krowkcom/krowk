@@ -384,6 +384,21 @@ async fn r_relay_1_only_a_trusted_device_with_its_own_signature_joins_and_only_t
     refused_join(t, &As { fence: Some(fence(t) - 1), ..host(t) }, "stale_lease").await;
     refused_join(t, &As { fence: None, ..host(t) }, "stale_lease").await;
     refused_join(t, &As { name: "outsider", ..viewer(t, "viewer") }, "not_in_workspace").await;
+    // A session the relay does not know, asked by a device it does.
+    refused_join("nowhere", &viewer(t, "viewer"), "unknown_session").await;
+    // Anything but a join first, and a join missing what it needs.
+    {
+        let (mut c, _) = dial(t).await;
+        let e = c.sealed(KIND_FRAME, 0, b"sealed");
+        c.send(e).await;
+        c.refused("not_joined").await;
+        let (mut c, _) = dial(t).await;
+        c.send_control(json!({"type": "join"})).await;
+        c.refused("bad_join").await;
+        let (mut c, _) = dial(t).await;
+        c.ws.send(Message::Text("hello".into())).await.unwrap();
+        c.refused("not_joined").await;
+    }
     refused_join(t, &As { name: "revoked", ..viewer(t, "viewer") }, "device_revoked").await;
     // A signature answers one challenge: the nonce is fresh each time.
     let (_a, one) = dial(t).await;

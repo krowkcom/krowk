@@ -377,8 +377,11 @@ struct Join {
 fn read_join(b: &[u8]) -> Result<Join, Refusal> {
     let bad = |what: &str| refuse("bad_join", format!("the join {what}"), "send {type: \"join\", role, device, signature} as relay.md → Joining lays out");
     let e = Envelope::decode(b).map_err(|e| bad(&format!("is no envelope: {e}")))?;
-    if e.kind != KIND_RELAY || e.flags != 0 {
-        return Err(bad("is not a plain control message (kind 4, flags 0)"));
+    if e.kind != KIND_RELAY {
+        return Err(refuse("not_joined", format!("an envelope of kind {} came before the join", e.kind), "answer the challenge with a join control message first"));
+    }
+    if e.flags != 0 {
+        return Err(bad("is compressed; a control message is plain"));
     }
     let v: Value = serde_json::from_slice(&e.payload).map_err(|_| bad("is not JSON"))?;
     if v["type"] != "join" {
