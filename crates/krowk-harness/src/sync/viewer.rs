@@ -62,6 +62,8 @@ fn open_key(wrapped: &str, id: &str, account: &AccountKey) -> Result<SessionKey,
 }
 
 /// What a viewer hands its screen, one `Vec` a display frame.
+// A line is most of what a viewer is handed, so it stays unboxed.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Update {
     /// The session as the chunks hold it, once, as the viewer attaches.
@@ -99,6 +101,8 @@ pub struct Viewer {
     pub updates: mpsc::Receiver<Vec<Update>>,
     /// How long reading the checkpoint and the tail took.
     pub attach_time: Duration,
+    /// When each `Vec` of updates was handed on (R-LAG-7's measure).
+    pub handed: Arc<std::sync::Mutex<Vec<Instant>>>,
 }
 
 /// Attaches: the sealed index, the checkpoint and the tail (off the
@@ -121,13 +125,14 @@ pub async fn attach(o: Options) -> Result<Viewer, String> {
     let attach_time = started.elapsed();
     let (commands, rx) = mpsc::unbounded_channel();
     let (tx, updates) = mpsc::channel(256);
+    let handed = Arc::new(std::sync::Mutex::new(vec![Instant::now()]));
     let first = vec![Update::Attached { events: attached.events.clone(), head: attached.head }];
     let _ = tx.send(first).await;
-    tokio::spawn(live(o, key, attached, rx, tx));
-    Ok(Viewer { commands, updates, attach_time })
+    tokio::spawn(live(o, key, attached, rx, tx, handed.clone()));
+    Ok(Viewer { commands, updates, attach_time, handed })
 }
 
-async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut commands: mpsc::UnboundedReceiver<Command>, out: mpsc::Sender<Vec<Update>>) {
+async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut commands: mpsc::UnboundedReceiver<Command>, out: mpsc::Sender<Vec<Update>>, handed: Arc<std::sync::Mutex<Vec<Instant>>>) {
     let raw = crate::daemon::ws::uuid(&o.session);
     let mut seen: HashSet<String> = at_rest.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect();
     let mut frame: Vec<Update> = Vec::new();
@@ -140,7 +145,10 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
     let mut retry = Instant::now();
     let mut heard = Instant::now();
     let mut next_id = 0u64;
-    let mut tick = tokio::time::interval(FRAME);
+    // The first frame went with the attach; the next is a frame after it,
+    // and a late tick waits a whole frame rather than firing twice.
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + FRAME, FRAME);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut beat = tokio::time::interval(PING);
     loop {
         tokio::select! {
@@ -159,6 +167,7 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                 }
             }
             _ = tick.tick(), if !frame.is_empty() => {
+                handed.lock().unwrap_or_else(|e| e.into_inner()).push(Instant::now());
                 if out.send(std::mem::take(&mut frame)).await.is_err() { break; }
             }
             _ = beat.tick() => {

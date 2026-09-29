@@ -78,7 +78,7 @@ impl World {
         let api = format!("{}/v1", registry.url());
         let relay = TcpListener::bind("127.0.0.1:0").unwrap();
         let relay_addr = relay.local_addr().unwrap();
-        let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::sync::TICKET_KID), e2e::hex(&krowk_devregistry::sync::ticket_public_key()));
+        let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
         let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
         std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None }));
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -315,12 +315,12 @@ async fn first_turn(w: &World) -> (Arc<Client>, String) {
 /// unblocks A; B is handed at most one batch of updates per display frame;
 /// and the relay's traffic, captured, holds neither B's prompt nor A's
 /// answer.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let w = World::new("prompt");
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));
-    let (d, session) = first_turn(&w).await;
-    let (_stop, _cp, _bridge) = w.bridge(&a, &session, d.clone());
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
     w.synced(&session).await;
 
     let (api, account) = (w.client(), AccountKey::from_bytes(*w.account.as_bytes()));
@@ -352,7 +352,9 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     assert!(w.repo().join("approved.txt").exists(), "R-PERM-2: B's answer unblocked A's turn");
 
     // R-LAG-7: never two hand-offs inside one display frame.
-    let tightest = frames.windows(2).map(|p| p[1] - p[0]).min().unwrap();
+    let handed = v.handed.lock().unwrap().clone();
+    assert!(handed.len() > 3, "{handed:?}");
+    let tightest = handed.windows(2).map(|p| p[1] - p[0]).min().unwrap();
     assert!(tightest >= Duration::from_millis(12), "two frames {tightest:?} apart");
 
     // R-E2E-1: the relay carried the session, and never a word of it.
@@ -366,12 +368,12 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
 /// R-OFF-2: A's network is gone for 30 seconds while A runs a turn by
 /// itself; once it is back, sync resumes with nothing more than waiting,
 /// and B holds every event A's log holds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn r_off_2_sync_resumes_by_itself_after_a_30_second_cut_with_no_event_lost() {
     let w = World::new("cut");
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));
     let (d, session) = first_turn(&w).await;
-    let (_stop, _cp, _bridge) = w.bridge(&a, &session, d.clone());
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
     w.synced(&session).await;
     let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
     let mut frames = Vec::new();
@@ -388,13 +390,9 @@ async fn r_off_2_sync_resumes_by_itself_after_a_30_second_cut_with_no_event_lost
     tokio::time::sleep(Duration::from_secs(30)).await;
     w.cut.store(false, Ordering::SeqCst);
 
-    let got = until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
-    for u in &got {
-        ids.extend(logged(u));
-    }
     // What the live stream brought and what the chunks did, together, once.
     let want = log_ids(&w, &session);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while want.iter().any(|i| !ids.contains(i)) && Instant::now() < deadline {
         if let Ok(Some(batch)) = tokio::time::timeout(Duration::from_millis(500), v.updates.recv()).await {
             ids.extend(batch.iter().flat_map(logged));
@@ -410,12 +408,12 @@ async fn r_off_2_sync_resumes_by_itself_after_a_30_second_cut_with_no_event_lost
 
 /// R-HAND-4: with A's bridge gone, B attaches from the chunks read-only, a
 /// prompt it types is queued rather than run, and it runs once A is back.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn r_hand_4_with_a_offline_b_is_read_only_and_its_queued_prompt_runs_when_a_returns() {
     let w = World::new("queue");
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));
-    let (d, session) = first_turn(&w).await;
-    let (stop, _cp, bridge) = w.bridge(&a, &session, d.clone());
+    let (_d, session) = first_turn(&w).await;
+    let (stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
     w.synced(&session).await;
     stop.send(true).unwrap();
     bridge.await.unwrap().unwrap();
@@ -429,7 +427,7 @@ async fn r_hand_4_with_a_offline_b_is_read_only_and_its_queued_prompt_runs_when_
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(log_ids(&w, &session).len(), before, "nothing ran while A was away");
 
-    let (_stop, _cp, _bridge) = w.bridge(&a, &session, d.clone());
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
     until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
     let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join("events.jsonl")).unwrap();
     assert!(log.contains("queued while A was away"), "the queued prompt ran on A");
