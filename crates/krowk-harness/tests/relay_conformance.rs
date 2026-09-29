@@ -340,7 +340,20 @@ async fn dial_with(test: &str, env: Option<&str>, ticket: Option<&str>, address:
     if let Some(a) = address {
         req.headers_mut().insert("cf-connecting-ip", a.parse().unwrap());
     }
-    let (ws, _) = tokio_tungstenite::connect_async(req).await.expect("the relay accepts a WebSocket");
+    // A relay that counts by the connection's own address (the reference
+    // relay) is dialed from a loopback address of its own for each
+    // simulated one, where the relay is on loopback.
+    let authority = relay_url().split("://").nth(1).unwrap().to_string();
+    let target: std::net::SocketAddr = tokio::net::lookup_host(&authority).await.unwrap().next().unwrap();
+    let ws = match address.and_then(|a| a.rsplit('.').next()?.parse::<u8>().ok()) {
+        Some(n) if target.ip().is_loopback() && target.is_ipv4() => {
+            let sock = tokio::net::TcpSocket::new_v4().unwrap();
+            sock.bind(format!("127.0.1.{n}:0").parse().unwrap()).unwrap();
+            let stream = sock.connect(target).await.unwrap();
+            tokio_tungstenite::client_async(req, MaybeTlsStream::Plain(stream)).await.expect("the relay accepts a WebSocket").0
+        }
+        _ => tokio_tungstenite::connect_async(req).await.expect("the relay accepts a WebSocket").0,
+    };
     let session = krowk_harness::daemon::ws::uuid(&sid);
     let mut c = Conn { ws, session };
     let first = c.control().await;

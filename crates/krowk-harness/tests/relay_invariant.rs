@@ -74,7 +74,7 @@ async fn r_relay_1_a_channel_forgets_its_fence_only_after_every_older_ticket_exp
     let seed: [u8; 32] = e2e::unhex(f["ticketSeed"].as_str().unwrap()).unwrap().try_into().unwrap();
     let kid: [u8; 8] = e2e::unhex(f["ticketKeys"].as_object().unwrap().keys().next().unwrap()).unwrap().try_into().unwrap();
     let now = relay_ticket::now();
-    let ticket = |fence: u64| {
+    let ticket_at = |now: u64, fence: u64| {
         Ticket {
             kid,
             role: RELAY_ROLE_HOST,
@@ -89,6 +89,7 @@ async fn r_relay_1_a_channel_forgets_its_fence_only_after_every_older_ticket_exp
         }
         .sign(&seed)
     };
+    let ticket = |fence: u64| ticket_at(now, fence);
     let stale = ticket(fence - 1);
     let current = ticket(fence);
     let (joined, host) = host_join(&url, &f, &current, fence).await;
@@ -96,7 +97,15 @@ async fn r_relay_1_a_channel_forgets_its_fence_only_after_every_older_ticket_exp
     let (early, _) = host_join(&url, &f, &stale, fence - 1).await;
     assert_eq!(early["code"], "not_lease_holder", "{early}");
     drop(host);
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // A fresh ticket at the old fence pins the forget's timing: a second
+    // before the idle time the fence still refuses it. (This relay forgets
+    // lazily, when another channel is entered, so the forget itself is not
+    // observed here; the hosted relay's check observes it.)
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let fresh = ticket_at(relay_ticket::now(), fence - 1);
+    let (held, _) = host_join(&url, &f, &fresh, fence - 1).await;
+    assert_eq!(held["code"], "not_lease_holder", "a second before the idle time: {held}");
+    tokio::time::sleep(Duration::from_secs(2)).await;
     let (late, _) = host_join(&url, &f, &stale, fence - 1).await;
     assert_eq!(late["code"], "ticket_expired", "{late}");
 }
