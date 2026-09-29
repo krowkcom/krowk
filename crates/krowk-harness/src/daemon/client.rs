@@ -59,7 +59,7 @@ pub struct Resume {
     pub epoch: u64,
     /// What its log said of the turn under way: carried to the next
     /// connection, whose catch-up starts after it.
-    pub turn: Option<TurnSoFar>,
+    pub turn: Option<Box<TurnSoFar>>,
 }
 
 /// A session's latest turn as its logged events tell it: enough to answer
@@ -338,7 +338,7 @@ impl Client {
     fn resume_of(&self, session: &str) -> Resume {
         let i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let (after_seq, after_event_id) = i.cursors.get(session).cloned().unwrap_or_default();
-        Resume { session_id: session.to_string(), after_event_id, after_seq, epoch: self.epoch, turn: i.turns.get(session).cloned() }
+        Resume { session_id: session.to_string(), after_event_id, after_seq, epoch: self.epoch, turn: i.turns.get(session).cloned().map(Box::new) }
     }
 
     fn ask_id(&self, frame: impl FnOnce(u64) -> ClientFrame, sink: Option<NewSink>) -> Result<(u64, oneshot::Receiver<ServerFrame>), EngineError> {
@@ -436,7 +436,7 @@ impl Client {
             // What the last connection's log said of the turn, which this
             // one's catch-up goes on from.
             if let Some(t) = &from.turn {
-                i.turns.insert(session_id.to_string(), t.clone());
+                i.turns.insert(session_id.to_string(), (**t).clone());
             }
             // A turn that had ended before the cut is an earlier one: the
             // cut one had not logged its start yet, and only an end caught
