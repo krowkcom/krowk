@@ -1125,7 +1125,7 @@ stdout:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session here; stdin lines are prompts or /commands"
+          "summary": "Follow a synced session; stdin takes prompts and /commands"
         }
       ]
     },
@@ -2437,7 +2437,7 @@ stdout:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session here; stdin lines are prompts or /commands"
+          "summary": "Follow a synced session; stdin takes prompts and /commands"
         }
       ]
     },
@@ -3763,7 +3763,7 @@ stdout:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session here; stdin lines are prompts or /commands"
+          "summary": "Follow a synced session; stdin takes prompts and /commands"
         }
       ]
     },
@@ -5089,7 +5089,7 @@ tty:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session here; stdin lines are prompts or /commands"
+          "summary": "Follow a synced session; stdin takes prompts and /commands"
         }
       ]
     },

@@ -104,7 +104,7 @@ OTHER
   sync register     Tell the workspace this machine holds its account key
   sync sessions     The synced sessions this machine can open
   sync host         Run a session here and sync it until interrupted
-  sync attach       Follow a synced session here; stdin lines are prompts or /commands
+  sync attach       Follow a synced session; stdin takes prompts and /commands
   devices list      The workspace's devices, and the account key this one holds
   devices approve   Approve a new device's `krowk sync join`
   config show       The effective configuration, and which layer set each value
