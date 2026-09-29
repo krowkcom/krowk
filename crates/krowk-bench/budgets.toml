@@ -214,7 +214,13 @@ unit = "bytes"
 # join ceilings, the pre-join read budget and per-address caps, overflow
 # said on every queue, idle channels forgotten) adds 44,256 bytes:
 # 9,811,752 (9.36 MiB), 149,720 under this.
-max = { x86_64-linux = 9_961_472 }
+# Ticket 19's sync (no new crate: tokio-tungstenite's client half of the
+# handshake it already links for the daemon, `connect`; the relay link's
+# three sealed chains, the host bridge, the viewer, chunks and checkpoints,
+# `krowk sync sessions|host|attach` and `--resume` of a synced session)
+# adds 426,304 bytes on ticket 18's 9,840,744: 10,267,048 (9.79 MiB).
+# Raised 9.50 -> 10.00 MiB by ticket 19, leaving 218,712 bytes.
+max = { x86_64-linux = 10_485_760 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---
