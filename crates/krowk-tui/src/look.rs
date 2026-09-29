@@ -206,6 +206,28 @@ pub fn said_bar() -> Style {
     said_band().fg(Color::Blue)
 }
 
+/// A key to press: white, so the keys a hint names stand out of the grey
+/// (or the colour) it is in.
+pub fn key() -> Style {
+    Style::new().fg(Color::White)
+}
+
+/// A hint whose keys are marked with backticks (`` `esc` closes this ``):
+/// each key in `key()`, the rest in `style`. What measures the hint
+/// measures it `unmarked`.
+pub fn keys(text: &str, style: Style) -> Vec<Span<'static>> {
+    text.split('`')
+        .enumerate()
+        .filter(|(_, s)| !s.is_empty())
+        .map(|(i, s)| Span::styled(s.to_string(), if i % 2 == 1 { key() } else { style }))
+        .collect()
+}
+
+/// A hint's text without its keys' marks, as it reads.
+pub fn unmarked(text: &str) -> String {
+    text.replace('`', "")
+}
+
 /// Whether the terminal takes 24-bit colour (`COLORTERM`), read once.
 pub fn truecolor() -> bool {
     static TRUECOLOR: std::sync::LazyLock<bool> =

@@ -283,7 +283,7 @@ impl Flow {
         let hint = match &self.ask {
             None => {
                 rows.push(Line::from(Span::styled(clip(&self.busy, width), dim())));
-                "esc hides this · it goes on, and says here when it is done"
+                "`esc` hides this · it goes on, and says here when it is done"
             }
             Some(a) => {
                 rows.extend(crate::app::wrap(&crate::app::clean(&a.message), width).into_iter().map(Line::from));
@@ -294,7 +294,7 @@ impl Flow {
                             let text = clip(&format!("{}{o}", if chosen { "❯ " } else { "  " }), width);
                             rows.push(Line::from(Span::styled(text, if chosen { look::accent() } else { blue })));
                         }
-                        "↑ ↓ choose · enter picks · esc cancels"
+                        "`↑` `↓` choose · `enter` picks · `esc` cancels"
                     }
                     Kind::Text { input, secret } => {
                         // A secret is a bullet a character, never itself.
@@ -312,12 +312,12 @@ impl Flow {
                         };
                         caret = Some(((2 + tail.width()) as u16, rows.len() as u16));
                         rows.push(Line::from(vec![Span::styled(look::ARROW, look::prompt()), Span::raw(tail)]));
-                        if *secret { "enter stores it · esc cancels · what is pasted is never shown" } else { "enter answers · esc cancels" }
+                        if *secret { "`enter` stores it · `esc` cancels · what is pasted is never shown" } else { "`enter` answers · `esc` cancels" }
                     }
                 }
             }
         };
-        rows.push(Line::from(Span::styled(clip(hint, width), dim())));
+        rows.push(Line::from(crate::app::clip_spans(look::keys(hint, dim()), width)));
         (rows, caret)
     }
 }

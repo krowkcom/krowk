@@ -319,7 +319,7 @@ const STATUS_INDENT: usize = 2;
 /// and the cost — then the model is cut short; `? help` stays.
 fn hint_row(mut parts: Vec<Part>, width: usize) -> Line<'static> {
     let room = width.saturating_sub(STATUS_INDENT);
-    let used = |parts: &[Part]| parts.iter().map(|p| p.text.width()).sum::<usize>() + parts.len().saturating_sub(1) * BAR_SEP.len();
+    let used = |parts: &[Part]| parts.iter().map(|p| look::unmarked(&p.text).width()).sum::<usize>() + parts.len().saturating_sub(1) * BAR_SEP.len();
     while used(&parts) > room {
         // The one to give way next: the lowest rank below the model's.
         let Some(i) = (0..parts.len()).filter(|&i| parts[i].rank < Rank::Model).min_by_key(|&i| parts[i].rank) else { break };
@@ -349,7 +349,8 @@ fn hint_row(mut parts: Vec<Part>, width: usize) -> Line<'static> {
             // Every cell carries the link: the live region is drawn a cell
             // at a time (`term::Back`).
             Some(url) => spans.extend(text.chars().map(|c| look::linked(c.to_string(), p.style, url))),
-            None => spans.push(Span::styled(text, p.style)),
+            // A key it names (`?`) in white.
+            None => spans.extend(clip_spans(look::keys(&p.text, p.style), room)),
         }
     }
     Line::from(spans)
@@ -881,6 +882,12 @@ impl App {
     }
 
     fn push_wrapped(&mut self, first: &str, rest: &str, text: &str, prefix_style: Style, style: Style) {
+        self.push_rows(first, rest, text, prefix_style, style, false);
+    }
+
+    /// `push_wrapped`, and with `marked` the keys the text marks with
+    /// backticks drawn as keys (`look::keys`).
+    fn push_rows(&mut self, first: &str, rest: &str, text: &str, prefix_style: Style, style: Style, marked: bool) {
         // Unprefixed text — the answer itself, most of scrollback — stays
         // one line here and is wrapped with everything else on its way out
         // (`take_pending`). Prefixed items wrap here, under their hanging
@@ -896,7 +903,8 @@ impl App {
         let width = usize::from(self.width);
         for (i, row) in wrap(&clean(text), width.saturating_sub(first.width().max(rest.width())).max(1)).into_iter().enumerate() {
             let prefix = if i == 0 { first } else { rest };
-            let line = if prefix.is_empty() { Line::from(Span::styled(row, style)) } else { Line::from(vec![Span::styled(prefix.to_string(), prefix_style), Span::styled(row, style)]) };
+            let row = if marked { look::keys(&row, style) } else { vec![Span::styled(row, style)] };
+            let line = if prefix.is_empty() { Line::from(row) } else { Line::from([vec![Span::styled(prefix.to_string(), prefix_style)], row].concat()) };
             self.last_blank = line.width() == 0;
             self.after_tool = false;
             self.pending.push(line);
@@ -939,6 +947,13 @@ impl App {
     pub fn notice(&mut self, text: &str) {
         self.gap();
         self.push_wrapped("! ", "  ", text, yellow(), yellow());
+    }
+
+    /// A notice that names keys, marked with backticks: they are drawn as
+    /// keys. Plain `notice` keeps its backticks, as commands are quoted.
+    pub fn notice_keys(&mut self, text: &str) {
+        self.gap();
+        self.push_rows("! ", "  ", text, yellow(), yellow(), true);
     }
 
     /// A page to open, from a sign-in: what it is for, dim, and the URL on a
@@ -1952,7 +1967,7 @@ impl App {
                 _ => "Working…".to_string(),
             };
             let label_style = if t.want_interrupt { red() } else { look::accent() };
-            let right = format!(" {}{SEP}esc to interrupt", look::duration(since));
+            let right = format!(" {}{SEP}`esc` to interrupt", look::duration(since));
             // A blank line above, unless there is one already: straight
             // under streaming text, the spinner read as part of it.
             let above_blank = match rows.last() {
@@ -1965,8 +1980,10 @@ impl App {
             rows.push(Line::from(vec![
                 Span::styled(format!("{frame} "), look::accent()),
                 Span::styled(clip(&label, width.saturating_sub(right.width() + 2)), label_style),
-                Span::styled(clip(&right, width.saturating_sub(label.width() + 2)), dim()),
-            ]));
+            ]
+            .into_iter()
+            .chain(clip_spans(look::keys(&right, dim()), width.saturating_sub(label.width() + 2)))
+            .collect::<Vec<_>>()));
             for s in self.steers.iter().chain(&self.unsent_steers) {
                 let first = s.lines().next().unwrap_or_default();
                 rows.push(Line::from(vec![Span::styled(look::STEER, look::accent()), Span::styled(clip(&format!("steer queued: {first}"), width.saturating_sub(2)), dim())]));
@@ -1986,12 +2003,12 @@ impl App {
         }
         if let Some(o) = &self.offer {
             for row in wrap(&offer_question(o), width) {
-                rows.push(Line::from(Span::styled(row, yellow().add_modifier(Modifier::BOLD))));
+                rows.push(Line::from(look::keys(&row, yellow().add_modifier(Modifier::BOLD))));
             }
         }
         if let Some(q) = &self.trust_question {
             for row in wrap(q, width) {
-                rows.push(Line::from(Span::styled(row, yellow().add_modifier(Modifier::BOLD))));
+                rows.push(Line::from(look::keys(&row, yellow().add_modifier(Modifier::BOLD))));
             }
         }
         let mut flow_caret = None;
@@ -2012,11 +2029,11 @@ impl App {
                     rows.push(Line::from(vec![Span::styled(look::TOOL, look::accent()), Span::styled(clip(&clean(&line), width.saturating_sub(2)), dim())]));
                 }
                 let hint = match (self.subs.is_empty(), self.backend_agents.is_empty()) {
-                    (true, true) => "no subagents running · esc closes this",
-                    (true, false) => "Claude Code runs these itself · esc closes this",
-                    _ => "↑ ↓ select · enter expands · x interrupts that one · esc closes this",
+                    (true, true) => "no subagents running · `esc` closes this",
+                    (true, false) => "Claude Code runs these itself · `esc` closes this",
+                    _ => "`↑` `↓` select · `enter` expands · `x` interrupts that one · `esc` closes this",
                 };
-                rows.push(Line::from(Span::styled(clip(hint, width), dim())));
+                rows.push(Line::from(clip_spans(look::keys(hint, dim()), width)));
             }
             Overlay::Models => rows.extend(self.models_overlay(width)),
             Overlay::Modes => rows.extend(self.modes_overlay(width)),
@@ -2053,13 +2070,20 @@ impl App {
         rows.push(Line::from(Span::styled(across, edge)));
         // A question of `/connect`'s takes the keys, and the caret with them.
         let caret = flow_caret.unwrap_or((ccol + 2, top + (crow as usize - first) as u16));
+        // A flash shows with the status bar off too: "Press Ctrl-C again to
+        // exit" unseen would make the key look broken.
+        if !self.settings.status_bar
+            && let Some(f) = &self.flash
+        {
+            rows.push(Line::from(vec![Span::raw(" ".repeat(STATUS_INDENT.min(inner)))].into_iter().chain(clip_spans(look::keys(f, dim()), inner.saturating_sub(STATUS_INDENT))).collect::<Vec<_>>()));
+        }
         if self.settings.status_bar {
             // Right under the prompt's bottom rule, nothing between.
             let [first, second] = self.status_parts();
             rows.push(match &self.flash {
                 // What a key just did (Ctrl-Y), in place of the first row
                 // until the next.
-                Some(f) => Line::from(vec![Span::raw(" ".repeat(STATUS_INDENT.min(inner))), Span::styled(clip(f, inner.saturating_sub(STATUS_INDENT)), dim())]),
+                Some(f) => Line::from(vec![Span::raw(" ".repeat(STATUS_INDENT.min(inner)))].into_iter().chain(clip_spans(look::keys(f, dim()), inner.saturating_sub(STATUS_INDENT))).collect::<Vec<_>>()),
                 None => hint_row(first, inner),
             });
             if !second.is_empty() {
@@ -2072,7 +2096,7 @@ impl App {
     /// The status line as text, every item it has room for at any width:
     /// a row a line.
     pub fn status_bar(&self) -> String {
-        self.status_parts().into_iter().filter(|r| !r.is_empty()).map(|r| r.into_iter().map(|p| p.text).collect::<Vec<_>>().join(BAR_SEP)).collect::<Vec<_>>().join("\n")
+        self.status_parts().into_iter().filter(|r| !r.is_empty()).map(|r| r.into_iter().map(|p| look::unmarked(&p.text)).collect::<Vec<_>>().join(BAR_SEP)).collect::<Vec<_>>().join("\n")
     }
 
     /// The status line's items, in the order drawn: `<instance>/<model> |
@@ -2144,7 +2168,7 @@ impl App {
             first.push(Part { rank: Rank::Offline, text: "offline".into(), style: yellow(), url: None });
         }
         if self.settings.status_items.contains(&StatusItem::Help) {
-            first.push(part(Rank::Help, "? help".into()));
+            first.push(part(Rank::Help, "`?` help".into()));
         }
         [first, second]
     }
@@ -2183,7 +2207,7 @@ impl App {
 
     fn todos_overlay(&self, width: usize) -> Vec<Line<'static>> {
         if self.todos.is_empty() {
-            return vec![Line::from(Span::styled(clip("no todo list in this session yet · esc closes this", width), dim()))];
+            return vec![Line::from(clip_spans(look::keys("no todo list in this session yet · `esc` closes this", dim()), width))];
         }
         self.todos
             .iter()
@@ -2251,7 +2275,7 @@ impl App {
 
     fn models_overlay(&self, width: usize) -> Vec<Line<'static>> {
         let found = self.found_picks();
-        let mut out = vec![picker_title("switch model", "type to filter · ↑↓ choose · enter switch · esc close", width)];
+        let mut out = vec![picker_title("switch model", "type to filter · `↑` `↓` choose · `enter` switch · `esc` close", width)];
         if found.is_empty() && self.editor.text().trim().is_empty() {
             out.push(Line::from(Span::styled(clip("  nothing connected can run a model here · /connect signs one in", width), dim())));
             return out;
@@ -2265,7 +2289,7 @@ impl App {
             })
             .collect();
         if rows.is_empty() {
-            out.push(Line::from(Span::styled(clip(&format!("  nothing matches · enter runs /model {}", self.editor.text().trim()), width), dim())));
+            out.push(Line::from(clip_spans(look::keys(&format!("  nothing matches · `enter` runs /model {}", self.editor.text().trim().replace('`', "")), dim()), width)));
             return out;
         }
         out.extend(menu(&rows, self.pick_at, width, MODEL_ROWS));
@@ -2280,7 +2304,7 @@ impl App {
                 Choice { name: name.to_string(), value, says: mode_says(name).into(), warning: None }
             })
             .collect();
-        let mut out = vec![picker_title("permission mode", "↑↓ choose · enter switch · esc close · or /mode <name>", width)];
+        let mut out = vec![picker_title("permission mode", "`↑` `↓` choose · `enter` switch · `esc` close · or /mode <name>", width)];
         out.extend(choices(&rows, self.mode_at, false, width));
         out
     }
@@ -2303,13 +2327,13 @@ impl App {
             Choice { name: "Default permission mode".into(), value: Span::raw(mode), says: says.into(), warning },
             Choice { name: "Content width".into(), value: Span::raw(cw.name()), says: cw_says, warning: None },
         ];
-        let mut out = vec![picker_title("settings", "↑↓ choose · ←→ change and save · esc close", width)];
+        let mut out = vec![picker_title("settings", "`↑` `↓` choose · `←` `→` change and save · `esc` close", width)];
         out.extend(choices(&rows, self.setting_at, true, width));
         out
     }
 
     fn sessions_overlay(&self, width: usize) -> Vec<Line<'static>> {
-        let mut out = vec![Line::from(Span::styled(clip("continue a session — ↑ ↓ choose · enter continues it · esc closes", width), dim()))];
+        let mut out = vec![Line::from(clip_spans(look::keys("continue a session — `↑` `↓` choose · `enter` continues it · `esc` closes", dim()), width))];
         if self.resumable.is_empty() {
             out.push(Line::from(Span::styled(clip("no earlier session started in this directory", width), dim())));
             return out;
@@ -2485,8 +2509,8 @@ struct Choice {
 /// A picker's header: its name in bold, the keys it takes dimmed.
 fn picker_title(name: &str, keys: &str, width: usize) -> Line<'static> {
     let name = clip(name, width);
-    let keys = clip(&format!(" — {keys}"), width - name.width());
-    Line::from(vec![Span::styled(name, bold()), Span::styled(keys, dim())])
+    let keys = clip_spans(look::keys(&format!(" — {keys}"), dim()), width - name.width());
+    Line::from([vec![Span::styled(name, bold())], keys].concat())
 }
 
 /// The settings and pickers' rows, one look for all (codex's styles.md):
@@ -2698,7 +2722,7 @@ fn banded(body: Vec<Span<'static>>, label: &str, width: usize) -> Vec<Line<'stat
 }
 
 /// `spans` cut to `width` columns, with an ellipsis when they were longer.
-fn clip_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+pub(crate) fn clip_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
     if spans.iter().map(Span::width).sum::<usize>() <= width {
         return spans;
     }
@@ -2842,13 +2866,13 @@ fn approval_rows(req: &ApprovalRequest, waiting: usize, width: usize, ready: boo
     let mut rows: Vec<Line<'static>> = wrap(&format!("{}{who}allow {summary}?{more}", look::TOOL), width).into_iter().map(|l| Line::from(Span::styled(l, yellow().add_modifier(Modifier::BOLD)))).collect();
     rows.extend(wrap(&format!("  {}", shown(&req.reason, MAX_APPROVAL_TEXT)), width).into_iter().map(|l| Line::from(Span::styled(l, dim()))));
     let keys = if !ready {
-        "  cut to fit — v prints all of it, then y/s/p · n deny".to_string()
+        "  cut to fit — `v` prints all of it, then `y` `s` `p` · `n` deny".to_string()
     } else if req.remember.is_empty() {
-        "  y allow once · n deny".to_string()
+        "  `y` allow once · `n` deny".to_string()
     } else {
-        format!("  y allow once · s allow {} for this session · p … for this project · n deny", shown(&req.remember.join(", "), MAX_APPROVAL_TEXT / 2))
+        format!("  `y` allow once · `s` allow {} for this session · `p` … for this project · `n` deny", shown(&req.remember.join(", "), MAX_APPROVAL_TEXT / 2).replace('`', "'"))
     };
-    rows.push(Line::from(Span::styled(clip(&keys, width), look::accent())));
+    rows.push(Line::from(clip_spans(look::keys(&keys, look::accent()), width)));
     rows
 }
 
@@ -2856,7 +2880,7 @@ fn approval_rows(req: &ApprovalRequest, waiting: usize, width: usize, ready: boo
 /// claude:personal? [y/N]".
 pub fn offer_question(o: &SwitchOffer) -> String {
     let until = o.resets_at_ms.map(|ms| format!(" until {}", krowk_harness::host::clock(ms))).unwrap_or_default();
-    format!("{}{} limited{until}, continue on {}? [y/N]", look::SWITCH, o.from.instance, if o.to.model == o.from.model { o.to.instance.clone() } else { o.to.to_string() })
+    format!("{}{} limited{until}, continue on {}? [`y`/`N`]", look::SWITCH, o.from.instance, if o.to.model == o.from.model { o.to.instance.clone() } else { o.to.to_string() })
 }
 
 /// How much of a model-supplied string an approval shows.
@@ -2912,14 +2936,14 @@ fn menu(rows: &[[String; 3]], at: usize, width: usize, most_rows: usize) -> Vec<
     use ratatui::widgets::{Block, Borders, Cell, HighlightSpacing, Row, Table, TableState};
     let block = Block::new().borders(Borders::TOP).border_style(look::border());
     if rows.is_empty() {
-        let none = vec![Row::new([Cell::from(Span::styled("  nothing matches · esc closes", dim()))])];
+        let none = vec![Row::new([Cell::from(Line::from(look::keys("  nothing matches · `esc` closes", dim())))])];
         return widget_rows(Table::new(none, [Constraint::Fill(1)]).block(block), &mut TableState::default(), width, 2);
     }
     let at = at.min(rows.len() - 1);
     // Grok Build's layout: the title column fits the titles, at most 40
     // wide and 60% of the row; the description takes what is left, cut
     // with `…`; a third column only while there is room and something in it.
-    let most = |i: usize| rows.iter().map(|r| r[i].width()).max().unwrap_or(0);
+    let most = |i: usize| rows.iter().map(|r| look::unmarked(&r[i]).width()).max().unwrap_or(0);
     let title = most(0).min(40).min(width * 3 / 5);
     let third = most(2);
     let with_third = third > 0 && 2 + title + 2 + most(1).min(width / 2) + 2 + third <= width;
@@ -2930,7 +2954,8 @@ fn menu(rows: &[[String; 3]], at: usize, width: usize, most_rows: usize) -> Vec<
         let name = if i == at { Span::styled(name, bold()) } else { Span::raw(name) };
         let mut cells = vec![Cell::from(name), Cell::from(Span::styled(clip(&r[1], described), dim()))];
         if with_third {
-            cells.push(Cell::from(Span::styled(r[2].clone(), look::border())));
+            // The keys column: the keys as keys, a command as it is typed.
+            cells.push(Cell::from(Line::from(look::keys(&r[2], look::border()))));
         }
         Row::new(cells)
     });
@@ -3840,7 +3865,7 @@ mod tests {
         let later = SwitchOffer { resets_at_ms: Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64 + 3_600_000), ..offer.clone() };
         assert!(offer_question(&later).contains("claude:work limited until "), "{}", offer_question(&later));
         let other = SwitchOffer { to: ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() }, ..offer };
-        assert!(offer_question(&other).ends_with("continue on anthropic/claude-opus-5-5? [y/N]"), "another model is named whole");
+        assert!(offer_question(&other).ends_with("continue on anthropic/claude-opus-5-5? [`y`/`N`]"), "another model is named whole");
     }
 
     #[test]
