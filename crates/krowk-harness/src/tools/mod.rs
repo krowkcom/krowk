@@ -859,6 +859,7 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
         }
         Some(Err(fix)) => return (format!("the command was not run: {fix}"), true),
     };
+    let mut unfenced = sandbox.map(crate::sandbox::Unfenced::before);
     cmd.current_dir(cwd);
     cmd.stdin(std::process::Stdio::null());
     // One pipe for both streams, as a terminal would have it: the model
@@ -954,7 +955,13 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
             if held_open {
                 tail += " (a process it started in the background still holds its output; krowk stopped reading when the shell exited)";
             }
-            let body = if text.is_empty() { tail.clone() } else { format!("{}\n{tail}", text.trim_end_matches('\n')) };
+            let mut body = if text.is_empty() { tail.clone() } else { format!("{}\n{tail}", text.trim_end_matches('\n')) };
+            let appeared = unfenced.as_mut().map(|u| u.appeared()).unwrap_or_default();
+            if !appeared.is_empty() {
+                let names = appeared.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
+                body += &format!("\nthe sandbox removed {names}, which the command created: git, Claude Code, Codex and krowk run what such a directory names, so none is made from inside the sandbox — ask the person to create it");
+                return (body, true);
+            }
             (body, code != Some(0))
         }
         Err(_) => {

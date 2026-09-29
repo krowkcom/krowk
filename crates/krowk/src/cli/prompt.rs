@@ -76,9 +76,11 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     let vendor = vendor_of(model.clone().or(session_model).as_ref(), &registry);
     let mut permissions = permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| flag_trust || store.trusts(root)), false);
     let (permission_mode, notices) = resolve_mode(flag_mode, &permissions, session_cwd.as_deref().unwrap_or(&cwd))?;
-    let settings_mode = permissions::settings::load(&permissions, session_cwd.as_deref().unwrap_or(&cwd)).ok().and_then(|l| l.default_mode);
+    // A settings file naming any mode chose one, even one krowk reads as
+    // default (Claude Code's `auto`): its notice says krowk asks, and so it does.
+    let settings_chose = !notices.is_empty() || permissions::settings::load(&permissions, session_cwd.as_deref().unwrap_or(&cwd)).is_ok_and(|l| l.default_mode.is_some());
     let here = Here { enforcer: sandbox::enforcer().map(|_| ()), container: sandbox::in_container() };
-    let (sandbox, permission_mode) = sandbox_and_mode(&ctx.f.sandbox, ctx.f.daemon, flag_mode.is_some() || settings_mode.is_some(), permission_mode, runs_native, &here)?;
+    let (sandbox, permission_mode) = sandbox_and_mode(&ctx.f.sandbox, ctx.f.daemon, flag_mode.is_some() || settings_chose, permission_mode, runs_native, &here)?;
     permissions.sandbox = sandbox;
     for n in notices {
         let _ = writeln!(ctx.io.stderr, "! {n}");

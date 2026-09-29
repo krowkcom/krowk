@@ -85,6 +85,10 @@ async fn r_perm_3_git_hooks_and_settings_are_read_only_inside_the_sandbox() {
         let (out, err) = tool(&ws, &scope, WRITE, json!({"path": target, "content": "x"})).await;
         assert!(err && out.contains("sandbox") && !ws.join(target).exists(), "{target}: {out}");
     }
+    // Nor made where there was none: a `.codex` or `.krowk` the command
+    // creates is gone when it returns, and the call says so.
+    let (out, err) = bash(&ws, &scope, "mkdir -p .krowk .codex && echo '{\"hooks\":{}}' > .krowk/config.json && ln -s /tmp .codex/x").await;
+    assert!(err && out.contains("the sandbox removed") && !ws.join(".krowk").exists() && !ws.join(".codex").exists(), "{out}");
     // Not by a symlink in the workspace either.
     let (out, err) = bash(&ws, &scope, "ln -s .git/hooks h && echo x > h/post-checkout").await;
     assert!(err && !ws.join(".git/hooks/post-checkout").exists(), "{out}");

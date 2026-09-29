@@ -193,6 +193,39 @@ impl Plan {
     }
 }
 
+/// The fences a call found missing, which bubblewrap cannot bind
+/// read-only because there is nothing to bind: a `.git` or `.claude` the
+/// command creates would hold hooks that run the next time git or an agent
+/// starts there. Whatever of them the call left behind is removed when
+/// this is dropped — after the call, when its pid namespace, and so
+/// everything it started, is gone — and named by `appeared`.
+pub struct Unfenced(Vec<PathBuf>);
+
+impl Unfenced {
+    pub fn before(plan: &Plan) -> Unfenced {
+        Unfenced(plan.read_only.iter().filter(|p| std::fs::symlink_metadata(p).is_err()).cloned().collect())
+    }
+
+    /// Removes what appeared and says so; empty when nothing did.
+    pub fn appeared(&mut self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for p in std::mem::take(&mut self.0) {
+            let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+            // Not followed: a symlink is removed as a link, and a directory's
+            // contents are removed without following the links in it.
+            let _ = if m.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+            out.push(p);
+        }
+        out
+    }
+}
+
+impl Drop for Unfenced {
+    fn drop(&mut self) {
+        self.appeared();
+    }
+}
+
 /// The program that enforces a plan here, or why none can: the `fix` a
 /// sandboxed run refuses with. Probed once per process.
 pub fn enforcer() -> Result<&'static Path, String> {
