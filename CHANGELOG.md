@@ -223,6 +223,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A viewer that moves to the direct path mid-session keeps receiving
+  the session.** The direct listener replays from where the viewer was when
+  it started looking for the direct path. The viewer had already opened
+  those batches through the relay, so it never acked them, and once the
+  listener's window filled, no further event reached the viewer, though
+  its own prompts and their acks still went through. An approval request
+  waiting while the viewer moved is now shown once, not once per path. A
+  command still running when the viewer moved is answered on the path the
+  viewer is on now. A host that reconnects to the relay no longer drops the
+  viewers on its direct path.
 - **`krowk sync host` no longer hangs on a session this machine does not
   have.** It used to take the session's lease and then wait, silent, until
   interrupted; it now fails at once with `no_session` and how to start one,

@@ -15,7 +15,7 @@
 use super::store::{self, Attached, Head};
 use super::direct::Candidate;
 use super::{Answer, Batch, In, Join, Remote, ViewerFrame, Welcome, DEAD, FRAME, PING};
-use crate::protocol::{Command, StreamLine};
+use crate::protocol::{Command, LiveEvent, StreamLine};
 use krowk_api::Client;
 use krowk_client::e2e::{self, AccountKey, DeviceId, SessionKey, SigningKey};
 use krowk_client::protocol::frame::{KIND_ACK, KIND_BATCH};
@@ -169,6 +169,10 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
     let raw = crate::daemon::ws::uuid(&o.session);
     let mut seen: HashSet<String> = at_rest.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect();
     let mut last_id: Option<String> = None;
+    // Approval requests shown and not yet resolved, by request id: every
+    // welcome names the waiting ones and the stream carries them too, and
+    // a move to a direct path is a second welcome, so each is shown once.
+    let mut asked: HashSet<String> = HashSet::new();
     for id in &seen {
         newest(&mut last_id, id);
     }
@@ -330,7 +334,7 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                     In::Closed => leaving = None,
                     In::Envelope(b) if b[1] == KIND_BATCH && b[20..28] != [0; 8] => match link.as_mut() {
                         Some(l) if l.welcomed() => {
-                            apply(l, &b, &mut seen, &mut last_id, &mut frame, &mut applied);
+                            apply(l, &b, &mut seen, &mut last_id, &mut asked, &mut frame, &mut applied);
                         }
                         _ => {
                             held.push(b);
@@ -417,7 +421,9 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                                     }
                                     host = true;
                                     frame.push(Update::Host(true));
-                                    for r in w.approvals { frame.push(Update::Line(StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)))); }
+                                    for r in w.approvals {
+                                        if asked.insert(r.request_id.clone()) { frame.push(Update::Line(StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)))); }
+                                    }
                                     // What the chunks do not hold yet — the running
                                     // turn's events — the host sends.
                                     let mut sends = vec![ViewerFrame::CatchUp { after: last_id.clone() }];
@@ -434,7 +440,15 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                                         if let (Some(w), Ok(sealed)) = (ws.as_mut(), l.frame(&serde_json::to_vec(&f).expect("json"), false)) && !super::send(w, sealed).await { ws = None; break; }
                                     }
                                     for b in std::mem::take(&mut held) {
-                                        apply(l, &b, &mut seen, &mut last_id, &mut frame, &mut applied);
+                                        apply(l, &b, &mut seen, &mut last_id, &mut asked, &mut frame, &mut applied);
+                                    }
+                                    // What was held may all have been batches opened
+                                    // already by the relay: acked all the same, or a
+                                    // direct listener, its window full of them, sends
+                                    // nothing more.
+                                    if let (Some(w), Some((_, have))) = (ws.as_mut(), l.cursor()) {
+                                        acked = acked.max(have);
+                                        if !super::send(w, ack(&raw, have)).await { ws = None; }
                                     }
                                 }
                                 Ok(Outbound::Routed { body, .. }) => match serde_json::from_slice(&body) {
@@ -455,8 +469,20 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                         } else if !l.welcomed() {
                             held.push(b);
                             if moving.is_some() && held.len() > HELD_MAX { moving_until = Instant::now(); }
+                        } else if let Some((_, have)) = l.cursor() && u64::from_be_bytes(b[20..28].try_into().expect("eight bytes")) <= have {
+                            // A batch this viewer opened already, by the other
+                            // uplink: a direct listener replays from the cursor
+                            // the race joined it at, and a relay still holds
+                            // what the direct path brought. It is acked all the
+                            // same — the listener counts its window in what it
+                            // sent, and holds the live batches behind it until
+                            // told the viewer has these.
+                            if let Some(w) = ws.as_mut() {
+                                acked = acked.max(have);
+                                if !super::send(w, ack(&raw, have)).await { ws = None; }
+                            }
                         } else {
-                            let gap = apply(l, &b, &mut seen, &mut last_id, &mut frame, &mut applied);
+                            let gap = apply(l, &b, &mut seen, &mut last_id, &mut asked, &mut frame, &mut applied);
                             // A batch the relay dropped: the host fills the gap,
                             // from the newest event held before this batch.
                             if let Some(after) = gap && !catching_up && let Ok(f) = l.frame(&serde_json::to_vec(&ViewerFrame::CatchUp { after }).expect("json"), false) {
@@ -546,7 +572,7 @@ fn fresh_only(events: Vec<serde_json::Value>, seen: &mut HashSet<String>, last: 
 /// Answers, when it skipped past a batch this viewer never opened, the
 /// newest event held *before* it: what the catch-up asks from, since this
 /// batch's own events are newer than the ones the gap swallowed.
-fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mut Option<String>, frame: &mut Vec<Update>, applied: &mut u64) -> Option<Option<String>> {
+fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mut Option<String>, asked: &mut HashSet<String>, frame: &mut Vec<Update>, applied: &mut u64) -> Option<Option<String>> {
     let before = last.clone();
     let Ok((body, end, skipped)) = l.open_batch_gap(b) else { return None };
     let seq = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
@@ -556,11 +582,20 @@ fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mut Op
     *applied = seq;
     let Ok(batch) = serde_json::from_slice::<Batch>(&body) else { return gap };
     for line in batch.lines {
-        if let StreamLine::Log(e) = &line {
-            newest(last, &e.id);
-            if !seen.insert(e.id.clone()) {
-                continue;
+        match &line {
+            StreamLine::Log(e) => {
+                newest(last, &e.id);
+                if !seen.insert(e.id.clone()) {
+                    continue;
+                }
             }
+            StreamLine::Live(LiveEvent::ApprovalRequested(r)) if !asked.insert(r.request_id.clone()) => continue,
+            StreamLine::Live(LiveEvent::ApprovalResolved { request_id, .. }) => {
+                asked.remove(request_id);
+            }
+            // A turn's end resolves whatever it still asked.
+            StreamLine::Live(LiveEvent::Result(_)) => asked.clear(),
+            _ => {}
         }
         frame.push(Update::Line(line));
     }

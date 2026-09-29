@@ -82,6 +82,10 @@ const CUT: u8 = 1;
 const FAIL_WRITES: u8 = 2;
 const DROP_ALL: u8 = 2;
 const DROP_BATCHES: u8 = 3;
+/// A registry proxy's mode: every relay ticket after the first waits until
+/// the mode changes, so a viewer's race for a direct path starts when the
+/// test says.
+const HOLD_TICKETS: u8 = 3;
 
 struct Device {
     key: DeviceKey,
@@ -341,18 +345,20 @@ fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>) -> Soc
     addr
 }
 
-/// A's registry proxy: `CUT` drops every connection, `FAIL_WRITES` answers
-/// every write (a POST or PUT) 503 — a registry failing, not gone.
+/// A registry proxy: `CUT` drops every connection, `FAIL_WRITES` answers
+/// every write (a POST or PUT) 503 — a registry failing, not gone — and
+/// `HOLD_TICKETS` holds every relay ticket but the first.
 fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>) -> SocketAddr {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
+    let tickets = Arc::new(AtomicUsize::new(0));
     std::thread::spawn(move || {
         for mut c in l.incoming().flatten() {
             if mode.load(Ordering::SeqCst) == CUT {
                 drop(c);
                 continue;
             }
-            let mode = mode.clone();
+            let (mode, tickets) = (mode.clone(), tickets.clone());
             std::thread::spawn(move || {
                 // Each request on the connection is judged as it comes and
                 // sent upstream on a connection of its own; the client may
@@ -383,6 +389,12 @@ fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>) -> SocketAddr {
                     if m == FAIL_WRITES && (one.starts_with(b"POST ") || one.starts_with(b"PUT ")) {
                         let _ = c.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
                         return;
+                    }
+                    let first = String::from_utf8_lossy(&one[..one.windows(2).position(|w| w == b"\r\n").unwrap_or(0)]).to_string();
+                    if first.starts_with("GET ") && first.contains("/relay_ticket") && tickets.fetch_add(1, Ordering::SeqCst) > 0 {
+                        while mode.load(Ordering::SeqCst) == HOLD_TICKETS {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
                     }
                     // Bytes, not text: a chunk upload's body is ciphertext.
                     let line = one.windows(2).position(|w| w == b"\r\n").unwrap_or(0);
@@ -1073,6 +1085,69 @@ async fn r_net_2_killing_the_direct_listener_falls_back_to_the_relay_with_no_gap
     dedup.sort();
     dedup.dedup();
     assert_eq!(dedup.len(), ids.len(), "no event arrived twice");
+}
+
+/// R-NET-2 (todo 22d): B attaches with a prompt still queued, the turn
+/// streams to it over the relay, and only then — mid-session, an approval
+/// waiting — does B's race for the direct path get its ticket and move.
+/// The direct listener replays from the cursor B had when the race began,
+/// so its first window is all batches B already opened by the relay. B
+/// still acks them, so the stream never stalls there; every event of A's
+/// log reaches B exactly once, and the approval request, which both
+/// welcomes name and the stream carries, is shown once.
+#[tokio::test]
+async fn r_net_2_moving_to_the_direct_path_mid_session_stalls_nothing_and_shows_each_approval_once() {
+    let w = World::new("direct-stall");
+    let ts = FakeTailscale::start(&w.root);
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_kill, kill_rx) = watch::channel(false);
+    let (_stop, _cp, _bridge) = w.bridge_direct(&a, &session, w.daemon().await, &ts, false, kill_rx);
+    w.synced(&session).await;
+    let hold = Arc::new(AtomicU8::new(HOLD_TICKETS));
+    let reg_b = format!("http://{}/v1", registry_proxy(w.registry.addr(), hold.clone()));
+    let mut o = w.viewer(&b, &session);
+    o.api = Arc::new(krowk_api::Client::new(&reg_b, "krowk_sk_sync_attach_0000000000000000").signed_by(signer(&b)));
+    let mut v = viewer::attach(o).await.unwrap();
+    let mut frames = Vec::new();
+    v.commands.send(w.prompt(Some(&session), "a long answer, queued")).unwrap();
+    let mut got = until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
+    assert!(got.iter().any(|u| matches!(u, viewer::Update::Sent { queued: true, .. })), "the prompt waited for the host: {got:?}");
+    assert!(!got.iter().any(direct_path), "the race waits on its ticket");
+    v.commands.send(w.prompt(Some(&session), "make the file")).unwrap();
+    got.extend(until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(_))))).await);
+
+    // The race goes on, and B moves with the approval waiting.
+    hold.store(PASS, Ordering::SeqCst);
+    got.extend(until(&mut v, Duration::from_secs(15), &mut frames, direct_path).await);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(batch) = v.updates.try_recv() {
+        got.extend(batch);
+    }
+    let asked: Vec<_> = got.iter().filter_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).collect();
+    assert_eq!(asked.len(), 1, "the approval request was shown {} times", asked.len());
+    let req = asked[0].clone();
+    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow }).unwrap();
+    got.extend(until(&mut v, Duration::from_secs(15), &mut frames, result_of).await);
+    assert!(w.repo().join("approved.txt").exists(), "B's answer unblocked A's turn");
+
+    let mut ids: Vec<String> = got.iter().flat_map(logged).collect();
+    let want = log_ids(&w, &session);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while want.iter().any(|i| !ids.contains(i)) && Instant::now() < deadline {
+        if let Ok(Some(batch)) = tokio::time::timeout(Duration::from_millis(300), v.updates.recv()).await {
+            got.extend(batch.clone());
+            ids.extend(batch.iter().flat_map(logged));
+        }
+    }
+    let missing: Vec<_> = want.iter().filter(|i| !ids.contains(i)).collect();
+    assert!(missing.is_empty(), "B never got {} of A's {} events", missing.len(), want.len());
+    let mut dedup = ids.clone();
+    dedup.sort();
+    dedup.dedup();
+    assert_eq!(dedup.len(), ids.len(), "no event arrived twice");
+    let asked = got.iter().filter(|u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(_))))).count();
+    assert_eq!(asked, 1, "the approval request was shown once");
 }
 
 /// R-NET-3: with the same-user check on, tailscaled naming the far end as

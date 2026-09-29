@@ -290,12 +290,17 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let remote_turns: Arc<Mutex<HashSet<String>>> = Arc::default();
     let mut done: HashMap<String, Answer> = HashMap::new();
     let mut done_order: VecDeque<String> = VecDeque::new();
-    let mut running: HashSet<String> = HashSet::new();
+    // Commands being taken, by id, with the link that last sent each: a
+    // viewer that moved between the relay and a direct path while one ran
+    // is answered where it is now, not on the link it left.
+    let mut running: HashMap<String, u64> = HashMap::new();
     // Since when no viewer has been here to answer.
     let mut alone_since = Some(Instant::now());
     // Links the relay said are present since the host last joined; chains
     // of any other link are forgotten a second after the join.
     let mut present: Option<(HashSet<u64>, Instant)> = None;
+    // The same for the direct listener, which speaks for its own links.
+    let mut dpresent: Option<(HashSet<u64>, Instant)> = None;
     let mut ws: Option<super::Ws> = None;
     let mut heard = Instant::now();
     let mut retry = Instant::now();
@@ -351,9 +356,9 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                 if let Some(w) = ws.as_mut() && !super::send(w, sealed).await { ws = None; }
             }
             Some(h) = heads.recv() => head = Some(h),
-            Some((to, a)) = answers.recv() => {
+            Some((mut to, a)) = answers.recv() => {
                 if let Answer::Ack { id, .. } = &a && !id.is_empty() {
-                    running.remove(id);
+                    if let Some(now) = running.remove(id) { to = now; }
                     if done.insert(id.clone(), a.clone()).is_none() {
                         done_order.push_back(id.clone());
                         if done_order.len() > REMEMBERED && let Some(old) = done_order.pop_front() { done.remove(&old); }
@@ -368,9 +373,16 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                     ended = Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", o.session));
                     break;
                 }
+                // Each uplink speaks for its own links only: a viewer on the
+                // direct path is not one the relay could have named, nor the
+                // other way round.
                 if let Some((here, since)) = &present && since.elapsed() > Duration::from_secs(1) {
-                    for l in link.links() { if !here.contains(&l) { link.forget(l); } }
+                    for l in link.links() { if l < super::direct::FIRST_LINK && !here.contains(&l) { link.forget(l); } }
                     present = None;
+                }
+                if let Some((here, since)) = &dpresent && since.elapsed() > Duration::from_secs(1) {
+                    for l in link.links() { if l >= super::direct::FIRST_LINK && !here.contains(&l) { link.forget(l); } }
+                    dpresent = None;
                 }
                 if link.viewers().is_empty() { alone_since.get_or_insert_with(Instant::now); } else { alone_since = None; }
                 // Only a request of a turn a viewer started, and only once no
@@ -389,6 +401,12 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                 if let Some(w) = dws.as_mut() && (dheard.elapsed() > DEAD || !super::ping(w).await) { dws = None; }
             }
             _ = tokio::time::sleep_until(dretry.into()), if dws.is_none() && listening.is_some() => {
+                // The listener's viewers went with the host's link to it,
+                // however it was lost: none of them is here to answer, so a
+                // remote turn's approval is denied after `APPROVAL_WAIT`
+                // rather than waiting on a chain nobody holds.
+                for l in link.links() { if l >= super::direct::FIRST_LINK { link.forget(l); } }
+                dpresent = None;
                 // The direct listener, joined as the relay is: the same
                 // ticket, the same stream. What the relay has not yet
                 // acknowledged seeds it, so a viewer moving over resumes
@@ -403,7 +421,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                     for (_, b) in kept.iter().filter(|(s, _)| *s > at) {
                         if !super::send(&mut w, b.clone()).await { ok = false; break; }
                     }
-                    if ok { dws = Some(w); dheard = Instant::now(); }
+                    if ok { dws = Some(w); dheard = Instant::now(); dpresent = Some((HashSet::new(), Instant::now())); }
                 }
             }
             _ = tokio::time::sleep_until(retry.into()), if ws.is_none() => {
@@ -455,7 +473,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                     In::Control(v) => {
                         if v["type"] == "viewer" && let Some(l) = v["link"].as_u64() {
                             if v["event"] == "left" { link.forget(l); }
-                            if v["event"] == "joined" && let Some((here, _)) = present.as_mut() { here.insert(l); }
+                            if v["event"] == "joined" && let Some((here, _)) = if direct { dpresent.as_mut() } else { present.as_mut() } { here.insert(l); }
                         }
                     }
                     // The direct listener's acks free nothing: what is kept
@@ -489,12 +507,12 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                                 Ok(ViewerFrame::Command(r)) if done.contains_key(&r.id) => {
                                     let _ = answers_tx.send((from, done[&r.id].clone()));
                                 }
-                                Ok(ViewerFrame::Command(r)) if running.contains(&r.id) => {}
+                                Ok(ViewerFrame::Command(r)) if running.contains_key(&r.id) => { running.insert(r.id, from); }
                                 Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &o.session) => {
                                     let _ = answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, and nothing else", o.session)) }));
                                 }
                                 Ok(ViewerFrame::Command(r)) => {
-                                    running.insert(r.id.clone());
+                                    running.insert(r.id.clone(), from);
                                     let command = under_session_settings(r.command, mode);
                                     let (daemon, answers, tx, turns) = (daemon.clone(), answers_tx.clone(), lines_tx.clone(), remote_turns.clone());
                                     tokio::spawn(async move {
