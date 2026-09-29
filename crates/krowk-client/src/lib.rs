@@ -19,6 +19,7 @@ pub mod e2e;
 pub mod keystore;
 pub mod phrase;
 pub mod protocol;
+pub mod relay_ticket;
 
 /// A secret the caller holds for a moment — a typed phrase — wiped on drop.
 pub use zeroize::Zeroizing;
