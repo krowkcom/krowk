@@ -342,7 +342,7 @@ pub fn markdown_line(text: &str, fence: &mut bool) -> Line<'static> {
 /// `code`, `**bold**` and links within a line: `[text](url)`, `<url>` and a
 /// bare URL, each opening its http(s) URL (`link_spans`). Anything unclosed,
 /// and a link to anything but http(s), stays as typed.
-fn inline(text: &str) -> Vec<Span<'static>> {
+pub(crate) fn inline(text: &str) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut plain = 0;
     let mut i = 0;
@@ -385,7 +385,7 @@ const URL_MAX: usize = 2048;
 
 /// `spans` in `style`, each keeping its own on top; a link keeps its look
 /// exactly, which is what makes it one (`link_target`).
-fn emphasised(spans: Vec<Span<'static>>, style: Style) -> Vec<Span<'static>> {
+pub(crate) fn emphasised(spans: Vec<Span<'static>>, style: Style) -> Vec<Span<'static>> {
     spans.into_iter().map(|s| if link_target(&s).is_some() { s } else { Span::styled(s.content, style.patch(s.style)) }).collect()
 }
 

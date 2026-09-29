@@ -36,6 +36,7 @@ pub mod help;
 pub mod look;
 pub mod net;
 pub mod settings;
+mod table;
 pub mod term;
 
 use app::{App, Mark, Overlay};

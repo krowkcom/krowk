@@ -9,6 +9,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- The TUI draws markdown tables in an answer as columns: the header bold over a thin rule, each cell in the answer's markdown and wrapped inside its column, aligned as the delimiter row says. On a screen too narrow for its columns, each row is shown as a record of `Header  value` lines. A table is held while it streams and drawn once it ends.
+
 ### Changed
 
 - `@krowk/cli` on npm describes krowk as the coding agent it carries, with publishing as one of the things it does; `@krowk/mcp` says it publishes from any agent. The build-it-yourself line (npm launcher, `prompt.md`) installs the full build (`--features harness`) rather than `sessions`, which left the agent out. The Claude plugin's manifest version, stuck at 0.8.2, is 0.11.0.
