@@ -88,7 +88,10 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     let old = session(&sessions, &root, "the idle session's secret prompt", 20);
     let pinned = session(&sessions, &root, "a pinned one", 30);
     let fresh = session(&sessions, &root, "a recent one", 3);
+    // A context worth restoring byte for byte, as a turn records it.
+    std::fs::write(sessions.join(&old).join(log::CONTEXT_FILE), "{\"system\":\"the old session's system prompt\",\"tools\":[]}\n").unwrap();
     let original = std::fs::read(sessions.join(&old).join(log::EVENTS_FILE)).unwrap();
+    let original_context = std::fs::read(sessions.join(&old).join(log::CONTEXT_FILE)).unwrap();
     let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);
     assert!(ok, "{out}");
     let (ok, _, out) = m.krowk(&["sessions", "pin", &pinned]);
@@ -117,8 +120,10 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     assert!(v.to_string().contains(&old), "a rebuild keeps it listed from its stub: {out}");
 
     // R-VINT-1: the registry holds the week's vintage, and only ciphertext.
-    let week = krowk_harness::vintage::read_stub(&sessions, &old).unwrap().week;
+    let stub = krowk_harness::vintage::read_stub(&sessions, &old).unwrap();
+    let week = stub.week;
     let vintage = api.week_vintage(&week).unwrap().expect("the week's vintage");
+    assert_eq!(stub.vintage, vintage.slug, "the stub names its vintage");
     let sealed = api.read_vintage(&vintage).unwrap();
     assert!(!sealed.windows(6).any(|w| w == b"secret"), "no plaintext on the server");
     let plain = krowk_harness::vintage::unpack(&e2e::open_vintage(&sealed, &week, &account).unwrap()).unwrap();
@@ -130,6 +135,7 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     assert!(ok, "{out}");
     assert!(v.to_string().contains("answering the idle session"), "shown in full: {out}");
     assert_eq!(std::fs::read(sessions.join(&old).join(log::EVENTS_FILE)).unwrap(), original);
+    assert_eq!(std::fs::read(sessions.join(&old).join(log::CONTEXT_FILE)).unwrap(), original_context, "and its context");
     assert!(!sessions.join(&old).join(krowk_harness::vintage::STUB_FILE).exists());
 
     // R-VINT-1: a second session last active in the same week joins the
@@ -140,6 +146,7 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     assert!(v.to_string().contains(&sibling) && v.to_string().contains(&old), "{out}");
     let merged = api.week_vintage(&week).unwrap().expect("the week's vintage");
     assert_ne!(merged.slug, vintage.slug, "replaced");
+    assert_eq!(api.read_vintage(&vintage).unwrap(), sealed, "the replaced vintage's bytes are kept");
     let plain = krowk_harness::vintage::unpack(&e2e::open_vintage(&api.read_vintage(&merged).unwrap(), &week, &account).unwrap()).unwrap();
     assert!(plain.contains_key(&old) && plain.contains_key(&sibling), "one vintage holds the week's sessions");
     // A replacement that did not read the week's latest is refused.

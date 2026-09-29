@@ -111,6 +111,10 @@ pub struct StubTurn {
 #[serde(rename_all = "camelCase")]
 pub struct Stub {
     pub week: String,
+    /// The slug of the vintage it went into, for finding it again should
+    /// the week's vintage be replaced by one that lost it.
+    #[serde(default)]
+    pub vintage: String,
     pub title: String,
     /// The first thing asked in it, longer than the title.
     pub summary: String,
@@ -171,6 +175,7 @@ impl Stub {
             .collect();
         Some(Stub {
             week: week.to_owned(),
+            vintage: String::new(),
             title: krowk_store::title_for(&th.messages),
             summary,
             directory: th.session.directory.clone(),
@@ -278,18 +283,46 @@ fn candidates(sessions: &Path, now_ms: i64, idle_ms: i64) -> Vec<Candidate> {
         if lock.try_lock().is_err() {
             continue;
         }
-        let (Ok(ev), context) = (std::fs::read_to_string(&path), std::fs::read_to_string(dir.join(CONTEXT_FILE)).unwrap_or_default()) else { continue };
+        let Ok(ev) = std::fs::read_to_string(&path) else { continue };
+        // Only a missing context is an empty one. One that cannot be read
+        // would go into the vintage as nothing and then be deleted, so the
+        // session is left where it is instead.
+        let context = match std::fs::read_to_string(dir.join(CONTEXT_FILE)) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(_) => continue,
+        };
         out.push(Candidate { id, dir, week, stub, events: ev, context, _lock: lock });
     }
     out
 }
 
-/// One session inside a vintage: its log files, verbatim.
+/// The format of a vintage's line this krowk writes and reads.
+pub const LINE_V1: u32 = 1;
+
+/// One session inside a vintage: its log files, verbatim. A merge carries
+/// every line it read into the vintage it writes, so fields a later krowk
+/// added are kept as they came (`rest`). A line of a later format is
+/// refused whole rather than merged down into this one's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Line {
+    #[serde(default = "line_v1")]
+    pub v: u32,
     pub id: String,
     pub events: String,
     pub context: String,
+    #[serde(flatten)]
+    pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
+fn line_v1() -> u32 {
+    LINE_V1
+}
+
+impl Line {
+    pub fn new(id: &str, events: String, context: String) -> Line {
+        Line { v: LINE_V1, id: id.to_owned(), events, context, rest: serde_json::Map::new() }
+    }
 }
 
 /// A week's sessions as the vintage's plaintext: JSONL, zstd-compressed.
@@ -317,6 +350,9 @@ pub fn unpack(packed: &[u8]) -> Result<BTreeMap<String, Line>, String> {
             continue;
         }
         let l: Line = serde_json::from_str(&line).map_err(|e| format!("the vintage holds a line this krowk does not read: {e}"))?;
+        if l.v > LINE_V1 {
+            return Err(format!("the vintage holds session {} in format {}, newer than this krowk reads — upgrade krowk", l.id, l.v));
+        }
         if !log::valid_id(&l.id) {
             return Err(format!("the vintage names a session {:?} that is no krowk session id", l.id));
         }
@@ -344,41 +380,63 @@ pub struct Archived {
     pub week: String,
 }
 
+/// What a run did: the sessions it archived, and why it stopped early
+/// when it did. The weeks before a failure stay archived and are reported,
+/// so the caller still drops their bodies from krowk.db.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Run {
+    pub archived: Vec<Archived>,
+    pub failed: Option<String>,
+}
+
 /// Archives every native session idle for more than `idle_days` at
-/// `now_ms`, week by week, and stamps the run. A week that fails leaves its
-/// sessions exactly as they were; the weeks before it stay archived.
-pub fn archive(client: &Client, account: &AccountKey, sessions: &Path, now_ms: i64, idle_days: u64) -> Result<Vec<Archived>, String> {
+/// `now_ms`, week by week, and stamps a run that finished. A week that
+/// fails leaves its sessions exactly as they were — no stub, the log files
+/// in place — and ends the run.
+pub fn archive(client: &Client, account: &AccountKey, sessions: &Path, now_ms: i64, idle_days: u64) -> Run {
     let mut weeks: BTreeMap<String, Vec<Candidate>> = BTreeMap::new();
     for c in candidates(sessions, now_ms, idle_days as i64 * DAY_MS) {
         weeks.entry(c.week.clone()).or_default().push(c);
     }
-    let mut done = Vec::new();
+    let mut run = Run::default();
     for (week, group) in weeks {
-        store_week(client, account, &week, &group)?;
-        for c in group {
-            leave_stub(&c)?;
-            done.push(Archived { id: c.id, week: week.clone() });
+        let slug = match store_week(client, account, &week, &group) {
+            Ok(slug) => slug,
+            Err(e) => {
+                run.failed = Some(e);
+                return run;
+            }
+        };
+        for mut c in group {
+            c.stub.vintage.clone_from(&slug);
+            if let Err(e) = leave_stub(&c) {
+                run.failed = Some(e);
+                return run;
+            }
+            run.archived.push(Archived { id: c.id, week: week.clone() });
         }
     }
     let _ = std::fs::create_dir_all(sessions);
-    stamp(sessions, now_ms)?;
-    Ok(done)
+    if let Err(e) = stamp(sessions, now_ms) {
+        run.failed = Some(e);
+    }
+    run
 }
 
 /// Writes the week's vintage with `group` merged into whatever it already
 /// holds, reading again when another machine replaced it meanwhile.
-fn store_week(client: &Client, account: &AccountKey, week: &str, group: &[Candidate]) -> Result<(), String> {
+fn store_week(client: &Client, account: &AccountKey, week: &str, group: &[Candidate]) -> Result<String, String> {
     for _ in 0..MERGE_TRIES {
         let (replaces, mut lines) = match fetch(client, account, week)? {
             Some((slug, lines)) => (Some(slug), lines),
             None => (None, BTreeMap::new()),
         };
         for c in group {
-            lines.insert(c.id.clone(), Line { id: c.id.clone(), events: c.events.clone(), context: c.context.clone() });
+            lines.insert(c.id.clone(), Line::new(&c.id, c.events.clone(), c.context.clone()));
         }
         let sealed = e2e::seal_vintage(account, week, &pack(&lines));
         match client.put_vintage(week, &sealed, replaces.as_deref()) {
-            Ok(_) => return Ok(()),
+            Ok(v) => return Ok(v.slug),
             Err(e) if e.code() == "vintage_conflict" => continue,
             Err(e) => return Err(format!("the vintage for {week} was not stored, so its sessions stay on this machine: {}", e.fix())),
         }
@@ -452,12 +510,91 @@ mod tests {
     #[test]
     fn r_vint_1_a_week_packs_as_zstd_jsonl_and_unpacks_whole() {
         let id = "0192f1e2-3a4b-7c5d-8e6f-0123456789ab".to_string();
-        let lines = BTreeMap::from([(id.clone(), Line { id: id.clone(), events: "{\"a\":1}\n".repeat(200), context: "{}\n".into() })]);
+        let lines = BTreeMap::from([(id.clone(), Line::new(&id, "{\"a\":1}\n".repeat(200), "{}\n".into()))]);
         let packed = pack(&lines);
         assert_eq!(&packed[..4], &[0x28, 0xb5, 0x2f, 0xfd], "a zstd frame");
         assert!(packed.len() < 200 * 8, "compressed");
         assert_eq!(unpack(&packed).unwrap(), lines);
         let bad = ruzstd::encoding::compress_to_vec(&b"{\"id\":\"../x\",\"events\":\"\",\"context\":\"\"}\n"[..], ruzstd::encoding::CompressionLevel::Fastest);
         assert!(unpack(&bad).is_err());
+    }
+
+    fn packed(jsonl: &str) -> Vec<u8> {
+        ruzstd::encoding::compress_to_vec(jsonl.as_bytes(), ruzstd::encoding::CompressionLevel::Fastest)
+    }
+
+    /// A merge by this krowk keeps what a later one wrote into a line it
+    /// does not know, and a line of a later format is refused, never
+    /// merged down.
+    #[test]
+    fn r_vint_1_a_merge_keeps_a_newer_krowks_fields_and_refuses_a_newer_format() {
+        let theirs = "0192f1e2-3a4b-7c5d-8e6f-0123456789ab";
+        let ours = "0192f1e2-3a4b-7c5d-8e6f-0123456789ac";
+        let mut week = unpack(&packed(&format!("{{\"v\":1,\"id\":\"{theirs}\",\"events\":\"e\\n\",\"context\":\"\",\"forks\":[{{\"head\":\"x\"}}]}}\n"))).unwrap();
+        week.insert(ours.into(), Line::new(ours, "mine\n".into(), String::new()));
+        let again = unpack(&pack(&week)).unwrap();
+        assert_eq!(again[theirs].rest["forks"], serde_json::json!([{"head": "x"}]), "kept through the merge");
+        assert_eq!(again[ours].v, LINE_V1);
+        let newer = unpack(&packed(&format!("{{\"v\":2,\"id\":\"{theirs}\",\"events\":\"\",\"context\":\"\"}}\n"))).unwrap_err();
+        assert!(newer.contains("upgrade krowk"), "{newer}");
+    }
+
+    fn idle_session(sessions: &Path, days: i64) -> String {
+        let (mut l, root) = log::SessionLog::create(sessions, sessions, "test").unwrap();
+        l.append(crate::protocol::LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: crate::protocol::Item::UserText { text: "hi".into() } }).unwrap();
+        drop(l);
+        let path = sessions.join(&root.session_id).join(EVENTS_FILE);
+        let aged: String = log::read_events(&path)
+            .unwrap()
+            .into_iter()
+            .map(|mut e| {
+                e.time_ms -= days * DAY;
+                serde_json::to_string(&e).unwrap() + "\n"
+            })
+            .collect();
+        std::fs::write(&path, aged).unwrap();
+        root.session_id
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("krowk-vintage-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A context that exists but cannot be read is not archived as empty:
+    /// the session is skipped and stays whole (R-VINT-2).
+    #[test]
+    fn r_vint_2_a_session_whose_context_cannot_be_read_is_not_archived() {
+        let dir = scratch("unreadable");
+        let id = idle_session(&dir, 20);
+        let context = dir.join(&id).join(CONTEXT_FILE);
+        let _ = std::fs::remove_file(&context);
+        std::fs::create_dir(&context).unwrap();
+        let now = krowk_store::now_ms();
+        assert!(candidates(&dir, now, 14 * DAY).is_empty());
+        std::fs::remove_dir(&context).unwrap();
+        assert_eq!(candidates(&dir, now, 14 * DAY).len(), 1, "a missing context is an empty one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A vintage the registry never stores leaves the session exactly as
+    /// it was: its log files in place, no stub, no stamp (R-VINT-1).
+    #[test]
+    fn r_vint_1_a_failed_store_leaves_the_session_on_the_machine() {
+        let dir = scratch("failed");
+        let id = idle_session(&dir, 20);
+        let before = std::fs::read(dir.join(&id).join(EVENTS_FILE)).unwrap();
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", dead.local_addr().unwrap());
+        drop(dead);
+        let client = Client::new(&url, "krowk_sk_dead_000000000000000000000000");
+        let run = archive(&client, &AccountKey::generate(), &dir, krowk_store::now_ms(), 14);
+        assert!(run.archived.is_empty() && run.failed.is_some(), "{run:?}");
+        assert_eq!(std::fs::read(dir.join(&id).join(EVENTS_FILE)).unwrap(), before);
+        assert!(!dir.join(&id).join(STUB_FILE).exists());
+        assert!(due(&dir, krowk_store::now_ms()), "an unfinished run is not stamped");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

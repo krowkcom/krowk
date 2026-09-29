@@ -119,7 +119,10 @@ pub fn archive(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         return emit_data(ctx, json!({ "archived": [], "due": false }), "not due: the last archive ran less than a week ago".into());
     }
     let (client, account) = super::sync::vintage_keys(ctx)?;
-    let done = krowk_harness::vintage::archive(&client, &account, &dir, now, days).map_err(|e| fail("archive_failed", e))?;
+    let run = krowk_harness::vintage::archive(&client, &account, &dir, now, days);
+    // The weeks stored before a failure are archived: their bodies leave
+    // krowk.db whether or not the rest of the run went through.
+    let done = run.archived;
     let conn = open_store(ctx)?;
     for a in &done {
         krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, &a.id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
@@ -127,6 +130,9 @@ pub fn archive(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     drop(conn);
     for a in &done {
         project_native(ctx.io.env, &a.id)?;
+    }
+    if let Some(e) = run.failed {
+        return Err(fail("archive_failed", if done.is_empty() { e } else { format!("{e} ({} session(s) archived before it)", done.len()) }));
     }
     let rows: Vec<Value> = done.iter().map(|a| json!({ "id": a.id, "week": a.week })).collect();
     let n = rows.len();
