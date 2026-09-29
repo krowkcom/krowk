@@ -133,7 +133,7 @@ fn r_host_1_closing_the_terminal_leaves_the_turn_running_and_reopening_krowk_fol
     let m = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(ANSWER), Duration::from_millis(120)));
     let d = Daemon::new("reopen");
     let mut a = pty::Pty::spawn(d.command(&m.url, &[]), 100, 30);
-    assert!(a.wait_for("? help", Duration::from_secs(10)).is_some(), "{:?}", a.text());
+    assert!(a.wait_for(" help", Duration::from_secs(10)).is_some(), "{:?}", a.text());
     a.write(b"say the alphabet\r");
     assert!(a.wait_for("charlie", Duration::from_secs(10)).is_some(), "{:?}", a.text());
     // The terminal closes: a hangup, as a closed window sends.
@@ -150,7 +150,7 @@ fn r_host_1_closing_the_terminal_leaves_the_turn_running_and_reopening_krowk_fol
     assert!(b.wait_for("tokens", Duration::from_secs(10)).is_some(), "and the turn's end: {:?}", b.text());
     let text = b.text();
     assert!(text.contains("alpha") && text.contains("mike"), "what it missed is there too: {text:?}");
-    b.write(b"\x04");
+    b.write(b"\x04\x04");
     assert!(b.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
 }
 
@@ -162,7 +162,7 @@ fn r_proto_1_two_tuis_on_one_session_show_the_same_reply() {
     let m = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(ANSWER), Duration::from_millis(100)));
     let d = Daemon::new("two");
     let mut a = pty::Pty::spawn(d.command(&m.url, &[]), 100, 30);
-    assert!(a.wait_for("? help", Duration::from_secs(10)).is_some(), "{:?}", a.text());
+    assert!(a.wait_for(" help", Duration::from_secs(10)).is_some(), "{:?}", a.text());
     a.write(b"count\r");
     assert!(a.wait_for("two", Duration::from_secs(10)).is_some(), "{:?}", a.text());
     let mut b = pty::Pty::spawn(d.command(&m.url, &["--resume", &d.session()]), 100, 30);
@@ -173,7 +173,7 @@ fn r_proto_1_two_tuis_on_one_session_show_the_same_reply() {
     let words = |t: &pty::Pty| ANSWER.split(' ').filter(|w| t.text().contains(w)).count();
     assert_eq!((words(&a), words(&b)), (12, 12), "both show every word");
     for t in [&mut a, &mut b] {
-        t.write(b"\x04");
+        t.write(b"\x04\x04");
         assert!(t.wait(Duration::from_secs(10)).is_some());
     }
 }
@@ -199,6 +199,6 @@ fn r_lag_9_a_10k_token_answer_from_the_daemon_lands_in_tmux_scrollback_exactly_o
     let want: Vec<String> = mock::numbered_lines(850).lines().map(String::from).collect();
     assert_eq!(got.len(), want.len(), "every line once, none twice");
     assert!(got.iter().zip(&want).all(|(g, w)| g == w), "in order, byte for byte");
-    assert_eq!(history.matches("❯ write it all out").count(), 1, "{history}");
+    assert_eq!(history.matches("▎ write it all out").count(), 1, "{history}");
     assert_eq!(history.matches("esc to interrupt").count(), 0, "a live row leaked into scrollback");
 }
