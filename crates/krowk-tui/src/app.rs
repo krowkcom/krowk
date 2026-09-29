@@ -424,6 +424,18 @@ enum Quiet {
     Run,
 }
 
+impl Quiet {
+    /// What a call of the tool `kind` (`look::tool_kind`) does if it goes well.
+    fn of(kind: &str) -> Option<Quiet> {
+        match kind {
+            "read" => Some(Quiet::Read),
+            "grep" | "glob" => Some(Quiet::Search),
+            "bash" => Some(Quiet::Run),
+            _ => None,
+        }
+    }
+}
+
 /// Quiet calls one after another — reads, searches and commands that went
 /// well — counted on one line: `◆ Read 2 files, ran 5 commands`. A call
 /// alone is shown as itself.
@@ -1087,13 +1099,7 @@ impl App {
         // command.
         let lines: Vec<&str> = output.lines().filter(|l| !l.starts_with("Shell cwd was reset to ")).collect();
         let edit = if is_error { None } else { look::edit_lines(name, input) };
-        let quiet = match name {
-            _ if is_error => None,
-            "read" => Some(Quiet::Read),
-            "grep" | "glob" => Some(Quiet::Search),
-            "bash" => Some(Quiet::Run),
-            _ => None,
-        };
+        let quiet = if is_error { None } else { Quiet::of(name) };
         let mut head = vec![Span::styled(look::TOOL, if is_error { red() } else { dim() }), Span::raw(verb.clone())];
         if !arg.is_empty() {
             head.push(Span::raw(" "));
@@ -1759,7 +1765,29 @@ impl App {
     /// The live region's rows, and where the caret goes among them.
     pub fn view(&self, now: Instant) -> (Vec<Line<'static>>, (u16, u16)) {
         let width = usize::from(self.width.max(1));
-        let mut rows: Vec<Line<'static>> = self.held.lines().into_iter().flat_map(|l| wrap_line(l, width)).collect();
+        let mut held = self.held.lines();
+        // Quiet calls running while a batch is counted stand under its line,
+        // as its branches, the bullet orange until they are back: the batch
+        // takes them in without the rows below it moving.
+        let nests = |kind: &str| self.held.batch.calls > 1 && Quiet::of(look::tool_kind(kind)).is_some();
+        let live_call = self.live.as_ref().and_then(|l| match &l.kind {
+            LiveKind::Call(name) => Some(name),
+            _ => None,
+        });
+        let nested: Vec<Span<'static>> = self.calls.iter()
+            .filter(|c| nests(&c.name))
+            .map(|c| {
+                let (verb, arg) = look::tool_title(&c.name, &c.input);
+                format!("{verb} {arg}")
+            })
+            .chain(live_call.filter(|n| nests(n)).cloned())
+            .map(|t| Span::styled(clip(&t, width.saturating_sub(look::BRANCH.width())), dim()))
+            .collect();
+        if !nested.is_empty() {
+            held[0].spans[0].style = look::running();
+            held.extend(branches(nested));
+        }
+        let mut rows: Vec<Line<'static>> = held.into_iter().flat_map(|l| wrap_line(l, width)).collect();
         // A running call stands where its block will: after a blank line,
         // unless it stacks under a tool block (`commit_tool`) — so the line
         // above it does not move when it finishes.
@@ -1785,6 +1813,7 @@ impl App {
                         stacks = false;
                     }
                 }
+                LiveKind::Call(name) if nests(name) => {}
                 LiveKind::Call(name) => {
                     tool_gap(&mut rows, &mut stacks);
                     rows.push(Line::from(vec![Span::styled(look::TOOL, look::running()), Span::styled(clip(name, width.saturating_sub(2)), dim())]));
@@ -1794,7 +1823,7 @@ impl App {
         }
         // Calls out, their results not back: each as it will be shown — a
         // subagent's as its own line, below.
-        for c in self.calls.iter().filter(|c| c.name != "subagent") {
+        for c in self.calls.iter().filter(|c| c.name != "subagent" && !nests(&c.name)) {
             tool_gap(&mut rows, &mut stacks);
             let (verb, arg) = look::tool_title(&c.name, &c.input);
             let text = clip(&format!("{verb} {arg}"), width.saturating_sub(2));
@@ -2971,6 +3000,27 @@ mod tests {
             text(&a.take_pending()),
             ["◆ Ran 2 commands, read 1 file, searched", "for 1 pattern", "◆ Run cargo test (failed)", "└─ boom", "◆ Read b.rs (2 lines)", "Done."]
         );
+    }
+
+    #[test]
+    fn a_quiet_call_running_under_a_batch_is_its_branch() {
+        let mut a = app();
+        a.start_turn(Instant::now());
+        let call = |a: &mut App, id: &str, name: &str, input: serde_json::Value| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolCall { call_id: id.into(), name: name.into(), input } }));
+        let back = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("r{id}"), item: Item::ToolResult { call_id: id.into(), output: "x".into(), is_error: false } }));
+        for id in ["1", "2"] {
+            call(&mut a, id, "bash", serde_json::json!({"command": "ls"}));
+            back(&mut a, id);
+        }
+        call(&mut a, "3", "bash", serde_json::json!({"command": "cargo test"}));
+        call(&mut a, "4", "Write", serde_json::json!({"file_path": "a.rs"}));
+        let (rows, _) = a.view(Instant::now());
+        assert_eq!(text(&rows)[..3], ["◆ Ran 2 commands", "└─ Run cargo test", "◆ Write a.rs"]);
+        assert_eq!(rows[0].spans[0].style, look::running(), "orange while one of it runs");
+        back(&mut a, "3");
+        let (rows, _) = a.view(Instant::now());
+        assert_eq!(text(&rows)[0], "◆ Ran 3 commands");
+        assert_eq!(rows[0].spans[0].style, dim(), "grey once all are back");
     }
 
     #[test]
