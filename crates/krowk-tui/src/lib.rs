@@ -389,6 +389,15 @@ async fn session(opts: Options) -> Outcome {
         ui.reattach(&mut app, &id, replayed_to.clone());
     }
     let result = ui.run(&mut app, &mut term).await;
+    // What the host already sent is read before leaving: keys go ahead of
+    // the stream in the loop, so a second Ctrl-C pressed just after a
+    // prompt can beat the session's start to the TUI, and the resume line
+    // would name no session although the host has recorded one.
+    if let Some(rx) = ui.rx.as_mut() {
+        while let Ok(line) = rx.try_recv() {
+            app.on_line(&line);
+        }
+    }
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
     ui.turn = None;

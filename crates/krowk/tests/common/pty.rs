@@ -28,6 +28,12 @@ struct Seen {
     /// When each frame started and ended arriving.
     frames: Vec<Instant>,
     frame_ends: Vec<Instant>,
+    /// The master side read to its end: every process on the terminal
+    /// has let go of it, and all it wrote is in `out`.
+    closed: bool,
+    /// Turns of the reader's loop, each counted once what it read is in
+    /// `out`: one past a moment means everything read before it is there.
+    turns: u64,
 }
 
 pub struct Pty {
@@ -101,8 +107,22 @@ impl Pty {
         std::thread::spawn(move || {
             let mut buf = [0u8; 64 * 1024];
             loop {
+                // A bounded wait for input, not a blocking read, so the loop
+                // turns even when nothing comes and `drain` can tell when
+                // it has caught up.
+                let mut fd = libc::pollfd { fd: reader.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                // SAFETY: one pollfd, on a descriptor this thread owns.
+                if unsafe { libc::poll(&mut fd, 1, 10) } <= 0 {
+                    log.lock().unwrap().turns += 1;
+                    continue;
+                }
                 let n = match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => return,
+                    Ok(0) | Err(_) => {
+                        let mut s = log.lock().unwrap();
+                        s.closed = true;
+                        s.turns += 1;
+                        return;
+                    }
                     Ok(n) => n,
                 };
                 let now = Instant::now();
@@ -181,20 +201,59 @@ impl Pty {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if let Ok(Some(st)) = self.child.try_wait() {
+                self.drain();
                 return Some(st);
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+        self.kill();
+        None
+    }
+
+    /// Waits until everything the terminal holds is in `output`. Exited is
+    /// not read: the last bytes the child wrote can still be in the
+    /// terminal or on their way through the reader thread, and a loaded
+    /// machine lets a test look before they land. Nothing waiting on the
+    /// master side, then one more turn of the reader's loop, says they have
+    /// landed. The terminal closing is not waited for: a daemon the TUI
+    /// started can hold it open long after.
+    fn drain(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let turn = || self.seen.lock().unwrap().turns;
+        loop {
+            let mut waiting: libc::c_int = 0;
+            // SAFETY: FIONREAD writes one int, the bytes ready to be read.
+            let ok = unsafe { libc::ioctl(self.master.as_raw_fd(), libc::FIONREAD as _, &mut waiting) } == 0;
+            if self.seen.lock().unwrap().closed || (ok && waiting == 0) || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Counted after nothing was left waiting: a turn that took the last
+        // bytes and has not yet stored them has not been counted either.
+        let from = turn();
+        while turn() <= from && !self.seen.lock().unwrap().closed && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Kills the child and everything it started. It leads a session and
+    /// process group of its own (`setsid`), so the group goes with it: a
+    /// backend or helper left running would outlive the test, reparented
+    /// to init, holding a sandbox that no longer exists.
+    fn kill(&mut self) {
+        // SAFETY: a signal to the process group our own child leads.
+        unsafe {
+            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
-        None
     }
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.kill();
     }
 }
 

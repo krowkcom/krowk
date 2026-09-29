@@ -1,0 +1,70 @@
+# R-OSS-3: `cargo deny check`, run by CI's `deny` job on every pull request
+# and by the release before anything is built. It holds every crate the
+# workspace links — both builds, every feature, on every target the release
+# ships — to three rules: no known advisory, no licence outside the list
+# below, and nothing fetched from anywhere but crates.io.
+
+[graph]
+# The five triples in scripts/dist.sh, so a crate only one platform links
+# (security-framework on macOS, windows-sys on Windows) is judged too.
+targets = [
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-gnu",
+]
+# The full build is `--features harness`, a superset of the lean one.
+all-features = true
+
+[advisories]
+# Every RustSec advisory — a vulnerability, an unmaintained or unsound crate,
+# a yanked version — fails the check. An exception goes here with the
+# advisory's id and why it does not reach krowk, never as a blanket level.
+unmaintained = "all"
+yanked = "deny"
+ignore = [
+  # bincode 1.3.3 is unmaintained, not vulnerable: its authors stopped work
+  # and call 1.3.3 complete. syntect reads the full build's compiled syntax
+  # grammars with it, and those grammars are krowk's own bytes, built in at
+  # compile time, never read from anything a session or a server supplies.
+  { id = "RUSTSEC-2025-0141", reason = "unmaintained, not vulnerable; syntect decodes only the grammars compiled into krowk" },
+]
+
+[licenses]
+# What krowk's own MIT licence can ship beside. Where a crate offers a
+# choice ("MIT OR Apache-2.0 OR LGPL-2.1-or-later"), cargo deny accepts it
+# when any one choice is on this list, so the copyleft alternatives some
+# crates list (self_cell, r-efi) are never the ones taken.
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+  # webpki-roots: Mozilla's root store, as data.
+  "CDLA-Permissive-2.0",
+  # nucleo-matcher, the TUI's fuzzy match: file-level copyleft, which asks
+  # only that its own files stay available under MPL, as they are on
+  # crates.io. krowk's code is not touched by it.
+  "MPL-2.0",
+]
+confidence-threshold = 0.9
+# The workspace's own crates carry `license-file` and `publish = false`.
+private = { ignore = true }
+
+[bans]
+# Two versions of one crate cost binary size, which `make bench` already
+# holds, so here they are named rather than refused.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
