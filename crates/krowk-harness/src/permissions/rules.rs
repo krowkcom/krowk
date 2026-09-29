@@ -273,10 +273,11 @@ fn mcp_matches(rule_tool: &str, server: &str, tool: &str) -> bool {
     if rest == "*" {
         return true;
     }
-    match rest.split_once("__") {
-        None => rest == server,
-        Some((s, t)) => s == server && (t == "*" || t == tool),
-    }
+    // Matched whole against the call's own parts rather than split at the
+    // first `__`, since a tool's name may hold `__` itself; server names
+    // krowk starts hold none and neither start nor end with `_` (see
+    // `crate::mcp`), so a rule reads one way.
+    rest == server || rest == format!("{server}__*") || rest == format!("{server}__{tool}")
 }
 
 fn host_of(url: &str) -> Option<String> {

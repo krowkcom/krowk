@@ -11,6 +11,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **krowk's own agent uses your MCP servers.** It reads the `mcpServers`
+  you set up for Claude Code (`~/.claude.json`, its `settings.json`), those
+  in `~/.krowk/config.json`, and a repository's `.mcp.json` once you trust
+  the repository, since a `.mcp.json` names programs to run. Stdio and
+  streamable-HTTP servers work. The model gets two tools, `mcp_search` and
+  `mcp_call`, instead of every server's tools, so fifty MCP tools cost each
+  turn about 140 tokens. No server starts until the model searches.
+  `Mcp(server:tool)` permission rules allow, ask about or deny each call,
+  and search leaves out tools a deny rule covers. A repository's servers
+  are asked about again when its `.mcp.json` changes after you trusted it,
+  and no server inherits your provider keys unless its config sets them.
+
 - **Releases are signed, come with an SBOM, and are proven reproducible.**
   Each release carries `checksums.txt.sigstore.json`, a keyless Sigstore
   signature over the checksums of every archive, bound to the release

@@ -30,13 +30,17 @@ pub struct Compat {
     /// `SessionStart`'s source when this turn is the first a host runs of
     /// the session: `startup` for a new one, `resume` for one resumed.
     pub session_start: Option<&'static str>,
+    /// The MCP servers the turn may use, started on first use and shared
+    /// with its subagents (`crate::mcp`).
+    pub mcp: std::sync::Arc<crate::mcp::Mcp>,
 }
 
 impl Compat {
     /// Everything that applies in `cwd`, with the hooks the settings named.
     pub fn load(cfg: &Config, cwd: &Path, hooks: Hooks) -> Compat {
         let project_dir = crate::trust::root(cwd);
-        Compat { instructions: instructions::discover(cfg, cwd), skills: skills::discover(cfg, cwd), hooks, project_dir, ..Compat::default() }
+        let mcp = std::sync::Arc::new(crate::mcp::Mcp::new(crate::mcp::discover(cfg, cwd)));
+        Compat { instructions: instructions::discover(cfg, cwd), skills: skills::discover(cfg, cwd), hooks, project_dir, mcp, ..Compat::default() }
     }
 
     /// What the native system prompt carries after its own few lines: the
