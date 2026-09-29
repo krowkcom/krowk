@@ -238,7 +238,7 @@ async fn r_perm_3_in_a_container_the_file_tools_keep_the_sandboxes_fences() {
     }
     let (out, err) = tool(&ws, &scope, READ, json!({ "path": base.join("home/.ssh/id_ed25519") })).await;
     assert!(err && !out.contains("PRIVATE KEY"), "{out}");
-    assert_eq!(tool(&ws, &scope, WRITE, json!({"path": "a.txt", "content": "x"})).await.1, false);
+    assert!(!tool(&ws, &scope, WRITE, json!({"path": "a.txt", "content": "x"})).await.1, "the workspace is written");
     // Commands run as they are: the container is their boundary, and no
     // bubblewrap is needed for them.
     assert_eq!(bash(&ws, &scope, "echo hi").await, ("hi\nexit code 0".into(), false));
