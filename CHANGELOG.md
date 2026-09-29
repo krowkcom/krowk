@@ -20,8 +20,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   host it. A device that reconnects picks up where it left off from the
   relay's short buffer, and the relay answers heartbeats itself, so a busy
   or quiet host never looks gone. It listens on 127.0.0.1:7790 unless
-  `--addr` says otherwise, and says so when that is reachable from the
-  network. Nothing connects to it on its own yet; the host daemon and the
+  `--addr` says otherwise; an address reachable from the network also
+  needs `--origin`, the URL devices dial it by, and the banner says it is
+  open. Nothing connects to it on its own yet; the host daemon and the
   terminal will once syncing sessions lands. `krowk help --all` lists it.
 - **A synced session's log can now be stored, encrypted, in the registry.**
   The machine holding a session's lease seals each piece of the log on its

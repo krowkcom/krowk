@@ -86,6 +86,9 @@ pub struct Limits {
     /// Connections that have not joined yet: in all, and from one address.
     pub unjoined: usize,
     pub unjoined_per_peer: usize,
+    /// Connections open on one channel that have not joined: the
+    /// contract's own bound, which a per-session object can hold.
+    pub unjoined_per_channel: usize,
     /// Bytes a connection may send before it has joined: the upgrade
     /// request, the join and a few heartbeats. Counted as they are read,
     /// so no more than this is buffered for anyone unauthenticated.
@@ -116,6 +119,7 @@ impl Default for Limits {
             link_queue: 16 << 20,
             unjoined: 64,
             unjoined_per_peer: 32,
+            unjoined_per_channel: 16,
             prejoin_bytes: 80 * 1024,
             prejoin_pings: 8,
             upgrade_wait: Duration::from_secs(3),
@@ -163,7 +167,7 @@ pub fn run(listener: std::net::TcpListener, config: Config) -> Result<(), String
 
 /// Accepts connections for ever. Inside a `LocalSet`.
 pub async fn serve(listener: TcpListener, config: Config) {
-    let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), peers: RefCell::new(HashMap::new()), unjoined: Cell::new(0), links: Cell::new(0) });
+    let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), peers: RefCell::new(HashMap::new()), waiting: RefCell::new(HashMap::new()), unjoined: Cell::new(0), links: Cell::new(0) });
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
@@ -182,6 +186,8 @@ struct Relay {
     channels: RefCell<HashMap<[u8; 16], Channel>>,
     /// Connections not yet joined, by the address they came from.
     peers: RefCell<HashMap<std::net::IpAddr, usize>>,
+    /// And by the channel they asked for.
+    waiting: RefCell<HashMap<[u8; 16], usize>>,
     unjoined: Cell<usize>,
     links: Cell<u64>,
 }
@@ -425,9 +431,34 @@ async fn handshake(stream: Metered, relay: &Rc<Relay>) -> Option<(Ws, [u8; 16], 
     let mut ws = tokio::time::timeout(limits.upgrade_wait, tokio_tungstenite::accept_hdr_async_with_config(stream, route, Some(config))).await.ok()?.ok()?;
     let (session, host) = seen.borrow().clone();
     let session = session?;
+    {
+        let mut waiting = relay.waiting.borrow_mut();
+        let n = waiting.entry(session).or_default();
+        if *n >= limits.unjoined_per_channel {
+            return None;
+        }
+        *n += 1;
+    }
+    let result = challenge(&mut ws, relay, session, &host).await;
+    {
+        let mut waiting = relay.waiting.borrow_mut();
+        if let Some(n) = waiting.get_mut(&session) {
+            *n -= 1;
+            if *n == 0 {
+                waiting.remove(&session);
+            }
+        }
+    }
+    let (device, role, join) = result?;
+    Some((ws, session, device, role, join))
+}
+
+/// The challenge, and the join that answers it.
+async fn challenge(ws: &mut Ws, relay: &Rc<Relay>, session: [u8; 16], host: &str) -> Option<(DeviceId, u8, Join)> {
+    let limits = &relay.config.limits;
     let given = relay.config.origin.clone().unwrap_or_else(|| format!("ws://{host}"));
     let Some(origin) = e2e::canonical_origin(&given) else {
-        close(&mut ws, &refuse("bad_origin", format!("{given:?} is no origin a device can sign"), "dial the relay by a host name or address, or start it with --origin")).await;
+        close(ws, &refuse("bad_origin", format!("{given:?} is no origin a device can sign"), "dial the relay by a host name or address, or start it with --origin")).await;
         return None;
     };
     let nonce: [u8; 32] = e2e::random();
@@ -438,25 +469,25 @@ async fn handshake(stream: Metered, relay: &Rc<Relay>) -> Option<(Ws, [u8; 16], 
     let join = loop {
         match tokio::time::timeout_at(deadline, ws.next()).await {
             Err(_) => {
-                close(&mut ws, &refuse("join_timeout", "no join arrived in time", "send the join within ten seconds of the challenge")).await;
+                close(ws, &refuse("join_timeout", "no join arrived in time", "send the join within ten seconds of the challenge")).await;
                 return None;
             }
             Ok(Some(Ok(Message::Binary(b)))) => break b,
             Ok(Some(Ok(Message::Text(t)))) if t.as_str() == "ping" => {
                 pings += 1;
                 if pings > limits.prejoin_pings {
-                    close(&mut ws, &refuse("rate_limited", "more heartbeats than a join takes to sign", "join, then beat")).await;
+                    close(ws, &refuse("rate_limited", "more heartbeats than a join takes to sign", "join, then beat")).await;
                     return None;
                 }
                 let _ = ws.send(Message::Text("pong".into())).await;
             }
             Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
             Ok(Some(Err(_))) => {
-                close(&mut ws, &refuse("too_large", format!("at most {} bytes may come before the join", limits.prejoin_bytes), "send the join, at most 64 KiB, and nothing larger before it")).await;
+                close(ws, &refuse("too_large", format!("at most {} bytes may come before the join", limits.prejoin_bytes), "send the join, at most 64 KiB, and nothing larger before it")).await;
                 return None;
             }
             Ok(Some(Ok(_))) => {
-                close(&mut ws, &refuse("not_joined", "the first message after the challenge must be a join", "answer the challenge with a join control message")).await;
+                close(ws, &refuse("not_joined", "the first message after the challenge must be a join", "answer the challenge with a join control message")).await;
                 return None;
             }
             Ok(_) => return None,
@@ -465,10 +496,10 @@ async fn handshake(stream: Metered, relay: &Rc<Relay>) -> Option<(Ws, [u8; 16], 
     let parsed = if join.len() > limits.max_control { Err(refuse("too_large", "a join is at most 64 KiB", "send a join, nothing larger")) } else { read_join(&join) };
     match parsed.and_then(|j| admit(relay, session, &nonce, &origin, j)) {
         Err(r) => {
-            close(&mut ws, &r).await;
+            close(ws, &r).await;
             None
         }
-        Ok((device, role, join)) => Some((ws, session, device, role, join)),
+        Ok(found) => Some(found),
     }
 }
 
