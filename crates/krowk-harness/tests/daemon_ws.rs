@@ -293,6 +293,7 @@ fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
         mock::serve(move |_, _| mock::Reply { hold: Some(("content_block_stop", g.clone())), ..mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(10)) })
     };
     let home = Home::new("nowrite", &m.url);
+    let queued = log::queued_syncs();
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
     fn written(dir: &Path, into: &mut Vec<(PathBuf, u64, std::time::SystemTime)>) {
         for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -352,6 +353,7 @@ fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
     daemon.join().unwrap().unwrap();
     // The turn's sync ran before the daemon's runtime went: `serve` waits
     // for it on its way out.
+    assert!(log::queued_syncs() > queued, "the turn's sync was handed to the blocking pool");
     assert_eq!(log::pending_syncs(), 0, "a sync was dropped unrun as the daemon exited");
 }
 
@@ -927,6 +929,7 @@ fn r_lag_9_a_sigterm_interrupts_the_running_turn_syncs_it_and_takes_no_new_one()
     let answer = words(3000);
     let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(2))) };
     let home = Home::new("sigterm", &m.url);
+    let queued = log::queued_syncs();
     let slow = home.root.join("slow");
     std::fs::create_dir_all(slow.join(".git")).unwrap();
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
@@ -952,6 +955,7 @@ fn r_lag_9_a_sigterm_interrupts_the_running_turn_syncs_it_and_takes_no_new_one()
     assert!(refused(two.last().unwrap(), 2), "{:?}", two.last());
     daemon.join().unwrap().unwrap();
     assert!(signalled.elapsed() < krowk_harness::host::SHUTDOWN_GRACE, "exited in {:?}", signalled.elapsed());
+    assert!(log::queued_syncs() > queued, "the interrupted turn's sync was handed to the blocking pool");
     assert_eq!(log::pending_syncs(), 0, "the interrupted turn's sync ran before the daemon exited");
     drop((a, b));
 }

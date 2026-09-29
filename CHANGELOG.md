@@ -1171,11 +1171,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
   there too; both now happen off it, so streams and heartbeats keep going.
   A TLS setup that fails once is tried again, rather than failing every
   turn until the daemon restarts.
+- **A turn caught up after its client fell behind no longer loses its
+  answer.** A terminal or phone that stopped reading, and was caught up
+  from where it stood just as the turn ended, could get the typing and the
+  end of the turn but not the finished answer. It now always gets it.
 - **`krowk host stop` straight after a turn keeps that turn on disk.** The
   daemon waits for the turn's log to be flushed before it exits, for up to
   ten seconds. Stopped by SIGTERM or Ctrl-C, it first interrupts the
-  running turns, so each is logged as interrupted and flushed too. A
-  prompt sent while it exits is refused rather than lost.
+  running turns, a turn still starting included, so each is logged as
+  interrupted and flushed too. The waits add up: up to ten seconds for the
+  turns to end, ten for each backend to close, and ten for the flush. A
+  second SIGTERM or Ctrl-C exits at once. A prompt sent while it exits is
+  refused rather than lost, an idle exit's included.
 
 - **A terminal suspended while it follows a long session no longer grows
   the host daemon's memory.** The daemon keeps a few megabytes for each

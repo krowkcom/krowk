@@ -221,7 +221,9 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     }));
     eprintln!("krowk host {} listening on {} (pid {}, idle exit {})", state.borrow().opts.krowk_version, socket.display(), std::process::id(), idle.map_or("never".into(), |d| format!("{d:?}")));
     // The TLS configuration every engine shares, built off the thread
-    // before any turn needs it.
+    // before any turn needs it, and never on it: an engine made here takes
+    // what `warm` built, or fails with why there is none.
+    crate::http::warm_only();
     tokio::task::spawn_blocking(crate::http::warm);
     if let Some(probe) = state.borrow().opts.lateness.clone() {
         tokio::task::spawn_local(async move {
@@ -256,6 +258,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     }
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|e| e.to_string())?;
     let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(|e| e.to_string())?;
+    let mut signalled = false;
     loop {
         let (quiet, stopping) = {
             let s = state.borrow();
@@ -281,33 +284,49 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
             }
             _ = term.recv() => {
                 eprintln!("terminated: interrupting the running turns, then exiting");
-                wind_down(&state).await;
+                signalled = true;
                 break;
             }
             _ = int.recv() => {
                 eprintln!("interrupted: interrupting the running turns, then exiting");
-                wind_down(&state).await;
+                signalled = true;
                 break;
             }
         }
     }
+    // Every way out takes no new turn from here, an idle exit's included:
+    // a prompt that arrives while the engines are let go is refused.
+    state.borrow_mut().stopping = true;
     // Only the socket this daemon bound: one a newer daemon put in its
     // place is that one's.
     // blocking: on the way out, with nobody left to serve.
     if inode(&socket).is_some() && inode(&socket) == ours {
         let _ = std::fs::remove_file(&socket);
     }
-    let hosts: Vec<Rc<Host>> = state.borrow().hosts.values().cloned().collect();
-    for h in hosts {
-        h.shutdown().await;
-    }
-    // The turns' syncs, still on the blocking pool: a runtime dropped with
-    // them queued drops them unrun, and a `krowk host stop` straight after
-    // a turn would leave that turn in the page cache alone. Bounded like
-    // the engines' shutdown: a sync stuck on a dead mount must not keep
-    // the daemon from exiting.
-    if tokio::time::timeout(crate::host::SHUTDOWN_GRACE, log::synced()).await.is_err() {
-        eprintln!("{} session log sync(s) had not finished after {:?}: exiting without them", log::pending_syncs(), crate::host::SHUTDOWN_GRACE);
+    // The way out waits on turns, engines and syncs — up to
+    // `SHUTDOWN_GRACE` for each — and a second signal cuts it short: a
+    // person who presses Ctrl-C again means now.
+    let out = async {
+        if signalled {
+            wind_down(&state).await;
+        }
+        let hosts: Vec<Rc<Host>> = state.borrow().hosts.values().cloned().collect();
+        for h in hosts {
+            h.shutdown().await;
+        }
+        // The turns' syncs, still on the blocking pool: a runtime dropped
+        // with them queued drops them unrun, and a `krowk host stop`
+        // straight after a turn would leave that turn in the page cache
+        // alone. Bounded like the engines' shutdown: a sync stuck on a dead
+        // mount must not keep the daemon from exiting.
+        if tokio::time::timeout(crate::host::SHUTDOWN_GRACE, log::synced()).await.is_err() {
+            eprintln!("{} session log sync(s) had not finished after {:?}: exiting without them", log::pending_syncs(), crate::host::SHUTDOWN_GRACE);
+        }
+    };
+    tokio::select! {
+        () = out => {}
+        _ = term.recv() => eprintln!("terminated again: exiting now"),
+        _ = int.recv() => eprintln!("interrupted again: exiting now"),
     }
     Ok(())
 }
@@ -320,22 +339,35 @@ fn stopping_error() -> EngineError {
 /// interrupted the way a person interrupts them, and each is given until
 /// `SHUTDOWN_GRACE` to end — its `turn.completed` logged and its sync
 /// queued for `synced` — rather than being dropped with the runtime.
+///
+/// The sessions under way are looked at again on every change and every
+/// few milliseconds, not once: a turn still setting up when the signal came
+/// — its engine being made, its first request not sent — has no turn to
+/// interrupt yet, and is interrupted once it has, rather than running on
+/// until the grace is up.
 async fn wind_down(state: &Shared) {
-    let running: Vec<(String, Rc<Host>)> = {
-        let mut s = state.borrow_mut();
-        s.stopping = true;
-        s.hubs.iter().filter(|(_, h)| h.running).map(|(id, h)| (id.clone(), h.host.clone())).collect()
-    };
-    for (session_id, host) in running {
-        tokio::task::spawn_local(async move {
-            let (tx, _rx) = mpsc::channel::<StreamLine>(16);
-            let _ = host.execute(Command::Interrupt { session_id }, tx).await;
-        });
-    }
     let wake = state.borrow().wake.clone();
+    let mut interrupted: HashSet<String> = HashSet::new();
     let _ = tokio::time::timeout(crate::host::SHUTDOWN_GRACE, async {
-        while state.borrow().working > 0 {
-            wake.notified().await;
+        loop {
+            let running: Vec<(String, Rc<Host>)> = {
+                let s = state.borrow();
+                if s.working == 0 {
+                    return;
+                }
+                s.hubs.iter().filter(|(id, h)| h.running && !interrupted.contains(*id)).map(|(id, h)| (id.clone(), h.host.clone())).collect()
+            };
+            for (session_id, host) in running {
+                interrupted.insert(session_id.clone());
+                tokio::task::spawn_local(async move {
+                    let (tx, _rx) = mpsc::channel::<StreamLine>(16);
+                    let _ = host.execute(Command::Interrupt { session_id }, tx).await;
+                });
+            }
+            tokio::select! {
+                _ = wake.notified() => {}
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
         }
     })
     .await;
