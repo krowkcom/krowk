@@ -11,7 +11,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
-- The TUI draws markdown tables in an answer as columns: the header bold over a thin rule, each cell in the answer's markdown and wrapped inside its column, aligned as the delimiter row says. On a screen too narrow for its columns, each row is shown as a record of `Header  value` lines. A table is held while it streams and drawn once it ends.
+- The TUI draws markdown tables in an answer the way psql does: indented, with a blank line either side, a bold header, and dim lines between the columns and under the header, but no box. Each cell is in the answer's markdown and wraps inside its column, aligned as the delimiter row says; once a row wraps, rows get a rule between them. On a screen too narrow for the columns, each row is shown as a record of `Header │ value` lines. A table is held while it streams and drawn once it ends.
 
 ### Changed
 
