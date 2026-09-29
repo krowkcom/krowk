@@ -20,8 +20,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   or stop it, and answer its approvals. When the host is away the other
   machine is read-only, and a prompt typed there waits and runs when the
   host is back. A dropped connection resumes by itself with nothing lost.
-  Neither the relay nor the registry ever sees the session's content. The
-  library pieces land here; the `krowk` commands that drive them follow.
+  Neither the relay nor the registry ever sees the session's content.
+  `krowk sync host <session>` syncs a session of this machine, `krowk sync
+  sessions` lists what another machine can open, and `krowk sync attach
+  <session>` — or `krowk --resume <session>` on a machine without the
+  session's log — follows it there. The relay is `KROWK_RELAY_URL`, or
+  `krowk relay serve` on this machine.
 
 - **Setting up sync now registers this machine's relay signing key.**
   `krowk sync init`, `recover` and `register`, and `krowk devices approve`,
