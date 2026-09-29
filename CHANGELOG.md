@@ -11,6 +11,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk sync attach` answers approvals and steers the turn.** Besides
+  prompts, a line typed on its stdin can be `/approve REQUEST_ID`,
+  `/allow-session REQUEST_ID` or `/deny REQUEST_ID`, answering the tool call
+  an `approval.requested` line names, `/interrupt`, which stops the running
+  turn, or `/steer TEXT`, which adds to it. Each `approval.requested` line
+  carries its `requestId`, and stderr says which command answers it. A line
+  starting with `/` that names none of these is refused, never sent as a
+  prompt. `krowk help sync attach` lists them.
+
 - **A synced session goes direct over Tailscale when it can.** `krowk sync
   host` reads this machine's tailnet address, MagicDNS name and LAN address
   from the local `tailscaled`, listens there, and names the addresses to
@@ -214,6 +223,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **`krowk sync host` no longer hangs on a session this machine does not
+  have.** It used to take the session's lease and then wait, silent, until
+  interrupted; it now fails at once with `no_session` and how to start one,
+  before writing anything to the registry. A bridge that stops by itself
+  for any other reason also ends the command then, saying why.
 - **A turn sent the moment the host daemon starts no longer stalls every
   other session.** The daemon waited on its thread for the TLS setup a
   turn's first request needs, and read a new directory's configuration

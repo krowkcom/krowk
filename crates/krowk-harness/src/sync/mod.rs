@@ -193,15 +193,52 @@ pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path:
         let daemon = crate::daemon::ensure(env, cwd, version, true, spawn).await.map_err(|e| (e.code.clone(), e.message.clone()))?;
         let (stop, stop_rx) = tokio::sync::watch::channel(false);
         let (_cp, cp_rx) = tokio::sync::mpsc::unbounded_channel();
-        let run = tokio::spawn(host::run(o, std::sync::Arc::new(daemon), stop_rx, cp_rx));
-        host::interrupted().await;
-        let _ = stop.send(true);
-        run.await.map_err(|e| ("sync_failed".to_string(), e.to_string()))?.map_err(|e| ("sync_failed".to_string(), e))
+        let mut run = tokio::spawn(host::run(o, std::sync::Arc::new(daemon), stop_rx, cp_rx));
+        // A bridge that ends by itself — it could not follow the session,
+        // or lost its lease — ends the command then, with why, rather than
+        // leaving it silent until someone interrupts it.
+        let ended = tokio::select! {
+            r = &mut run => r,
+            _ = host::interrupted() => {
+                let _ = stop.send(true);
+                run.await
+            }
+        };
+        ended.map_err(|e| ("sync_failed".to_string(), e.to_string()))?.map_err(|e| ("sync_failed".to_string(), e))
     })
 }
 
+/// What a line typed into `krowk sync attach` asks of the session: a
+/// prompt, unless it is one of the slash commands `krowk help sync attach`
+/// lists. A line that starts with `/` but names none of them is refused
+/// rather than sent as a prompt, so a mistyped `/aprove` never reaches the
+/// model.
+pub fn typed(session: &str, line: String) -> Result<crate::protocol::Command, String> {
+    use crate::protocol::{ApprovalDecision, Command};
+    let session_id = session.to_string();
+    let Some(rest) = line.trim().strip_prefix('/') else {
+        return Ok(Command::Prompt { session_id: Some(session_id), text: line, model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None });
+    };
+    let (word, arg) = rest.split_once(char::is_whitespace).map(|(w, a)| (w, a.trim())).unwrap_or((rest, ""));
+    let decision = match word {
+        "approve" => Some(ApprovalDecision::Allow),
+        "allow-session" => Some(ApprovalDecision::AllowSession),
+        "deny" => Some(ApprovalDecision::Deny),
+        _ => None,
+    };
+    match (word, decision) {
+        (_, Some(_)) if arg.is_empty() || arg.contains(char::is_whitespace) => Err(format!("`/{word}` takes the requestId an approval.requested line names")),
+        (_, Some(decision)) => Ok(Command::Approve { session_id, request_id: arg.to_string(), decision }),
+        ("interrupt", _) if arg.is_empty() => Ok(Command::Interrupt { session_id }),
+        ("steer", _) if !arg.is_empty() => Ok(Command::Steer { session_id, text: arg.to_string() }),
+        ("interrupt" | "steer", _) => Err(format!("`/{word}` is `/interrupt` alone, or `/steer TEXT`")),
+        _ => Err(format!("`/{word}` is not a command here — /approve, /allow-session, /deny, /interrupt and /steer are (`krowk help sync attach`)")),
+    }
+}
+
 /// `krowk sync attach`: follows a synced session, writing each update as
-/// one JSON line to `out`, and sends each line of stdin as a prompt.
+/// one JSON line to `out`, and sends each line of stdin as a prompt or
+/// the command it names (`typed`).
 pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<(), String> {
     let session = o.session.clone();
     runtime()?.block_on(async move {
@@ -217,13 +254,23 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
         loop {
             tokio::select! {
                 l = lines.recv() => if let Some(text) = l.filter(|t| !t.trim().is_empty()) {
-                    let _ = v.commands.send(crate::protocol::Command::Prompt { session_id: Some(session.clone()), text, model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None });
+                    match typed(&session, text) {
+                        Ok(c) => { let _ = v.commands.send(c); }
+                        Err(e) => eprintln!("krowk: {e}"),
+                    }
                 },
                 u = v.updates.recv() => {
                     let Some(batch) = u else { return Ok(()) };
                     for u in batch {
                         let line = match u {
-                            viewer::Update::Line(l) => serde_json::to_string(&l).unwrap_or_default(),
+                            viewer::Update::Line(l) => {
+                                // Said once per request, beside the line a
+                                // script reads: what answers it, typed here.
+                                if let crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)) = &l {
+                                    eprintln!("krowk: {} wants approval — type `/approve {id}`, `/allow-session {id}` or `/deny {id}`", r.tool, id = r.request_id);
+                                }
+                                serde_json::to_string(&l).unwrap_or_default()
+                            }
                             viewer::Update::Attached { events, .. } | viewer::Update::CaughtUp(events) => events.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n"),
                             viewer::Update::Host(h) => json!({"type": "sync.host", "present": h}).to_string(),
                             viewer::Update::Sent { id, queued } => json!({"type": "sync.sent", "id": id, "queued": queued}).to_string(),

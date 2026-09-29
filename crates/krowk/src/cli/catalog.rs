@@ -107,6 +107,20 @@ day, and comes back with a claim token that `krowk claim` spends to move it
 into a workspace — where a paid plan keeps it and a free one gives it another
 day.";
 
+#[cfg(feature = "harness")]
+const SYNC_ATTACH_ABOUT: &str = "\
+Prints the session as stream-json on stdout. Each line typed on stdin is a
+prompt to it, queued while no host is online, except these:
+
+  /approve REQUEST_ID        allow the tool call an approval.requested names
+  /allow-session REQUEST_ID  allow it, and calls like it for the session
+  /deny REQUEST_ID           refuse it
+  /interrupt                 stop the running turn
+  /steer TEXT                add TEXT to the running turn without stopping it
+
+Each approval.requested line carries its requestId, and a hint on stderr
+names the command that answers it.";
+
 const CLAIM_ABOUT: &str = "\
 Moves an anonymous upload into this key's workspace, spending the claim token
 it came back with: `krowk help push`.";
@@ -474,7 +488,7 @@ fn sync_command() -> Command {
             #[cfg(unix)]
             cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
             #[cfg(unix)]
-            cmd("attach", "krowk sync attach SESSION", "Follow a synced session here; each stdin line is a prompt"),
+            cmd("attach", "krowk sync attach SESSION", "Follow a synced session here; stdin lines are prompts or /commands"),
         ],
         ..cmd("sync", "", "End-to-end encryption keys for syncing sessions")
     }
@@ -783,6 +797,8 @@ pub fn about(name: &str) -> &'static str {
         "disconnect" => "\
 Signs an instance out: SuperGrok's tokens are deleted, a subscription's own
 logout is run, and an API key's variable is named for you to unset.",
+        #[cfg(feature = "harness")]
+        "sync attach" => SYNC_ATTACH_ABOUT,
         #[cfg(feature = "harness")]
         "providers add" => "\
 Also signs in to SuperGrok, or adds a Claude Code or Codex account (signed in
