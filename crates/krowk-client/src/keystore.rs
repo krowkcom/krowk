@@ -9,17 +9,22 @@
 //!   `device.json`, and `device.json` is useless without it: a copy of one
 //!   file is not the account key.
 //!
+//! - `signing.json`: the device's Ed25519 relay signing key
+//!   (`e2e::SigningKey`), made the first time a relay is joined. It proves
+//!   which device connects, and opens nothing.
+//!
 //! The registry holds the account key wrapped to a device only while an
 //! approval carries it to that device (`join`); once collected it lives
 //! here, so these files and the recovery phrase are the copies that last.
 
-use crate::e2e::{self, AccountKey, DeviceKey, KeyId};
+use crate::e2e::{self, AccountKey, DeviceKey, KeyId, SigningKey};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub const DEVICE_FILE: &str = "device.json";
 pub const ACCOUNT_FILE: &str = "account-key.json";
+pub const SIGNING_FILE: &str = "signing.json";
 
 #[derive(Default, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct DeviceFile {
@@ -115,6 +120,34 @@ impl Keystore {
         let file = DeviceFile { version: 1, secret: e2e::hex(&d.secret_bytes()[..]) };
         krowk_api::creds::write(&self.device_path(), &file)?;
         Ok((d, true))
+    }
+
+    pub fn signing_path(&self) -> PathBuf {
+        self.home.join(SIGNING_FILE)
+    }
+
+    /// This device's relay signing key, made and stored now when it has
+    /// none, under the account file's lock as the device key is. Its own
+    /// file rather than a field of `device.json`, so a device made before
+    /// it existed gains one without its device key being written again.
+    pub fn signing_key(&self) -> Result<SigningKey, String> {
+        krowk_api::home::make(&self.home)?;
+        let _lock = krowk_api::creds::lock(&self.account_path())?;
+        let path = self.signing_path();
+        if path.exists() {
+            let f: DeviceFile = krowk_api::creds::read(&path)?;
+            let bad = || format!("{} does not hold a signing key krowk reads — move it aside, and krowk makes a new one to register", path.display());
+            if f.version != 1 {
+                return Err(bad());
+            }
+            let mut raw = e2e::unhex(&f.secret).ok_or_else(bad)?;
+            let key = SigningKey::from_secret(&raw).map_err(|_| bad());
+            raw.zeroize();
+            return key;
+        }
+        let k = SigningKey::generate();
+        krowk_api::creds::write(&path, &DeviceFile { version: 1, secret: e2e::hex(&k.secret_bytes()[..]) })?;
+        Ok(k)
     }
 
     /// Whether this home holds an account key, and its id.

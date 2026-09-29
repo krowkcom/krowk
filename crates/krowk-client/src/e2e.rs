@@ -643,9 +643,111 @@ impl Opener {
     }
 }
 
+/// The label a relay join's signature starts with (engineering/relay.md).
+pub const RELAY_JOIN_LABEL: &[u8] = b"krowk/relay/v1";
+
+/// The roles a device joins a relay channel as, as the signature binds them.
+pub const RELAY_ROLE_HOST: u8 = 1;
+pub const RELAY_ROLE_VIEWER: u8 = 2;
+
+/// A device's relay signing key: Ed25519, beside its X25519 device key,
+/// which can agree on a key but cannot sign. It proves to a relay which
+/// device is connecting, and nothing else: it wraps no key and seals no
+/// content, so a relay that learns every signature learns who connected,
+/// which it knows anyway. Wiped when dropped.
+pub struct SigningKey(ed25519_dalek::SigningKey);
+
+impl SigningKey {
+    pub fn generate() -> SigningKey {
+        SigningKey(ed25519_dalek::SigningKey::from_bytes(&random::<32>()))
+    }
+
+    /// The key from its stored 32-byte seed.
+    pub fn from_secret(bytes: &[u8]) -> Result<SigningKey, Error> {
+        let seed: [u8; 32] = bytes.try_into().map_err(|_| err("the signing key is not a 32-byte Ed25519 seed"))?;
+        Ok(SigningKey(ed25519_dalek::SigningKey::from_bytes(&seed)))
+    }
+
+    /// The seed, for the keystore to write. Wiped when dropped.
+    pub fn secret_bytes(&self) -> zeroize::Zeroizing<[u8; 32]> {
+        zeroize::Zeroizing::new(self.0.to_bytes())
+    }
+
+    pub fn public(&self) -> SigningPublic {
+        SigningPublic(self.0.verifying_key().to_bytes())
+    }
+
+    /// Answers a relay's challenge: a signature over `relay_join_message`.
+    /// `origin` is the relay the caller dialed, as it dialed it — never the
+    /// origin a relay's challenge names, or a relay could pass another
+    /// relay's challenge through and join there as this device.
+    pub fn sign_relay_join(&self, role: u8, session: &[u8; 16], nonce: &[u8; 32], device: &DeviceId, origin: &str) -> [u8; 64] {
+        use ed25519_dalek::Signer as _;
+        self.0.sign(&relay_join_message(role, session, nonce, device, origin)).to_bytes()
+    }
+}
+
+impl std::fmt::Debug for SigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SigningKey({})", hex(&self.public().0))
+    }
+}
+
+/// A device's Ed25519 public key: what the registry's device record, and
+/// so the relay, holds to check a join.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SigningPublic(pub [u8; 32]);
+
+impl SigningPublic {
+    /// Checks a join's signature, strictly (RFC 8032's checks and no
+    /// small-order or non-canonical keys or signatures), so one signature
+    /// has one encoding and a key cannot be chosen to verify anything.
+    pub fn verify_relay_join(&self, signature: &[u8], role: u8, session: &[u8; 16], nonce: &[u8; 32], device: &DeviceId, origin: &str) -> Result<(), Error> {
+        let bad = || err("the signature does not verify");
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&self.0).map_err(|_| bad())?;
+        let sig: [u8; 64] = signature.try_into().map_err(|_| bad())?;
+        key.verify_strict(&relay_join_message(role, session, nonce, device, origin), &ed25519_dalek::Signature::from_bytes(&sig)).map_err(|_| bad())
+    }
+}
+
+/// What a relay join signs: `"krowk/relay/v1" ‖ role (1) ‖ session (16) ‖
+/// nonce (32) ‖ device id (16) ‖ origin`, the origin last so its length
+/// needs no prefix.
+pub fn relay_join_message(role: u8, session: &[u8; 16], nonce: &[u8; 32], device: &DeviceId, origin: &str) -> Vec<u8> {
+    let mut m = Vec::with_capacity(RELAY_JOIN_LABEL.len() + 65 + origin.len());
+    m.extend_from_slice(RELAY_JOIN_LABEL);
+    m.push(role);
+    m.extend_from_slice(session);
+    m.extend_from_slice(nonce);
+    m.extend_from_slice(&device.0);
+    m.extend_from_slice(origin.as_bytes());
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R-RELAY-1: a join's signature verifies only for its own role,
+    /// session, nonce, device and origin, and only under its own key.
+    #[test]
+    fn r_relay_1_a_join_signature_binds_role_session_nonce_device_and_origin() {
+        let k = SigningKey::generate();
+        let again = SigningKey::from_secret(&k.secret_bytes()[..]).unwrap();
+        assert_eq!(again.public(), k.public());
+        let (s, n, d) = ([7u8; 16], [9u8; 32], DeviceId([3u8; 16]));
+        let sig = k.sign_relay_join(RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com");
+        let p = k.public();
+        p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com").unwrap();
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_HOST, &s, &n, &d, "wss://relay.krowk.com").is_err(), "a viewer's signature is not a host's");
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &[8u8; 16], &n, &d, "wss://relay.krowk.com").is_err());
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &[1u8; 32], &d, "wss://relay.krowk.com").is_err());
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &DeviceId([4u8; 16]), "wss://relay.krowk.com").is_err());
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://evil.example").is_err(), "another relay's challenge does not pass through");
+        assert!(SigningKey::generate().public().verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com").is_err());
+        assert!(p.verify_relay_join(&sig[..63], RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com").is_err());
+        assert!(SigningPublic([0u8; 32]).verify_relay_join(&[0u8; 64], RELAY_ROLE_VIEWER, &s, &n, &d, "").is_err(), "a small-order key verifies nothing");
+    }
 
     const SESSION: [u8; 16] = *b"0123456789abcdef";
 

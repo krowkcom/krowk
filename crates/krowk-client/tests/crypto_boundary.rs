@@ -78,7 +78,7 @@ fn r_e2e_2_r_client_1_no_crate_but_krowk_client_imports_a_crypto_primitive() {
     }
     let owner = m["packages"].as_array().unwrap().iter().find(|p| p["name"] == OWNER).unwrap();
     let deps: Vec<&str> = owner["dependencies"].as_array().unwrap().iter().filter_map(|d| d["name"].as_str()).collect();
-    assert!(deps.contains(&"hpke") && deps.contains(&"chacha20poly1305"), "the owner is where the crypto is: {deps:?}");
+    assert!(deps.contains(&"hpke") && deps.contains(&"chacha20poly1305") && deps.contains(&"ed25519-dalek"), "the owner is where the crypto is: {deps:?}");
     let found = violations(&m);
     assert!(found.is_empty(), "crypto is implemented only in krowk-client (R-E2E-2): {found:?} — use krowk_client::e2e instead");
 }
