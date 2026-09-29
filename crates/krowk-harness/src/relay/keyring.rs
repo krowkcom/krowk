@@ -1,12 +1,12 @@
 //! Who the reference relay trusts: devices by their signing keys and
 //! workspaces, and each session's workspace and lease. The hosted relay
 //! (ticket 18) reads the same facts from the registry — a device record's
-//! `signing_key`, a session's lease holder and token — so this file is
+//! `signing_key`, a session's lease holder and fence — so this file is
 //! the registry's shape, not a second model of it:
 //!
 //! ```json
 //! {"devices": [{"id": "<32 hex>", "signingKey": "<64 hex>", "workspace": "ws_…", "revoked": false}],
-//!  "sessions": [{"id": "<uuid>", "workspace": "ws_…", "holder": "<device id>", "lease": "<token>"}]}
+//!  "sessions": [{"id": "<uuid>", "workspace": "ws_…", "holder": "<device id>", "fence": 3}]}
 //! ```
 
 use krowk_client::e2e::{self, DeviceId, SigningPublic};
@@ -30,7 +30,8 @@ pub struct Device {
 pub struct Session {
     pub workspace: String,
     pub holder: [u8; 16],
-    pub lease: String,
+    /// The lease's fence: it moves on whenever the lease changes hands.
+    pub fence: u64,
 }
 
 #[derive(Deserialize)]
@@ -58,7 +59,7 @@ struct SessionEntry {
     id: String,
     workspace: String,
     holder: String,
-    lease: String,
+    fence: u64,
 }
 
 impl Keyring {
@@ -75,10 +76,7 @@ impl Keyring {
         for s in f.sessions {
             let id = super::parse_uuid(&s.id).ok_or_else(|| format!("session {:?} is not a UUID", s.id))?;
             let holder = DeviceId::parse(&s.holder).ok_or_else(|| format!("session {}'s holder is not a device id", s.id))?;
-            if s.lease.is_empty() {
-                return Err(format!("session {} has an empty lease token", s.id));
-            }
-            ring.sessions.insert(id, Session { workspace: s.workspace, holder: holder.0, lease: s.lease });
+            ring.sessions.insert(id, Session { workspace: s.workspace, holder: holder.0, fence: s.fence });
         }
         Ok(ring)
     }

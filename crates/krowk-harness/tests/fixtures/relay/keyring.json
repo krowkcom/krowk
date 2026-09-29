@@ -312,84 +312,84 @@
       "id": "c5f121fb-3f53-7325-996e-72cf19e3458d",
       "workspace": "ws_conformance_a",
       "holder": "db0d4f77218049813bd9e9ad328125c5",
-      "lease": "lease-9125e2d5eb6ef993754f9921"
+      "fence": 225
     },
     {
       "name": "fanout",
       "id": "e6e40b65-bff4-70ba-b9c9-ea674dc1d056",
       "workspace": "ws_conformance_a",
       "holder": "543451b6dbfea6c454cc2e253a291590",
-      "lease": "lease-47648c89c2befe131cb58a28"
+      "fence": 13
     },
     {
       "name": "plaintext",
       "id": "54ae7b47-e9f6-7890-a83a-924bda405c71",
       "workspace": "ws_conformance_a",
       "holder": "b99f9cc995a04c9367a62abcc9c0ee30",
-      "lease": "lease-df82a43fdd65c15fc4341642"
+      "fence": 169
     },
     {
       "name": "resume",
       "id": "2e281f9c-1722-78fa-b884-851953e90f09",
       "workspace": "ws_conformance_a",
       "holder": "23815777644649b81931a0f4a2539204",
-      "lease": "lease-afcc781fe11cc8bac5acc7c4"
+      "fence": 55
     },
     {
       "name": "beyond",
       "id": "85d56aa7-f073-7b97-8766-68d9cfc9d543",
       "workspace": "ws_conformance_a",
       "holder": "23b4a3c1a8c3d5b7fb79ab63da1b79cd",
-      "lease": "lease-5c4018efdc9d1b0d594127d5"
+      "fence": 101
     },
     {
       "name": "heartbeat",
       "id": "56f7e751-23f8-7879-a951-aef664d6a3d3",
       "workspace": "ws_conformance_a",
       "holder": "304daf0e29a8f480907b3072a65e2e17",
-      "lease": "lease-c584030f6915e69589949398"
+      "fence": 140
     },
     {
       "name": "window",
       "id": "c3e13675-b4d1-72fe-a8c3-fdde2bc1e80c",
       "workspace": "ws_conformance_a",
       "holder": "b321d707047e580af8426334c5b0db3e",
-      "lease": "lease-568abd88fa8e7709ee764565"
+      "fence": 233
     },
     {
       "name": "order",
       "id": "08696c18-c836-7f0a-aa00-c1d8ec2ed541",
       "workspace": "ws_conformance_a",
       "holder": "8dba55c6fcdb7c9459045f6068354646",
-      "lease": "lease-24974df6651332df2b27c23d"
+      "fence": 50
     },
     {
       "name": "replace",
       "id": "ce64cd21-5730-7592-a998-bd648775765e",
       "workspace": "ws_conformance_a",
       "holder": "b85d46223ef09d4075a4393d75588767",
-      "lease": "lease-73f12c33b5649f5cd46c5632"
+      "fence": 53
     },
     {
       "name": "stream",
       "id": "741ecd76-f2de-7b79-8e22-eb75e6a117ee",
       "workspace": "ws_conformance_a",
       "holder": "c2ff44d3c8e3c349fa7a15eee61fe92e",
-      "lease": "lease-19e517649b1b58a0e77e27af"
+      "fence": 18
     },
     {
       "name": "rate",
       "id": "f9b238df-2fae-7e55-b79e-105afc60bbcc",
       "workspace": "ws_conformance_a",
       "holder": "f37b08c1ac4ea15712d3906e33c8f679",
-      "lease": "lease-0c50605221bdede0f9bed82b"
+      "fence": 228
     },
     {
       "name": "size",
       "id": "a10ecbe5-454a-7bf2-8faa-c561712d2a14",
       "workspace": "ws_conformance_a",
       "holder": "f7b9076f0ab07b34476a542498d3f331",
-      "lease": "lease-f5b8f430f1cedb050c213f1e"
+      "fence": 172
     }
   ],
   "unregistered": [

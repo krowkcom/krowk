@@ -369,7 +369,7 @@ struct Join {
     role: u8,
     device: DeviceId,
     signature: Vec<u8>,
-    lease: Option<String>,
+    fence: Option<u64>,
     stream: Option<[u8; 16]>,
     after: Option<u64>,
 }
@@ -399,14 +399,21 @@ fn read_join(b: &[u8]) -> Result<Join, Refusal> {
         None => None,
         Some(s) => Some(s.as_u64().ok_or_else(|| bad("has an afterSeq that is not a whole number"))?),
     };
-    let lease = v["lease"].as_str().map(str::to_string);
-    Ok(Join { role, device, signature, lease, stream, after })
+    let fence = match v.get("fence").filter(|s| !s.is_null()) {
+        None => None,
+        Some(s) => Some(s.as_u64().ok_or_else(|| bad("has a fence that is not a whole number"))?),
+    };
+    Ok(Join { role, device, signature, fence, stream, after })
 }
 
 /// Who may join: a device the keyring knows, not revoked, whose signature
 /// verifies, of the session's workspace, and — to host — the holder of
-/// its lease with the lease's token. Checked in that order, so a device
-/// the relay does not trust learns nothing about the session.
+/// its lease, naming the lease's current fence. The signature proves the
+/// device; the fence says it knows the lease is still its own, so a host
+/// displaced by another device's takeover is refused rather than let
+/// back in. The lease token stays between the holder and the registry: a
+/// relay never needs it, so never holds it. Checked in that order, so a
+/// device the relay does not trust learns nothing about the session.
 fn admit(relay: &Relay, session: [u8; 16], nonce: &[u8; 32], origin: &str, j: Join) -> Result<(DeviceId, u8, Join), Refusal> {
     let ring = &relay.config.keyring;
     let Some(device) = ring.device(&j.device) else {
@@ -428,9 +435,11 @@ fn admit(relay: &Relay, session: [u8; 16], nonce: &[u8; 32], origin: &str, j: Jo
         return Err(refuse("not_in_workspace", "the device is not of the session's workspace", "join from a device of the workspace the session belongs to"));
     }
     if j.role == RELAY_ROLE_HOST {
-        let token_ok = j.lease.as_deref().is_some_and(|t| constant_eq(t.as_bytes(), entry.lease.as_bytes()));
-        if entry.holder != j.device.0 || !token_ok {
-            return Err(refuse("not_lease_holder", "only the device holding the session's lease, with its lease token, may host it", "take the session's lease (krowk resumes it on this device), or join as a viewer"));
+        if entry.holder != j.device.0 {
+            return Err(refuse("not_lease_holder", "only the device holding the session's lease may host it", "take the session's lease (krowk resumes it on this device), or join as a viewer"));
+        }
+        if j.fence != Some(entry.fence) {
+            return Err(refuse("stale_lease", format!("the lease's fence is {}, not {}", entry.fence, j.fence.map_or("absent".into(), |f| f.to_string())), "read the session's lease from the registry again; if another device took it, join as a viewer"));
         }
         if j.stream.is_none() {
             return Err(refuse("bad_join", "a host's join names no stream", "send the stream epoch the host seals batches under, 32 hex characters"));
@@ -445,10 +454,6 @@ fn admit(relay: &Relay, session: [u8; 16], nonce: &[u8; 32], origin: &str, j: Jo
         return Err(refuse("channel_full", format!("the session has {} viewers already", channel.viewers.len()), "close a device watching the session, then join again"));
     }
     Ok((j.device, j.role, j))
-}
-
-fn constant_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// Puts a joined link on its channel, and says so.

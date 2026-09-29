@@ -63,8 +63,9 @@ fn session_id(test: &str) -> String {
     format!("{}-{}-{}-{}-{}", &x[..8], &x[8..12], &x[12..16], &x[16..20], &x[20..])
 }
 
-fn lease(test: &str) -> String {
-    format!("lease-{}", e2e::hex(&seed(&format!("lease/{test}"))[..12]))
+/// The lease's fence: any number, so a relay cannot assume they start low.
+fn fence(test: &str) -> u64 {
+    u64::from(seed(&format!("fence/{test}"))[0]) + 3
 }
 
 fn device(name: &str, workspace: &str, revoked: bool) -> Value {
@@ -80,7 +81,7 @@ fn fixture() -> Value {
         for role in ["host", "viewer", "viewer2"] {
             devices.push(device(&format!("{t}-{role}"), "ws_conformance_a", false));
         }
-        sessions.push(json!({"name": t, "id": session_id(t), "workspace": "ws_conformance_a", "holder": device_id(&format!("{t}-host")).to_string(), "lease": lease(t)}));
+        sessions.push(json!({"name": t, "id": session_id(t), "workspace": "ws_conformance_a", "holder": device_id(&format!("{t}-host")).to_string(), "fence": fence(t)}));
     }
     devices.push(device("outsider", "ws_conformance_b", false));
     devices.push(device("revoked", "ws_conformance_a", true));
@@ -295,7 +296,7 @@ async fn dial(test: &str) -> (Conn, Value) {
 struct As<'a> {
     name: &'a str,
     role: u8,
-    lease: Option<String>,
+    fence: Option<u64>,
     stream: Option<[u8; 16]>,
     after: Option<u64>,
     /// Sign with another device's key, or for another origin.
@@ -305,12 +306,12 @@ struct As<'a> {
 
 fn host(test: &str) -> As<'static> {
     let name: &'static str = Box::leak(format!("{test}-host").into_boxed_str());
-    As { name, role: RELAY_ROLE_HOST, lease: Some(lease(test)), stream: Some(stream_id(test, 1)), after: None, key_of: None, origin: None }
+    As { name, role: RELAY_ROLE_HOST, fence: Some(fence(test)), stream: Some(stream_id(test, 1)), after: None, key_of: None, origin: None }
 }
 
 fn viewer(test: &str, which: &str) -> As<'static> {
     let name: &'static str = Box::leak(format!("{test}-{which}").into_boxed_str());
-    As { name, role: RELAY_ROLE_VIEWER, lease: None, stream: None, after: None, key_of: None, origin: None }
+    As { name, role: RELAY_ROLE_VIEWER, fence: None, stream: None, after: None, key_of: None, origin: None }
 }
 
 fn stream_id(test: &str, n: u8) -> [u8; 16] {
@@ -324,8 +325,8 @@ async fn join_as(test: &str, a: &As<'_>) -> (Conn, Value) {
     let dialed = origin();
     let sig = key.sign_relay_join(a.role, &c.session, &nonce, &device_id(a.name), a.origin.unwrap_or(&dialed));
     let mut join = json!({"type": "join", "role": if a.role == RELAY_ROLE_HOST { "host" } else { "viewer" }, "device": device_id(a.name).to_string(), "signature": e2e::hex(&sig)});
-    if let Some(l) = &a.lease {
-        join["lease"] = l.clone().into();
+    if let Some(f) = a.fence {
+        join["fence"] = f.into();
     }
     if let Some(s) = a.stream {
         join["stream"] = e2e::hex(&s).into();
@@ -357,8 +358,8 @@ async fn refused_join(test: &str, a: &As<'_>, code: &str) {
 
 /// R-RELAY-1: a device the relay does not trust is refused; so is a
 /// signature by another key, or for another relay's origin, or another
-/// role's; a viewer cannot pose as the host, nor the holder without its
-/// lease token; a device of another workspace, or a revoked one, cannot
+/// role's; a viewer cannot pose as the host, nor the holder of a lease
+/// since taken over (an older fence); a device of another workspace, or a revoked one, cannot
 /// join at all. None of them is told anything about the session.
 #[tokio::test]
 async fn r_relay_1_only_a_trusted_device_with_its_own_signature_joins_and_only_the_lease_holder_hosts() {
@@ -373,13 +374,15 @@ async fn r_relay_1_only_a_trusted_device_with_its_own_signature_joins_and_only_t
         let nonce: [u8; 32] = e2e::unhex(challenge["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
         let key = SigningKey::from_secret(&seed("auth-host")).unwrap();
         let sig = key.sign_relay_join(RELAY_ROLE_VIEWER, &c.session, &nonce, &device_id("auth-host"), &origin());
-        c.send_control(json!({"type": "join", "role": "host", "device": device_id("auth-host").to_string(), "signature": e2e::hex(&sig), "lease": lease(t), "stream": e2e::hex(&stream_id(t, 1))})).await;
+        c.send_control(json!({"type": "join", "role": "host", "device": device_id("auth-host").to_string(), "signature": e2e::hex(&sig), "fence": fence(t), "stream": e2e::hex(&stream_id(t, 1))})).await;
         c.refused("bad_signature").await;
     }
-    // A viewer asking to host, with or without the right lease token.
-    refused_join(t, &As { role: RELAY_ROLE_HOST, lease: Some(lease(t)), stream: Some(stream_id(t, 1)), ..viewer(t, "viewer") }, "not_lease_holder").await;
-    refused_join(t, &As { lease: Some("lease-guessed".into()), ..host(t) }, "not_lease_holder").await;
-    refused_join(t, &As { lease: None, ..host(t) }, "not_lease_holder").await;
+    // A viewer asking to host, knowing the lease's fence (it is public).
+    refused_join(t, &As { role: RELAY_ROLE_HOST, fence: Some(fence(t)), stream: Some(stream_id(t, 1)), ..viewer(t, "viewer") }, "not_lease_holder").await;
+    // The holder of an older lease — another device took it since — or
+    // one naming no fence.
+    refused_join(t, &As { fence: Some(fence(t) - 1), ..host(t) }, "stale_lease").await;
+    refused_join(t, &As { fence: None, ..host(t) }, "stale_lease").await;
     refused_join(t, &As { name: "outsider", ..viewer(t, "viewer") }, "not_in_workspace").await;
     refused_join(t, &As { name: "revoked", ..viewer(t, "viewer") }, "device_revoked").await;
     // A signature answers one challenge: the nonce is fresh each time.

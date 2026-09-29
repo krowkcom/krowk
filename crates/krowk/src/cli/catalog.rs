@@ -843,8 +843,14 @@ pub const GROUPS: &[(&str, &[&str])] = &[
 ];
 
 /// Listed by `krowk help --all` alone: the long forms of what the overview
-/// already lists, and help itself.
-pub const ALL_ONLY: &[&str] = &["auth", "help"];
+/// already lists, help itself, and the relay, which a person runs only to
+/// host one.
+pub const ALL_ONLY: &[&str] = &[
+    "auth",
+    "help",
+    #[cfg(all(feature = "harness", unix))]
+    "relay",
+];
 
 #[cfg(test)]
 mod tests {

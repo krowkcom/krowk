@@ -11,6 +11,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk relay serve` runs a relay of your own.** It carries a synced
+  session between the machine running it and the devices watching it, and
+  only ever sealed bytes: it refuses anything not encrypted, and never
+  stores it. A device joins by signing the relay's challenge with a new
+  per-device signing key (`signing.json` in krowk's home, made the first
+  time it is needed); only the machine holding the session's lease may
+  host it. A device that reconnects picks up where it left off from the
+  relay's short buffer, and the relay answers heartbeats itself, so a busy
+  or quiet host never looks gone. It listens on 127.0.0.1:7790 unless
+  `--addr` says otherwise, and says so when that is reachable from the
+  network. Nothing connects to it on its own yet; the host daemon and the
+  terminal will once syncing sessions lands. `krowk help --all` lists it.
 - **A synced session's log can now be stored, encrypted, in the registry.**
   The machine holding a session's lease seals each piece of the log on its
   own side and uploads it straight to storage. Each piece is numbered,
