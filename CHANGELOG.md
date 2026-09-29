@@ -9,6 +9,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Fixed
+
+- A session resumed in the TUI shows what it has cost so far. On a model models.dev has no price for yet, such as a new Claude through Claude Code, the status bar showed `$—` until the next turn ran; it now counts what the backend reported for each past turn, the way the live figure does.
+
 ## [0.11.2] - 2026-09-29
 
 Code in the TUI is in colour, and the chat is calmer: your messages stand
