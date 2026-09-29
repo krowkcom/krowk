@@ -110,7 +110,7 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let spawn = super::host::spawner(ctx)?;
-    let o = host::Options { relay: relay(ctx), env, api, device: k.device, signing: k.signing, account: k.account, session, title: String::new(), cwd: cwd.display().to_string(), ttl: host::LEASE_TTL, direct: direct(ctx)? };
+    let o = host::Options { relay: relay(ctx), env, api, device: k.device, signing: k.signing, account: k.account, session, title: String::new(), cwd: cwd.display().to_string(), ttl: host::LEASE_TTL, keep: host::KEEP, direct: direct(ctx)? };
     krowk_harness::sync::run_host(o, ctx.io.env, &cwd, super::VERSION, &spawn).map_err(|(code, message)| fail(&code, message))
 }
 
@@ -143,5 +143,8 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
     let s = api.show_sync_session(&id).ok()?;
     let wrapped = krowk_client::e2e::unhex(&s.wrapped_key)?;
     krowk_client::e2e::unwrap_session_key(&wrapped, &krowk_harness::daemon::ws::uuid(&id), &k.account).ok()?;
+    // Said plainly, on stderr: the TUI does not draw a synced session yet,
+    // so what follows is stream-json, as `krowk sync attach` prints it.
+    let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sync attach`); the TUI does not attach synced sessions yet");
     Some(attach(ctx, &[id]))
 }

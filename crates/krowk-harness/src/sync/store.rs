@@ -31,14 +31,20 @@ pub struct Head {
 impl Head {
     /// Refuses a log that ends before `known`, a head this device has seen
     /// vouched for (the host's welcome, or what it read before): a registry
-    /// serving a prefix, or an index older than the log.
-    pub fn at_least(read: Option<Head>, known: Option<Head>) -> Result<(), String> {
+    /// serving a prefix, or an index older than the log. `read` is every
+    /// chunk this reading opened, in order: a log that reaches past `known`
+    /// must hold `known`'s own chunk at its index, or it is another log.
+    pub fn at_least(read: &[Head], known: Option<Head>) -> Result<(), String> {
         let Some(k) = known else { return Ok(()) };
-        match read {
-            Some(r) if r.index > k.index => Ok(()),
-            Some(r) if r.index == k.index && r.digest == k.digest => Ok(()),
-            Some(r) if r.index == k.index => Err(format!("chunk {} is not the one the session's host sealed: the registry served another log", r.index)),
-            _ => Err(format!("the registry served the log only to chunk {}, where the session's host has sealed to chunk {}: a prefix, refused", read.map_or(-1, |r| r.index as i64), k.index)),
+        let last = read.last().copied();
+        match last {
+            Some(r) if r.index >= k.index => match read.iter().find(|h| h.index == k.index) {
+                Some(h) if h.digest != k.digest => Err(format!("chunk {} is not the one the session's host sealed: the registry served another log", k.index)),
+                // Before what this reading opened (under the checkpoint it
+                // started from): the chain from there binds it.
+                _ => Ok(()),
+            },
+            _ => Err(format!("the registry served the log only to chunk {}, where the session's host has sealed to chunk {}: a prefix, refused", last.map_or(-1, |r| r.index as i64), k.index)),
         }
     }
 }
@@ -103,8 +109,25 @@ fn api(e: krowk_api::Error) -> String {
     e.to_string()
 }
 
+/// A chunk sealed and not yet stored: kept, bytes and all, and put again
+/// under the same index, digest and Idempotency-Key until the registry has
+/// it. Sealing moved the chain on, so this chunk is the only one that may
+/// come next; a chunk never sealed past a chunk that was never stored.
+struct Staged {
+    index: u64,
+    sealed: Vec<u8>,
+    key: String,
+    /// The events it holds, taken out of `pending`: they rejoin it should
+    /// the chunk have to be sealed again elsewhere in the log.
+    events: Vec<Value>,
+    /// Set for a checkpoint: where the index is to point once it is stored.
+    mark: Option<Mark>,
+}
+
 /// The lease holder's writer: seals and puts each chunk, and keeps the
-/// sealed index pointing at the head and the latest checkpoint.
+/// sealed index pointing at the head and the latest checkpoint. Every
+/// write is a transaction: the events of a turn stay with the writer until
+/// the chunk holding them is stored, however many attempts that takes.
 pub struct Writer {
     client: std::sync::Arc<Client>,
     key: SessionKey,
@@ -114,9 +137,26 @@ pub struct Writer {
     sealer: ChunkSealer,
     fence: u64,
     pub index: Index,
-    /// Every event so far: the next checkpoint's compacted context.
+    /// Every event stored so far: the next checkpoint's compacted context.
     events: Vec<Value>,
     pending: Vec<Value>,
+    staged: Option<Staged>,
+    /// The index write failed and is owed.
+    index_owed: bool,
+}
+
+/// The whole log as the registry holds it: its events and where it ends.
+fn read_all(client: &Client, key: &SessionKey, id: &str) -> Result<(Vec<Value>, ChunkReader, Option<Head>), String> {
+    let mut reader = ChunkReader::new(key, crate::daemon::ws::uuid(id));
+    let mut events = Vec::new();
+    let head = read_from(client, id, &mut reader, None, &mut |c, _| {
+        match c {
+            Chunk::Events { events: e } => events.extend(e),
+            Chunk::Checkpoint(cp) => events = cp.events,
+        }
+        Ok(())
+    })?;
+    Ok((events, reader, head))
 }
 
 impl Writer {
@@ -124,27 +164,48 @@ impl Writer {
     /// onto is the whole log (crypto.md → chunks), under lease `fence`.
     pub fn take_up(client: std::sync::Arc<Client>, key: SessionKey, id: &str, wrapped: String, index: Index, fence: u64) -> Result<Writer, String> {
         let session = crate::daemon::ws::uuid(id);
-        let mut reader = ChunkReader::new(&key, session);
-        let mut events = Vec::new();
+        let (events, reader, head) = read_all(&client, &key, id)?;
         let mut index = index;
-        index.head = read_from(&client, id, &mut reader, None, &mut |c| {
-            match c {
-                Chunk::Events { events: e } => events.extend(e),
-                Chunk::Checkpoint(cp) => events = cp.events,
-            }
-            Ok(())
-        })?;
+        index.head = head;
         let sealer = ChunkSealer::new(&key, session, reader.next(), reader.previous(), fence);
-        Ok(Writer { client, key, id: id.to_string(), session, wrapped, sealer, fence, index, events, pending: Vec::new() })
+        Ok(Writer { client, key, id: id.to_string(), session, wrapped, sealer, fence, index, events, pending: Vec::new(), staged: None, index_owed: false })
     }
 
-    /// The lease moved on (a lapse and a new acquire): what follows is
-    /// written under the new fence, chained onto the same log.
-    pub fn refence(&mut self, fence: u64) {
-        if fence != self.fence {
-            self.sealer = ChunkSealer::new(&self.key, self.session, self.sealer.next(), self.previous(), fence);
-            self.fence = fence;
+    /// The lease moved on (a lapse and a new acquire): the log is read
+    /// again, since another holder may have written in between, and what
+    /// follows chains onto the log as the registry holds it — never onto
+    /// this writer's memory of it. A staged chunk the log already holds is
+    /// done; one it does not hold and cannot follow is dropped and its
+    /// events sealed again after the registry's head.
+    pub fn refence(&mut self, fence: u64) -> Result<(), String> {
+        if fence == self.fence {
+            return Ok(());
         }
+        let (events, reader, head) = read_all(&self.client, &self.key, &self.id)?;
+        let staged_head = self.staged.as_ref().map(|s| Head { index: s.index, digest: e2e::chunk_digest(&s.sealed) });
+        if head.is_some() && head == staged_head {
+            self.commit();
+        } else if head != self.index.head {
+            // Another holder wrote: this writer's unstored events go after it.
+            if let Some(s) = self.staged.take() {
+                let mut again = s.events;
+                again.append(&mut self.pending);
+                self.pending = again;
+            }
+            self.events = events;
+            self.index.head = head;
+            self.sealer = ChunkSealer::new(&self.key, self.session, reader.next(), reader.previous(), fence);
+        } else if let Some(s) = self.staged.as_mut() {
+            // The staged chunk still follows the log: put it under the new
+            // lease, with a key of its own (the old lease's declare is the
+            // registry's to replace).
+            s.key = krowk_api::client::idempotency_key().map_err(api)?;
+        }
+        if self.staged.is_none() {
+            self.sealer = ChunkSealer::new(&self.key, self.session, self.sealer.next(), self.previous(), fence);
+        }
+        self.fence = fence;
+        Ok(())
     }
 
     fn previous(&self) -> [u8; 32] {
@@ -157,32 +218,69 @@ impl Writer {
 
     /// How many events the log holds, those not yet in a chunk included.
     pub fn log_offset(&self) -> u64 {
-        (self.events.len() + self.pending.len()) as u64
+        (self.events.len() + self.staged.as_ref().map_or(0, |s| s.events.len()) + self.pending.len()) as u64
+    }
+
+    /// Whether a write is owed: a chunk staged or the index unwritten.
+    pub fn owes(&self) -> bool {
+        self.staged.is_some() || self.index_owed
     }
 
     pub fn push(&mut self, event: Value) {
         self.pending.push(event);
     }
 
-    fn put(&mut self, chunk: &Chunk, token: &str) -> Result<Head, String> {
+    fn stage(&mut self, chunk: &Chunk, events: Vec<Value>, mark: Option<Mark>) -> Result<(), String> {
         let plain = serde_json::to_vec(chunk).map_err(|e| e.to_string())?;
         let index = self.sealer.next();
         let sealed = self.sealer.seal(&plain, false).map_err(|e| e.to_string())?;
-        self.client.put_chunk(&self.id, index, &sealed, token).map_err(api)?;
-        let head = Head { index, digest: e2e::chunk_digest(&sealed) };
-        self.index.head = Some(head);
-        Ok(head)
+        let key = krowk_api::client::idempotency_key().map_err(api)?;
+        self.staged = Some(Staged { index, sealed, key, events, mark });
+        Ok(())
     }
 
-    /// Puts the events waiting as one chunk, and the index after it.
-    pub fn flush(&mut self, token: &str) -> Result<(), String> {
-        if self.pending.is_empty() {
-            return Ok(());
+    /// The staged chunk is stored: its events join the log.
+    fn commit(&mut self) {
+        let Some(s) = self.staged.take() else { return };
+        self.index.head = Some(Head { index: s.index, digest: e2e::chunk_digest(&s.sealed) });
+        if let Some(m) = s.mark {
+            self.index.checkpoint = Some(m);
+        } else {
+            self.events.extend(s.events);
         }
-        let events = std::mem::take(&mut self.pending);
-        self.put(&Chunk::Events { events: events.clone() }, token)?;
-        self.events.extend(events);
-        self.write_index(token)
+        self.index_owed = true;
+    }
+
+    /// Puts the staged chunk. A failure whose answer may have been lost is
+    /// checked against the registry's listing: the chunk may be there.
+    fn put_staged(&mut self, token: &str) -> Result<(), String> {
+        let Some(s) = self.staged.as_ref() else { return Ok(()) };
+        let put = self.client.put_chunk_keyed(&self.id, s.index, &s.sealed, token, &s.key);
+        if let Err(e) = put {
+            let sum = e2e::hex(&e2e::chunk_digest(&s.sealed));
+            let listed = self.client.list_chunks(&self.id, s.index.checked_sub(1), 1).map_err(api)?;
+            if !listed.chunks.first().is_some_and(|c| c.index == s.index && c.checksum == sum && c.state == "ready") {
+                return Err(api(e));
+            }
+        }
+        self.commit();
+        Ok(())
+    }
+
+    /// Puts what is owed — a staged chunk, then the events waiting as one
+    /// chunk — and the index after it. On a failure nothing is lost: the
+    /// next flush puts the same chunk again.
+    pub fn flush(&mut self, token: &str) -> Result<(), String> {
+        self.put_staged(token)?;
+        if !self.pending.is_empty() {
+            let events = std::mem::take(&mut self.pending);
+            self.stage(&Chunk::Events { events: events.clone() }, events, None)?;
+            self.put_staged(token)?;
+        }
+        if self.index_owed {
+            self.write_index(token)?;
+        }
+        Ok(())
     }
 
     /// Cuts a checkpoint: what is waiting first, then the session so far as
@@ -192,9 +290,8 @@ impl Writer {
         let before = self.index.head;
         let mark = Mark { index: self.sealer.next(), previous: self.previous(), fence: self.fence };
         let cp = Checkpoint { events: self.events.clone(), log_offset: self.events.len() as u64, worktree, chunk: before };
-        self.put(&Chunk::Checkpoint(cp), token)?;
-        self.index.checkpoint = Some(mark);
-        self.write_index(token)
+        self.stage(&Chunk::Checkpoint(cp), Vec::new(), Some(mark))?;
+        self.flush(token)
     }
 
     fn write_index(&mut self, token: &str) -> Result<(), String> {
@@ -202,12 +299,13 @@ impl Writer {
         let plain = serde_json::to_vec(&self.index).map_err(|e| e.to_string())?;
         let sealed = e2e::hex(&e2e::seal_session_index(&self.key, &self.session, &plain));
         self.client.put_sync_session(&self.id, &self.wrapped, Some(&sealed), Some(token)).map_err(api)?;
+        self.index_owed = false;
         Ok(())
     }
 }
 
 /// Reads chunks from `reader`'s place to the end of what the registry lists.
-fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Option<Head>, each: &mut dyn FnMut(Chunk) -> Result<(), String>) -> Result<Option<Head>, String> {
+fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Option<Head>, each: &mut dyn FnMut(Chunk, Head) -> Result<(), String>) -> Result<Option<Head>, String> {
     let mut after = reader.next().checked_sub(1);
     loop {
         let page = client.list_chunks(id, after, 100).map_err(api)?;
@@ -224,8 +322,9 @@ fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Opti
             let sealed = sealed.map_err(api)?;
             let plain = reader.open(&sealed).map_err(|e| e.to_string())?;
             let chunk: Chunk = serde_json::from_slice(&plain).map_err(|e| format!("chunk {} holds no chunk this krowk reads: {e}", c.index))?;
-            last = Some(Head { index: c.index, digest: e2e::chunk_digest(&sealed) });
-            each(chunk)?;
+            let h = Head { index: c.index, digest: e2e::chunk_digest(&sealed) };
+            last = Some(h);
+            each(chunk, h)?;
         }
         match page.next {
             Some(n) if !page.chunks.is_empty() => after = Some(n),
@@ -245,6 +344,8 @@ pub struct Attached {
     pub next: u64,
     pub previous: [u8; 32],
     pub fence: u64,
+    /// Every chunk read, for holding the log to a head it was told of.
+    pub heads: Vec<Head>,
 }
 
 /// Opens a session's sealed index.
@@ -266,33 +367,39 @@ pub fn attach(client: &Client, key: &SessionKey, id: &str, index: Index, known: 
         None => ChunkReader::new(key, session),
     };
     let mut events = Vec::new();
-    let head = read_from(client, id, &mut reader, None, &mut |c| {
+    let mut heads = Vec::new();
+    let head = read_from(client, id, &mut reader, None, &mut |c, h| {
         match c {
             Chunk::Events { events: e } => events.extend(e),
             Chunk::Checkpoint(cp) => {
-                Head::at_least(cp.chunk, None)?;
+                // The head before the checkpoint, as the host sealed it in.
+                heads.extend(cp.chunk);
                 events = cp.events;
             }
         }
+        heads.push(h);
         Ok(())
     })?;
-    Head::at_least(head, index.head)?;
-    Head::at_least(head, known)?;
-    Ok(Attached { next: reader.next(), previous: reader.previous(), fence: reader.fence(), index, events, head })
+    Head::at_least(&heads, index.head)?;
+    Head::at_least(&heads, known)?;
+    Ok(Attached { next: reader.next(), previous: reader.previous(), fence: reader.fence(), index, events, head, heads })
 }
 
 /// Reads the tail again from where `a` stopped, until it reaches `known`.
 pub fn catch_up(client: &Client, key: &SessionKey, id: &str, a: &mut Attached, known: Option<Head>) -> Result<Vec<Value>, String> {
     let mut reader = ChunkReader::resume(key, crate::daemon::ws::uuid(id), a.next, a.previous, a.fence);
     let mut fresh = Vec::new();
-    let head = read_from(client, id, &mut reader, a.head, &mut |c| {
-        match c {
-            Chunk::Events { events } => fresh.extend(events),
-            Chunk::Checkpoint(_) => {}
+    let mut heads = std::mem::take(&mut a.heads);
+    let head = read_from(client, id, &mut reader, a.head, &mut |c, h| {
+        if let Chunk::Events { events } = c {
+            fresh.extend(events);
         }
+        heads.push(h);
         Ok(())
-    })?;
-    Head::at_least(head, known)?;
+    });
+    a.heads = heads;
+    let head = head?;
+    Head::at_least(&a.heads, known)?;
     a.head = head;
     a.next = reader.next();
     a.previous = reader.previous();
@@ -309,15 +416,21 @@ mod tests {
         Some(Head { index: i, digest: [d; 32] })
     }
 
+    fn log(n: u64, d: u8) -> Vec<Head> {
+        (0..n).map(|i| Head { index: i, digest: [d; 32] }).collect()
+    }
+
     /// The prefix check: a log that stops short of a head this device was
-    /// told of, or reaches it with another chunk, is refused.
+    /// told of, or holds another chunk at that head's index — reached or
+    /// passed — is refused.
     #[test]
     fn r_sync_1_a_log_short_of_the_known_head_is_a_prefix_and_refused() {
-        assert!(Head::at_least(h(4, 1), h(4, 1)).is_ok());
-        assert!(Head::at_least(h(5, 2), h(4, 1)).is_ok());
-        assert!(Head::at_least(h(3, 1), h(4, 1)).unwrap_err().contains("prefix"));
-        assert!(Head::at_least(None, h(0, 1)).unwrap_err().contains("prefix"));
-        assert!(Head::at_least(h(4, 9), h(4, 1)).is_err());
-        assert!(Head::at_least(None, None).is_ok());
+        assert!(Head::at_least(&log(5, 1), h(4, 1)).is_ok());
+        assert!(Head::at_least(&log(6, 1), h(4, 1)).is_ok());
+        assert!(Head::at_least(&log(4, 1), h(4, 1)).unwrap_err().contains("prefix"));
+        assert!(Head::at_least(&[], h(0, 1)).unwrap_err().contains("prefix"));
+        assert!(Head::at_least(&log(5, 9), h(4, 1)).is_err(), "another chunk at the head");
+        assert!(Head::at_least(&log(8, 9), h(4, 1)).is_err(), "a longer log that forked before the head");
+        assert!(Head::at_least(&[], None).is_ok());
     }
 }

@@ -30,6 +30,11 @@ async fn host_join(url: &str, f: &Value, ticket: &str, fence: u64) -> (Value, Ws
 }
 
 async fn join(url: &str, f: &Value, session: &str, device: &str, role: u8, ticket: &str, fence: u64) -> (Value, Ws) {
+    join_after(url, f, session, device, role, ticket, fence, Duration::ZERO).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn join_after(url: &str, f: &Value, session: &str, device: &str, role: u8, ticket: &str, fence: u64, delay: Duration) -> (Value, Ws) {
     let s = &f["sessions"].as_array().unwrap().iter().find(|s| s["name"] == session).unwrap();
     let d = f["devices"].as_array().unwrap().iter().find(|d| d["name"] == device).unwrap();
     let sid = s["id"].as_str().unwrap();
@@ -48,6 +53,7 @@ async fn join(url: &str, f: &Value, session: &str, device: &str, role: u8, ticke
     if first["type"] == "error" {
         return (first, ws);
     }
+    tokio::time::sleep(delay).await;
     let nonce: [u8; 32] = e2e::unhex(first["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
     let key = SigningKey::from_secret(&e2e::unhex(d["seed"].as_str().unwrap()).unwrap()).unwrap();
     let device = e2e::DeviceId::parse(d["id"].as_str().unwrap()).unwrap();
@@ -319,3 +325,96 @@ async fn r_relay_1_a_relays_state_is_private_to_it_and_pruned() {
     assert!(why.contains("another relay holds it"), "{why}");
 }
 
+
+/// A ticket for a fixture device on a fixture session, in `role`.
+fn fixture_ticket(f: &Value, session: &str, device: &str, role: u8) -> (String, u64) {
+    let s = f["sessions"].as_array().unwrap().iter().find(|s| s["name"] == session).unwrap();
+    let d = f["devices"].as_array().unwrap().iter().find(|d| d["name"] == device).unwrap();
+    let seed: [u8; 32] = e2e::unhex(f["ticketSeed"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let kid: [u8; 8] = e2e::unhex(f["ticketKeys"].as_object().unwrap().keys().next().unwrap()).unwrap().try_into().unwrap();
+    let fence = if role == RELAY_ROLE_HOST { s["fence"].as_u64().unwrap() } else { 0 };
+    let now = relay_ticket::now();
+    let t = Ticket {
+        kid,
+        role,
+        env: relay_ticket::ENV_PRODUCTION,
+        session: krowk_harness::daemon::ws::uuid(s["id"].as_str().unwrap()),
+        device: e2e::unhex(d["id"].as_str().unwrap()).unwrap().try_into().unwrap(),
+        signing_key: e2e::unhex(d["signingKey"].as_str().unwrap()).unwrap().try_into().unwrap(),
+        fence,
+        iat: now,
+        exp: now + 300,
+        workspace: d["workspace"].as_str().unwrap().to_string(),
+    };
+    (t.sign(&seed), fence)
+}
+
+/// R-RELAY-1: a workspace spreading its own tickets one to a session evicts
+/// only itself. The reference relay's ticketed pool at a tenth of its size
+/// (128, and 16 a workspace): one pending connection on each of 128 of a
+/// tenant's sessions, then 150 more on fresh ones, while another
+/// workspace's host and two viewers answer in 600 ms — all three join,
+/// three times. The same at full size is `relay_conformance.rs`'s heavy
+/// test.
+#[tokio::test]
+async fn r_relay_1_a_workspace_spread_over_its_own_sessions_evicts_only_itself() {
+    let f: Value = serde_json::from_str(FIXTURE).unwrap();
+    let url = start(krowk_harness::relay::Limits { unjoined_ticketed: 128, unjoined_per_workspace: 16, ..Default::default() }, None);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let seed: [u8; 32] = e2e::unhex(f["ticketSeed"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let kid: [u8; 8] = e2e::unhex(f["ticketKeys"].as_object().unwrap().keys().next().unwrap()).unwrap().try_into().unwrap();
+    let spreader = SigningKey::generate();
+    let now = relay_ticket::now();
+    let tenant = |i: u32| {
+        let session = format!("{:08x}-0000-7000-8000-{:012x}", i + 1, 0x5b3);
+        let t = Ticket {
+            kid,
+            role: e2e::RELAY_ROLE_VIEWER,
+            env: relay_ticket::ENV_PRODUCTION,
+            session: krowk_harness::daemon::ws::uuid(&session),
+            device: [0x5b; 16],
+            signing_key: spreader.public().0,
+            fence: 0,
+            iat: now,
+            exp: now + 300,
+            workspace: "ws_spreader".into(),
+        };
+        (session, t.sign(&seed))
+    };
+    let flood = |tickets: Vec<(String, String)>, url: String| {
+        futures_util::future::join_all(tickets.into_iter().enumerate().map(move |(n, (session, ticket))| {
+            let url = url.clone();
+            tokio::spawn(async move {
+                let mut req = format!("{url}/v1/relay/{session}").into_client_request().unwrap();
+                req.headers_mut().insert("x-krowk-ticket", ticket.parse().unwrap());
+                let target: std::net::SocketAddr = url.trim_start_matches("ws://").parse().ok()?;
+                let sock = tokio::net::TcpSocket::new_v4().ok()?;
+                sock.bind(format!("127.{}.{}.1:0", 60 + n % 20, n / 20 + 1).parse().unwrap()).ok()?;
+                let stream = sock.connect(target).await.ok()?;
+                tokio_tungstenite::client_async(req, tokio_tungstenite::MaybeTlsStream::Plain(stream)).await.ok().map(|(ws, _)| ws)
+            })
+        }))
+    };
+    let mut held = flood((0..128).map(tenant).collect(), url.clone()).await;
+    for round in 0..3u32 {
+        let fresh: Vec<_> = (0..150).map(|i| tenant(1000 + round * 150 + i)).collect();
+        let u = url.clone();
+        let burst = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            flood(fresh, u).await
+        });
+        let wait = Duration::from_millis(600);
+        let (th, fh) = fixture_ticket(&f, "pool3", "pool3-host", RELAY_ROLE_HOST);
+        let (tv1, _) = fixture_ticket(&f, "pool3", "pool3-viewer", e2e::RELAY_ROLE_VIEWER);
+        let (tv2, _) = fixture_ticket(&f, "pool3", "pool3-viewer2", e2e::RELAY_ROLE_VIEWER);
+        let ((h, _hw), (v1, _w1), (v2, _w2)) = tokio::join!(
+            join_after(&url, &f, "pool3", "pool3-host", RELAY_ROLE_HOST, &th, fh, wait),
+            join_after(&url, &f, "pool3", "pool3-viewer", e2e::RELAY_ROLE_VIEWER, &tv1, 0, wait),
+            join_after(&url, &f, "pool3", "pool3-viewer2", e2e::RELAY_ROLE_VIEWER, &tv2, 0, wait),
+        );
+        for (who, answer) in [("host", h), ("viewer", v1), ("viewer2", v2)] {
+            assert_eq!(answer["type"], "joined", "round {round}: {who}: {answer}");
+        }
+        held.extend(burst.await.unwrap());
+    }
+}
