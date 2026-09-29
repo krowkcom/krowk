@@ -39,7 +39,7 @@ const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/
 /// Every test, its devices and its session: `<test>-host` holds the lease
 /// of session `<test>`, `<test>-viewer` and `<test>-viewer2` watch it, all
 /// in workspace A.
-const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs", "xws", "tickets", "flood", "pool", "hostvt", "equal", "pool2"];
+const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs", "xws", "tickets", "flood", "pool", "hostvt", "equal", "pool2", "pool3"];
 
 /// How long anything the relay should answer may take, and how long to
 /// wait to be sure nothing comes.
@@ -1403,6 +1403,80 @@ async fn r_relay_1_a_workspaces_own_tickets_cannot_crowd_another_channels_host_o
         });
         let answer = join_after(t, &host(t), Duration::from_millis(600)).await;
         assert_eq!(answer["type"], "joined", "round {round}: {answer}");
+        held.extend(burst.await.unwrap());
+    }
+}
+
+/// R-RELAY-1: a workspace spreading its own tickets one to a session over
+/// as many sessions as it likes evicts only itself: the reference relay
+/// holds each workspace to 64 ticketed pending connections, making room
+/// among its own at that cap, and at the pool's cap lets go from the
+/// workspace holding the most. One pending connection on each of 1024
+/// attacker sessions, then 1100 on fresh ones, while another workspace's
+/// host and two viewers answer in 600 ms: all three join, three times.
+/// Reference-only, as the pool is, and heavy: 4300 upgrades each verified
+/// by a relay in this process, which a debug build cannot answer in time,
+/// so it runs with `KROWK_RELAY_HEAVY=1 cargo test --release`; the same
+/// shape at a tenth of the size runs always, in `relay_invariant.rs`.
+#[tokio::test]
+async fn r_relay_1_a_workspace_spread_over_its_own_sessions_evicts_only_itself() {
+    if (std::env::var_os("KROWK_RELAY_URL").is_some() && std::env::var_os("KROWK_RELAY_REFERENCE").is_none()) || std::env::var_os("KROWK_RELAY_HEAVY").is_none() {
+        return;
+    }
+    let t = "pool3";
+    let now = relay_ticket::now();
+    let key = SigningKey::from_secret(&seed("spreader")).unwrap();
+    let ticket_for = |i: u32| {
+        let session = format!("{:08x}-0000-7000-8000-{:012x}", i + 1, 0x5b3);
+        let ticket = Ticket {
+            kid: ticket_kid(),
+            role: RELAY_ROLE_VIEWER,
+            env: relay_ticket::ENV_PRODUCTION,
+            session: krowk_harness::daemon::ws::uuid(&session),
+            device: device_id("spreader").0,
+            signing_key: key.public().0,
+            fence: 0,
+            iat: now,
+            exp: now + relay_ticket::TTL,
+            workspace: "ws_spreader".into(),
+        };
+        (session, ticket.sign(&ticket_seed()))
+    };
+    // Dialed at once, as fast as the relay takes them, so the pool is full
+    // well inside the relay's join deadline.
+    fn all_at_once(tickets: Vec<(String, String)>) -> impl std::future::Future<Output = Vec<Result<Option<Ws>, tokio::task::JoinError>>> {
+        futures_util::future::join_all(tickets.into_iter().enumerate().map(|(n, (session, ticket))| {
+            tokio::spawn(async move {
+                use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+                let mut req = format!("{}/v1/relay/{session}", relay_url()).into_client_request().unwrap();
+                req.headers_mut().insert("x-krowk-ticket", ticket.parse().unwrap());
+                // From many addresses, as the reviewer's attack did, so no
+                // per-address cap on connections before their upgrade binds.
+                let authority = relay_url().split("://").nth(1).unwrap().to_string();
+                let target: std::net::SocketAddr = tokio::net::lookup_host(&authority).await.ok()?.next()?;
+                let sock = tokio::net::TcpSocket::new_v4().ok()?;
+                sock.bind(format!("127.{}.{}.{}:0", 40 + n % 20, (n / 20) % 250 + 1, n / 5000 + 1).parse().unwrap()).ok()?;
+                let stream = sock.connect(target).await.ok()?;
+                tokio_tungstenite::client_async(req, MaybeTlsStream::Plain(stream)).await.ok().map(|(ws, _)| ws)
+            })
+        }))
+    }
+    let mut held = all_at_once((0..1024).map(ticket_for).collect()).await;
+    for round in 0..3u32 {
+        let fresh: Vec<_> = (0..1100).map(|i| ticket_for(2000 + round * 1100 + i)).collect();
+        let burst = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            all_at_once(fresh).await
+        });
+        let (ah, av1, av2) = (host(t), viewer(t, "viewer"), viewer(t, "viewer2"));
+        let (h, v1, v2) = tokio::join!(
+            join_after(t, &ah, Duration::from_millis(600)),
+            join_after(t, &av1, Duration::from_millis(600)),
+            join_after(t, &av2, Duration::from_millis(600)),
+        );
+        for (who, answer) in [("host", h), ("viewer", v1), ("viewer2", v2)] {
+            assert_eq!(answer["type"], "joined", "round {round}: {who}: {answer}");
+        }
         held.extend(burst.await.unwrap());
     }
 }
