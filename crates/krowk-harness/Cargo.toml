@@ -79,9 +79,16 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 # small and compressed once, so the C library's speed buys nothing felt.
 ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 
+[features]
+# Hooks for the integration tests only (`log::simulate_slow_disk`): turned
+# on by the dev-dependency below, never in a build krowk ships.
+test-hooks = []
+
 [dev-dependencies]
 # The stand-in registry, in-process, for the sync tests' two devices.
 krowk-devregistry = { path = "../krowk-devregistry" }
+# Itself, with the test hooks: no new crate, nothing in a shipped build.
+krowk-harness = { path = ".", features = ["test-hooks"] }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "macros", "io-util", "time"] }
 
 [target.'cfg(unix)'.dev-dependencies]

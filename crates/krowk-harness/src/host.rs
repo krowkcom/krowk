@@ -639,7 +639,7 @@ impl Shared {
         if !log::valid_id(id) {
             return Err(EngineError::new("no_session", format!("{id:?} is not a krowk session id")));
         }
-        let events = log::read_events(&self.cfg.sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(log_failure)?;
+        let events = log::read_events_off(&self.cfg.sessions_dir.join(id).join(log::EVENTS_FILE)).await.map_err(log_failure)?;
         let past = replay(&log::branch(&events, events.last().map(|e| e.id.as_str()).unwrap_or_default()), &self.registry());
         // A subagent runs one turn, on the model its definition (or
         // `subagents.model`) chose: there is no next turn to switch.
@@ -1125,9 +1125,9 @@ impl Shared {
                 next = None;
             }
         }
-        // Off the daemon's thread, and not waited for: awaited here, the
-        // gap it opens between `turn.completed` and `result` exposes a
-        // scrollback race in the TUI (r_tui_1_a_10k_token_answer…).
+        // Off the daemon's thread, and not waited for: the result goes out
+        // as soon as the turn has ended, and the daemon waits for the sync
+        // on its way out (`log::synced`).
         plan.log.sync_behind();
         let result = RunResult {
             session_id,
@@ -1525,12 +1525,12 @@ struct Writer<'a> {
 
 impl Writer<'_> {
     async fn log(&mut self, body: LogBody) -> Result<LogEvent, EngineError> {
-        // A write into the page cache, no fsync (that is the turn's end,
-        // off the thread): microseconds (R-PERF-5). Awaited on the
-        // blocking pool it shifts the frames' timing enough to expose a
-        // scrollback race in the TUI (r_tui_1_a_10k_token_answer…), so it
-        // stays here until that is fixed.
-        let ev = self.log.append(body).map_err(log_failure)?;
+        // Written, then sent: in the host daemon the write is awaited on
+        // the blocking pool (`log::off_thread`), so a disk that stalls
+        // stalls this turn's stream alone, never the thread every session
+        // and heartbeat shares (R-LAG-9), and no client sees an event the
+        // log does not have.
+        let ev = self.log.append_off(body).await.map_err(log_failure)?;
         let _ = self.out.send(StreamLine::Log(ev.clone())).await;
         Ok(ev)
     }
@@ -1620,9 +1620,8 @@ impl Writer<'_> {
                     tools,
                     handoff: self.handoff.take(),
                 };
-                // A page-cache write like the event appends, and kept here for
-                // the same TUI race (see `Writer::log`).
-                self.log.record_context(&rec).map_err(log_failure)?;
+                // Off the thread like the event appends (see `Writer::log`).
+                self.log.record_context_off(&rec).await.map_err(log_failure)?;
             }
             EngineEvent::ItemStarted { item_id, kind } => {
                 self.live(LiveEvent::ItemStarted { session_id: session_id.into(), turn_id, item_id, item: kind }).await;

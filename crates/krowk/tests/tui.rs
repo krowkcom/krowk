@@ -17,6 +17,10 @@
 mod mock;
 #[path = "common/pty.rs"]
 mod pty;
+#[path = "common/tmux.rs"]
+mod tmux;
+
+use tmux::Tmux;
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -569,125 +573,6 @@ fn steering_an_interrupted_turn_never_read_goes_back_into_the_prompt_not_sent() 
     // Blank cells are skipped, not written: the words arrive apart.
     assert!(tail.contains("also") && tail.contains("this"), "the steer is in the prompt again: {tail:?}");
     assert!(!tail.contains("esc to interrupt"), "and no new turn was started with it: {tail:?}");
-}
-
-// ---- tmux ---------------------------------------------------------------------
-
-struct Tmux {
-    socket: String,
-}
-
-impl Tmux {
-    /// None when tmux is not installed and this is not CI.
-    fn start(name: &str, cols: u16, rows: u16, cwd: &Path, env: &[(String, String)], args: &[&str]) -> Option<Tmux> {
-        Tmux::start_after(name, cols, rows, cwd, env, args, "")
-    }
-
-    /// As `start`, with `before` run in the shell first — output a person's
-    /// terminal already holds when they type `krowk`.
-    fn start_after(name: &str, cols: u16, rows: u16, cwd: &Path, env: &[(String, String)], args: &[&str], before: &str) -> Option<Tmux> {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            assert!(!cfg!(target_os = "linux") || std::env::var_os("CI").is_none(), "tmux is not installed, and CI on Linux must run this check");
-            eprintln!("skipped: tmux is not installed");
-            return None;
-        }
-        let socket = format!("krowk-tui-{name}-{}", std::process::id());
-        let conf = std::env::temp_dir().join(format!("{socket}.conf"));
-        std::fs::write(&conf, "set -g history-limit 100000\nset -g status off\n").unwrap();
-        let mut line = format!("cd '{}' && {before} exec env -i", cwd.display());
-        for (k, v) in env {
-            line += &format!(" {k}='{v}'");
-        }
-        line += &format!(" '{}'", env!("CARGO_BIN_EXE_krowk"));
-        for a in args {
-            line += &format!(" '{a}'");
-        }
-        let st = Command::new("tmux")
-            .args(["-L", &socket, "-f"])
-            .arg(&conf)
-            .args(["new-session", "-d", "-s", "t", "-x", &cols.to_string(), "-y", &rows.to_string(), &line])
-            .status()
-            .unwrap();
-        assert!(st.success(), "tmux new-session: {st}");
-        Some(Tmux { socket })
-    }
-
-    fn tmux(&self, args: &[&str]) -> String {
-        let out = Command::new("tmux").args(["-L", &self.socket]).args(args).output().unwrap();
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    }
-
-    fn keys(&self, keys: &[&str]) {
-        let mut a = vec!["send-keys", "-t", "t"];
-        a.extend_from_slice(keys);
-        self.tmux(&a);
-    }
-
-    fn screen(&self) -> String {
-        self.tmux(&["capture-pane", "-p", "-t", "t"])
-    }
-
-    fn history(&self) -> String {
-        self.tmux(&["capture-pane", "-p", "-t", "t", "-S", "-", "-E", "-"])
-    }
-
-    fn wait_for(&self, needle: &str, timeout: Duration) -> Option<Duration> {
-        let t0 = Instant::now();
-        while t0.elapsed() < timeout {
-            if self.screen().contains(needle) {
-                return Some(t0.elapsed());
-            }
-            std::thread::sleep(Duration::from_millis(40));
-        }
-        None
-    }
-
-    /// As `wait_for`, over the whole history: a fast stream scrolls a line
-    /// past the screen before a poll of the screen alone can see it.
-    fn wait_in_history(&self, needle: &str, timeout: Duration) -> Option<Duration> {
-        let t0 = Instant::now();
-        while t0.elapsed() < timeout {
-            if self.history().contains(needle) {
-                return Some(t0.elapsed());
-            }
-            std::thread::sleep(Duration::from_millis(40));
-        }
-        None
-    }
-
-    /// The whole history once the TUI has stopped drawing: the same across
-    /// two polls, with `ready` true of the screen.
-    fn wait_still(&self, ready: impl Fn(&str) -> bool, timeout: Duration) -> Option<String> {
-        let t0 = Instant::now();
-        let mut last = self.history();
-        while t0.elapsed() < timeout {
-            std::thread::sleep(Duration::from_millis(80));
-            let now = self.history();
-            if now == last && ready(&self.screen()) {
-                return Some(now);
-            }
-            last = now;
-        }
-        None
-    }
-
-    fn wait_gone(&self, needle: &str, timeout: Duration) -> Option<Duration> {
-        let t0 = Instant::now();
-        while t0.elapsed() < timeout {
-            if !self.screen().contains(needle) {
-                return Some(t0.elapsed());
-            }
-            std::thread::sleep(Duration::from_millis(40));
-        }
-        None
-    }
-}
-
-impl Drop for Tmux {
-    fn drop(&mut self) {
-        self.tmux(&["kill-server"]);
-        let _ = std::fs::remove_file(std::env::temp_dir().join(format!("{}.conf", self.socket)));
-    }
 }
 
 fn streamed(lines: usize, pace: Duration) -> mock::Mock {

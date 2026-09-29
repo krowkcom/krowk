@@ -1644,6 +1644,7 @@ dependencies = [
  "krowk-api",
  "krowk-client",
  "krowk-devregistry",
+ "krowk-harness",
  "krowk-import",
  "krowk-store",
  "libc",

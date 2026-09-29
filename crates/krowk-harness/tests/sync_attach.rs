@@ -1100,3 +1100,35 @@ async fn r_net_3_with_whois_on_another_tailnet_user_is_refused_and_stays_on_the_
     v.commands.send(w.prompt(Some(&session), "still by the relay")).unwrap();
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
 }
+
+
+/// R-OFF-2: the relay drops every batch of a whole turn to B, and B sees
+/// the gap only when a later turn's batch arrives. The catch-up asks from
+/// the newest event B held before that batch, so the dropped turn's events
+/// arrive too.
+#[tokio::test]
+async fn r_off_2_a_whole_turn_the_relay_dropped_arrives_when_a_later_turn_shows_the_gap() {
+    let w = World::new("dropturn");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    let mut ids: Vec<String> = until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await.iter().flat_map(logged).collect();
+    w.b_drop.store(usize::MAX, Ordering::SeqCst);
+    w.b_mode.store(DROP_BATCHES, Ordering::SeqCst);
+    turn(&d, &w, &session, "turn-whose-batches-drop").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    w.b_mode.store(PASS, Ordering::SeqCst);
+    turn(&d, &w, &session, "a later turn").await;
+    let want = log_ids(&w, &session);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while want.iter().any(|i| !ids.contains(i)) && Instant::now() < deadline {
+        if let Ok(Some(batch)) = tokio::time::timeout(Duration::from_millis(500), v.updates.recv()).await {
+            ids.extend(batch.iter().flat_map(logged));
+        }
+    }
+    let missing: Vec<_> = want.iter().filter(|i| !ids.contains(i)).collect();
+    assert!(missing.is_empty(), "B never got {} of A's {} events", missing.len(), want.len());
+}

@@ -1311,6 +1311,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   still refuses the prompt, and the TUI now says so before it asks the
   trust question rather than after saving the answer.
 
+### Fixed
+
+- **A slow disk no longer stalls every session in the host daemon.** Each
+  event a turn logs, and its context record, is written off the thread all
+  sessions and heartbeats share, and still before any client sees it.
+
 ## [0.10.0] - 2026-09-24
 
 krowk is written in Rust now, and it can read your agents' sessions back.

@@ -213,11 +213,14 @@ fn for_this_session(c: &Command, session: &str) -> bool {
 }
 
 /// A viewer's prompt runs under the session's own settings, never its own:
-/// the model and effort the session last ran on, the permission mode its
-/// last turn ran in, the configured toolset and no budget of the viewer's
-/// choosing. A viewer cannot pick `unhinged`, switch the model or lift a
-/// budget through a prompt; the person at the host's machine sets those.
+/// the model and effort the session last ran on, the configured toolset
+/// and no budget of the viewer's choosing. Its permission mode is the one
+/// the session's last turn ran in, capped at `default`: a mode that asks
+/// less (`acceptEdits`, `bypassPermissions`, `unhinged`) is the host
+/// person's choice for their own turns, and a remote turn never runs looser
+/// than `default`. `plan`, which asks more, is kept.
 fn under_session_settings(c: Command, mode: PermissionMode) -> Command {
+    let mode = if mode == PermissionMode::Plan { PermissionMode::Plan } else { PermissionMode::Default };
     match c {
         Command::Prompt { session_id, text, .. } => Command::Prompt { session_id, text, model: None, permission_mode: mode, toolset: None, effort: None, budget: None },
         other => other,
@@ -573,4 +576,27 @@ pub async fn interrupted() {
         }
     };
     tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = t => {} }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prompt(mode: PermissionMode) -> Command {
+        Command::Prompt { session_id: Some("s".into()), text: "t".into(), model: None, permission_mode: mode, toolset: None, effort: None, budget: None }
+    }
+
+    /// R-PERM-2: a remote prompt never runs looser than `default`, whatever
+    /// it asks for and whatever the session last ran in.
+    #[test]
+    fn r_perm_2_a_remote_prompt_runs_no_looser_than_default() {
+        for session in [PermissionMode::Default, PermissionMode::AcceptEdits, PermissionMode::BypassPermissions, PermissionMode::Unhinged] {
+            for asked in [PermissionMode::Unhinged, PermissionMode::BypassPermissions, PermissionMode::Default] {
+                let Command::Prompt { permission_mode, .. } = under_session_settings(prompt(asked), session) else { unreachable!() };
+                assert_eq!(permission_mode, PermissionMode::Default, "session {session:?}, asked {asked:?}");
+            }
+        }
+        let Command::Prompt { permission_mode, .. } = under_session_settings(prompt(PermissionMode::Unhinged), PermissionMode::Plan) else { unreachable!() };
+        assert_eq!(permission_mode, PermissionMode::Plan, "plan asks more, and stays");
+    }
 }
