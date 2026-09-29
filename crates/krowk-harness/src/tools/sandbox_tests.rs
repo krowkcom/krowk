@@ -187,7 +187,7 @@ async fn r_perm_3_a_sandboxed_command_gets_only_the_allowlisted_environment() {
     let (out, err) = bash(&ws, &scope, dump).await;
     assert!(!err, "{out}");
     let names: std::collections::BTreeSet<&str> = out.lines().filter_map(|l| l.split_once('=').map(|(k, _)| k)).collect();
-    let allowed = |k: &&str| ["PATH", "HOME", "TERM", "LANG", "USER", "LOGNAME", "TMPDIR", "PWD", "SHLVL", "_", "OLDPWD"].contains(k) || k.starts_with("LC_");
+    let allowed = |k: &&str| ["PATH", "HOME", "TERM", "LANG", "USER", "LOGNAME", "TMPDIR", "PWD", "SHLVL", "_", "OLDPWD", "RUSTUP_HOME", "CARGO_HOME"].contains(k) || k.starts_with("LC_");
     assert!(names.iter().all(allowed), "only the allowlist: {names:?}");
     assert!(out.contains(&format!("HOME={}", crate::sandbox::HOME)), "{out}");
     let _ = std::fs::remove_dir_all(base);
@@ -245,5 +245,42 @@ async fn r_perm_3_in_a_container_the_file_tools_keep_the_sandboxes_fences() {
     // Commands run as they are: the container is their boundary, and no
     // bubblewrap is needed for them.
     assert_eq!(bash(&ws, &scope, "echo hi").await, ("hi\nexit code 0".into(), false));
+    let _ = std::fs::remove_dir_all(base);
+}
+
+/// R-PERM-3: the Rust toolchain runs inside the sandbox — its homes are
+/// bound read-only and named to the command — and cargo's registry
+/// credentials in them stay unreadable.
+#[tokio::test(flavor = "current_thread")]
+async fn r_perm_3_cargo_runs_in_the_sandbox_and_its_credentials_stay_hidden() {
+    if !enforced("r_perm_3_cargo_runs_in_the_sandbox_and_its_credentials_stay_hidden") {
+        return;
+    }
+    let real_home = std::env::var_os("HOME").map(PathBuf::from);
+    let rustup = std::env::var_os("RUSTUP_HOME").map(PathBuf::from).or_else(|| real_home.as_ref().map(|h| h.join(".rustup")));
+    if !rustup.as_ref().is_some_and(|r| r.is_dir()) || std::process::Command::new("cargo").arg("--version").output().is_err() {
+        assert!(std::env::var_os("CI").is_none(), "CI must have a rustup toolchain to run this check");
+        eprintln!("r_perm_3_cargo_runs_in_the_sandbox_and_its_credentials_stay_hidden skipped: no rustup toolchain here");
+        return;
+    }
+    let (base, ws, mut scope) = setup("sbx-cargo", Profile::Workspace);
+    // A cargo home of the test's own, holding a registry token.
+    let cargo_home = base.join("home/.cargo");
+    std::fs::create_dir_all(cargo_home.join("registry")).unwrap();
+    std::fs::write(cargo_home.join("credentials.toml"), "[registry]\ntoken = \"cio-planted-token\"\n").unwrap();
+    let env = |k: &str| match k {
+        "CARGO_HOME" => Some(cargo_home.clone().into_os_string()),
+        "RUSTUP_HOME" => rustup.clone().map(PathBuf::into_os_string),
+        _ => None,
+    };
+    let plan = Plan::new_in(Sandbox { profile: Profile::Workspace, by: By::Bubblewrap }, &ws, &[], &[], &[], &[], Some(&base.join("home")), &env);
+    scope.secrets.extend(plan.hidden.iter().cloned());
+    scope.sandbox = Some(Arc::new(plan));
+    let (out, err) = bash(&ws, &scope, "cargo --version && echo \"CARGO_HOME=$CARGO_HOME\"").await;
+    assert!(!err && out.starts_with("cargo ") && out.contains(&format!("CARGO_HOME={}", cargo_home.display())), "{out}");
+    let (out, _) = bash(&ws, &scope, "cat \"$CARGO_HOME/credentials.toml\"; echo x > \"$CARGO_HOME/registry/planted\"").await;
+    assert!(!out.contains("cio-planted-token") && !cargo_home.join("registry/planted").exists(), "hidden, and read-only: {out}");
+    let (out, err) = tool(&ws, &scope, READ, json!({ "path": cargo_home.join("credentials.toml") })).await;
+    assert!(err && !out.contains("cio-planted-token"), "{out}");
     let _ = std::fs::remove_dir_all(base);
 }

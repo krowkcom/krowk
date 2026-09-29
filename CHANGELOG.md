@@ -27,7 +27,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   read-only, and the file tools hold the same lines whatever the permission
   mode says. A sandboxed command gets only `PATH`, `TERM`, the locale,
   `USER`, a private `HOME` and `TMPDIR` — no provider key, token or agent
-  socket — no inherited file descriptor, and a session of its own.
+  socket — no inherited file descriptor, and a session of its own. The
+  Rust toolchain still runs: `RUSTUP_HOME` and `CARGO_HOME` (`~/.rustup`,
+  `~/.cargo`) are bound read-only and named to it, with cargo's
+  `credentials.toml` hidden, so `cargo build` of what is already fetched
+  works and fetching a new dependency does not.
   `PreToolUse` hooks are the person's own and run outside it. A run with no `--permission-mode` and no `defaultMode` takes
   the workspace sandbox and `acceptEdits` where bubblewrap works (or inside
   a container), and keeps asking — so refusing edits — where it does not. A

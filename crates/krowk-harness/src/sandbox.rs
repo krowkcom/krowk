@@ -21,7 +21,10 @@
 //! `.claude/settings.json` could run anything the next time git or an
 //! agent starts. `/tmp` is private to the call, and `/run` — where the
 //! ssh agent, the session bus and the Docker socket live — is empty but
-//! for the resolver. The command's environment is an allowlist (`env`),
+//! for the resolver. The Rust toolchain's homes are readable and named to
+//! the command, cargo's registry credentials in them hidden; they are not
+//! writable, so a build of what is already fetched works and a fetch does
+//! not — the simpler of the safe choices. The command's environment is an allowlist (`env`),
 //! it inherits no descriptor past stdio, and it runs in a session, IPC,
 //! UTS and pid namespace of its own.
 //!
@@ -132,6 +135,11 @@ pub struct Plan {
     pub home: Option<PathBuf>,
     /// Directories bound read-only back into a hidden home: the skills.
     pub readable: Vec<PathBuf>,
+    /// The Rust toolchain's homes, as `RUSTUP_HOME` and `CARGO_HOME` name
+    /// them (or `~/.rustup` and `~/.cargo`): readable, never writable, and
+    /// named to the command, since its own `HOME` is private. Cargo's
+    /// registry credentials in them stay hidden.
+    pub toolchains: Vec<(&'static str, PathBuf)>,
 }
 
 impl Plan {
@@ -140,6 +148,12 @@ impl Plan {
     /// (`readable`), the settings directories it keeps (`protected`) and
     /// krowk's home (`secrets`).
     pub fn new(sandbox: Sandbox, cwd: &Path, roots: &[PathBuf], readable: &[PathBuf], protected: &[PathBuf], secrets: &[PathBuf], home: Option<&Path>) -> Plan {
+        Plan::new_in(sandbox, cwd, roots, readable, protected, secrets, home, &|k| std::env::var_os(k))
+    }
+
+    /// `new`, reading `RUSTUP_HOME` and `CARGO_HOME` from `env`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_in(sandbox: Sandbox, cwd: &Path, roots: &[PathBuf], readable: &[PathBuf], protected: &[PathBuf], secrets: &[PathBuf], home: Option<&Path>, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Plan {
         // As they lead: a bind mount is of the real directory, and a
         // symlinked working directory would otherwise leave `.git` where
         // the mount never reaches.
@@ -153,6 +167,9 @@ impl Plan {
         let mut read_only: Vec<PathBuf> = writable.iter().flat_map(|w| FENCED.iter().map(move |f| w.join(f))).collect();
         read_only.extend(protected.iter().map(|d| canon(d)));
         let mut hidden: Vec<PathBuf> = home.map(|h| CREDENTIALS.iter().map(|c| canon(&h.join(c))).collect()).unwrap_or_default();
+        let toolchains = toolchains(home, env);
+        // `credentials` is cargo's older name for the same file.
+        hidden.extend(toolchains.iter().filter(|(k, _)| *k == "CARGO_HOME").flat_map(|(_, d)| ["credentials.toml", "credentials"].map(|f| d.join(f))));
         hidden.extend(secrets.iter().map(|d| canon(d)));
         hidden.dedup();
         let profile = sandbox.profile;
@@ -164,7 +181,8 @@ impl Plan {
             read_only,
             hidden,
             home: home.filter(|_| profile == Profile::Strict).map(canon),
-            readable: readable.iter().map(|d| canon(d)).collect(),
+            readable: readable.iter().map(|d| canon(d)).chain(toolchains.iter().map(|(_, d)| d.clone())).collect(),
+            toolchains,
         }
     }
 
@@ -226,6 +244,9 @@ impl Plan {
         for (k, v) in env() {
             a.extend(["--setenv".into(), k, v]);
         }
+        for (k, d) in &self.toolchains {
+            a.extend(["--setenv".into(), (*k).into(), s(d)]);
+        }
         a.extend(["--dir".into(), HOME.into()]);
         // A session of its own, so it cannot push keystrokes into the
         // terminal krowk runs in (TIOCSTI); its own IPC, host name and
@@ -268,6 +289,20 @@ impl Drop for Unfenced {
     fn drop(&mut self) {
         self.appeared();
     }
+}
+
+/// The Rust toolchain's homes that exist: `RUSTUP_HOME` and `CARGO_HOME`
+/// as krowk's environment names them, else `~/.rustup` and `~/.cargo`, as
+/// they lead. rustup finds its toolchains only there, so a sandbox with a
+/// private `HOME` and without them cannot run `cargo`.
+fn toolchains(home: Option<&Path>, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<(&'static str, PathBuf)> {
+    [("RUSTUP_HOME", ".rustup"), ("CARGO_HOME", ".cargo")]
+        .into_iter()
+        .filter_map(|(k, d)| {
+            let named = env(k).filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| home.map(|h| h.join(d)))?;
+            named.canonicalize().ok().filter(|p| p.is_dir()).map(|p| (k, p))
+        })
+        .collect()
 }
 
 /// The environment a sandboxed command gets, and bubblewrap itself: the
