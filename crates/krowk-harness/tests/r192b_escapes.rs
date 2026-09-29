@@ -276,8 +276,15 @@ async fn r192b_3_planted_secrets_stay_unreadable() {
     let f = bw("w3", Profile::Workspace);
     let mut t = Tally::default();
     let key = f.home.join(".ssh/id_ed25519");
+    // Amended (#192 round 3, the coordinator's decision): the home binds
+    // back nothing, so the positive control is a fixture outside it, and
+    // the home's own non-dot file is an attempt that must be blocked.
+    std::fs::create_dir_all(f.base.join("control")).unwrap();
+    std::fs::write(f.base.join("control/readable.txt"), format!("{MARKER}-control\n")).unwrap();
+    let (out, _) = sh(&f, &format!("cat {}", q(&f.base.join("control/readable.txt")))).await;
+    t.control("an unhidden file outside the home is readable in the sandbox", out.contains(MARKER), &out);
     let (out, _) = sh(&f, &format!("cat {}", q(&f.home.join("control/readable.txt")))).await;
-    t.control("an unhidden file in the fake home is readable in the sandbox", out.contains(MARKER), &out);
+    t.blocked("3j cat a non-dot file in the home (~/control)", !out.contains(MARKER), out);
 
     let (out, _) = sh(&f, &format!("cat {}", q(&key))).await;
     t.blocked("3a cat ~/.ssh key", !out.contains(MARKER), out);

@@ -4,21 +4,20 @@
 //! not krowk's judgement of a command line it cannot fully read.
 //!
 //! What it lets a command see is allowed, not listed: the person's home
-//! is replaced by an empty directory, and only the workspace, the Rust
-//! toolchain's homes (read-only) and — under `workspace` and `read-only` —
-//! the home's top-level entries whose names do not start with a dot
-//! (read-only) are bound back into it. A home's credentials live in its
-//! dotfiles and dot directories, more of them than any list names.
+//! is replaced by an empty directory, and only the workspace and the Rust
+//! toolchain's homes (read-only) are bound back into it. A home's
+//! credentials live in more dotfiles than any list names, and under
+//! `workspace`, which keeps the network, a readable `~/Documents` would be
+//! as good a channel out as a readable `~/.ssh`.
 //!
 //! Three named profiles:
 //!
 //! - **workspace**: the working directory and the directories the
-//!   settings add are writable; the rest of the file system is read-only;
-//!   the network is on, the resolver with it.
+//!   settings add are writable; the rest of the file system outside the
+//!   home is read-only; the network is on, the resolver with it.
 //! - **read-only**: nothing is writable but a private `/tmp`; no network,
 //!   and no resolver.
-//! - **strict**: the workspace is writable, the whole home outside it is
-//!   hidden, and there is no network or resolver.
+//! - **strict**: the workspace is writable; no network, and no resolver.
 //!
 //! In every profile every `.git` in the workspace — nested repositories
 //! and gitdir files included, found by searching it when a call runs — and
@@ -128,7 +127,7 @@ const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".krowk"];
 /// what it may not see, and whether it reaches the network.
 /// What a plan is laid out from, kept so it can be laid out again when a
 /// call runs (`Plan::current`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct Inputs {
     sandbox: Sandbox,
     cwd: PathBuf,
@@ -138,9 +137,10 @@ struct Inputs {
     secrets: Vec<PathBuf>,
     home: Option<PathBuf>,
     toolchains: Vec<(&'static str, PathBuf)>,
+    walk: Walk,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Plan {
     inputs: Inputs,
     pub profile: Profile,
@@ -160,11 +160,6 @@ pub struct Plan {
     /// home holds that signs or logs in as the person (`.git-credentials`,
     /// `.netrc`, `.npmrc`, an agent's login) is no list's to name.
     pub home: Option<PathBuf>,
-    /// The home's top-level entries whose names do not start with a dot,
-    /// bound back read-only under `workspace` and `read-only` (none under
-    /// `strict`): documents and checkouts, not the dotfiles and dot
-    /// directories credentials and configuration live in.
-    pub home_entries: Vec<PathBuf>,
     /// Directories bound read-only back into a hidden home: the skills and
     /// the toolchain homes.
     pub readable: Vec<PathBuf>,
@@ -191,11 +186,20 @@ impl Plan {
         Plan::new_in(sandbox, cwd, roots, readable, protected, secrets, home, &|k| std::env::var_os(k))
     }
 
+    /// `new`, sharing `walk`, the workspace search of the turn the plan is
+    /// for: its first call searches the workspace, and each later one
+    /// sweeps what the first found for changes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with(sandbox: Sandbox, cwd: &Path, roots: &[PathBuf], readable: &[PathBuf], protected: &[PathBuf], secrets: &[PathBuf], home: Option<&Path>, walk: Walk) -> Plan {
+        let toolchains = toolchains(home, &|k| std::env::var_os(k));
+        Plan::build(Inputs { sandbox, cwd: cwd.into(), roots: roots.into(), readable: readable.into(), protected: protected.into(), secrets: secrets.into(), home: home.map(Into::into), toolchains, walk })
+    }
+
     /// `new`, reading `RUSTUP_HOME` and `CARGO_HOME` from `env`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_in(sandbox: Sandbox, cwd: &Path, roots: &[PathBuf], readable: &[PathBuf], protected: &[PathBuf], secrets: &[PathBuf], home: Option<&Path>, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Plan {
         let toolchains = toolchains(home, env);
-        Plan::build(Inputs { sandbox, cwd: cwd.into(), roots: roots.into(), readable: readable.into(), protected: protected.into(), secrets: secrets.into(), home: home.map(Into::into), toolchains })
+        Plan::build(Inputs { sandbox, cwd: cwd.into(), roots: roots.into(), readable: readable.into(), protected: protected.into(), secrets: secrets.into(), home: home.map(Into::into), toolchains, walk: Walk::default() })
     }
 
     /// The plan laid out again, as the workspace and the home are now: a
@@ -207,7 +211,7 @@ impl Plan {
     }
 
     fn build(inputs: Inputs) -> Plan {
-        let Inputs { sandbox, ref cwd, ref roots, ref readable, ref protected, ref secrets, ref home, ref toolchains } = inputs;
+        let Inputs { sandbox, ref cwd, ref roots, ref readable, ref protected, ref secrets, ref home, ref toolchains, ref walk } = inputs;
         let (cwd, home) = (cwd.as_path(), home.as_deref());
         // As they lead: a bind mount is of the real directory, and a
         // symlinked working directory would otherwise leave `.git` where
@@ -223,7 +227,7 @@ impl Plan {
         // Every repository in the workspace, nested ones too, and the hooks
         // directory each names: bound read-only, and fenced from the file
         // tools alike.
-        let (fences, refused) = match repositories(&writable, home) {
+        let (fences, refused) = match walk.lock().unwrap_or_else(|e| e.into_inner()).repositories(&writable, home) {
             Ok(r) => (r, None),
             Err(why) => (Fences::default(), Some(why)),
         };
@@ -245,14 +249,6 @@ impl Plan {
         hidden.dedup();
         let profile = sandbox.profile;
         let home = home.map(canon);
-        let home_entries = match (&home, profile) {
-            (Some(h), Profile::Workspace | Profile::ReadOnly) => std::fs::read_dir(h)
-                // Not a symlink: `~/keys -> ~/.ssh` would bind the dot
-                // directory back under another name.
-                .map(|rd| rd.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.') && e.file_type().is_ok_and(|t| !t.is_symlink())).map(|e| e.path()).collect())
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
         Plan {
             inputs: inputs.clone(),
             profile,
@@ -262,7 +258,6 @@ impl Plan {
             read_only,
             hidden,
             home,
-            home_entries,
             readable: readable.iter().map(|d| canon(d)).chain(toolchains.iter().map(|(_, d)| d.clone())).collect(),
             refused,
             repos,
@@ -278,7 +273,7 @@ impl Plan {
             return true;
         }
         match &self.home {
-            Some(home) => real.starts_with(home) && !self.writable.iter().chain(&self.readable).chain(&self.home_entries).any(|w| real.starts_with(w)),
+            Some(home) => real.starts_with(home) && !self.writable.iter().chain(&self.readable).any(|w| real.starts_with(w)),
             None => false,
         }
     }
@@ -313,7 +308,7 @@ impl Plan {
         }
         if let Some(home) = &self.home {
             a.extend(["--tmpfs".into(), s(home)]);
-            for r in self.home_entries.iter().chain(&self.readable) {
+            for r in &self.readable {
                 a.extend(["--ro-bind-try".into(), s(r), s(r)]);
             }
         }
@@ -378,6 +373,7 @@ pub struct Unfenced {
     writable: Vec<PathBuf>,
     home: Option<PathBuf>,
     repos: Vec<(u64, u64)>,
+    walk: Walk,
 }
 
 /// A path's device and inode, not following a symlink.
@@ -398,14 +394,14 @@ impl Unfenced {
     pub fn before(plan: &Plan) -> Unfenced {
         let missing = plan.read_only.iter().filter(|p| std::fs::symlink_metadata(p).is_err()).cloned().collect();
         let repos = plan.repos.iter().filter_map(|r| identity(r)).collect();
-        Unfenced { missing, writable: plan.writable.clone(), home: plan.home.clone(), repos }
+        Unfenced { missing, writable: plan.writable.clone(), home: plan.home.clone(), repos, walk: plan.inputs.walk.clone() }
     }
 
     /// Removes what appeared and says so; empty when nothing did.
     pub fn appeared(&mut self) -> Vec<PathBuf> {
         let mut out = Vec::new();
         let mut gone = std::mem::take(&mut self.missing);
-        if let Ok(now) = repositories(&std::mem::take(&mut self.writable), self.home.as_deref()) {
+        if let Ok(now) = self.walk.lock().unwrap_or_else(|e| e.into_inner()).repositories(&std::mem::take(&mut self.writable), self.home.as_deref()) {
             gone.extend(now.repos.into_iter().filter(|r| identity(r).is_none_or(|id| !self.repos.contains(&id))));
         }
         for p in gone {
@@ -444,42 +440,115 @@ impl Fences {
     }
 }
 
-/// Searches each writable root for repositories, following no symlink and
-/// not descending into a `.git` (compared as the file tools compare it,
-/// case-folded, with Windows' trailing dots and spaces dropped).
-fn repositories(roots: &[PathBuf], home: Option<&Path>) -> Result<Fences, String> {
-    let is_git = |n: &std::ffi::OsStr| n.to_string_lossy().trim_end_matches(['.', ' ']).eq_ignore_ascii_case(".git");
-    let within = |p: &Path| roots.iter().any(|r| p.starts_with(r));
-    let mut f = Fences::default();
-    let mut seen = 0usize;
-    for root in roots {
-        let mut stack = vec![root.clone()];
-        while let Some(dir) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-            for e in rd.flatten() {
-                seen += 1;
-                if seen > WALK_BUDGET {
-                    return Err(format!("the workspace holds more than {WALK_BUDGET} files and directories, too many to search for every repository in it, so the sandbox cannot fence them — run krowk in a smaller directory, or without --sandbox"));
+/// A turn's workspace search, shared by its calls: every directory it
+/// read, known by its device, inode and change time, with what it held. A
+/// later search stats each directory it knows and reads again only those
+/// that changed — a file added, removed or renamed in a directory changes
+/// its time — so an unchanged workspace costs a sweep of `stat`s,
+/// and a `.git` made anywhere since is found. A repository's config (its
+/// `core.hooksPath`) and a gitdir file are known the same way.
+pub type Walk = std::sync::Arc<std::sync::Mutex<WalkCache>>;
+
+#[derive(Debug, Default)]
+pub struct WalkCache {
+    dirs: std::collections::HashMap<PathBuf, Seen>,
+    gits: std::collections::HashMap<PathBuf, (Stamp, Option<PathBuf>, Option<PathBuf>)>,
+}
+
+/// A directory or file as `stat` sees it, not following a symlink: its
+/// device and inode, and its change time — which, unlike the modification
+/// time, no command can set back (`touch -d` moves `mtime`, and moves
+/// `ctime` forward in doing so).
+type Stamp = (u64, u64, i64, i64);
+
+fn stamp(p: &Path) -> Option<Stamp> {
+    stamp_of(&std::fs::symlink_metadata(p).ok()?)
+}
+
+fn stamp_of(m: &std::fs::Metadata) -> Option<Stamp> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((m.dev(), m.ino(), m.ctime(), m.ctime_nsec()))
+    }
+    #[cfg(not(unix))]
+    {
+        let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some((0, 0, t.as_secs() as i64, t.subsec_nanos() as i64))
+    }
+}
+
+/// What one directory held when it was read.
+#[derive(Debug)]
+struct Seen {
+    stamp: Stamp,
+    entries: usize,
+    subdirs: Vec<PathBuf>,
+    gits: Vec<(PathBuf, bool)>,
+}
+
+impl WalkCache {
+    /// Every repository in each writable root, following no symlink and not
+    /// descending into a `.git` (compared as the file tools compare it,
+    /// case-folded, with Windows' trailing dots and spaces dropped).
+    fn repositories(&mut self, roots: &[PathBuf], home: Option<&Path>) -> Result<Fences, String> {
+        let is_git = |n: &std::ffi::OsStr| n.to_string_lossy().trim_end_matches(['.', ' ']).eq_ignore_ascii_case(".git");
+        let within = |p: &Path| roots.iter().any(|r| p.starts_with(r));
+        let mut f = Fences::default();
+        let mut seen = 0usize;
+        let mut visited = std::collections::HashSet::new();
+        for root in roots {
+            let mut stack = vec![root.clone()];
+            while let Some(dir) = stack.pop() {
+                let Some(st) = std::fs::symlink_metadata(&dir).ok().filter(std::fs::Metadata::is_dir).and_then(|m| stamp_of(&m)) else { continue };
+                if !self.dirs.get(&dir).is_some_and(|s| s.stamp == st) {
+                    let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+                    let mut s = Seen { stamp: st, entries: 0, subdirs: Vec::new(), gits: Vec::new() };
+                    for e in rd.flatten() {
+                        s.entries += 1;
+                        let Ok(t) = e.file_type() else { continue };
+                        if is_git(&e.file_name()) {
+                            s.gits.push((e.path(), t.is_dir()));
+                        } else if t.is_dir() {
+                            s.subdirs.push(e.path());
+                        }
+                    }
+                    self.dirs.insert(dir.clone(), s);
                 }
-                let Ok(t) = e.file_type() else { continue };
-                let p = e.path();
-                if is_git(&e.file_name()) {
-                    let repo = dir.clone();
-                    let gitdir = if t.is_dir() { Some(p.clone()) } else { git_file_target(&p, &repo) };
-                    if let Some(g) = gitdir.clone().filter(|g| g != &p && within(g)) {
-                        f.extra.push(g);
+                let s = &self.dirs[&dir];
+                seen += s.entries;
+                if seen > WALK_BUDGET {
+                    return Err(format!(
+                        "the workspace holds more than {seen} files and directories, over the {WALK_BUDGET} the sandbox searches for repositories to fence, so it cannot fence them all — run krowk in a smaller directory, or pass --sandbox off to run without the sandbox"
+                    ));
+                }
+                stack.extend(s.subdirs.iter().cloned());
+                let gits = s.gits.clone();
+                visited.insert(dir.clone());
+                for (p, is_dir) in gits {
+                    // A git directory's config, or a gitdir file, as it is now.
+                    let watched = if is_dir { p.join("config") } else { p.clone() };
+                    let st = stamp(&watched).unwrap_or_default();
+                    let fresh = self.gits.get(&p).is_some_and(|(s, _, _)| *s == st);
+                    if !fresh {
+                        let repo = dir.clone();
+                        let gitdir = if is_dir { Some(p.clone()) } else { git_file_target(&p, &repo) };
+                        let hooks = gitdir.as_deref().and_then(|g| hooks_path(g, &repo, home));
+                        self.gits.insert(p.clone(), (st, gitdir.filter(|g| g != &p), hooks));
                     }
-                    if let Some(hooks) = gitdir.as_deref().and_then(|g| hooks_path(g, &repo, home)).filter(|h| within(h)) {
-                        f.extra.push(hooks);
-                    }
+                    let (_, gitdir, hooks) = &self.gits[&p];
+                    f.extra.extend(gitdir.iter().chain(hooks).filter(|g| within(g)).cloned());
                     f.repos.push(p);
-                } else if t.is_dir() {
-                    stack.push(p);
                 }
             }
         }
+        // What is no longer there is forgotten, so the cache stays the size
+        // of the workspace.
+        self.dirs.retain(|d, _| visited.contains(d));
+        let repos: std::collections::HashSet<&PathBuf> = f.repos.iter().collect();
+        self.gits.retain(|g, _| repos.contains(g));
+        Ok(f)
     }
-    Ok(f)
 }
 
 /// A small regular file's text, read without following a symlink and
@@ -677,9 +746,9 @@ mod tests {
         assert!(args.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == base.join("home/.ssh").to_string_lossy()));
         assert!(!args.contains(&"--unshare-net".to_string()), "workspace keeps the network");
         assert!(args.contains(&"/run/systemd/resolve".to_string()), "and its resolver");
-        assert!(at("--tmpfs", &base.join("home")) < at("--ro-bind-try", &base.join("home/src")), "the home is hidden, then its non-dot entries come back");
-        assert!(!p.home_entries.contains(&base.join("home/keys")), "a symlink to a dot directory is not bound back");
-        assert!(p.hides(&base.join("home/.ssh/id_ed25519")) && !p.hides(&base.join("home/src")));
+        assert!(args.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == base.join("home").to_string_lossy()), "the home is hidden");
+        assert!(!args.iter().any(|a| a.starts_with(&*base.join("home/src").to_string_lossy()) || a.starts_with(&*base.join("home/keys").to_string_lossy())), "and nothing of it comes back");
+        assert!(p.hides(&base.join("home/.ssh/id_ed25519")) && p.hides(&base.join("home/src/notes.txt")), "every profile hides the whole home");
         let strict = plan(Profile::Strict, &base);
         assert!(strict.bwrap_args().contains(&"--unshare-net".to_string()));
         assert!(!strict.bwrap_args().iter().any(|a| a.starts_with("/run/")), "strict mounts no resolver");
@@ -687,6 +756,35 @@ mod tests {
         let ro = plan(Profile::ReadOnly, &base);
         assert!(ro.bwrap_args().windows(2).any(|w| w[0] == "--ro-bind" && w[1] == base.join("ws").to_string_lossy()), "read-only binds the workspace read-only");
         assert!(Profile::NAMES.iter().all(|n| Profile::parse(n).map(Profile::name) == Some(n)));
+    }
+
+    /// The workspace search's cost, first and cached, over trees of 60k
+    /// and 400k entries (100 files a directory): run by hand with
+    /// `--ignored --nocapture`, for the numbers the PR quotes.
+    #[test]
+    #[ignore]
+    fn workspace_search_cost() {
+        for total in [60_000usize, 399_000] {
+            let base = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../target/tmp/walk-cost-{total}"));
+            if !base.exists() {
+                for d in 0..total / 101 {
+                    let dir = base.join(format!("d{:03}/e{d}", d % 100));
+                    std::fs::create_dir_all(&dir).unwrap();
+                    for f in 0..100 {
+                        std::fs::write(dir.join(format!("f{f}")), "").unwrap();
+                    }
+                }
+            }
+            let base = base.canonicalize().unwrap();
+            let mut cache = WalkCache::default();
+            let t = std::time::Instant::now();
+            cache.repositories(std::slice::from_ref(&base), None).unwrap();
+            let first = t.elapsed();
+            let t = std::time::Instant::now();
+            cache.repositories(std::slice::from_ref(&base), None).unwrap();
+            let cached = t.elapsed();
+            eprintln!("walk {total} entries ({} directories): first {first:?}, cached {cached:?}", cache.dirs.len());
+        }
     }
 
     /// R-PERM-3: on a system without bubblewrap, a sandboxed run refuses

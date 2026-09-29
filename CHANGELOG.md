@@ -19,17 +19,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `--permission-mode default` to keep the old behaviour. `--sandbox
   workspace|read-only|strict|off` puts the `bash` tool inside bubblewrap.
   The sandbox allows rather than lists what it hides: your home is replaced
-  by an empty one, and only the workspace, the Rust toolchain's homes and —
-  under `workspace` and `read-only` — the home's entries whose names do not
-  start with a dot come back, so dotfiles and dot directories
-  (`.git-credentials`, `.netrc`, `.npmrc`, `~/.ssh`, agents' logins) are out
-  of reach, and programs installed under a dot directory of the home (mise's
-  shims, `~/.local/bin`) are not on the sandbox's `PATH`. `workspace` writes
+  by an empty one, and only the workspace and the Rust toolchain's homes
+  come back, so nothing else in it — `~/.ssh`, `.git-credentials`, `.netrc`,
+  agents' logins, `~/Documents` — is in reach, and programs installed under
+  the home (mise's shims, `~/.local/bin`) are not on the sandbox's `PATH`. `workspace` writes
   the working directory and its added directories and keeps the network;
-  `read-only` writes nothing and has no network, not even DNS; `strict` has
-  no network and hides the whole home outside the workspace. Every `.git` in
+  `read-only` writes nothing and has no network, not even DNS; `strict`
+  writes the workspace and has no network. Every `.git` in
   the workspace, nested repositories and gitdir files included, and every
-  hooks directory a repository's `core.hooksPath` names there, stays
+  hooks directory a repository's `core.hooksPath` names there — found by
+  searching the workspace once a turn and re-checking only what changed —
+  stays
   read-only, as do `.claude`, `.codex` and `.krowk`; a `.git` a command
   creates is removed after the call. The file tools hold the same lines
   under every permission mode, and open exactly the path they checked, so a

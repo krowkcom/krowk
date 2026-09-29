@@ -106,6 +106,12 @@ async fn r_perm_3_git_hooks_and_settings_are_read_only_inside_the_sandbox() {
     // creates is gone when it returns, and the call says so.
     let (out, err) = bash(&ws, &scope, "mkdir -p .krowk .codex && echo '{\"hooks\":{}}' > .krowk/config.json && ln -s /tmp .codex/x").await;
     assert!(err && out.contains("the sandbox removed") && !ws.join(".krowk").exists() && !ws.join(".codex").exists(), "{out}");
+    // Nor one hidden from the workspace search by setting its directory's
+    // time back: the search keys on the change time, which cannot be.
+    std::fs::create_dir_all(ws.join("stale")).unwrap();
+    let (_, _) = bash(&ws, &scope, "true").await;
+    let (out, err) = bash(&ws, &scope, "t=$(stat -c %Y stale); mkdir -p stale/.git/hooks && touch -d @$t stale && echo 'echo pwned' > stale/.git/hooks/pre-commit").await;
+    assert!(err && !ws.join("stale/.git").exists(), "{out}");
     // Nor a nested repository the command makes: its `.git` is removed
     // after the call, which says so.
     std::fs::create_dir_all(ws.join("nested")).unwrap();
