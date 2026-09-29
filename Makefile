@@ -8,8 +8,11 @@ build: ## Build target/release/krowk (the full build) and krowk-mcp
 	KROWK_VERSION=$(VERSION) cargo build --release -p krowk --features harness
 
 # With `harness`, which implies `sessions`: every test either build runs.
+# nextest runs no doctests, so cargo test runs those. CI sets
+# NEXTEST_PROFILE=ci, which retries a flaky test instead of failing the job.
 test: ## The unit and integration tests
-	cargo test --workspace --exclude krowk-golden --features krowk/harness
+	cargo nextest run --workspace --exclude krowk-golden --features krowk/harness
+	cargo test --doc --workspace --exclude krowk-golden --features krowk/harness
 
 # Both builds: the agent build (no sessions) is the one a container compiles
 # from source, and a cfg that only one of them sees is a lint only one catches.

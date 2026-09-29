@@ -1,0 +1,39 @@
+# How `make test` runs the tests. nextest runs every test in a process of its
+# own, so a `static` lock in a test binary no longer keeps its tests one at a
+# time: the groups and overrides below do.
+
+[test-groups]
+# Each drives a real backend or daemon through a shared stand-in and holds a
+# SERIAL lock under cargo test.
+claude-backend = { max-threads = 1 }
+codex-backend = { max-threads = 1 }
+switch = { max-threads = 1 }
+
+[profile.default]
+# A hung test is named after a minute and stopped after five.
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[[profile.default.overrides]]
+filter = "binary(claude_backend)"
+test-group = "claude-backend"
+
+[[profile.default.overrides]]
+filter = "binary(codex_backend)"
+test-group = "codex-backend"
+
+[[profile.default.overrides]]
+filter = "binary(switch)"
+test-group = "switch"
+
+# The no-lag tests measure time: each runs with nothing else on the machine,
+# as cargo test ran them (one binary at a time, ONE_AT_A_TIME within it).
+[[profile.default.overrides]]
+filter = "binary(daemon_ws)"
+threads-required = "num-test-threads"
+
+# CI: a test that fails and then passes is reported FLAKY and the job goes on,
+# instead of the whole job being run again. One that fails three times fails.
+[profile.ci]
+retries = { backoff = "fixed", count = 2, delay = "1s" }
+fail-fast = false
+failure-output = "immediate-final"
