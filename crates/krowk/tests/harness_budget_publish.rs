@@ -199,6 +199,8 @@ fn tool_result(m: &mock::Mock) -> (String, bool) {
     (text, block["is_error"].as_bool().unwrap_or(false))
 }
 
+/// R-EVID-1, and R-EVID-2's substrate: the artifact carries the session, the
+/// engine and the model its card links back with.
 #[test]
 fn r_evid_1_publish_pushes_a_screenshot_tagged_with_the_session_under_its_run() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
@@ -225,6 +227,11 @@ fn r_evid_1_publish_pushes_a_screenshot_tagged_with_the_session_under_its_run() 
     assert_eq!(artifact["metadata"]["krowk.session"], session.as_str(), "{shown}");
     assert_eq!(artifact["metadata"]["krowk.caption"], "the fixed page");
     assert_eq!(artifact["metadata"]["krowk.client"], "krowk/dev", "published by krowk itself, not its MCP server");
+    // R-EVID-2: what the card's session line reads — the engine and the
+    // model, off the artifact itself.
+    assert_eq!(artifact["metadata"]["krowk.engine"], "krowk", "{shown}");
+    assert_eq!(artifact["metadata"]["gen_ai.request.model"], "claude-sonnet-4-6", "{shown}");
+    assert_eq!(artifact["metadata"]["gen_ai.system"], "anthropic", "{shown}");
     assert_eq!(artifact["run"]["slug"], run.as_str(), "{shown}");
     assert_eq!(artifact["run"]["metadata"]["krowk.session"], session.as_str(), "the run records the session too");
     assert_eq!(artifact["run"]["metadata"]["krowk.harness"], "krowk");

@@ -50,6 +50,32 @@ pub struct PublishRequest {
     pub session_id: String,
     /// The session's run, once it has one.
     pub run: Option<String>,
+    /// What did the work this file came out of.
+    pub producer: Producer,
+}
+
+/// What did the work a published file came out of, stamped on each artifact
+/// at its own moment (canon, engineering/metadata.md): the turn's model can
+/// change mid-session and a subagent runs its own, so it is the publishing
+/// turn's, not the session's first.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Producer {
+    /// `krowk.engine`: `krowk` for krowk's own loop, else the backend that
+    /// ran it — `claude-code`, `codex-app-server`.
+    pub engine: String,
+    /// `gen_ai.request.model`: the provider's model id.
+    pub model: String,
+    /// `gen_ai.system`: the provider the model is priced under.
+    pub provider: String,
+}
+
+impl Producer {
+    /// The engine name for a turn on this instance: a backend's kind, or
+    /// `krowk` when the native loop runs it.
+    pub fn new(instance: &crate::instances::Resolved, model: &str) -> Producer {
+        let engine = if instance.backend.is_some() { instance.kind } else { "krowk" };
+        Producer { engine: engine.into(), model: model.into(), provider: instance.provider.clone() }
+    }
 }
 
 /// What a publish produced: the text the model reads — every artifact's
@@ -74,6 +100,7 @@ pub type Publisher = Arc<dyn Fn(&PublishRequest) -> Result<Published, String> + 
 pub struct Evidence {
     publisher: Publisher,
     session_id: String,
+    producer: Producer,
     /// Held across a publish, so two at once open one run between them.
     run: Arc<tokio::sync::Mutex<Option<String>>>,
     /// Where a run it opens is reported instead of the caller's channel: a
@@ -90,15 +117,16 @@ impl std::fmt::Debug for Evidence {
 
 impl Evidence {
     /// `run` is the session's, from its log's `run.opened`, if it has one.
-    pub fn new(publisher: Publisher, session_id: &str, run: Option<String>) -> Evidence {
-        Evidence { publisher, session_id: session_id.into(), run: Arc::new(tokio::sync::Mutex::new(run)), report_to: None }
+    pub fn new(publisher: Publisher, session_id: &str, run: Option<String>, producer: Producer) -> Evidence {
+        Evidence { publisher, session_id: session_id.into(), producer, run: Arc::new(tokio::sync::Mutex::new(run)), report_to: None }
     }
 
     /// The same evidence — the same session tag, the same run — for a
     /// subagent, whose run, when it opens one, is reported on its parent's
-    /// `events` and so logged in the parent's log.
-    pub fn for_subagent(&self, events: Events) -> Evidence {
-        Evidence { report_to: Some(events), ..self.clone() }
+    /// `events` and so logged in the parent's log. What it publishes is the
+    /// subagent's work, so the producer is its own.
+    pub fn for_subagent(&self, events: Events, producer: Producer) -> Evidence {
+        Evidence { report_to: Some(events), producer, ..self.clone() }
     }
 
     /// One `publish` call: the output the model reads and whether it is an
@@ -112,7 +140,7 @@ impl Evidence {
             return ("publish needs at least one path in `files`".into(), true);
         }
         let mut run = self.run.lock().await;
-        let req = PublishRequest { root: cwd.to_path_buf(), files: input.files, caption: input.caption.filter(|c| !c.trim().is_empty()), session_id: self.session_id.clone(), run: run.clone() };
+        let req = PublishRequest { root: cwd.to_path_buf(), files: input.files, caption: input.caption.filter(|c| !c.trim().is_empty()), session_id: self.session_id.clone(), run: run.clone(), producer: self.producer.clone() };
         let publisher = self.publisher.clone();
         // The upload is blocking network work, off the runtime, which must
         // stay free to hear an interrupt.
@@ -167,7 +195,8 @@ mod tests {
             seen.lock().unwrap().push(r.clone());
             Ok(Published { text: format!("published {}", r.files.join(", ")), run: Some(r.run.clone().unwrap_or_else(|| "run_1".into())), for_person: Vec::new() })
         });
-        let ev = Evidence::new(publisher, "s-1", None);
+        let producer = Producer { engine: "krowk".into(), model: "claude-sonnet-4-6".into(), provider: "anthropic".into() };
+        let ev = Evidence::new(publisher, "s-1", None, producer.clone());
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         rt.block_on(async {
@@ -182,5 +211,6 @@ mod tests {
         let asked = asked.lock().unwrap();
         assert_eq!((asked[0].run.as_deref(), asked[1].run.as_deref()), (None, Some("run_1")));
         assert_eq!((asked[0].session_id.as_str(), asked[0].caption.as_deref(), asked[0].root.as_path()), ("s-1", Some("the fix"), Path::new("/repo")));
+        assert_eq!(asked[0].producer, producer, "R-EVID-2: each publish carries what did the work");
     }
 }

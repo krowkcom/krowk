@@ -309,6 +309,16 @@ impl Server<'_> {
         let mut metadata = BTreeMap::new();
         if keyed {
             metadata.insert("krowk.session", req.session_id.clone());
+            // What did the work, so the artifact's card can say which engine
+            // and model its session ran on (R-EVID-2) without the registry
+            // ever reading the session: a synced session is sealed, and the
+            // card shows what the artifact carries and nothing else.
+            let p = &req.producer;
+            for (key, value) in [("krowk.engine", &p.engine), ("gen_ai.request.model", &p.model), ("gen_ai.system", &p.provider)] {
+                if !value.is_empty() {
+                    metadata.insert(key, value.clone());
+                }
+            }
             // Pushed by krowk's engine, through its MCP server's code.
             metadata.insert("krowk.client", format!("krowk/{}", self.version));
             if let Some(c) = &req.caption {
