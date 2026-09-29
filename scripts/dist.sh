@@ -84,6 +84,16 @@ build() {
   [[ "$goos" == windows ]] && ext=".exe"
   # Apple's own toolchain for Apple targets on a Mac; zig everywhere else.
   [[ "$goos" == darwin && "$(uname -s)" == Darwin ]] && tool=build
+  # R-OSS-3: the same tag builds the same bytes wherever it is checked out.
+  # The only machine-specific input a release binary would otherwise carry is
+  # the absolute path of its sources, in panic locations and in the C that
+  # SQLite and ring compile, so both are rewritten to fixed prefixes: this
+  # checkout to /krowk, cargo's registry to /cargo. The standard library's
+  # paths are already /rustc/<commit>. The toolchain versions are the other
+  # input, and they are pinned in the workflows.
+  local cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$PWD=/krowk --remap-path-prefix=$cargo_home=/cargo"
+  export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$PWD=/krowk -ffile-prefix-map=$cargo_home=/cargo"
   if [[ "${KROWK_FAST_BUILD:-}" == 1 ]]; then
     export CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
   fi
