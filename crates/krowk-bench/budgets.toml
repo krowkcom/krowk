@@ -210,7 +210,10 @@ unit = "bytes"
 # the join and its checks, the per-stream ring buffer and resume, routing,
 # windows and token buckets, the roster file and the command. Raised 9.25
 # -> 9.50 MiB by ticket 17, leaving 193,976 bytes for the rest of Harness
-# P1.
+# P1. Its review round 1 (no new crate: canonical origins, per-channel
+# join ceilings, the pre-join read budget and per-address caps, overflow
+# said on every queue, idle channels forgotten) adds 44,256 bytes:
+# 9,811,752 (9.36 MiB), 149,720 under this.
 max = { x86_64-linux = 9_961_472 }
 status = "enforced"
 
