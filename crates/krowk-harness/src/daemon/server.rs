@@ -894,7 +894,10 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     // fails is remembered for a few seconds (`http::tls`), so the engine's
     // own call right after is refused at once rather than built again on
     // the thread; a turn that needs no TLS (a backend's) runs as it did.
-    if turn && !crate::http::warmed() {
+    // Any command, not only a turn: a model switch makes an engine to
+    // check the model, and the daemon's `client` never builds one itself
+    // (`http::warm_only`).
+    if !crate::http::warmed() {
         let _ = tokio::task::spawn_blocking(crate::http::warm).await;
     }
     let (tx, mut rx) = mpsc::channel::<StreamLine>(1024);
