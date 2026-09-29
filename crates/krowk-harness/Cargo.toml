@@ -74,6 +74,8 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+# The stand-in registry, in-process, for the sync tests' two devices.
+krowk-devregistry = { path = "../krowk-devregistry" }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "macros", "io-util", "time"] }
 
 [target.'cfg(unix)'.dev-dependencies]

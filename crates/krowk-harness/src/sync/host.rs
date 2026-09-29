@@ -188,10 +188,10 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let (heads_tx, mut heads) = mpsc::unbounded_channel();
     let mut head = writer.head();
     let (jobs, jobs_rx) = std::sync::mpsc::channel();
-    {
+    let writing = {
         let held = held.clone();
-        std::thread::spawn(move || writer_loop(writer, held, jobs_rx, heads_tx));
-    }
+        std::thread::spawn(move || writer_loop(writer, held, jobs_rx, heads_tx))
+    };
     // A checkpoint as the bridge takes the session up, so a device
     // attaching reads one chunk and the tail, not the whole log.
     let _ = jobs.send(Write::Checkpoint(worktree(&o.cwd)));
@@ -334,5 +334,14 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let _ = jobs.send(Write::Flush);
     drop(jobs);
     halt.store(true, std::sync::atomic::Ordering::Relaxed);
+    // The lease goes back, so the next host takes it at once rather than
+    // after its TTL, once the writer has put its last chunk.
+    let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+    let o2 = o.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = writing.join();
+        o2.api.release_lease(&o2.session, &token)
+    })
+    .await;
     Ok(())
 }
