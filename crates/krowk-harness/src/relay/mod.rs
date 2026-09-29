@@ -576,8 +576,9 @@ async fn read(mut incoming: futures_util::stream::SplitStream<Ws>, relay: Rc<Rel
             }
             Message::Text(_) => break Some(refuse("not_binary", "every message but the text heartbeat is binary", "send envelopes as binary messages")),
             Message::Close(_) => break None,
-            // tungstenite answers a ping as it reads it; a pong only says
-            // the peer is there, which reading it has noted.
+            // tungstenite answers a ping as it reads it, and the read that
+            // follows flushes the pong; a pong only says the peer is
+            // there, which reading it noted.
             _ => continue,
         };
         if !messages.take(1.0) || !bytes.take(b.len() as f64) {
