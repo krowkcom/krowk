@@ -6,13 +6,13 @@
     "url": "https://github.com/krowkcom/krowk",
     "source": "github"
   },
-  "version": "0.11.0",
+  "version": "0.11.1",
   "websiteUrl": "https://krowk.com",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@krowk/mcp",
-      "version": "0.11.0",
+      "version": "0.11.1",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
