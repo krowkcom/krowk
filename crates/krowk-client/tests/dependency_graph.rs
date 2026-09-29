@@ -48,10 +48,13 @@ fn violations(metadata: &Value) -> Vec<String> {
     out
 }
 
+/// Not `--offline`, unlike the crypto boundary's `--no-deps` call: the
+/// resolved graph needs every locked package's manifest, other targets'
+/// included, which a runner that built for one target has not fetched.
 fn metadata() -> Value {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml");
-    let out = Command::new(cargo).args(["metadata", "--format-version", "1", "--offline", "--manifest-path", root]).output().expect("cargo metadata runs");
+    let out = Command::new(cargo).args(["metadata", "--format-version", "1", "--manifest-path", root]).output().expect("cargo metadata runs");
     assert!(out.status.success(), "cargo metadata failed: {}", String::from_utf8_lossy(&out.stderr));
     serde_json::from_slice(&out.stdout).expect("cargo metadata is JSON")
 }
