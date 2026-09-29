@@ -5,7 +5,13 @@
 //! LeasesController.
 //!
 //! Every endpoint needs a key and refuses a free workspace (R-SYNC-1); a
-//! token containing `free` is one, as for uploads. Keys and sealed blobs are
+//! token containing `free` is one, as for uploads. The creates meet a burst
+//! ceiling of 120 a minute per workspace, a workspace holds at most so many
+//! sessions (`Config::max_sessions`), and a device revoked by the owner's
+//! reset (`POST /_reset/sync`, the dashboard's stand-in) is refused until it
+//! registers again — as the registry does. A session's log is chunks, kept
+//! apart from the artifacts so no artifact listing, card or lookup can see
+//! one, and stored under `/_storage` like any artifact's bytes. Keys and sealed blobs are
 //! hex of the sizes canon's crypto.md fixes, and anything else a body carries
 //! is not read, so there is nowhere for plaintext to land (R-E2E-1).
 
@@ -34,6 +40,8 @@ pub struct Device {
     pub created_at: Timestamp,
     /// None for a device an approval created, until it next acts.
     pub last_seen_at: Option<Timestamp>,
+    /// Set by the owner's reset; cleared by registering again.
+    pub revoked_at: Option<Timestamp>,
     pub wrapped_account_key: String,
     pub seq: usize,
 }
@@ -67,8 +75,35 @@ pub struct Session {
     pub seq: usize,
 }
 
+/// One chunk of a session's log: an upload like an artifact's, under a key
+/// of its own, never an artifact.
+pub struct Chunk {
+    pub slug: String,
+    pub index: u64,
+    pub byte_size: i64,
+    pub checksum: String,
+    pub storage_key: String,
+    pub upload_tok: String,
+    pub upload_til: Timestamp,
+    pub uploaded_sum: Option<String>,
+    pub ready: bool,
+    pub created_at: Timestamp,
+}
+
+/// The registry's burst ceiling on a keyed create, per minute.
+const KEYED_BURST: usize = 120;
+/// The registry's SyncSession::MAX_PER_WORKSPACE.
+pub const MAX_SESSIONS: usize = 10_000;
+const CHUNK_CONTENT_TYPE: &str = "application/octet-stream";
+
 #[derive(Default)]
 pub struct SyncStore {
+    /// Workspace, session id and index → the chunk.
+    pub chunks: HashMap<(String, String, u64), Chunk>,
+    /// Workspace and create → the minute its count began, and the count.
+    pub bursts: HashMap<(String, &'static str), (Timestamp, usize)>,
+    /// 0 is MAX_SESSIONS.
+    pub max_sessions: usize,
     /// Workspace → the account key id its first device offered.
     pub account_keys: HashMap<String, String>,
     pub devices: HashMap<(String, String), Device>,
@@ -129,6 +164,34 @@ fn gate(req: &Req) -> Result<String, Resp> {
     Ok(workspace)
 }
 
+/// The keyed burst ceiling on a create: 429 with Retry-After past it.
+fn burst(s: &mut SyncStore, workspace: &str, name: &'static str, now: Timestamp) -> Result<(), Resp> {
+    let window = s.bursts.entry((workspace.to_owned(), name)).or_insert((now, 0));
+    if now.duration_since(window.0) >= SignedDuration::from_mins(1) {
+        *window = (now, 0);
+    }
+    window.1 += 1;
+    if window.1 > KEYED_BURST {
+        let mut r = error(429, "too_many_requests", &format!("Too many {} too quickly. Retry in 60 seconds.", name.replace('_', " ")), None);
+        r.headers.push(("Retry-After", "60".to_owned()));
+        return Err(r);
+    }
+    Ok(())
+}
+
+fn device_revoked(id: &str) -> Resp {
+    error(403, "device_revoked", &format!("device {id} has been revoked and can no longer act for this workspace"), None)
+}
+
+/// The device a call acts as: the workspace's, and not revoked.
+fn acting(s: &SyncStore, workspace: &str, device: &str) -> Result<(), Resp> {
+    match s.devices.get(&(workspace.to_owned(), device.to_owned())) {
+        None => Err(not_found()),
+        Some(d) if d.revoked_at.is_some() => Err(device_revoked(device)),
+        Some(_) => Ok(()),
+    }
+}
+
 /// The body's `resource` object, and a 400 for a missing one.
 fn body(req: &mut Req, resource: &str) -> Result<Value, Resp> {
     match decode(req, 1 << 20)? {
@@ -172,7 +235,7 @@ fn serialize_device(d: &Device) -> Json {
         ("name", Json::str(&d.name)),
         ("created_at", Json::str(rfc3339_nano(d.created_at))),
         ("last_seen_at", d.last_seen_at.map_or(Json::Null, |t| Json::str(rfc3339_nano(t)))),
-        ("revoked_at", Json::Null),
+        ("revoked_at", d.revoked_at.map_or(Json::Null, |t| Json::str(rfc3339_nano(t)))),
     ])
 }
 
@@ -265,6 +328,7 @@ pub fn register_device(app: &App, req: &mut Req) -> Resp {
         let account = id_field("account_key_id", &required(&mut f, "account_key_id")?)?;
         let mut s = app.lock();
         let now = s.now();
+        burst(&mut s.sync, &workspace, "device_registrations", now)?;
         adopt_account_key(&mut s.sync, &workspace, &account)?;
         let id = fingerprint(&key);
         let seq = s.sync.seq + 1;
@@ -275,11 +339,15 @@ pub fn register_device(app: &App, req: &mut Req) -> Resp {
             name: String::new(),
             created_at: now,
             last_seen_at: Some(now),
+            revoked_at: None,
             wrapped_account_key: String::new(),
             seq,
         });
+        // Only the owner's reset revokes here, and a reset clears the slate:
+        // registering again is the way back (Device#registrable?).
         d.name = name;
         d.last_seen_at = Some(now);
+        d.revoked_at = None;
         let resp = Resp::json(if fresh { 201 } else { 200 }, &serialize_device(d));
         if fresh {
             s.sync.seq = seq;
@@ -310,6 +378,7 @@ pub fn request_approval(app: &App, req: &mut Req) -> Resp {
         let name = name_field(&mut f)?;
         let mut s = app.lock();
         let now = s.now();
+        burst(&mut s.sync, &workspace, "device_approval_requests", now)?;
         let a = Approval {
             slug: generate_slug("dap"),
             workspace,
@@ -369,9 +438,7 @@ pub fn approve(app: &App, req: &mut Req, slug: &str) -> Resp {
         if a.approved {
             return Err(error(409, "already_approved", &format!("{slug} is already approved — the new device has an account key to collect"), None));
         }
-        if !sync.devices.contains_key(&(workspace.clone(), device.clone())) {
-            return Err(not_found());
-        }
+        acting(sync, &workspace, &device)?;
         adopt_account_key(sync, &workspace, &account)?;
         let a = sync.approvals.get_mut(slug).unwrap();
         a.approved = true;
@@ -387,6 +454,7 @@ pub fn approve(app: &App, req: &mut Req, slug: &str) -> Resp {
             name: String::new(),
             created_at: now,
             last_seen_at: None,
+            revoked_at: None,
             wrapped_account_key: String::new(),
             seq,
         });
@@ -477,9 +545,16 @@ pub fn put_session(app: &App, req: &mut Req, id: &str) -> Resp {
         let token = f.string("lease_token");
         let mut s = app.lock();
         let now = s.now();
+        burst(&mut s.sync, &workspace, "session_writes", now)?;
         let seq = s.sync.seq + 1;
-        let key = (workspace, id.clone());
+        let key = (workspace.clone(), id.clone());
+        let holder_revoked = s.sync.sessions.get(&key).is_some_and(|x| revoked(&s.sync, &workspace, &x.holder));
+        let cap = if s.sync.max_sessions == 0 { MAX_SESSIONS } else { s.sync.max_sessions };
+        let held = s.sync.sessions.keys().filter(|(w, _)| *w == workspace).count();
         let Some(x) = s.sync.sessions.get_mut(&key) else {
+            if held >= cap {
+                return Err(error(422, "session_limit_reached", &format!("this workspace holds {cap} synced sessions, the most one may"), None));
+            }
             let x = Session { id, wrapped_key: wrapped, sealed_index: sealed, fence: 0, token_digest: String::new(), holder: String::new(), lease_expires_at: None, created_at: now, updated_at: now, last_written_at: now, seq };
             let resp = Resp::json(201, &serialize_session(&x, now, false));
             s.sync.sessions.insert(key, x);
@@ -494,6 +569,9 @@ pub fn put_session(app: &App, req: &mut Req, id: &str) -> Resp {
                 return Err(parameter_missing("lease_token"));
             }
             holder(x, &token, now)?;
+            if holder_revoked {
+                return Err(device_revoked(&x.holder));
+            }
             x.sealed_index = sealed;
             x.last_written_at = now;
             x.updated_at = now;
@@ -534,8 +612,15 @@ fn lease_call<'a>(app: &'a App, req: &mut Req, id: &str, needs_device: bool) -> 
     let device = if needs_device { id_field("device", &required(&mut f, "device")?)? } else { String::new() };
     let s = app.lock();
     let key = (workspace.clone(), id);
-    if !s.sync.sessions.contains_key(&key) || (needs_device && !s.sync.devices.contains_key(&(workspace, device.clone()))) {
+    if !s.sync.sessions.contains_key(&key) {
         return Err(not_found());
+    }
+    if needs_device {
+        acting(&s.sync, &workspace, &device)?;
+    }
+    // A revoked holder is refused whatever token it presents.
+    if let Some(x) = s.sync.sessions.get(&key).filter(|x| revoked(&s.sync, &workspace, &x.holder)) {
+        return Err(device_revoked(&x.holder));
     }
     Ok((s, key, device, v))
 }
@@ -613,4 +698,250 @@ fn touch(s: &mut SyncStore, workspace: &str, device: &str, now: Timestamp) {
     if let Some(d) = s.devices.get_mut(&(workspace.to_owned(), device.to_owned())) {
         d.last_seen_at = Some(now);
     }
+}
+
+fn revoked(s: &SyncStore, workspace: &str, device: &str) -> bool {
+    !device.is_empty() && s.devices.get(&(workspace.to_owned(), device.to_owned())).is_some_and(|d| d.revoked_at.is_some())
+}
+
+/// The dashboard's owner reset of sync, stood in for: every device revoked,
+/// the account key id cleared. Keyed by the bearer, the way `/_approve`
+/// stands in for a signed-in person.
+pub fn reset(app: &App, req: &Req) -> Resp {
+    let workspace = match require_key(req) {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let mut s = app.lock();
+    let now = s.now();
+    let mut revoked = 0;
+    for ((w, _), d) in s.sync.devices.iter_mut() {
+        if *w == workspace && d.revoked_at.is_none() {
+            d.revoked_at = Some(now);
+            revoked += 1;
+        }
+    }
+    s.sync.account_keys.remove(&workspace);
+    Resp::json(200, &Json::map([("revoked", Json::Int(revoked))]))
+}
+
+fn serialize_chunk(c: &Chunk) -> Vec<(String, Json)> {
+    vec![
+        ("index".to_owned(), Json::Int(c.index as i64)),
+        ("slug".to_owned(), Json::str(&c.slug)),
+        ("state".to_owned(), Json::str(if c.ready { "ready" } else { "pending" })),
+        ("byte_size".to_owned(), Json::Int(c.byte_size)),
+        ("checksum".to_owned(), Json::str(&c.checksum)),
+        ("created_at".to_owned(), Json::str(rfc3339_nano(c.created_at))),
+    ]
+}
+
+fn lease_token_missing() -> Resp {
+    error(409, "lease_stale", "no lease token was presented — a chunk is the lease holder's to write; acquire the lease first", None)
+}
+
+/// A whole-number field that was sent, as the registry's `Integer(…)` reads
+/// it: a number, or a string of one.
+fn whole(f: &Fields, name: &str) -> Option<i64> {
+    match f.get_value(name) {
+        Some(Value::Num(n)) => n.parse().ok(),
+        Some(Value::Str(t)) => t.parse().ok(),
+        _ => None,
+    }
+}
+
+/// The holder's declare of a chunk: the lease token, then an Idempotency-Key
+/// replay or a new chunk with a presigned PUT under `/_storage`.
+pub fn declare_chunk(app: &App, req: &mut Req, id: &str, site: &str) -> Resp {
+    let mut run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        let id = session_id(id).ok_or_else(not_found)?;
+        let attempt = crate::artifacts::idempotency_key(req)?;
+        let v = body(req, "chunk")?;
+        let mut f = v.fields();
+        let index = whole(&f, "index").filter(|i| *i >= 0).ok_or_else(|| invalid("index", "must be a whole number from 0"))? as u64;
+        let byte_size = whole(&f, "byte_size").ok_or_else(|| invalid("byte_size", "must be a whole number"))?;
+        if byte_size <= 0 {
+            return Err(invalid("byte_size", "must be greater than 0"));
+        }
+        let checksum = f.string("checksum").to_ascii_lowercase();
+        if checksum.len() != 64 || !checksum.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid("checksum", "must be a lowercase hex SHA-256"));
+        }
+        let token = f.string("lease_token");
+        let mut s = app.lock();
+        let now = s.now();
+        let key = (workspace.clone(), id.clone());
+        let x = s.sync.sessions.get(&key).ok_or_else(not_found)?;
+        if token.is_empty() {
+            return Err(lease_token_missing());
+        }
+        holder(x, &token, now)?;
+        if revoked(&s.sync, &workspace, &x.holder) {
+            return Err(device_revoked(&x.holder));
+        }
+        burst(&mut s.sync, &workspace, "chunk_declares", now)?;
+        let hash = crate::store::sha256_hex(format!("{id}\n{index}\n{byte_size}\n{checksum}").as_bytes());
+        let ck = (workspace.clone(), id.clone(), index);
+        if let Some(attempt) = &attempt
+            && let Some((found, matches)) = s.replay("chunk", &workspace, attempt, &hash)
+        {
+            let slug = found.artifact.clone();
+            if !matches {
+                return Err(crate::errors::key_reused(&slug));
+            }
+            let c = s.sync.chunks.get_mut(&ck).filter(|c| c.slug == slug).ok_or_else(not_found)?;
+            if c.ready {
+                return Err(crate::errors::already_finalized(&c.slug));
+            }
+            c.upload_tok = crate::store::random_token();
+            c.upload_til = now + crate::store::UPLOAD_URL_LIFETIME;
+            return Ok(Resp::json(201, &declared_chunk(c, site)));
+        }
+        if s.sync.chunks.contains_key(&ck) {
+            return Err(error(409, "chunk_exists", &format!("this session already has chunk {index} — its log is append-only"), None));
+        }
+        let c = Chunk {
+            slug: generate_slug("art"),
+            index,
+            byte_size,
+            checksum,
+            storage_key: format!("{}/{}/chunk-{index}.bin", crate::store::ARTIFACT_REGION, crate::store::random_base36()),
+            upload_tok: crate::store::random_token(),
+            upload_til: now + crate::store::UPLOAD_URL_LIFETIME,
+            uploaded_sum: None,
+            ready: false,
+            created_at: now,
+        };
+        let resp = Resp::json(201, &declared_chunk(&c, site));
+        if let Some(attempt) = &attempt {
+            s.remember("chunk", &workspace, attempt, crate::store::Answered { request_hash: hash, artifact: c.slug.clone(), run: String::new() });
+        }
+        s.sync.chunks.insert(ck, c);
+        Ok(resp)
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+fn declared_chunk(c: &Chunk, site: &str) -> Json {
+    let mut out = serialize_chunk(c);
+    let headers = Json::map([
+        ("Content-Type", Json::str(CHUNK_CONTENT_TYPE)),
+        ("Content-Length", Json::str(c.byte_size.to_string())),
+        ("x-amz-checksum-sha256", Json::str(crate::store::base64_sum(&c.checksum))),
+    ]);
+    out.push((
+        "upload".to_owned(),
+        Json::map([
+            ("method", Json::str("PUT")),
+            ("url", Json::str(format!("{site}/_storage/{}?upload_token={}", c.storage_key, c.upload_tok))),
+            ("headers", headers),
+            ("expires_at", Json::str(rfc3339_nano(c.upload_til))),
+        ]),
+    ));
+    Json::map_of(out)
+}
+
+/// Storage's PUT for a chunk's key, with a real signature's checks: the
+/// token, the window, the type, the digest header, the length and the
+/// digest. None when the key is no chunk's.
+pub fn put_chunk_object(app: &App, req: &mut Req, key: &str) -> Option<Resp> {
+    let found = {
+        let s = app.lock();
+        s.sync.chunks.iter().find(|(_, c)| c.storage_key == key).map(|(k, c)| (k.clone(), c.upload_tok.clone(), c.checksum.clone(), c.byte_size, c.upload_til, c.ready))
+    };
+    let (ck, token, sum, size, until, ready) = found?;
+    if ready || token.is_empty() || req.query_get("upload_token") != token {
+        return Some(Resp::xml(403, "SignatureDoesNotMatch"));
+    }
+    if app.lock().now() > until {
+        return Some(Resp::xml(403, "AccessDenied"));
+    }
+    if req.header("Content-Type").unwrap_or("") != CHUNK_CONTENT_TYPE || req.header("x-amz-checksum-sha256").unwrap_or("") != crate::store::base64_sum(&sum) {
+        return Some(Resp::xml(403, "SignatureDoesNotMatch"));
+    }
+    let Ok(bytes) = req.read_body(size as u64 + 1) else { return Some(Resp::xml(400, "IncompleteBody")) };
+    if bytes.len() as i64 != size {
+        return Some(Resp::xml(400, "IncorrectContentLength"));
+    }
+    let got = crate::store::sha256_hex(&bytes);
+    if got != sum {
+        return Some(Resp::xml(400, "BadDigest"));
+    }
+    let mut s = app.lock();
+    if let Some(c) = s.sync.chunks.get_mut(&ck) {
+        c.uploaded_sum = Some(got);
+    }
+    s.objects.insert(key.to_owned(), bytes);
+    Some(Resp::empty(200))
+}
+
+/// The holder's confirmation that a chunk landed: the token again, then
+/// what storage holds checked against the declare. Idempotent.
+pub fn finalize_chunk(app: &App, req: &mut Req, id: &str, index: &str) -> Resp {
+    let mut run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        let id = session_id(id).ok_or_else(not_found)?;
+        let index: u64 = index.parse().map_err(|_| not_found())?;
+        let token = match decode(req, 1 << 16)? {
+            Decoded::Value(v) => v.get("chunk").map(|m| m.value.fields().string("lease_token")).unwrap_or_default(),
+            _ => String::new(),
+        };
+        let mut s = app.lock();
+        let now = s.now();
+        let x = s.sync.sessions.get(&(workspace.clone(), id.clone())).ok_or_else(not_found)?;
+        if token.is_empty() {
+            return Err(lease_token_missing());
+        }
+        holder(x, &token, now)?;
+        if revoked(&s.sync, &workspace, &x.holder) {
+            return Err(device_revoked(&x.holder));
+        }
+        let c = s.sync.chunks.get_mut(&(workspace.clone(), id.clone(), index)).ok_or_else(not_found)?;
+        if !c.ready {
+            match &c.uploaded_sum {
+                None => return Err(error(409, "upload_missing", &format!("nothing uploaded for {} yet", c.slug), None)),
+                Some(sum) if *sum != c.checksum => return Err(error(422, "checksum_mismatch", "what was uploaded does not match the declared checksum", None)),
+                Some(_) => {}
+            }
+            c.ready = true;
+            c.upload_tok.clear();
+        }
+        let resp = Resp::json(200, &Json::map_of(serialize_chunk(c)));
+        if let Some(x) = s.sync.sessions.get_mut(&(workspace, id)) {
+            x.last_written_at = now;
+            x.updated_at = now;
+        }
+        Ok(resp)
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// A session's ready chunks from after `after`, in log order, each with the
+/// URL its bytes are read from.
+pub fn list_chunks(app: &App, req: &Req, id: &str, site: &str) -> Resp {
+    let workspace = match gate(req) {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let Some(id) = session_id(id) else { return not_found() };
+    let limit = crate::artifacts::page_limit(req);
+    let s = app.lock();
+    if !s.sync.sessions.contains_key(&(workspace.clone(), id.clone())) {
+        return not_found();
+    }
+    let after: Option<u64> = req.query_get("after").parse().ok();
+    let mut ready: Vec<&Chunk> = s.sync.chunks.iter().filter(|((w, sid, i), c)| *w == workspace && *sid == id && c.ready && after.is_none_or(|a| *i > a)).map(|(_, c)| c).collect();
+    ready.sort_by_key(|c| c.index);
+    ready.truncate(limit);
+    let next = if ready.len() == limit { ready.last().map_or(Json::Null, |c| Json::Int(c.index as i64)) } else { Json::Null };
+    let page = ready
+        .into_iter()
+        .map(|c| {
+            let mut j = serialize_chunk(c);
+            j.push(("url".to_owned(), Json::str(format!("{site}/_storage/{}", c.storage_key))));
+            Json::map_of(j)
+        })
+        .collect();
+    Resp::json(200, &Json::map([("chunks", Json::Arr(page)), ("next", next)]))
 }

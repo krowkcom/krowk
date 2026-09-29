@@ -26,7 +26,7 @@ impl Server {
     pub fn with_limit(limit_bytes: i64) -> Server {
         let clock = Arc::new(Mutex::new(Timestamp::now()));
         let c = Arc::clone(&clock);
-        let config = Config { limit_bytes, site: String::new(), clock: Some(Arc::new(move || *c.lock().unwrap())) };
+        let config = Config { limit_bytes, site: String::new(), clock: Some(Arc::new(move || *c.lock().unwrap())), max_sessions: 0 };
         let running = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), config).unwrap();
         Server { url: running.url(), running, clock }
     }

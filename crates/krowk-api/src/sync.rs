@@ -15,6 +15,7 @@
 //! the command line's to do with what these calls return.
 
 use crate::client::{Client, slug_path};
+use crate::types::Upload;
 use crate::error::Error;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
@@ -141,7 +142,76 @@ pub struct SyncSessionPage {
     pub next: String,
 }
 
+/// One chunk of a session's log, as the registry holds it: its place, size
+/// and digest; `upload` from a declare, `url` from a listing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Chunk {
+    #[serde(default, deserialize_with = "nullable")]
+    pub index: u64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub slug: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub state: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub byte_size: u64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub checksum: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub upload: Option<Upload>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub url: String,
+}
+
+/// A page of a session's ready chunks, in log order; `next` is the index to
+/// pass back as `after`, absent on the last page.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ChunkPage {
+    #[serde(default, deserialize_with = "nullable")]
+    pub chunks: Vec<Chunk>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub next: Option<u64>,
+}
+
+/// The most a chunk read back may be: a chunk is a slice of a log, and a
+/// registry listing a larger one is not handed the memory for it.
+pub const MAX_CHUNK_BYTES: u64 = 64 << 20;
+
 impl Client {
+    /// The lease holder writes chunk `index` of a session's log: declared
+    /// (with an Idempotency-Key, so a retry after a lost answer is the same
+    /// chunk), put straight to storage, and finalized, each presenting the
+    /// lease token (R-SYNC-2). `sealed` is what `e2e::ChunkSealer` made; the
+    /// registry and storage see only it (R-E2E-1).
+    pub fn put_chunk(&self, session: &str, index: u64, sealed: &[u8], lease_token: &str) -> Result<Chunk, Error> {
+        let checksum = crate::client::sha256_hex(sealed);
+        let body = json!({ "chunk": { "index": index, "byte_size": sealed.len(), "checksum": checksum, "lease_token": lease_token } });
+        let declared: Chunk = self.call("POST", &format!("/sessions/{}/chunks", slug_path(session)), Some(body), ATTEMPTS, Some(crate::client::idempotency_key()?))?.0;
+        let upload = declared.upload.as_ref().filter(|u| !u.url.is_empty()).ok_or_else(|| crate::fail("no_upload_url", "the registry declared the chunk but did not say where to put its bytes"))?;
+        self.put_blob(upload, sealed)?;
+        let fin = json!({ "chunk": { "lease_token": lease_token } });
+        Ok(self.call("PUT", &format!("/sessions/{}/chunks/{index}/finalization", slug_path(session)), Some(fin), ATTEMPTS, None)?.0)
+    }
+
+    /// A page of a session's ready chunks from after `after`, with the URL
+    /// each is read from.
+    pub fn list_chunks(&self, session: &str, after: Option<u64>, limit: i64) -> Result<ChunkPage, Error> {
+        let mut path = format!("/sessions/{}/chunks?limit={limit}", slug_path(session));
+        if let Some(a) = after {
+            path.push_str(&format!("&after={a}"));
+        }
+        self.get(&path)
+    }
+
+    /// A listed chunk's sealed bytes, checked against the digest the
+    /// registry recorded before anything opens them.
+    pub fn read_chunk(&self, chunk: &Chunk) -> Result<Vec<u8>, Error> {
+        let bytes = self.get_blob(&chunk.url, MAX_CHUNK_BYTES)?;
+        if crate::client::sha256_hex(&bytes) != chunk.checksum {
+            return Err(crate::fail("checksum_mismatch", format!("chunk {} read back does not match its digest — read it again", chunk.index)));
+        }
+        Ok(bytes)
+    }
+
     /// Says this machine holds the account key `account_key_id`. The same
     /// public key again is the same device, renamed; an account key other
     /// than the one the workspace's devices hold is `account_key_mismatch`.

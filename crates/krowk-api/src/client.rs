@@ -549,6 +549,67 @@ impl Client {
         Err(Error { status, body })
     }
 
+    /// Puts `bytes` to a presigned upload that is not an artifact's file — a
+    /// session chunk, sealed in memory. The same rules as `put_bytes`: always
+    /// PUT, the URL judged by `storage_origin`, no redirect followed, the
+    /// transport's headers never taken from the registry, retried only when
+    /// storage says a retry could help.
+    pub fn put_blob(&self, upload: &Upload, bytes: &[u8]) -> Result<(), Error> {
+        let endpoint = self.storage_origin(&upload.url)?;
+        let mut last = None;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let mut req = ureq::http::Request::builder().method("PUT").uri(&endpoint);
+            for (k, v) in upload.headers.iter().flatten() {
+                if !transport_header(k) {
+                    req = req.header(k.as_str(), v.as_str());
+                }
+            }
+            let req = req.header("Content-Length", bytes.len().to_string()).body(bytes.to_vec()).map_err(|e| fail("bad_upload_url", e.to_string()))?;
+            let status = match self.agent.run(req) {
+                Ok(res) => res.status().as_u16(),
+                Err(e) => {
+                    let e = self.transport("PUT", &endpoint, e, "storage_unreachable");
+                    if attempt == MAX_ATTEMPTS {
+                        return Err(e);
+                    }
+                    last = Some(e);
+                    (self.sleep)(Duration::from_millis(250 << attempt));
+                    continue;
+                }
+            };
+            if status < 300 {
+                return Ok(());
+            }
+            let mut body = BTreeMap::new();
+            body.insert("error".into(), json!(if (300..400).contains(&status) { "upload_redirected" } else { "storage_rejected_upload" }));
+            body.insert("fix".into(), json!("object storage refused the chunk — declare it again for a fresh URL, and report it if it persists"));
+            body.insert("retryable".into(), json!(status >= 500));
+            let e = Error { status, body };
+            if !e.retryable() || attempt == MAX_ATTEMPTS {
+                return Err(e);
+            }
+            last = Some(e);
+            (self.sleep)(Duration::from_millis(250 << attempt));
+        }
+        Err(last.expect("at least one attempt"))
+    }
+
+    /// Reads a stored object — a session chunk — from the URL the registry
+    /// listed, judged like an upload target, with no redirect followed and
+    /// at most `limit` bytes read.
+    pub fn get_blob(&self, url: &str, limit: u64) -> Result<Vec<u8>, Error> {
+        let endpoint = self.storage_origin(url)?;
+        let req = ureq::http::Request::builder().method("GET").uri(&endpoint).body(()).map_err(|e| fail("bad_download_url", e.to_string()))?;
+        let mut res = self.agent.run(req).map_err(|e| self.transport("GET", &endpoint, e, "storage_unreachable"))?;
+        let status = res.status().as_u16();
+        if status != 200 {
+            return Err(fail("storage_read_failed", format!("object storage answered {status} for a chunk the registry listed — list the chunks again, and report it if it persists")));
+        }
+        let mut bytes = Vec::new();
+        res.body_mut().as_reader().take(limit).read_to_end(&mut bytes).map_err(|e| fail("storage_read_failed", e.to_string()))?;
+        Ok(bytes)
+    }
+
     /// The storage host a presigned URL names, if it is one worth sending bytes
     /// to: http(s) only; a local registry's targets are local by definition; the
     /// API's own origin is trusted on the API's terms; anything else must be
@@ -693,10 +754,14 @@ fn fix_for(code: &str, status: u16) -> String {
         "account_key_mismatch" => {
             "the registry says this workspace syncs under another account key — if this key came from `krowk sync recover`, a word of the phrase is wrong: run it again with the right one. Compare with `krowk devices list` on a machine you already sync from, never with an id in an error message; if you have no such machine, do not join this workspace, and its owner can reset sync in the dashboard's settings"
         }
+        "chunk_exists" => "this session already has a chunk at that index, and its log is append-only — write the next index",
         "session_limit_reached" => "this workspace holds as many synced sessions as one may — report it if you need more",
         "approval_expired" => "the new device's request lapsed before it was approved — run `krowk sync join` on it again",
         "already_approved" => "this device has already been approved — run `krowk sync join` on it to collect its key, if it has not",
-        "device_revoked" => "this device has been revoked for the workspace — set sync up again on it with `krowk sync recover`",
+        // Registering the same device key again is refused until the owner
+        // resets sync, which clears the slate for every device it revoked;
+        // `recover` alone keeps the revoked key and cannot help.
+        "device_revoked" => "this device has been revoked for the workspace — once its owner has reset sync in the dashboard's settings, run `krowk sync register` on it; until then, ask them",
         "lease_held" => "another device holds this session's lease — send it commands through that device, or wait for the lease to lapse",
         "lease_stale" => "this device does not hold the session's lease — another device took it, it lapsed, or the token is not the holder's; acquire it again before writing",
         "method_not_allowed" => {
@@ -773,7 +838,13 @@ fn clip(s: &str, n: usize) -> String {
 /// 128 random bits shaped as a v4 UUID. Unguessable, not merely unique: on a
 /// keyless push it is the only thing a retry presents to prove it made the
 /// original call.
-fn idempotency_key() -> Result<String, Error> {
+/// SHA-256, hex: the digest a chunk is declared with and read back against.
+pub(crate) fn sha256_hex(b: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+}
+
+pub(crate) fn idempotency_key() -> Result<String, Error> {
     let mut b = [0u8; 16];
     std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).map_err(|_| {
         fail("no_idempotency_key", "this machine's random source is unreadable, so a retry could not be named safely")

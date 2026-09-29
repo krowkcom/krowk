@@ -59,6 +59,11 @@ pub fn put_object(app: &App, req: &mut Req, key: &str) -> Resp {
             (a.slug.clone(), a.upload_tok.clone(), a.content_type.clone(), a.checksum.clone(), a.byte_size, a.upload_til)
         })
     };
+    if found.is_none()
+        && let Some(r) = crate::sync::put_chunk_object(app, req, key)
+    {
+        return r;
+    }
     let Some((slug, token, want_type, want_sum, want_size, until)) =
         found.filter(|f| !f.1.is_empty() && req.query_get("upload_token") == f.1)
     else {
