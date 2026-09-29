@@ -39,7 +39,7 @@ const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/
 /// Every test, its devices and its session: `<test>-host` holds the lease
 /// of session `<test>`, `<test>-viewer` and `<test>-viewer2` watch it, all
 /// in workspace A.
-const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs", "xws", "tickets", "flood", "pool", "hostvt"];
+const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs", "xws", "tickets", "flood", "pool", "hostvt", "equal", "pool2"];
 
 /// How long anything the relay should answer may take, and how long to
 /// wait to be sure nothing comes.
@@ -1311,4 +1311,80 @@ async fn r_relay_1_the_host_devices_viewer_ticket_replayed_never_locks_the_host_
         assert_eq!(answer["type"], "joined", "round {round}: {answer}");
     }
     drop(flood.await.unwrap());
+}
+
+/// R-RELAY-1: one lease at one fence has one holder. A host ticket at the
+/// channel's fence naming another device — which a registry racing a renew
+/// against a hand-over once minted — is `not_lease_holder`; the holder
+/// connecting again at that fence replaces its earlier connection.
+#[tokio::test]
+async fn r_relay_1_another_device_at_an_equal_fence_is_not_the_lease_holder() {
+    let t = "equal";
+    let (mut first, _) = joined(t, &host(t)).await;
+    let holder = issue(t, "equal-host", RELAY_ROLE_HOST, None).unwrap();
+    let other = Ticket { device: device_id("equal-viewer").0, signing_key: SigningKey::from_secret(&seed("equal-viewer")).unwrap().public().0, ..holder.clone() };
+    refused_join(t, &As { ticket: Tk::Given(other.sign(&ticket_seed())), fence: Some(fence(t)), stream: Some(stream_id(t, 1)), role: RELAY_ROLE_HOST, ..viewer(t, "viewer") }, "not_lease_holder").await;
+    let (_again, j) = joined(t, &host(t)).await;
+    assert_eq!(j["role"], "host");
+    first.refused("replaced").await;
+}
+
+/// R-RELAY-1: tickets a workspace mints for its own sessions and devices
+/// cannot fill the reference relay's pool at another channel's expense: at
+/// the pool's cap a connection goes from the channel holding the most
+/// pending, a viewer's first. 512 tickets, two connections each, then 1100
+/// more replayed while the lease holder of another session answers in
+/// 600 ms: the host joins, three times. Reference-only, as the pool is.
+#[tokio::test]
+async fn r_relay_1_a_workspaces_own_tickets_cannot_crowd_another_channels_host_out() {
+    if std::env::var_os("KROWK_RELAY_URL").is_some() && std::env::var_os("KROWK_RELAY_REFERENCE").is_none() {
+        return;
+    }
+    let t = "pool2";
+    let now = relay_ticket::now();
+    let tickets: Vec<(String, String)> = (0..512u32)
+        .map(|i| {
+            let session = format!("{:08x}-0000-7000-8000-{:012x}", i / 8 + 1, 0xa11);
+            let name = format!("attacker-{}", i % 8);
+            let key = SigningKey::from_secret(&seed(&name)).unwrap();
+            let ticket = Ticket {
+                kid: ticket_kid(),
+                role: RELAY_ROLE_VIEWER,
+                env: relay_ticket::ENV_PRODUCTION,
+                session: krowk_harness::daemon::ws::uuid(&session),
+                device: device_id(&name).0,
+                signing_key: key.public().0,
+                fence: 0,
+                iat: now,
+                exp: now + relay_ticket::TTL,
+                workspace: "ws_attacker".into(),
+            };
+            (session, ticket.sign(&ticket_seed()))
+        })
+        .collect();
+    let dial_raw = |session: String, ticket: String| async move {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut req = format!("{}/v1/relay/{session}", relay_url()).into_client_request().unwrap();
+        req.headers_mut().insert("x-krowk-ticket", ticket.parse().unwrap());
+        tokio_tungstenite::connect_async(req).await.ok().map(|(ws, _)| ws)
+    };
+    let mut held = Vec::new();
+    for _ in 0..2 {
+        for (s, tk) in &tickets {
+            held.push(dial_raw(s.clone(), tk.clone()).await);
+        }
+    }
+    for round in 0..3 {
+        let replays = tickets.clone();
+        let burst = tokio::spawn(async move {
+            let mut more = Vec::new();
+            for (s, tk) in replays.iter().cycle().skip(round * 100).take(1100) {
+                more.push(dial_raw(s.clone(), tk.clone()).await);
+            }
+            more
+        });
+        let answer = join_after(t, &host(t), Duration::from_millis(600)).await;
+        assert_eq!(answer["type"], "joined", "round {round}: {answer}");
+        held.extend(burst.await.unwrap());
+    }
 }

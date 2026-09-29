@@ -151,8 +151,11 @@ pub fn verify_within(hex: &str, keys: &[([u8; 8], [u8; 32])], now: u64, max_life
     let key = VerifyingKey::from_bytes(key).map_err(|_| bad("the registry key is not an Ed25519 key"))?;
     let sig = ed25519_dalek::Signature::from_bytes(sig.try_into().expect("64"));
     key.verify_strict(&[LABEL, body].concat(), &sig).map_err(|_| bad("the ticket's signature is not the registry's"))?;
-    // Not yet valid, or expired; and never alive longer from now than a
-    // lifetime and the skew, whatever the ticket's own times say.
+    // Not yet valid, or expired. The last test, an expiry further from now
+    // than a lifetime and the skew, follows from the other two with the
+    // lifetime cap above; it stays as the statement of the bound the
+    // idle-forget invariant rests on (relay.md → Tickets), should either
+    // of the others ever change.
     if now >= t.exp || t.iat > now + skew || t.exp > now + max_lifetime + skew {
         return Err(Refused { code: "ticket_expired", message: "the ticket has expired, or is not yet valid".into() });
     }
