@@ -160,7 +160,7 @@ fn unbroken(line: &Line<'static>) -> usize {
 /// One row, indented: each cell wrapped to its column, the row as tall as
 /// its tallest cell, a dim line between the columns.
 fn drawn(row: Vec<Line<'static>>, widths: &[usize], aligns: &[Align]) -> Vec<Line<'static>> {
-    let wrapped: Vec<Vec<Line<'static>>> = row.into_iter().zip(widths).map(|(cell, &w)| wrap_line(cell, w).into_iter().enumerate().map(unindented).collect()).collect();
+    let wrapped: Vec<Vec<Line<'static>>> = row.into_iter().zip(widths).map(|(cell, &w)| wrap_line(cell, w)).collect();
     let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
     (0..height)
         .map(|k| {
@@ -179,17 +179,6 @@ fn drawn(row: Vec<Line<'static>>, widths: &[usize], aligns: &[Align]) -> Vec<Lin
             line
         })
         .collect()
-}
-
-/// A cell's `k`th row without the space a word broken at the column's
-/// edge leaves before the next.
-fn unindented((k, mut line): (usize, Line<'static>)) -> Line<'static> {
-    if k > 0
-        && let Some(first) = line.spans.first_mut()
-    {
-        first.content = first.content.trim_start_matches(' ').to_string().into();
-    }
-    line
 }
 
 /// A cell's line padded to `w` columns as its column is aligned.

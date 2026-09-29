@@ -554,8 +554,8 @@ pub struct App {
     replay_model: Option<(String, String)>,
     /// Tool calls waiting for their results, oldest first.
     calls: Vec<Call>,
-    /// Whether the answer being shown has a fenced code block open.
-    fence: bool,
+    /// Where the answer being shown stands: a fenced block, list items.
+    md: look::Markdown,
     /// The rows of a table in the answer, held until it ends (`table`).
     table: Vec<String>,
     /// Whether the answer's last line was a table's: a blank line after it
@@ -688,7 +688,7 @@ impl App {
             pricer,
             replay_model: None,
             calls: Vec::new(),
-            fence: false,
+            md: look::Markdown::default(),
             table: Vec::new(),
             tabled: false,
             billing: None,
@@ -1015,11 +1015,11 @@ impl App {
         self.push_wrapped("  ", "  ", &format!("({})", e.code), dim(), dim());
     }
 
-    /// One line of an answer, in light markdown, wrapped on its way out. A
-    /// table's rows are held until the first line that is not one.
+    /// One line of an answer, in light markdown, wrapped under its hanging
+    /// indent. A table's rows are held until the first line that is not one.
     fn push_md(&mut self, text: &str) {
         let text = look::untagged(&clean(text));
-        if !self.fence && table::is_row(&text) {
+        if !self.md.fence && table::is_row(&text) {
             self.table.push(text);
             return;
         }
@@ -1027,14 +1027,16 @@ impl App {
         if std::mem::take(&mut self.tabled) && self.last_blank && text.trim().is_empty() {
             return;
         }
-        let line = look::markdown_line(&text, &mut self.fence);
-        self.push_answer(line);
+        let md = look::markdown(&text, &mut self.md);
+        for line in hung(md, usize::from(self.width)) {
+            self.push_answer(line);
+        }
     }
 
     /// The end of an answer's text: a table it ended on is drawn.
     fn end_md(&mut self) {
         self.end_table();
-        self.fence = false;
+        self.md = look::Markdown::default();
         self.tabled = false;
     }
 
@@ -1047,7 +1049,7 @@ impl App {
         }
         let Some(lines) = table::render(&rows, usize::from(self.width)) else {
             for r in &rows {
-                self.push_answer(look::markdown_line(r, &mut false));
+                self.push_answer(look::markdown_line(r, &mut look::Markdown::default()));
             }
             return;
         };
@@ -2226,7 +2228,7 @@ impl App {
         self.steers.clear();
         self.unsent_steers.clear();
         self.replay_model = None;
-        self.fence = false;
+        self.md = look::Markdown::default();
         self.table.clear();
         self.billing = None;
         self.approvals.clear();
@@ -2522,6 +2524,17 @@ fn branches(rows: Vec<Span<'static>>) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// An answer's line wrapped to `width`: its `lead` before the first row,
+/// its `hang` before each row after.
+fn hung(md: look::MdLine, width: usize) -> Vec<Line<'static>> {
+    let hang = md.hang.iter().map(Span::width).sum::<usize>();
+    wrap_line(Line::from(md.body), width.saturating_sub(hang).max(1))
+        .into_iter()
+        .enumerate()
+        .map(|(r, row)| Line::from([if r == 0 { md.lead.clone() } else { md.hang.clone() }, row.spans].concat()))
+        .collect()
+}
+
 pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     // What each span shows, and the URL it opens if it is a link.
     let shown: Vec<(&str, Option<String>)> = line.spans.iter().map(|s| look::link_target(s).map_or((s.content.as_ref(), None), |(t, u)| (t, Some(u)))).collect();
@@ -2547,12 +2560,18 @@ pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
                 }
             }
             at += n;
-            // The space a row broke at is not drawn at its end.
+            // The space a row broke at is not drawn at its end, nor at the
+            // start of the next when the row ended at a word's end.
             if r < last
                 && let Some(end) = pieces.last_mut()
                 && end.0.ends_with(' ')
             {
                 end.0.pop();
+            }
+            if r > 0
+                && let Some(start) = pieces.first_mut()
+            {
+                start.0 = start.0.trim_start_matches(' ').to_string();
             }
             // A link broken across rows opens the same URL from each.
             let spans: Vec<Span<'static>> = pieces.into_iter().map(|(t, st, url)| match url {
@@ -2804,6 +2823,19 @@ mod tests {
         a.on_line(&delta("i", "rd"));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "first line\nsecond\nthird".into() } }));
         assert_eq!(text(&a.take_pending()), ["third"], "the tail, and nothing twice");
+    }
+
+    #[test]
+    fn a_list_items_wrapped_rows_line_up_under_its_text() {
+        let mut a = app();
+        a.set_width(24);
+        for l in ["- one two three four five six", "  - seven eight nine ten", "> a quote that goes on and on"] {
+            a.push_md(l);
+        }
+        assert_eq!(
+            text(&a.take_pending()),
+            ["  • one two three four", "    five six", "    ◦ seven eight nine", "      ten", "│ a quote that goes on", "│ and on"]
+        );
     }
 
     #[test]
@@ -3290,7 +3322,7 @@ mod tests {
 
     #[test]
     fn a_link_wrapped_across_rows_opens_its_url_from_each() {
-        let mut f = false;
+        let mut f = look::Markdown::default();
         let rows = wrap_line(look::markdown_line("read [the whole manual](https://krowk.com/m) first", &mut f), 16);
         let shown = |l: &Line| l.spans.iter().map(|s| look::link_target(s).map_or(s.content.to_string(), |(t, _)| t.to_string())).collect::<String>();
         assert_eq!(rows.iter().map(shown).collect::<Vec<_>>(), ["read the whole", "manual\u{a0}↗ first"]);
