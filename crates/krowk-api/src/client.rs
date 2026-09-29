@@ -322,7 +322,7 @@ impl Client {
 
     pub(crate) fn device_signer(&self) -> Result<&dyn RequestSigner, Error> {
         self.signer.as_deref().ok_or_else(|| {
-            fail("device_signature_missing", "this call acts as this machine's device and needs its signing key — run `krowk sync status` to see whether sync is set up here")
+            fail("device_signature_missing", "this call acts as this machine's device and needs its signing key — set sync up on this machine first (`krowk sync init`, `recover` or `join`), then `krowk sync register`")
         })
     }
 

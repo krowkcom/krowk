@@ -177,10 +177,11 @@ fn verify_signed(app: &App, req: &Req, workspace: &str, body: &[u8]) -> Result<S
     let mut s = app.lock();
     // The key on record; for a registration of a device with none yet, the
     // one its body registers.
+    // A row on record with no key is not claimable by registering one.
     let key = match s.sync.devices.get(&(workspace.to_owned(), device.clone())) {
-        Some(d) if !d.signing_key.is_empty() => d.signing_key.clone(),
-        _ if req.path == "/v1/devices" => presented_signing_key(body).unwrap_or_default(),
-        _ => String::new(),
+        Some(d) => d.signing_key.clone(),
+        None if req.path == "/v1/devices" => presented_signing_key(body).unwrap_or_default(),
+        None => String::new(),
     };
     let target = if req.query.is_empty() { req.path.clone() } else { format!("{}?{}", req.path, req.query) };
     let message = format!("krowk/registry/v1\n{}\n{target}\n{at}\n{}", req.method, hex(&Sha256::digest(body)));
