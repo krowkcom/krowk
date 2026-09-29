@@ -37,15 +37,12 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     if state.is_none() && !addr.ip().to_canonical().is_loopback() {
         return Err(fail("bad_flags", format!("--addr {asked} is reachable from the network, so the relay needs --state DIR: where it keeps each channel's fence across restarts")));
     }
-    if let Some(dir) = &state {
-        std::fs::create_dir_all(dir).map_err(|e| fail("bad_config", format!("--state {}: {e}", dir.display())))?;
-    }
     let listener = TcpListener::bind(addr).map_err(|e| fail("relay_unavailable", format!("{addr} cannot be listened on: {e}")))?;
     let bound = listener.local_addr().map_err(|e| fail("relay_unavailable", e.to_string()))?;
     // Bound before it is announced, so a script keying off the banner
     // finds it listening.
     let _ = ctx.io.stdout.write_all(banner(&bound, origin.as_deref()).as_bytes()).and_then(|_| ctx.io.stdout.flush());
-    relay::run(listener, Config { roster, origin, limits: Limits::default(), state }).map_err(|e| fail("relay_unavailable", e))
+    relay::run(listener, Config { roster, origin, limits: Limits::default(), state }).map_err(|e| if e.starts_with("--state") { fail("bad_state", e) } else { fail("relay_unavailable", e) })
 }
 
 /// `--origin` in the form devices sign it.

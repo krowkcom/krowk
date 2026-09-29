@@ -217,7 +217,13 @@ async fn r_relay_1_a_restart_with_state_keeps_the_fence() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     let (joined, _host) = host_join(&first, &f, &host_ticket(&f, now, 300, fence), fence).await;
     assert_eq!(joined["type"], "joined", "{joined}");
-    let second = start(Default::default(), Some(dir.clone()));
+    // The restart: the first relay holds its state's lock while it runs,
+    // so the second reads a copy of what the first persisted.
+    let restarted = dir.with_extension("restarted");
+    let _ = std::fs::remove_dir_all(&restarted);
+    std::fs::create_dir_all(&restarted).unwrap();
+    std::fs::copy(dir.join("relay-channels.jsonl"), restarted.join("relay-channels.jsonl")).unwrap();
+    let second = start(Default::default(), Some(restarted.clone()));
     tokio::time::sleep(Duration::from_millis(100)).await;
     let (answer, _) = host_join(&second, &f, &host_ticket(&f, now, 300, fence - 1), fence - 1).await;
     assert_eq!(answer["code"], "not_lease_holder", "after the restart: {answer}");
@@ -227,4 +233,89 @@ async fn r_relay_1_a_restart_with_state_keeps_the_fence() {
     let (forgot, _) = host_join(&bare, &f, &host_ticket(&f, now, 300, fence - 1), fence - 1).await;
     assert_eq!(forgot["type"], "joined", "{forgot}");
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&restarted);
 }
+
+/// Starts a relay on `dir` and answers why it would not, or None if it did.
+fn refused_to_start(dir: &std::path::Path) -> Option<String> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let roster = krowk_harness::relay::Roster::parse(FIXTURE).unwrap();
+    let dir = dir.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let r = krowk_harness::relay::run(listener, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: Some(dir) });
+        let _ = tx.send(r.err());
+    });
+    rx.recv_timeout(Duration::from_millis(500)).ok().flatten()
+}
+
+/// A state directory holding one good record, the fence a displaced holder
+/// must meet, and `damage` done to it.
+fn damaged(name: &str, damage: impl FnOnce(&std::path::Path)) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("krowk-relay-damaged-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let good = format!("{}\n", json!({"env": "production", "session": "00".repeat(16), "workspace": "ws_a", "fence": 241, "fenceExp": relay_ticket::now() + 300, "fenceDevice": "11".repeat(16)}));
+    std::fs::write(dir.join("relay-channels.jsonl"), &good).unwrap();
+    damage(&dir.join("relay-channels.jsonl"));
+    dir
+}
+
+/// R-RELAY-1: a relay never starts on state it cannot trust, since starting
+/// as though it knew no fence would let a displaced holder host: a
+/// truncated record, a byte that is not UTF-8, NUL bytes, a record with no
+/// fence, a file it may not read, and a rewrite cut off, each refuse, with
+/// what to do.
+#[test]
+fn r_relay_1_a_relay_refuses_to_start_on_state_it_cannot_trust() {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    let append = |bytes: Vec<u8>| move |p: &std::path::Path| std::fs::OpenOptions::new().append(true).open(p).unwrap().write_all(&bytes).unwrap();
+    type Damage = Box<dyn FnOnce(&std::path::Path)>;
+    let cases: Vec<(&str, Damage)> = vec![
+        ("truncated", Box::new(|p: &std::path::Path| {
+            let b = std::fs::read(p).unwrap();
+            std::fs::write(p, &b[..60]).unwrap();
+        })),
+        ("not-utf8", Box::new(append(b"\xff\n".to_vec()))),
+        ("nul", Box::new(append(vec![0u8; 131]))),
+        ("fence-null", Box::new(append(format!("{}\n", json!({"env": "production", "session": "00".repeat(16), "workspace": "ws_a", "fence": null, "fenceExp": 1})).into_bytes()))),
+        ("unreadable", Box::new(|p: &std::path::Path| std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o000)).unwrap())),
+        ("mid-compaction", Box::new(|p: &std::path::Path| std::fs::write(p.with_extension("jsonl.tmp"), b"{\"env\"").unwrap())),
+    ];
+    // A root test runner reads a 000 file anyway; the case is then moot.
+    let root = unsafe { libc::geteuid() } == 0;
+    for (name, damage) in cases {
+        let dir = damaged(name, damage);
+        if name == "unreadable" && root {
+            continue;
+        }
+        let why = refused_to_start(&dir).unwrap_or_else(|| panic!("a relay started on {name} state"));
+        assert!(why.starts_with("--state") && why.contains(" — "), "{name}: {why}");
+        let _ = std::fs::set_permissions(dir.join("relay-channels.jsonl"), std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// R-RELAY-1: the state is private to the relay and to one relay: the
+/// directory is 0700 and the file 0600, and a second relay on the same
+/// directory refuses to start while the first holds it. Records whose
+/// fences have long expired are pruned when the relay starts.
+#[tokio::test]
+async fn r_relay_1_a_relays_state_is_private_to_it_and_pruned() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = damaged("private", |p: &std::path::Path| {
+        use std::io::Write as _;
+        let old = json!({"env": "production", "session": "22".repeat(16), "workspace": "ws_a", "fence": 3, "fenceExp": 1000, "fenceDevice": null});
+        std::fs::OpenOptions::new().append(true).open(p).unwrap().write_all(format!("{old}\n").as_bytes()).unwrap();
+    });
+    let _url = start(Default::default(), Some(dir.clone()));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_eq!(std::fs::metadata(dir.join("relay-channels.jsonl")).unwrap().permissions().mode() & 0o777, 0o600);
+    let kept = std::fs::read_to_string(dir.join("relay-channels.jsonl")).unwrap();
+    assert!(kept.contains(&"00".repeat(16)) && !kept.contains(&"22".repeat(16)), "the expired record is pruned, the live one kept: {kept}");
+    let why = refused_to_start(&dir).expect("a second relay on held state");
+    assert!(why.contains("another relay holds it"), "{why}");
+}
+

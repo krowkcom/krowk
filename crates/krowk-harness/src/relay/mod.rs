@@ -86,6 +86,10 @@ pub struct Limits {
     /// Connections that have not joined yet: in all, and from one address.
     pub unjoined: usize,
     pub unjoined_per_peer: usize,
+    /// Connections whose ticket was verified and which have not joined yet,
+    /// in all: a pool of their own, so neither a flood of strangers nor one
+    /// of tickets can take the other's room.
+    pub unjoined_ticketed: usize,
     /// Connections open on one channel that have not joined: the
     /// contract's own bound, which a per-session object can hold.
     pub unjoined_per_channel: usize,
@@ -129,6 +133,7 @@ impl Default for Limits {
             link_queue: 16 << 20,
             unjoined: 1024,
             unjoined_per_peer: 32,
+            unjoined_ticketed: 1024,
             unjoined_per_channel: 64,
             unjoined_per_device: 2,
             ticket_lifetime: krowk_client::relay_ticket::MAX_LIFETIME,
@@ -226,19 +231,33 @@ pub struct Config {
 
 /// Runs a relay on `listener` until the process ends.
 pub fn run(listener: std::net::TcpListener, config: Config) -> Result<(), String> {
+    // The state is read, strictly, before anything is served: a relay that
+    // cannot trust its fences does not start.
+    let state = match config.state.as_deref() {
+        Some(dir) => Some(open_state(dir, &config.limits).map_err(|StateRefused(why)| why)?),
+        None => None,
+    };
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("the async runtime could not start: {e}"))?;
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
         let listener = TcpListener::from_std(listener).map_err(|e| e.to_string())?;
-        serve(listener, config).await;
+        serve_with(listener, config, state).await;
         Ok(())
     })
 }
 
 /// Accepts connections for ever. Inside a `LocalSet`.
 pub async fn serve(listener: TcpListener, config: Config) {
-    let channels = config.state.as_deref().map(load_state).unwrap_or_default();
+    serve_with(listener, config, None).await
+}
+
+async fn serve_with(listener: TcpListener, config: Config, state: Option<(std::fs::File, HashMap<Key, Channel>)>) {
+    // The lock is held for as long as the relay serves.
+    let (_lock, channels) = match state {
+        Some((lock, channels)) => (Some(lock), channels),
+        None => (None, HashMap::new()),
+    };
     let relay = Rc::new(Relay { config, channels: RefCell::new(channels), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0) });
     loop {
         match listener.accept().await {
@@ -297,25 +316,44 @@ impl Relay {
         }
     }
 
+    /// At the pool's cap with every connection ticketed: one goes from the
+    /// channel holding the most pending — a viewer's before a host's, the
+    /// oldest first — so no workspace filling the pool with its own
+    /// tickets, across any number of its sessions, pushes out a device of a
+    /// channel holding fewer (relay.md → Limits). As a Durable Object holds
+    /// each channel to its own cap, this holds the pool to the fullest.
+    fn evict_from_fullest(&self) {
+        let mut counts: HashMap<Key, usize> = HashMap::new();
+        for p in self.pending.borrow().iter().filter(|p| p.device.is_some()) {
+            if let Some(k) = p.session {
+                *counts.entry(k).or_default() += 1;
+            }
+        }
+        let Some((&fullest, _)) = counts.iter().max_by_key(|(_, n)| **n) else { return };
+        let viewer = self.pending.borrow().iter().any(|p| p.session == Some(fullest) && p.device.is_some_and(|(_, r)| r == RELAY_ROLE_VIEWER));
+        if viewer {
+            self.evict(|p| p.session == Some(fullest) && p.device.is_some_and(|(_, r)| r == RELAY_ROLE_VIEWER));
+        } else {
+            self.evict(|p| p.session == Some(fullest) && p.device.is_some());
+        }
+    }
+
     /// A new pending connection, room made for it under the caps.
     ///
-    /// Two tiers: a connection that has shown no ticket yet is always let
-    /// go before one whose ticket was verified, so no number of strangers
-    /// holding connections open, from any number of addresses, pushes out
-    /// a device answering its challenge. Ticketed connections are bounded
-    /// already, two per device and role and 64 a channel (`names`).
+    /// Two pools: connections that have shown no ticket yet (here, 1024,
+    /// 32 from one address, the oldest let go) and ones whose ticket was
+    /// verified (`names`), so no number of strangers holding connections
+    /// open, from any number of addresses, pushes out a device answering
+    /// its challenge, and no number of tickets crowds out a stranger's
+    /// honest upgrade either.
     fn arrive(&self, peer: std::net::IpAddr) -> (u64, Rc<tokio::sync::Notify>) {
         let limits = &self.config.limits;
         let peer = peer_bucket(peer);
         if self.pending.borrow().iter().filter(|p| p.peer == peer && p.device.is_none()).count() >= limits.unjoined_per_peer {
             self.evict(|p| p.peer == peer && p.device.is_none());
         }
-        if self.pending.borrow().len() >= limits.unjoined {
-            if self.pending.borrow().iter().any(|p| p.device.is_none()) {
-                self.evict(|p| p.device.is_none());
-            } else {
-                self.evict(|_| true);
-            }
+        if self.pending.borrow().iter().filter(|p| p.device.is_none()).count() >= limits.unjoined {
+            self.evict(|p| p.device.is_none());
         }
         let id = self.pending_ids.get() + 1;
         self.pending_ids.set(id);
@@ -337,6 +375,9 @@ impl Relay {
         }
         if self.pending.borrow().iter().filter(|p| p.session == Some(session)).count() >= limits.unjoined_per_channel {
             self.evict(|p| p.session == Some(session));
+        }
+        if self.pending.borrow().iter().filter(|p| p.device.is_some()).count() >= limits.unjoined_ticketed {
+            self.evict_from_fullest();
         }
         if let Some(p) = self.pending.borrow_mut().iter_mut().find(|p| p.id == id) {
             p.session = Some(session);
@@ -421,6 +462,10 @@ struct Channel {
     /// expires no later, so the channel keeps its fence at least until the
     /// relay's own clock has passed it (relay.md → Tickets).
     fence_exp: u64,
+    /// The device a host was admitted as at that fence. One lease at one
+    /// fence has one holder, so another device at an equal fence is not
+    /// the lease holder, whatever its ticket says (relay.md → Tickets).
+    fence_device: Option<[u8; 16]>,
 }
 
 impl Channel {
@@ -833,7 +878,8 @@ fn admit(relay: &Relay, key: Key, nonce: &[u8; 32], origin: &str, mut j: Join, t
         // A viewer's ticket, or a lease the channel has since seen move on:
         // the registry said this device held the lease once, and a host
         // with a higher fence has joined since.
-        if t.role != RELAY_ROLE_HOST || channel.fence.is_some_and(|f| t.fence < f) {
+        let other_at_fence = channel.fence == Some(t.fence) && channel.fence_device.is_some_and(|d| d != t.device);
+        if t.role != RELAY_ROLE_HOST || channel.fence.is_some_and(|f| t.fence < f) || other_at_fence {
             return Err(refuse("not_lease_holder", "only the device holding the session's lease may host it, and the lease has moved on from this ticket's", "take the session's lease (krowk resumes it on this device), or join as a viewer"));
         }
         if j.fence != Some(t.fence) {
@@ -875,6 +921,7 @@ fn enter(relay: &Relay, session: Key, link: &Rc<Link>, role: u8, j: Join) {
             _ => {
                 ch.fence = Some(j.ticket_fence);
                 ch.fence_exp = j.ticket_exp;
+                ch.fence_device = Some(link.device.0);
             }
         }
         // Kept before the host is told it joined, so a restart after it
@@ -1162,12 +1209,17 @@ fn forgettable(c: &Channel, limits: &Limits, now: u64) -> bool {
 /// The admission facts of every channel that has any, one JSON line each,
 /// the last line for a channel the one that counts.
 const STATE_FILE: &str = "relay-channels.jsonl";
+const STATE_LOCK: &str = "relay.lock";
+
+fn state_line(key: Key, ch: &Channel) -> String {
+    json!({"env": key.0.as_str(), "session": e2e::hex(&key.1), "workspace": ch.workspace, "fence": ch.fence, "fenceExp": ch.fence_exp, "fenceDevice": ch.fence_device.map(|d| e2e::hex(&d))}).to_string() + "\n"
+}
 
 fn save_state(dir: &std::path::Path, key: Key, ch: &Channel) {
     use std::io::Write as _;
-    let line = json!({"env": key.0.as_str(), "session": e2e::hex(&key.1), "workspace": ch.workspace, "fence": ch.fence, "fenceExp": ch.fence_exp}).to_string() + "\n";
-    let written = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(STATE_FILE)).and_then(|mut f| {
-        f.write_all(line.as_bytes())?;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let written = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(dir.join(STATE_FILE)).and_then(|mut f| {
+        f.write_all(state_line(key, ch).as_bytes())?;
         f.sync_data()
     });
     if let Err(e) = written {
@@ -1178,26 +1230,95 @@ fn save_state(dir: &std::path::Path, key: Key, ch: &Channel) {
     }
 }
 
-/// The admission facts kept under `--state`, each channel's as empty since
-/// now, and the file rewritten with one line a channel.
-fn load_state(dir: &std::path::Path) -> HashMap<Key, Channel> {
+/// Why the state under `--state` cannot be trusted: the relay refuses to
+/// start rather than run as if it knew no fence (relay.md → Tickets).
+#[derive(Debug)]
+pub struct StateRefused(pub String);
+
+/// Opens `--state DIR` for this relay alone: the directory made 0700, a
+/// lock held on it for as long as the relay runs (two relays on one state
+/// would each forget the other's fences), and the admission facts read
+/// strictly. Any read error but a missing file, any byte that is not
+/// UTF-8, any line that is not a whole record (a last one cut off
+/// mid-append included), and a rewrite left unfinished refuse to start,
+/// each with what to do, and nothing is rewritten after a refusal. Records past both their idle time and their fence's expiry
+/// are pruned, and the rest written back durably: a temporary file,
+/// synced, renamed over the old, and the directory synced.
+fn open_state(dir: &std::path::Path, limits: &Limits) -> Result<(std::fs::File, HashMap<Key, Channel>), StateRefused> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    let fail = |what: String| StateRefused(format!("--state {}: {what}", dir.display()));
+    std::fs::create_dir_all(dir).map_err(|e| fail(format!("cannot be made: {e}")))?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| fail(format!("cannot be made private (0700): {e}")))?;
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(dir.join(STATE_LOCK)).map_err(|e| fail(format!("its lock cannot be opened: {e}")))?;
+    // SAFETY: flock on a file descriptor this process owns.
+    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(fail("another relay holds it; give each relay its own state".into()));
+    }
+    let path = dir.join(STATE_FILE);
+    let tmp = dir.join(format!("{STATE_FILE}.tmp"));
+    if tmp.exists() {
+        return Err(fail(format!("a rewrite of {STATE_FILE} was cut off (its .tmp is there); {STATE_FILE} itself is whole — remove {STATE_FILE}.tmp and start again")));
+    }
+    let raw = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(fail(format!("{STATE_FILE} cannot be read ({e}); the relay will not start without its fences — restore the file or its permissions (0600, the relay's own)"))),
+    };
+    let text = String::from_utf8(raw).map_err(|_| fail(format!("{STATE_FILE} is not text; the relay will not start without its fences — restore it from a backup, or remove it only once every ticket it could refuse has expired (seven minutes after the relay last ran)")))?;
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let mut channels: HashMap<Key, Channel> = HashMap::new();
-    let text = std::fs::read_to_string(dir.join(STATE_FILE)).unwrap_or_default();
-    for line in text.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        let (Some(env), Some(session)) = (Env::parse(v["env"].as_str()), v["session"].as_str().and_then(e2e::unhex).and_then(|b| <[u8; 16]>::try_from(b).ok())) else { continue };
-        let ch = channels.entry((env, session)).or_default();
-        ch.workspace = v["workspace"].as_str().map(str::to_string);
-        ch.fence = v["fence"].as_u64();
-        ch.fence_exp = v["fenceExp"].as_u64().unwrap_or(0);
+    for (n, line) in lines.iter().enumerate() {
+        let record = line.strip_suffix('\n').and_then(parse_state_line);
+        let Some((key, workspace, fence, fence_exp, fence_device)) = record else {
+            let torn = n + 1 == lines.len() && !line.ends_with('\n');
+            let fix = if torn {
+                "a crash cut the last record off mid-append: remove that last line (the host it was for was never told it joined) and start again".to_string()
+            } else {
+                "restore the file, or remove it only once every ticket it could refuse has expired (seven minutes after the relay last ran)".to_string()
+            };
+            return Err(fail(format!("{STATE_FILE} line {} is not a whole record, so the relay will not start without its fences — {fix}", n + 1)));
+        };
+        let ch = channels.entry(key).or_default();
+        ch.workspace = Some(workspace);
+        ch.fence = Some(fence);
+        ch.fence_exp = fence_exp;
+        ch.fence_device = fence_device;
         ch.empty_since = Some(Instant::now());
     }
-    let compact: String = channels.iter().map(|(k, c)| json!({"env": k.0.as_str(), "session": e2e::hex(&k.1), "workspace": c.workspace, "fence": c.fence, "fenceExp": c.fence_exp}).to_string() + "\n").collect();
-    let tmp = dir.join(format!("{STATE_FILE}.tmp"));
-    if std::fs::write(&tmp, compact).and_then(|_| std::fs::rename(&tmp, dir.join(STATE_FILE))).is_err() {
-        eprintln!("relay state {} could not be rewritten; carrying on with the longer file", dir.display());
-    }
-    channels
+    // Pruned: a channel whose fence's tickets have all expired past the
+    // margin would be forgotten after the idle time anyway, and the idle
+    // time starts again at every start.
+    let now = krowk_client::relay_ticket::now();
+    channels.retain(|_, c| now < c.fence_exp + limits.idle_margin + limits.idle().as_secs());
+    let compact: String = channels.iter().map(|(k, c)| state_line(*k, c)).collect();
+    let durable = std::fs::OpenOptions::new().create(true).truncate(true).write(true).mode(0o600).open(&tmp).and_then(|mut f| {
+        f.write_all(compact.as_bytes())?;
+        f.sync_all()
+    });
+    durable
+        .and_then(|_| std::fs::rename(&tmp, &path))
+        .and_then(|_| std::fs::File::open(dir)?.sync_all())
+        .map_err(|e| fail(format!("cannot be rewritten durably: {e}")))?;
+    let _ = std::io::stderr().flush();
+    Ok((lock, channels))
+}
+
+type StateRecord = (Key, String, u64, u64, Option<[u8; 16]>);
+
+/// One whole record: every field present and of its type.
+fn parse_state_line(line: &str) -> Option<StateRecord> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    let env = Env::parse(Some(v["env"].as_str()?))?;
+    let session: [u8; 16] = e2e::unhex(v["session"].as_str()?)?.try_into().ok()?;
+    let workspace = v["workspace"].as_str()?.to_string();
+    let fence = v["fence"].as_u64()?;
+    let fence_exp = v["fenceExp"].as_u64()?;
+    let fence_device = match &v["fenceDevice"] {
+        Value::Null => None,
+        d => Some(e2e::unhex(d.as_str()?)?.try_into().ok()?),
+    };
+    Some(((env, session), workspace, fence, fence_exp, fence_device))
 }
 
 /// A session id's sixteen bytes, from its canonical UUID form.
@@ -1207,4 +1328,21 @@ pub fn parse_uuid(s: &str) -> Option<[u8; 16]> {
         return None;
     }
     e2e::unhex(&hex.to_ascii_lowercase())?.try_into().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::peer_bucket;
+
+    /// R-RELAY-1: the pre-request cap counts an IPv6 peer by its /64 and an
+    /// IPv4 one, v4-mapped included, by itself.
+    #[test]
+    fn r_relay_1_an_ipv6_peer_is_counted_by_its_64() {
+        let b = |s: &str| peer_bucket(s.parse().unwrap());
+        assert_eq!(b("2001:db8::1"), b("2001:db8::ffff"));
+        assert_eq!(b("2001:db8::1"), b("2001:db8:0:0:abcd:1:2:3"));
+        assert_ne!(b("2001:db8::1"), b("2001:db8:0:1::1"));
+        assert_eq!(b("::ffff:1.2.3.4"), b("1.2.3.4"));
+        assert_ne!(b("1.2.3.4"), b("1.2.3.5"));
+    }
 }
