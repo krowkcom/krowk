@@ -31,6 +31,7 @@ mod page;
 mod runs;
 mod store;
 mod sync;
+pub use sync::{ticket_public_key, TICKET_KID, TICKET_SEED};
 mod uploads;
 mod view;
 mod xml;
@@ -250,6 +251,7 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         (_, ["v1", "sessions"]) if get => sync::list_sessions(a, req),
         (_, ["v1", "sessions", id]) if get => sync::show_session(a, req, id),
         ("PUT" | "PATCH", ["v1", "sessions", id]) => sync::put_session(a, req, id),
+        (_, ["v1", "sessions", id, "relay_ticket"]) if get => sync::viewer_ticket(a, req, id),
         ("POST", ["v1", "sessions", id, "lease"]) => sync::acquire_lease(a, req, id),
         ("PUT" | "PATCH", ["v1", "sessions", id, "lease"]) => sync::renew_lease(a, req, id),
         ("DELETE", ["v1", "sessions", id, "lease"]) => sync::release_lease(a, req, id),

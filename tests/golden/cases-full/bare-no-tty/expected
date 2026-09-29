@@ -1044,7 +1044,7 @@ stdout:
       "subcommands": [
         {
           "name": "serve",
-          "usage": "krowk relay serve --roster FILE [--addr HOST:PORT] [--origin URL]",
+          "usage": "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]",
           "summary": "Carry sealed sessions between their host and viewers",
           "flags": [
             {
@@ -1054,16 +1054,22 @@ stdout:
               "usage": "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"
             },
             {
-              "name": "roster",
+              "name": "ticket-keys",
               "type": "string",
               "default": "",
-              "usage": "The JSON file of trusted devices and session leases (relay.md → The reference relay)"
+              "usage": "The JSON file of the registry's ticket-signing public keys (relay.md → Tickets)"
             },
             {
               "name": "origin",
               "type": "string",
               "default": "",
               "usage": "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "default": "",
+              "usage": "The directory each channel's fence is kept in across restarts; required off loopback"
             }
           ]
         }
@@ -1100,6 +1106,21 @@ stdout:
           "name": "register",
           "usage": "krowk sync register [--name NAME]",
           "summary": "Tell the workspace this machine holds its account key"
+        },
+        {
+          "name": "sessions",
+          "usage": "krowk sync sessions",
+          "summary": "The synced sessions this machine can open"
+        },
+        {
+          "name": "host",
+          "usage": "krowk sync host SESSION",
+          "summary": "Run a session here and sync it until interrupted"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sync attach SESSION",
+          "summary": "Follow a synced session here; each stdin line is a prompt"
         }
       ]
     },
@@ -2330,7 +2351,7 @@ stdout:
       "subcommands": [
         {
           "name": "serve",
-          "usage": "krowk relay serve --roster FILE [--addr HOST:PORT] [--origin URL]",
+          "usage": "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]",
           "summary": "Carry sealed sessions between their host and viewers",
           "flags": [
             {
@@ -2340,16 +2361,22 @@ stdout:
               "usage": "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"
             },
             {
-              "name": "roster",
+              "name": "ticket-keys",
               "type": "string",
               "default": "",
-              "usage": "The JSON file of trusted devices and session leases (relay.md → The reference relay)"
+              "usage": "The JSON file of the registry's ticket-signing public keys (relay.md → Tickets)"
             },
             {
               "name": "origin",
               "type": "string",
               "default": "",
               "usage": "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "default": "",
+              "usage": "The directory each channel's fence is kept in across restarts; required off loopback"
             }
           ]
         }
@@ -2386,6 +2413,21 @@ stdout:
           "name": "register",
           "usage": "krowk sync register [--name NAME]",
           "summary": "Tell the workspace this machine holds its account key"
+        },
+        {
+          "name": "sessions",
+          "usage": "krowk sync sessions",
+          "summary": "The synced sessions this machine can open"
+        },
+        {
+          "name": "host",
+          "usage": "krowk sync host SESSION",
+          "summary": "Run a session here and sync it until interrupted"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sync attach SESSION",
+          "summary": "Follow a synced session here; each stdin line is a prompt"
         }
       ]
     },
@@ -3630,7 +3672,7 @@ stdout:
       "subcommands": [
         {
           "name": "serve",
-          "usage": "krowk relay serve --roster FILE [--addr HOST:PORT] [--origin URL]",
+          "usage": "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]",
           "summary": "Carry sealed sessions between their host and viewers",
           "flags": [
             {
@@ -3640,16 +3682,22 @@ stdout:
               "usage": "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"
             },
             {
-              "name": "roster",
+              "name": "ticket-keys",
               "type": "string",
               "default": "",
-              "usage": "The JSON file of trusted devices and session leases (relay.md → The reference relay)"
+              "usage": "The JSON file of the registry's ticket-signing public keys (relay.md → Tickets)"
             },
             {
               "name": "origin",
               "type": "string",
               "default": "",
               "usage": "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "default": "",
+              "usage": "The directory each channel's fence is kept in across restarts; required off loopback"
             }
           ]
         }
@@ -3686,6 +3734,21 @@ stdout:
           "name": "register",
           "usage": "krowk sync register [--name NAME]",
           "summary": "Tell the workspace this machine holds its account key"
+        },
+        {
+          "name": "sessions",
+          "usage": "krowk sync sessions",
+          "summary": "The synced sessions this machine can open"
+        },
+        {
+          "name": "host",
+          "usage": "krowk sync host SESSION",
+          "summary": "Run a session here and sync it until interrupted"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sync attach SESSION",
+          "summary": "Follow a synced session here; each stdin line is a prompt"
         }
       ]
     },
@@ -4930,7 +4993,7 @@ tty:
       "subcommands": [
         {
           "name": "serve",
-          "usage": "krowk relay serve --roster FILE [--addr HOST:PORT] [--origin URL]",
+          "usage": "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]",
           "summary": "Carry sealed sessions between their host and viewers",
           "flags": [
             {
@@ -4940,16 +5003,22 @@ tty:
               "usage": "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"
             },
             {
-              "name": "roster",
+              "name": "ticket-keys",
               "type": "string",
               "default": "",
-              "usage": "The JSON file of trusted devices and session leases (relay.md → The reference relay)"
+              "usage": "The JSON file of the registry's ticket-signing public keys (relay.md → Tickets)"
             },
             {
               "name": "origin",
               "type": "string",
               "default": "",
               "usage": "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "default": "",
+              "usage": "The directory each channel's fence is kept in across restarts; required off loopback"
             }
           ]
         }
@@ -4986,6 +5055,21 @@ tty:
           "name": "register",
           "usage": "krowk sync register [--name NAME]",
           "summary": "Tell the workspace this machine holds its account key"
+        },
+        {
+          "name": "sessions",
+          "usage": "krowk sync sessions",
+          "summary": "The synced sessions this machine can open"
+        },
+        {
+          "name": "host",
+          "usage": "krowk sync host SESSION",
+          "summary": "Run a session here and sync it until interrupted"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sync attach SESSION",
+          "summary": "Follow a synced session here; each stdin line is a prompt"
         }
       ]
     },

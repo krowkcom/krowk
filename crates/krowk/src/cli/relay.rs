@@ -3,7 +3,7 @@
 //! stand-in the tests and ticket 18's conformance runs use, and a way to
 //! run a relay of one's own. Loopback unless `--addr` names another
 //! address, and then it says so, as the stand-in registry does: anyone who
-//! reaches it can open connections, though only the roster's devices can
+//! reaches it can open connections, though only a device with a registry ticket can
 //! join, and it only ever holds ciphertext.
 
 use super::Ctx;
@@ -15,7 +15,7 @@ pub const DEFAULT_ADDR: &str = "127.0.0.1:7790";
 
 pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     if ctx.f.roster.is_empty() {
-        return Err(fail("bad_flags", "krowk relay serve needs --roster FILE: the devices it trusts and the sessions' leases, as engineering/relay.md lays out"));
+        return Err(fail("bad_flags", "krowk relay serve needs --ticket-keys FILE: the registry's ticket-signing public keys, {\"ticketKeys\": {\"<kid>\": \"<key>\"}}, as engineering/relay.md lays out"));
     }
     let text = std::fs::read_to_string(&ctx.f.roster).map_err(|e| fail("bad_config", format!("{} cannot be read: {e}", ctx.f.roster)))?;
     let roster = Roster::parse(&text).map_err(|e| fail("bad_config", format!("{}: {e}", ctx.f.roster)))?;
@@ -31,12 +31,18 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     if origin.is_none() && !addr.ip().to_canonical().is_loopback() {
         return Err(fail("bad_flags", format!("--addr {asked} is reachable from the network, so the relay needs --origin: the URL devices dial it by, like wss://relay.example.com")));
     }
+    // And its channels' fences must outlive a restart there, or a restart
+    // lets a displaced lease holder host again (relay.md → Tickets).
+    let state = Some(ctx.f.relay_state.clone()).filter(|d| !d.is_empty()).map(std::path::PathBuf::from);
+    if state.is_none() && !addr.ip().to_canonical().is_loopback() {
+        return Err(fail("bad_flags", format!("--addr {asked} is reachable from the network, so the relay needs --state DIR: where it keeps each channel's fence across restarts")));
+    }
     let listener = TcpListener::bind(addr).map_err(|e| fail("relay_unavailable", format!("{addr} cannot be listened on: {e}")))?;
     let bound = listener.local_addr().map_err(|e| fail("relay_unavailable", e.to_string()))?;
     // Bound before it is announced, so a script keying off the banner
     // finds it listening.
     let _ = ctx.io.stdout.write_all(banner(&bound, origin.as_deref()).as_bytes()).and_then(|_| ctx.io.stdout.flush());
-    relay::run(listener, Config { roster, origin, limits: Limits::default() }).map_err(|e| fail("relay_unavailable", e))
+    relay::run(listener, Config { roster, origin, limits: Limits::default(), state }).map_err(|e| if e.starts_with("--state") { fail("bad_state", e) } else { fail("relay_unavailable", e) })
 }
 
 /// `--origin` in the form devices sign it.
@@ -52,7 +58,7 @@ pub fn banner(bound: &SocketAddr, origin: Option<&str>) -> String {
     let mut lines = vec![format!("krowk relay listening on {base}"), format!("  a session's channel: {base}{}<session id>", relay::PATH)];
     if !bound.ip().to_canonical().is_loopback() {
         let what = if bound.ip().is_unspecified() { "every interface".to_string() } else { bound.ip().to_string() };
-        lines.push(format!("  ! reachable from the network on {what} — anyone can connect; only the roster's devices can join, and it carries ciphertext only"));
+        lines.push(format!("  ! reachable from the network on {what} — anyone can connect; only a device with a ticket its keys verify can join, and it carries ciphertext only"));
     }
     lines.join("\n") + "\n"
 }

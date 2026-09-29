@@ -72,11 +72,20 @@ pub(super) fn approve(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let client = keyed_client(ctx, "`krowk devices approve`")?;
     // Registered first, so the registry knows the device the answer is
     // from; the same key again is the same row.
-    client.register_device(&e2e::hex(&device.public().0), &device_name(ctx), &account.id().to_string())?;
+    let signing = store.signing_key().map_err(|e| fail("sync_setup_failed", e))?;
+    client.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), &device_name(ctx), &account.id().to_string())?;
     let pending = client.list_device_approvals()?;
-    // Each request's id computed here, from the key this machine would wrap
-    // to, never taken from the registry's own `id`.
-    let candidates: Vec<_> = pending.iter().filter_map(|a| public_key(&a.public_key).map(|k| (k.id(), k, a))).collect();
+    // Each request's code computed here, from both keys it carries — the
+    // X25519 key this machine would wrap to and the signing key the approval
+    // registers — never taken from the registry's own `id`.
+    let candidates: Vec<_> = pending
+        .iter()
+        .filter_map(|a| {
+            let key = public_key(&a.public_key)?;
+            let signing: [u8; 32] = e2e::unhex(&a.signing_key).and_then(|b| b.try_into().ok())?;
+            Some((e2e::approval_code(&key, &e2e::SigningPublic(signing)), key, a))
+        })
+        .collect();
     if candidates.is_empty() {
         return Err(fail("no_pending_devices", "no device is waiting to be approved — run `krowk sync join` on the new machine first, with a key to this workspace"));
     }
@@ -93,10 +102,14 @@ pub(super) fn approve(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             DeviceId::parse(&t).ok_or_else(|| fail("bad_device_code", "that is not a device code — it is 32 hex characters; nothing was approved"))?
         }
     };
-    let Some((id, key, request)) = candidates.into_iter().find(|(id, _, _)| *id == code) else {
+    // Exactly one request with exactly this code, and the account key goes
+    // to the X25519 key of that request: never the first of several, and
+    // never matched by key alone.
+    let mut matched = candidates.into_iter().filter(|(c, _, _)| *c == code);
+    let (Some((id, key, request)), None) = (matched.next(), matched.next()) else {
         return Err(fail(
             "no_such_device_code",
-            format!("no waiting device has code {} — check it against the new device's screen; nothing was approved", code.grouped()),
+            format!("no single waiting device has code {} — check it against the new device's screen; nothing was approved", code.grouped()),
         ));
     };
     let name = printable(&request.name);
@@ -113,6 +126,6 @@ pub(super) fn approve(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         let _ = writeln!(ctx.io.stdout, "{summary}");
         return Ok(());
     }
-    let data = json!({ "device": id.to_string(), "name": name, "account_key": account.id().to_string() });
+    let data = json!({ "device": key.id().to_string(), "code": id.to_string(), "name": name, "account_key": account.id().to_string() });
     super::sessions::emit_data(ctx, data, summary)
 }

@@ -467,6 +467,12 @@ fn sync_command() -> Command {
                 ..cmd("join", "krowk sync join [ACCOUNT_KEY_ID]", "Add this machine, approved from one that already syncs")
             },
             cmd("register", "krowk sync register [--name NAME]", "Tell the workspace this machine holds its account key"),
+            #[cfg(unix)]
+            cmd("sessions", "krowk sync sessions", "The synced sessions this machine can open"),
+            #[cfg(unix)]
+            cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
+            #[cfg(unix)]
+            cmd("attach", "krowk sync attach SESSION", "Follow a synced session here; each stdin line is a prompt"),
         ],
         ..cmd("sync", "", "End-to-end encryption keys for syncing sessions")
     }
@@ -481,10 +487,11 @@ fn relay_command() -> Command {
         subcommands: vec![Command {
             flags: vec![
                 flag("addr", STRING, "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"),
-                flag("roster", STRING, "The JSON file of trusted devices and session leases (relay.md → The reference relay)"),
+                flag("ticket-keys", STRING, "The JSON file of the registry's ticket-signing public keys (relay.md → Tickets)"),
                 flag("origin", STRING, "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"),
+                flag("state", STRING, "The directory each channel's fence is kept in across restarts; required off loopback"),
             ],
-            ..cmd("serve", "krowk relay serve --roster FILE [--addr HOST:PORT] [--origin URL]", "Carry sealed sessions between their host and viewers")
+            ..cmd("serve", "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]", "Carry sealed sessions between their host and viewers")
         }],
         ..cmd("relay", "", "The relay other devices reach a session through")
     }

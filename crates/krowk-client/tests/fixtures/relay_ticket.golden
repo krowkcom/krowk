@@ -1,0 +1,15 @@
+{
+  "seed": "0101010101010101010101010101010101010101010101010101010101010101",
+  "kid": "0102030405060708",
+  "public_key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+  "role": "host",
+  "env": "production",
+  "session": "0190f3a8-7c1e-7a9b-8c2d-3e4f5a6b7c8d",
+  "device": "0123456789abcdef0123456789abcdef",
+  "signing_key": "abababababababababababababababababababababababababababababababab",
+  "workspace": "ws_golden0000000000000000",
+  "fence": 9,
+  "iat": 1790000000,
+  "exp": 1790000300,
+  "ticket": "01010203040506070801010190f3a87c1e7a9b8c2d3e4f5a6b7c8d0123456789abcdef0123456789abcdefabababababababababababababababababababababababababababababababab0000000000000009000000006ab13b80000000006ab13cac1977735f676f6c64656e3030303030303030303030303030303099480842721987bd48bf813d542c5e3acbf403ac5708dc51a01cc5aeb161d6bc84e4d75403efb0c95b1f5550d6ee4974c98bc8adff77ad101dd311db95b8da01"
+}
