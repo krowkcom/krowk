@@ -1318,11 +1318,12 @@ fn with_a_key_and_a_subscription_model_sonnet_is_refused_as_ambiguous_in_the_tui
 
 // ---- /connect, /disconnect and the first-run card ------------------------------
 
-/// What the TUI wrote after byte `from`, as words: a blank cell is skipped,
-/// not written — the next word starts with a move to its column — so each
-/// such move reads as the space it stands for, and styles as nothing.
-fn words(t: &pty::Pty, from: usize) -> String {
-    let raw = String::from_utf8_lossy(&t.output()[from..]).into_owned();
+/// What the TUI wrote after byte `from` of `out`, as words: a blank cell is
+/// skipped, not written — the next word starts with a move to its column —
+/// so each such move reads as the space it stands for, and styles as
+/// nothing.
+fn words(out: &[u8], from: usize) -> String {
+    let raw = String::from_utf8_lossy(&out[from..]).into_owned();
     let mut out = String::new();
     let mut rest = raw.as_str();
     while let Some(i) = rest.find('\x1b') {
@@ -1339,12 +1340,124 @@ fn words(t: &pty::Pty, from: usize) -> String {
     out
 }
 
-/// Whether `needle`, as words, is in what the TUI wrote after `from`,
+/// The rows of a `cols` by `rows` terminal once `out` is drawn on it, from
+/// the top left, where the pty says a fresh cursor is. Only what the TUI
+/// sends is followed: CR, LF, moves up, down and right, clearing to the
+/// end of the screen, inserting and deleting rows, saving and restoring the
+/// cursor, and the deferred wrap at the last column while autowrap is on.
+/// Every other sequence draws nothing, and every character takes one cell —
+/// what is looked for here is narrow.
+fn screen(out: &[u8], cols: u16, rows: u16) -> Vec<String> {
+    let (w, h) = (usize::from(cols.max(1)), usize::from(rows.max(1)));
+    let mut grid = vec![vec![' '; w]; h];
+    let (mut x, mut y, mut saved, mut wrap, mut pending) = (0usize, 0usize, (0usize, 0usize), true, false);
+    let text = String::from_utf8_lossy(out);
+    let mut chars = text.chars().peekable();
+    let feed = |grid: &mut Vec<Vec<char>>, y: &mut usize| {
+        if *y + 1 == h {
+            grid.remove(0);
+            grid.push(vec![' '; w]);
+        } else {
+            *y += 1;
+        }
+    };
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => (x, pending) = (0, false),
+            '\n' => {
+                feed(&mut grid, &mut y);
+                pending = false;
+            }
+            '\x07' | '\x08' => {}
+            '\x1b' => match chars.next() {
+                Some('7') => saved = (x, y),
+                Some('8') => ((x, y), pending) = (saved, false),
+                Some(']') => {
+                    // An OSC runs to BEL or ST.
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                Some('[') => {
+                    let mut params = String::new();
+                    while let Some(c) = chars.next_if(|c| ('\x30'..='\x3f').contains(c)) {
+                        params.push(c);
+                    }
+                    let intermediate = std::iter::from_fn(|| chars.next_if(|c| ('\x20'..='\x2f').contains(c))).count() > 0;
+                    let Some(fin) = chars.next() else { break };
+                    let n = params.parse::<usize>().unwrap_or(1).max(1);
+                    if intermediate || params.starts_with(['?', '>', '<', '=']) {
+                        if params == "?7" {
+                            wrap = fin == 'h';
+                        }
+                        continue;
+                    }
+                    pending = false;
+                    match fin {
+                        'A' => y = y.saturating_sub(n),
+                        'B' => y = (y + n).min(h - 1),
+                        'C' => x = (x + n).min(w - 1),
+                        'J' => {
+                            grid[y][x..].fill(' ');
+                            grid[y + 1..].iter_mut().for_each(|r| r.fill(' '));
+                        }
+                        'L' => {
+                            for _ in 0..n.min(h - y) {
+                                grid.pop();
+                                grid.insert(y, vec![' '; w]);
+                            }
+                        }
+                        'M' => {
+                            for _ in 0..n.min(h - y) {
+                                grid.remove(y);
+                                grid.push(vec![' '; w]);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            },
+            c if c < ' ' => {}
+            c => {
+                if pending {
+                    x = 0;
+                    feed(&mut grid, &mut y);
+                    pending = false;
+                }
+                grid[y][x] = c;
+                if x + 1 < w {
+                    x += 1;
+                } else {
+                    pending = wrap;
+                }
+            }
+        }
+    }
+    grid.into_iter().map(|r| r.into_iter().collect::<String>().trim_end().to_owned()).collect()
+}
+
+/// Whether `needle` is what the TUI said after byte `from` of `out`, on a
+/// `size` terminal. Two readings: the words it wrote since, or the screen
+/// it leaves, when `needle` was not on the screen at `from`. The second is
+/// for a frame drawn over another: a cell that already shows the right
+/// character is not written again, so the words of text drawn over text
+/// can come with letters missing — how the next frame looks depends on
+/// which frames the terminal saw before it, and so on how its input was
+/// read.
+fn said(out: &[u8], from: usize, needle: &str, (cols, rows): (u16, u16)) -> bool {
+    let on = |to: usize| screen(&out[..to], cols, rows).iter().any(|r| r.contains(needle));
+    words(out, from).contains(needle) || (on(out.len()) && !on(from))
+}
+
+/// Whether `needle` is what the TUI said after byte `from` (`said`),
 /// within `timeout`.
 fn says(t: &pty::Pty, from: usize, needle: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        if words(t, from).contains(needle) {
+        if said(&t.output(), from, needle, t.size) {
             return true;
         }
         if Instant::now() > deadline {
@@ -1353,6 +1466,24 @@ fn says(t: &pty::Pty, from: usize, needle: &str, timeout: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+/// What macOS CI's terminal got in the first-run test, up to `/connect`'s
+/// picker drawn over the slash menu with no frame between them: the words
+/// read "Conn c  which provider?", as the two cells the menu already showed
+/// were not written again, and the screen reads the question whole.
+#[test]
+fn a_frame_drawn_over_another_says_what_the_screen_shows() {
+    let out: &[u8] = include_bytes!("common/first-run-connect-macos.out");
+    let worked = out.windows(10).rposition(|w| w == b"Worked for").unwrap();
+    let from = worked + out[worked..].windows(pty::SYNC_END.len()).position(|w| w == pty::SYNC_END).unwrap();
+    let asked = "Connect which provider?";
+    assert!(!words(out, from).contains(asked), "{:?}", words(out, from));
+    assert!(screen(out, 110, 34).iter().any(|r| r.trim() == asked), "{:#?}", screen(out, 110, 34));
+    assert!(said(out, from, asked, (110, 34)));
+    // The turn's summary is still on screen, and was before: not said again.
+    assert!(screen(out, 110, 34).iter().any(|r| r.contains("Worked for 0.1s")));
+    assert!(!said(out, from, "Worked for", (110, 34)));
+}
+
 /// No key, no config, and a `claude` signed in to nothing: nothing here
 /// can run a model. `FAKE_CLAUDE_LOGIN=ask` makes its login wait for a line
 /// on the terminal, as the real one waits on a person.
