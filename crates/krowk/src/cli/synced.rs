@@ -86,3 +86,26 @@ pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let o = viewer::Options { relay: relay(ctx), env, api, device: k.device, signing: k.signing, account: k.account, session: session.clone(), known: None };
     krowk_harness::sync::run_attach(o, &mut *ctx.io.stdout).map_err(|e| fail("sync_failed", e))
 }
+
+/// `krowk --resume <id>` for a session this machine does not have but can
+/// open from sync: it follows it as `krowk sync attach` does, so the
+/// command an artifact card copies works on any of the workspace's
+/// machines, not only the one holding the log. None when the id is local,
+/// or this machine does not sync, or the registry holds no session under it
+/// that this machine's account key opens: `--resume` then goes on as before.
+pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
+    let id = ctx.f.resume.trim().to_string();
+    if !krowk_harness::log::valid_id(&id) {
+        return None;
+    }
+    let dir = krowk_harness::log::sessions_dir(ctx.io.env).ok()?;
+    if dir.join(&id).join(krowk_harness::log::EVENTS_FILE).is_file() {
+        return None;
+    }
+    let k = keys(ctx).ok()?;
+    let api = keyed_client(ctx, "krowk --resume").ok()?;
+    let s = api.show_sync_session(&id).ok()?;
+    let wrapped = krowk_client::e2e::unhex(&s.wrapped_key)?;
+    krowk_client::e2e::unwrap_session_key(&wrapped, &krowk_harness::daemon::ws::uuid(&id), &k.account).ok()?;
+    Some(attach(ctx, &[id]))
+}

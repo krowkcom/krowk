@@ -96,6 +96,9 @@ mod hex32 {
     }
 }
 
+/// How many chunks are read from storage at once.
+const FETCH: usize = 8;
+
 fn api(e: krowk_api::Error) -> String {
     e.to_string()
 }
@@ -208,11 +211,17 @@ fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Opti
     let mut after = reader.next().checked_sub(1);
     loop {
         let page = client.list_chunks(id, after, 100).map_err(api)?;
-        for c in &page.chunks {
-            if c.index < reader.next() {
-                continue;
-            }
-            let sealed = client.read_chunk(c).map_err(api)?;
+        let wanted: Vec<_> = page.chunks.iter().filter(|c| c.index >= reader.next()).collect();
+        // Each chunk is a round trip to storage, so a page is fetched
+        // FETCH at a time and opened in order: an attach costs a few round
+        // trips, not one a chunk (R-PERF-6).
+        let mut fetched = Vec::with_capacity(wanted.len());
+        for group in wanted.chunks(FETCH) {
+            let got: Vec<_> = std::thread::scope(|s| group.iter().map(|c| s.spawn(move || client.read_chunk(c))).collect::<Vec<_>>().into_iter().map(|h| h.join().unwrap_or_else(|_| Err(krowk_api::fail("read_failed", "a chunk read panicked")))).collect());
+            fetched.extend(got);
+        }
+        for (c, sealed) in wanted.iter().zip(fetched) {
+            let sealed = sealed.map_err(api)?;
             let plain = reader.open(&sealed).map_err(|e| e.to_string())?;
             let chunk: Chunk = serde_json::from_slice(&plain).map_err(|e| format!("chunk {} holds no chunk this krowk reads: {e}", c.index))?;
             last = Some(Head { index: c.index, digest: e2e::chunk_digest(&sealed) });
