@@ -299,6 +299,8 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     // Links the relay said are present since the host last joined; chains
     // of any other link are forgotten a second after the join.
     let mut present: Option<(HashSet<u64>, Instant)> = None;
+    // The same for the direct listener, which speaks for its own links.
+    let mut dpresent: Option<(HashSet<u64>, Instant)> = None;
     let mut ws: Option<super::Ws> = None;
     let mut heard = Instant::now();
     let mut retry = Instant::now();
@@ -371,11 +373,16 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                     ended = Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", o.session));
                     break;
                 }
+                // Each uplink speaks for its own links only: a viewer on the
+                // direct path is not one the relay could have named, nor the
+                // other way round.
                 if let Some((here, since)) = &present && since.elapsed() > Duration::from_secs(1) {
-                    // The relay speaks for its own links only: a viewer on the
-                    // direct path is not one it could have named.
                     for l in link.links() { if l < super::direct::FIRST_LINK && !here.contains(&l) { link.forget(l); } }
                     present = None;
+                }
+                if let Some((here, since)) = &dpresent && since.elapsed() > Duration::from_secs(1) {
+                    for l in link.links() { if l >= super::direct::FIRST_LINK && !here.contains(&l) { link.forget(l); } }
+                    dpresent = None;
                 }
                 if link.viewers().is_empty() { alone_since.get_or_insert_with(Instant::now); } else { alone_since = None; }
                 // Only a request of a turn a viewer started, and only once no
@@ -408,7 +415,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                     for (_, b) in kept.iter().filter(|(s, _)| *s > at) {
                         if !super::send(&mut w, b.clone()).await { ok = false; break; }
                     }
-                    if ok { dws = Some(w); dheard = Instant::now(); }
+                    if ok { dws = Some(w); dheard = Instant::now(); dpresent = Some((HashSet::new(), Instant::now())); }
                 }
             }
             _ = tokio::time::sleep_until(retry.into()), if ws.is_none() => {
@@ -460,7 +467,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                     In::Control(v) => {
                         if v["type"] == "viewer" && let Some(l) = v["link"].as_u64() {
                             if v["event"] == "left" { link.forget(l); }
-                            if v["event"] == "joined" && let Some((here, _)) = present.as_mut() { here.insert(l); }
+                            if v["event"] == "joined" && let Some((here, _)) = if direct { dpresent.as_mut() } else { present.as_mut() } { here.insert(l); }
                         }
                     }
                     // The direct listener's acks free nothing: what is kept
