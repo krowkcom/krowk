@@ -11,6 +11,37 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Setting up sync now registers this machine's relay signing key.**
+  `krowk sync init`, `recover` and `register`, and `krowk devices approve`,
+  send the public half of the signing key beside the device key, and `krowk
+  sync join` sends it with the approval request, so the approval registers
+  it. krowk's hosted relay uses it to tell this machine's connections from
+  anyone else's. The key is set once: a different one for the same device
+  is refused (`signing_key_mismatch`).
+- **The code `krowk sync join` shows to approve a machine changed.** It
+  now covers both of the new machine's keys, so a request that copied its
+  device key with someone else's signing key shows a different code, and
+  `krowk devices approve` approves only the one request whose code is
+  exactly the one you typed. Only one approval request per machine may
+  wait at a time.
+- **Relays admit devices on tickets the registry signs.** A device joins
+  a relay with a short-lived ticket, which comes with the session's lease
+  for the host and on request for a viewer. `krowk relay serve` now takes
+  `--ticket-keys FILE`, the registry's ticket-signing public keys, instead
+  of `--roster`. The ticket travels in the `X-Krowk-Ticket` header of the
+  WebSocket upgrade, and a connection without a good one is turned away
+  before it takes any room on the channel, so a flood of connections
+  cannot keep a session's devices off it.
+- **`krowk relay serve --state DIR` keeps each channel's fence across
+  restarts.** It is required when `--addr` is reachable from the network,
+  like `--origin`, so a restart never lets a machine that lost the lease
+  host again. On loopback the relay may keep it in memory.
+- **A relay keeps development sessions apart from production ones.**
+  A relay join now says which it is, `env` "production" or "development",
+  and `krowk relay serve` gives each its own channel of a session, so a
+  developer's session never shares a relay buffer or a viewer with a
+  user's. krowk says "development" for a debug build, for
+  `KROWK_ENV=development`, or for any registry but `api.krowk.com`.
 - **`krowk relay serve` runs a relay of your own.** It carries a synced
   session between the machine running it and the devices watching it, and
   only ever sealed bytes: it refuses anything not encrypted, and never

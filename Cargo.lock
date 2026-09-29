@@ -1615,6 +1615,7 @@ name = "krowk-devregistry"
 version = "0.0.0"
 dependencies = [
  "jiff",
+ "krowk-client",
  "serde_json",
  "sha2 0.11.0",
  "tiny_http",

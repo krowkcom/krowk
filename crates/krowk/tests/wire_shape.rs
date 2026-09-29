@@ -117,7 +117,8 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         }
         let request: Value = serde_json::from_slice(&response_body(answer)).map_err(|e| e.to_string())?;
         let key: [u8; 32] = krowk_client::e2e::unhex(request["public_key"].as_str().unwrap_or_default()).and_then(|b| b.try_into().ok()).ok_or("no public key")?;
-        let code = krowk_client::e2e::DevicePublic(key).id().to_string();
+        let signing: [u8; 32] = krowk_client::e2e::unhex(request["signing_key"].as_str().unwrap_or_default()).and_then(|b| b.try_into().ok()).ok_or("no signing key")?;
+        let code = krowk_client::e2e::approval_code(&krowk_client::e2e::DevicePublic(key), &krowk_client::e2e::SigningPublic(signing)).to_string();
         let laptop = Krowk { home: hook_home.clone(), api: hook_api.lock().unwrap().clone() };
         match laptop.run(&["devices", "approve", &code], true) {
             (true, _) => Ok(()),
@@ -139,8 +140,10 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     let device = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk")).device().unwrap().unwrap().id().to_string();
     let id = "0190f3a8-7c1e-7a9b-8c2d-3e4f5a6b7c8d";
     client.put_sync_session(id, &"00".repeat(74), Some(&"00".repeat(40)), None).unwrap();
-    let lease = client.acquire_lease(id, &device, 60).unwrap();
-    client.renew_lease(id, &device, &lease.token, 60).unwrap();
+    let lease = client.acquire_lease(id, &device, 60, "production").unwrap();
+    client.renew_lease(id, &device, &lease.token, 60, "production").unwrap();
+    assert!(!lease.relay_ticket.is_empty(), "the lease carries its holder's relay ticket");
+    assert!(!client.relay_ticket(id, &device, "development").unwrap().relay_ticket.is_empty());
     client.list_sync_sessions("", 50).unwrap();
     client.show_sync_session(id).unwrap();
     let sealed = b"sealed bytes stand-in";
@@ -169,6 +172,9 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         "PUT /v1/sessions/{id}",
         "POST /v1/sessions/{id}/lease",
         "PUT /v1/sessions/{id}/lease",
+        // A viewer's relay ticket (relay.md → Tickets); a host's comes
+        // with the lease.
+        "GET /v1/sessions/{id}/relay_ticket",
         "GET /v1/sessions",
         "GET /v1/sessions/{id}",
         // A chunk of the session's log: declared under an Idempotency-Key,

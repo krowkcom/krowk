@@ -122,7 +122,8 @@ fn register(ctx: &Ctx, s: &Setup) -> Result<Option<krowk_api::sync::Device>, Err
     // be reached or fails on its side is not a reason for setup to fail:
     // the keys made here are complete without it. Set up, not registered,
     // the summary says so, and `krowk sync register` does it later.
-    let registered = client.register_device(&e2e::hex(&s.device.public().0), &device_name(ctx), &s.account.id().to_string());
+    let signing = keystore(ctx)?.signing_key().map_err(|e| fail("sync_setup_failed", e))?;
+    let registered = client.register_device(&e2e::hex(&s.device.public().0), &e2e::hex(&signing.public().0), &device_name(ctx), &s.account.id().to_string());
     if registered.as_ref().is_err_and(|e| e.code() == "sync_requires_paid_plan" || e.status == 0 || e.status >= 500) {
         return Ok(None);
     }
@@ -140,6 +141,7 @@ fn register(ctx: &Ctx, s: &Setup) -> Result<Option<krowk_api::sync::Device>, Err
 
 fn report(ctx: &mut Ctx, s: &Setup, how: &str, replaced: Option<KeyId>) -> Result<(), Error> {
     let recovered = how == "recover";
+    // A joined device's row, signing key and all, was made by its approval.
     let registered = if how == "join" { true } else { register(ctx, s)?.is_some() };
     let data = json!({
         "device": s.device.id().to_string(),
@@ -255,8 +257,9 @@ pub(super) fn register_now(ctx: &mut Ctx) -> Result<(), Error> {
     let (Some(device), Some(account)) = (store.device().map_err(|e| fail("sync_setup_failed", e))?, store.account_id().map_err(|e| fail("sync_setup_failed", e))?) else {
         return Err(fail("no_account_key", "this machine holds no account key to register — set sync up first: `krowk sync init`, `recover` or `join`"));
     };
+    let signing = store.signing_key().map_err(|e| fail("sync_setup_failed", e))?;
     let client = keyed_client(ctx, "`krowk sync register`")?;
-    let d = client.register_device(&e2e::hex(&device.public().0), &device_name(ctx), &account.to_string())?;
+    let d = client.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), &device_name(ctx), &account.to_string())?;
     let summary = format!("this machine ({}) is registered as {}, holding account key {account}", device.id(), printable(&d.name));
     if ctx.format == Format::Human {
         let _ = writeln!(ctx.io.stdout, "{summary}");
@@ -286,11 +289,12 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let client = keyed_client(ctx, "`krowk sync join`")?;
     let device = store.device_key().map_err(|e| fail("sync_setup_failed", e))?;
-    let request = client.request_device_approval(&e2e::hex(&device.public().0), &device_name(ctx))?;
+    let signing = store.signing_key().map_err(|e| fail("sync_setup_failed", e))?;
+    let request = client.request_device_approval(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), &device_name(ctx))?;
     let _ = writeln!(
         ctx.io.stderr,
         "This device's code:\n\n    {}\n\nOn a machine that already syncs, run `krowk devices approve` and type this code there. Waiting…",
-        device.id().grouped()
+        e2e::approval_code(&device.public(), &signing.public()).grouped()
     );
     let _ = ctx.io.stderr.flush();
     let approved = loop {
