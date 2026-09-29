@@ -1014,7 +1014,7 @@ impl App {
     /// One line of an answer, in light markdown, wrapped on its way out. A
     /// table's rows are held until the first line that is not one.
     fn push_md(&mut self, text: &str) {
-        let text = clean(text);
+        let text = look::untagged(&clean(text));
         if !self.fence && table::is_row(&text) {
             self.table.push(text);
             return;
@@ -1696,8 +1696,10 @@ impl App {
     /// Whatever of the streaming text never ended in a newline goes to
     /// scrollback now, and the live item is done.
     fn finish_live(&mut self) {
-        let Some(live) = self.live.take() else { return };
-        if live.kind == LiveKind::Text && !live.tail.is_empty() {
+        if let Some(live) = self.live.take()
+            && live.kind == LiveKind::Text
+            && !live.tail.is_empty()
+        {
             self.answer.push_str(&live.tail);
             if !live.committed {
                 self.gap();

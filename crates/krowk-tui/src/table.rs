@@ -12,7 +12,6 @@ use crate::app::wrap_line;
 use crate::look;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
 
 /// The narrowest a column is squeezed to; narrower, the rows are records.
 const MIN_COLUMN: usize = 8;
@@ -38,6 +37,9 @@ pub fn render(rows: &[String], width: usize) -> Option<Vec<Line<'static>>> {
     let aligns = alignments(delimiter)?;
     let n = aligns.len();
     if cells(head).len() != n {
+        return None;
+    }
+    if body.is_empty() {
         return None;
     }
     let head = styled(head, n, true);
@@ -130,6 +132,9 @@ fn fit(head: &[Line<'static>], body: &[Vec<Line<'static>>], room: usize) -> Opti
     let n = head.len();
     let mut widths: Vec<usize> = (0..n).map(|c| column(c).map(Line::width).max().unwrap_or(0).max(1)).collect();
     let floors: Vec<usize> = (0..n).map(|c| column(c).map(unbroken).max().unwrap_or(0).max(MIN_COLUMN)).collect();
+    if (0..n).map(|c| widths[c].min(floors[c])).sum::<usize>() > room {
+        return None;
+    }
     while widths.iter().sum::<usize>() > room {
         let c = (0..n).filter(|&c| widths[c] > floors[c]).max_by_key(|&c| widths[c])?;
         widths[c] -= 1;
@@ -137,13 +142,11 @@ fn fit(head: &[Line<'static>], body: &[Vec<Line<'static>>], room: usize) -> Opti
     Some(widths)
 }
 
-/// The widest URL `line` shows as itself, which `wrap_line` never breaks.
+/// How narrow `line` can be wrapped: not at all when it shows a URL as
+/// itself, which `wrap_line` leaves whole.
 fn unbroken(line: &Line<'static>) -> usize {
-    line.spans
-        .iter()
-        .filter_map(|s| look::link_target(s).filter(|(t, u)| look::shows_its_url(t, u)).map(|(t, _)| t.width()))
-        .max()
-        .unwrap_or(0)
+    let whole = line.spans.iter().any(|s| look::link_target(s).is_some_and(|(t, u)| look::shows_its_url(t, &u)));
+    if whole { line.width() } else { 0 }
 }
 
 /// One row: each cell wrapped to its column, the row as tall as its
@@ -252,7 +255,10 @@ mod tests {
         assert!(render(&rows("| a | b |\n| c | d |"), 80).is_none(), "no delimiter row");
         assert!(render(&rows("| a | b |\n|---|"), 80).is_none(), "a column short");
         assert!(render(&rows("| name | value |\n|---|---|\n| something long | other long |"), 12).is_none(), "too narrow even for records");
-        let url = "| see | where |\n|---|---|\n| docs | https://krowk.com/a/rather/long/path |";
-        assert_eq!(text(&render(&rows(url), 30).unwrap())[1], "where  https://krowk.com/a/rather/long/path\u{a0}↗", "a URL is never broken");
+        assert!(render(&rows("| Name | Kind | What it does |\n|---|---|---|"), 20).is_none(), "a header alone as records");
+        let url = "| see | where |\n|---|---|\n| docs | at https://krowk.com/a/rather/long/path |";
+        assert_eq!(text(&render(&rows(url), 30).unwrap())[1], "where  at https://krowk.com/a/rather/long/path\u{a0}↗", "a URL is never broken");
+        let t = render(&rows("| a | b |\n|---|---|\n| see https://krowk.com/a/long/path | x |"), 50).unwrap();
+        assert_eq!(text(&t)[2], "see https://krowk.com/a/long/path\u{a0}↗  x", "a cell with a URL is never wrapped");
     }
 }
