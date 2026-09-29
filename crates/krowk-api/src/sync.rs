@@ -81,8 +81,10 @@ struct DeviceApprovals {
     device_approvals: Vec<DeviceApproval>,
 }
 
-/// A session's lease: its one writer, until when, and the fence every write
-/// it makes names (R-SYNC-2).
+/// A lease call's answer: the session's one writer, until when, the fence
+/// that orders holders, and — from an acquire or a hand-over only — the
+/// token every write the holder makes presents (R-SYNC-2). The token is the
+/// holder's proof and nobody else ever sees it; the fence is no secret.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Lease {
     #[serde(default, deserialize_with = "nullable")]
@@ -92,11 +94,23 @@ pub struct Lease {
     #[serde(default, deserialize_with = "nullable")]
     pub fence: u64,
     #[serde(default, deserialize_with = "nullable")]
+    pub token: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub expires_at: String,
+}
+
+/// Who holds a session's lease, as a session reports it: never the fence or
+/// the token.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct LeaseHolder {
+    #[serde(default, deserialize_with = "nullable")]
+    pub device: String,
+    #[serde(default, deserialize_with = "nullable")]
     pub expires_at: String,
 }
 
 /// A synced session as the registry holds it: ciphertext, sizes, times and
-/// the lease.
+/// who holds the lease. A listing leaves `sealed_index` empty; `show` has it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SyncSession {
     #[serde(default, deserialize_with = "nullable")]
@@ -108,9 +122,7 @@ pub struct SyncSession {
     #[serde(default, deserialize_with = "nullable")]
     pub sealed_index_size: u64,
     #[serde(default, deserialize_with = "nullable")]
-    pub fence: u64,
-    #[serde(default, deserialize_with = "nullable")]
-    pub lease: Option<Lease>,
+    pub lease: Option<LeaseHolder>,
     #[serde(default, deserialize_with = "nullable")]
     pub created_at: String,
     #[serde(default, deserialize_with = "nullable")]
@@ -119,10 +131,14 @@ pub struct SyncSession {
     pub last_written_at: String,
 }
 
+/// One page of sessions, most recently written first; `next` is the id to
+/// pass back as `before`, empty on the last page.
 #[derive(Debug, Clone, Default, Deserialize)]
-struct SyncSessions {
+pub struct SyncSessionPage {
     #[serde(default, deserialize_with = "nullable")]
-    sessions: Vec<SyncSession>,
+    pub sessions: Vec<SyncSession>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub next: String,
 }
 
 impl Client {
@@ -155,27 +171,32 @@ impl Client {
     }
 
     /// Answers a request with the account key wrapped to its public key, from
-    /// `device`, this machine.
+    /// `device`, this machine. Sent once: every wrap is a different blob, so
+    /// a retry after a lost answer would be refused as already approved and
+    /// read as a failure when it had worked.
     pub fn approve_device(&self, slug: &str, device: &str, account_key_id: &str, wrapped_account_key: &str) -> Result<DeviceApproval, Error> {
         let body = json!({ "approval": { "device": device, "account_key_id": account_key_id, "wrapped_account_key": wrapped_account_key } });
-        Ok(self.call("PUT", &format!("/device_approvals/{}/approval", slug_path(slug)), Some(body), ATTEMPTS, None)?.0)
+        Ok(self.call("PUT", &format!("/device_approvals/{}/approval", slug_path(slug)), Some(body), 1, None)?.0)
     }
 
-    pub fn list_sync_sessions(&self) -> Result<Vec<SyncSession>, Error> {
-        Ok(self.get::<SyncSessions>("/sessions")?.sessions)
+    pub fn list_sync_sessions(&self, before: &str, limit: i64) -> Result<SyncSessionPage, Error> {
+        self.get(&crate::client::paged("/sessions", before, limit))
     }
 
     pub fn show_sync_session(&self, id: &str) -> Result<SyncSession, Error> {
         self.get(&format!("/sessions/{}", slug_path(id)))
     }
 
-    /// Creates the session under its own id, or writes its sealed index;
-    /// `fence` is the lease the writer holds, and a write after the first
-    /// needs one.
-    pub fn put_sync_session(&self, id: &str, wrapped_key: &str, sealed_index: &str, fence: Option<u64>) -> Result<SyncSession, Error> {
-        let mut session = json!({ "wrapped_key": wrapped_key, "sealed_index": sealed_index });
-        if let Some(fence) = fence {
-            session["fence"] = json!(fence);
+    /// Creates the session under its own id, or writes its sealed index.
+    /// `sealed_index` None leaves the stored one as it is; `lease_token` is
+    /// the holder's, and a write after the first needs it.
+    pub fn put_sync_session(&self, id: &str, wrapped_key: &str, sealed_index: Option<&str>, lease_token: Option<&str>) -> Result<SyncSession, Error> {
+        let mut session = json!({ "wrapped_key": wrapped_key });
+        if let Some(index) = sealed_index {
+            session["sealed_index"] = json!(index);
+        }
+        if let Some(token) = lease_token {
+            session["lease_token"] = json!(token);
         }
         Ok(self.call("PUT", &format!("/sessions/{}", slug_path(id)), Some(json!({ "session": session })), ATTEMPTS, None)?.0)
     }
@@ -188,14 +209,17 @@ impl Client {
         Ok(self.call("POST", &format!("/sessions/{}/lease", slug_path(id)), Some(body), 1, None)?.0)
     }
 
-    /// The holder keeps the lease (`device` itself) or hands it to `device`.
-    pub fn renew_lease(&self, id: &str, device: &str, fence: u64, ttl_seconds: u64) -> Result<Lease, Error> {
-        let body = json!({ "lease": { "device": device, "fence": fence, "ttl": ttl_seconds } });
-        Ok(self.call("PUT", &format!("/sessions/{}/lease", slug_path(id)), Some(body), ATTEMPTS, None)?.0)
+    /// The holder, by its token, keeps the lease (`device` itself) or hands it
+    /// to `device`, which mints the next holder's token. Sent once: a
+    /// hand-over whose answer was lost has minted a token nobody holds, and a
+    /// retry would present the old one and be refused as stale.
+    pub fn renew_lease(&self, id: &str, device: &str, token: &str, ttl_seconds: u64) -> Result<Lease, Error> {
+        let body = json!({ "lease": { "device": device, "token": token, "ttl": ttl_seconds } });
+        Ok(self.call("PUT", &format!("/sessions/{}/lease", slug_path(id)), Some(body), 1, None)?.0)
     }
 
-    pub fn release_lease(&self, id: &str, fence: u64) -> Result<(), Error> {
+    pub fn release_lease(&self, id: &str, token: &str) -> Result<(), Error> {
         let url = format!("{}/sessions/{}/lease", self.base_url, slug_path(id));
-        self.request_raw("DELETE", &url, Some(json!({ "lease": { "fence": fence } })), ATTEMPTS, None).map(|_| ())
+        self.request_raw("DELETE", &url, Some(json!({ "lease": { "token": token } })), ATTEMPTS, None).map(|_| ())
     }
 }

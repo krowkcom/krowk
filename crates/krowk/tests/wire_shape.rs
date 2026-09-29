@@ -138,12 +138,12 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     let client = krowk_api::Client::new(&laptop.api, "krowk_sk_test");
     let device = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk")).device().unwrap().unwrap().id().to_string();
     let id = "0190f3a8-7c1e-7a9b-8c2d-3e4f5a6b7c8d";
-    client.put_sync_session(id, &"00".repeat(74), &"00".repeat(40), None).unwrap();
+    client.put_sync_session(id, &"00".repeat(74), Some(&"00".repeat(40)), None).unwrap();
     let lease = client.acquire_lease(id, &device, 60).unwrap();
-    client.renew_lease(id, &device, lease.fence, 60).unwrap();
-    client.list_sync_sessions().unwrap();
+    client.renew_lease(id, &device, &lease.token, 60).unwrap();
+    client.list_sync_sessions("", 50).unwrap();
     client.show_sync_session(id).unwrap();
-    client.release_lease(id, lease.fence).unwrap();
+    client.release_lease(id, &lease.token).unwrap();
 
     assert!(failures.lock().unwrap().is_empty(), "{:?}", failures.lock().unwrap());
     let want = [
@@ -188,6 +188,9 @@ impl Krowk {
             .env("HOME", &self.home)
             .env("KROWK_API_URL", &self.api)
             .env("KROWK_NO_UPDATE_CHECK", "1")
+            // The debug build's stand-in for the person saying yes at
+            // `devices approve` and `sync join`.
+            .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
             .current_dir(self.home.parent().unwrap());
         if keyed {
             cmd.env("KROWK_TOKEN", "krowk_sk_test");

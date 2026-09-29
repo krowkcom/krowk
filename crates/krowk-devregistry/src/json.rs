@@ -328,13 +328,9 @@ impl<'a> Fields<'a> {
         out
     }
 
-    /// A number field that was sent, as an integer; None when it was absent,
-    /// null, or not a whole number.
-    pub fn get_num(&self, name: &str) -> Option<i64> {
-        match &self.named(name).last()?.value {
-            Value::Num(n) => n.parse().ok(),
-            _ => None,
-        }
+    /// The last value sent under `name`, None when absent or null.
+    pub fn get_value(&self, name: &str) -> Option<&Value> {
+        self.named(name).last().map(|m| &m.value).filter(|v| !matches!(v, Value::Null))
     }
 
     /// A `json.RawMessage` field: the last member's bytes, whatever they hold.

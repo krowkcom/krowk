@@ -32,7 +32,8 @@ pub struct Device {
     pub public_key: String,
     pub name: String,
     pub created_at: Timestamp,
-    pub last_seen_at: Timestamp,
+    /// None for a device an approval created, until it next acts.
+    pub last_seen_at: Option<Timestamp>,
     pub wrapped_account_key: String,
     pub seq: usize,
 }
@@ -56,6 +57,8 @@ pub struct Session {
     pub wrapped_key: String,
     pub sealed_index: String,
     pub fence: u64,
+    /// The holder's token, as its digest: the registry keeps no copy either.
+    pub token_digest: String,
     pub holder: String,
     pub lease_expires_at: Option<Timestamp>,
     pub created_at: Timestamp,
@@ -142,11 +145,6 @@ fn required(f: &mut Fields, name: &str) -> Result<String, Resp> {
     if v.is_empty() { Err(parameter_missing(name)) } else { Ok(v) }
 }
 
-/// A non-negative integer field, or None when it was not sent.
-fn number(f: &Fields, name: &str) -> Option<i64> {
-    f.get_num(name)
-}
-
 fn account_key_mismatch(expected: &str) -> Resp {
     error(
         409,
@@ -173,7 +171,7 @@ fn serialize_device(d: &Device) -> Json {
         ("public_key", Json::str(&d.public_key)),
         ("name", Json::str(&d.name)),
         ("created_at", Json::str(rfc3339_nano(d.created_at))),
-        ("last_seen_at", Json::str(rfc3339_nano(d.last_seen_at))),
+        ("last_seen_at", d.last_seen_at.map_or(Json::Null, |t| Json::str(rfc3339_nano(t)))),
         ("revoked_at", Json::Null),
     ])
 }
@@ -198,27 +196,49 @@ fn leased(s: &Session, now: Timestamp) -> bool {
     !s.holder.is_empty() && s.lease_expires_at.is_some_and(|e| e > now)
 }
 
-fn serialize_lease(s: &Session) -> Json {
-    Json::map([
-        ("session", Json::str(&s.id)),
-        ("device", if s.holder.is_empty() { Json::Null } else { Json::str(&s.holder) }),
-        ("fence", Json::Int(s.fence as i64)),
-        ("expires_at", s.lease_expires_at.map_or(Json::Null, |e| Json::str(rfc3339_nano(e)))),
-    ])
+/// A lease call's answer. `token` only from the call that minted it.
+fn serialize_lease(s: &Session, token: Option<&str>) -> Json {
+    let mut pairs = vec![
+        ("session".to_owned(), Json::str(&s.id)),
+        ("device".to_owned(), Json::str(&s.holder)),
+        ("fence".to_owned(), Json::Int(s.fence as i64)),
+    ];
+    if let Some(t) = token {
+        pairs.push(("token".to_owned(), Json::str(t)));
+    }
+    pairs.push(("expires_at".to_owned(), s.lease_expires_at.map_or(Json::Null, |e| Json::str(rfc3339_nano(e)))));
+    Json::map_of(pairs)
 }
 
-fn serialize_session(s: &Session, now: Timestamp) -> Json {
-    Json::map([
-        ("id", Json::str(&s.id)),
-        ("wrapped_key", Json::str(&s.wrapped_key)),
-        ("sealed_index", if s.sealed_index.is_empty() { Json::Null } else { Json::str(&s.sealed_index) }),
-        ("sealed_index_size", Json::Int((s.sealed_index.len() / 2) as i64)),
-        ("fence", Json::Int(s.fence as i64)),
-        ("lease", if leased(s, now) { serialize_lease(s) } else { Json::Null }),
-        ("created_at", Json::str(rfc3339_nano(s.created_at))),
-        ("updated_at", Json::str(rfc3339_nano(s.updated_at))),
-        ("last_written_at", Json::str(rfc3339_nano(s.last_written_at))),
-    ])
+/// A session: never the fence or the token, and in a listing not the
+/// sealed index either.
+fn serialize_session(s: &Session, now: Timestamp, listing: bool) -> Json {
+    let lease = if leased(s, now) {
+        Json::map([("device", Json::str(&s.holder)), ("expires_at", s.lease_expires_at.map_or(Json::Null, |e| Json::str(rfc3339_nano(e))))])
+    } else {
+        Json::Null
+    };
+    let mut pairs = vec![("id".to_owned(), Json::str(&s.id)), ("wrapped_key".to_owned(), Json::str(&s.wrapped_key))];
+    if !listing {
+        pairs.push(("sealed_index".to_owned(), if s.sealed_index.is_empty() { Json::Null } else { Json::str(&s.sealed_index) }));
+    }
+    pairs.extend([
+        ("sealed_index_size".to_owned(), Json::Int((s.sealed_index.len() / 2) as i64)),
+        ("lease".to_owned(), lease),
+        ("created_at".to_owned(), Json::str(rfc3339_nano(s.created_at))),
+        ("updated_at".to_owned(), Json::str(rfc3339_nano(s.updated_at))),
+        ("last_written_at".to_owned(), Json::str(rfc3339_nano(s.last_written_at))),
+    ]);
+    Json::map_of(pairs)
+}
+
+/// A name printed on other devices' terminals: no control characters.
+fn name_field(f: &mut Fields) -> Result<String, Resp> {
+    let name = required(f, "name")?;
+    if name.chars().any(char::is_control) {
+        return Err(invalid("name", "cannot hold control characters"));
+    }
+    Ok(name)
 }
 
 pub fn list_devices(app: &App, req: &Req) -> Resp {
@@ -241,7 +261,7 @@ pub fn register_device(app: &App, req: &mut Req) -> Resp {
         let mut f = v.fields();
         let public_key = required(&mut f, "public_key")?;
         let key = blob("public_key", &public_key, Some(PUBLIC_KEY_BYTES), None)?;
-        let name = required(&mut f, "name")?;
+        let name = name_field(&mut f)?;
         let account = id_field("account_key_id", &required(&mut f, "account_key_id")?)?;
         let mut s = app.lock();
         let now = s.now();
@@ -254,12 +274,12 @@ pub fn register_device(app: &App, req: &mut Req) -> Resp {
             public_key: hex(&key),
             name: String::new(),
             created_at: now,
-            last_seen_at: now,
+            last_seen_at: Some(now),
             wrapped_account_key: String::new(),
             seq,
         });
         d.name = name;
-        d.last_seen_at = now;
+        d.last_seen_at = Some(now);
         let resp = Resp::json(if fresh { 201 } else { 200 }, &serialize_device(d));
         if fresh {
             s.sync.seq = seq;
@@ -287,7 +307,7 @@ pub fn request_approval(app: &App, req: &mut Req) -> Resp {
         let v = body(req, "device_approval")?;
         let mut f = v.fields();
         let key = blob("public_key", &required(&mut f, "public_key")?, Some(PUBLIC_KEY_BYTES), None)?;
-        let name = required(&mut f, "name")?;
+        let name = name_field(&mut f)?;
         let mut s = app.lock();
         let now = s.now();
         let a = Approval {
@@ -366,7 +386,7 @@ pub fn approve(app: &App, req: &mut Req, slug: &str) -> Resp {
             public_key,
             name: String::new(),
             created_at: now,
-            last_seen_at: now,
+            last_seen_at: None,
             wrapped_account_key: String::new(),
             seq,
         });
@@ -387,16 +407,25 @@ fn session_id(id: &str) -> Option<String> {
     shape.then_some(id)
 }
 
+/// Most recently written first, a page at a time, as the registry pages.
 pub fn list_sessions(app: &App, req: &Req) -> Resp {
     let workspace = match gate(req) {
         Ok(w) => w,
         Err(r) => return r,
     };
+    let limit = crate::artifacts::page_limit(req);
     let s = app.lock();
     let now = s.now();
     let mut mine: Vec<&Session> = s.sync.sessions.iter().filter(|((w, _), _)| *w == workspace).map(|(_, x)| x).collect();
-    mine.sort_by_key(|x| (std::cmp::Reverse(x.updated_at), std::cmp::Reverse(x.seq)));
-    Resp::json(200, &Json::map([("sessions", Json::Arr(mine.into_iter().map(|x| serialize_session(x, now)).collect()))]))
+    mine.sort_by_key(|x| (std::cmp::Reverse(x.last_written_at), std::cmp::Reverse(x.seq)));
+    let before = req.query_get("before");
+    if !before.is_empty() {
+        let Some(cursor) = session_id(&before).and_then(|id| s.sync.sessions.get(&(workspace.clone(), id))) else { return not_found() };
+        let at = (cursor.last_written_at, cursor.seq);
+        mine.retain(|x| (x.last_written_at, x.seq) < at);
+    }
+    let (page, next) = crate::artifacts::paginate(mine, limit, |x| &x.id);
+    Resp::json(200, &Json::map([("sessions", Json::Arr(page.into_iter().map(|x| serialize_session(x, now, true)).collect())), ("next", next)]))
 }
 
 pub fn show_session(app: &App, req: &Req, id: &str) -> Resp {
@@ -406,26 +435,35 @@ pub fn show_session(app: &App, req: &Req, id: &str) -> Resp {
     };
     let s = app.lock();
     let now = s.now();
-    session_id(id).and_then(|id| s.sync.sessions.get(&(workspace, id))).map_or_else(not_found, |x| Resp::json(200, &serialize_session(x, now)))
+    session_id(id).and_then(|id| s.sync.sessions.get(&(workspace, id))).map_or_else(not_found, |x| Resp::json(200, &serialize_session(x, now, false)))
 }
 
-fn lease_stale(s: &Session, presented: i64, now: Timestamp) -> Resp {
-    let held = if leased(s, now) { "" } else { ", and nobody holds it" };
+fn lease_stale(s: &Session, now: Timestamp) -> Resp {
+    let held = if leased(s, now) { "" } else { " (nobody holds it)" };
     error(
         409,
         "lease_stale",
-        &format!("fence {presented} is not this session's live lease (the session is at {}{held}) — another device took the lease or it lapsed; acquire it again", s.fence),
+        &format!("this is not the token of the session's live lease{held} — another device took the lease, it lapsed, or it was never this caller's; acquire it again"),
         None,
     )
 }
 
-fn fenced(s: &Session, presented: i64, now: Timestamp) -> Result<(), Resp> {
-    if leased(s, now) && presented == s.fence as i64 { Ok(()) } else { Err(lease_stale(s, presented, now)) }
+/// Whether `token` is the live lease's, compared as digests.
+fn holder(s: &Session, token: &str, now: Timestamp) -> Result<(), Resp> {
+    let presented = crate::store::sha256_hex(token.as_bytes());
+    if leased(s, now) && !s.token_digest.is_empty() && presented == s.token_digest { Ok(()) } else { Err(lease_stale(s, now)) }
+}
+
+/// A new lease token, and its digest to keep.
+fn mint(s: &mut Session) -> String {
+    let token = crate::store::random_token()[..32].to_owned();
+    s.token_digest = crate::store::sha256_hex(token.as_bytes());
+    token
 }
 
 /// Creates the session under its id, or writes its sealed index — the
-/// latter the lease holder's, naming its fence. The wrapped key never
-/// changes.
+/// latter the lease holder's, presenting its token. The wrapped key never
+/// changes; a body naming no `sealed_index` leaves it as it is.
 pub fn put_session(app: &App, req: &mut Req, id: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let workspace = gate(req)?;
@@ -433,16 +471,17 @@ pub fn put_session(app: &App, req: &mut Req, id: &str) -> Resp {
         let v = body(req, "session")?;
         let mut f = v.fields();
         let wrapped = hex(&blob("wrapped_key", &required(&mut f, "wrapped_key")?, Some(WRAPPED_SESSION_KEY_BYTES), None)?);
+        let named = f.raw("sealed_index").is_some();
         let sealed = f.string("sealed_index");
         let sealed = if sealed.is_empty() { String::new() } else { hex(&blob("sealed_index", &sealed, None, Some(MAX_SEALED_INDEX_BYTES))?) };
-        let fence = number(&f, "fence");
+        let token = f.string("lease_token");
         let mut s = app.lock();
         let now = s.now();
         let seq = s.sync.seq + 1;
         let key = (workspace, id.clone());
         let Some(x) = s.sync.sessions.get_mut(&key) else {
-            let x = Session { id, wrapped_key: wrapped, sealed_index: sealed, fence: 0, holder: String::new(), lease_expires_at: None, created_at: now, updated_at: now, last_written_at: now, seq };
-            let resp = Resp::json(201, &serialize_session(&x, now));
+            let x = Session { id, wrapped_key: wrapped, sealed_index: sealed, fence: 0, token_digest: String::new(), holder: String::new(), lease_expires_at: None, created_at: now, updated_at: now, last_written_at: now, seq };
+            let resp = Resp::json(201, &serialize_session(&x, now, false));
             s.sync.sessions.insert(key, x);
             s.sync.seq = seq;
             return Ok(resp);
@@ -450,21 +489,31 @@ pub fn put_session(app: &App, req: &mut Req, id: &str) -> Resp {
         if x.wrapped_key != wrapped {
             return Err(invalid("wrapped_key", "is set when the session is created and cannot change"));
         }
-        if x.sealed_index != sealed {
-            let fence = fence.ok_or_else(|| parameter_missing("fence"))?;
-            fenced(x, fence, now)?;
+        if named && x.sealed_index != sealed {
+            if token.is_empty() {
+                return Err(parameter_missing("lease_token"));
+            }
+            holder(x, &token, now)?;
             x.sealed_index = sealed;
             x.last_written_at = now;
             x.updated_at = now;
         }
-        Ok(Resp::json(200, &serialize_session(x, now)))
+        Ok(Resp::json(200, &serialize_session(x, now, false)))
     };
     run().unwrap_or_else(|r| r)
 }
 
+/// The lease length asked for: absent is the default, and anything else
+/// that is not a whole number of seconds in the window is refused, as the
+/// registry's `Integer(…)` refuses it — a number, or a string of one.
 fn ttl(f: &Fields) -> Result<SignedDuration, Resp> {
-    let secs = number(f, "ttl").unwrap_or(DEFAULT_LEASE_TTL);
-    if LEASE_TTL.contains(&secs) {
+    let secs = match f.get_value("ttl") {
+        None => Some(DEFAULT_LEASE_TTL),
+        Some(Value::Num(n)) => n.parse().ok(),
+        Some(Value::Str(t)) => t.parse().ok(),
+        Some(_) => None,
+    };
+    if let Some(secs) = secs.filter(|s| LEASE_TTL.contains(s)) {
         Ok(SignedDuration::from_secs(secs))
     } else {
         Err(invalid("ttl", &format!("must be a whole number of seconds from {} to {}", LEASE_TTL.start(), LEASE_TTL.end())))
@@ -503,14 +552,17 @@ pub fn acquire_lease(app: &App, req: &mut Req, id: &str) -> Resp {
                 409,
                 "lease_held",
                 &format!("device {} holds this session's lease until {until} — send it commands instead, or wait for the lease to lapse", x.holder),
-                Some(Json::map([("device", Json::str(&x.holder)), ("expires_at", Json::str(until)), ("fence", Json::Int(x.fence as i64))])),
+                Some(Json::map([("device", Json::str(&x.holder)), ("expires_at", Json::str(until))])),
             ));
         }
         x.fence += 1;
-        x.holder = device;
+        x.holder = device.clone();
         x.lease_expires_at = Some(now + ttl);
         x.updated_at = now;
-        Ok(Resp::json(201, &serialize_lease(x)))
+        let token = mint(x);
+        let resp = Resp::json(201, &serialize_lease(x, Some(&token)));
+        touch(&mut s.sync, &key.0, &device, now);
+        Ok(resp)
     };
     run().unwrap_or_else(|r| r)
 }
@@ -518,19 +570,24 @@ pub fn acquire_lease(app: &App, req: &mut Req, id: &str) -> Resp {
 pub fn renew_lease(app: &App, req: &mut Req, id: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let (mut s, key, device, v) = lease_call(app, req, id, true)?;
-        let f = v.fields();
-        let fence = number(&f, "fence").ok_or_else(|| parameter_missing("fence"))?;
+        let mut f = v.fields();
+        let token = required(&mut f, "token")?;
         let ttl = ttl(&f)?;
         let now = s.now();
         let x = s.sync.sessions.get_mut(&key).unwrap();
-        fenced(x, fence, now)?;
-        if x.holder != device {
+        holder(x, &token, now)?;
+        let minted = if x.holder != device {
             x.fence += 1;
-            x.holder = device;
-        }
+            x.holder = device.clone();
+            Some(mint(x))
+        } else {
+            None
+        };
         x.lease_expires_at = Some(now + ttl);
         x.updated_at = now;
-        Ok(Resp::json(200, &serialize_lease(x)))
+        let resp = Resp::json(200, &serialize_lease(x, minted.as_deref()));
+        touch(&mut s.sync, &key.0, &device, now);
+        Ok(resp)
     };
     run().unwrap_or_else(|r| r)
 }
@@ -538,14 +595,22 @@ pub fn renew_lease(app: &App, req: &mut Req, id: &str) -> Resp {
 pub fn release_lease(app: &App, req: &mut Req, id: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let (mut s, key, _, v) = lease_call(app, req, id, false)?;
-        let fence = number(&v.fields(), "fence").ok_or_else(|| parameter_missing("fence"))?;
+        let token = required(&mut v.fields(), "token")?;
         let now = s.now();
         let x = s.sync.sessions.get_mut(&key).unwrap();
-        fenced(x, fence, now)?;
+        holder(x, &token, now)?;
         x.holder.clear();
+        x.token_digest.clear();
         x.lease_expires_at = None;
         x.updated_at = now;
         Ok(Resp::empty(204))
     };
     run().unwrap_or_else(|r| r)
+}
+
+/// A lease call is the holder being seen, as the registry records it.
+fn touch(s: &mut SyncStore, workspace: &str, device: &str, now: Timestamp) {
+    if let Some(d) = s.devices.get_mut(&(workspace.to_owned(), device.to_owned())) {
+        d.last_seen_at = Some(now);
+    }
 }

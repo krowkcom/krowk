@@ -6,13 +6,16 @@
 //! - `approve [CODE]`: answers a new device's `krowk sync join`. The code is
 //!   the id the new device shows; this machine computes each pending
 //!   request's id from the public key the registry hands it and wraps the
-//!   account key only to the one whose id matches. A registry that swapped
-//!   in a key of its own would have to show a different code, and the
-//!   person comparing is what catches it.
+//!   account key only to the one whose id matches, once the person has said
+//!   yes to its name and id. A registry that swapped in a key of its own
+//!   would have to show a different code, and the person comparing is what
+//!   catches it. A terminal is required, code given or not: a prompt
+//!   injection that has an agent run `krowk devices approve <code>` must not
+//!   hand the attacker's machine every session.
 //!
 //! Both need a key to a paid workspace (R-SYNC-1).
 
-use super::sync::{device_name, keyed_client, keystore};
+use super::sync::{confirm, device_name, keyed_client, keystore, printable};
 use super::Ctx;
 use crate::output::Format;
 use krowk_api::{fail, Error};
@@ -31,7 +34,7 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
     let devices = client.list_devices()?;
     let rows: Vec<_> = devices
         .iter()
-        .map(|d| json!({ "id": d.id, "name": d.name, "this_device": mine.as_deref() == Some(d.id.as_str()), "created_at": d.created_at, "last_seen_at": d.last_seen_at, "revoked_at": if d.revoked_at.is_empty() { None } else { Some(&d.revoked_at) } }))
+        .map(|d| json!({ "id": d.id, "name": printable(&d.name), "this_device": mine.as_deref() == Some(d.id.as_str()), "created_at": d.created_at, "last_seen_at": d.last_seen_at, "revoked_at": if d.revoked_at.is_empty() { None } else { Some(&d.revoked_at) } }))
         .collect();
     let summary = match &account {
         Some(id) => format!("{} devices; this machine holds account key {}", devices.len(), id.grouped()),
@@ -40,7 +43,7 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
     if ctx.format == Format::Human {
         for d in &devices {
             let this = if mine.as_deref() == Some(d.id.as_str()) { "  (this device)" } else { "" };
-            let _ = writeln!(ctx.io.stdout, "{}  {}{this}", d.id, d.name);
+            let _ = writeln!(ctx.io.stdout, "{}  {}{this}", d.id, printable(&d.name));
         }
         let _ = writeln!(ctx.io.stdout, "{summary}");
         return Ok(());
@@ -49,11 +52,16 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
     super::sessions::emit_data(ctx, data, summary)
 }
 
+const OFF_TERMINAL: &str = "`krowk devices approve` hands this workspace's account key to another machine, so it needs a person at a terminal to compare the new device's code and say yes — run it in one";
+
 pub(super) fn approve(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    let unattended = cfg!(debug_assertions) && ctx.env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL") == "1";
+    if !unattended && (!ctx.io.stdin_tty || !ctx.io.err_tty) {
+        return Err(fail("confirmation_required", OFF_TERMINAL));
+    }
     let typed = match args.first() {
         Some(t) => Some(DeviceId::parse(t).ok_or_else(|| fail("bad_device_code", format!("`{t}` is not a device code — it is the 32 hex characters `krowk sync join` shows on the new device")))?),
-        None if ctx.io.stdin_tty => None,
-        None => return Err(fail("confirmation_required", "pass the code the new device shows: `krowk devices approve <code>`, or run it at a terminal")),
+        None => None,
     };
     let store = keystore(ctx)?;
     let device = store.device().map_err(|e| fail("sync_setup_failed", e))?;
@@ -64,7 +72,7 @@ pub(super) fn approve(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let client = keyed_client(ctx, "`krowk devices approve`")?;
     // Registered first, so the registry knows the device the answer is
     // from; the same key again is the same row.
-    client.register_device(&e2e::hex(&device.public().0), &device_name(), &account.id().to_string())?;
+    client.register_device(&e2e::hex(&device.public().0), &device_name(ctx), &account.id().to_string())?;
     let pending = client.list_device_approvals()?;
     // Each request's id computed here, from the key this machine would wrap
     // to, never taken from the registry's own `id`.
@@ -79,7 +87,7 @@ pub(super) fn approve(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             // not picked from a list this registry supplied.
             let _ = writeln!(ctx.io.stderr, "Waiting to be approved:");
             for (_, _, a) in &candidates {
-                let _ = writeln!(ctx.io.stderr, "  {}  (asked at {})", a.name, a.created_at);
+                let _ = writeln!(ctx.io.stderr, "  {}  (asked at {})", printable(&a.name), printable(&a.created_at));
             }
             let t = inquire::Text::new("Type the code the new device shows:").prompt().map_err(|_| fail("selection_cancelled", "no code was entered and nothing was approved"))?;
             DeviceId::parse(&t).ok_or_else(|| fail("bad_device_code", "that is not a device code — it is 32 hex characters; nothing was approved"))?
@@ -91,11 +99,13 @@ pub(super) fn approve(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             format!("no waiting device has code {} — check it against the new device's screen; nothing was approved", code.grouped()),
         ));
     };
+    let name = printable(&request.name);
+    confirm(ctx, &format!("Give this workspace's account key to {name} ({}), asked at {}?", id.grouped(), printable(&request.created_at)), OFF_TERMINAL)?;
     let wrapped = e2e::wrap_account_key(&account, &key).map_err(|e| fail("sync_setup_failed", e.0))?;
     client.approve_device(&request.slug, &device.id().to_string(), &account.id().to_string(), &e2e::hex(&wrapped))?;
     let summary = format!(
         "approved {} ({}) — on it, `krowk sync join` asks for account key id {}",
-        request.name,
+        name,
         id.grouped(),
         account.id().grouped()
     );
@@ -103,6 +113,6 @@ pub(super) fn approve(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         let _ = writeln!(ctx.io.stdout, "{summary}");
         return Ok(());
     }
-    let data = json!({ "device": id.to_string(), "name": request.name, "account_key": account.id().to_string() });
+    let data = json!({ "device": id.to_string(), "name": name, "account_key": account.id().to_string() });
     super::sessions::emit_data(ctx, data, summary)
 }

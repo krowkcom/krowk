@@ -14,20 +14,23 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **Add a machine to sync by approving it from one that already syncs,
   with no recovery phrase.** On the new machine, `krowk sync join` shows a
   32-character code and waits. On a machine that already syncs, `krowk
-  devices approve` asks for that code and hands the account key over,
-  encrypted to the new machine's key. Type the code as the new machine
-  shows it. The new machine then asks for the account key id `approve`
-  printed (or take it as `krowk sync join <id>`), and it keeps nothing
-  unless the ids match. These two checks stop the registry slipping in a
-  key of its own. `krowk devices list` shows the workspace's machines and
-  the account key id this one holds. All of it needs a key to a Pro
-  workspace. On a free workspace the commands refuse, with a fix line
-  saying so. `krowk sync init` and `recover` still work there and with no
-  account at all: the keys stay on this machine. With a Pro key, `init`
-  and `recover` register this machine with the workspace. `recover` then
+  devices approve` asks for that code, shows which machine it belongs to,
+  and hands the account key over, encrypted to the new machine's key, once
+  you say yes. The new machine then asks for the account key id `approve`
+  printed (or takes it as `krowk sync join <id>`), asks you to confirm, and
+  keeps nothing unless the ids match. Read that id off your other machine,
+  never from an error message or a web page. Both commands need a person at
+  a terminal: an agent told to run them is refused. `krowk devices list`
+  shows the workspace's machines and the account key id this one holds.
+  All of it needs a key to a Pro workspace; on a free one the commands
+  refuse with a fix line. `krowk sync init` and `recover` still work with
+  no account, on a free plan, or with the registry unreachable: the keys
+  stay on this machine, and `krowk sync register` registers it later. With
+  a Pro key they register this machine themselves, and `recover` then
   refuses a phrase that restored a different account key from the
   workspace's, which is how a mistyped word that happens to pass the
-  checksum is caught.
+  checksum is caught. `--name` (or `KROWK_DEVICE_NAME`) sets what the device
+  list calls this machine instead of its host name.
 - **`krowk sync init` sets up the end-to-end encryption keys sync will
   use, and shows your recovery phrase.** It makes a key for this machine
   and an account key, prints the account key as 24 words, and keeps it

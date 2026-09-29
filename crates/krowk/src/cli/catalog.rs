@@ -460,7 +460,11 @@ fn sync_command() -> Command {
         subcommands: vec![
             cmd("init", "krowk sync init", "Set up: a device key, an account key, its recovery phrase"),
             cmd("recover", "krowk sync recover", "Restore the account key here from its recovery phrase"),
-            cmd("join", "krowk sync join [ACCOUNT_KEY_ID]", "Add this machine, approved from one that already syncs"),
+            Command {
+                flags: vec![flag("name", STRING, "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
+                ..cmd("join", "krowk sync join [ACCOUNT_KEY_ID]", "Add this machine, approved from one that already syncs")
+            },
+            cmd("register", "krowk sync register [--name NAME]", "Tell the workspace this machine holds its account key"),
         ],
         ..cmd("sync", "", "End-to-end encryption keys for syncing sessions")
     }
@@ -765,7 +769,8 @@ account key as 24 words once, with its key id; `recover` takes them on a new
 machine and shows the id it restored. Type them at its prompt, or pipe them
 from a file (`krowk sync recover < phrase.txt`) — never `echo`, which keeps
 them in your shell history. Or skip the words: `join` shows a code, and
-`krowk devices approve` on a machine that already syncs answers it. The keys
+`krowk devices approve` on a machine that already syncs answers it; read the
+account key id off that machine, never from an error or a web page. The keys
 are kept in krowk's home, 0600; with a key to a Pro workspace the device is
 registered there too.",
         #[cfg(feature = "harness")]

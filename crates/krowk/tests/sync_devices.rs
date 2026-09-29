@@ -34,8 +34,16 @@ fn root(name: &str) -> PathBuf {
     root.canonicalize().unwrap()
 }
 
-/// krowk with `home` as HOME and nothing else of this machine's.
+/// krowk with `home` as HOME and nothing else of this machine's. The debug
+/// build's stand-in for the person saying yes at `join` and `approve` is on;
+/// `attended` leaves it off.
 fn command(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
+    let mut c = attended(home, api, token, args);
+    c.env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1");
+    c
+}
+
+fn attended(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
     c.args(args)
         .env_clear()
@@ -144,10 +152,10 @@ fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
     let session_key = SessionKey::generate();
     let wrapped = e2e::hex(&e2e::wrap_session_key(&session_key, &id, &account));
     let sealed = e2e::hex(&e2e::seal_session_index(&session_key, &id, TITLE.as_bytes()));
-    client.put_sync_session(&uuid(&id), &wrapped, &sealed, None).unwrap();
+    client.put_sync_session(&uuid(&id), &wrapped, Some(&sealed), None).unwrap();
     let lease = client.acquire_lease(&uuid(&id), &laptop_device, 60).unwrap();
     let resealed = e2e::hex(&e2e::seal_session_index(&session_key, &id, TITLE.as_bytes()));
-    client.put_sync_session(&uuid(&id), &wrapped, &resealed, Some(lease.fence)).unwrap();
+    client.put_sync_session(&uuid(&id), &wrapped, Some(&resealed), Some(&lease.token)).unwrap();
 
     // The desktop asks to join, naming the account key id it was told.
     let mut join = command(&desktop, api, token, &["sync", "join", &account_id, "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
@@ -246,16 +254,69 @@ fn r_sync_2_a_stale_lease_holders_write_is_refused() {
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
     let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &id, &account));
-    client.put_sync_session(&uuid(&id), &wrapped, &e2e::hex(&e2e::seal_session_index(&key, &id, b"one")), None).unwrap();
+    client.put_sync_session(&uuid(&id), &wrapped, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"one"))), None).unwrap();
 
     let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60).unwrap();
-    assert_eq!(client.acquire_lease(&uuid(&id), &b.id().to_string(), 60).unwrap_err().code(), "lease_held");
-    let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), held.fence, 60).unwrap();
-    assert!(moved.fence > held.fence);
+    assert_eq!(held.token.len(), 32, "the acquirer, and only it, is handed a token");
+    let refused = client.acquire_lease(&uuid(&id), &b.id().to_string(), 60).unwrap_err();
+    assert_eq!(refused.code(), "lease_held");
+    assert!(!format!("{:?}", refused.body).contains(&held.token));
+    // Knowing the fence is not holding the lease.
+    assert_eq!(client.renew_lease(&uuid(&id), &b.id().to_string(), &held.fence.to_string(), 60).unwrap_err().code(), "lease_stale");
+    let listed = client.list_sync_sessions("", 50).unwrap();
+    assert_eq!(listed.sessions[0].lease.as_ref().unwrap().device, a.id().to_string());
+    assert!(listed.sessions[0].sealed_index.is_empty(), "a listing carries no sealed index");
 
-    let stale = client.put_sync_session(&uuid(&id), &wrapped, &e2e::hex(&e2e::seal_session_index(&key, &id, b"two")), Some(held.fence)).unwrap_err();
+    let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60).unwrap();
+    assert!(moved.fence > held.fence && !moved.token.is_empty() && moved.token != held.token);
+
+    let stale = client.put_sync_session(&uuid(&id), &wrapped, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"two"))), Some(&held.token)).unwrap_err();
     assert_eq!(stale.code(), "lease_stale");
     assert!(stale.fix().contains("acquire it again"), "{:?}", stale.body);
-    client.put_sync_session(&uuid(&id), &wrapped, &e2e::hex(&e2e::seal_session_index(&key, &id, b"two")), Some(moved.fence)).unwrap();
-    client.release_lease(&uuid(&id), moved.fence).unwrap();
+    client.put_sync_session(&uuid(&id), &wrapped, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"two"))), Some(&moved.token)).unwrap();
+    // A write that names no index leaves it as it was.
+    client.put_sync_session(&uuid(&id), &wrapped, None, Some(&moved.token)).unwrap();
+    let shown = client.show_sync_session(&uuid(&id)).unwrap();
+    assert_eq!(e2e::open_session_index(&e2e::unhex(&shown.sealed_index).unwrap(), &id, &key).unwrap(), b"two");
+    client.release_lease(&uuid(&id), &moved.token).unwrap();
+}
+
+/// R-E2E-3: off a terminal, `approve` and `join` refuse — a code or an id
+/// handed to an agent does not add a device — and nothing is wrapped.
+#[test]
+fn r_e2e_3_approve_and_join_refuse_without_a_person_at_a_terminal() {
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let r = root("headless");
+    let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
+    let words = krowk_client::phrase::encode(&AccountKey::generate());
+    json(&run(&laptop, &api, TOKEN, &["sync", "recover", "--json"], &format!("{}\n", *words)));
+
+    for (home, args) in [(&laptop, vec!["devices", "approve", &"0".repeat(32), "--json"]), (&desktop, vec!["sync", "join", &"0".repeat(32), "--json"])] {
+        let out = attended(home, &api, TOKEN, &args).stdout(Stdio::piped()).stderr(Stdio::piped()).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success() && err.contains("confirmation_required") && err.contains("a person at a terminal"), "{err}");
+    }
+    assert!(!desktop.join(".krowk/device.json").exists(), "join asked for nothing");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// R-SYNC-1: with a key but no registry answering, setting sync up still
+/// succeeds, locally, and `krowk sync register` registers it later.
+#[test]
+fn r_sync_1_setup_with_the_registry_unreachable_stays_local_and_registers_later() {
+    let r = root("offline");
+    let laptop = r.join("laptop");
+    let words = krowk_client::phrase::encode(&AccountKey::generate());
+    let set_up = json(&run(&laptop, "http://127.0.0.1:9/v1", TOKEN, &["sync", "recover", "--json"], &format!("{}\n", *words)));
+    assert_eq!(set_up["data"]["registered"], false, "{set_up}");
+    assert!(set_up["summary"].as_str().unwrap().contains("krowk sync register"), "{set_up}");
+
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let registered = json(&run(&laptop, &api, TOKEN, &["sync", "register", "--name", "work laptop", "--json"], ""));
+    assert_eq!(registered["data"]["registered"], true, "{registered}");
+    let listed = json(&run(&laptop, &api, TOKEN, &["devices", "list", "--json"], ""));
+    assert_eq!(listed["data"]["devices"][0]["name"], "work laptop");
+    let _ = std::fs::remove_dir_all(&r);
 }

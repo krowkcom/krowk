@@ -99,6 +99,7 @@ OTHER
   sync init         Set up: a device key, an account key, its recovery phrase
   sync recover      Restore the account key here from its recovery phrase
   sync join         Add this machine, approved from one that already syncs
+  sync register     Tell the workspace this machine holds its account key
   devices list      The workspace's devices, and the account key this one holds
   devices approve   Approve a new device's `krowk sync join`
   config show       The effective configuration, and which layer set each value
