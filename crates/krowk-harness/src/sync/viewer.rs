@@ -193,7 +193,14 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
     let (won_tx, mut won) = mpsc::unbounded_channel::<Option<(Candidate, super::Ws, serde_json::Value)>>();
     let mut probing = false;
     let mut reprobe = Instant::now();
+    // How long until the next race: `REPROBE`, doubled after each that
+    // finds no direct path, up to `REPROBE_MAX`, and back to `REPROBE`
+    // once one is taken.
+    let mut backoff = REPROBE;
     let mut moving: Option<Candidate> = None;
+    // When the direct welcome must have come by: past it, or with more
+    // than `HELD_MAX` batches waiting for it, the direct path is dropped.
+    let mut moving_until = Instant::now();
     let mut leaving: Option<super::Ws> = None;
     let mut on: Option<Candidate> = None;
     // The last stream batch applied, and the last acked to the relay.
@@ -297,14 +304,24 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                                 ws = Some(dw);
                                 heard = Instant::now();
                                 moving = Some(c);
+                                moving_until = Instant::now() + PROBE;
                             }
-                            false => { ws = None; retry = Instant::now(); reprobe = Instant::now() + REPROBE; }
+                            false => { ws = None; retry = Instant::now(); (reprobe, backoff) = later(backoff); }
                         }
                         link = Some(l);
                     }
-                    Some(_) => {}
-                    None => reprobe = Instant::now() + REPROBE,
+                    // A candidate joined with no host there (its uplink to
+                    // the listener not up yet), or nobody answered: later.
+                    Some(_) | None => (reprobe, backoff) = later(backoff),
                 }
+            }
+            _ = tokio::time::sleep_until(moving_until.into()), if moving.is_some() => {
+                // The direct welcome is late, or too much waits on it: the
+                // relay again, from the cursor, which its buffer fills.
+                (moving, leaving) = (None, None);
+                ws = None;
+                retry = Instant::now();
+                (reprobe, backoff) = later(backoff);
             }
             m = async { match leaving.as_mut() { Some(w) => super::recv(w).await, None => std::future::pending().await } } => {
                 // The relay's connection, while the session moves off it:
@@ -315,7 +332,10 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                         Some(l) if l.welcomed() => {
                             apply(l, &b, &mut seen, &mut last_id, &mut frame, &mut applied);
                         }
-                        _ => held.push(b),
+                        _ => {
+                            held.push(b);
+                            if held.len() > HELD_MAX { moving_until = Instant::now(); }
+                        }
                     },
                     _ => {}
                 }
@@ -325,7 +345,7 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                 match m {
                     // A direct path gone falls back to the relay at once, from
                     // the cursor, which the relay's buffer fills (R-NET-2).
-                    In::Closed if on.is_some() || moving.is_some() => { ws = None; retry = Instant::now(); reprobe = Instant::now() + REPROBE; }
+                    In::Closed if on.is_some() || moving.is_some() => { ws = None; retry = Instant::now(); (reprobe, backoff) = later(backoff); }
                     In::Closed => { ws = None; retry = Instant::now() + Duration::from_secs(1); }
                     In::Alive => {}
                     In::Control(v) if v["type"] == "host" => {
@@ -341,7 +361,7 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                             // the host: back to the relay, where it may still be.
                             ws = None;
                             retry = Instant::now();
-                            reprobe = Instant::now() + REPROBE;
+                            (reprobe, backoff) = later(backoff);
                         } else if present && !welcomed { ws = None; retry = Instant::now(); } else if !present { host = false; frame.push(Update::Host(false)); }
                     }
                     In::Control(v) if v["type"] == "resync" => {
@@ -377,6 +397,7 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                                     let w: Welcome = serde_json::from_slice(&body).unwrap_or_default();
                                     if let Some(c) = moving.take() {
                                         leaving = None;
+                                        backoff = REPROBE;
                                         on = Some(c);
                                     } else if on.is_none() {
                                         candidates = w.candidates.clone();
@@ -433,6 +454,7 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                             }
                         } else if !l.welcomed() {
                             held.push(b);
+                            if moving.is_some() && held.len() > HELD_MAX { moving_until = Instant::now(); }
                         } else {
                             let gap = apply(l, &b, &mut seen, &mut last_id, &mut frame, &mut applied);
                             // A batch the relay dropped: the host fills the gap.
@@ -457,6 +479,18 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
 /// How long after a race nobody won, or a direct path lost, the candidates
 /// are tried again: the network may have changed meanwhile.
 pub const REPROBE: Duration = Duration::from_secs(10);
+
+/// The longest a viewer waits between races: a phone off the tailnet asks
+/// the registry for a ticket and tries each candidate this often, no more.
+pub const REPROBE_MAX: Duration = Duration::from_secs(300);
+
+/// Batches a move to a direct path may hold before its welcome.
+pub const HELD_MAX: usize = 1024;
+
+/// The next race's time, and the wait after it.
+fn later(backoff: Duration) -> (Instant, Duration) {
+    (Instant::now() + backoff, (backoff * 2).min(REPROBE_MAX))
+}
 
 /// How long one candidate has to answer the join.
 pub const PROBE: Duration = Duration::from_secs(3);

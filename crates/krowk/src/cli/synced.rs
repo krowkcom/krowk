@@ -55,6 +55,8 @@ fn relay(ctx: &Ctx) -> String {
 /// --ticket-keys` reads). Without them there is no direct listener: nothing
 /// but a ticket may let a device in. `KROWK_TAILSCALE_SAME_USER=1` also
 /// requires tailscaled to name the far end as this tailnet user (R-NET-3).
+/// The LAN address is offered only with `KROWK_DIRECT_LAN=1`: it is off the
+/// tailnet, so plain `ws://` there is reachable by the whole network.
 fn direct(ctx: &Ctx) -> Result<Option<krowk_harness::sync::direct::Config>, Error> {
     let keys = ctx.env("KROWK_RELAY_TICKET_KEYS");
     if keys.trim().is_empty() {
@@ -62,7 +64,7 @@ fn direct(ctx: &Ctx) -> Result<Option<krowk_harness::sync::direct::Config>, Erro
     }
     let text = std::fs::read_to_string(keys.trim()).map_err(|e| fail("bad_ticket_keys", format!("KROWK_RELAY_TICKET_KEYS names {}, which could not be read: {e}", keys.trim())))?;
     let roster = krowk_harness::relay::Roster::parse(&text).map_err(|e| fail("bad_ticket_keys", e))?;
-    Ok(Some(krowk_harness::sync::direct::Config { socket: krowk_harness::sync::tailscale::socket(ctx.io.env), roster, same_user: ctx.env("KROWK_TAILSCALE_SAME_USER") == "1", lan: true, stop: None }))
+    Ok(Some(krowk_harness::sync::direct::Config { socket: krowk_harness::sync::tailscale::socket(ctx.io.env), roster, same_user: ctx.env("KROWK_TAILSCALE_SAME_USER") == "1", lan: ctx.env("KROWK_DIRECT_LAN") == "1", stop: None }))
 }
 
 /// `krowk hosts`: the tailnet's machines tagged `tag:krowk-host`, from the

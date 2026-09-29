@@ -17,12 +17,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   each viewer inside the sealed channel. A viewer tries them all beside the
   relay and moves onto the first that passes the same ticket, challenge and
   handshake the relay does, mid-session and without losing a frame; if the
-  direct path goes, it falls back to the relay by itself and tries again
-  later. `krowk sync attach` prints the path in use (`sync.path`: `relay`,
+  direct path goes, or its welcome is more than three seconds late, it
+  falls back to the relay by itself and tries again later, less often each
+  time nothing is found (10 seconds, doubling to 5 minutes). `krowk sync attach` prints the path in use (`sync.path`: `relay`,
   `direct over Tailscale` or `direct over LAN`). Being on the tailnet lets
   nobody in: direct paths are on only with the registry's ticket keys in
   `KROWK_RELAY_TICKET_KEYS`, and `KROWK_TAILSCALE_SAME_USER=1` also turns
-  away a connection from another tailnet user. `krowk hosts` lists the
+  away a connection from another tailnet user. The LAN address is offered
+  only with `KROWK_DIRECT_LAN=1`, and never with the same-user check.
+  `krowk hosts` lists the
   tailnet's machines tagged `tag:krowk-host`.
 - **A file a session publishes now says what made it.** Besides the session
   (`krowk.session`), each artifact `publish` pushes records the engine that

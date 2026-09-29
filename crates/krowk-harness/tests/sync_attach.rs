@@ -225,7 +225,7 @@ impl World {
         let o = host::Options {
             relay: self.relay_a.clone(),
             env: "development".into(),
-            api: self.a_client(),
+            api: self.a_client(a),
             device: a.key.id(),
             signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
             account: AccountKey::from_bytes(*self.account.as_bytes()),
@@ -1052,7 +1052,10 @@ async fn r_net_2_killing_the_direct_listener_falls_back_to_the_relay_with_no_gap
     let mut got = until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Line(_))).await;
     kill.send(true).unwrap();
     got.extend(until(&mut v, Duration::from_secs(15), &mut frames, relay_path).await);
-    got.extend(until(&mut v, Duration::from_secs(20), &mut frames, result_of).await);
+    // The turn may have ended before the relay's welcome, or in its frame.
+    if !got.iter().any(result_of) {
+        got.extend(until(&mut v, Duration::from_secs(20), &mut frames, result_of).await);
+    }
     ids.extend(got.iter().flat_map(logged));
     let relay_rtt = ack_rtt(&mut v, &session, &mut frames).await;
     println!("R-NET-2 latency (command round trip, median of 15, loopback): direct {direct_rtt:?}, relay {relay_rtt:?}");

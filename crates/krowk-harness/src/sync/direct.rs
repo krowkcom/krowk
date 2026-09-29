@@ -32,7 +32,8 @@ pub struct Config {
     pub roster: Roster,
     /// Also require tailscaled to name the far end as this tailnet user.
     pub same_user: bool,
-    /// Offer this machine's LAN address too.
+    /// Offer this machine's LAN address too (`KROWK_DIRECT_LAN=1`); never
+    /// with `same_user`.
     pub lan: bool,
     /// Stops the listener when it turns true; without it the listener goes
     /// with the bridge.
@@ -98,7 +99,9 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
         candidates.push(Candidate { url: format!("ws://{name}:{port}"), via: "magicdns".into() });
     }
     let mut listeners = vec![first];
-    if c.lan {
+    // Never with the same-user check: tailscaled knows no one on the LAN,
+    // so every LAN connection would be turned away.
+    if c.lan && !c.same_user {
         for lan in status.lan().into_iter().filter(|l| *l != ip) {
             // The same port, so a viewer's candidates name one listener; an
             // address taken there is simply not offered.
