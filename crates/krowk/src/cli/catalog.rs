@@ -467,6 +467,12 @@ fn sync_command() -> Command {
                 ..cmd("join", "krowk sync join [ACCOUNT_KEY_ID]", "Add this machine, approved from one that already syncs")
             },
             cmd("register", "krowk sync register [--name NAME]", "Tell the workspace this machine holds its account key"),
+            #[cfg(unix)]
+            cmd("sessions", "krowk sync sessions", "The synced sessions this machine can open"),
+            #[cfg(unix)]
+            cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
+            #[cfg(unix)]
+            cmd("attach", "krowk sync attach SESSION", "Follow a synced session from this machine; lines on stdin are prompts"),
         ],
         ..cmd("sync", "", "End-to-end encryption keys for syncing sessions")
     }

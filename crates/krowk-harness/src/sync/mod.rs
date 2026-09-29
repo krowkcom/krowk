@@ -154,3 +154,64 @@ pub struct Batch {
     /// The log's head once the chunks written so far are in.
     pub head: Option<store::Head>,
 }
+
+fn runtime() -> Result<tokio::runtime::Runtime, String> {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("the async runtime could not start: {e}"))
+}
+
+/// `krowk sync host`: reaches this machine's daemon (starting it when none
+/// answers) as a client that answers approvals, and runs the bridge until
+/// Ctrl-C or SIGTERM. Errors are `(code, message)`.
+pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path::Path, version: &str, spawn: &crate::daemon::Spawn<'_>) -> Result<(), (String, String)> {
+    let rt = runtime().map_err(|e| ("runtime_unavailable".to_string(), e))?;
+    rt.block_on(async move {
+        let daemon = crate::daemon::ensure(env, cwd, version, true, spawn).await.map_err(|e| (e.code.clone(), e.message.clone()))?;
+        let (stop, stop_rx) = tokio::sync::watch::channel(false);
+        let (_cp, cp_rx) = tokio::sync::mpsc::unbounded_channel();
+        let run = tokio::spawn(host::run(o, std::sync::Arc::new(daemon), stop_rx, cp_rx));
+        host::interrupted().await;
+        let _ = stop.send(true);
+        run.await.map_err(|e| ("sync_failed".to_string(), e.to_string()))?.map_err(|e| ("sync_failed".to_string(), e))
+    })
+}
+
+/// `krowk sync attach`: follows a synced session, writing each update as
+/// one JSON line to `out`, and sends each line of stdin as a prompt.
+pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<(), String> {
+    let session = o.session.clone();
+    runtime()?.block_on(async move {
+        let mut v = viewer::attach(o).await?;
+        let (lines_tx, mut lines) = tokio::sync::mpsc::unbounded_channel::<String>();
+        std::thread::spawn(move || {
+            for l in std::io::stdin().lines().map_while(Result::ok) {
+                if lines_tx.send(l).is_err() {
+                    return;
+                }
+            }
+        });
+        loop {
+            tokio::select! {
+                l = lines.recv() => if let Some(text) = l.filter(|t| !t.trim().is_empty()) {
+                    let _ = v.commands.send(crate::protocol::Command::Prompt { session_id: Some(session.clone()), text, model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None });
+                },
+                u = v.updates.recv() => {
+                    let Some(batch) = u else { return Ok(()) };
+                    for u in batch {
+                        let line = match u {
+                            viewer::Update::Line(l) => serde_json::to_string(&l).unwrap_or_default(),
+                            viewer::Update::Attached { events, .. } | viewer::Update::CaughtUp(events) => events.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n"),
+                            viewer::Update::Host(h) => json!({"type": "sync.host", "present": h}).to_string(),
+                            viewer::Update::Sent { id, queued } => json!({"type": "sync.sent", "id": id, "queued": queued}).to_string(),
+                            viewer::Update::Acked { id, error } => json!({"type": "sync.acked", "id": id, "error": error}).to_string(),
+                            viewer::Update::Failed(e) => return Err(e),
+                        };
+                        if !line.is_empty() {
+                            let _ = writeln!(out, "{line}");
+                        }
+                    }
+                    let _ = out.flush();
+                }
+            }
+        }
+    })
+}

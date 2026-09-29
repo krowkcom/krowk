@@ -369,3 +369,19 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     .await;
     Ok(())
 }
+
+/// Waits for Ctrl-C or SIGTERM: `krowk sync host` then ends the stream with
+/// its final sealed batch and lets the lease go, rather than leaving
+/// viewers to find the stream cut short and the lease to lapse.
+pub async fn interrupted() {
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+    let t = async {
+        match term.as_mut() {
+            Some(s) => {
+                s.recv().await;
+            }
+            None => std::future::pending().await,
+        }
+    };
+    tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = t => {} }
+}

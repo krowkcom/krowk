@@ -26,6 +26,8 @@ mod sessions;
 mod status;
 #[cfg(feature = "harness")]
 mod sync;
+#[cfg(all(feature = "harness", unix))]
+mod synced;
 #[cfg(feature = "harness")]
 mod tui;
 mod upgrade;
@@ -300,6 +302,12 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["sync", "join", ..] => sync::join(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["sync", "register", ..] => sync::register_now(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["sync", "sessions", ..] => synced::sessions(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["sync", "host", ..] => synced::host_session(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["sync", "attach", ..] => synced::attach(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["devices"] | ["devices", "list", ..] => devices::list(ctx),
         #[cfg(feature = "harness")]

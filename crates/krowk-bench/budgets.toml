@@ -401,6 +401,9 @@ id = "remote.attach"
 req = "R-PERF-6"
 what = "Attach from a checkpoint on a remote device"
 unit = "ms"
+# The sealed index, the checkpoint and ten chunks of tail, read from the
+# stand-in registry over loopback HTTP and opened: what a viewer does before
+# it goes live (crates/krowk-harness/src/sync/store.rs).
 max = 500
-status = "pending"
-owner = "19"
+runs = 11
+status = "enforced"
