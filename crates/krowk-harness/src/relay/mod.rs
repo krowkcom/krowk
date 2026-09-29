@@ -117,7 +117,7 @@ impl Default for Limits {
             viewer_messages: 100.0,
             viewer_bytes: 4.0 * (1 << 20) as f64 + HEADER as f64,
             link_queue: 16 << 20,
-            unjoined: 64,
+            unjoined: 1024,
             unjoined_per_peer: 32,
             unjoined_per_channel: 16,
             prejoin_bytes: 80 * 1024,
@@ -167,7 +167,7 @@ pub fn run(listener: std::net::TcpListener, config: Config) -> Result<(), String
 
 /// Accepts connections for ever. Inside a `LocalSet`.
 pub async fn serve(listener: TcpListener, config: Config) {
-    let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), peers: RefCell::new(HashMap::new()), waiting: RefCell::new(HashMap::new()), unjoined: Cell::new(0), links: Cell::new(0) });
+    let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0) });
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
@@ -184,12 +184,61 @@ pub async fn serve(listener: TcpListener, config: Config) {
 struct Relay {
     config: Config,
     channels: RefCell<HashMap<[u8; 16], Channel>>,
-    /// Connections not yet joined, by the address they came from.
-    peers: RefCell<HashMap<std::net::IpAddr, usize>>,
-    /// And by the channel they asked for.
-    waiting: RefCell<HashMap<[u8; 16], usize>>,
-    unjoined: Cell<usize>,
+    /// Connections not yet joined, oldest first. At any cap the oldest
+    /// is let go to make room, never the newcomer refused: someone
+    /// holding connections open must then outpace honest clients, who
+    /// join within a round trip of the challenge.
+    pending: RefCell<VecDeque<Pending>>,
+    pending_ids: Cell<u64>,
     links: Cell<u64>,
+}
+
+struct Pending {
+    id: u64,
+    peer: std::net::IpAddr,
+    session: Option<[u8; 16]>,
+    kill: Rc<tokio::sync::Notify>,
+}
+
+impl Relay {
+    /// Lets go the oldest pending connection `which` picks.
+    fn evict(&self, which: impl Fn(&Pending) -> bool) {
+        let mut p = self.pending.borrow_mut();
+        if let Some(i) = p.iter().position(which) {
+            let gone = p.remove(i).expect("found");
+            gone.kill.notify_one();
+        }
+    }
+
+    /// A new pending connection, room made for it under the caps.
+    fn arrive(&self, peer: std::net::IpAddr) -> (u64, Rc<tokio::sync::Notify>) {
+        let limits = &self.config.limits;
+        if self.pending.borrow().iter().filter(|p| p.peer == peer).count() >= limits.unjoined_per_peer {
+            self.evict(|p| p.peer == peer);
+        }
+        if self.pending.borrow().len() >= limits.unjoined {
+            self.evict(|_| true);
+        }
+        let id = self.pending_ids.get() + 1;
+        self.pending_ids.set(id);
+        let kill = Rc::new(tokio::sync::Notify::new());
+        self.pending.borrow_mut().push_back(Pending { id, peer, session: None, kill: kill.clone() });
+        (id, kill)
+    }
+
+    /// Its channel, once the upgrade names it: room made there too.
+    fn names(&self, id: u64, session: [u8; 16]) {
+        if self.pending.borrow().iter().filter(|p| p.session == Some(session)).count() >= self.config.limits.unjoined_per_channel {
+            self.evict(|p| p.session == Some(session));
+        }
+        if let Some(p) = self.pending.borrow_mut().iter_mut().find(|p| p.id == id) {
+            p.session = Some(session);
+        }
+    }
+
+    fn done(&self, id: u64) {
+        self.pending.borrow_mut().retain(|p| p.id != id);
+    }
 }
 
 /// A count that starts again each minute.
@@ -366,27 +415,10 @@ type Ws = tokio_tungstenite::WebSocketStream<Metered>;
 
 async fn connection(stream: TcpStream, peer: std::net::IpAddr, relay: Rc<Relay>) {
     let limits = &relay.config.limits;
-    {
-        let mut peers = relay.peers.borrow_mut();
-        let from = peers.entry(peer).or_default();
-        if relay.unjoined.get() >= limits.unjoined || *from >= limits.unjoined_per_peer {
-            return;
-        }
-        *from += 1;
-    }
-    relay.unjoined.set(relay.unjoined.get() + 1);
+    let (pending, kill) = relay.arrive(peer);
     let left = Rc::new(Cell::new(limits.prejoin_bytes));
-    let joined = handshake(Metered { inner: stream, left: left.clone() }, &relay).await;
-    relay.unjoined.set(relay.unjoined.get() - 1);
-    {
-        let mut peers = relay.peers.borrow_mut();
-        if let Some(n) = peers.get_mut(&peer) {
-            *n -= 1;
-            if *n == 0 {
-                peers.remove(&peer);
-            }
-        }
-    }
+    let joined = handshake(Metered { inner: stream, left: left.clone() }, &relay, pending, &kill).await;
+    relay.done(pending);
     let Some((ws, session, device, role, join)) = joined else { return };
     left.set(usize::MAX);
     let (tx, rx) = mpsc::unbounded_channel();
@@ -409,7 +441,7 @@ async fn close(ws: &mut Ws, r: &Refusal) {
 }
 
 /// The WebSocket handshake, the challenge and the join.
-async fn handshake(stream: Metered, relay: &Rc<Relay>) -> Option<(Ws, [u8; 16], DeviceId, u8, Join)> {
+async fn handshake(stream: Metered, relay: &Rc<Relay>, pending: u64, kill: &tokio::sync::Notify) -> Option<(Ws, [u8; 16], DeviceId, u8, Join)> {
     use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
     let _ = stream.inner.set_nodelay(true);
     let limits = &relay.config.limits;
@@ -428,33 +460,21 @@ async fn handshake(stream: Metered, relay: &Rc<Relay>) -> Option<(Ws, [u8; 16], 
         *into.borrow_mut() = (Some(session), host);
         Ok(resp)
     };
-    let mut ws = tokio::time::timeout(limits.upgrade_wait, tokio_tungstenite::accept_hdr_async_with_config(stream, route, Some(config))).await.ok()?.ok()?;
+    let upgrade = tokio::time::timeout(limits.upgrade_wait, tokio_tungstenite::accept_hdr_async_with_config(stream, route, Some(config)));
+    let mut ws = tokio::select! {
+        _ = kill.notified() => return None,
+        r = upgrade => r.ok()?.ok()?,
+    };
     let (session, host) = seen.borrow().clone();
     let session = session?;
-    {
-        let mut waiting = relay.waiting.borrow_mut();
-        let n = waiting.entry(session).or_default();
-        if *n >= limits.unjoined_per_channel {
-            return None;
-        }
-        *n += 1;
-    }
-    let result = challenge(&mut ws, relay, session, &host).await;
-    {
-        let mut waiting = relay.waiting.borrow_mut();
-        if let Some(n) = waiting.get_mut(&session) {
-            *n -= 1;
-            if *n == 0 {
-                waiting.remove(&session);
-            }
-        }
-    }
+    relay.names(pending, session);
+    let result = challenge(&mut ws, relay, session, &host, kill).await;
     let (device, role, join) = result?;
     Some((ws, session, device, role, join))
 }
 
 /// The challenge, and the join that answers it.
-async fn challenge(ws: &mut Ws, relay: &Rc<Relay>, session: [u8; 16], host: &str) -> Option<(DeviceId, u8, Join)> {
+async fn challenge(ws: &mut Ws, relay: &Rc<Relay>, session: [u8; 16], host: &str, kill: &tokio::sync::Notify) -> Option<(DeviceId, u8, Join)> {
     let limits = &relay.config.limits;
     let given = relay.config.origin.clone().unwrap_or_else(|| format!("ws://{host}"));
     let Some(origin) = e2e::canonical_origin(&given) else {
@@ -467,7 +487,14 @@ async fn challenge(ws: &mut Ws, relay: &Rc<Relay>, session: [u8; 16], host: &str
     let deadline = tokio::time::Instant::now() + limits.join_wait;
     let mut pings = 0;
     let join = loop {
-        match tokio::time::timeout_at(deadline, ws.next()).await {
+        let next = tokio::select! {
+            _ = kill.notified() => {
+                close(ws, &refuse("join_timeout", "the oldest connection not yet joined made way for a newer one", "send the join as soon as the challenge arrives")).await;
+                return None;
+            }
+            r = tokio::time::timeout_at(deadline, ws.next()) => r,
+        };
+        match next {
             Err(_) => {
                 close(ws, &refuse("join_timeout", "no join arrived in time", "send the join within ten seconds of the challenge")).await;
                 return None;

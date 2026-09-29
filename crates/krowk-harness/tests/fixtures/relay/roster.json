@@ -386,6 +386,54 @@
       "revoked": false
     },
     {
+      "name": "crowd-host",
+      "id": "879ae1682979dd91ec49f5fd7ce53a2e",
+      "seed": "e0f079d3c54d42215d3be79012ec07a02e4c261110ec80121a04aed2dd068007",
+      "signingKey": "dd4e4be810173c47c0008e7aec8f9f26695fc221cf7a5d2dacbe6030dd2da0e6",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "crowd-viewer",
+      "id": "b2024cde53f437456b0383feb73de2fe",
+      "seed": "ed67db4e29972f08b70cc4490fda843d2b9dca7998f6fe2da2f446861f376b34",
+      "signingKey": "466a1c49657f699451089796e67384c4aa26e2a4811c28b76207e209550a96cd",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "crowd-viewer2",
+      "id": "5bf869c5cd6c43097deb1b9de660d5b6",
+      "seed": "736a3abb59a7b7429ee9ccb1fcebdb851d6c33dd398422db3655d2282b7474b9",
+      "signingKey": "1c02bcb69dbd35f00f3f310be6e73ec9f9abb36e43ab7294be14523c01a1dad3",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "idle-host",
+      "id": "cb5f451aef58b6b4df2f7b4f6915fcb2",
+      "seed": "1b46a7e8f0450036cb21bf811e7715a50ffdee16c08146242c977d5f849a30d3",
+      "signingKey": "ed4f5607ed7d990ae31f325a6226d7bef02d8028e4ce1fa37eea2e6019dafa1c",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "idle-viewer",
+      "id": "7839f921711c377f224dc9f5cc6ab16c",
+      "seed": "4c87dade1efd9f72dfb9adf42b09c39a7000698f434a4a56335bec9d9525578f",
+      "signingKey": "80401884b4e1403541d2790d28fce29642fa4630e9a652f068a64bf23766b919",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "idle-viewer2",
+      "id": "b9b512ae37eb3f0f62ddb4d361ea31aa",
+      "seed": "f9e94a52fbc52a8014179a989975181cf0fa0a95f8a2353a90097812820fbe20",
+      "signingKey": "a59a9483f50d1834318d1c07bdbeaebee67d721afe1cc6a3541b47fa5c61a414",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
       "name": "outsider",
       "id": "efc5fa16d87af0fe9215049762a334ac",
       "seed": "238e38bd09339bbfe7d2ce99c28792a6f411ea15b4aa219c9f6845c00740036c",
@@ -514,6 +562,20 @@
       "workspace": "ws_conformance_a",
       "holder": "22ff84866ac776124fbe7cfb8554f7e5",
       "fence": 56
+    },
+    {
+      "name": "crowd",
+      "id": "035d2f84-37ca-7260-bce5-7918cdaffd3c",
+      "workspace": "ws_conformance_a",
+      "holder": "879ae1682979dd91ec49f5fd7ce53a2e",
+      "fence": 179
+    },
+    {
+      "name": "idle",
+      "id": "a744987e-58ef-70fd-a395-00825dccc689",
+      "workspace": "ws_conformance_a",
+      "holder": "cb5f451aef58b6b4df2f7b4f6915fcb2",
+      "fence": 241
     }
   ],
   "unregistered": [

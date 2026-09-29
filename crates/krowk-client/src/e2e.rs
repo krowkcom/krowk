@@ -734,8 +734,9 @@ pub fn canonical_origin(url: &str) -> Option<String> {
     }
     let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
         let (h, after) = inner.split_once(']')?;
-        h.parse::<std::net::Ipv6Addr>().ok()?;
-        (format!("[{}]", h.to_ascii_lowercase()), after.strip_prefix(':'))
+        // RFC 5952's text, so every spelling of one address signs alike.
+        let ip = h.parse::<std::net::Ipv6Addr>().ok()?;
+        (format!("[{ip}]"), after.strip_prefix(':'))
     } else {
         match authority.split_once(':') {
             Some((h, p)) => (h.to_ascii_lowercase(), Some(p)),
@@ -809,6 +810,8 @@ mod tests {
         assert_eq!(c("http://LOCALHOST:7790/x?y").as_deref(), Some("ws://localhost:7790"));
         assert_eq!(c("wss://[::1]:443").as_deref(), Some("wss://[::1]"));
         assert_eq!(c("ws://[::1]:7790").as_deref(), Some("ws://[::1]:7790"));
+        assert_eq!(c("ws://[0:0:0:0:0:0:0:1]:7790").as_deref(), Some("ws://[::1]:7790"));
+        assert_eq!(c("wss://[2001:DB8:0:0:0:0:0:1]").as_deref(), Some("wss://[2001:db8::1]"));
         for bad in ["ftp://x", "ws://", "ws://user@host", "ws://h:port", "ws://h:99999", "ws://[zz]", "ws://a:b:c", "ws://h o"] {
             assert_eq!(c(bad), None, "{bad}");
         }

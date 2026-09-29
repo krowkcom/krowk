@@ -38,7 +38,7 @@ const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/
 /// Every test, its devices and its session: `<test>-host` holds the lease
 /// of session `<test>`, `<test>-viewer` and `<test>-viewer2` watch it, all
 /// in workspace A.
-const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin"];
+const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle"];
 
 /// How long anything the relay should answer may take, and how long to
 /// wait to be sure nothing comes.
@@ -851,4 +851,64 @@ async fn r_relay_1_the_reference_relay_bounds_what_comes_before_a_join() {
         }
     }
     drop(idle);
+}
+
+/// R-RELAY-1: connections that upgrade to a channel and never join cannot
+/// keep its devices off it: at the pre-join cap the oldest is let go, not
+/// the newcomer refused (relay.md → Limits).
+#[tokio::test]
+async fn r_relay_1_idle_connections_to_a_channel_cannot_lock_its_devices_out() {
+    let t = "crowd";
+    let url = format!("{}/v1/relay/{}", relay_url(), session_id(t));
+    let authority = relay_url().split("://").nth(1).unwrap().to_string();
+    let target: std::net::SocketAddr = tokio::net::lookup_host(&authority).await.unwrap().next().unwrap();
+    // More than the channel's 16, from another address, each upgraded and
+    // holding its challenge unanswered.
+    let mut idle = Vec::new();
+    for _ in 0..24 {
+        let sock = if target.is_ipv4() { tokio::net::TcpSocket::new_v4() } else { tokio::net::TcpSocket::new_v6() }.unwrap();
+        if target.ip().is_loopback() && target.is_ipv4() {
+            sock.bind("127.0.0.9:0".parse().unwrap()).unwrap();
+        }
+        let stream = sock.connect(target).await.unwrap();
+        if let Ok((ws, _)) = tokio_tungstenite::client_async(url.as_str(), stream).await {
+            idle.push(ws);
+        }
+    }
+    let (_h, j) = joined(t, &host(t)).await;
+    assert_eq!(j["role"], "host");
+    let (_v, j) = joined(t, &viewer(t, "viewer")).await;
+    assert_eq!(j["role"], "viewer");
+    drop(idle);
+}
+
+/// R-LAG-6, slow and optional (`KROWK_RELAY_SLOW=1`): a channel idle for
+/// 15 seconds — long enough for a Durable Object to be evicted from memory
+/// — still serves a viewer's resume from its ring buffer. Ticket 18 runs
+/// it against `wrangler dev` and the deployed relay.
+#[tokio::test]
+async fn r_lag_6_the_ring_buffer_survives_an_idle_channel() {
+    if std::env::var_os("KROWK_RELAY_SLOW").is_none() {
+        return;
+    }
+    let t = "idle";
+    let stream = stream_id(t, 1);
+    let (mut h, _) = joined(t, &host(t)).await;
+    let (mut v, _) = joined(t, &viewer(t, "viewer")).await;
+    for seq in 1..=16 {
+        h.batch(seq).await;
+    }
+    h.acked(16).await;
+    for seq in 1..=16 {
+        v.batch_in(seq).await;
+    }
+    drop(v);
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    let (mut v, j) = joined(t, &As { stream: Some(stream), after: Some(8), ..viewer(t, "viewer") }).await;
+    assert_eq!(j["seq"], 16, "{j}");
+    for seq in 9..=16 {
+        v.batch_in(seq).await;
+    }
+    h.batch(17).await;
+    v.batch_in(17).await;
 }
