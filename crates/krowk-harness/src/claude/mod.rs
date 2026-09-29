@@ -328,10 +328,15 @@ pub fn cleared(b: &Backend) -> impl Iterator<Item = &'static str> + '_ {
 }
 
 /// The environment a Claude Code command gets on top of krowk's own: the
-/// inherited key and base URL taken away, the config directory, the
-/// instance's `env`, and its key under the name Claude Code reads.
+/// inherited key and base URL taken away, telemetry off, the config
+/// directory, the instance's `env`, and its key under the name Claude Code
+/// reads.
+///
+/// Telemetry off because Claude Code flushes it on exit: ~0.7 s that every
+/// quit of the TUI would wait on, against ~30 ms without. An instance that
+/// wants it sets `DISABLE_TELEMETRY` in its `env`, which comes after.
 pub fn environment(b: &Backend) -> (Vec<&'static str>, Vec<(String, String)>) {
-    let mut set: Vec<(String, String)> = Vec::new();
+    let mut set: Vec<(String, String)> = vec![("DISABLE_TELEMETRY".into(), "1".into())];
     if let Some(dir) = &b.config_dir {
         set.push(("CLAUDE_CONFIG_DIR".into(), dir.display().to_string()));
     }

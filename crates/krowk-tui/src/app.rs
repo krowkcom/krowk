@@ -14,6 +14,8 @@ use crate::help;
 use crate::look::{self, SEP};
 use crate::pr::State as PrState;
 use crate::settings::{ContentWidth, Item as StatusItem, Settings};
+use crate::syntax::Code;
+use crate::table;
 use krowk_harness::host::Pricer;
 use krowk_harness::log::Recent;
 use krowk_harness::protocol::{
@@ -317,7 +319,7 @@ const STATUS_INDENT: usize = 2;
 /// and the cost — then the model is cut short; `? help` stays.
 fn hint_row(mut parts: Vec<Part>, width: usize) -> Line<'static> {
     let room = width.saturating_sub(STATUS_INDENT);
-    let used = |parts: &[Part]| parts.iter().map(|p| p.text.width()).sum::<usize>() + parts.len().saturating_sub(1) * BAR_SEP.len();
+    let used = |parts: &[Part]| parts.iter().map(|p| look::unmarked(&p.text).width()).sum::<usize>() + parts.len().saturating_sub(1) * BAR_SEP.len();
     while used(&parts) > room {
         // The one to give way next: the lowest rank below the model's.
         let Some(i) = (0..parts.len()).filter(|&i| parts[i].rank < Rank::Model).min_by_key(|&i| parts[i].rank) else { break };
@@ -347,7 +349,8 @@ fn hint_row(mut parts: Vec<Part>, width: usize) -> Line<'static> {
             // Every cell carries the link: the live region is drawn a cell
             // at a time (`term::Back`).
             Some(url) => spans.extend(text.chars().map(|c| look::linked(c.to_string(), p.style, url))),
-            None => spans.push(Span::styled(text, p.style)),
+            // A key it names (`?`) in white.
+            None => spans.extend(clip_spans(look::keys(&p.text, p.style), room)),
         }
     }
     Line::from(spans)
@@ -421,6 +424,18 @@ enum Quiet {
     Read,
     Search,
     Run,
+}
+
+impl Quiet {
+    /// What a call of the tool `kind` (`look::tool_kind`) does if it goes well.
+    fn of(kind: &str) -> Option<Quiet> {
+        match kind {
+            "read" => Some(Quiet::Read),
+            "grep" | "glob" => Some(Quiet::Search),
+            "bash" => Some(Quiet::Run),
+            _ => None,
+        }
+    }
 }
 
 /// Quiet calls one after another — reads, searches and commands that went
@@ -541,6 +556,9 @@ pub struct App {
     pub steers: Vec<String>,
     /// Steering typed before the turn could take it; sent when it can.
     pub unsent_steers: Vec<String>,
+    /// The prompt on screen since Enter, before the host has routed, keyed
+    /// and logged it; the log's copy, when it comes, is not drawn again.
+    echoed: Option<String>,
     /// The mode the next prompt runs in, as the client sends it: the
     /// picker's `now` and the details overlay. Never a `turn.started`'s —
     /// a resumed session's last turn, or one a backend began, ran in its own.
@@ -551,10 +569,19 @@ pub struct App {
     pricer: Option<Pricer>,
     /// The provider and model of the turn being replayed, for pricing.
     replay_model: Option<(String, String)>,
+    /// What the turn being replayed has cost so far, and whether any call
+    /// in it had no price: counted when the turn ends, against what its
+    /// backend reported.
+    replay_spend: Option<(f64, bool)>,
     /// Tool calls waiting for their results, oldest first.
     calls: Vec<Call>,
-    /// Whether the answer being shown has a fenced code block open.
-    fence: bool,
+    /// Where the answer being shown stands: a fenced block, list items.
+    md: look::Markdown,
+    /// The rows of a table in the answer, held until it ends (`table`).
+    table: Vec<String>,
+    /// Whether the answer's last line was a table's: a blank line after it
+    /// is the one it already has.
+    tabled: bool,
     /// What a backend reported its session is billed to, and on which
     /// instance (R-INST-3).
     billing: Option<(String, Billing)>,
@@ -675,14 +702,18 @@ impl App {
             settings,
             steers: Vec::new(),
             unsent_steers: Vec::new(),
+            echoed: None,
             permission_mode: "default".into(),
             log_dir: None,
             quit: false,
             dirty: true,
             pricer,
             replay_model: None,
+            replay_spend: None,
             calls: Vec::new(),
-            fence: false,
+            md: look::Markdown::default(),
+            table: Vec::new(),
+            tabled: false,
             billing: None,
             vendor_instances: Vec::new(),
             skills: Vec::new(),
@@ -851,6 +882,12 @@ impl App {
     }
 
     fn push_wrapped(&mut self, first: &str, rest: &str, text: &str, prefix_style: Style, style: Style) {
+        self.push_rows(first, rest, text, prefix_style, style, false);
+    }
+
+    /// `push_wrapped`, and with `marked` the keys the text marks with
+    /// backticks drawn as keys (`look::keys`).
+    fn push_rows(&mut self, first: &str, rest: &str, text: &str, prefix_style: Style, style: Style, marked: bool) {
         // Unprefixed text — the answer itself, most of scrollback — stays
         // one line here and is wrapped with everything else on its way out
         // (`take_pending`). Prefixed items wrap here, under their hanging
@@ -866,12 +903,25 @@ impl App {
         let width = usize::from(self.width);
         for (i, row) in wrap(&clean(text), width.saturating_sub(first.width().max(rest.width())).max(1)).into_iter().enumerate() {
             let prefix = if i == 0 { first } else { rest };
-            let line = if prefix.is_empty() { Line::from(Span::styled(row, style)) } else { Line::from(vec![Span::styled(prefix.to_string(), prefix_style), Span::styled(row, style)]) };
+            let row = if marked { look::keys(&row, style) } else { vec![Span::styled(row, style)] };
+            let line = if prefix.is_empty() { Line::from(row) } else { Line::from([vec![Span::styled(prefix.to_string(), prefix_style)], row].concat()) };
             self.last_blank = line.width() == 0;
             self.after_tool = false;
             self.pending.push(line);
         }
         self.dirty = true;
+    }
+
+    /// What the person said, on a band across the width: a thin bar down
+    /// its left edge, the text in the ink, an empty row of it above and below.
+    fn push_said(&mut self, text: &str) {
+        let width = usize::from(self.width);
+        let room = width.saturating_sub(look::SAID.width()).max(1);
+        let rows = wrap(&clean(text), room);
+        for row in std::iter::once(String::new()).chain(rows).chain([String::new()]) {
+            let fill = " ".repeat(room.saturating_sub(row.width()));
+            self.push_line(Line::from(vec![Span::styled(look::SAID, look::said_bar()), Span::styled(row + &fill, look::said_band())]));
+        }
     }
 
     /// A dim line of its own, after a gap: what the client did, not the model.
@@ -897,6 +947,13 @@ impl App {
     pub fn notice(&mut self, text: &str) {
         self.gap();
         self.push_wrapped("! ", "  ", text, yellow(), yellow());
+    }
+
+    /// A notice that names keys, marked with backticks: they are drawn as
+    /// keys. Plain `notice` keeps its backticks, as commands are quoted.
+    pub fn notice_keys(&mut self, text: &str) {
+        self.gap();
+        self.push_rows("! ", "  ", text, yellow(), yellow(), true);
     }
 
     /// A page to open, from a sign-in: what it is for, dim, and the URL on a
@@ -1007,9 +1064,64 @@ impl App {
         self.push_wrapped("  ", "  ", &format!("({})", e.code), dim(), dim());
     }
 
-    /// One line of an answer, in light markdown, wrapped on its way out.
+    /// One line of an answer, in light markdown, wrapped under its hanging
+    /// indent. A table's rows are held until the first line that is not one.
     fn push_md(&mut self, text: &str) {
-        let line = look::markdown_line(&clean(text), &mut self.fence);
+        let text = look::untagged(&clean(text));
+        if !self.md.fenced() && table::is_row(&text) {
+            self.table.push(text);
+            return;
+        }
+        self.end_table();
+        if std::mem::take(&mut self.tabled) && self.last_blank && text.trim().is_empty() {
+            return;
+        }
+        let opening = !self.md.fenced();
+        let md = look::markdown(&text, &mut self.md);
+        // A code block stands off the text above it, as a table does.
+        if opening && self.md.fenced() {
+            self.gap();
+        }
+        for line in hung(md, usize::from(self.width)) {
+            self.push_answer(line);
+        }
+    }
+
+    /// The end of an answer's text: a table it ended on is drawn, a fenced
+    /// block it ended in closed.
+    fn end_md(&mut self) {
+        self.end_table();
+        if self.md.fenced() {
+            self.push_md("```");
+        }
+        self.md = look::Markdown::default();
+        self.tabled = false;
+    }
+
+    /// The table held, drawn to the width with a blank line either side;
+    /// as typed when it is none.
+    fn end_table(&mut self) {
+        let rows = std::mem::take(&mut self.table);
+        if rows.is_empty() {
+            return;
+        }
+        let Some(lines) = table::render(&rows, usize::from(self.width)) else {
+            for r in &rows {
+                self.push_answer(look::markdown_line(r, &mut look::Markdown::default()));
+            }
+            return;
+        };
+        self.gap();
+        for line in lines {
+            self.push_answer(line);
+        }
+        // An empty last row is the table's, not the blank line after it.
+        self.last_blank = false;
+        self.gap();
+        self.tabled = true;
+    }
+
+    fn push_answer(&mut self, line: Line<'static>) {
         self.last_blank = line.width() == 0;
         self.after_tool = false;
         self.pending.push(line);
@@ -1033,13 +1145,8 @@ impl App {
         // command.
         let lines: Vec<&str> = output.lines().filter(|l| !l.starts_with("Shell cwd was reset to ")).collect();
         let edit = if is_error { None } else { look::edit_lines(name, input) };
-        let quiet = match name {
-            _ if is_error => None,
-            "read" => Some(Quiet::Read),
-            "grep" | "glob" => Some(Quiet::Search),
-            "bash" => Some(Quiet::Run),
-            _ => None,
-        };
+        let written = input.get("content").and_then(|c| c.as_str()).filter(|_| name == "write" && !is_error);
+        let quiet = if is_error { None } else { Quiet::of(name) };
         let mut head = vec![Span::styled(look::TOOL, if is_error { red() } else { dim() }), Span::raw(verb.clone())];
         if !arg.is_empty() {
             head.push(Span::raw(" "));
@@ -1051,26 +1158,48 @@ impl App {
                 head.push(Span::styled(format!(" +{}", add.len()), look::success()));
                 head.push(Span::styled(format!(" -{}", del.len()), red()));
             }
+            (None, "write", _) if let Some(c) = written => head.push(Span::styled(format!(" ({} lines)", c.lines().count()), dim())),
             (None, "read" | "grep" | "glob" | "write", _) => head.push(Span::styled(format!(" ({} lines)", lines.len()), dim())),
             (None, "bash", _) if lines.len() > 1 => head.push(Span::styled(format!(" ({} lines)", lines.len()), dim())),
             _ => {}
         }
         let mut block = vec![Line::from(head)];
         let body_width = width.saturating_sub(look::BRANCH.width());
-        let mut body: Vec<Span<'static>> = Vec::new();
+        let mut body: Vec<Line<'static>> = Vec::new();
+        const SHOWN: usize = 8;
+        let more = |n: usize| Line::from(Span::styled(format!("… +{} lines", n - SHOWN), dim()));
         if is_error {
-            body.extend(lines.iter().filter(|l| !l.trim().is_empty()).take(3).map(|l| Span::styled(clip(l, body_width), red())));
+            body.extend(lines.iter().filter(|l| !l.trim().is_empty()).take(3).map(|l| Span::styled(clip(l, body_width), red()).into()));
         } else if let Some((del, add)) = edit {
-            const SHOWN: usize = 8;
+            // Each side on its band, in colour where the band is dark enough
+            // for it (`edit_in_colour`), highlighted as a run of the file's
+            // code: a side that starts inside a comment or a string is
+            // coloured as though it did not.
+            let lang = if look::edit_in_colour() { arg.as_str() } else { "" };
             for (rows, band) in [(del, look::delete_band()), (add, look::insert_band())] {
-                body.extend(rows.iter().take(SHOWN).map(|l| Span::styled(clip(l, body_width), band)));
+                let mut code = Code::new(lang);
+                body.extend(rows.iter().take(SHOWN).map(|l| {
+                    // The band runs the width, not just under the text.
+                    let mut row: Vec<Span<'static>> = clip_spans(code.line(&clean(l)), body_width).into_iter().map(|s| s.patch_style(band)).collect();
+                    let used: usize = row.iter().map(Span::width).sum();
+                    row.push(Span::styled(" ".repeat(body_width.saturating_sub(used)), band));
+                    Line::from(row)
+                }));
                 if rows.len() > SHOWN {
-                    body.push(Span::styled(format!("… +{} lines", rows.len() - SHOWN), dim()));
+                    body.push(more(rows.len()));
                 }
+            }
+        } else if let Some(content) = written {
+            // What it wrote, in colour: the head of the file.
+            let mut code = Code::new(&arg);
+            body.extend(content.lines().take(SHOWN).map(|l| Line::from(clip_spans(code.line(&clean(l)), body_width))));
+            let n = content.lines().count();
+            if n > SHOWN {
+                body.push(more(n));
             }
         } else if name == "bash" {
             // Its last line is most often its verdict; the rest is the log.
-            body.extend(lines.iter().rev().find(|l| !l.trim().is_empty()).map(|l| Span::styled(clip(l, body_width), dim())));
+            body.extend(lines.iter().rev().find(|l| !l.trim().is_empty()).map(|l| Span::styled(clip(l, body_width), dim()).into()));
         }
         block.extend(branches(body));
         self.hold(block, quiet.map(|q| (q, arg)));
@@ -1204,7 +1333,7 @@ impl App {
                 }
                 let kind = match item {
                     ItemKind::AssistantText => {
-                        self.fence = false;
+                        self.end_md();
                         LiveKind::Text
                     }
                     ItemKind::Reasoning => LiveKind::Reasoning,
@@ -1428,7 +1557,9 @@ impl App {
                     if first {
                         self.gap();
                     }
-                    for l in done.trim_end_matches('\n').split('\n') {
+                    // Only the newline that ends the last line: a blank line
+                    // before it is the answer's.
+                    for l in done.strip_suffix('\n').unwrap_or(&done).split('\n') {
                         self.push_md(l);
                     }
                 }
@@ -1460,6 +1591,10 @@ impl App {
                 }
             }
             LogBody::TurnStarted { model, provider, .. } => {
+                // One before it that never completed, on its own instance.
+                if !live {
+                    self.settle_replayed(None);
+                }
                 self.follow.turn_started();
                 self.session_id = Some(ev.session_id.clone());
                 self.model = Some(model.clone());
@@ -1469,6 +1604,9 @@ impl App {
                     self.used.push(model.clone());
                 }
                 self.replay_model = Some((provider.clone(), model.model.clone()));
+                if !live {
+                    self.replay_spend = Some((0.0, false));
+                }
                 if let Some(t) = &mut self.turn {
                     t.prompt_seen = true;
                 }
@@ -1485,16 +1623,10 @@ impl App {
                         (Some(p), Some((provider, asked))) => p(provider, asked, usage).or_else(|| p(provider, model, usage)),
                         _ => None,
                     };
-                    let u = self.instances.entry(instance).or_default();
+                    let spend = self.replay_spend.get_or_insert((0.0, false));
                     match priced {
-                        Some(usd) => {
-                            self.cost += usd;
-                            u.cost += usd;
-                        }
-                        None => {
-                            self.unpriced = true;
-                            u.unpriced = true;
-                        }
+                        Some(usd) => spend.0 += usd,
+                        None => spend.1 = true,
                     }
                 }
             }
@@ -1542,8 +1674,11 @@ impl App {
                 }
             }
             LogBody::TodosUpdated { todos, .. } => self.todos.clone_from(todos),
-            LogBody::TurnCompleted { status, usage, duration_ms, error, .. } => {
+            LogBody::TurnCompleted { status, usage, duration_ms, error, reported_cost_usd, .. } => {
                 self.turns += 1;
+                if !live {
+                    self.settle_replayed(*reported_cost_usd);
+                }
                 if let Some(u) = self.turn_instance.as_ref().and_then(|i| self.instances.get_mut(i)) {
                     u.settle();
                 }
@@ -1595,13 +1730,14 @@ impl App {
                 self.finish_live();
                 self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(format!("Loaded the {} skill", clean(name)), dim().add_modifier(Modifier::ITALIC))]));
             }
+            Item::UserText { text } if live && self.echoed.as_ref() == Some(text) => self.echoed = None,
             Item::UserText { text } => {
                 if let Some(i) = self.steers.iter().position(|s| s == text) {
                     self.steers.remove(i);
                 }
                 self.finish_live();
                 self.gap();
-                self.push_wrapped(look::PROMPT, "  ", text, look::prompt(), bold());
+                self.push_said(text);
             }
             Item::AssistantText { text } => {
                 // What streamed is on screen already. A message a backend
@@ -1616,10 +1752,11 @@ impl App {
                         self.answer.push_str(text);
                     }
                     self.gap();
-                    self.fence = false;
+                    self.end_md();
                     for l in text.split('\n') {
                         self.push_md(l);
                     }
+                    self.end_md();
                 }
                 self.live = None;
             }
@@ -1662,8 +1799,10 @@ impl App {
     /// Whatever of the streaming text never ended in a newline goes to
     /// scrollback now, and the live item is done.
     fn finish_live(&mut self) {
-        let Some(live) = self.live.take() else { return };
-        if live.kind == LiveKind::Text && !live.tail.is_empty() {
+        if let Some(live) = self.live.take()
+            && live.kind == LiveKind::Text
+            && !live.tail.is_empty()
+        {
             self.answer.push_str(&live.tail);
             if !live.committed {
                 self.gap();
@@ -1671,6 +1810,26 @@ impl App {
             for l in live.tail.split('\n') {
                 self.push_md(l);
             }
+        }
+        self.end_md();
+    }
+
+    /// A replayed turn's spend into the session's and its instance's, the
+    /// way the host counts it (`budget::reconcile`): the larger of what was
+    /// priced and what its backend reported, and priced whenever it
+    /// reported — a vendor's total covers calls models.dev has no price for.
+    fn settle_replayed(&mut self, reported: Option<f64>) {
+        let Some((mut usd, mut unpriced)) = self.replay_spend.take() else { return };
+        if let Some(r) = reported.filter(|r| *r > usd || unpriced) {
+            usd = usd.max(r);
+            unpriced = false;
+        }
+        let u = self.instances.entry(self.turn_instance.clone().unwrap_or_default()).or_default();
+        self.cost += usd;
+        u.cost += usd;
+        if unpriced {
+            self.unpriced = true;
+            u.unpriced = true;
         }
     }
 
@@ -1691,6 +1850,8 @@ impl App {
         for ev in branch {
             self.on_log(ev, false);
         }
+        // A last turn that never completed: what it priced.
+        self.settle_replayed(None);
         self.release();
     }
 
@@ -1699,7 +1860,29 @@ impl App {
     /// The live region's rows, and where the caret goes among them.
     pub fn view(&self, now: Instant) -> (Vec<Line<'static>>, (u16, u16)) {
         let width = usize::from(self.width.max(1));
-        let mut rows: Vec<Line<'static>> = self.held.lines().into_iter().flat_map(|l| wrap_line(l, width)).collect();
+        let mut held = self.held.lines();
+        // Quiet calls running while a batch is counted stand under its line,
+        // as its branches, the bullet orange until they are back: the batch
+        // takes them in without the rows below it moving.
+        let nests = |kind: &str| self.held.batch.calls > 1 && Quiet::of(look::tool_kind(kind)).is_some();
+        let live_call = self.live.as_ref().and_then(|l| match &l.kind {
+            LiveKind::Call(name) => Some(name),
+            _ => None,
+        });
+        let nested: Vec<Span<'static>> = self.calls.iter()
+            .filter(|c| nests(&c.name))
+            .map(|c| {
+                let (verb, arg) = look::tool_title(&c.name, &c.input);
+                format!("{verb} {arg}")
+            })
+            .chain(live_call.filter(|n| nests(n)).cloned())
+            .map(|t| Span::styled(clip(&t, width.saturating_sub(look::BRANCH.width())), dim()))
+            .collect();
+        if !nested.is_empty() {
+            held[0].spans[0].style = look::running();
+            held.extend(branches(nested));
+        }
+        let mut rows: Vec<Line<'static>> = held.into_iter().flat_map(|l| wrap_line(l, width)).collect();
         // A running call stands where its block will: after a blank line,
         // unless it stacks under a tool block (`commit_tool`) — so the line
         // above it does not move when it finishes.
@@ -1712,6 +1895,11 @@ impl App {
         if let Some(live) = &self.live {
             match &live.kind {
                 LiveKind::Text if !live.tail.is_empty() => {
+                    // The gap its first whole line will take (`on_text`),
+                    // so the answer does not start stuck to what is above.
+                    if !live.committed && !rows.last().map_or(self.last_blank, |l| l.width() == 0) {
+                        rows.push(Line::default());
+                    }
                     let wrapped = wrap(&clean(&live.tail), width);
                     let skip = wrapped.len().saturating_sub(MAX_LIVE_ROWS);
                     rows.extend(wrapped.into_iter().skip(skip).map(Line::from));
@@ -1725,6 +1913,7 @@ impl App {
                         stacks = false;
                     }
                 }
+                LiveKind::Call(name) if nests(name) => {}
                 LiveKind::Call(name) => {
                     tool_gap(&mut rows, &mut stacks);
                     rows.push(Line::from(vec![Span::styled(look::TOOL, look::running()), Span::styled(clip(name, width.saturating_sub(2)), dim())]));
@@ -1734,7 +1923,7 @@ impl App {
         }
         // Calls out, their results not back: each as it will be shown — a
         // subagent's as its own line, below.
-        for c in self.calls.iter().filter(|c| c.name != "subagent") {
+        for c in self.calls.iter().filter(|c| c.name != "subagent" && !nests(&c.name)) {
             tool_gap(&mut rows, &mut stacks);
             let (verb, arg) = look::tool_title(&c.name, &c.input);
             let text = clip(&format!("{verb} {arg}"), width.saturating_sub(2));
@@ -1778,7 +1967,7 @@ impl App {
                 _ => "Working…".to_string(),
             };
             let label_style = if t.want_interrupt { red() } else { look::accent() };
-            let right = format!(" {}{SEP}esc to interrupt", look::duration(since));
+            let right = format!(" {}{SEP}`esc` to interrupt", look::duration(since));
             // A blank line above, unless there is one already: straight
             // under streaming text, the spinner read as part of it.
             let above_blank = match rows.last() {
@@ -1791,8 +1980,10 @@ impl App {
             rows.push(Line::from(vec![
                 Span::styled(format!("{frame} "), look::accent()),
                 Span::styled(clip(&label, width.saturating_sub(right.width() + 2)), label_style),
-                Span::styled(clip(&right, width.saturating_sub(label.width() + 2)), dim()),
-            ]));
+            ]
+            .into_iter()
+            .chain(clip_spans(look::keys(&right, dim()), width.saturating_sub(label.width() + 2)))
+            .collect::<Vec<_>>()));
             for s in self.steers.iter().chain(&self.unsent_steers) {
                 let first = s.lines().next().unwrap_or_default();
                 rows.push(Line::from(vec![Span::styled(look::STEER, look::accent()), Span::styled(clip(&format!("steer queued: {first}"), width.saturating_sub(2)), dim())]));
@@ -1812,12 +2003,12 @@ impl App {
         }
         if let Some(o) = &self.offer {
             for row in wrap(&offer_question(o), width) {
-                rows.push(Line::from(Span::styled(row, yellow().add_modifier(Modifier::BOLD))));
+                rows.push(Line::from(look::keys(&row, yellow().add_modifier(Modifier::BOLD))));
             }
         }
         if let Some(q) = &self.trust_question {
             for row in wrap(q, width) {
-                rows.push(Line::from(Span::styled(row, yellow().add_modifier(Modifier::BOLD))));
+                rows.push(Line::from(look::keys(&row, yellow().add_modifier(Modifier::BOLD))));
             }
         }
         let mut flow_caret = None;
@@ -1838,11 +2029,11 @@ impl App {
                     rows.push(Line::from(vec![Span::styled(look::TOOL, look::accent()), Span::styled(clip(&clean(&line), width.saturating_sub(2)), dim())]));
                 }
                 let hint = match (self.subs.is_empty(), self.backend_agents.is_empty()) {
-                    (true, true) => "no subagents running · esc closes this",
-                    (true, false) => "Claude Code runs these itself · esc closes this",
-                    _ => "↑ ↓ select · enter expands · x interrupts that one · esc closes this",
+                    (true, true) => "no subagents running · `esc` closes this",
+                    (true, false) => "Claude Code runs these itself · `esc` closes this",
+                    _ => "`↑` `↓` select · `enter` expands · `x` interrupts that one · `esc` closes this",
                 };
-                rows.push(Line::from(Span::styled(clip(hint, width), dim())));
+                rows.push(Line::from(clip_spans(look::keys(hint, dim()), width)));
             }
             Overlay::Models => rows.extend(self.models_overlay(width)),
             Overlay::Modes => rows.extend(self.modes_overlay(width)),
@@ -1879,13 +2070,20 @@ impl App {
         rows.push(Line::from(Span::styled(across, edge)));
         // A question of `/connect`'s takes the keys, and the caret with them.
         let caret = flow_caret.unwrap_or((ccol + 2, top + (crow as usize - first) as u16));
+        // A flash shows with the status bar off too: "Press Ctrl-C again to
+        // exit" unseen would make the key look broken.
+        if !self.settings.status_bar
+            && let Some(f) = &self.flash
+        {
+            rows.push(Line::from(vec![Span::raw(" ".repeat(STATUS_INDENT.min(inner)))].into_iter().chain(clip_spans(look::keys(f, dim()), inner.saturating_sub(STATUS_INDENT))).collect::<Vec<_>>()));
+        }
         if self.settings.status_bar {
             // Right under the prompt's bottom rule, nothing between.
             let [first, second] = self.status_parts();
             rows.push(match &self.flash {
                 // What a key just did (Ctrl-Y), in place of the first row
                 // until the next.
-                Some(f) => Line::from(vec![Span::raw(" ".repeat(STATUS_INDENT.min(inner))), Span::styled(clip(f, inner.saturating_sub(STATUS_INDENT)), dim())]),
+                Some(f) => Line::from(vec![Span::raw(" ".repeat(STATUS_INDENT.min(inner)))].into_iter().chain(clip_spans(look::keys(f, dim()), inner.saturating_sub(STATUS_INDENT))).collect::<Vec<_>>()),
                 None => hint_row(first, inner),
             });
             if !second.is_empty() {
@@ -1898,7 +2096,7 @@ impl App {
     /// The status line as text, every item it has room for at any width:
     /// a row a line.
     pub fn status_bar(&self) -> String {
-        self.status_parts().into_iter().filter(|r| !r.is_empty()).map(|r| r.into_iter().map(|p| p.text).collect::<Vec<_>>().join(BAR_SEP)).collect::<Vec<_>>().join("\n")
+        self.status_parts().into_iter().filter(|r| !r.is_empty()).map(|r| r.into_iter().map(|p| look::unmarked(&p.text)).collect::<Vec<_>>().join(BAR_SEP)).collect::<Vec<_>>().join("\n")
     }
 
     /// The status line's items, in the order drawn: `<instance>/<model> |
@@ -1970,7 +2168,7 @@ impl App {
             first.push(Part { rank: Rank::Offline, text: "offline".into(), style: yellow(), url: None });
         }
         if self.settings.status_items.contains(&StatusItem::Help) {
-            first.push(part(Rank::Help, "? help".into()));
+            first.push(part(Rank::Help, "`?` help".into()));
         }
         [first, second]
     }
@@ -2009,7 +2207,7 @@ impl App {
 
     fn todos_overlay(&self, width: usize) -> Vec<Line<'static>> {
         if self.todos.is_empty() {
-            return vec![Line::from(Span::styled(clip("no todo list in this session yet · esc closes this", width), dim()))];
+            return vec![Line::from(clip_spans(look::keys("no todo list in this session yet · `esc` closes this", dim()), width))];
         }
         self.todos
             .iter()
@@ -2017,7 +2215,7 @@ impl App {
                 let (mark, style) = match t.status {
                     TodoStatus::Pending => ("☐ ", Style::new()),
                     TodoStatus::InProgress => ("◐ ", bold()),
-                    TodoStatus::Completed => ("☑ ", dim()),
+                    TodoStatus::Completed => ("☒ ", dim()),
                 };
                 Line::from(Span::styled(clip(&format!("{mark}{}", t.content), width), style))
             })
@@ -2077,7 +2275,7 @@ impl App {
 
     fn models_overlay(&self, width: usize) -> Vec<Line<'static>> {
         let found = self.found_picks();
-        let mut out = vec![picker_title("switch model", "type to filter · ↑↓ choose · enter switch · esc close", width)];
+        let mut out = vec![picker_title("switch model", "type to filter · `↑` `↓` choose · `enter` switch · `esc` close", width)];
         if found.is_empty() && self.editor.text().trim().is_empty() {
             out.push(Line::from(Span::styled(clip("  nothing connected can run a model here · /connect signs one in", width), dim())));
             return out;
@@ -2091,7 +2289,7 @@ impl App {
             })
             .collect();
         if rows.is_empty() {
-            out.push(Line::from(Span::styled(clip(&format!("  nothing matches · enter runs /model {}", self.editor.text().trim()), width), dim())));
+            out.push(Line::from(clip_spans(look::keys(&format!("  nothing matches · `enter` runs /model {}", self.editor.text().trim().replace('`', "")), dim()), width)));
             return out;
         }
         out.extend(menu(&rows, self.pick_at, width, MODEL_ROWS));
@@ -2106,7 +2304,7 @@ impl App {
                 Choice { name: name.to_string(), value, says: mode_says(name).into(), warning: None }
             })
             .collect();
-        let mut out = vec![picker_title("permission mode", "↑↓ choose · enter switch · esc close · or /mode <name>", width)];
+        let mut out = vec![picker_title("permission mode", "`↑` `↓` choose · `enter` switch · `esc` close · or /mode <name>", width)];
         out.extend(choices(&rows, self.mode_at, false, width));
         out
     }
@@ -2129,13 +2327,13 @@ impl App {
             Choice { name: "Default permission mode".into(), value: Span::raw(mode), says: says.into(), warning },
             Choice { name: "Content width".into(), value: Span::raw(cw.name()), says: cw_says, warning: None },
         ];
-        let mut out = vec![picker_title("settings", "↑↓ choose · ←→ change and save · esc close", width)];
+        let mut out = vec![picker_title("settings", "`↑` `↓` choose · `←` `→` change and save · `esc` close", width)];
         out.extend(choices(&rows, self.setting_at, true, width));
         out
     }
 
     fn sessions_overlay(&self, width: usize) -> Vec<Line<'static>> {
-        let mut out = vec![Line::from(Span::styled(clip("continue a session — ↑ ↓ choose · enter continues it · esc closes", width), dim()))];
+        let mut out = vec![Line::from(clip_spans(look::keys("continue a session — `↑` `↓` choose · `enter` continues it · `esc` closes", dim()), width))];
         if self.resumable.is_empty() {
             out.push(Line::from(Span::styled(clip("no earlier session started in this directory", width), dim())));
             return out;
@@ -2170,7 +2368,9 @@ impl App {
         self.steers.clear();
         self.unsent_steers.clear();
         self.replay_model = None;
-        self.fence = false;
+        self.replay_spend = None;
+        self.md = look::Markdown::default();
+        self.table.clear();
         self.billing = None;
         self.approvals.clear();
         self.answer.clear();
@@ -2240,6 +2440,15 @@ impl App {
         self.dirty = true;
     }
 
+    /// `text`, sent as a prompt, on screen now: the host logs it only once
+    /// the model is routed and its key read.
+    pub fn echo(&mut self, text: &str) {
+        self.finish_live();
+        self.gap();
+        self.push_said(text);
+        self.echoed = Some(text.to_string());
+    }
+
     /// A turn has started: `Command::Prompt` is on its way.
     pub fn start_turn(&mut self, now: Instant) {
         self.answer.clear();
@@ -2260,6 +2469,7 @@ impl App {
     /// refused it, or the turn ended first).
     pub fn end_turn_parts(&mut self) -> (Vec<String>, Vec<String>) {
         self.turn = None;
+        self.echoed = None;
         self.finish_live();
         // A subagent whose call was never answered is shown as it stood.
         for s in std::mem::take(&mut self.subs) {
@@ -2299,8 +2509,8 @@ struct Choice {
 /// A picker's header: its name in bold, the keys it takes dimmed.
 fn picker_title(name: &str, keys: &str, width: usize) -> Line<'static> {
     let name = clip(name, width);
-    let keys = clip(&format!(" — {keys}"), width - name.width());
-    Line::from(vec![Span::styled(name, bold()), Span::styled(keys, dim())])
+    let keys = clip_spans(look::keys(&format!(" — {keys}"), dim()), width - name.width());
+    Line::from([vec![Span::styled(name, bold())], keys].concat())
 }
 
 /// The settings and pickers' rows, one look for all (codex's styles.md):
@@ -2454,15 +2664,100 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
 /// answer, unwrapped, is Ctrl-Y.
 /// `rows`, each on a branch as a file tree draws a directory's entries:
 /// `├─ ` and, on the last, `└─ `.
-fn branches(rows: Vec<Span<'static>>) -> Vec<Line<'static>> {
+fn branches<R: Into<Line<'static>>>(rows: Vec<R>) -> Vec<Line<'static>> {
     let n = rows.len();
     rows.into_iter()
         .enumerate()
         .map(|(i, row)| {
             let branch = if i + 1 == n { look::LAST_BRANCH } else { look::BRANCH };
-            Line::from(vec![Span::styled(branch, look::border()), row])
+            let mut line = row.into();
+            line.spans.insert(0, Span::styled(branch, look::border()));
+            line
         })
         .collect()
+}
+
+/// An answer's line wrapped to `width`: its `lead` before the first row,
+/// its `hang` before each row after, unless that would take over half of it.
+fn hung(md: look::MdLine, width: usize) -> Vec<Line<'static>> {
+    if let Some(label) = &md.band {
+        return banded(md.body, label, width);
+    }
+    let hang = md.hang.iter().map(Span::width).sum::<usize>();
+    // Nested past half the width, a hang leaves too little to read.
+    if hang * 2 > width {
+        return wrap_line(md.line(), width);
+    }
+    wrap_line(Line::from(md.body), width.saturating_sub(hang).max(1))
+        .into_iter()
+        .enumerate()
+        .map(|(r, row)| Line::from([if r == 0 { md.lead.clone() } else { md.hang.clone() }, row.spans].concat()))
+        .collect()
+}
+
+/// How far code is in from either edge of its band.
+const CODE_PAD: usize = 2;
+
+/// A row of a fenced block on the code band across the width, `CODE_PAD`
+/// in, with `label` washed at the right end of its first row. Code is
+/// broken where the width ends, not at a space, so it keeps its spacing.
+fn banded(body: Vec<Span<'static>>, label: &str, width: usize) -> Vec<Line<'static>> {
+    let band = look::code_band();
+    let room = width.saturating_sub(2 * CODE_PAD).max(1);
+    let pad = Span::styled(" ".repeat(CODE_PAD), band);
+    split_spans(body, room)
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let used: usize = row.iter().map(Span::width).sum();
+            let tag = if i == 0 && !label.is_empty() && used + 1 < room { clip(label, room - used - 1) } else { String::new() };
+            let mut spans = vec![pad.clone()];
+            spans.extend(row.into_iter().map(|s| s.patch_style(band)));
+            spans.push(Span::styled(" ".repeat(room.saturating_sub(used + tag.width())), band));
+            spans.push(Span::styled(tag, band.add_modifier(Modifier::DIM)));
+            spans.push(pad.clone());
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// `spans` cut to `width` columns, with an ellipsis when they were longer.
+pub(crate) fn clip_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    if spans.iter().map(Span::width).sum::<usize>() <= width {
+        return spans;
+    }
+    let mut rows = split_spans(spans, width.saturating_sub(1).max(1)).into_iter();
+    let mut row = rows.next().unwrap_or_default();
+    if rows.next().is_some() {
+        row.push(Span::styled("…", dim()));
+    }
+    row
+}
+
+/// `spans` in rows of at most `width` columns, broken at any character;
+/// at least one row, empty when they are.
+fn split_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>> {
+    let mut rows = vec![Vec::new()];
+    let mut used = 0;
+    for span in spans {
+        let mut piece = String::new();
+        for c in span.content.chars() {
+            let w = c.width().unwrap_or(0);
+            if used + w > width && used > 0 {
+                if !piece.is_empty() {
+                    rows.last_mut().expect("a row").push(Span::styled(std::mem::take(&mut piece), span.style));
+                }
+                rows.push(Vec::new());
+                used = 0;
+            }
+            piece.push(c);
+            used += w;
+        }
+        if !piece.is_empty() {
+            rows.last_mut().expect("a row").push(Span::styled(piece, span.style));
+        }
+    }
+    rows
 }
 
 pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
@@ -2490,12 +2785,18 @@ pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
                 }
             }
             at += n;
-            // The space a row broke at is not drawn at its end.
+            // The space a row broke at is not drawn at its end, nor at the
+            // start of the next when the row ended at a word's end.
             if r < last
                 && let Some(end) = pieces.last_mut()
                 && end.0.ends_with(' ')
             {
                 end.0.pop();
+            }
+            if r > 0
+                && let Some(start) = pieces.first_mut()
+            {
+                start.0 = start.0.trim_start_matches(' ').to_string();
             }
             // A link broken across rows opens the same URL from each.
             let spans: Vec<Span<'static>> = pieces.into_iter().map(|(t, st, url)| match url {
@@ -2565,13 +2866,13 @@ fn approval_rows(req: &ApprovalRequest, waiting: usize, width: usize, ready: boo
     let mut rows: Vec<Line<'static>> = wrap(&format!("{}{who}allow {summary}?{more}", look::TOOL), width).into_iter().map(|l| Line::from(Span::styled(l, yellow().add_modifier(Modifier::BOLD)))).collect();
     rows.extend(wrap(&format!("  {}", shown(&req.reason, MAX_APPROVAL_TEXT)), width).into_iter().map(|l| Line::from(Span::styled(l, dim()))));
     let keys = if !ready {
-        "  cut to fit — v prints all of it, then y/s/p · n deny".to_string()
+        "  cut to fit — `v` prints all of it, then `y` `s` `p` · `n` deny".to_string()
     } else if req.remember.is_empty() {
-        "  y allow once · n deny".to_string()
+        "  `y` allow once · `n` deny".to_string()
     } else {
-        format!("  y allow once · s allow {} for this session · p … for this project · n deny", shown(&req.remember.join(", "), MAX_APPROVAL_TEXT / 2))
+        format!("  `y` allow once · `s` allow {} for this session · `p` … for this project · `n` deny", shown(&req.remember.join(", "), MAX_APPROVAL_TEXT / 2).replace('`', "'"))
     };
-    rows.push(Line::from(Span::styled(clip(&keys, width), look::accent())));
+    rows.push(Line::from(clip_spans(look::keys(&keys, look::accent()), width)));
     rows
 }
 
@@ -2579,7 +2880,7 @@ fn approval_rows(req: &ApprovalRequest, waiting: usize, width: usize, ready: boo
 /// claude:personal? [y/N]".
 pub fn offer_question(o: &SwitchOffer) -> String {
     let until = o.resets_at_ms.map(|ms| format!(" until {}", krowk_harness::host::clock(ms))).unwrap_or_default();
-    format!("{}{} limited{until}, continue on {}? [y/N]", look::SWITCH, o.from.instance, if o.to.model == o.from.model { o.to.instance.clone() } else { o.to.to_string() })
+    format!("{}{} limited{until}, continue on {}? [`y`/`N`]", look::SWITCH, o.from.instance, if o.to.model == o.from.model { o.to.instance.clone() } else { o.to.to_string() })
 }
 
 /// How much of a model-supplied string an approval shows.
@@ -2635,14 +2936,14 @@ fn menu(rows: &[[String; 3]], at: usize, width: usize, most_rows: usize) -> Vec<
     use ratatui::widgets::{Block, Borders, Cell, HighlightSpacing, Row, Table, TableState};
     let block = Block::new().borders(Borders::TOP).border_style(look::border());
     if rows.is_empty() {
-        let none = vec![Row::new([Cell::from(Span::styled("  nothing matches · esc closes", dim()))])];
+        let none = vec![Row::new([Cell::from(Line::from(look::keys("  nothing matches · `esc` closes", dim())))])];
         return widget_rows(Table::new(none, [Constraint::Fill(1)]).block(block), &mut TableState::default(), width, 2);
     }
     let at = at.min(rows.len() - 1);
     // Grok Build's layout: the title column fits the titles, at most 40
     // wide and 60% of the row; the description takes what is left, cut
     // with `…`; a third column only while there is room and something in it.
-    let most = |i: usize| rows.iter().map(|r| r[i].width()).max().unwrap_or(0);
+    let most = |i: usize| rows.iter().map(|r| look::unmarked(&r[i]).width()).max().unwrap_or(0);
     let title = most(0).min(40).min(width * 3 / 5);
     let third = most(2);
     let with_third = third > 0 && 2 + title + 2 + most(1).min(width / 2) + 2 + third <= width;
@@ -2653,7 +2954,8 @@ fn menu(rows: &[[String; 3]], at: usize, width: usize, most_rows: usize) -> Vec<
         let name = if i == at { Span::styled(name, bold()) } else { Span::raw(name) };
         let mut cells = vec![Cell::from(name), Cell::from(Span::styled(clip(&r[1], described), dim()))];
         if with_third {
-            cells.push(Cell::from(Span::styled(r[2].clone(), look::border())));
+            // The keys column: the keys as keys, a command as it is typed.
+            cells.push(Cell::from(Line::from(look::keys(&r[2], look::border()))));
         }
         Row::new(cells)
     });
@@ -2718,7 +3020,7 @@ mod tests {
     }
 
     fn text(lines: &[Line]) -> Vec<String> {
-        lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect()
+        lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim_end().to_string()).collect()
     }
 
     fn live(ev: LiveEvent) -> StreamLine {
@@ -2747,6 +3049,39 @@ mod tests {
         a.on_line(&delta("i", "rd"));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "first line\nsecond\nthird".into() } }));
         assert_eq!(text(&a.take_pending()), ["third"], "the tail, and nothing twice");
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "j".into(), item: ItemKind::AssistantText }));
+        a.on_line(&delta("j", "Header\n\n"));
+        a.on_line(&delta("j", "- item\n"));
+        assert_eq!(text(&a.take_pending()), ["", "Header", "", "  • item"], "a blank line a delta ends on is kept");
+    }
+
+    #[test]
+    fn a_list_items_wrapped_rows_line_up_under_its_text() {
+        let mut a = app();
+        a.set_width(24);
+        for l in ["- one two three four five six", "  - seven eight nine ten", "> a quote that goes on and on"] {
+            a.push_md(l);
+        }
+        assert_eq!(
+            text(&a.take_pending()),
+            ["  • one two three four", "    five six", "    ◦ seven eight nine", "      ten", "│ a quote that goes on", "│ and on"]
+        );
+    }
+
+    #[test]
+    fn a_streamed_table_is_held_until_it_ends_then_drawn() {
+        let mut a = app();
+        a.start_turn(Instant::now());
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "i".into(), item: ItemKind::AssistantText }));
+        a.on_line(&delta("i", "Sizes:\n| a | b |\n|---|---|\n| 1 | 2 |\n"));
+        assert_eq!(text(&a.take_pending()), ["Sizes:"], "the table is held while it may go on");
+        a.on_line(&delta("i", "Done.\n```\n| in | code |\n```\n| x |"));
+        assert_eq!(text(&a.take_pending()), ["", "  a │ b", " ───┼───", "  1 │ 2", "", "Done.", "", "", "  | in | code |", ""], "a fenced block's rows are code, not a table's");
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: String::new() } }));
+        assert_eq!(text(&a.take_pending()), ["| x |"], "a table the answer ends on is drawn with it, as typed when it is none");
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "j".into(), item: ItemKind::AssistantText }));
+        a.on_line(&delta("j", "Sizes:\n\n| a |\n|---|\n| 1 |\n\nDone.\n\nNext.\n"));
+        assert_eq!(text(&a.take_pending()), ["", "Sizes:", "", "  a", " ───", "  1", "", "Done.", "", "Next."], "a blank line either side, never two");
     }
 
     #[test]
@@ -2788,7 +3123,7 @@ mod tests {
         let call = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolCall { call_id: id.into(), name: "read".into(), input: serde_json::json!({"path": "README.md"}) } }));
         let back = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolResult { call_id: id.into(), output: "x".into(), is_error: false } }));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::UserText { text: "hi".into() } }));
-        assert_eq!(text(&a.take_pending()), ["❯ hi"]);
+        assert_eq!(text(&a.take_pending()), ["▎", "▎ hi", "▎"]);
         call(&mut a, "1");
         assert_eq!(text(&a.view(Instant::now()).0)[..2], ["", "◆ Read README.md"], "a gap under the prompt while it runs");
         back(&mut a, "1");
@@ -2856,6 +3191,86 @@ mod tests {
             text(&a.take_pending()),
             ["◆ Ran 2 commands, read 1 file, searched", "for 1 pattern", "◆ Run cargo test (failed)", "└─ boom", "◆ Read b.rs (2 lines)", "Done."]
         );
+    }
+
+    #[test]
+    fn a_fenced_block_is_highlighted_on_a_band_its_fences_hidden() {
+        let mut a = app();
+        let w = usize::from(a.width);
+        a.push_md("Run it:");
+        a.push_md("```rust");
+        a.push_md(&format!("fn main() {{ let s = \"{}\"; }}", "x".repeat(w)));
+        a.push_md("```");
+        a.push_md("Then");
+        a.push_md("```");
+        a.push_md("left open");
+        a.end_md();
+        let lines = a.take_pending();
+        let rows = text(&lines);
+        assert_eq!(rows[..2], ["Run it:", ""], "a gap above the block, the fence not shown");
+        assert!(rows[2].ends_with("rust"), "its language at the right of the row above: {:?}", rows[2]);
+        assert!(rows[3].starts_with("  fn main() { let s = \"x"), "{:?}", rows[3]);
+        assert!(rows[4].starts_with("  xxx"), "a long line breaks where the width ends: {:?}", rows[4]);
+        assert_eq!(rows[5..8], ["", "Then", ""]);
+        assert_eq!(rows[8..], ["", "  left open", ""], "a block the answer ends in is closed");
+        for l in lines.iter().filter(|l| l.width() > 0 && !l.spans[0].content.starts_with(['R', 'T'])) {
+            assert_eq!(l.width(), w, "the band is the width");
+            assert!(l.spans.iter().all(|s| s.style.bg == look::code_band().bg), "{l:?}");
+        }
+        let main = lines[3].spans.iter().find(|s| s.content == "main").expect("main");
+        assert_eq!(main.style.fg, Some(Color::Blue), "highlighted");
+    }
+
+    #[test]
+    fn a_written_file_shows_its_head_in_colour() {
+        let mut a = app();
+        let content: String = (0..10).map(|i| format!("let x{i} = {i};\n")).collect();
+        a.commit_tool("write", &serde_json::json!({"path": "src/a.rs", "content": content}), "wrote", false);
+        a.push_md("Done.");
+        let lines = a.take_pending();
+        let rows = text(&lines);
+        assert_eq!(rows[0], "◆ Write src/a.rs (10 lines)");
+        assert_eq!(rows[1], "├─ let x0 = 0;");
+        assert_eq!(rows[9], "└─ … +2 lines");
+        let kw = lines[1].spans.iter().find(|s| s.content == "let").expect("let");
+        assert_eq!(kw.style.fg, Some(Color::Magenta));
+    }
+
+    #[test]
+    fn an_edit_is_in_colour_on_its_bands() {
+        let mut a = app();
+        a.commit_tool("Edit", &serde_json::json!({"file_path": "src/a.rs", "old_string": "let x = 1;", "new_string": "let x = 2;"}), "ok", false);
+        a.push_md("Done.");
+        let lines = a.take_pending();
+        assert_eq!(text(&lines)[..3], ["◆ Edit src/a.rs +1 -1", "├─ let x = 1;", "└─ let x = 2;"]);
+        for (row, band) in [(1, look::delete_band()), (2, look::insert_band())] {
+            assert_eq!(lines[row].width(), usize::from(a.width), "the band runs the width");
+            assert!(lines[row].spans[1..].iter().all(|s| s.style.bg == band.bg));
+            let kw = lines[row].spans.iter().find(|s| s.content.starts_with("let")).expect("let");
+            let fg = look::edit_in_colour().then_some(Color::Magenta);
+            assert_eq!((kw.style.fg, kw.style.bg), (fg, band.bg), "in colour only on bands dark enough for it");
+        }
+    }
+
+    #[test]
+    fn a_quiet_call_running_under_a_batch_is_its_branch() {
+        let mut a = app();
+        a.start_turn(Instant::now());
+        let call = |a: &mut App, id: &str, name: &str, input: serde_json::Value| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolCall { call_id: id.into(), name: name.into(), input } }));
+        let back = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("r{id}"), item: Item::ToolResult { call_id: id.into(), output: "x".into(), is_error: false } }));
+        for id in ["1", "2"] {
+            call(&mut a, id, "bash", serde_json::json!({"command": "ls"}));
+            back(&mut a, id);
+        }
+        call(&mut a, "3", "bash", serde_json::json!({"command": "cargo test"}));
+        call(&mut a, "4", "Write", serde_json::json!({"file_path": "a.rs"}));
+        let (rows, _) = a.view(Instant::now());
+        assert_eq!(text(&rows)[..3], ["◆ Ran 2 commands", "└─ Run cargo test", "◆ Write a.rs"]);
+        assert_eq!(rows[0].spans[0].style, look::running(), "orange while one of it runs");
+        back(&mut a, "3");
+        let (rows, _) = a.view(Instant::now());
+        assert_eq!(text(&rows)[0], "◆ Ran 3 commands");
+        assert_eq!(rows[0].spans[0].style, dim(), "grey once all are back");
     }
 
     #[test]
@@ -2927,8 +3342,32 @@ mod tests {
             ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 1200, ..Usage::default() }, duration_ms: 1500, error: None, reported_cost_usd: None }),
         ];
         a.replay(&evs.iter().collect::<Vec<_>>());
-        assert_eq!(text(&a.take_pending()), ["❯ hi", "", "◆ Read README.md (2 lines)", "", "It is a CLI.", "", "Worked for 1.5s · 1.2k tokens"]);
+        assert_eq!(text(&a.take_pending()), ["▎", "▎ hi", "▎", "", "◆ Read README.md (2 lines)", "", "It is a CLI.", "", "Worked for 1.5s · 1.2k tokens"]);
         assert_eq!(a.model, Some(model), "the session's model is the one shown");
+    }
+
+    #[test]
+    fn a_resumed_session_costs_what_its_backend_reported_when_models_dev_has_no_price() {
+        let known = |model: &str| model == "claude-x";
+        let pricer: Pricer = std::sync::Arc::new(move |_: &str, model: &str, _: &Usage| known(model).then_some(0.5));
+        let mut a = App::new(Editor::new(None), 40, Settings { status_bar: true, status_items: vec![StatusItem::Cost], ..Settings::default() }, None, Some(pricer));
+        let ev = |body| LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body };
+        let turn = |t: &str, model: &str, reported: Option<f64>| {
+            [
+                ev(LogBody::TurnStarted { turn_id: t.into(), model: ModelRef { instance: "claude".into(), model: model.into() }, provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }),
+                ev(LogBody::ResponseCompleted { turn_id: t.into(), response_id: None, model: model.into(), usage: Usage { input_tokens: 10, ..Usage::default() }, stop_reason: None, item_ids: Vec::new() }),
+                ev(LogBody::TurnCompleted { turn_id: t.into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: reported }),
+            ]
+        };
+        // Unpriced but reported; priced above what was reported; priced
+        // below it; and unpriced with nothing reported.
+        let evs: Vec<LogEvent> = [turn("1", "claude-new", Some(1.25)), turn("2", "claude-x", Some(0.25)), turn("3", "claude-x", Some(2.0))].concat();
+        a.replay(&evs.iter().collect::<Vec<_>>());
+        assert_eq!(a.status_bar(), "$3.75", "each turn the larger of the two, as the host counts it");
+        let more = turn("4", "claude-new", None);
+        a.replay(&more.iter().collect::<Vec<_>>());
+        assert_eq!(a.status_bar(), "$3.75", "a turn with no price and none reported adds nothing");
+        assert!(a.unpriced);
     }
 
     #[test]
@@ -3217,7 +3656,7 @@ mod tests {
 
     #[test]
     fn a_link_wrapped_across_rows_opens_its_url_from_each() {
-        let mut f = false;
+        let mut f = look::Markdown::default();
         let rows = wrap_line(look::markdown_line("read [the whole manual](https://krowk.com/m) first", &mut f), 16);
         let shown = |l: &Line| l.spans.iter().map(|s| look::link_target(s).map_or(s.content.to_string(), |(t, _)| t.to_string())).collect::<String>();
         assert_eq!(rows.iter().map(shown).collect::<Vec<_>>(), ["read the whole", "manual\u{a0}↗ first"]);
@@ -3322,7 +3761,7 @@ mod tests {
         assert_eq!(a.status_bar(), "[2 tasks]", "the open ones: pending or in progress");
         a.overlay = Overlay::Todos;
         let (rows, _) = a.view(Instant::now());
-        assert_eq!(&text(&rows)[..3], ["☑ read", "◐ fix", "☐ test"]);
+        assert_eq!(&text(&rows)[..3], ["☒ read", "◐ fix", "☐ test"]);
         let reminder = format!("{}The todo list has not been updated…</system-reminder>", krowk_harness::todo::REMINDER);
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r".into(), item: Item::UserText { text: reminder } }));
         assert_eq!(text(&a.take_pending()), ["◆ Reminded the model of its todo list"], "never shown as the person's words");
@@ -3426,7 +3865,7 @@ mod tests {
         let later = SwitchOffer { resets_at_ms: Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64 + 3_600_000), ..offer.clone() };
         assert!(offer_question(&later).contains("claude:work limited until "), "{}", offer_question(&later));
         let other = SwitchOffer { to: ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() }, ..offer };
-        assert!(offer_question(&other).ends_with("continue on anthropic/claude-opus-5-5? [y/N]"), "another model is named whole");
+        assert!(offer_question(&other).ends_with("continue on anthropic/claude-opus-5-5? [`y`/`N`]"), "another model is named whole");
     }
 
     #[test]
@@ -3643,6 +4082,34 @@ mod tests {
         assert_eq!(help::canonical("/clear"), "/new");
         assert!(help::unlisted("/resume"));
         assert_eq!(help::slash("/sessions", &[]).first().map(|s| s.name.as_str()), Some("sessions"));
+    }
+
+    #[test]
+    fn a_prompt_is_on_screen_at_enter_and_once() {
+        let mut a = app();
+        a.set_width(60);
+        a.echo("fix the parser");
+        a.start_turn(Instant::now());
+        let said = |lines: &[Line]| text(lines).iter().filter(|r| r.contains("fix the parser")).count();
+        assert_eq!(said(&a.take_pending()), 1, "before the host has logged it");
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::UserText { text: "fix the parser".into() } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "s".into(), item: Item::UserText { text: "fix the parser".into() } }));
+        assert_eq!(said(&a.take_pending()), 1, "the log's copy is not drawn again; the same words sent again are");
+    }
+
+    #[test]
+    fn an_answer_starts_a_blank_line_under_the_prompt_before_its_first_line_is_whole() {
+        let mut a = app();
+        a.set_width(60);
+        a.echo("fix the parser");
+        a.start_turn(Instant::now());
+        a.take_pending();
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "i".into(), item: ItemKind::AssistantText }));
+        a.on_line(&delta("i", "Looking"));
+        assert_eq!(text(&a.view(Instant::now()).0)[..2], ["", "Looking"]);
+        a.on_line(&delta("i", " at it\nthen"));
+        assert_eq!(text(&a.take_pending()), ["", "Looking at it"], "the same gap once the line is whole");
+        assert_eq!(text(&a.view(Instant::now()).0)[0], "then", "and not a second one");
     }
 
     #[test]

@@ -190,7 +190,7 @@ pub fn tools_tokens(tools: &[ToolDefinition]) -> u64 {
 
 /// Runs every future to its end at once, and answers in their order: a
 /// fan-out of subagents, which borrow the turn and so cannot be spawned.
-async fn join_all<T>(mut futs: Vec<BoxFuture<'_, T>>) -> Vec<T> {
+pub(crate) async fn join_all<T>(mut futs: Vec<BoxFuture<'_, T>>) -> Vec<T> {
     let mut done: Vec<Option<T>> = futs.iter().map(|_| None).collect();
     std::future::poll_fn(|cx| {
         let mut pending = false;

@@ -24,6 +24,7 @@ pub enum Action {
 pub struct Entry {
     pub title: &'static str,
     pub description: &'static str,
+    /// The keys, each marked with backticks (`look::keys`); a command as typed.
     pub keys: &'static str,
     pub action: Action,
 }
@@ -33,12 +34,12 @@ const fn e(title: &'static str, description: &'static str, keys: &'static str, a
 }
 
 pub const ENTRIES: &[Entry] = &[
-    e("Send", "Send the prompt", "enter", Action::Tell),
-    e("New line", "Start a new line without sending", "shift-enter · alt-enter · ctrl-j", Action::Tell),
-    e("Steer", "Type while a turn runs to redirect it", "type + enter", Action::Tell),
-    e("Interrupt", "Stop the running turn", "esc · ctrl-c", Action::Interrupt),
-    e("History", "Bring back an earlier prompt", "↑ ↓", Action::Tell),
-    e("Commands", "Type / for commands and skills", "/", Action::Tell),
+    e("Send", "Send the prompt", "`enter`", Action::Tell),
+    e("New line", "Start a new line without sending", "`shift-enter` `alt-enter` `ctrl-j`", Action::Tell),
+    e("Steer", "Type while a turn runs to redirect it", "type + `enter`", Action::Tell),
+    e("Interrupt", "Stop the running turn", "`esc` `ctrl-c`", Action::Interrupt),
+    e("History", "Bring back an earlier prompt", "`↑` `↓`", Action::Tell),
+    e("Commands", "Type / for commands and skills", "`/`", Action::Tell),
     e("Model", "Switch model or instance", "/model", Action::Model),
     e("Mode", "Switch permission mode", "/mode", Action::Mode),
     e("Settings", "The default permission mode and content width, saved", "/settings · /config", Action::Settings),
@@ -46,12 +47,12 @@ pub const ENTRIES: &[Entry] = &[
     e("Disconnect", "Sign an instance out", "/disconnect", Action::Disconnect),
     e("New session", "Start over in a fresh session", "/new · /clear", Action::New),
     e("Earlier sessions", "Continue one started here", "/sessions · /resume", Action::Sessions),
-    e("Todos", "The task list for this session", "ctrl-t", Action::Todos),
-    e("Subagents", "See, expand or stop subagents", "ctrl-g", Action::Agents),
-    e("Session", "Tokens, limits and the log file", "ctrl-o", Action::Details),
-    e("Copy answer", "Copy the last answer", "ctrl-y", Action::Copy),
-    e("Editing", "Jump to line ends, delete words", "ctrl-a/e · ctrl-u/k/w", Action::Tell),
-    e("Quit", "Leave krowk", "ctrl-d · /exit", Action::Quit),
+    e("Todos", "The task list for this session", "`ctrl-t`", Action::Todos),
+    e("Subagents", "See, expand or stop subagents", "`ctrl-g`", Action::Agents),
+    e("Session", "Tokens, limits and the log file", "`ctrl-o`", Action::Details),
+    e("Copy answer", "Copy the last answer", "`ctrl-y`", Action::Copy),
+    e("Editing", "Jump to line ends, delete words", "`ctrl-a/e` `ctrl-u/k/w`", Action::Tell),
+    e("Quit", "Leave krowk", "`ctrl-d` · /exit", Action::Quit),
 ];
 
 /// The entries `query` finds, those whose title starts with it first, then

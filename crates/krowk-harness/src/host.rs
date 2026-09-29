@@ -214,13 +214,12 @@ impl Host {
     ///
     /// Bounded: an engine that cannot be let go of in `SHUTDOWN_GRACE` — its
     /// lock held by a turn nobody polls any more — has its process group
-    /// killed instead, so a host going away never waits on one.
+    /// killed instead, so a host going away never waits on one. They are let
+    /// go together, so the wait is the slowest one's, not their sum.
     pub async fn shutdown(&self) {
         let engines: Vec<Arc<dyn Engine>> = self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, b)| b.engine).collect();
-        let mut stuck = false;
-        for e in engines {
-            stuck |= tokio::time::timeout(SHUTDOWN_GRACE, e.shutdown()).await.is_err();
-        }
+        let waits = engines.iter().map(|e| -> BoxFuture<'_, bool> { Box::pin(async move { tokio::time::timeout(SHUTDOWN_GRACE, e.shutdown()).await.is_err() }) }).collect();
+        let stuck = crate::native::join_all(waits).await.contains(&true);
         if stuck {
             crate::group::kill_all();
         }

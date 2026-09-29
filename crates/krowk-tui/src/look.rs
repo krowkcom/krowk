@@ -3,15 +3,17 @@
 //!
 //! The vocabulary follows Grok Build's (xAI, Apache-2.0: its
 //! `xai-grok-pager-render` glyphs and "Terminal" theme, its minimal inline
-//! mode's commit rules, its turn-status block): `❯` for what the person
-//! said, `◆` for a tool, a tool shown once with its outcome,
+//! mode's commit rules, its turn-status block): `◆` for a tool, a tool shown once with its outcome,
 //! `Worked for 12s` after a turn,
 //! ` │ ` between status items. Written here from those ideas; no code was
 //! copied (see THIRD-PARTY-NOTICES).
 //!
 //! Colours are the terminal's own sixteen, so a person's theme decides what
 //! they look like and a phone terminal shows them; the diff bands are two
-//! 256-colour indexes that stay red and green where 256 colours degrade.
+//! 256-colour indexes that stay red and green where 256 colours degrade
+//! (GitHub's muted two where the terminal takes 24-bit colour),
+//! and what the person said and a fenced block's code are on two faint
+//! greys.
 //! Most of what is shown is ink on the terminal's paper — its foreground,
 //! full or washed (dim) — never the white or black slots, which are
 //! surfaces in one mode or the other; a hue is for what needs the eye.
@@ -19,8 +21,12 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::Duration;
+use unicode_width::UnicodeWidthStr;
 
-pub const PROMPT: &str = "❯ ";
+use crate::syntax::Code;
+
+/// Before each row of what the person said, down the band's left edge.
+pub const SAID: &str = "▎ ";
 /// Before the prompt's first row, inside its box.
 pub const ARROW: &str = "→ ";
 pub const TOOL: &str = "◆ ";
@@ -185,12 +191,66 @@ pub fn prompt() -> Style {
     Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD)
 }
 
-pub fn insert_band() -> Style {
-    Style::new().bg(Color::Indexed(22))
+/// What the person said: a faint band across the width, its bar blue.
+pub fn said_band() -> Style {
+    Style::new().bg(Color::Indexed(236))
 }
 
+/// A fenced block's code: a band a shade darker than what the person
+/// said, so the two are not taken for each other.
+pub fn code_band() -> Style {
+    Style::new().bg(Color::Indexed(235))
+}
+
+pub fn said_bar() -> Style {
+    said_band().fg(Color::Blue)
+}
+
+/// A key to press: white, so the keys a hint names stand out of the grey
+/// (or the colour) it is in.
+pub fn key() -> Style {
+    Style::new().fg(Color::White)
+}
+
+/// A hint whose keys are marked with backticks (`` `esc` closes this ``):
+/// each key in `key()`, the rest in `style`. What measures the hint
+/// measures it `unmarked`.
+pub fn keys(text: &str, style: Style) -> Vec<Span<'static>> {
+    text.split('`')
+        .enumerate()
+        .filter(|(_, s)| !s.is_empty())
+        .map(|(i, s)| Span::styled(s.to_string(), if i % 2 == 1 { key() } else { style }))
+        .collect()
+}
+
+/// A hint's text without its keys' marks, as it reads.
+pub fn unmarked(text: &str) -> String {
+    text.replace('`', "")
+}
+
+/// Whether the terminal takes 24-bit colour (`COLORTERM`), read once.
+pub fn truecolor() -> bool {
+    static TRUECOLOR: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("COLORTERM").is_ok_and(|v| matches!(v.as_str(), "truecolor" | "24bit")));
+    *TRUECOLOR
+}
+
+/// An edit's added lines. With 24-bit colour, GitHub's dark-mode green (a
+/// 15% wash over near-black), muted enough that the code's colours read on it (`edit_in_colour`); else
+/// the 256-colour green, on which only the ink does.
+pub fn insert_band() -> Style {
+    Style::new().bg(if truecolor() { Color::Rgb(18, 38, 30) } else { Color::Indexed(22) })
+}
+
+/// An edit's removed lines: GitHub's dark-mode red, or the 256-colour one.
 pub fn delete_band() -> Style {
-    Style::new().bg(Color::Indexed(52))
+    Style::new().bg(if truecolor() { Color::Rgb(48, 27, 30) } else { Color::Indexed(52) })
+}
+
+/// Whether an edit's lines are highlighted on their bands: only on the
+/// dark ones 24-bit colour gives, where the code's colours still read.
+pub fn edit_in_colour() -> bool {
+    truecolor()
 }
 
 /// `4.2s`, `12s`, `1m5s`, `1h2m`.
@@ -301,48 +361,190 @@ pub fn edit_lines(name: &str, input: &serde_json::Value) -> Option<(Vec<String>,
     }
 }
 
+/// Where an answer's markdown stands between its lines: the fenced block
+/// open, and the list items open, outermost first.
+#[derive(Debug, Default)]
+pub struct Markdown {
+    fence: Option<Fence>,
+    items: Vec<Item>,
+}
+
+/// A fenced block open: what closes it — its character, at least as many
+/// as opened it — and its code, highlighted as it comes.
+#[derive(Debug)]
+struct Fence {
+    mark: char,
+    len: usize,
+    code: Code,
+}
+
+/// A fence line's character and how many of it, and what follows.
+fn fence_line(trimmed: &str) -> Option<(char, usize, &str)> {
+    let mark = trimmed.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let len = trimmed.chars().take_while(|c| *c == mark).count();
+    (len >= 3).then(|| (mark, len, trimmed[len..].trim()))
+}
+
+/// An open list item: the column its marker is at in the answer, and the
+/// one its text is shown at.
+#[derive(Debug)]
+struct Item {
+    indent: usize,
+    text: usize,
+}
+
+/// How far a list is shown in from the text around it.
+const LIST_INDENT: usize = 2;
+/// A bulleted item's marker, by how deep it is nested.
+const BULLETS: [&str; 3] = ["•", "◦", "▪"];
+
+/// One line of an answer: `lead` and then `body` on its first row, and
+/// `hang` before each row `body` wraps onto, so a list item's rows line
+/// up under its text and a quote's under its rule.
+pub struct MdLine {
+    pub lead: Vec<Span<'static>>,
+    pub body: Vec<Span<'static>>,
+    pub hang: Vec<Span<'static>>,
+    /// A row of a fenced block, drawn on the code band across the width:
+    /// its text rows break anywhere, and what is here is shown at the
+    /// right end of the first, dim (the language, on the row above the
+    /// code).
+    pub band: Option<String>,
+}
+
+impl MdLine {
+    /// `body` after `indent` columns, its rows hung there too.
+    fn indented(indent: usize, body: Vec<Span<'static>>) -> Self {
+        let pad = if indent > 0 { vec![Span::raw(" ".repeat(indent))] } else { Vec::new() };
+        MdLine { lead: pad.clone(), body, hang: pad, band: None }
+    }
+
+    /// The line unwrapped.
+    pub fn line(self) -> Line<'static> {
+        Line::from([self.lead, self.body].concat())
+    }
+}
+
+/// What starts a list item.
+enum Marker<'a> {
+    Bullet,
+    Number(&'a str),
+    Task(bool),
+}
+
+/// One line of an answer in light markdown, unwrapped (`markdown`).
+pub fn markdown_line(text: &str, md: &mut Markdown) -> Line<'static> {
+    markdown(text, md).line()
+}
+
 /// One line of an answer in light markdown: headings bold and coloured,
-/// list markers as `•`, quotes behind a rule, `code` and fenced blocks in
-/// the code colour, `**bold**` bold. Line by line, so it streams: `fence`
-/// carries whether a fenced block is open across lines.
-pub fn markdown_line(text: &str, fence: &mut bool) -> Line<'static> {
+/// list items indented behind a washed marker, quotes behind a
+/// rule, `code` in the code colour, `**bold**` bold. A fenced block's
+/// fences are not shown: its code is highlighted on a band (`MdLine::band`),
+/// with a row of the band above it, naming its language, and one below.
+/// Line by line, so it streams: `md` carries what is open across lines.
+pub fn markdown(text: &str, md: &mut Markdown) -> MdLine {
     let text: &str = &untagged(text);
     let trimmed = text.trim_start();
-    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-        *fence = !*fence;
-        return Line::from(Span::styled(text.to_string(), dim()));
+    let banded = |body, label: &str| MdLine { lead: Vec::new(), body, hang: Vec::new(), band: Some(label.to_string()) };
+    if let Some(f) = &mut md.fence {
+        if fence_line(trimmed).is_some_and(|(mark, len, rest)| mark == f.mark && len >= f.len && rest.is_empty()) {
+            md.fence = None;
+            return banded(Vec::new(), "");
+        }
+        return banded(f.code.line(text), "");
     }
-    if *fence {
-        return Line::from(Span::styled(text.to_string(), code()));
+    if let Some((mark, len, info)) = fence_line(trimmed)
+        && !(mark == '`' && info.contains('`'))
+    {
+        md.fence = Some(Fence { mark, len, code: Code::new(info) });
+        let lang = info.split_whitespace().next().unwrap_or_default();
+        let lang = lang.rsplit(':').next().unwrap_or(lang);
+        return banded(Vec::new(), lang);
     }
-    let indent = &text[..text.len() - trimmed.len()];
+    if trimmed.is_empty() {
+        return MdLine::indented(0, Vec::new());
+    }
+    let indent = text.len() - trimmed.len();
     let hashes = trimmed.chars().take_while(|c| *c == '#').count();
     if (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(' ') {
+        md.items.clear();
         let colour = match hashes {
             1 => Color::Cyan,
             2 => Color::Blue,
             _ => Color::Magenta,
         };
-        return Line::from(emphasised(inline(&trimmed[hashes + 1..]), bold().fg(colour)));
+        return MdLine::indented(0, emphasised(inline(&trimmed[hashes + 1..]), bold().fg(colour)));
     }
-    let mut spans = vec![Span::raw(indent.to_string())];
-    let body = if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")).or_else(|| trimmed.strip_prefix("+ ")) {
-        spans.push(Span::styled("• ", accent()));
-        rest
-    } else if let Some(rest) = trimmed.strip_prefix("> ") {
-        spans.push(Span::styled("│ ", dim()));
-        rest
-    } else {
-        trimmed
-    };
-    spans.extend(inline(body));
-    Line::from(spans)
+    if let Some((marker, rest)) = list_marker(trimmed) {
+        return md.item(indent, marker, rest);
+    }
+    let within = md.within(indent);
+    match (trimmed.strip_prefix("> "), within) {
+        (Some(rest), _) => {
+            let rule = [Span::raw(" ".repeat(within.unwrap_or(indent))), Span::styled("│ ", dim())];
+            MdLine { lead: rule.to_vec(), body: inline(rest), hang: rule.to_vec(), band: None }
+        }
+        (None, Some(at)) => MdLine::indented(at, inline(trimmed)),
+        // Indented as typed, and wrapped as it was: an unfenced block of
+        // JSON is not squeezed into what is left of the width.
+        (None, None) => MdLine::indented(0, MdLine::indented(indent, inline(trimmed)).line().spans),
+    }
+}
+
+impl Markdown {
+    /// Whether a fenced block is open: its lines are code, not markdown.
+    pub fn fenced(&self) -> bool {
+        self.fence.is_some()
+    }
+
+    /// A list item at `indent`: nested in each open item whose marker is
+    /// further left, its marker under the text of the one it is in.
+    fn item(&mut self, indent: usize, marker: Marker, rest: &str) -> MdLine {
+        self.close(indent);
+        let at = self.items.last().map_or(LIST_INDENT, |i| i.text);
+        let glyph = match marker {
+            Marker::Bullet => BULLETS[self.items.len() % BULLETS.len()],
+            Marker::Number(n) => n,
+            Marker::Task(false) => "☐",
+            Marker::Task(true) => "☒",
+        };
+        let text = at + glyph.width() + 1;
+        self.items.push(Item { indent, text });
+        MdLine { lead: vec![Span::raw(" ".repeat(at)), Span::styled(format!("{glyph} "), dim())], body: inline(rest), hang: vec![Span::raw(" ".repeat(text))], band: None }
+    }
+
+    /// Where a line that is no item, at `indent`, is shown: under the text
+    /// of the item it goes on, if it goes on one.
+    fn within(&mut self, indent: usize) -> Option<usize> {
+        self.close(indent);
+        self.items.last().map(|i| i.text)
+    }
+
+    /// Closes each open item a line at `indent` is not inside.
+    fn close(&mut self, indent: usize) {
+        while self.items.last().is_some_and(|i| i.indent >= indent) {
+            self.items.pop();
+        }
+    }
+}
+
+/// The marker a list item starts with, and its text: `- `, `* ` or `+ `,
+/// a task's `[ ] ` or `[x] ` after one, or `1. ` or `1) `.
+fn list_marker(s: &str) -> Option<(Marker<'_>, &str)> {
+    if let Some(rest) = ["- ", "* ", "+ "].iter().find_map(|m| s.strip_prefix(m)) {
+        let task = |done: bool, box_: &str| rest.strip_prefix(box_).map(|r| (Marker::Task(done), r));
+        return task(false, "[ ] ").or_else(|| task(true, "[x] ")).or_else(|| task(true, "[X] ")).or(Some((Marker::Bullet, rest)));
+    }
+    let digits = s.bytes().take_while(u8::is_ascii_digit).count();
+    let after = &s[digits..];
+    ((1..=9).contains(&digits) && (after.starts_with(". ") || after.starts_with(") "))).then(|| (Marker::Number(&s[..digits + 1]), &s[digits + 2..]))
 }
 
 /// `code`, `**bold**` and links within a line: `[text](url)`, `<url>` and a
 /// bare URL, each opening its http(s) URL (`link_spans`). Anything unclosed,
 /// and a link to anything but http(s), stays as typed.
-fn inline(text: &str) -> Vec<Span<'static>> {
+pub(crate) fn inline(text: &str) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut plain = 0;
     let mut i = 0;
@@ -385,7 +587,7 @@ const URL_MAX: usize = 2048;
 
 /// `spans` in `style`, each keeping its own on top; a link keeps its look
 /// exactly, which is what makes it one (`link_target`).
-fn emphasised(spans: Vec<Span<'static>>, style: Style) -> Vec<Span<'static>> {
+pub(crate) fn emphasised(spans: Vec<Span<'static>>, style: Style) -> Vec<Span<'static>> {
     spans.into_iter().map(|s| if link_target(&s).is_some() { s } else { Span::styled(s.content, style.patch(s.style)) }).collect()
 }
 
@@ -509,16 +711,19 @@ mod tests {
 
     #[test]
     fn markdown_is_shown_line_by_line() {
-        let mut f = false;
+        let mut f = Markdown::default();
         assert_eq!(text(&markdown_line("## Usage", &mut f)), "Usage");
         assert_eq!(text(&markdown_line("  - one `two` **three**", &mut f)), "  • one two three");
         let l = markdown_line("use `krowk push` now", &mut f);
-        assert_eq!(l.spans[2].style, code(), "{:?}", l.spans);
-        assert_eq!(text(&markdown_line("```rust", &mut f)), "```rust");
-        assert!(f, "the fence is open");
+        assert_eq!(l.spans[1].style, code(), "{:?}", l.spans);
+        let open = markdown("```rust", &mut f);
+        assert!(open.body.is_empty() && open.band.as_deref() == Some("rust"), "the fence is not shown, its language is");
+        assert!(f.fenced(), "the fence is open");
         assert_eq!(text(&markdown_line("- not a list in code", &mut f)), "- not a list in code");
-        markdown_line("```", &mut f);
-        assert!(!f);
+        markdown_line("```text", &mut f);
+        assert!(f.fenced(), "a fence with more after it does not close one");
+        markdown_line("````", &mut f);
+        assert!(!f.fenced());
         assert_eq!(text(&markdown_line("a ` lone tick and **unclosed", &mut f)), "a ` lone tick and **unclosed");
         assert_eq!(text(&markdown_line("line 00001: the quick brown fox", &mut f)), "line 00001: the quick brown fox");
     }
@@ -533,11 +738,11 @@ mod tests {
 
     #[test]
     fn a_link_shows_its_text_and_an_arrow_and_opens_its_url() {
-        let mut f = false;
+        let mut f = Markdown::default();
         let l = markdown_line("see [the **docs**](https://krowk.com/docs) now", &mut f);
         assert_eq!(shown(&l), "see the docs\u{a0}↗ now");
         assert_eq!(targets(&l), ["https://krowk.com/docs"; 2], "the text and the arrow both open it");
-        assert_eq!(l.spans[2].style, link(), "{:?}", l.spans);
+        assert_eq!(l.spans[1].style, link(), "{:?}", l.spans);
         assert_eq!(l.width(), "see the docs ↗ now".chars().count(), "the URL takes no columns");
         let l = markdown_line("[Rust](https://en.wikipedia.org/wiki/Rust_(programming_language)).", &mut f);
         assert_eq!((shown(&l).as_str(), targets(&l)[0].as_str()), ("Rust\u{a0}↗.", "https://en.wikipedia.org/wiki/Rust_(programming_language)"));
@@ -553,9 +758,9 @@ mod tests {
 
     #[test]
     fn a_bracket_before_a_link_is_left_alone() {
-        let mut f = false;
+        let mut f = Markdown::default();
         let l = markdown_line("- [ ] fix [docs](https://x.io) [1] see [here](https://y.io)", &mut f);
-        assert_eq!(shown(&l), "• [ ] fix docs\u{a0}↗ [1] see here\u{a0}↗");
+        assert_eq!(shown(&l), "  ☐ fix docs\u{a0}↗ [1] see here\u{a0}↗");
         let l = markdown_line("[see https://x.io] and <https://y.io>>", &mut f);
         assert_eq!(shown(&l), "[see https://x.io\u{a0}↗] and https://y.io\u{a0}↗>");
         assert_eq!(targets(&l), ["https://x.io", "https://x.io", "https://y.io", "https://y.io"]);
@@ -565,7 +770,7 @@ mod tests {
 
     #[test]
     fn a_line_of_unclosed_brackets_takes_linear_time() {
-        let mut f = false;
+        let mut f = Markdown::default();
         let trailing = |c: &str| format!("http://x{}", c.repeat(80_000));
         for line in ["[1,".repeat(40_000), "a <".repeat(40_000), "[a](x".repeat(20_000), "<http://x".repeat(20_000), trailing(")"), trailing("]"), trailing(".)"), "http:///".repeat(40_000), "<https:///".repeat(40_000)] {
             let t = std::time::Instant::now();
@@ -574,11 +779,49 @@ mod tests {
         }
     }
 
+    fn lines(md: &str) -> Vec<String> {
+        let mut f = Markdown::default();
+        md.lines().map(|l| text(&markdown_line(l, &mut f))).collect()
+    }
+
+    #[test]
+    fn a_list_is_indented_and_nested_by_depth() {
+        let md = "Steps:\n- one\n  - two\n    * three\n    * four\n- five\n\n1. first\n   - under it\n10) tenth\nDone.";
+        assert_eq!(lines(md), ["Steps:", "  • one", "    ◦ two", "      ▪ three", "      ▪ four", "  • five", "", "  1. first", "     ◦ under it", "  10) tenth", "Done."]);
+        assert_eq!(lines("-  wide\n* x\n+ y"), ["  •  wide", "  • x", "  • y"], "`*` and `+` are bullets too");
+        assert_eq!(lines("1.5 is a number\n1234567890. is too long\n-not a list"), ["1.5 is a number", "1234567890. is too long", "-not a list"]);
+    }
+
+    #[test]
+    fn a_line_under_an_item_lines_up_with_its_text() {
+        let md = "1. first\n\n   more on it\n   - sub\n     more on sub\n   back on first\nOut.";
+        assert_eq!(lines(md), ["  1. first", "", "     more on it", "     ◦ sub", "       more on sub", "     back on first", "Out."]);
+        assert_eq!(lines("- a\n## Next\n  b"), ["  • a", "Next", "  b"], "a heading ends the list");
+    }
+
+    #[test]
+    fn a_task_is_a_box_ticked_or_not() {
+        assert_eq!(lines("- [ ] todo\n- [x] done\n- [X] also"), ["  ☐ todo", "  ☒ done", "  ☒ also"]);
+        let mut f = Markdown::default();
+        assert_eq!(markdown("- [x] done", &mut f).lead[1].style, dim(), "a marker is washed, not coloured");
+    }
+
+    #[test]
+    fn an_item_and_a_quote_say_what_their_wrapped_rows_start_with() {
+        let mut f = Markdown::default();
+        let hang = |m: MdLine| m.hang.iter().map(|s| s.content.to_string()).collect::<String>();
+        assert_eq!(hang(markdown("- a", &mut f)), "    ");
+        assert_eq!(hang(markdown("  12. b", &mut f)), "        ", "nested in the item before it");
+        assert_eq!(hang(markdown("> c", &mut f)), "│ ");
+        assert_eq!(hang(markdown("plain", &mut f)), "");
+        assert_eq!(hang(markdown("    \"key\": 1,", &mut f)), "", "an indent typed outside a list does not hang");
+    }
+
     #[test]
     fn a_link_in_bold_or_a_heading_is_a_link_too() {
-        let mut f = false;
+        let mut f = Markdown::default();
         let l = markdown_line("- **[Title](https://x.io)** — desc", &mut f);
-        assert_eq!((shown(&l).as_str(), targets(&l)), ("• Title\u{a0}↗ — desc", vec!["https://x.io".to_string(); 2]));
+        assert_eq!((shown(&l).as_str(), targets(&l)), ("  • Title\u{a0}↗ — desc", vec!["https://x.io".to_string(); 2]));
         let l = markdown_line("**See [docs](https://x.io) and `this`**", &mut f);
         assert_eq!(shown(&l), "See docs\u{a0}↗ and this");
         assert!(l.spans.iter().filter(|s| link_target(s).is_none() && !s.content.is_empty()).all(|s| s.style.add_modifier.contains(Modifier::BOLD)), "{:?}", l.spans);

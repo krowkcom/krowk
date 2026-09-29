@@ -9,6 +9,7 @@
 //! - `app` — what is shown, driven by frames and keys.
 //! - `editor` — the multi-line prompt and its history.
 //! - `look` — glyphs, colours, the spinner and the light markdown.
+//! - `syntax` — code in colour, in the terminal's own sixteen.
 //! - `settings` — the status line's configuration (R-TUI-2).
 //! - `device` — the `<user>/<host>` the status line opens with, read once.
 //! - `pr` — the branch and its pull request, for the status line's second row.
@@ -39,6 +40,8 @@ pub mod help;
 pub mod look;
 pub mod net;
 pub mod settings;
+pub mod syntax;
+mod table;
 pub mod term;
 
 use app::{App, Mark, Overlay};
@@ -78,6 +81,9 @@ const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
 const SLOW: &str = "host_slow";
 /// How long a control command sent from a key is waited for.
 const COMMAND_WAIT: Duration = Duration::from_secs(2);
+/// How long a Ctrl-C or Ctrl-D that would leave krowk waits for the second
+/// that does.
+const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
 /// How many earlier sessions `/sessions` lists.
 const RESUMABLE: usize = 30;
 
@@ -116,6 +122,10 @@ pub struct Options {
     /// The host daemon to run sessions in, started when none runs; none
     /// runs them in this process.
     pub daemon: Option<Daemon>,
+    /// Brings a session's rows in krowk.db up to date from its log. Run on
+    /// a thread of its own after each turn, while the person reads the
+    /// answer, so leaving has little or nothing left to write.
+    pub project: Option<Project>,
 }
 
 /// How to reach the host daemon (`krowk_harness::daemon::ensure`).
@@ -125,6 +135,8 @@ pub struct Daemon {
     /// Starts it, detached, when none answers.
     pub spawn: Box<dyn Fn() -> Result<Option<std::process::Child>, String> + Send + Sync>,
 }
+
+pub type Project = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// What the TUI routes once it is up (`Host::route_model`).
 pub struct Route {
@@ -368,7 +380,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()) };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
     // A resumed session still running in the daemon is followed from where
     // its log left off: the turn so far, then live.
     if let Some(id) = opts.resume.clone()
@@ -381,15 +393,8 @@ async fn session(opts: Options) -> Outcome {
     // lock, and would hold a shutdown waiting on it forever.
     ui.turn = None;
     ui.rx = None;
-    // A backend's process (Claude Code, Codex) is let go cleanly, and
-    // whatever it started with it, before the terminal is handed back —
-    // unless the person left without waiting (a second Ctrl-C, SIGTERM),
-    // when every backend's process group is killed at once instead.
-    if ui.abandoned {
-        krowk_harness::group::kill_all();
-    } else {
-        host.shutdown().await;
-    }
+    // The screen is left first, so leaving shows at once whatever is still
+    // to be let go.
     let _ = term.finish();
     ui.presence.finish();
     let mut out = term.into_inner();
@@ -397,6 +402,15 @@ async fn session(opts: Options) -> Outcome {
         let _ = write!(out, "\x1b[2mresume this session with: krowk --resume {id}\x1b[0m\r\n");
     }
     let _ = out.flush();
+    // A backend's process (Claude Code, Codex) is let go cleanly, and
+    // whatever it started with it — unless the person left without waiting
+    // (a second Ctrl-C, SIGTERM), when every backend's process group is
+    // killed at once instead.
+    if ui.abandoned {
+        krowk_harness::group::kill_all();
+    } else {
+        host.shutdown().await;
+    }
     app.left.retain(|id| app.session_id.as_ref() != Some(id));
     Outcome { session_id: app.session_id.clone(), left: std::mem::take(&mut app.left), error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
 }
@@ -479,11 +493,16 @@ struct Ui<'h> {
     rx: Option<mpsc::Receiver<StreamLine>>,
     /// Set to leave now, without the running turn's end.
     abandoned: bool,
+    /// The key (`c` or `d`, with Ctrl) that would have left krowk, and
+    /// when: the same key again within `QUIT_CONFIRM` leaves, any other
+    /// key forgets it.
+    quit_armed: Option<(char, Instant)>,
     /// The last prompt sent: what a yes to a limit's offer sends again on
     /// the instance it moves to (R-INST-7).
     last_prompt: String,
     /// The window title and herdr's agent state.
     presence: presence::Presence,
+    project: Option<Project>,
 }
 
 /// Two signals as one stream, registered once for the TUI's life.
@@ -743,7 +762,8 @@ impl<'h> Ui<'h> {
             let stall_at = (app.waiting_on_model() && probe.is_none() && app.offline.is_none() && self.target.is_some())
                 .then(|| (last_activity + STALL).max(stall_quiet_until.unwrap_or(now)));
             let retry_at = app.turn.as_ref().filter(|t| (t.want_interrupt && !t.interrupt_sent) || !app.unsent_steers.is_empty()).map(|_| now + INTERRUPT_RETRY);
-            let wake = [frame_at, tick_at, stall_at, retry_at, probe_at].into_iter().flatten().min();
+            let quit_at = self.quit_armed.map(|(_, t)| t + QUIT_CONFIRM);
+            let wake = [frame_at, tick_at, stall_at, retry_at, probe_at, quit_at].into_iter().flatten().min();
             tokio::select! {
                 biased;
                 // Ctrl-C or Ctrl-\ on the terminal a vendor's login has: that
@@ -805,6 +825,10 @@ impl<'h> Ui<'h> {
                         }
                     }
                     self.follow(app);
+                    if let (Some(project), Some(id)) = (&self.project, &app.session_id) {
+                        let (project, id) = (project.clone(), id.clone());
+                        std::thread::spawn(move || project(&id));
+                    }
                     // What the engine never read, as the host says on the
                     // result (its own queue, so nothing is guessed), and what
                     // was never accepted at all.
@@ -922,6 +946,12 @@ impl<'h> Ui<'h> {
                     }
                     if retry_at.is_some_and(|t| t <= now) {
                         self.flush_requests(app).await;
+                    }
+                    // The second press never came: its hint goes.
+                    if quit_at.is_some_and(|t| t <= now) {
+                        self.quit_armed = None;
+                        app.flash = None;
+                        app.touch();
                     }
                 }
             }
@@ -1156,7 +1186,7 @@ impl<'h> Ui<'h> {
                 None => {
                     let runs = krowk_harness::trust::what_runs(&t.root);
                     let has = if runs.is_empty() { "Nothing of that kind is there now.".to_string() } else { format!("It has {}.", runs.join(", ")) };
-                    let q = format!("{m} runs {vendor}, which runs a repository's own hooks and MCP servers without asking. {has} Trust {}? y trusts it, n or esc does not", home_relative(&t.root));
+                    let q = format!("{m} runs {vendor}, which runs a repository's own hooks and MCP servers without asking. {has} Trust {}? `y` trusts it, `n` or `esc` does not", home_relative(&t.root).replace('`', "'"));
                     self.needs_trust = Some((m.clone(), q));
                     if self.held.is_some() {
                         self.ask_trust(app);
@@ -1249,6 +1279,7 @@ impl<'h> Ui<'h> {
         }
         self.last_prompt = text.clone();
         app.offer = None;
+        app.echo(&text);
         let (tx, rx) = mpsc::channel(1024);
         let cmd = Command::Prompt { session_id: app.session_id.clone(), text, model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
         self.turn = Some(Box::pin(self.host.execute(cmd, tx)));
@@ -1400,6 +1431,7 @@ impl<'h> Ui<'h> {
         let alt = k.modifiers.contains(KeyModifiers::ALT);
         app.touch();
         app.flash = None;
+        let armed = self.quit_armed.take().filter(|(_, t)| t.elapsed() < QUIT_CONFIRM).map(|(c, _)| c);
         // A call waiting for the person's say takes the keys that answer it
         // (R-PERM-2): y once, s for the session, p for the project, n or
         // Esc no, v to print a request that was cut to fit (its y/s/p work
@@ -1461,16 +1493,9 @@ impl<'h> Ui<'h> {
                     app.overlay = Overlay::None;
                 }
                 // Leaves krowk whatever the prompt under the overlay holds,
-                // as it does on an empty prompt; with a turn running, it
-                // stops that turn first, as there.
-                KeyCode::Char('d') if ctrl => {
-                    if app.running() {
-                        *quitting = true;
-                        self.interrupt(app).await;
-                    } else {
-                        app.quit = true;
-                    }
-                }
+                // as it does on an empty prompt: pressed twice, and with a
+                // turn running, stopping that turn first, as there.
+                KeyCode::Char('d') if ctrl => self.ask_to_leave(app, 'd', armed, quitting).await,
                 KeyCode::Up if !typing => f.step(-1),
                 KeyCode::Down if !typing => f.step(1),
                 KeyCode::Enter if settled => f.enter(),
@@ -1485,12 +1510,28 @@ impl<'h> Ui<'h> {
             }
             return false;
         }
-        self.on_prompt_key(app, k, quitting).await
+        self.on_prompt_key(app, k, quitting, armed).await
+    }
+
+    /// Ctrl-C or Ctrl-D asked to leave krowk: the first press asks for a
+    /// second, the second (the same key, within `QUIT_CONFIRM`) leaves,
+    /// stopping a running turn first. One stray key is not a lost session.
+    async fn ask_to_leave(&mut self, app: &mut App, key: char, armed: Option<char>, quitting: &mut bool) {
+        if armed != Some(key) {
+            self.quit_armed = Some((key, Instant::now()));
+            app.flash = Some(format!("Press `Ctrl-{}` again to exit", key.to_ascii_uppercase()));
+        } else if app.running() {
+            *quitting = true;
+            self.interrupt(app).await;
+        } else {
+            app.quit = true;
+        }
     }
 
     /// A key no question or overlay took: the prompt's, the menus' and the
-    /// commands'.
-    async fn on_prompt_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool) -> bool {
+    /// commands'. `armed`: the key before this one that asked for a second
+    /// to leave krowk.
+    async fn on_prompt_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool, armed: Option<char>) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         // Shift-enter is alt-enter: a new line wherever alt-enter makes one.
         // Only a terminal that took KEYS_PUSH tells the two enters apart.
@@ -1781,22 +1822,17 @@ impl<'h> Ui<'h> {
                     app.editor.clear();
                 } else if self.held.is_some() || app.trust_question.is_some() {
                     // What is waiting on the route or the trust question
-                    // comes back unsent; a second Ctrl-C then quits.
+                    // comes back unsent; Ctrl-C twice more then quits.
                     app.trust_question = None;
                     self.unhold(app);
                     app.notice("not sent — it is back in the prompt");
                 } else {
-                    app.quit = true;
+                    self.ask_to_leave(app, 'c', armed, quitting).await;
                 }
             }
             KeyCode::Char('d') if ctrl => {
                 if e.is_empty() {
-                    if app.running() {
-                        *quitting = true;
-                        self.interrupt(app).await;
-                    } else {
-                        app.quit = true;
-                    }
+                    self.ask_to_leave(app, 'd', armed, quitting).await;
                 } else {
                     e.delete();
                 }
@@ -1978,19 +2014,19 @@ impl<'h> Ui<'h> {
     /// resumed meanwhile has its own, which the route then leaves alone.
     fn can_resume(&self, app: &mut App) -> bool {
         let waits = if app.running() {
-            "the running turn to finish — esc interrupts it"
+            "the running turn to finish — `esc` interrupts it"
         } else if app.offer.is_some() {
-            "the question above — y or n"
+            "the question above — `y` or `n`"
         } else if self.held.is_some() {
-            "the prompt waiting to be sent — ctrl-c takes it back"
+            "the prompt waiting to be sent — `ctrl-c` takes it back"
         } else if self.model_route.is_some() {
             "the /model switch to finish"
         } else if app.backend_agents_running() {
-            "the agents running in the background — ctrl-g lists them"
+            "the agents running in the background — `ctrl-g` lists them"
         } else {
             return true;
         };
-        app.notice(&format!("that waits for {waits}"));
+        app.notice_keys(&format!("that waits for {waits}"));
         false
     }
 
@@ -2016,7 +2052,7 @@ impl<'h> Ui<'h> {
             return;
         }
         if app.running() {
-            app.notice("that waits for the running turn to finish — esc interrupts it");
+            app.notice_keys("that waits for the running turn to finish — `esc` interrupts it");
             return;
         }
         let (title, prefer) = match &job {
