@@ -14,6 +14,7 @@ use crate::help;
 use crate::look::{self, SEP};
 use crate::pr::State as PrState;
 use crate::settings::{ContentWidth, Item as StatusItem, Settings};
+use crate::syntax::Code;
 use crate::table;
 use krowk_harness::host::Pricer;
 use krowk_harness::log::Recent;
@@ -1043,7 +1044,7 @@ impl App {
     /// indent. A table's rows are held until the first line that is not one.
     fn push_md(&mut self, text: &str) {
         let text = look::untagged(&clean(text));
-        if !self.md.fence && table::is_row(&text) {
+        if !self.md.fenced() && table::is_row(&text) {
             self.table.push(text);
             return;
         }
@@ -1051,15 +1052,24 @@ impl App {
         if std::mem::take(&mut self.tabled) && self.last_blank && text.trim().is_empty() {
             return;
         }
+        let opening = !self.md.fenced();
         let md = look::markdown(&text, &mut self.md);
+        // A code block stands off the text above it, as a table does.
+        if opening && self.md.fenced() {
+            self.gap();
+        }
         for line in hung(md, usize::from(self.width)) {
             self.push_answer(line);
         }
     }
 
-    /// The end of an answer's text: a table it ended on is drawn.
+    /// The end of an answer's text: a table it ended on is drawn, a fenced
+    /// block it ended in closed.
     fn end_md(&mut self) {
         self.end_table();
+        if self.md.fenced() {
+            self.push_md("```");
+        }
         self.md = look::Markdown::default();
         self.tabled = false;
     }
@@ -1111,6 +1121,7 @@ impl App {
         // command.
         let lines: Vec<&str> = output.lines().filter(|l| !l.starts_with("Shell cwd was reset to ")).collect();
         let edit = if is_error { None } else { look::edit_lines(name, input) };
+        let written = input.get("content").and_then(|c| c.as_str()).filter(|_| name == "write" && !is_error);
         let quiet = if is_error { None } else { Quiet::of(name) };
         let mut head = vec![Span::styled(look::TOOL, if is_error { red() } else { dim() }), Span::raw(verb.clone())];
         if !arg.is_empty() {
@@ -1123,26 +1134,48 @@ impl App {
                 head.push(Span::styled(format!(" +{}", add.len()), look::success()));
                 head.push(Span::styled(format!(" -{}", del.len()), red()));
             }
+            (None, "write", _) if let Some(c) = written => head.push(Span::styled(format!(" ({} lines)", c.lines().count()), dim())),
             (None, "read" | "grep" | "glob" | "write", _) => head.push(Span::styled(format!(" ({} lines)", lines.len()), dim())),
             (None, "bash", _) if lines.len() > 1 => head.push(Span::styled(format!(" ({} lines)", lines.len()), dim())),
             _ => {}
         }
         let mut block = vec![Line::from(head)];
         let body_width = width.saturating_sub(look::BRANCH.width());
-        let mut body: Vec<Span<'static>> = Vec::new();
+        let mut body: Vec<Line<'static>> = Vec::new();
+        const SHOWN: usize = 8;
+        let more = |n: usize| Line::from(Span::styled(format!("… +{} lines", n - SHOWN), dim()));
         if is_error {
-            body.extend(lines.iter().filter(|l| !l.trim().is_empty()).take(3).map(|l| Span::styled(clip(l, body_width), red())));
+            body.extend(lines.iter().filter(|l| !l.trim().is_empty()).take(3).map(|l| Span::styled(clip(l, body_width), red()).into()));
         } else if let Some((del, add)) = edit {
-            const SHOWN: usize = 8;
+            // Each side on its band, in colour where the band is dark enough
+            // for it (`edit_in_colour`), highlighted as a run of the file's
+            // code: a side that starts inside a comment or a string is
+            // coloured as though it did not.
+            let lang = if look::edit_in_colour() { arg.as_str() } else { "" };
             for (rows, band) in [(del, look::delete_band()), (add, look::insert_band())] {
-                body.extend(rows.iter().take(SHOWN).map(|l| Span::styled(clip(l, body_width), band)));
+                let mut code = Code::new(lang);
+                body.extend(rows.iter().take(SHOWN).map(|l| {
+                    // The band runs the width, not just under the text.
+                    let mut row: Vec<Span<'static>> = clip_spans(code.line(&clean(l)), body_width).into_iter().map(|s| s.patch_style(band)).collect();
+                    let used: usize = row.iter().map(Span::width).sum();
+                    row.push(Span::styled(" ".repeat(body_width.saturating_sub(used)), band));
+                    Line::from(row)
+                }));
                 if rows.len() > SHOWN {
-                    body.push(Span::styled(format!("… +{} lines", rows.len() - SHOWN), dim()));
+                    body.push(more(rows.len()));
                 }
+            }
+        } else if let Some(content) = written {
+            // What it wrote, in colour: the head of the file.
+            let mut code = Code::new(&arg);
+            body.extend(content.lines().take(SHOWN).map(|l| Line::from(clip_spans(code.line(&clean(l)), body_width))));
+            let n = content.lines().count();
+            if n > SHOWN {
+                body.push(more(n));
             }
         } else if name == "bash" {
             // Its last line is most often its verdict; the rest is the log.
-            body.extend(lines.iter().rev().find(|l| !l.trim().is_empty()).map(|l| Span::styled(clip(l, body_width), dim())));
+            body.extend(lines.iter().rev().find(|l| !l.trim().is_empty()).map(|l| Span::styled(clip(l, body_width), dim()).into()));
         }
         block.extend(branches(body));
         self.hold(block, quiet.map(|q| (q, arg)));
@@ -2556,13 +2589,15 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
 /// answer, unwrapped, is Ctrl-Y.
 /// `rows`, each on a branch as a file tree draws a directory's entries:
 /// `├─ ` and, on the last, `└─ `.
-fn branches(rows: Vec<Span<'static>>) -> Vec<Line<'static>> {
+fn branches<R: Into<Line<'static>>>(rows: Vec<R>) -> Vec<Line<'static>> {
     let n = rows.len();
     rows.into_iter()
         .enumerate()
         .map(|(i, row)| {
             let branch = if i + 1 == n { look::LAST_BRANCH } else { look::BRANCH };
-            Line::from(vec![Span::styled(branch, look::border()), row])
+            let mut line = row.into();
+            line.spans.insert(0, Span::styled(branch, look::border()));
+            line
         })
         .collect()
 }
@@ -2570,6 +2605,9 @@ fn branches(rows: Vec<Span<'static>>) -> Vec<Line<'static>> {
 /// An answer's line wrapped to `width`: its `lead` before the first row,
 /// its `hang` before each row after, unless that would take over half of it.
 fn hung(md: look::MdLine, width: usize) -> Vec<Line<'static>> {
+    if let Some(label) = &md.band {
+        return banded(md.body, label, width);
+    }
     let hang = md.hang.iter().map(Span::width).sum::<usize>();
     // Nested past half the width, a hang leaves too little to read.
     if hang * 2 > width {
@@ -2580,6 +2618,71 @@ fn hung(md: look::MdLine, width: usize) -> Vec<Line<'static>> {
         .enumerate()
         .map(|(r, row)| Line::from([if r == 0 { md.lead.clone() } else { md.hang.clone() }, row.spans].concat()))
         .collect()
+}
+
+/// How far code is in from either edge of its band.
+const CODE_PAD: usize = 2;
+
+/// A row of a fenced block on the code band across the width, `CODE_PAD`
+/// in, with `label` washed at the right end of its first row. Code is
+/// broken where the width ends, not at a space, so it keeps its spacing.
+fn banded(body: Vec<Span<'static>>, label: &str, width: usize) -> Vec<Line<'static>> {
+    let band = look::code_band();
+    let room = width.saturating_sub(2 * CODE_PAD).max(1);
+    let pad = Span::styled(" ".repeat(CODE_PAD), band);
+    split_spans(body, room)
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let used: usize = row.iter().map(Span::width).sum();
+            let tag = if i == 0 && !label.is_empty() && used + 1 < room { clip(label, room - used - 1) } else { String::new() };
+            let mut spans = vec![pad.clone()];
+            spans.extend(row.into_iter().map(|s| s.patch_style(band)));
+            spans.push(Span::styled(" ".repeat(room.saturating_sub(used + tag.width())), band));
+            spans.push(Span::styled(tag, band.add_modifier(Modifier::DIM)));
+            spans.push(pad.clone());
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// `spans` cut to `width` columns, with an ellipsis when they were longer.
+fn clip_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    if spans.iter().map(Span::width).sum::<usize>() <= width {
+        return spans;
+    }
+    let mut rows = split_spans(spans, width.saturating_sub(1).max(1)).into_iter();
+    let mut row = rows.next().unwrap_or_default();
+    if rows.next().is_some() {
+        row.push(Span::styled("…", dim()));
+    }
+    row
+}
+
+/// `spans` in rows of at most `width` columns, broken at any character;
+/// at least one row, empty when they are.
+fn split_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>> {
+    let mut rows = vec![Vec::new()];
+    let mut used = 0;
+    for span in spans {
+        let mut piece = String::new();
+        for c in span.content.chars() {
+            let w = c.width().unwrap_or(0);
+            if used + w > width && used > 0 {
+                if !piece.is_empty() {
+                    rows.last_mut().expect("a row").push(Span::styled(std::mem::take(&mut piece), span.style));
+                }
+                rows.push(Vec::new());
+                used = 0;
+            }
+            piece.push(c);
+            used += w;
+        }
+        if !piece.is_empty() {
+            rows.last_mut().expect("a row").push(Span::styled(piece, span.style));
+        }
+    }
+    rows
 }
 
 pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
@@ -2897,7 +3000,7 @@ mod tests {
         a.on_line(&delta("i", "Sizes:\n| a | b |\n|---|---|\n| 1 | 2 |\n"));
         assert_eq!(text(&a.take_pending()), ["Sizes:"], "the table is held while it may go on");
         a.on_line(&delta("i", "Done.\n```\n| in | code |\n```\n| x |"));
-        assert_eq!(text(&a.take_pending()), ["", "  a │ b", " ───┼───", "  1 │ 2", "", "Done.", "```", "| in | code |", "```"]);
+        assert_eq!(text(&a.take_pending()), ["", "  a │ b", " ───┼───", "  1 │ 2", "", "Done.", "", "", "  | in | code |", ""], "a fenced block's rows are code, not a table's");
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: String::new() } }));
         assert_eq!(text(&a.take_pending()), ["| x |"], "a table the answer ends on is drawn with it, as typed when it is none");
         a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "j".into(), item: ItemKind::AssistantText }));
@@ -3012,6 +3115,65 @@ mod tests {
             text(&a.take_pending()),
             ["◆ Ran 2 commands, read 1 file, searched", "for 1 pattern", "◆ Run cargo test (failed)", "└─ boom", "◆ Read b.rs (2 lines)", "Done."]
         );
+    }
+
+    #[test]
+    fn a_fenced_block_is_highlighted_on_a_band_its_fences_hidden() {
+        let mut a = app();
+        let w = usize::from(a.width);
+        a.push_md("Run it:");
+        a.push_md("```rust");
+        a.push_md(&format!("fn main() {{ let s = \"{}\"; }}", "x".repeat(w)));
+        a.push_md("```");
+        a.push_md("Then");
+        a.push_md("```");
+        a.push_md("left open");
+        a.end_md();
+        let lines = a.take_pending();
+        let rows = text(&lines);
+        assert_eq!(rows[..2], ["Run it:", ""], "a gap above the block, the fence not shown");
+        assert!(rows[2].ends_with("rust"), "its language at the right of the row above: {:?}", rows[2]);
+        assert!(rows[3].starts_with("  fn main() { let s = \"x"), "{:?}", rows[3]);
+        assert!(rows[4].starts_with("  xxx"), "a long line breaks where the width ends: {:?}", rows[4]);
+        assert_eq!(rows[5..8], ["", "Then", ""]);
+        assert_eq!(rows[8..], ["", "  left open", ""], "a block the answer ends in is closed");
+        for l in lines.iter().filter(|l| l.width() > 0 && !l.spans[0].content.starts_with(['R', 'T'])) {
+            assert_eq!(l.width(), w, "the band is the width");
+            assert!(l.spans.iter().all(|s| s.style.bg == look::code_band().bg), "{l:?}");
+        }
+        let main = lines[3].spans.iter().find(|s| s.content == "main").expect("main");
+        assert_eq!(main.style.fg, Some(Color::Blue), "highlighted");
+    }
+
+    #[test]
+    fn a_written_file_shows_its_head_in_colour() {
+        let mut a = app();
+        let content: String = (0..10).map(|i| format!("let x{i} = {i};\n")).collect();
+        a.commit_tool("write", &serde_json::json!({"path": "src/a.rs", "content": content}), "wrote", false);
+        a.push_md("Done.");
+        let lines = a.take_pending();
+        let rows = text(&lines);
+        assert_eq!(rows[0], "◆ Write src/a.rs (10 lines)");
+        assert_eq!(rows[1], "├─ let x0 = 0;");
+        assert_eq!(rows[9], "└─ … +2 lines");
+        let kw = lines[1].spans.iter().find(|s| s.content == "let").expect("let");
+        assert_eq!(kw.style.fg, Some(Color::Magenta));
+    }
+
+    #[test]
+    fn an_edit_is_in_colour_on_its_bands() {
+        let mut a = app();
+        a.commit_tool("Edit", &serde_json::json!({"file_path": "src/a.rs", "old_string": "let x = 1;", "new_string": "let x = 2;"}), "ok", false);
+        a.push_md("Done.");
+        let lines = a.take_pending();
+        assert_eq!(text(&lines)[..3], ["◆ Edit src/a.rs +1 -1", "├─ let x = 1;", "└─ let x = 2;"]);
+        for (row, band) in [(1, look::delete_band()), (2, look::insert_band())] {
+            assert_eq!(lines[row].width(), usize::from(a.width), "the band runs the width");
+            assert!(lines[row].spans[1..].iter().all(|s| s.style.bg == band.bg));
+            let kw = lines[row].spans.iter().find(|s| s.content.starts_with("let")).expect("let");
+            let fg = look::edit_in_colour().then_some(Color::Magenta);
+            assert_eq!((kw.style.fg, kw.style.bg), (fg, band.bg), "in colour only on bands dark enough for it");
+        }
     }
 
     #[test]

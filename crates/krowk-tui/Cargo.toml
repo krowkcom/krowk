@@ -29,6 +29,13 @@ unicode-width = "0.2"
 # menus' ratatui Table it adds 161,024 bytes to full.size (7,951,400 ->
 # 8,112,424 on x86_64 Linux, 14,040 under the ceiling).
 nucleo-matcher = "0.3"
+# Code in colour, a fenced block in an answer or a file a call wrote
+# (`syntax`): syntect's highlighter over bat's grammars (two-face), which
+# have what syntect's own set lacks (TypeScript, TOML, Dockerfile). Pure
+# Rust regexes (fancy-regex), no oniguruma to build. Adds 2,225,888 bytes to
+# full.size (8,648,392 -> 10,874,280 on x86_64 Linux).
+syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
 
 [target.'cfg(unix)'.dependencies]
 # Ctrl-Z: stopping ourselves with SIGTSTP once the terminal is given back.

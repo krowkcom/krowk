@@ -157,7 +157,15 @@ unit = "bytes"
 # Its review (krowk's own files deleted by name, never a directory whole;
 # the two key files merged entry by entry; a held key compared as it is;
 # a linked key file named) adds 6,336: 8,498,216, 152,536 under this.
-max = { x86_64-linux = 8_650_752 }
+# Main measured 8,648,392 before code in colour (syntect and two-face,
+# bat's grammars: fenced blocks in answers, written files and edits
+# highlighted in the TUI), which adds 2,225,888 bytes: 10,874,280
+# (10.37 MiB), 2,223,528 over 8.25 MiB. About 0.95 MB is the grammars'
+# dump; the rest is syntect, fancy-regex and the dump's decoding. Loaded
+# lazily (2 ms on the first code shown), so startup and idle RSS do not
+# move. Raised 8.25 -> 10.50 MiB for it, leaving 135,768 bytes. A curated
+# grammar set could win back some of it later.
+max = { x86_64-linux = 11_010_048 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---
