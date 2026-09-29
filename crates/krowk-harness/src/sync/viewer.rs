@@ -235,7 +235,10 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                         held.clear();
                         catching_up = false;
                         if host && let Ok(h) = l.hello(b"{}") && !super::send(&mut w, h).await { retry = Instant::now() + Duration::from_secs(1); link = Some(l); continue; }
-                        applied = l.cursor().map_or(0, |c| c.1);
+                        // Where the stream stands for this viewer: its own cursor
+                        // on a stream it read, else the relay's count, live from
+                        // the next batch.
+                        applied = match l.cursor() { Some((s, n)) if joined["stream"].as_str() == Some(e2e::hex(&s).as_str()) => n, _ => joined["seq"].as_u64().unwrap_or(0) };
                         acked = applied;
                         link = Some(l);
                         if !host { frame.push(Update::Host(false)); }
@@ -378,8 +381,12 @@ fn fresh_only(events: Vec<serde_json::Value>, seen: &mut HashSet<String>, last: 
 /// One stream batch: its lines, the log's events among them once each.
 /// Answers whether it skipped past a batch this viewer never opened.
 fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mut Option<String>, frame: &mut Vec<Update>, applied: &mut u64) -> bool {
-    let Ok((body, end, gap)) = l.open_batch_gap(b) else { return false };
-    *applied = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
+    let Ok((body, end, skipped)) = l.open_batch_gap(b) else { return false };
+    let seq = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
+    // Against the last batch opened, or — the first since joining — the
+    // relay's count at the join: either way the batch must be the next.
+    let gap = skipped || seq != *applied + 1;
+    *applied = seq;
     let Ok(batch) = serde_json::from_slice::<Batch>(&body) else { return gap };
     for line in batch.lines {
         if let StreamLine::Log(e) = &line {

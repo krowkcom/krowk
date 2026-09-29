@@ -25,7 +25,7 @@ use krowk_harness::sync::{host, viewer};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
@@ -42,6 +42,10 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let messages = body["messages"].as_array().cloned().unwrap_or_default();
     let last = messages.last().cloned().unwrap_or_default();
     let has_result = last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
+    if !has_result && last.to_string().contains("a long answer") {
+        let words: String = (0..160).map(|i| format!("word{i} ")).collect();
+        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
+    }
     if !has_result && last.to_string().contains("make the file") {
         return mock::Reply::sse(&mock::tool_use("toolu_01Touch", "bash", &serde_json::json!({"command": "touch approved.txt"})));
     }
@@ -61,7 +65,23 @@ struct World {
     relay_b: String,
     _mock: mock::Mock,
     mock_url: String,
+    /// A's own way to the registry: `PASS`, `CUT` or `FAIL_WRITES`.
+    reg_a: String,
+    reg_mode: Arc<AtomicU8>,
+    /// What B's proxy does with what the relay sends B: `PASS`, `CUT`,
+    /// `DROP_ALL`, or `DROP_BATCHES` (stream batches only).
+    b_mode: Arc<AtomicU8>,
+    /// Stream batches B's proxy handed on.
+    b_batches: Arc<AtomicUsize>,
+    /// Under `DROP_BATCHES`, how many more to drop before passing again.
+    b_drop: Arc<AtomicUsize>,
 }
+
+const PASS: u8 = 0;
+const CUT: u8 = 1;
+const FAIL_WRITES: u8 = 2;
+const DROP_ALL: u8 = 2;
+const DROP_BATCHES: u8 = 3;
 
 struct Device {
     key: DeviceKey,
@@ -84,10 +104,21 @@ impl World {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let cut = Arc::new(AtomicBool::new(false));
         let relay_a = proxy(relay_addr, seen.clone(), cut.clone());
-        let relay_b = proxy(relay_addr, seen.clone(), Arc::new(AtomicBool::new(false)));
+        let (b_mode, b_batches) = (Arc::new(AtomicU8::new(PASS)), Arc::new(AtomicUsize::new(0)));
+        let b_drop = Arc::new(AtomicUsize::new(0));
+        let relay_b = viewer_proxy(relay_addr, seen.clone(), b_mode.clone(), b_batches.clone(), b_drop.clone());
+        let reg_mode = Arc::new(AtomicU8::new(PASS));
+        let reg_a = format!("http://{}/v1", registry_proxy(registry.addr(), reg_mode.clone()));
         let m = mock::serve(model);
         let mock_url = m.url.clone();
-        World { root, registry, api, account: AccountKey::generate(), seen, cut, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url }
+        World { root, registry, api, account: AccountKey::generate(), seen, cut, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
+    }
+
+    /// A's registry client, through A's own proxy.
+    fn a_client(&self) -> Arc<krowk_api::Client> {
+        let mut c = krowk_api::Client::new(&self.reg_a, "krowk_sk_sync_attach_0000000000000000");
+        c.sleep = |_| std::thread::sleep(Duration::from_millis(50));
+        Arc::new(c)
     }
 
     fn client(&self) -> Arc<krowk_api::Client> {
@@ -156,17 +187,22 @@ impl World {
 
     /// A's bridge for `session`, running until the handle is stopped.
     fn bridge(&self, a: &Device, session: &str, daemon: Arc<Client>) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
+        self.bridge_with(a, session, daemon, host::LEASE_TTL, host::KEEP)
+    }
+
+    fn bridge_with(&self, a: &Device, session: &str, daemon: Arc<Client>, ttl: u64, keep: usize) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
         let o = host::Options {
             relay: self.relay_a.clone(),
             env: "development".into(),
-            api: self.client(),
+            api: self.a_client(),
             device: a.key.id(),
             signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
             account: AccountKey::from_bytes(*self.account.as_bytes()),
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),
-            ttl: host::LEASE_TTL,
+            ttl,
+            keep,
         };
         let (stop, stop_rx) = watch::channel(false);
         let (cp, cp_rx) = mpsc::unbounded_channel();
@@ -264,6 +300,159 @@ fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>) -> Soc
     addr
 }
 
+/// A's registry proxy: `CUT` drops every connection, `FAIL_WRITES` answers
+/// every write (a POST or PUT) 503 — a registry failing, not gone.
+fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>) -> SocketAddr {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for mut c in l.incoming().flatten() {
+            if mode.load(Ordering::SeqCst) == CUT {
+                drop(c);
+                continue;
+            }
+            let mode = mode.clone();
+            std::thread::spawn(move || {
+                // One request a connection, so each is judged as it comes.
+                let mut req = Vec::new();
+                let mut buf = [0u8; 16384];
+                c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                loop {
+                    let Ok(n) = c.read(&mut buf) else { return };
+                    if n == 0 {
+                        return;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                    let Some(end) = req.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                    let head = String::from_utf8_lossy(&req[..end]).to_ascii_lowercase();
+                    let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+                    if req.len() >= end + 4 + len {
+                        break;
+                    }
+                }
+                let m = mode.load(Ordering::SeqCst);
+                if m == CUT {
+                    return;
+                }
+                if m == FAIL_WRITES && (req.starts_with(b"POST ") || req.starts_with(b"PUT ")) {
+                    let _ = c.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                    return;
+                }
+                // Asked to close after, so the next request is a connection of its own.
+                // Bytes, not text: the body of a chunk upload is ciphertext.
+                let end = req.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(0);
+                let head = String::from_utf8_lossy(&req[..end]).to_ascii_lowercase();
+                let req = if head.contains("\r\nconnection:") {
+                    req
+                } else {
+                    let line = req.windows(2).position(|w| w == b"\r\n").unwrap_or(0);
+                    [&req[..line + 2], b"Connection: close\r\n", &req[line + 2..]].concat()
+                };
+                let Ok(mut up) = TcpStream::connect(to) else { return };
+                if up.write_all(&req).is_err() {
+                    return;
+                }
+                let mut resp = Vec::new();
+                let _ = up.read_to_end(&mut resp);
+                let _ = c.write_all(&resp);
+            });
+        }
+    });
+    addr
+}
+
+/// B's relay proxy: records both ways; what the relay sends B passes, is
+/// cut, is dropped whole, or has its stream batches dropped, by `mode`.
+fn viewer_proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, mode: Arc<AtomicU8>, batches: Arc<AtomicUsize>, drop_left: Arc<AtomicUsize>) -> SocketAddr {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for c in l.incoming().flatten() {
+            if mode.load(Ordering::SeqCst) == CUT {
+                drop(c);
+                continue;
+            }
+            let Ok(up) = TcpStream::connect(to) else { continue };
+            for (down, (mut from, mut into)) in [(false, (c.try_clone().unwrap(), up.try_clone().unwrap())), (true, (up, c))] {
+                let (seen, mode, batches, drop_left) = (seen.clone(), mode.clone(), batches.clone(), drop_left.clone());
+                std::thread::spawn(move || {
+                    let mut pend: Vec<u8> = Vec::new();
+                    let mut shook = false;
+                    from.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+                    let mut buf = [0u8; 16384];
+                    loop {
+                        if mode.load(Ordering::SeqCst) == CUT {
+                            let _ = from.shutdown(std::net::Shutdown::Both);
+                            let _ = into.shutdown(std::net::Shutdown::Both);
+                            return;
+                        }
+                        let n = match from.read(&mut buf) {
+                            Ok(0) => {
+                                let _ = into.shutdown(std::net::Shutdown::Both);
+                                return;
+                            }
+                            Ok(n) => n,
+                            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
+                            Err(_) => {
+                                let _ = into.shutdown(std::net::Shutdown::Both);
+                                return;
+                            }
+                        };
+                        if !down {
+                            seen.lock().unwrap().extend_from_slice(&buf[..n]);
+                            if into.write_all(&buf[..n]).is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+                        // Relay to B: whole WebSocket frames (unmasked).
+                        pend.extend_from_slice(&buf[..n]);
+                        if !shook {
+                            let Some(i) = pend.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                            let h: Vec<u8> = pend.drain(..i + 4).collect();
+                            if into.write_all(&h).is_err() {
+                                return;
+                            }
+                            shook = true;
+                        }
+                        while pend.len() >= 2 {
+                            let (op, l7) = (pend[0] & 0x0f, (pend[1] & 0x7f) as usize);
+                            let (hl, len) = match l7 {
+                                126 if pend.len() >= 4 => (4, u16::from_be_bytes([pend[2], pend[3]]) as usize),
+                                127 if pend.len() >= 10 => (10, u64::from_be_bytes(pend[2..10].try_into().unwrap()) as usize),
+                                126 | 127 => break,
+                                l => (2, l),
+                            };
+                            if pend.len() < hl + len {
+                                break;
+                            }
+                            let f: Vec<u8> = pend.drain(..hl + len).collect();
+                            let p = &f[hl..];
+                            // A stream batch: kind 1 with a seq (a routed one's is 0).
+                            let batch = op == 2 && p.len() >= 28 && p[1] == 1 && p[20..28] != [0; 8];
+                            let m = mode.load(Ordering::SeqCst);
+                            if m == DROP_ALL {
+                                continue;
+                            }
+                            if batch && m == DROP_BATCHES && drop_left.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+                                continue;
+                            }
+                            if batch {
+                                batches.fetch_add(1, Ordering::SeqCst);
+                            }
+                            seen.lock().unwrap().extend_from_slice(&f);
+                            if into.write_all(&f).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    });
+    addr
+}
+
 /// Reads updates until `done` says so, or panics after `wait`. Every frame
 /// handed on is timed, for R-LAG-7.
 async fn until(v: &mut viewer::Viewer, wait: Duration, frames: &mut Vec<Instant>, mut done: impl FnMut(&viewer::Update) -> bool) -> Vec<viewer::Update> {
@@ -344,6 +533,20 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
         let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
         assert!(got.iter().any(|u| matches!(u, viewer::Update::Acked { error: Some(e), .. } if e.contains("nothing else"))), "{got:?}");
     }
+
+    // B's prompt runs under the session's settings, whatever it asks for.
+    let mut unhinged = w.prompt(Some(&session), "asking for more than it may");
+    if let Command::Prompt { permission_mode, model, .. } = &mut unhinged {
+        *permission_mode = PermissionMode::Unhinged;
+        *model = Some(Registry::resolve(&InstancesConfig::default(), &w.env()).parse_model("claude-haiku-4-5").unwrap());
+    }
+    v.commands.send(unhinged).unwrap();
+    until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join("events.jsonl")).unwrap();
+    let started: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).filter(|e| e["type"] == "turn.started").collect();
+    let (first, last) = (&started[0], started.last().unwrap());
+    assert_eq!(last["permissionMode"], "default", "never the viewer's unhinged: {last}");
+    assert_eq!(last["model"], first["model"], "never the viewer's model: {last}");
 
     // B types; A runs it.
     v.commands.send(w.prompt(Some(&session), &format!("make the file {PROMPT_MARKER}"))).unwrap();
@@ -446,4 +649,227 @@ async fn r_hand_4_with_a_offline_b_is_read_only_and_its_queued_prompt_runs_when_
     until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
     let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join("events.jsonl")).unwrap();
     assert!(log.contains("queued while A was away"), "the queued prompt ran on A");
+}
+
+/// The session's events as the registry holds them, read at rest by a
+/// device that has never seen it: what every later attach gets.
+async fn at_rest_ids(w: &World, session: &str) -> Result<Vec<String>, String> {
+    let (api, account, id) = (w.client(), AccountKey::from_bytes(*w.account.as_bytes()), session.to_string());
+    tokio::task::spawn_blocking(move || {
+        let s = api.show_sync_session(&id).map_err(|e| e.to_string())?;
+        let key = e2e::unwrap_session_key(&e2e::unhex(&s.wrapped_key).unwrap(), &krowk_harness::daemon::ws::uuid(&id), &account).map_err(|e| e.to_string())?;
+        let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index)?;
+        let a = krowk_harness::sync::store::attach(&api, &key, &id, index, None)?;
+        Ok(a.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect())
+    })
+    .await
+    .unwrap()
+}
+
+/// Waits until what the registry holds is A's whole log.
+async fn stored_whole(w: &World, session: &str, wait: Duration) {
+    let deadline = Instant::now() + wait;
+    loop {
+        let want = log_ids(w, session);
+        match at_rest_ids(w, session).await {
+            Ok(got) if got == want => return,
+            Ok(got) if Instant::now() > deadline => panic!("the registry holds {} of A's {} events: {:?}", got.len(), want.len(), want.iter().filter(|i| !got.contains(i)).collect::<Vec<_>>()),
+            Err(e) if Instant::now() > deadline => panic!("the log no longer reads: {e}"),
+            _ => tokio::time::sleep(Duration::from_millis(250)).await,
+        }
+    }
+}
+
+async fn turn(d: &Client, w: &World, session: &str, text: &str) {
+    let (tx, mut rx) = mpsc::channel(4096);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    d.execute(w.prompt(Some(session), text), tx).await.unwrap().unwrap();
+}
+
+/// R-OFF-2, R-SYNC-2: A's registry is gone for 12 seconds while a turn
+/// ends, and then fails every write with a 503 while another does. The
+/// chunks are put again, the same ones under the same indexes, once it is
+/// back: the log reads whole on any device, and a second bridge takes the
+/// session up.
+#[tokio::test]
+async fn r_off_2_a_registry_gone_or_failing_across_a_turn_end_loses_nothing() {
+    let w = World::new("regcut");
+    let a = w.device("machine-a");
+    let (d, session) = first_turn(&w).await;
+    let (stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+
+    w.reg_mode.store(CUT, Ordering::SeqCst);
+    turn(&d, &w, &session, "a turn while the registry is gone").await;
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    w.reg_mode.store(PASS, Ordering::SeqCst);
+    stored_whole(&w, &session, Duration::from_secs(15)).await;
+
+    w.reg_mode.store(FAIL_WRITES, Ordering::SeqCst);
+    turn(&d, &w, &session, "a turn while the registry fails").await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    w.reg_mode.store(PASS, Ordering::SeqCst);
+    stored_whole(&w, &session, Duration::from_secs(15)).await;
+
+    turn(&d, &w, &session, "a turn after").await;
+    stored_whole(&w, &session, Duration::from_secs(15)).await;
+    stop.send(true).unwrap();
+    bridge.await.unwrap().unwrap();
+    // The next holder reads the whole chain and writes on from it.
+    let (stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    stop.send(true).unwrap();
+    bridge.await.unwrap().expect("a second bridge takes the session up");
+}
+
+/// R-OFF-2: the registry gone longer than the lease's TTL, across a turn
+/// end: the lease lapses, the bridge takes it again under a new fence when
+/// the registry is back, and the chunk it could not write goes in then.
+#[tokio::test]
+async fn r_off_2_a_lease_lapsed_while_the_registry_was_gone_is_taken_again_and_nothing_is_lost() {
+    let w = World::new("lapse");
+    let a = w.device("machine-a");
+    let (d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, 10, host::KEEP);
+    w.synced(&session).await;
+    w.reg_mode.store(CUT, Ordering::SeqCst);
+    turn(&d, &w, &session, "a turn while the lease lapses").await;
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    w.reg_mode.store(PASS, Ordering::SeqCst);
+    stored_whole(&w, &session, Duration::from_secs(20)).await;
+    turn(&d, &w, &session, "a turn under the new lease").await;
+    stored_whole(&w, &session, Duration::from_secs(15)).await;
+}
+
+/// R-SYNC-2: while A's lease lapsed, another device took it. A's bridge
+/// writes nothing more and ends, saying the lease moved.
+#[tokio::test]
+async fn r_sync_2_a_bridge_whose_lease_another_device_took_stops() {
+    let w = World::new("lost");
+    let (a, c) = (w.device("machine-a"), w.device("machine-c"));
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, bridge) = w.bridge_with(&a, &session, w.daemon().await, 10, host::KEEP);
+    w.synced(&session).await;
+    w.reg_mode.store(CUT, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    let (api, id, dev) = (w.client(), session.clone(), c.key.id().to_string());
+    tokio::task::spawn_blocking(move || api.acquire_lease(&id, &dev, 60, "development")).await.unwrap().expect("C takes the lapsed lease");
+    w.reg_mode.store(PASS, Ordering::SeqCst);
+    let ended = tokio::time::timeout(Duration::from_secs(20), bridge).await.expect("the bridge stops").unwrap();
+    assert!(ended.is_err_and(|e| e.contains("lease")), "it says the lease moved");
+}
+
+/// R-LAG-7, R-LAG-4 over the relay: a session of well over 16 batches —
+/// the relay's window — reaches B whole, because B acknowledges what it
+/// applies.
+#[tokio::test]
+async fn r_lag_7_a_viewer_acks_so_a_long_answer_reaches_it_whole() {
+    let w = World::new("long");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    let before = w.b_batches.load(Ordering::SeqCst);
+    let dd = d.clone();
+    let prompt = w.prompt(Some(&session), "a long answer, please");
+    tokio::spawn(async move {
+        let (tx, mut rx) = mpsc::channel(4096);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let _ = dd.execute(prompt, tx).await;
+    });
+    let got = until(&mut v, Duration::from_secs(30), &mut frames, result_of).await;
+    let batches = w.b_batches.load(Ordering::SeqCst) - before;
+    assert!(batches > 100, "only {batches} batches");
+    assert!(got.iter().any(|u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ItemDelta { .. }))) ), "the typing arrived");
+    let text: String = got.iter().filter_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ItemDelta { delta, .. })) = u && let krowk_harness::protocol::Delta::Text { text } = delta { Some(text.clone()) } else { None }).collect();
+    assert!(text.contains("word0 ") && text.contains("word159 "), "the whole answer: {} chars", text.len());
+}
+
+/// R-LAG-8: a prompt whose ack was lost — B's downlink dropped, then cut —
+/// is sent again after the reconnect, and A runs it once.
+#[tokio::test]
+async fn r_lag_8_a_prompt_sent_again_after_a_lost_ack_runs_once() {
+    let w = World::new("dup");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    w.b_mode.store(DROP_ALL, Ordering::SeqCst);
+    v.commands.send(w.prompt(Some(&session), "run-once-marker-77")).unwrap();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    w.b_mode.store(CUT, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    w.b_mode.store(PASS, Ordering::SeqCst);
+    until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join("events.jsonl")).unwrap();
+    let n = log.lines().filter(|l| l.contains("run-once-marker-77") && l.contains("userText")).count();
+    assert_eq!(n, 1, "the prompt ran {n} times");
+}
+
+/// R-OFF-2: the relay drops three of B's stream batches mid-turn — fewer
+/// than its window, so what follows still flows. B sees the gap, asks A,
+/// and ends up with every event A's log holds.
+#[tokio::test]
+async fn r_off_2_batches_the_relay_dropped_show_as_a_gap_and_are_caught_up() {
+    let w = World::new("drop");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    let mut ids: Vec<String> = until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await.iter().flat_map(logged).collect();
+    w.b_drop.store(3, Ordering::SeqCst);
+    w.b_mode.store(DROP_BATCHES, Ordering::SeqCst);
+    turn(&d, &w, &session, "a turn the relay drops some of").await;
+    let mut gap = false;
+    let want = log_ids(&w, &session);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while want.iter().any(|i| !ids.contains(i)) && Instant::now() < deadline {
+        if let Ok(Some(batch)) = tokio::time::timeout(Duration::from_millis(500), v.updates.recv()).await {
+            gap |= batch.iter().any(|u| matches!(u, viewer::Update::Gap));
+            ids.extend(batch.iter().flat_map(logged));
+        }
+    }
+    assert!(gap, "the gap showed");
+    let missing: Vec<_> = want.iter().filter(|i| !ids.contains(i)).collect();
+    assert!(missing.is_empty(), "B never got {missing:?}");
+}
+
+/// R-OFF-2: A's link to the relay is down past what the bridge keeps, so
+/// it cannot carry its stream on and starts another; B, told to resync,
+/// is welcomed onto the new stream and caught up by A, losing nothing.
+#[tokio::test]
+async fn r_off_2_a_new_stream_after_a_long_cut_loses_nothing() {
+    let w = World::new("newstream");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, host::LEASE_TTL, 4);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    let mut ids: Vec<String> = until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await.iter().flat_map(logged).collect();
+    // Some batches on the first stream, so the relay holds a count.
+    turn(&d, &w, &session, "a turn on the first stream").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    w.cut.store(true, Ordering::SeqCst);
+    turn(&d, &w, &session, "a long answer while A is cut off").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    w.cut.store(false, Ordering::SeqCst);
+    let want = log_ids(&w, &session);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while want.iter().any(|i| !ids.contains(i)) && Instant::now() < deadline {
+        if let Ok(Some(batch)) = tokio::time::timeout(Duration::from_millis(500), v.updates.recv()).await {
+            ids.extend(batch.iter().flat_map(logged));
+        }
+    }
+    let missing: Vec<_> = want.iter().filter(|i| !ids.contains(i)).collect();
+    assert!(missing.is_empty(), "B never got {missing:?}");
 }

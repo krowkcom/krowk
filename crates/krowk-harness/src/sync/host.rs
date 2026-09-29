@@ -9,9 +9,10 @@
 //! interrupt, an approval — the bridge executes on the daemon as any client
 //! would, and answers the viewer with an ack. It says it answers approvals,
 //! so a request reaches the viewers as it reaches the terminal, and
-//! whichever answers first decides (R-PERM-2); one nobody answers within
-//! `APPROVAL_WAIT` is denied, so a turn never waits on a device that never
-//! comes.
+//! whichever answers first decides (R-PERM-2). A request of a turn a
+//! viewer started that no viewer is left to answer is denied after
+//! `APPROVAL_WAIT`, so such a turn never waits on a device that never
+//! comes; a turn started at the host's own terminal waits for its person.
 //!
 //! Losing the relay loses nothing (R-OFF-2): the turn runs on in the
 //! daemon, the chunks go on being written, and every batch sealed while the
@@ -46,8 +47,8 @@ pub fn renew_every(ttl: u64) -> Duration {
 pub const APPROVAL_WAIT: Duration = Duration::from_secs(300);
 
 /// Batches kept for the relay while its link is down: past this the oldest
-/// go, and a viewer resuming across them is told to resync and reads them
-/// from the chunks.
+/// go, the bridge starts a new stream when it is back, and each viewer,
+/// told to resync, asks the host for the logged events it lacks.
 pub const KEEP: usize = 1024;
 
 pub struct Options {
@@ -61,6 +62,8 @@ pub struct Options {
     pub title: String,
     pub cwd: String,
     pub ttl: u64,
+    /// Batches kept for the relay while its link is down (`KEEP`).
+    pub keep: usize,
 }
 
 /// The lease as the bridge holds it: the token only the holder has, its
@@ -319,7 +322,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                 let body = serde_json::to_vec(&Batch { lines: std::mem::take(&mut waiting), head }).expect("json");
                 let sealed = link.batch(&body, false).map_err(|e| e.to_string())?;
                 kept.push_back((link.last_seq(), sealed.clone()));
-                if kept.len() > KEEP { kept.pop_front(); }
+                if kept.len() > o.keep.max(1) { kept.pop_front(); }
                 if let Some(w) = ws.as_mut() && !super::send(w, sealed).await { ws = None; }
             }
             Some(h) = heads.recv() => head = Some(h),
