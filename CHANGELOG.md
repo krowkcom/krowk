@@ -27,6 +27,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **`cargo deny` on every pull request and at every tag.** A dependency
   with a RustSec advisory, a licence outside `deny.toml`'s list, or a
   source other than crates.io fails CI and stops a release.
+- **Idle sessions move off the machine as weekly vintages.** `krowk sessions
+  archive` takes every native session idle for more than 14 days
+  (`--older-than DAYS`, or `KROWK_ARCHIVE_AFTER_DAYS`) and stores each ISO
+  week's sessions in the registry as one vintage: zstd-compressed JSONL,
+  sealed under the account key, so the registry only ever holds ciphertext.
+  An existing vintage for the week is merged, never overwritten. `--weekly`
+  runs only when a week has passed since the last run, so it can be put on
+  a schedule. An archived session keeps its title, summary, directory,
+  dates, models and cost on the machine, so `krowk sessions` still lists
+  it, and `krowk sessions show` or `krowk -p --resume` fetches its week and
+  restores it into krowk.db first. `krowk sessions restore <id>` does that
+  on its own. `krowk sessions pin <id>` keeps a session from ever being
+  archived, and `unpin` undoes it. It needs `krowk sync` set up on the
+  machine.
 
 - **`krowk sync attach` answers approvals and steers the turn.** Besides
   prompts, a line typed on its stdin can be `/approve REQUEST_ID`,
@@ -239,6 +253,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - Keys the TUI suggests stand out: in hints, the help menu, the status line, approvals and questions, each key (`esc`, `enter`, `y`, `ctrl-g`, `?`) is white instead of grey like the words around it.
 
 ### Fixed
+
+- **Two quick Ctrl-Cs right after a prompt still print the resume line.**
+  Leaving that fast could beat the session's start to the TUI, so krowk
+  exited 130 without `krowk --resume <id>` although the host had already
+  started the session. The TUI now reads what the host already sent before it leaves.
 
 - **A viewer that moves to the direct path mid-session keeps receiving
   the session.** The direct listener replays from where the viewer was when

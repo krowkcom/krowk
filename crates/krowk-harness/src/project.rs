@@ -37,7 +37,11 @@ impl Source for Krowk {
 
     fn discover(&self, env: Env) -> Result<Vec<Ref>, ImportError> {
         let dir = log::sessions_dir(env).map_err(|e| ImportError::NoHome(format!("krowk: {}", e.fix())))?;
-        let found = log::list(&dir).map_err(|e| ImportError::Other(format!("krowk: list {}: {e}", dir.display())))?;
+        let mut found = log::list(&dir).map_err(|e| ImportError::Other(format!("krowk: list {}: {e}", dir.display())))?;
+        // An archived session is its stub until it is restored: listed and
+        // found from that alone (R-VINT-3).
+        #[cfg(unix)]
+        found.extend(crate::vintage::list_archived(&dir));
         Ok(found.into_iter().map(|(id, path)| Ref { provider: HARNESS.into(), id, path: path.display().to_string() }).collect())
     }
 
@@ -47,6 +51,12 @@ impl Source for Krowk {
     fn read(&self, _env: Env, r: &Ref, _cursor: &str) -> Result<(Thread, String, ReadResult), ImportError> {
         let path = Path::new(&r.path);
         let size = std::fs::metadata(path).map_err(|e| ImportError::Other(format!("krowk: stat {}: {e}", r.path)))?.len();
+        #[cfg(unix)]
+        if path.file_name().is_some_and(|f| f == crate::vintage::STUB_FILE) {
+            let stub: crate::vintage::Stub = serde_json::from_slice(&std::fs::read(path).map_err(|e| ImportError::Other(format!("krowk: read {}: {e}", r.path)))?)
+                .map_err(|e| ImportError::Other(format!("krowk: {} is not a stub this krowk reads: {e}", r.path)))?;
+            return Ok((stub_thread(&r.id, &stub), encode_cursor(&JsonlCursor { offset: size, size }), ReadResult::default()));
+        }
         let events = log::read_events(path).map_err(|e| ImportError::Other(format!("krowk: {}", e.message())))?;
         let mut res = ReadResult { lines: events.len(), ..ReadResult::default() };
         let th = thread(&events, &mut res).ok_or_else(|| ImportError::Other(format!("krowk: {} has no session.started event", r.path)))?;
@@ -56,6 +66,37 @@ impl Source for Krowk {
     fn unchanged(&self, _env: Env, r: &Ref, cursor: &str) -> bool {
         let Ok(c) = krowk_import::decode_jsonl_cursor(cursor) else { return false };
         std::fs::metadata(&r.path).is_ok_and(|m| m.len() == c.size && c.offset == c.size)
+    }
+}
+
+/// The thread an archived session's stub projects to (R-VINT-3): the
+/// session and its turns, each turn with one empty assistant message naming
+/// the model it ran on, so it lists, is found and is priced per model as it
+/// was — and no bodies, which are in its vintage.
+#[cfg(unix)]
+pub fn stub_thread(session_id: &str, stub: &crate::vintage::Stub) -> Thread {
+    let binding = |id: &str, resume: String| Binding { provider: HARNESS.into(), harness: HARNESS.into(), foreign_session_id: id.into(), resume_cmd: resume };
+    Thread {
+        worktree: krowk_import::worktree_for(&stub.directory),
+        session: Session { directory: stub.directory.clone(), title: stub.title.clone(), model: stub.model.clone(), provider: stub.provider.clone(), harness: HARNESS.into() },
+        binding: binding(session_id, format!("krowk -p --resume {session_id}")),
+        parent: stub.parent_session_id.as_deref().map(|p| binding(p, String::new())),
+        turns: stub
+            .turns
+            .iter()
+            .map(|t| Turn {
+                status: t.status.clone(),
+                cost_input: t.input,
+                cost_output: t.output,
+                cost_total: t.total,
+                cost_cache_read: t.cache_read,
+                cost_cache_write: t.cache_write,
+                cost_reasoning: t.reasoning,
+                cost_usd_micros: t.usd_micros,
+            })
+            .collect(),
+        messages: stub.turns.iter().enumerate().map(|(i, t)| message(Role::Assistant, &t.provider, &t.model, &format!("archived:{i}"), Some(i as i64), "", Vec::new())).collect(),
+        ..Thread::default()
     }
 }
 

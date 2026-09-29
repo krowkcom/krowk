@@ -50,6 +50,21 @@ pub(super) fn keystore(ctx: &Ctx) -> Result<Keystore, Error> {
     Ok(Keystore::new(&krowk_api::home::dir(ctx.io.env)?))
 }
 
+/// The registry client vintages are written and read with, signed as this
+/// device, and the account key they are sealed under: a machine that has
+/// not joined sync has no vintages to write or read.
+#[cfg(unix)]
+pub(super) fn vintage_keys(ctx: &Ctx) -> Result<(Client, krowk_client::e2e::AccountKey), Error> {
+    let ks = keystore(ctx)?;
+    let not_set_up = || fail("not_set_up", "archived sessions are sealed under the account key, which this machine does not hold — run `krowk sync init`, `recover` or `join` first");
+    let device = ks.device().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(not_set_up)?.id();
+    let account = ks.account().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(not_set_up)?;
+    let signing = ks.signing_key().map_err(|e| fail("keys_unreadable", e))?;
+    let key = krowk_client::e2e::SigningKey::from_secret(&*signing.secret_bytes()).map_err(|e| fail("keys_unreadable", e.to_string()))?;
+    let client = keyed_client(ctx, "archiving sessions")?.signed_by(krowk_client::e2e::DeviceSigner::new(device, key).shared());
+    Ok((client, account))
+}
+
 /// The registry client for sync calls, which all need a key to a workspace.
 pub(super) fn keyed_client(ctx: &Ctx, what: &str) -> Result<Client, Error> {
     let client = super::agent::new_client(ctx)?;
