@@ -123,7 +123,11 @@ fn register(ctx: &Ctx, s: &Setup) -> Result<Option<krowk_api::sync::Device>, Err
     // the keys made here are complete without it. Set up, not registered,
     // the summary says so, and `krowk sync register` does it later.
     let signing = keystore(ctx)?.signing_key().map_err(|e| fail("sync_setup_failed", e))?;
-    let registered = client.register_device(&e2e::hex(&s.device.public().0), &e2e::hex(&signing.public().0), &device_name(ctx), &s.account.id().to_string());
+    let signing_public = e2e::hex(&signing.public().0);
+    // Signed by the key it registers, which is how the registry knows the
+    // caller holds it (crypto.md → Signed registry requests).
+    let client = client.signed_by(e2e::DeviceSigner::new(s.device.id(), signing).shared());
+    let registered = client.register_device(&e2e::hex(&s.device.public().0), &signing_public, &device_name(ctx), &s.account.id().to_string());
     if registered.as_ref().is_err_and(|e| e.code() == "sync_requires_paid_plan" || e.status == 0 || e.status >= 500) {
         return Ok(None);
     }
@@ -258,8 +262,9 @@ pub(super) fn register_now(ctx: &mut Ctx) -> Result<(), Error> {
         return Err(fail("no_account_key", "this machine holds no account key to register — set sync up first: `krowk sync init`, `recover` or `join`"));
     };
     let signing = store.signing_key().map_err(|e| fail("sync_setup_failed", e))?;
-    let client = keyed_client(ctx, "`krowk sync register`")?;
-    let d = client.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), &device_name(ctx), &account.to_string())?;
+    let signing_public = e2e::hex(&signing.public().0);
+    let client = keyed_client(ctx, "`krowk sync register`")?.signed_by(e2e::DeviceSigner::new(device.id(), signing).shared());
+    let d = client.register_device(&e2e::hex(&device.public().0), &signing_public, &device_name(ctx), &account.to_string())?;
     let summary = format!("this machine ({}) is registered as {}, holding account key {account}", device.id(), printable(&d.name));
     if ctx.format == Format::Human {
         let _ = writeln!(ctx.io.stdout, "{summary}");

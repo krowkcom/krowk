@@ -13,6 +13,11 @@
 //! against a hostile registry — comparing the new device's id on both
 //! screens, and the account key's id on the new one — is krowk-client's and
 //! the command line's to do with what these calls return.
+//!
+//! Every call that acts as a device — registering or approving one, a lease
+//! call, writing a session or its chunks, asking for a relay ticket — is
+//! signed by this machine's device key (`Client::signed_by`), and refused
+//! before it is sent when the client has none. Reads are the API key's.
 
 use crate::client::{Client, slug_path};
 use crate::types::Upload;
@@ -214,11 +219,11 @@ impl Client {
     pub fn put_chunk_keyed(&self, session: &str, index: u64, sealed: &[u8], lease_token: &str, key: &str) -> Result<Chunk, Error> {
         let checksum = crate::client::sha256_hex(sealed);
         let body = json!({ "chunk": { "index": index, "byte_size": sealed.len(), "checksum": checksum, "lease_token": lease_token } });
-        let declared: Chunk = self.call("POST", &format!("/sessions/{}/chunks", slug_path(session)), Some(body), ATTEMPTS, Some(key.to_string()))?.0;
+        let declared: Chunk = self.call_as_device("POST", &format!("/sessions/{}/chunks", slug_path(session)), Some(body), ATTEMPTS, Some(key.to_string()))?.0;
         let upload = declared.upload.as_ref().filter(|u| !u.url.is_empty()).ok_or_else(|| crate::fail("no_upload_url", "the registry declared the chunk but did not say where to put its bytes"))?;
         self.put_blob(upload, sealed)?;
         let fin = json!({ "chunk": { "lease_token": lease_token } });
-        Ok(self.call("PUT", &format!("/sessions/{}/chunks/{index}/finalization", slug_path(session)), Some(fin), ATTEMPTS, None)?.0)
+        Ok(self.call_as_device("PUT", &format!("/sessions/{}/chunks/{index}/finalization", slug_path(session)), Some(fin), ATTEMPTS, None)?.0)
     }
 
     /// A page of a session's ready chunks from after `after`, with the URL
@@ -248,7 +253,7 @@ impl Client {
     /// hosted relay verifies its joins against.
     pub fn register_device(&self, public_key: &str, signing_key: &str, name: &str, account_key_id: &str) -> Result<Device, Error> {
         let body = json!({ "device": { "public_key": public_key, "signing_key": signing_key, "name": name, "account_key_id": account_key_id } });
-        Ok(self.call("POST", "/devices", Some(body), ATTEMPTS, None)?.0)
+        Ok(self.call_as_device("POST", "/devices", Some(body), ATTEMPTS, None)?.0)
     }
 
     pub fn list_devices(&self) -> Result<Vec<Device>, Error> {
@@ -279,7 +284,7 @@ impl Client {
     /// read as a failure when it had worked.
     pub fn approve_device(&self, slug: &str, device: &str, account_key_id: &str, wrapped_account_key: &str) -> Result<DeviceApproval, Error> {
         let body = json!({ "approval": { "device": device, "account_key_id": account_key_id, "wrapped_account_key": wrapped_account_key } });
-        Ok(self.call("PUT", &format!("/device_approvals/{}/approval", slug_path(slug)), Some(body), 1, None)?.0)
+        Ok(self.call_as_device("PUT", &format!("/device_approvals/{}/approval", slug_path(slug)), Some(body), 1, None)?.0)
     }
 
     pub fn list_sync_sessions(&self, before: &str, limit: i64) -> Result<SyncSessionPage, Error> {
@@ -301,7 +306,7 @@ impl Client {
         if let Some(token) = lease_token {
             session["lease_token"] = json!(token);
         }
-        Ok(self.call("PUT", &format!("/sessions/{}", slug_path(id)), Some(json!({ "session": session })), ATTEMPTS, None)?.0)
+        Ok(self.call_as_device("PUT", &format!("/sessions/{}", slug_path(id)), Some(json!({ "session": session })), ATTEMPTS, None)?.0)
     }
 
     /// Takes a lease nobody holds. Once: acquiring moves the fence on, so an
@@ -310,7 +315,7 @@ impl Client {
     /// `env` is the relay env its host ticket is for (`crate::relay_env`).
     pub fn acquire_lease(&self, id: &str, device: &str, ttl_seconds: u64, env: &str) -> Result<Lease, Error> {
         let body = json!({ "lease": { "device": device, "ttl": ttl_seconds, "env": env } });
-        Ok(self.call("POST", &format!("/sessions/{}/lease", slug_path(id)), Some(body), 1, None)?.0)
+        Ok(self.call_as_device("POST", &format!("/sessions/{}/lease", slug_path(id)), Some(body), 1, None)?.0)
     }
 
     /// The holder, by its token, keeps the lease (`device` itself) or hands it
@@ -319,18 +324,18 @@ impl Client {
     /// retry would present the old one and be refused as stale.
     pub fn renew_lease(&self, id: &str, device: &str, token: &str, ttl_seconds: u64, env: &str) -> Result<Lease, Error> {
         let body = json!({ "lease": { "device": device, "token": token, "ttl": ttl_seconds, "env": env } });
-        Ok(self.call("PUT", &format!("/sessions/{}/lease", slug_path(id)), Some(body), 1, None)?.0)
+        Ok(self.call_as_device("PUT", &format!("/sessions/{}/lease", slug_path(id)), Some(body), 1, None)?.0)
     }
 
     /// A viewer's relay ticket for `device` on session `id`, in `env`: what
     /// a device joins a relay channel with (relay.md → Tickets). Good for
     /// five minutes; ask again for the next join after that.
     pub fn relay_ticket(&self, id: &str, device: &str, env: &str) -> Result<RelayTicket, Error> {
-        self.get(&format!("/sessions/{}/relay_ticket?device={}&env={}", slug_path(id), slug_path(device), slug_path(env)))
+        Ok(self.call_as_device("GET", &format!("/sessions/{}/relay_ticket?device={}&env={}", slug_path(id), slug_path(device), slug_path(env)), None, ATTEMPTS, None)?.0)
     }
 
     pub fn release_lease(&self, id: &str, token: &str) -> Result<(), Error> {
         let url = format!("{}/sessions/{}/lease", self.base_url, slug_path(id));
-        self.request_raw("DELETE", &url, Some(json!({ "lease": { "token": token } })), ATTEMPTS, None).map(|_| ())
+        self.request_signed("DELETE", &url, Some(json!({ "lease": { "token": token } })), ATTEMPTS, None, Some(self.device_signer()?)).map(|_| ())
     }
 }

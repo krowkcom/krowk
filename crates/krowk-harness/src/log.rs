@@ -268,6 +268,11 @@ pub async fn synced() {
     }
 }
 
+/// How many syncs have been handed to the blocking pool.
+pub fn queued_syncs() -> u64 {
+    QUEUED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// How many syncs handed to the blocking pool have not run.
 pub fn pending_syncs() -> u64 {
     QUEUED.load(std::sync::atomic::Ordering::SeqCst).saturating_sub(DONE.load(std::sync::atomic::Ordering::SeqCst))
@@ -329,6 +334,7 @@ pub fn valid_id(id: &str) -> bool {
     id.len() == 36
         && id.bytes().enumerate().all(|(i, b)| if matches!(i, 8 | 13 | 18 | 23) { b == b'-' } else { b.is_ascii_hexdigit() && !b.is_ascii_uppercase() })
         && &id[14..15] == "7"
+        && matches!(id.as_bytes()[19], b'8' | b'9' | b'a' | b'b')
 }
 
 /// Every session directory with a log, as (id, events path).
@@ -440,6 +446,14 @@ mod tests {
         assert!(DONE.load(std::sync::atomic::Ordering::SeqCst) > done, "and the sync ran");
         drop((busy, rt));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_id_is_a_lowercase_uuidv7_with_the_rfc_variant() {
+        assert!(valid_id("0199a3c4-5b6d-7e8f-9a0b-1c2d3e4f5a6b"));
+        for bad in ["0199a3c4-5b6d-7e8f-0a0b-1c2d3e4f5a6b", "0199a3c4-5b6d-7e8f-fa0b-1c2d3e4f5a6b", "0199a3c4-5b6d-4e8f-9a0b-1c2d3e4f5a6b", "0199A3C4-5B6D-7E8F-9A0B-1C2D3E4F5A6B"] {
+            assert!(!valid_id(bad), "{bad}");
+        }
     }
 
     #[test]
