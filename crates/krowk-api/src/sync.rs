@@ -34,6 +34,10 @@ pub struct Device {
     pub id: String,
     #[serde(default, deserialize_with = "nullable")]
     pub public_key: String,
+    /// The Ed25519 key a relay checks this device's joins by (relay.md →
+    /// Why a signing key); empty for a device that has not registered one.
+    #[serde(default, deserialize_with = "nullable")]
+    pub signing_key: String,
     #[serde(default, deserialize_with = "nullable")]
     pub name: String,
     #[serde(default, deserialize_with = "nullable")]
@@ -215,8 +219,10 @@ impl Client {
     /// Says this machine holds the account key `account_key_id`. The same
     /// public key again is the same device, renamed; an account key other
     /// than the one the workspace's devices hold is `account_key_mismatch`.
-    pub fn register_device(&self, public_key: &str, name: &str, account_key_id: &str) -> Result<Device, Error> {
-        let body = json!({ "device": { "public_key": public_key, "name": name, "account_key_id": account_key_id } });
+    /// `signing_key` is the device's relay signing public key, which the
+    /// hosted relay verifies its joins against.
+    pub fn register_device(&self, public_key: &str, signing_key: &str, name: &str, account_key_id: &str) -> Result<Device, Error> {
+        let body = json!({ "device": { "public_key": public_key, "signing_key": signing_key, "name": name, "account_key_id": account_key_id } });
         Ok(self.call("POST", "/devices", Some(body), ATTEMPTS, None)?.0)
     }
 

@@ -11,6 +11,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Setting up sync now registers this machine's relay signing key.**
+  `krowk sync init`, `recover`, `join` and `register`, and `krowk devices
+  approve`, send the public half of the signing key beside the device key,
+  so krowk's hosted relay can tell this machine's connections from anyone
+  else's. A machine that set sync up before this sends it the next time it
+  runs `krowk sync register`.
 - **`krowk relay serve` runs a relay of your own.** It carries a synced
   session between the machine running it and the devices watching it, and
   only ever sealed bytes: it refuses anything not encrypted, and never

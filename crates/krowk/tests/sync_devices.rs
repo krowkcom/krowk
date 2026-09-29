@@ -202,6 +202,16 @@ fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
     assert_eq!(log, [TITLE.as_bytes().to_vec(), b"the last turn".to_vec()]);
     assert!(reader.finished(), "the log ends with its final chunk");
 
+    // R-RELAY-1: both machines registered the relay signing key they hold
+    // — the laptop at recover, the desktop at join — which is what the
+    // hosted relay checks their joins against.
+    let desktop_keys = Keystore::new(&desktop.join(".krowk"));
+    for keys in [&laptop_keys, &desktop_keys] {
+        let id = keys.device().unwrap().unwrap().id().to_string();
+        let registered = client.list_devices().unwrap().into_iter().find(|d| d.id == id).expect("the device is registered");
+        assert_eq!(registered.signing_key, e2e::hex(&keys.signing_key().unwrap().public().0), "device {id} registered its signing key");
+    }
+
     let listed = json(&run(&desktop, api, token, &["devices", "list", "--json"], ""));
     assert_eq!(listed["data"]["devices"].as_array().unwrap().len(), 2, "{listed}");
     assert_eq!(listed["data"]["devices"].as_array().unwrap().iter().filter(|d| d["this_device"] == true).count(), 1);
@@ -265,7 +275,7 @@ fn r_sync_2_a_stale_lease_holders_write_is_refused() {
     let account = AccountKey::generate();
     let (a, b) = (e2e::DeviceKey::generate(), e2e::DeviceKey::generate());
     for d in [&a, &b] {
-        client.register_device(&e2e::hex(&d.public().0), "machine", &account.id().to_string()).unwrap();
+        client.register_device(&e2e::hex(&d.public().0), &e2e::hex(&[7; 32]), "machine", &account.id().to_string()).unwrap();
     }
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
@@ -346,7 +356,7 @@ fn r_sync_2_a_chunk_with_a_stale_or_missing_lease_token_is_refused() {
     let account = AccountKey::generate();
     let (a, b) = (e2e::DeviceKey::generate(), e2e::DeviceKey::generate());
     for d in [&a, &b] {
-        client.register_device(&e2e::hex(&d.public().0), "machine", &account.id().to_string()).unwrap();
+        client.register_device(&e2e::hex(&d.public().0), &e2e::hex(&[7; 32]), "machine", &account.id().to_string()).unwrap();
     }
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
@@ -382,7 +392,7 @@ fn the_stand_in_models_the_session_cap_the_burst_ceiling_and_revocation() {
     let account = AccountKey::generate();
     let device = e2e::DeviceKey::generate();
     let public = e2e::hex(&device.public().0);
-    client.register_device(&public, "laptop", &account.id().to_string()).unwrap();
+    client.register_device(&public, &e2e::hex(&[7; 32]), "laptop", &account.id().to_string()).unwrap();
     let wrapped = |id: &[u8; 16]| e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), id, &account));
 
     let first: [u8; 16] = e2e::random();
@@ -399,11 +409,11 @@ fn the_stand_in_models_the_session_cap_the_burst_ceiling_and_revocation() {
     assert_eq!(client.acquire_lease(&uuid(&first), &device.id().to_string(), 60).unwrap_err().code(), "device_revoked");
     // The reset cleared the pin too, so registering again may pin another key.
     let fresh = AccountKey::generate().id().to_string();
-    client.register_device(&public, "laptop", &fresh).unwrap();
+    client.register_device(&public, &e2e::hex(&[7; 32]), "laptop", &fresh).unwrap();
     client.acquire_lease(&uuid(&first), &device.id().to_string(), 60).unwrap();
 
     // 120 creates a minute, then 429 (two spent above).
-    let refused = (0..125).find_map(|_| client.register_device(&public, "laptop", &fresh).err()).expect("the ceiling was met");
+    let refused = (0..125).find_map(|_| client.register_device(&public, &e2e::hex(&[7; 32]), "laptop", &fresh).err()).expect("the ceiling was met");
     assert_eq!(refused.code(), "too_many_requests");
 }
 
@@ -417,7 +427,7 @@ fn r_sync_2_a_displaced_holders_pending_chunk_is_replaced_not_finalized() {
     let account = AccountKey::generate();
     let (a, b) = (e2e::DeviceKey::generate(), e2e::DeviceKey::generate());
     for d in [&a, &b] {
-        client.register_device(&e2e::hex(&d.public().0), "machine", &account.id().to_string()).unwrap();
+        client.register_device(&e2e::hex(&d.public().0), &e2e::hex(&[7; 32]), "machine", &account.id().to_string()).unwrap();
     }
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();

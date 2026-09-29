@@ -36,6 +36,8 @@ const LEASE_TTL: std::ops::RangeInclusive<i64> = 10..=600;
 pub struct Device {
     pub id: String,
     pub public_key: String,
+    /// The relay signing public key, hex; empty until the device sends one.
+    pub signing_key: String,
     pub name: String,
     pub created_at: Timestamp,
     /// None for a device an approval created, until it next acts.
@@ -244,6 +246,7 @@ fn serialize_device(d: &Device) -> Json {
     Json::map([
         ("id", Json::str(&d.id)),
         ("public_key", Json::str(&d.public_key)),
+        ("signing_key", if d.signing_key.is_empty() { Json::Null } else { Json::str(&d.signing_key) }),
         ("name", Json::str(&d.name)),
         ("created_at", Json::str(rfc3339_nano(d.created_at))),
         ("last_seen_at", d.last_seen_at.map_or(Json::Null, |t| Json::str(rfc3339_nano(t)))),
@@ -336,6 +339,10 @@ pub fn register_device(app: &App, req: &mut Req) -> Resp {
         let mut f = v.fields();
         let public_key = required(&mut f, "public_key")?;
         let key = blob("public_key", &public_key, Some(PUBLIC_KEY_BYTES), None)?;
+        // Optional, as the registry has it: a CLI from before it registers
+        // without one, and registering again without one keeps it.
+        let signing = f.string("signing_key");
+        let signing = if signing.is_empty() { None } else { Some(hex(&blob("signing_key", &signing, Some(PUBLIC_KEY_BYTES), None)?)) };
         let name = name_field(&mut f)?;
         let account = id_field("account_key_id", &required(&mut f, "account_key_id")?)?;
         let mut s = app.lock();
@@ -348,6 +355,7 @@ pub fn register_device(app: &App, req: &mut Req) -> Resp {
         let d = s.sync.devices.entry((workspace, id.clone())).or_insert_with(|| Device {
             id,
             public_key: hex(&key),
+            signing_key: String::new(),
             name: String::new(),
             created_at: now,
             last_seen_at: Some(now),
@@ -358,6 +366,9 @@ pub fn register_device(app: &App, req: &mut Req) -> Resp {
         // Only the owner's reset revokes here, and a reset clears the slate:
         // registering again is the way back (Device#registrable?).
         d.name = name;
+        if let Some(signing) = signing {
+            d.signing_key = signing;
+        }
         d.last_seen_at = Some(now);
         d.revoked_at = None;
         let resp = Resp::json(if fresh { 201 } else { 200 }, &serialize_device(d));
@@ -463,6 +474,7 @@ pub fn approve(app: &App, req: &mut Req, slug: &str) -> Resp {
         let d = sync.devices.entry((workspace, id.clone())).or_insert_with(|| Device {
             id,
             public_key,
+            signing_key: String::new(),
             name: String::new(),
             created_at: now,
             last_seen_at: None,

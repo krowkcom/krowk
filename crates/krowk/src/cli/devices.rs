@@ -72,7 +72,8 @@ pub(super) fn approve(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let client = keyed_client(ctx, "`krowk devices approve`")?;
     // Registered first, so the registry knows the device the answer is
     // from; the same key again is the same row.
-    client.register_device(&e2e::hex(&device.public().0), &device_name(ctx), &account.id().to_string())?;
+    let signing = store.signing_key().map_err(|e| fail("sync_setup_failed", e))?;
+    client.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), &device_name(ctx), &account.id().to_string())?;
     let pending = client.list_device_approvals()?;
     // Each request's id computed here, from the key this machine would wrap
     // to, never taken from the registry's own `id`.
