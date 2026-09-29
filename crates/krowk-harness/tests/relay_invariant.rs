@@ -271,7 +271,8 @@ fn r_relay_1_a_relay_refuses_to_start_on_state_it_cannot_trust() {
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
     let append = |bytes: Vec<u8>| move |p: &std::path::Path| std::fs::OpenOptions::new().append(true).open(p).unwrap().write_all(&bytes).unwrap();
-    let cases: Vec<(&str, Box<dyn FnOnce(&std::path::Path)>)> = vec![
+    type Damage = Box<dyn FnOnce(&std::path::Path)>;
+    let cases: Vec<(&str, Damage)> = vec![
         ("truncated", Box::new(|p: &std::path::Path| {
             let b = std::fs::read(p).unwrap();
             std::fs::write(p, &b[..60]).unwrap();
