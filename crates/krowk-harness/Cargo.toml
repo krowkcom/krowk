@@ -17,6 +17,11 @@ krowk-api = { path = "../krowk-api" }
 # The log projects into krowk.db through the same writer the importers use.
 krowk-store = { path = "../krowk-store" }
 krowk-import = { path = "../krowk-import" }
+# The end-to-end constructions: the relay checks a device's join signature
+# with them (engineering/relay.md), and ticket 19 seals frames with them.
+# The only crate that may call a primitive (tests/crypto_boundary.rs), and
+# linked into the full build already by `krowk sync`, so it costs nothing.
+krowk-client = { path = "../krowk-client" }
 serde = { version = "1", features = ["derive"] }
 # raw_value: the catalog reads one model out of the megabytes of the
 # models.dev cache without building the rest (the CLI already enables it).

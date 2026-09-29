@@ -78,6 +78,8 @@ pub mod permissions;
 pub mod project;
 pub mod protocol;
 pub mod readiness;
+#[cfg(unix)]
+pub mod relay;
 pub mod schema;
 pub mod subagent;
 pub mod sse;

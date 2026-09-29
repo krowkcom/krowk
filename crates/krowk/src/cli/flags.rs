@@ -105,6 +105,14 @@ pub struct Flags {
     pub key_stdin: bool,
     #[cfg(feature = "harness")]
     pub key_ref: String,
+    /// `relay serve`: where it listens, whom it trusts, and the origin
+    /// devices sign.
+    #[cfg(feature = "harness")]
+    pub addr: String,
+    #[cfg(feature = "harness")]
+    pub keyring: String,
+    #[cfg(feature = "harness")]
+    pub origin: String,
     /// Which flags were typed, by canonical name — a different question from
     /// what they carry: `--jq "$UNSET"` was given and is empty.
     pub given: BTreeSet<String>,
@@ -270,6 +278,12 @@ impl Flags {
             "method" => text(&mut self.method),
             #[cfg(feature = "harness")]
             "key-ref" => text(&mut self.key_ref),
+            #[cfg(feature = "harness")]
+            "addr" => text(&mut self.addr),
+            #[cfg(feature = "harness")]
+            "keyring" => text(&mut self.keyring),
+            #[cfg(feature = "harness")]
+            "origin" => text(&mut self.origin),
             _ => {
                 let b = parse_bool(name, v)?;
                 *match name {
