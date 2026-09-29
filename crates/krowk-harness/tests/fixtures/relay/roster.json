@@ -626,6 +626,30 @@
       "revoked": false
     },
     {
+      "name": "pool3-host",
+      "id": "4a07c7e676d378c36b0bcffac34c79ab",
+      "seed": "e6556d592999f95cf4df4345b6caea6b64cac1caf0c16d1f491f72f4c701f28a",
+      "signingKey": "584aa6d44eadaf72f4ffe5172732a092e7f4b9844fa158c3b40d82791603baac",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "pool3-viewer",
+      "id": "519b4b1028ad45b19dc05a1159604c5a",
+      "seed": "ae6dbea41fcaebf2eb996642671c73dcc5d96ad9581eb03b247083fd9d2ce7c0",
+      "signingKey": "21b61714ef27d486ae6b4e1e118aef89376749523d35183a30599eaad0d4a8bb",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "pool3-viewer2",
+      "id": "53128b54e03274ed2c0adf99fc7f1250",
+      "seed": "c124401ecaa74182b7959789495e95a12e78dcb4f96943d9f2076cebc5b0347b",
+      "signingKey": "e47b7f8e9f5193c69bcfaefec72a2e78e36fde1442278660f1f111e4d3a8fc43",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
       "name": "outsider",
       "id": "efc5fa16d87af0fe9215049762a334ac",
       "seed": "238e38bd09339bbfe7d2ce99c28792a6f411ea15b4aa219c9f6845c00740036c",
@@ -832,6 +856,13 @@
       "workspace": "ws_conformance_a",
       "holder": "8d7bc87400ad46ebb4ec61f675694c2e",
       "fence": 197
+    },
+    {
+      "name": "pool3",
+      "id": "94877501-53c1-7977-baaa-51316d65d62d",
+      "workspace": "ws_conformance_a",
+      "holder": "4a07c7e676d378c36b0bcffac34c79ab",
+      "fence": 176
     },
     {
       "name": "xws-b",

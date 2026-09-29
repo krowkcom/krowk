@@ -90,6 +90,9 @@ pub struct Limits {
     /// in all: a pool of their own, so neither a flood of strangers nor one
     /// of tickets can take the other's room.
     pub unjoined_ticketed: usize,
+    /// Of those, one workspace's: at its cap the workspace's own are let go,
+    /// so a tenant spreading tickets over its own sessions evicts only itself.
+    pub unjoined_per_workspace: usize,
     /// Connections open on one channel that have not joined: the
     /// contract's own bound, which a per-session object can hold.
     pub unjoined_per_channel: usize,
@@ -134,6 +137,7 @@ impl Default for Limits {
             unjoined: 1024,
             unjoined_per_peer: 32,
             unjoined_ticketed: 1024,
+            unjoined_per_workspace: 64,
             unjoined_per_channel: 64,
             unjoined_per_device: 2,
             ticket_lifetime: krowk_client::relay_ticket::MAX_LIFETIME,
@@ -231,12 +235,24 @@ pub struct Config {
 
 /// Runs a relay on `listener` until the process ends.
 pub fn run(listener: std::net::TcpListener, config: Config) -> Result<(), String> {
-    // The state is read, strictly, before anything is served: a relay that
-    // cannot trust its fences does not start.
-    let state = match config.state.as_deref() {
+    let state = open(&config)?;
+    run_opened(listener, config, state)
+}
+
+/// A relay's `--state`, opened and read strictly, its lock held: before
+/// anything is bound or announced, so a relay that cannot trust its fences
+/// never says it is listening.
+pub struct Opened(Option<(std::fs::File, HashMap<Key, Channel>)>);
+
+pub fn open(config: &Config) -> Result<Opened, String> {
+    Ok(Opened(match config.state.as_deref() {
         Some(dir) => Some(open_state(dir, &config.limits).map_err(|StateRefused(why)| why)?),
         None => None,
-    };
+    }))
+}
+
+/// Runs a relay on `listener` with its state opened already (`open`).
+pub fn run_opened(listener: std::net::TcpListener, config: Config, Opened(state): Opened) -> Result<(), String> {
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("the async runtime could not start: {e}"))?;
     let local = tokio::task::LocalSet::new();
@@ -291,6 +307,9 @@ struct Pending {
     /// The device and role its ticket names, once the upgrade carried a
     /// good one: a device's viewer tickets never take its host's places.
     device: Option<([u8; 16], u8)>,
+    /// The workspace its ticket names: the unit a tenant cannot multiply
+    /// for free, as it can sessions and devices.
+    workspace: Option<Rc<str>>,
     kill: Rc<tokio::sync::Notify>,
 }
 
@@ -316,26 +335,40 @@ impl Relay {
         }
     }
 
-    /// At the pool's cap with every connection ticketed: one goes from the
-    /// channel holding the most pending — a viewer's before a host's, the
-    /// oldest first — so no workspace filling the pool with its own
-    /// tickets, across any number of its sessions, pushes out a device of a
-    /// channel holding fewer (relay.md → Limits). As a Durable Object holds
-    /// each channel to its own cap, this holds the pool to the fullest.
-    fn evict_from_fullest(&self) {
+    /// Lets go one ticketed pending connection among those `within` picks:
+    /// from its fullest channel, a viewer's before a host's, the oldest
+    /// first.
+    fn evict_fullest_channel(&self, within: impl Fn(&Pending) -> bool) {
         let mut counts: HashMap<Key, usize> = HashMap::new();
-        for p in self.pending.borrow().iter().filter(|p| p.device.is_some()) {
+        for p in self.pending.borrow().iter().filter(|p| p.device.is_some() && within(p)) {
             if let Some(k) = p.session {
                 *counts.entry(k).or_default() += 1;
             }
         }
         let Some((&fullest, _)) = counts.iter().max_by_key(|(_, n)| **n) else { return };
-        let viewer = self.pending.borrow().iter().any(|p| p.session == Some(fullest) && p.device.is_some_and(|(_, r)| r == RELAY_ROLE_VIEWER));
-        if viewer {
-            self.evict(|p| p.session == Some(fullest) && p.device.is_some_and(|(_, r)| r == RELAY_ROLE_VIEWER));
+        let in_fullest = |p: &Pending| p.session == Some(fullest) && p.device.is_some() && within(p);
+        let viewer = |p: &Pending| in_fullest(p) && p.device.is_some_and(|(_, r)| r == RELAY_ROLE_VIEWER);
+        if self.pending.borrow().iter().any(viewer) {
+            self.evict(viewer);
         } else {
-            self.evict(|p| p.session == Some(fullest) && p.device.is_some());
+            self.evict(in_fullest);
         }
+    }
+
+    /// At the ticketed pool's cap: one goes from the workspace holding the
+    /// most pending, from its fullest channel, a viewer's first. Fair by
+    /// workspace, not channel: a tenant can spread over as many of its own
+    /// sessions as it likes, and a channel with a host and two viewers
+    /// reconnecting would then be the fullest (relay.md → Limits).
+    fn evict_from_fullest(&self) {
+        let mut counts: HashMap<Rc<str>, usize> = HashMap::new();
+        for p in self.pending.borrow().iter().filter(|p| p.device.is_some()) {
+            if let Some(w) = &p.workspace {
+                *counts.entry(w.clone()).or_default() += 1;
+            }
+        }
+        let Some((fullest, _)) = counts.into_iter().max_by_key(|(_, n)| *n) else { return };
+        self.evict_fullest_channel(|p| p.workspace.as_deref() == Some(&*fullest));
     }
 
     /// A new pending connection, room made for it under the caps.
@@ -358,7 +391,7 @@ impl Relay {
         let id = self.pending_ids.get() + 1;
         self.pending_ids.set(id);
         let kill = Rc::new(tokio::sync::Notify::new());
-        self.pending.borrow_mut().push_back(Pending { id, peer, session: None, device: None, kill: kill.clone() });
+        self.pending.borrow_mut().push_back(Pending { id, peer, session: None, device: None, workspace: None, kill: kill.clone() });
         (id, kill)
     }
 
@@ -367,14 +400,19 @@ impl Relay {
     /// verified: room made there, first among that device's own pending
     /// connections, so a replayed ticket costs only the device it names and
     /// no stranger (who has no ticket) is ever counted on a channel.
-    fn names(&self, id: u64, session: Key, device: [u8; 16], role: u8) {
+    fn names(&self, id: u64, session: Key, device: [u8; 16], role: u8, workspace: &str) {
         let limits = &self.config.limits;
         let device = (device, role);
+        let workspace: Rc<str> = workspace.into();
         if self.pending.borrow().iter().filter(|p| p.session == Some(session) && p.device == Some(device)).count() >= limits.unjoined_per_device {
             self.evict(|p| p.session == Some(session) && p.device == Some(device));
         }
         if self.pending.borrow().iter().filter(|p| p.session == Some(session)).count() >= limits.unjoined_per_channel {
             self.evict(|p| p.session == Some(session));
+        }
+        // A workspace at its own cap makes room among its own.
+        if self.pending.borrow().iter().filter(|p| p.device.is_some() && p.workspace.as_deref() == Some(&*workspace)).count() >= limits.unjoined_per_workspace {
+            self.evict_fullest_channel(|p| p.workspace.as_deref() == Some(&*workspace));
         }
         if self.pending.borrow().iter().filter(|p| p.device.is_some()).count() >= limits.unjoined_ticketed {
             self.evict_from_fullest();
@@ -382,6 +420,7 @@ impl Relay {
         if let Some(p) = self.pending.borrow_mut().iter_mut().find(|p| p.id == id) {
             p.session = Some(session);
             p.device = Some(device);
+            p.workspace = Some(workspace);
         }
     }
 
@@ -656,7 +695,7 @@ async fn handshake(stream: Metered, relay: &Rc<Relay>, pending: u64, kill: &toki
         }
     };
     let env = env.expect("checked with the ticket");
-    relay.names(pending, (env, session), ticket.1.device, ticket.1.role);
+    relay.names(pending, (env, session), ticket.1.device, ticket.1.role, &ticket.1.workspace);
     let result = challenge(&mut ws, relay, session, Some(env), &host, ticket, kill).await;
     let (device, role, join) = result?;
     Some((ws, (env, session), device, role, join))
