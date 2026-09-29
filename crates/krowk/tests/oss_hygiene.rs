@@ -4,10 +4,13 @@
 //! on anything krowk ships under its own name, and a `cargo deny` policy
 //! that cannot be loosened quietly.
 //!
-//! The rest of D18 is checked elsewhere: signing, the SBOM and the
-//! reproducible rebuild are steps of `.github/workflows/release.yml`,
-//! `cargo deny` itself is CI's `deny` job, and the lean build's dependency
-//! promise (R-OSS-7) is `scripts/lean_deps_check.sh`.
+//! The rest of D18 is checked elsewhere. The public threat model and
+//! crypto design (R-OSS-1) are Canon's `engineering/threat-model.md` and
+//! `engineering/crypto.md`, and the audit they scope (R-OSS-2) is ticket
+//! 37. Signing, the SBOM and the reproducible rebuild are steps of
+//! `.github/workflows/release.yml`, `cargo deny` itself is CI's `deny` job,
+//! and the lean build's dependency promise (R-OSS-7) is
+//! `scripts/lean_deps_check.sh`.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};

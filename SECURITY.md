@@ -54,8 +54,9 @@ an attacker already running code as your user (the threat model says why),
 and missing hardening headers on marketing pages.
 
 The threat model, with the server side assumed hostile, and the crypto
-design are Canon's `engineering/threat-model.md` and
-`engineering/crypto.md`.
+design are `engineering/threat-model.md` and `engineering/crypto.md` in
+[krowkcom/canon](https://github.com/krowkcom/canon), the repository that
+holds krowk's design.
 
 ## Supported versions
 
@@ -97,7 +98,7 @@ nowhere else, and carries:
   SBOMs of the full and lean builds, each with its own `.sigstore.json`.
 
 To check a download, with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
-2.4 or later:
+3 or later:
 
 ```bash
 tag=v0.1.0   # the release you downloaded

@@ -88,6 +88,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # cargo deny reads the graph through `cargo metadata`, so the same
+      # toolchain as the rest.
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.97 --profile minimal
+          rustup default 1.97
+
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny@0.20.2
