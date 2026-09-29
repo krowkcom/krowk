@@ -329,7 +329,13 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                         // runs twice (the host dedups by command id).
                         let present = v["present"].as_bool().unwrap_or(false);
                         let welcomed = link.as_ref().is_some_and(|l| l.welcomed());
-                        if present && !welcomed { ws = None; retry = Instant::now(); } else if !present { host = false; frame.push(Update::Host(false)); }
+                        if !present && (on.is_some() || moving.is_some()) {
+                            // The host's uplink to its direct listener went, not
+                            // the host: back to the relay, where it may still be.
+                            ws = None;
+                            retry = Instant::now();
+                            reprobe = Instant::now() + REPROBE;
+                        } else if present && !welcomed { ws = None; retry = Instant::now(); } else if !present { host = false; frame.push(Update::Host(false)); }
                     }
                     In::Control(v) if v["type"] == "resync" => {
                         if v["reason"] == "stream" {

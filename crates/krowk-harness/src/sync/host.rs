@@ -294,7 +294,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let mut retry = Instant::now();
     // The direct listener, when tailscaled gives this machine an address:
     // a second uplink, sent every batch the relay is, never in its place.
-    let listening = match o.direct.as_ref().map(super::direct::listen) {
+    let listening = match o.direct.as_ref().map(|c| super::direct::listen(c, crate::daemon::ws::uuid(&o.session), o.device)) {
         Some(Ok(l)) => Some(l),
         Some(Err(e)) => {
             eprintln!("krowk: no direct path ({e}); the session goes by the relay");

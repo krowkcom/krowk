@@ -246,6 +246,11 @@ pub struct Config {
     /// tailscaled does not name as this tailnet user is closed before the
     /// upgrade. The ticket and the challenge still decide who joins.
     pub whois: Option<crate::sync::tailscale::SameUser>,
+    /// A host's direct listener carries its one session, and only its own
+    /// device hosts there: a ticket for another session, or a host ticket
+    /// of another device — a former lease holder's, not yet expired — is
+    /// refused, since this relay's fences start afresh with its bridge.
+    pub pin: Option<([u8; 16], DeviceId)>,
 }
 
 /// Runs a relay on `listener` until the process ends.
@@ -951,6 +956,14 @@ fn admit(relay: &Relay, key: Key, nonce: &[u8; 32], origin: &str, mut j: Join, t
     }
     if t.device != j.device.0 {
         return Err(bad("another device"));
+    }
+    if let Some((only, host)) = relay.config.pin {
+        if session != only {
+            return Err(bad("a session this host's direct listener does not carry"));
+        }
+        if j.role == RELAY_ROLE_HOST && j.device != host {
+            return Err(bad("hosting on another device's direct listener"));
+        }
     }
     if t.role == RELAY_ROLE_HOST && j.role == RELAY_ROLE_VIEWER {
         return Err(bad("hosting, and this join is a viewer's"));

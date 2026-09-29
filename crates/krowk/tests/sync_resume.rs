@@ -31,7 +31,7 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
     let relay_url = format!("ws://{}", relay.local_addr().unwrap());
     let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
     let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
-    std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None }));
+    std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None }));
 
     // Machine A wrote the session to the registry and went away.
     let account = AccountKey::generate();

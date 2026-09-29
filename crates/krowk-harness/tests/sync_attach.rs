@@ -100,7 +100,7 @@ impl World {
         let relay_addr = relay.local_addr().unwrap();
         let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
         let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
-        std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None }));
+        std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None }));
         let seen = Arc::new(Mutex::new(Vec::new()));
         let cut = Arc::new(AtomicBool::new(false));
         let relay_a = proxy(relay_addr, seen.clone(), cut.clone());

@@ -72,7 +72,7 @@ impl Drop for Listening {
 /// Reads this node from tailscaled and listens on its tailnet address (and
 /// LAN address), on one port. Errors say why there is no direct path; the
 /// session then goes by the relay alone.
-pub fn listen(c: &Config) -> Result<Listening, String> {
+pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) -> Result<Listening, String> {
     let status = tailscale::status(&c.socket)?;
     if !status.running() {
         return Err(format!("tailscale is {}", if status.backend_state.is_empty() { "not running" } else { &status.backend_state }));
@@ -108,7 +108,7 @@ pub fn listen(c: &Config) -> Result<Listening, String> {
             }
         }
     }
-    let config = relay::Config { roster: c.roster.clone(), origin: None, limits: Limits { first_link: FIRST_LINK, ..Limits::default() }, state: None, origins: candidates.iter().map(|c| c.url.clone()).collect(), whois };
+    let config = relay::Config { roster: c.roster.clone(), origin: None, limits: Limits { first_link: FIRST_LINK, ..Limits::default() }, state: None, origins: candidates.iter().map(|c| c.url.clone()).collect(), whois, pin: Some((session, host)) };
     let (stop, rx) = match c.stop.clone() {
         Some(rx) => (None, rx),
         None => {

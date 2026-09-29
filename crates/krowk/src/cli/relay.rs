@@ -37,7 +37,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     if state.is_none() && !addr.ip().to_canonical().is_loopback() {
         return Err(fail("bad_flags", format!("--addr {asked} is reachable from the network, so the relay needs --state DIR: where it keeps each channel's fence across restarts")));
     }
-    let config = Config { roster, origin: origin.clone(), limits: Limits::default(), state, origins: Vec::new(), whois: None };
+    let config = Config { roster, origin: origin.clone(), limits: Limits::default(), state, origins: Vec::new(), whois: None, pin: None };
     // The state first: a relay that will not start says so before it says
     // it is listening.
     let opened = relay::open(&config).map_err(|e| fail("bad_state", e))?;
