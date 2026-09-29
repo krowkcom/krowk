@@ -984,33 +984,56 @@ async fn page(state: &Shared, client: u64, session: &str, cursor: outbox::Cursor
     }
 }
 
+/// How much of a read of `session`'s log a page may replay, matched
+/// against its hub as it is now: `under_way` whether a turn runs or a
+/// streaming command is registered, `head` the last of its own events sent
+/// live, `base` what the log held when the command registered. None: the
+/// read is behind what was sent live, and is to be read again.
+///
+/// The read ran on the blocking pool while the daemon's thread went on, so
+/// the session may have moved past it — a turn may even have ended — and
+/// every event it published meanwhile was dropped for this client, which
+/// was behind. A read that does not reach the head misses them, under way
+/// or not: taken as the whole log once the turn had ended, it lost the
+/// turn's last logged events for good (R-LAG-4). With the head in the read
+/// it has all that was sent live: up to the head while a turn runs, since
+/// what lies beyond it comes live in order; all of it once none runs,
+/// since nothing more comes.
+/// With it, whether the running turn's frames after the head follow.
+fn extent(under_way: bool, head: Option<&str>, base: usize, events: &[crate::protocol::LogEvent], tries: u32) -> Option<(usize, bool)> {
+    let n = events.len();
+    let at = head.and_then(|h| events.iter().position(|e| e.id == h));
+    match (head, at) {
+        // Nothing sent live: the log as it was before the command, all of
+        // which is history, or all of it when none is under way.
+        (None, _) if under_way => Some((base.min(n), false)),
+        (None, _) => Some((n, false)),
+        (Some(_), Some(at)) if under_way => Some((at + 1, true)),
+        (Some(_), Some(_)) => Some((n, false)),
+        // The read is behind what was sent: read again, and past that,
+        // only what cannot come twice.
+        (Some(_), None) if tries < 100 => None,
+        (Some(_), None) if under_way => Some((base.min(n), false)),
+        (Some(_), None) => Some((n, false)),
+    }
+}
+
 /// Matches a read of the log against the hub as it is now, and hands the
 /// client's outbox the next page, with the control frames it held put back
 /// at their places — false when the read is behind what was sent live, and
 /// is to be read again.
 fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: Vec<crate::protocol::LogEvent>, tries: u32, cursor: &outbox::Cursor) -> bool {
-    let n = events.len();
     let mut s = state.borrow_mut();
-    let decided = match s.hubs.get(session).filter(|h| h.in_flight > 0 || h.running) {
-        None => Some((n, Vec::new(), false)),
-        Some(hub) => {
-            // Under way: `running` from its `turn.started`, or a
-            // command registered whose first frame is on its way.
-            let running = hub.running || hub.in_flight > 0;
-            let at = hub.head.as_ref().and_then(|h| events.iter().position(|e| &e.id == h));
-            match (&hub.head, at) {
-                // Nothing sent live yet: the log as it was before the
-                // command, all of which is history.
-                (None, _) => Some((hub.base.min(n), Vec::new(), running)),
-                (Some(_), Some(at)) => Some((at + 1, hub.turn.after(cursor.seq), running)),
-                // The read is behind what was sent: read again, and
-                // past that, only what cannot come twice.
-                (Some(_), None) if tries < 100 => None,
-                (Some(_), None) => Some((hub.base.min(n), Vec::new(), running)),
-            }
-        }
+    let hub = s.hubs.get(session);
+    // Under way: `running` from its `turn.started`, or a command registered
+    // whose first frame is on its way.
+    let under_way = hub.is_some_and(|h| h.running || h.in_flight > 0);
+    let Some((upto, live)) = extent(under_way, hub.and_then(|h| h.head.as_deref()), hub.map_or(0, |h| h.base), &events, tries) else { return false };
+    let running = under_way;
+    let tail = match hub {
+        Some(h) if live => h.turn.after(cursor.seq),
+        _ => Vec::new(),
     };
-    let Some((upto, tail, running)) = decided else { return false };
     // Gone, or it left the session while the log was read.
     let Some(outbox) = s.clients.get(&client).map(|c| c.outbox.clone()) else { return true };
     if !outbox.expects(session) {
@@ -1077,4 +1100,41 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: V
         s.send(client, session, control(&ServerFrame::Attached { id, session_id: session.to_string(), running, error: None }));
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{Item, LogEvent};
+
+    fn said(id: &str) -> LogEvent {
+        LogEvent { id: id.into(), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::AssistantText { text: id.into() } } }
+    }
+
+    /// R-LAG-4: the interleaving that lost a turn's last logged events. A
+    /// client behind is paged from a read of the log taken while its turn
+    /// ran; before the read is back the turn logs `item.completed` and
+    /// `turn.completed` (dropped for the client, which is behind), and
+    /// ends. The read, matched against the hub as it is now — nothing under
+    /// way, its head the `turn.completed` the read does not have — is read
+    /// again, where it was taken as the whole log: the last page, after
+    /// which nothing brought those events back.
+    #[test]
+    fn r_lag_4_a_read_taken_before_the_turn_ended_is_read_again_after_it() {
+        let stale = [said("root"), said("user"), said("started")];
+        let whole = [said("root"), said("user"), said("started"), said("item"), said("completed")];
+        // The turn has ended since the read began.
+        assert_eq!(extent(false, Some("completed"), 1, &stale, 1), None, "a read behind the head is read again, the turn over or not");
+        assert_eq!(extent(false, Some("completed"), 1, &whole, 2), Some((5, false)), "all of it once it reaches the head");
+        // Still under way: up to the head, the turn's frames after it.
+        assert_eq!(extent(true, Some("started"), 1, &whole, 1), Some((3, true)));
+        assert_eq!(extent(true, Some("item"), 1, &stale, 1), None);
+        // Nothing sent live: the log before the command while one is under
+        // way, all of it when none is.
+        assert_eq!(extent(true, None, 2, &whole, 1), Some((2, false)));
+        assert_eq!(extent(false, None, 2, &whole, 1), Some((5, false)));
+        // A head never reached is given up on after a hundred reads, at
+        // what cannot come twice.
+        assert_eq!(extent(true, Some("gone"), 2, &whole, 100), Some((2, false)));
+    }
 }
