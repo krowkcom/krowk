@@ -138,6 +138,15 @@ impl Store {
             && listed.mcp.get(&root.display().to_string()).cloned() == crate::mcp::project_digest(root)
     }
 
+    /// What the list says of `root`'s MCP servers: `None` when `root` is not
+    /// listed at all (trusted, if at all, by `--trust` or for this run), else
+    /// the digest its `.mcp.json` servers were trusted with, if any.
+    pub fn recorded_mcp(&self, root: &Path) -> Option<Option<String>> {
+        let listed = self.read().ok()?;
+        let key = root.display().to_string();
+        listed.directories.contains(&key).then(|| listed.mcp.get(&key).cloned())
+    }
+
     /// Why `root` cannot be remembered, if it cannot.
     pub fn refuses(&self, root: &Path) -> Option<String> {
         unrecordable(root, self.home.as_deref())

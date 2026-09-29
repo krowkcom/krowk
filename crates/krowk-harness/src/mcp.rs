@@ -140,8 +140,16 @@ pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> Vec<Server> {
         }
     };
     let read = |p: &Path| std::fs::read(p).ok().and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
+    // Read once: the servers loaded are the ones whose digest is checked
+    // here against what trust recorded, never a file swapped in after the
+    // check (`trusted` read it too, but a moment earlier).
     if trusted && let Some(v) = read_project(&root) {
-        add(v.get("mcpServers"), ".mcp.json");
+        let recorded = cfg.krowk_dir.as_ref().and_then(|d| crate::trust::Store::new(Some(d.join(crate::trust::FILE)), cfg.home.clone()).recorded_mcp(&root));
+        // Not listed at all: trusted for this run (`--trust`, or a yes not
+        // yet remembered), which covers what is there now.
+        if recorded.is_none_or(|r| r == digest(&v)) {
+            add(v.get("mcpServers"), ".mcp.json");
+        }
     }
     if let Some(dir) = cfg.claude_home()
         && let Some(s) = read(&dir.join("settings.json"))
@@ -185,8 +193,14 @@ fn read_project(root: &Path) -> Option<Value> {
 /// A digest of the servers a repository's `.mcp.json` names, none when it
 /// names none: what trust is recorded against (`crate::trust`).
 pub fn project_digest(root: &Path) -> Option<String> {
+    digest(&read_project(root)?)
+}
+
+/// The digest of the servers a parsed `.mcp.json` names, none when it names
+/// none.
+fn digest(v: &Value) -> Option<String> {
     use sha2::Digest;
-    let servers = read_project(root)?.get("mcpServers").filter(|m| m.as_object().is_some_and(|m| !m.is_empty()))?.to_string();
+    let servers = v.get("mcpServers").filter(|m| m.as_object().is_some_and(|m| !m.is_empty()))?.to_string();
     Some(sha2::Sha256::digest(servers.as_bytes()).iter().map(|b| format!("{b:02x}")).collect())
 }
 
@@ -770,6 +784,30 @@ mod tests {
         for bad in ["a__b", "a:b", "", "s_", "_s", "a b"] {
             assert!(!good_name(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn r_tool_3_a_mcp_json_swapped_after_the_trust_check_is_not_loaded() {
+        let base = std::env::temp_dir().join(format!("krowk-mcp-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("repo/.git")).unwrap();
+        std::fs::create_dir_all(base.join("krowk")).unwrap();
+        let repo = base.join("repo").canonicalize().unwrap();
+        std::fs::write(repo.join(".mcp.json"), json!({"mcpServers": {"good": {"command": "good"}}}).to_string()).unwrap();
+        let store = crate::trust::Store::new(Some(base.join("krowk").join(crate::trust::FILE)), None);
+        store.trust(&repo).unwrap();
+        // The check passed on the file the person was shown; then the file
+        // is swapped before the servers are read.
+        let checked = store.trusts(&repo);
+        assert!(checked);
+        std::fs::write(repo.join(".mcp.json"), json!({"mcpServers": {"evil": {"command": "evil"}}}).to_string()).unwrap();
+        let cfg = crate::permissions::Config { krowk_dir: Some(base.join("krowk")), trusted: Some(std::sync::Arc::new(move |_: &Path| checked)), ..Default::default() };
+        let names: Vec<String> = discover(&cfg, &repo).into_iter().map(|s| s.name).collect();
+        assert!(names.is_empty(), "the swapped-in servers were loaded: {names:?}");
+        // The file as trusted loads.
+        std::fs::write(repo.join(".mcp.json"), json!({"mcpServers": {"good": {"command": "good"}}}).to_string()).unwrap();
+        assert_eq!(discover(&cfg, &repo).into_iter().map(|s| s.name).collect::<Vec<_>>(), ["good"]);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
