@@ -31,6 +31,9 @@ struct Seen {
     /// The master side read to its end: every process on the terminal
     /// has let go of it, and all it wrote is in `out`.
     closed: bool,
+    /// Turns of the reader's loop, each counted once what it read is in
+    /// `out`: one past a moment means everything read before it is there.
+    turns: u64,
 }
 
 pub struct Pty {
@@ -104,9 +107,20 @@ impl Pty {
         std::thread::spawn(move || {
             let mut buf = [0u8; 64 * 1024];
             loop {
+                // A bounded wait for input, not a blocking read, so the loop
+                // turns even when nothing comes and `drain` can tell when
+                // it has caught up.
+                let mut fd = libc::pollfd { fd: reader.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                // SAFETY: one pollfd, on a descriptor this thread owns.
+                if unsafe { libc::poll(&mut fd, 1, 10) } <= 0 {
+                    log.lock().unwrap().turns += 1;
+                    continue;
+                }
                 let n = match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
-                        log.lock().unwrap().closed = true;
+                        let mut s = log.lock().unwrap();
+                        s.closed = true;
+                        s.turns += 1;
                         return;
                     }
                     Ok(n) => n,
@@ -187,21 +201,40 @@ impl Pty {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if let Ok(Some(st)) = self.child.try_wait() {
-                // Exited is not read: the last bytes it wrote can still be
-                // on their way through the reader thread, and a loaded
-                // machine lets a test look before they land. The terminal
-                // closing is what says they have — bounded, since a process
-                // it started may hold it open a while longer.
-                let drained = Instant::now() + Duration::from_secs(2);
-                while !self.seen.lock().unwrap().closed && Instant::now() < drained {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
+                self.drain();
                 return Some(st);
             }
             std::thread::sleep(Duration::from_millis(10));
         }
         self.kill();
         None
+    }
+
+    /// Waits until everything the terminal holds is in `output`. Exited is
+    /// not read: the last bytes the child wrote can still be in the
+    /// terminal or on their way through the reader thread, and a loaded
+    /// machine lets a test look before they land. Nothing waiting on the
+    /// master side, then one more turn of the reader's loop, says they have
+    /// landed. The terminal closing is not waited for: a daemon the TUI
+    /// started can hold it open long after.
+    fn drain(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let turn = || self.seen.lock().unwrap().turns;
+        loop {
+            let mut waiting: libc::c_int = 0;
+            // SAFETY: FIONREAD writes one int, the bytes ready to be read.
+            let ok = unsafe { libc::ioctl(self.master.as_raw_fd(), libc::FIONREAD as _, &mut waiting) } == 0;
+            if self.seen.lock().unwrap().closed || (ok && waiting == 0) || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Counted after nothing was left waiting: a turn that took the last
+        // bytes and has not yet stored them has not been counted either.
+        let from = turn();
+        while turn() <= from && !self.seen.lock().unwrap().closed && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 
     /// Kills the child and everything it started. It leads a session and
