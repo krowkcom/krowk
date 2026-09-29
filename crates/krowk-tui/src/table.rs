@@ -1,7 +1,9 @@
 //! Markdown tables in an answer. A table's rows are held while it streams
-//! (`App::push_md`) and drawn once it ends, as a grid fitted to the width:
-//! each cell in the answer's light markdown, wrapped inside its column. A
-//! table that cannot be drawn so is shown as the lines it was typed as.
+//! (`App::push_md`) and drawn once it ends, each cell in the answer's light
+//! markdown. Where there is room, as columns: the header bold over a thin
+//! rule, each cell wrapped inside its column. Where there is not, each row
+//! as a record, a line for each column: `Header  value`. A table too narrow
+//! even for that is shown as the lines it was typed as.
 //!
 //! Only rows that start with a pipe are held; a row without one reads as
 //! text until the line after it, which would hold every line with a `|`.
@@ -12,8 +14,10 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-/// The narrowest a column is drawn.
-const MIN_COLUMN: usize = 3;
+/// The narrowest a column is squeezed to; narrower, the rows are records.
+const MIN_COLUMN: usize = 8;
+/// Between two columns.
+const GAP: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Align {
@@ -27,8 +31,8 @@ pub fn is_row(line: &str) -> bool {
     line.trim_start().starts_with('|')
 }
 
-/// `rows` as a grid at most `width` columns wide: a header, a delimiter
-/// row, then the body. `None` when they are no table or it cannot fit.
+/// `rows` at most `width` columns wide: a header, a delimiter row, then the
+/// body. `None` when they are no table or it cannot fit.
 pub fn render(rows: &[String], width: usize) -> Option<Vec<Line<'static>>> {
     let [head, delimiter, body @ ..] = rows else { return None };
     let aligns = alignments(delimiter)?;
@@ -36,17 +40,43 @@ pub fn render(rows: &[String], width: usize) -> Option<Vec<Line<'static>>> {
     if cells(head).len() != n {
         return None;
     }
-    let grid: Vec<Vec<Line<'static>>> = std::iter::once(head).chain(body).enumerate().map(|(r, row)| styled(row, n, r == 0)).collect();
-    let widths = fit(&grid, width.checked_sub(3 * n + 1)?)?;
-    let rule = |l: &str, m: &str, r: &str| Line::from(Span::styled(format!("{l}{}{r}", widths.iter().map(|w| "─".repeat(w + 2)).collect::<Vec<_>>().join(m)), look::border()));
-    let mut out = vec![rule("┌", "┬", "┐")];
-    for (r, row) in grid.into_iter().enumerate() {
-        if r == 1 {
-            out.push(rule("├", "┼", "┤"));
+    let head = styled(head, n, true);
+    let body: Vec<Vec<Line<'static>>> = body.iter().map(|row| styled(row, n, false)).collect();
+    columns(&head, &body, &aligns, width).or_else(|| records(&head, &body, width))
+}
+
+/// The table as columns: the header over a rule, then the body; a blank
+/// line between rows when any of them wraps.
+fn columns(head: &[Line<'static>], body: &[Vec<Line<'static>>], aligns: &[Align], width: usize) -> Option<Vec<Line<'static>>> {
+    let widths = fit(head, body, width.checked_sub(GAP * (head.len() - 1))?)?;
+    let rule = widths.iter().map(|&w| "─".repeat(w)).collect::<Vec<_>>().join(&" ".repeat(GAP));
+    let mut out = drawn(head.to_vec(), &widths, aligns);
+    out.push(Line::from(Span::styled(rule, look::border())));
+    let rows: Vec<Vec<Line<'static>>> = body.iter().map(|row| drawn(row.clone(), &widths, aligns)).collect();
+    let spaced = rows.iter().any(|r| r.len() > 1);
+    for (i, row) in rows.into_iter().enumerate() {
+        if spaced && i > 0 {
+            out.push(Line::default());
         }
-        out.extend(drawn(row, &widths, &aligns));
+        out.extend(row);
     }
-    out.push(rule("└", "┴", "┘"));
+    Some(out)
+}
+
+/// The table as records, a blank line apart: each row a line for each
+/// column, its header before its value.
+fn records(head: &[Line<'static>], body: &[Vec<Line<'static>>], width: usize) -> Option<Vec<Line<'static>>> {
+    let label = head.iter().map(Line::width).max().unwrap_or(0).min(width / 3);
+    let value = width.checked_sub(label + GAP).filter(|&v| v >= MIN_COLUMN)?;
+    let mut out = Vec::new();
+    for (i, row) in body.iter().enumerate() {
+        if i > 0 {
+            out.push(Line::default());
+        }
+        for (h, cell) in head.iter().zip(row) {
+            out.extend(drawn(vec![h.clone(), cell.clone()], &[label, value], &[Align::Left, Align::Left]));
+        }
+    }
     Some(out)
 }
 
@@ -92,12 +122,12 @@ fn styled(row: &str, n: usize, header: bool) -> Vec<Line<'static>> {
 }
 
 /// Each column's width, their sum at most `room`: the widest column gives
-/// a column at a time until they fit. A column is no narrower than
-/// `MIN_COLUMN`, nor than a URL it shows whole; `None` when that is too
-/// wide.
-fn fit(grid: &[Vec<Line<'static>>], room: usize) -> Option<Vec<usize>> {
-    let column = |c: usize| grid.iter().map(move |row| &row[c]);
-    let n = grid[0].len();
+/// a column at a time until they fit. A column is squeezed no narrower
+/// than `MIN_COLUMN`, nor than a URL it shows whole; `None` when that is
+/// still too wide.
+fn fit(head: &[Line<'static>], body: &[Vec<Line<'static>>], room: usize) -> Option<Vec<usize>> {
+    let column = |c: usize| std::iter::once(&head[c]).chain(body.iter().map(move |row| &row[c]));
+    let n = head.len();
     let mut widths: Vec<usize> = (0..n).map(|c| column(c).map(Line::width).max().unwrap_or(0).max(1)).collect();
     let floors: Vec<usize> = (0..n).map(|c| column(c).map(unbroken).max().unwrap_or(0).max(MIN_COLUMN)).collect();
     while widths.iter().sum::<usize>() > room {
@@ -116,25 +146,42 @@ fn unbroken(line: &Line<'static>) -> usize {
         .unwrap_or(0)
 }
 
-/// One row of the grid: each cell wrapped to its column, the row as tall
-/// as its tallest cell.
+/// One row: each cell wrapped to its column, the row as tall as its
+/// tallest cell, the columns `GAP` apart.
 fn drawn(row: Vec<Line<'static>>, widths: &[usize], aligns: &[Align]) -> Vec<Line<'static>> {
-    let wrapped: Vec<Vec<Line<'static>>> = row.into_iter().zip(widths).map(|(cell, &w)| wrap_line(cell, w)).collect();
+    let wrapped: Vec<Vec<Line<'static>>> = row.into_iter().zip(widths).map(|(cell, &w)| wrap_line(cell, w).into_iter().enumerate().map(unindented).collect()).collect();
     let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
     (0..height)
         .map(|k| {
-            let mut spans = vec![Span::styled("│", look::border())];
-            for ((cell, &w), &align) in wrapped.iter().zip(widths).zip(aligns) {
+            let mut spans = Vec::new();
+            for (c, ((cell, &w), &align)) in wrapped.iter().zip(widths).zip(aligns).enumerate() {
+                if c > 0 {
+                    spans.push(space(GAP));
+                }
                 spans.extend(padded(cell.get(k), w, align));
-                spans.push(Span::styled("│", look::border()));
             }
-            Line::from(spans)
+            let mut line = Line::from(spans);
+            // No trailing blanks: a row is as wide as what it shows.
+            while line.spans.last().is_some_and(|s| s.content.trim().is_empty()) {
+                line.spans.pop();
+            }
+            line
         })
         .collect()
 }
 
-/// A cell's line padded to `w` columns as its column is aligned, with a
-/// space either side.
+/// A cell's `k`th row without the space a word broken at the column's
+/// edge leaves before the next.
+fn unindented((k, mut line): (usize, Line<'static>)) -> Line<'static> {
+    if k > 0
+        && let Some(first) = line.spans.first_mut()
+    {
+        first.content = first.content.trim_start_matches(' ').to_string().into();
+    }
+    line
+}
+
+/// A cell's line padded to `w` columns as its column is aligned.
 fn padded(line: Option<&Line<'static>>, w: usize, align: Align) -> Vec<Span<'static>> {
     let spans = line.map(|l| l.spans.clone()).unwrap_or_default();
     let gap = w.saturating_sub(spans.iter().map(Span::width).sum());
@@ -143,11 +190,14 @@ fn padded(line: Option<&Line<'static>>, w: usize, align: Align) -> Vec<Span<'sta
         Align::Center => gap / 2,
         Align::Right => gap,
     };
-    let space = |n: usize| Span::styled(" ".repeat(n), Style::new());
-    let mut out = vec![space(1 + left)];
+    let mut out = vec![space(left)];
     out.extend(spans);
-    out.push(space(1 + gap - left));
+    out.push(space(gap - left));
     out
+}
+
+fn space(n: usize) -> Span<'static> {
+    Span::styled(" ".repeat(n), Style::new())
 }
 
 #[cfg(test)]
@@ -163,21 +213,24 @@ mod tests {
     }
 
     #[test]
-    fn a_table_is_drawn_as_a_grid() {
+    fn a_table_is_drawn_as_columns() {
         let t = render(&rows("| Name | Size |\n|:-----|-----:|\n| `a.rs` | 12 |\n| **b** | 3 |"), 80).unwrap();
-        assert_eq!(
-            text(&t),
-            ["┌──────┬──────┐", "│ Name │ Size │", "├──────┼──────┤", "│ a.rs │   12 │", "│ b    │    3 │", "└──────┴──────┘"]
-        );
-        assert!(t[1].spans.iter().any(|s| s.content == "Name" && s.style == look::bold()), "the header is bold");
-        assert!(t[3].spans.iter().any(|s| s.content == "a.rs" && s.style == look::code()), "a cell is light markdown");
+        assert_eq!(text(&t), ["Name  Size", "────  ────", "a.rs    12", "b        3"]);
+        assert!(t[0].spans.iter().any(|s| s.content == "Name" && s.style == look::bold()), "the header is bold");
+        assert!(t[2].spans.iter().any(|s| s.content == "a.rs" && s.style == look::code()), "a cell is light markdown");
     }
 
     #[test]
-    fn a_wide_table_wraps_inside_its_columns() {
-        let t = render(&rows("| a | b |\n|---|:-:|\n| one two three four | x |"), 16).unwrap();
-        assert_eq!(text(&t), ["┌──────────┬───┐", "│ a        │ b │", "├──────────┼───┤", "│ one two  │ x │", "│ three    │   │", "│ four     │   │", "└──────────┴───┘"]);
+    fn a_wide_table_wraps_inside_its_columns_and_spaces_its_rows() {
+        let t = render(&rows("| a | b |\n|---|:-:|\n| one two three four five | x |\n| six | yyy |"), 16).unwrap();
+        assert_eq!(text(&t), ["a             b", "───────────  ───", "one two       x", "three four", "five", "", "six          yyy"]);
         assert!(t.iter().all(|l| l.width() <= 16));
+    }
+
+    #[test]
+    fn a_table_too_wide_for_its_columns_is_drawn_as_records() {
+        let t = render(&rows("| Name | Kind | What it does |\n|---|---|---|\n| push | command | publishes a file |\n| pull | command | fetches one |"), 20).unwrap();
+        assert_eq!(text(&t), ["Name    push", "Kind    command", "What    publishes a", "it      file", "does", "", "Name    pull", "Kind    command", "What    fetches one", "it", "does"]);
     }
 
     #[test]
@@ -190,7 +243,7 @@ mod tests {
     #[test]
     fn a_ragged_row_is_filled_or_cut_to_the_header() {
         let t = render(&rows("| a | b |\n|---|---|\n| 1 |\n| 1 | 2 | 3 |"), 80).unwrap();
-        assert_eq!(text(&t)[3..5], ["│ 1 │   │", "│ 1 │ 2 │"]);
+        assert_eq!(text(&t)[2..], ["1", "1  2"]);
     }
 
     #[test]
@@ -198,9 +251,8 @@ mod tests {
         assert!(render(&rows("| a | b |"), 80).is_none(), "no delimiter row");
         assert!(render(&rows("| a | b |\n| c | d |"), 80).is_none(), "no delimiter row");
         assert!(render(&rows("| a | b |\n|---|"), 80).is_none(), "a column short");
-        assert!(render(&rows("| a | b |\n|---|---|"), 8).is_none(), "too narrow");
-        let url = "| see |\n|---|\n| https://krowk.com/a/rather/long/path |";
-        assert!(render(&rows(url), 20).is_none(), "a URL is never broken");
-        assert!(render(&rows(url), 60).is_some());
+        assert!(render(&rows("| name | value |\n|---|---|\n| something long | other long |"), 12).is_none(), "too narrow even for records");
+        let url = "| see | where |\n|---|---|\n| docs | https://krowk.com/a/rather/long/path |";
+        assert_eq!(text(&render(&rows(url), 30).unwrap())[1], "where  https://krowk.com/a/rather/long/path\u{a0}↗", "a URL is never broken");
     }
 }

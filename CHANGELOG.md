@@ -11,7 +11,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
-- The TUI draws markdown tables in an answer as a grid fitted to the terminal, each cell in the answer's markdown and wrapped inside its column, with the delimiter row's alignment. A table is held while it streams and drawn once it ends; one that cannot fit is shown as typed.
+- The TUI draws markdown tables in an answer as columns: the header bold over a thin rule, each cell in the answer's markdown and wrapped inside its column, aligned as the delimiter row says. On a screen too narrow for its columns, each row is shown as a record of `Header  value` lines. A table is held while it streams and drawn once it ends.
 
 ### Changed
 

@@ -2793,7 +2793,7 @@ mod tests {
         a.on_line(&delta("i", "Sizes:\n| a | b |\n|---|---|\n| 1 | 2 |\n"));
         assert_eq!(text(&a.take_pending()), ["Sizes:"], "the table is held while it may go on");
         a.on_line(&delta("i", "Done.\n```\n| in | code |\n```\n| x |"));
-        assert_eq!(text(&a.take_pending()), ["┌───┬───┐", "│ a │ b │", "├───┼───┤", "│ 1 │ 2 │", "└───┴───┘", "Done.", "```", "| in | code |", "```"]);
+        assert_eq!(text(&a.take_pending()), ["a  b", "─  ─", "1  2", "Done.", "```", "| in | code |", "```"]);
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: String::new() } }));
         assert_eq!(text(&a.take_pending()), ["| x |"], "a table the answer ends on is drawn with it, as typed when it is none");
     }
