@@ -568,6 +568,10 @@ pub struct App {
     pricer: Option<Pricer>,
     /// The provider and model of the turn being replayed, for pricing.
     replay_model: Option<(String, String)>,
+    /// What the turn being replayed has cost so far, and whether any call
+    /// in it had no price: counted when the turn ends, against what its
+    /// backend reported.
+    replay_spend: Option<(f64, bool)>,
     /// Tool calls waiting for their results, oldest first.
     calls: Vec<Call>,
     /// Where the answer being shown stands: a fenced block, list items.
@@ -704,6 +708,7 @@ impl App {
             dirty: true,
             pricer,
             replay_model: None,
+            replay_spend: None,
             calls: Vec::new(),
             md: look::Markdown::default(),
             table: Vec::new(),
@@ -1571,6 +1576,10 @@ impl App {
                 }
             }
             LogBody::TurnStarted { model, provider, .. } => {
+                // One before it that never completed, on its own instance.
+                if !live {
+                    self.settle_replayed(None);
+                }
                 self.follow.turn_started();
                 self.session_id = Some(ev.session_id.clone());
                 self.model = Some(model.clone());
@@ -1580,6 +1589,9 @@ impl App {
                     self.used.push(model.clone());
                 }
                 self.replay_model = Some((provider.clone(), model.model.clone()));
+                if !live {
+                    self.replay_spend = Some((0.0, false));
+                }
                 if let Some(t) = &mut self.turn {
                     t.prompt_seen = true;
                 }
@@ -1596,16 +1608,10 @@ impl App {
                         (Some(p), Some((provider, asked))) => p(provider, asked, usage).or_else(|| p(provider, model, usage)),
                         _ => None,
                     };
-                    let u = self.instances.entry(instance).or_default();
+                    let spend = self.replay_spend.get_or_insert((0.0, false));
                     match priced {
-                        Some(usd) => {
-                            self.cost += usd;
-                            u.cost += usd;
-                        }
-                        None => {
-                            self.unpriced = true;
-                            u.unpriced = true;
-                        }
+                        Some(usd) => spend.0 += usd,
+                        None => spend.1 = true,
                     }
                 }
             }
@@ -1653,8 +1659,11 @@ impl App {
                 }
             }
             LogBody::TodosUpdated { todos, .. } => self.todos.clone_from(todos),
-            LogBody::TurnCompleted { status, usage, duration_ms, error, .. } => {
+            LogBody::TurnCompleted { status, usage, duration_ms, error, reported_cost_usd, .. } => {
                 self.turns += 1;
+                if !live {
+                    self.settle_replayed(*reported_cost_usd);
+                }
                 if let Some(u) = self.turn_instance.as_ref().and_then(|i| self.instances.get_mut(i)) {
                     u.settle();
                 }
@@ -1790,6 +1799,25 @@ impl App {
         self.end_md();
     }
 
+    /// A replayed turn's spend into the session's and its instance's, the
+    /// way the host counts it (`budget::reconcile`): the larger of what was
+    /// priced and what its backend reported, and priced whenever it
+    /// reported — a vendor's total covers calls models.dev has no price for.
+    fn settle_replayed(&mut self, reported: Option<f64>) {
+        let Some((mut usd, mut unpriced)) = self.replay_spend.take() else { return };
+        if let Some(r) = reported.filter(|r| *r > usd || unpriced) {
+            usd = usd.max(r);
+            unpriced = false;
+        }
+        let u = self.instances.entry(self.turn_instance.clone().unwrap_or_default()).or_default();
+        self.cost += usd;
+        u.cost += usd;
+        if unpriced {
+            self.unpriced = true;
+            u.unpriced = true;
+        }
+    }
+
     fn on_result(&mut self, r: &RunResult) {
         self.session_id = Some(r.session_id.clone());
         // A turn that made a call has already said where the session stands.
@@ -1807,6 +1835,8 @@ impl App {
         for ev in branch {
             self.on_log(ev, false);
         }
+        // A last turn that never completed: what it priced.
+        self.settle_replayed(None);
         self.release();
     }
 
@@ -2314,6 +2344,7 @@ impl App {
         self.steers.clear();
         self.unsent_steers.clear();
         self.replay_model = None;
+        self.replay_spend = None;
         self.md = look::Markdown::default();
         self.table.clear();
         self.billing = None;
@@ -3288,6 +3319,30 @@ mod tests {
         a.replay(&evs.iter().collect::<Vec<_>>());
         assert_eq!(text(&a.take_pending()), ["▎", "▎ hi", "▎", "", "◆ Read README.md (2 lines)", "", "It is a CLI.", "", "Worked for 1.5s · 1.2k tokens"]);
         assert_eq!(a.model, Some(model), "the session's model is the one shown");
+    }
+
+    #[test]
+    fn a_resumed_session_costs_what_its_backend_reported_when_models_dev_has_no_price() {
+        let known = |model: &str| model == "claude-x";
+        let pricer: Pricer = std::sync::Arc::new(move |_: &str, model: &str, _: &Usage| known(model).then_some(0.5));
+        let mut a = App::new(Editor::new(None), 40, Settings { status_bar: true, status_items: vec![StatusItem::Cost], ..Settings::default() }, None, Some(pricer));
+        let ev = |body| LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body };
+        let turn = |t: &str, model: &str, reported: Option<f64>| {
+            [
+                ev(LogBody::TurnStarted { turn_id: t.into(), model: ModelRef { instance: "claude".into(), model: model.into() }, provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }),
+                ev(LogBody::ResponseCompleted { turn_id: t.into(), response_id: None, model: model.into(), usage: Usage { input_tokens: 10, ..Usage::default() }, stop_reason: None, item_ids: Vec::new() }),
+                ev(LogBody::TurnCompleted { turn_id: t.into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: reported }),
+            ]
+        };
+        // Unpriced but reported; priced above what was reported; priced
+        // below it; and unpriced with nothing reported.
+        let evs: Vec<LogEvent> = [turn("1", "claude-new", Some(1.25)), turn("2", "claude-x", Some(0.25)), turn("3", "claude-x", Some(2.0))].concat();
+        a.replay(&evs.iter().collect::<Vec<_>>());
+        assert_eq!(a.status_bar(), "$3.75", "each turn the larger of the two, as the host counts it");
+        let more = turn("4", "claude-new", None);
+        a.replay(&more.iter().collect::<Vec<_>>());
+        assert_eq!(a.status_bar(), "$3.75", "a turn with no price and none reported adds nothing");
+        assert!(a.unpriced);
     }
 
     #[test]
