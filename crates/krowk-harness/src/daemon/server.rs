@@ -312,6 +312,10 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     Ok(())
 }
 
+fn stopping_error() -> EngineError {
+    EngineError::new("host_stopping", "the host daemon is exiting — send it again, and the next daemon runs it")
+}
+
 /// On SIGTERM or SIGINT: no new turn is taken, the running ones are
 /// interrupted the way a person interrupts them, and each is given until
 /// `SHUTDOWN_GRACE` to end — its `turn.completed` logged and its sync
@@ -446,7 +450,7 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
             // Stopping: a turn begun now would end after the syncs were
             // waited for, or not at all.
             if state.borrow().stopping {
-                let e = EngineError::new("host_stopping", "the host daemon is exiting — send it again, and the next daemon runs it");
+                let e = stopping_error();
                 return state.borrow_mut().send(id, "", control(&ServerFrame::Done { id: cmd_id, result: None, error: Some(error_info(&e)) }));
             }
             tokio::task::spawn_local(execute(state.clone(), id, cmd_id, command));
@@ -813,6 +817,12 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     let host = match known {
         Some(h) => Ok(h),
         None => host_for(&state, &cwd, answers).await,
+    };
+    // A new directory's read can outlast a signal: a turn whose host came
+    // back once the daemon was stopping is refused, not begun.
+    let host = match host {
+        Ok(_) if turn && state.borrow().stopping => Err(stopping_error()),
+        other => other,
     };
     let host = match host {
         Ok(h) => h,
