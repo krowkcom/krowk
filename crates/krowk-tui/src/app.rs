@@ -1850,6 +1850,11 @@ impl App {
         if let Some(live) = &self.live {
             match &live.kind {
                 LiveKind::Text if !live.tail.is_empty() => {
+                    // The gap its first whole line will take (`on_text`),
+                    // so the answer does not start stuck to what is above.
+                    if !live.committed && !rows.last().map_or(self.last_blank, |l| l.width() == 0) {
+                        rows.push(Line::default());
+                    }
                     let wrapped = wrap(&clean(&live.tail), width);
                     let skip = wrapped.len().saturating_sub(MAX_LIVE_ROWS);
                     rows.extend(wrapped.into_iter().skip(skip).map(Line::from));
@@ -4010,6 +4015,21 @@ mod tests {
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::UserText { text: "fix the parser".into() } }));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "s".into(), item: Item::UserText { text: "fix the parser".into() } }));
         assert_eq!(said(&a.take_pending()), 1, "the log's copy is not drawn again; the same words sent again are");
+    }
+
+    #[test]
+    fn an_answer_starts_a_blank_line_under_the_prompt_before_its_first_line_is_whole() {
+        let mut a = app();
+        a.set_width(60);
+        a.echo("fix the parser");
+        a.start_turn(Instant::now());
+        a.take_pending();
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "i".into(), item: ItemKind::AssistantText }));
+        a.on_line(&delta("i", "Looking"));
+        assert_eq!(text(&a.view(Instant::now()).0)[..2], ["", "Looking"]);
+        a.on_line(&delta("i", " at it\nthen"));
+        assert_eq!(text(&a.take_pending()), ["", "Looking at it"], "the same gap once the line is whole");
+        assert_eq!(text(&a.view(Instant::now()).0)[0], "then", "and not a second one");
     }
 
     #[test]
