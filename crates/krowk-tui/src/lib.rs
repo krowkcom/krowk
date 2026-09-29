@@ -9,6 +9,7 @@
 //! - `app` — what is shown, driven by frames and keys.
 //! - `editor` — the multi-line prompt and its history.
 //! - `look` — glyphs, colours, the spinner and the light markdown.
+//! - `syntax` — code in colour, in the terminal's own sixteen.
 //! - `settings` — the status line's configuration (R-TUI-2).
 //! - `device` — the `<user>/<host>` the status line opens with, read once.
 //! - `pr` — the branch and its pull request, for the status line's second row.
@@ -36,6 +37,7 @@ pub mod help;
 pub mod look;
 pub mod net;
 pub mod settings;
+pub mod syntax;
 mod table;
 pub mod term;
 

@@ -19,6 +19,19 @@ emit_to_scrollback), and the glyphs, commit rules and status wording of its
 minimal inline mode — `❯` for the prompt, `◆` for a tool shown once with its
 outcome, thinking collapsed to "Thought for 4.2s", "Worked for 12s", ` │ `
 between status items, edits as removed and added lines on red and green
-bands. krowk's implementation is its own: no Grok Build source file was copied
-or adapted, so no Apache-2.0 obligations attach to krowk's code. The
-acknowledgement is recorded here because the design is theirs.
+bands, fenced code without its fences on a background band. krowk's
+implementation is its own: no Grok Build source file was copied or adapted,
+so no Apache-2.0 obligations attach to krowk's code. The acknowledgement is
+recorded here because the design is theirs.
+
+--------------------------------------------------------------------------------
+Syntax grammars (bat, via two-face) — compiled into the full build
+--------------------------------------------------------------------------------
+Source:    https://github.com/CosmicHorrorDev/two-face, https://github.com/sharkdp/bat
+License:   the grammars' own (MIT, Apache-2.0, BSD and others), each listed in
+           two-face's acknowledgements
+
+The TUI highlights code (crates/krowk-tui/src/syntax.rs) with Sublime Text
+grammars as bat collects them, which two-face ships as a syntect dump. The dump
+is embedded in the `harness` build, so the grammars' authors are credited
+here; two-face's acknowledgements carry each grammar's license text.

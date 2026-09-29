@@ -10,8 +10,10 @@
 //!
 //! Colours are the terminal's own sixteen, so a person's theme decides what
 //! they look like and a phone terminal shows them; the diff bands are two
-//! 256-colour indexes that stay red and green where 256 colours degrade,
-//! and what the person said is on a third, a faint grey.
+//! 256-colour indexes that stay red and green where 256 colours degrade
+//! (GitHub's muted two where the terminal takes 24-bit colour),
+//! and what the person said and a fenced block's code are on two faint
+//! greys.
 //! Most of what is shown is ink on the terminal's paper — its foreground,
 //! full or washed (dim) — never the white or black slots, which are
 //! surfaces in one mode or the other; a hue is for what needs the eye.
@@ -20,6 +22,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
+
+use crate::syntax::Code;
 
 /// Before each row of what the person said, down the band's left edge.
 pub const SAID: &str = "▎ ";
@@ -192,16 +196,39 @@ pub fn said_band() -> Style {
     Style::new().bg(Color::Indexed(236))
 }
 
+/// A fenced block's code: a band a shade darker than what the person
+/// said, so the two are not taken for each other.
+pub fn code_band() -> Style {
+    Style::new().bg(Color::Indexed(235))
+}
+
 pub fn said_bar() -> Style {
     said_band().fg(Color::Blue)
 }
 
-pub fn insert_band() -> Style {
-    Style::new().bg(Color::Indexed(22))
+/// Whether the terminal takes 24-bit colour (`COLORTERM`), read once.
+pub fn truecolor() -> bool {
+    static TRUECOLOR: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("COLORTERM").is_ok_and(|v| matches!(v.as_str(), "truecolor" | "24bit")));
+    *TRUECOLOR
 }
 
+/// An edit's added lines. With 24-bit colour, GitHub's dark-mode green (a
+/// 15% wash over near-black), muted enough that the code's colours read on it (`edit_in_colour`); else
+/// the 256-colour green, on which only the ink does.
+pub fn insert_band() -> Style {
+    Style::new().bg(if truecolor() { Color::Rgb(18, 38, 30) } else { Color::Indexed(22) })
+}
+
+/// An edit's removed lines: GitHub's dark-mode red, or the 256-colour one.
 pub fn delete_band() -> Style {
-    Style::new().bg(Color::Indexed(52))
+    Style::new().bg(if truecolor() { Color::Rgb(48, 27, 30) } else { Color::Indexed(52) })
+}
+
+/// Whether an edit's lines are highlighted on their bands: only on the
+/// dark ones 24-bit colour gives, where the code's colours still read.
+pub fn edit_in_colour() -> bool {
+    truecolor()
 }
 
 /// `4.2s`, `12s`, `1m5s`, `1h2m`.
@@ -312,12 +339,28 @@ pub fn edit_lines(name: &str, input: &serde_json::Value) -> Option<(Vec<String>,
     }
 }
 
-/// Where an answer's markdown stands between its lines: whether a fenced
-/// block is open, and the list items open, outermost first.
+/// Where an answer's markdown stands between its lines: the fenced block
+/// open, and the list items open, outermost first.
 #[derive(Debug, Default)]
 pub struct Markdown {
-    pub fence: bool,
+    fence: Option<Fence>,
     items: Vec<Item>,
+}
+
+/// A fenced block open: what closes it — its character, at least as many
+/// as opened it — and its code, highlighted as it comes.
+#[derive(Debug)]
+struct Fence {
+    mark: char,
+    len: usize,
+    code: Code,
+}
+
+/// A fence line's character and how many of it, and what follows.
+fn fence_line(trimmed: &str) -> Option<(char, usize, &str)> {
+    let mark = trimmed.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let len = trimmed.chars().take_while(|c| *c == mark).count();
+    (len >= 3).then(|| (mark, len, trimmed[len..].trim()))
 }
 
 /// An open list item: the column its marker is at in the answer, and the
@@ -340,13 +383,18 @@ pub struct MdLine {
     pub lead: Vec<Span<'static>>,
     pub body: Vec<Span<'static>>,
     pub hang: Vec<Span<'static>>,
+    /// A row of a fenced block, drawn on the code band across the width:
+    /// its text rows break anywhere, and what is here is shown at the
+    /// right end of the first, dim (the language, on the row above the
+    /// code).
+    pub band: Option<String>,
 }
 
 impl MdLine {
     /// `body` after `indent` columns, its rows hung there too.
     fn indented(indent: usize, body: Vec<Span<'static>>) -> Self {
         let pad = if indent > 0 { vec![Span::raw(" ".repeat(indent))] } else { Vec::new() };
-        MdLine { lead: pad.clone(), body, hang: pad }
+        MdLine { lead: pad.clone(), body, hang: pad, band: None }
     }
 
     /// The line unwrapped.
@@ -369,17 +417,28 @@ pub fn markdown_line(text: &str, md: &mut Markdown) -> Line<'static> {
 
 /// One line of an answer in light markdown: headings bold and coloured,
 /// list items indented behind a washed marker, quotes behind a
-/// rule, `code` and fenced blocks in the code colour, `**bold**` bold.
+/// rule, `code` in the code colour, `**bold**` bold. A fenced block's
+/// fences are not shown: its code is highlighted on a band (`MdLine::band`),
+/// with a row of the band above it, naming its language, and one below.
 /// Line by line, so it streams: `md` carries what is open across lines.
 pub fn markdown(text: &str, md: &mut Markdown) -> MdLine {
     let text: &str = &untagged(text);
     let trimmed = text.trim_start();
-    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-        md.fence = !md.fence;
-        return MdLine::indented(0, vec![Span::styled(text.to_string(), dim())]);
+    let banded = |body, label: &str| MdLine { lead: Vec::new(), body, hang: Vec::new(), band: Some(label.to_string()) };
+    if let Some(f) = &mut md.fence {
+        if fence_line(trimmed).is_some_and(|(mark, len, rest)| mark == f.mark && len >= f.len && rest.is_empty()) {
+            md.fence = None;
+            return banded(Vec::new(), "");
+        }
+        return banded(f.code.line(text), "");
     }
-    if md.fence {
-        return MdLine::indented(0, vec![Span::styled(text.to_string(), code())]);
+    if let Some((mark, len, info)) = fence_line(trimmed)
+        && !(mark == '`' && info.contains('`'))
+    {
+        md.fence = Some(Fence { mark, len, code: Code::new(info) });
+        let lang = info.split_whitespace().next().unwrap_or_default();
+        let lang = lang.rsplit(':').next().unwrap_or(lang);
+        return banded(Vec::new(), lang);
     }
     if trimmed.is_empty() {
         return MdLine::indented(0, Vec::new());
@@ -402,7 +461,7 @@ pub fn markdown(text: &str, md: &mut Markdown) -> MdLine {
     match (trimmed.strip_prefix("> "), within) {
         (Some(rest), _) => {
             let rule = [Span::raw(" ".repeat(within.unwrap_or(indent))), Span::styled("│ ", dim())];
-            MdLine { lead: rule.to_vec(), body: inline(rest), hang: rule.to_vec() }
+            MdLine { lead: rule.to_vec(), body: inline(rest), hang: rule.to_vec(), band: None }
         }
         (None, Some(at)) => MdLine::indented(at, inline(trimmed)),
         // Indented as typed, and wrapped as it was: an unfenced block of
@@ -412,6 +471,11 @@ pub fn markdown(text: &str, md: &mut Markdown) -> MdLine {
 }
 
 impl Markdown {
+    /// Whether a fenced block is open: its lines are code, not markdown.
+    pub fn fenced(&self) -> bool {
+        self.fence.is_some()
+    }
+
     /// A list item at `indent`: nested in each open item whose marker is
     /// further left, its marker under the text of the one it is in.
     fn item(&mut self, indent: usize, marker: Marker, rest: &str) -> MdLine {
@@ -425,7 +489,7 @@ impl Markdown {
         };
         let text = at + glyph.width() + 1;
         self.items.push(Item { indent, text });
-        MdLine { lead: vec![Span::raw(" ".repeat(at)), Span::styled(format!("{glyph} "), dim())], body: inline(rest), hang: vec![Span::raw(" ".repeat(text))] }
+        MdLine { lead: vec![Span::raw(" ".repeat(at)), Span::styled(format!("{glyph} "), dim())], body: inline(rest), hang: vec![Span::raw(" ".repeat(text))], band: None }
     }
 
     /// Where a line that is no item, at `indent`, is shown: under the text
@@ -630,11 +694,14 @@ mod tests {
         assert_eq!(text(&markdown_line("  - one `two` **three**", &mut f)), "  • one two three");
         let l = markdown_line("use `krowk push` now", &mut f);
         assert_eq!(l.spans[1].style, code(), "{:?}", l.spans);
-        assert_eq!(text(&markdown_line("```rust", &mut f)), "```rust");
-        assert!(f.fence, "the fence is open");
+        let open = markdown("```rust", &mut f);
+        assert!(open.body.is_empty() && open.band.as_deref() == Some("rust"), "the fence is not shown, its language is");
+        assert!(f.fenced(), "the fence is open");
         assert_eq!(text(&markdown_line("- not a list in code", &mut f)), "- not a list in code");
-        markdown_line("```", &mut f);
-        assert!(!f.fence);
+        markdown_line("```text", &mut f);
+        assert!(f.fenced(), "a fence with more after it does not close one");
+        markdown_line("````", &mut f);
+        assert!(!f.fenced());
         assert_eq!(text(&markdown_line("a ` lone tick and **unclosed", &mut f)), "a ` lone tick and **unclosed");
         assert_eq!(text(&markdown_line("line 00001: the quick brown fox", &mut f)), "line 00001: the quick brown fox");
     }

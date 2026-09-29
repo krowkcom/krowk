@@ -9,6 +9,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- Code in the TUI is in colour. A fenced block in an answer is highlighted by its language, on a faint band across the width with a row of it above and below; its ```` ``` ```` fences are no longer shown, and its language is named at the right of the band's top row. Long lines break at the width and keep their spacing. A file a call writes shows its first lines, highlighted, under the call, and, in a terminal with 24-bit colour, an edit's removed and added lines are highlighted on muted red and green bands (GitHub's dark-mode tints) that keep the code readable. The colours are the terminal's own, so they follow its theme.
+
 ### Changed
 
 - What you say in the TUI is shown on a faint grey band across the width, with a thin blue bar down its left edge and an empty row of it above and below, in normal weight rather than bold after a `❯`. Your messages are easy to find when scrolling back, and long ones read as text rather than as a heading.
