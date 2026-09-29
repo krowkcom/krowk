@@ -40,22 +40,22 @@ fn all_sources() -> Vec<Box<dyn Source>> {
 /// for every subagent's under it (R-SUB-6), parents first, so each child
 /// links to the session that started it.
 #[cfg(feature = "harness")]
-pub(super) fn project_native(ctx: &Ctx, session_id: &str) -> Result<(), Error> {
-    let store_path = resolve_store_path(ctx)?;
+pub(super) fn project_native(env: krowk_import::Env, session_id: &str) -> Result<(), Error> {
+    let store_path = krowk_store::db_path(env).map_err(|e| store_fail(&e, ""))?.display().to_string();
     let src = krowk_harness::project::Krowk;
-    let found = src.discover(ctx.io.env).map_err(|e| fail("import_failed", e.to_string()))?;
+    let found = src.discover(env).map_err(|e| fail("import_failed", e.to_string()))?;
     let Some(r) = found.iter().find(|r| r.id == session_id) else {
         return Err(fail("import_failed", format!("the log of session {session_id} is not where krowk keeps sessions")));
     };
     let mut tree = vec![r.clone()];
-    if let Ok(dir) = krowk_harness::log::sessions_dir(ctx.io.env) {
+    if let Ok(dir) = krowk_harness::log::sessions_dir(env) {
         let children = krowk_harness::budget::descendants(&dir, session_id);
         tree.extend(children.iter().filter_map(|(id, _)| found.iter().find(|r| &r.id == id).cloned()));
     }
     let _lock = lock_store_waiting(&store_path, REFRESH_LOCK_WAIT)?;
-    let conn = open_store(ctx)?;
+    let conn = krowk_store::open(env).map_err(|e| store_fail(&e, &store_path))?;
     for r in &tree {
-        let (thread, next, _) = src.read(ctx.io.env, r, "").map_err(|e| fail("import_failed", e.to_string()))?;
+        let (thread, next, _) = src.read(env, r, "").map_err(|e| fail("import_failed", e.to_string()))?;
         krowk_store::Writer::new(&conn).ingest_with_cursor(&thread, &r.key(), &next).map_err(|e| store_fail(&e, &store_path))?;
     }
     Ok(())

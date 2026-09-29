@@ -5,7 +5,7 @@
 //! coding agents, which sets `HERDR_PANE_ID`), the pane's agent state, so
 //! herdr lists krowk as an agent with its status and notifies on it.
 
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -36,7 +36,10 @@ pub struct Presence {
 
 /// herdr's commands, run one at a time and in order on a thread of their
 /// own — each waited for, so none is left a zombie and a later state never
-/// overtakes an earlier one — and never waited on by the TUI.
+/// overtakes an earlier one — and never waited on by the TUI. The release
+/// is started and let go: krowk leaving, or stopping for a job stop, waits
+/// for it to be under way, not for herdr to answer it (~100 ms at times).
+/// A command after it waits for it first, so the order still holds.
 struct Reporter {
     tx: mpsc::Sender<Job>,
     done: mpsc::Receiver<()>,
@@ -44,6 +47,8 @@ struct Reporter {
 
 enum Job {
     Run(Vec<String>),
+    /// Started, and waited for only by the next command.
+    Start(Vec<String>),
     /// Answered once everything before it has run.
     Flush(mpsc::Sender<()>),
 }
@@ -53,10 +58,23 @@ impl Reporter {
         let (tx, rx) = mpsc::channel::<Job>();
         let (done_tx, done) = mpsc::channel();
         std::thread::spawn(move || {
+            let herdr = |args: &[String]| Command::new("herdr").args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok();
+            let mut started: Option<Child> = None;
             for job in rx {
                 match job {
                     Job::Run(args) => {
-                        let _ = Command::new("herdr").args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+                        if let Some(mut c) = started.take() {
+                            let _ = c.wait();
+                        }
+                        if let Some(mut c) = herdr(&args) {
+                            let _ = c.wait();
+                        }
+                    }
+                    Job::Start(args) => {
+                        if let Some(mut c) = started.take() {
+                            let _ = c.wait();
+                        }
+                        started = herdr(&args);
                     }
                     Job::Flush(ack) => {
                         let _ = ack.send(());
@@ -70,6 +88,10 @@ impl Reporter {
 
     fn send(&self, args: &[&str]) {
         let _ = self.tx.send(Job::Run(args.iter().map(|a| a.to_string()).collect()));
+    }
+
+    fn send_detached(&self, args: &[&str]) {
+        let _ = self.tx.send(Job::Start(args.iter().map(|a| a.to_string()).collect()));
     }
 
     /// Waits, at most `limit`, for what is queued to have run.
@@ -94,7 +116,7 @@ impl Presence {
     }
 
     /// The last word to herdr on the way out: released, and a moment given
-    /// for what is still queued to reach it.
+    /// for what is still queued to be under way.
     pub fn finish(&mut self) {
         self.release();
         if let Some(r) = self.herdr.take() {
@@ -104,7 +126,7 @@ impl Presence {
     }
 
     /// Before a job stop, which stops the reporting thread with the rest of
-    /// the process: released, and the release given a moment to arrive.
+    /// the process: released, and the release given a moment to start.
     pub fn pause(&mut self) {
         self.release();
         if let Some(r) = &self.herdr {
@@ -118,7 +140,7 @@ impl Presence {
         if let (Some(pane), Some(r)) = (&self.pane, &self.herdr)
             && self.told.is_some()
         {
-            r.send(&["pane", "release-agent", pane, "--source", "krowk", "--agent", "krowk"]);
+            r.send_detached(&["pane", "release-agent", pane, "--source", "krowk", "--agent", "krowk"]);
         }
         self.told = None;
     }
