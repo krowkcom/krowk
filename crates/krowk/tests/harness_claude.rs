@@ -451,7 +451,7 @@ fn r_sub_3_the_tui_counts_a_background_agent_and_runs_the_turn_claude_code_begin
     let redrawn = (0..200).find_map(|_| {
         std::thread::sleep(std::time::Duration::from_millis(20));
         let now = String::from_utf8_lossy(&t.output()[mark..]).into_owned();
-        now.contains("? help").then_some(now)
+        now.contains(" help").then_some(now)
     });
     let redrawn = redrawn.expect("the status bar redrawn");
     assert!(!redrawn.contains("subagent"), "the count cleared: {redrawn:?}");

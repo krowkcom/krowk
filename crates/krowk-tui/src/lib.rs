@@ -1097,7 +1097,7 @@ impl<'h> Ui<'h> {
                 None => {
                     let runs = krowk_harness::trust::what_runs(&t.root);
                     let has = if runs.is_empty() { "Nothing of that kind is there now.".to_string() } else { format!("It has {}.", runs.join(", ")) };
-                    let q = format!("{m} runs {vendor}, which runs a repository's own hooks and MCP servers without asking. {has} Trust {}? y trusts it, n or esc does not", home_relative(&t.root));
+                    let q = format!("{m} runs {vendor}, which runs a repository's own hooks and MCP servers without asking. {has} Trust {}? `y` trusts it, `n` or `esc` does not", home_relative(&t.root).replace('`', "'"));
                     self.needs_trust = Some((m.clone(), q));
                     if self.held.is_some() {
                         self.ask_trust(app);
@@ -1400,7 +1400,7 @@ impl<'h> Ui<'h> {
     async fn ask_to_leave(&mut self, app: &mut App, key: char, armed: Option<char>, quitting: &mut bool) {
         if armed != Some(key) {
             self.quit_armed = Some((key, Instant::now()));
-            app.flash = Some(format!("Press Ctrl-{} again to exit", key.to_ascii_uppercase()));
+            app.flash = Some(format!("Press `Ctrl-{}` again to exit", key.to_ascii_uppercase()));
         } else if app.running() {
             *quitting = true;
             self.interrupt(app).await;
@@ -1886,19 +1886,19 @@ impl<'h> Ui<'h> {
     /// resumed meanwhile has its own, which the route then leaves alone.
     fn can_resume(&self, app: &mut App) -> bool {
         let waits = if app.running() {
-            "the running turn to finish — esc interrupts it"
+            "the running turn to finish — `esc` interrupts it"
         } else if app.offer.is_some() {
-            "the question above — y or n"
+            "the question above — `y` or `n`"
         } else if self.held.is_some() {
-            "the prompt waiting to be sent — ctrl-c takes it back"
+            "the prompt waiting to be sent — `ctrl-c` takes it back"
         } else if self.model_route.is_some() {
             "the /model switch to finish"
         } else if app.backend_agents_running() {
-            "the agents running in the background — ctrl-g lists them"
+            "the agents running in the background — `ctrl-g` lists them"
         } else {
             return true;
         };
-        app.notice(&format!("that waits for {waits}"));
+        app.notice_keys(&format!("that waits for {waits}"));
         false
     }
 
@@ -1924,7 +1924,7 @@ impl<'h> Ui<'h> {
             return;
         }
         if app.running() {
-            app.notice("that waits for the running turn to finish — esc interrupts it");
+            app.notice_keys("that waits for the running turn to finish — `esc` interrupts it");
             return;
         }
         let (title, prefer) = match &job {
