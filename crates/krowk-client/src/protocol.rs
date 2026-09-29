@@ -19,6 +19,8 @@
 //! Wire names are camelCase, and every id is a UUIDv7 in canonical lowercase
 //! form, the same ids krowk.db mints.
 
+pub mod frame;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -97,6 +99,33 @@ pub enum Effort {
     High,
     Xhigh,
     Max,
+}
+
+/// Every rung, lowest first.
+pub const LADDER: [Effort; 7] = [Effort::None, Effort::Minimal, Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh, Effort::Max];
+
+impl Effort {
+    /// The name on the ladder, which is also the wire value every provider
+    /// that takes the rung uses for it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Effort::None => "none",
+            Effort::Minimal => "minimal",
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Effort> {
+        LADDER.into_iter().find(|e| e.name() == s.trim().to_ascii_lowercase())
+    }
+
+    pub fn names() -> Vec<&'static str> {
+        LADDER.iter().map(|e| e.name()).collect()
+    }
 }
 
 /// State a provider needs back verbatim and nobody else may read: a thinking

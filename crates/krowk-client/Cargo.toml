@@ -1,7 +1,7 @@
 # What every krowk client shares — the terminal today, the desktop app
 # (gpui, linked directly) and the phones (UniFFI bindings, ticket 33) later
-# (R-CLIENT-1): the end-to-end encryption, and in time the protocol types
-# and sync. Crypto is implemented here and nowhere else (R-E2E-2); the
+# (R-CLIENT-1): the end-to-end encryption and the protocol types, and in
+# time sync. Crypto is implemented here and nowhere else (R-E2E-2); the
 # crypto-import test (tests/crypto_boundary.rs) fails when another crate
 # names a crypto crate as a dependency.
 #
@@ -44,6 +44,13 @@ sha2 = "0.11"
 # The operating system's random numbers, for keys and nonces. Linked already.
 getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
+# The protocol's open fields (a tool's input, a provider's opaque blob) are
+# JSON values. Linked already, through krowk-api.
+serde_json = "1"
+# The protocol's JSON Schema, derived from its types (R-PROTO-2); the same
+# declaration krowk-harness makes, so the generated files do not move.
+# Linked into the full build already by krowk-harness.
+schemars = { version = "1", default-features = false, features = ["derive", "std", "preserve_order"] }
 # Ed25519 (RFC 8032) for a device's relay signing key: the X25519 device key
 # can agree on a key but cannot sign, and the relay must know which device
 # answers its challenge (engineering/relay.md in Canon). The dalek crate on
@@ -52,7 +59,3 @@ serde = { version = "1", features = ["derive"] }
 # tables) is off: a signature per connection does not need them, and they
 # cost tens of KiB. `zeroize` wipes the signing key on drop.
 ed25519-dalek = { version = "3", default-features = false, features = ["zeroize"] }
-
-[dev-dependencies]
-# The RFC 9180 vector file, the metadata the boundary test reads.
-serde_json = "1"
