@@ -1055,6 +1055,8 @@ impl App {
         for line in lines {
             self.push_answer(line);
         }
+        // An empty last row is the table's, not the blank line after it.
+        self.last_blank = false;
         self.gap();
         self.tabled = true;
     }
