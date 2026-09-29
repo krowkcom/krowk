@@ -19,15 +19,16 @@
 //! numbered on from the last sent.
 
 use super::store::{self, Index, Writer};
-use super::{Answer, Batch, In, Join, Remote, Welcome, DEAD, FRAME, PING};
+use super::{Answer, Batch, In, Join, ViewerFrame, Welcome, DEAD, FRAME, PING};
 use crate::daemon::client::Client as Daemon;
-use crate::protocol::{ApprovalDecision, ApprovalRequest, Command, LiveEvent, LogBody, StreamLine};
+use crate::protocol::{ApprovalDecision, ApprovalRequest, Command, LiveEvent, LogBody, PermissionMode, StreamLine};
 use krowk_api::Client;
 use krowk_client::e2e::{self, AccountKey, DeviceId, SessionKey, SigningKey};
 use krowk_client::protocol::frame::{KIND_ACK, KIND_ROUTED, HEADER};
 use krowk_client::relay_link::{HostLink, Inbound};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
@@ -39,9 +40,9 @@ pub fn renew_every(ttl: u64) -> Duration {
     Duration::from_secs(ttl / 3)
 }
 
-/// How long an approval waits for any client before it is denied.
-/// Only while no viewer is connected: a request the terminal on the host's
-/// own machine is showing waits for its person as it always did.
+/// How long an approval of a turn a viewer started waits, with no viewer
+/// connected, before the bridge denies it. A turn started at the host's own
+/// terminal is never denied by the bridge: its person answers it.
 pub const APPROVAL_WAIT: Duration = Duration::from_secs(300);
 
 /// Batches kept for the relay while its link is down: past this the oldest
@@ -102,18 +103,23 @@ fn take(o: &Options) -> Result<(SessionKey, Writer, Held), String> {
 /// Renews the lease every third of its TTL, on a thread of its own (the
 /// registry client blocks), keeping the latest ticket in `held`. A renewal
 /// that fails is tried again every two seconds; one refused because the
-/// lease lapsed takes it again.
-fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<std::sync::atomic::AtomicBool>) {
+/// lease lapsed takes it again when nobody else has. One that finds another
+/// device holding it sets `lost`: the bridge then writes nothing more and
+/// ends (R-SYNC-2's one writer).
+fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lost: Arc<AtomicBool>) {
     let every = renew_every(o.ttl);
     let mut next = Instant::now() + every;
-    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+    while !stop.load(Ordering::Relaxed) && !lost.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(100).min(next.saturating_duration_since(Instant::now())));
         if Instant::now() < next {
             continue;
         }
         let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let device = o.device.to_string();
-        let answer = o.api.renew_lease(&o.session, &device, &h.token, o.ttl, &o.env).or_else(|e| if e.to_string().contains("lease") { o.api.acquire_lease(&o.session, &device, o.ttl, &o.env) } else { Err(e) });
+        let answer = match o.api.renew_lease(&o.session, &device, &h.token, o.ttl, &o.env) {
+            Err(e) if e.code().contains("lease") => o.api.acquire_lease(&o.session, &device, o.ttl, &o.env),
+            other => other,
+        };
         match answer {
             Ok(l) => {
                 let mut h = held.lock().unwrap_or_else(|e| e.into_inner());
@@ -126,6 +132,7 @@ fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<std::sync::atom
                 }
                 next = Instant::now() + every;
             }
+            Err(e) if e.code() == "lease_held" => lost.store(true, Ordering::Relaxed),
             Err(_) => next = Instant::now() + Duration::from_secs(2),
         }
     }
@@ -138,24 +145,47 @@ enum Write {
     Checkpoint(Option<String>),
 }
 
-fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Receiver<Write>, heads: mpsc::UnboundedSender<store::Head>) {
-    for job in rx {
+/// How often a write the registry refused is tried again.
+const RETRY: Duration = Duration::from_secs(2);
+
+fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Receiver<Write>, heads: mpsc::UnboundedSender<store::Head>, lost: Arc<AtomicBool>) {
+    loop {
+        let job = match rx.recv_timeout(RETRY) {
+            Ok(j) => Some(j),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        // A lease another device holds now: nothing more is written.
+        if lost.load(Ordering::Relaxed) {
+            continue;
+        }
         let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        w.refence(h.fence);
-        let done = match job {
-            Write::Event(e) => {
+        let done = w.refence(h.fence).and_then(|()| match job {
+            Some(Write::Event(e)) => {
                 w.push(e);
                 Ok(())
             }
-            Write::Flush => w.flush(&h.token),
-            Write::Checkpoint(tree) => w.checkpoint(tree, &h.token),
-        };
+            Some(Write::Flush) => w.flush(&h.token),
+            Some(Write::Checkpoint(tree)) => w.checkpoint(tree, &h.token),
+            // What was owed is put again, the same chunk under the same index.
+            None if w.owes() => w.flush(&h.token),
+            None => Ok(()),
+        });
         if let Err(e) = done {
-            // The events stay waiting and go with the next flush.
-            eprintln!("krowk: a chunk of the session could not be written ({e}); it goes with the next");
+            eprintln!("krowk: a chunk of the session could not be written yet ({e}); it is kept and put again");
         }
         if let Some(head) = w.head() {
             let _ = heads.send(head);
+        }
+    }
+    // Stopping: what is owed gets a last few tries.
+    for _ in 0..3 {
+        if !w.owes() || lost.load(Ordering::Relaxed) {
+            break;
+        }
+        let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if w.flush(&h.token).is_err() {
+            std::thread::sleep(RETRY);
         }
     }
 }
@@ -172,6 +202,18 @@ fn for_this_session(c: &Command, session: &str) -> bool {
     }
 }
 
+/// A viewer's prompt runs under the session's own settings, never its own:
+/// the model and effort the session last ran on, the permission mode its
+/// last turn ran in, the configured toolset and no budget of the viewer's
+/// choosing. A viewer cannot pick `unhinged`, switch the model or lift a
+/// budget through a prompt; the person at the host's machine sets those.
+fn under_session_settings(c: Command, mode: PermissionMode) -> Command {
+    match c {
+        Command::Prompt { session_id, text, .. } => Command::Prompt { session_id, text, model: None, permission_mode: mode, toolset: None, effort: None, budget: None },
+        other => other,
+    }
+}
+
 fn worktree(cwd: &str) -> Option<String> {
     let out = std::process::Command::new("git").args(["-C", cwd, "rev-parse", "HEAD"]).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -184,6 +226,13 @@ pub struct Bridge {
     pub checkpoint: mpsc::UnboundedSender<()>,
 }
 
+/// Commands run, by their viewer's id, with the ack each was answered:
+/// bounded, the oldest let go first.
+const REMEMBERED: usize = 4096;
+
+/// Logged events a catch-up page holds.
+const PAGE: usize = 256;
+
 /// Runs the bridge until `stop`. `daemon` is a client of the daemon that
 /// says it answers approvals.
 pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool>, mut on_demand: mpsc::UnboundedReceiver<()>) -> Result<(), String> {
@@ -194,17 +243,18 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     };
     let (key, writer, held) = taken;
     let held = Arc::new(Mutex::new(held));
-    let halt = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let halt = Arc::new(AtomicBool::new(false));
+    let lost = Arc::new(AtomicBool::new(false));
     {
-        let (o, held, halt) = (o.clone(), held.clone(), halt.clone());
-        std::thread::spawn(move || renew_loop(o, held, halt));
+        let (o, held, halt, lost) = (o.clone(), held.clone(), halt.clone(), lost.clone());
+        std::thread::spawn(move || renew_loop(o, held, halt, lost));
     }
     let (heads_tx, mut heads) = mpsc::unbounded_channel();
     let mut head = writer.head();
     let (jobs, jobs_rx) = std::sync::mpsc::channel();
     let writing = {
-        let held = held.clone();
-        std::thread::spawn(move || writer_loop(writer, held, jobs_rx, heads_tx))
+        let (held, lost) = (held.clone(), lost.clone());
+        std::thread::spawn(move || writer_loop(writer, held, jobs_rx, heads_tx, lost))
     };
     // A checkpoint as the bridge takes the session up, so a device
     // attaching reads one chunk and the tail, not the whole log.
@@ -217,7 +267,22 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let mut kept: VecDeque<(u64, Vec<u8>)> = VecDeque::new();
     let mut waiting: Vec<StreamLine> = Vec::new();
     let mut approvals: BTreeMap<String, (ApprovalRequest, Instant)> = BTreeMap::new();
-    let mut logged = std::collections::HashSet::new();
+    // Every event logged since the bridge followed the session, in order:
+    // what a viewer's catch-up is answered from.
+    let mut log: Vec<crate::protocol::LogEvent> = Vec::new();
+    let mut logged = HashSet::new();
+    let mut mode = PermissionMode::Default;
+    // Turns a viewer's prompt started: the only ones whose approvals the
+    // bridge ever denies by itself.
+    let remote_turns: Arc<Mutex<HashSet<String>>> = Arc::default();
+    let mut done: HashMap<String, Answer> = HashMap::new();
+    let mut done_order: VecDeque<String> = VecDeque::new();
+    let mut running: HashSet<String> = HashSet::new();
+    // Since when no viewer has been here to answer.
+    let mut alone_since = Some(Instant::now());
+    // Links the relay said are present since the host last joined; chains
+    // of any other link are forgotten a second after the join.
+    let mut present: Option<(HashSet<u64>, Instant)> = None;
     let mut ws: Option<super::Ws> = None;
     let mut heard = Instant::now();
     let mut retry = Instant::now();
@@ -225,6 +290,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let mut tick = tokio::time::interval(FRAME);
     let mut beat = tokio::time::interval(PING);
     let mut sweep = tokio::time::interval(Duration::from_secs(1));
+    let mut ended = Ok(());
     loop {
         tokio::select! {
             line = lines.recv() => {
@@ -235,9 +301,12 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                         continue;
                     }
                     let _ = jobs.send(Write::Event(serde_json::to_value(e).expect("json")));
-                    if matches!(e.body, LogBody::TurnCompleted { .. }) {
-                        let _ = jobs.send(Write::Flush);
+                    match &e.body {
+                        LogBody::TurnCompleted { .. } => { let _ = jobs.send(Write::Flush); }
+                        LogBody::TurnStarted { permission_mode, .. } => mode = *permission_mode,
+                        _ => {}
                     }
+                    log.push(e.clone());
                 }
                 match &line {
                     StreamLine::Live(LiveEvent::ApprovalRequested(r)) => { approvals.insert(r.request_id.clone(), (r.clone(), Instant::now())); }
@@ -255,13 +324,31 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
             }
             Some(h) = heads.recv() => head = Some(h),
             Some((to, a)) = answers.recv() => {
+                if let Answer::Ack { id, .. } = &a && !id.is_empty() {
+                    running.remove(id);
+                    if done.insert(id.clone(), a.clone()).is_none() {
+                        done_order.push_back(id.clone());
+                        if done_order.len() > REMEMBERED && let Some(old) = done_order.pop_front() { done.remove(&old); }
+                    }
+                }
                 if let Some(w) = ws.as_mut() && let Ok(b) = link.to_viewer(to, &serde_json::to_vec(&a).expect("json"), false) && !super::send(w, b).await { ws = None; }
             }
             _ = on_demand.recv() => { let _ = jobs.send(Write::Checkpoint(worktree(&o.cwd))); }
             _ = sweep.tick() => {
-                // Only while no viewer is here to answer: a person at A's own
-                // terminal answering slowly is not overruled.
-                let late: Vec<_> = approvals.iter().filter(|(_, (_, t))| link.viewers().is_empty() && t.elapsed() > APPROVAL_WAIT).map(|(k, (r, _))| (k.clone(), r.clone())).collect();
+                if lost.load(Ordering::Relaxed) {
+                    ended = Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", o.session));
+                    break;
+                }
+                if let Some((here, since)) = &present && since.elapsed() > Duration::from_secs(1) {
+                    for l in link.links() { if !here.contains(&l) { link.forget(l); } }
+                    present = None;
+                }
+                if link.viewers().is_empty() { alone_since.get_or_insert_with(Instant::now); } else { alone_since = None; }
+                // Only a request of a turn a viewer started, and only once no
+                // viewer has been here to answer it for the whole wait: the
+                // person at the host's own terminal is never overruled.
+                let turns = remote_turns.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let late: Vec<_> = approvals.iter().filter(|(_, (r, t))| turns.contains(&r.turn_id) && alone_since.is_some_and(|a| a.elapsed() > APPROVAL_WAIT) && t.elapsed() > APPROVAL_WAIT).map(|(k, (r, _))| (k.clone(), r.clone())).collect();
                 for (k, r) in late {
                     approvals.remove(&k);
                     let (tx, _) = mpsc::channel(1);
@@ -278,12 +365,12 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                     Ok((mut w, joined)) => {
                         let at = joined["seq"].as_u64().unwrap_or(0);
                         // A relay holding more of this stream than it was sent, or
-                        // holding less than the oldest batch still kept (a cut
-                        // outlasted what is kept): this stream cannot follow on
-                        // there, so start another, and viewers read the gap from
-                        // the chunks.
+                        // less than the oldest batch still kept (a cut outlasted
+                        // what is kept): this stream cannot follow on there, so
+                        // start another. Nothing is lost with the old one's
+                        // batches: every viewer is told `resync`, joins again,
+                        // and asks the host for the logged events it lacks.
                         if !link.continues_after(at) || (at > 0 && kept.front().is_some_and(|(s, _)| *s > at + 1)) {
-                            // A relay holding more of this stream than it was sent: start another.
                             link = HostLink::new(&key, raw);
                             kept.clear();
                             drop(w);
@@ -291,11 +378,16 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                             continue;
                         }
                         let mut ok = true;
-                        for (seq, b) in kept.iter().filter(|(s, _)| *s > at) {
-                            let _ = seq;
+                        for (_, b) in kept.iter().filter(|(s, _)| *s > at) {
                             if !super::send(&mut w, b.clone()).await { ok = false; break; }
                         }
-                        if ok { ws = Some(w); heard = Instant::now(); } else { retry = Instant::now() + Duration::from_secs(1); }
+                        if ok {
+                            ws = Some(w);
+                            heard = Instant::now();
+                            present = Some((HashSet::new(), Instant::now()));
+                        } else {
+                            retry = Instant::now() + Duration::from_secs(1);
+                        }
                     }
                     Err(_) => retry = Instant::now() + Duration::from_secs(1),
                 }
@@ -306,7 +398,10 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                     In::Closed => { ws = None; retry = Instant::now() + Duration::from_secs(1); }
                     In::Alive => {}
                     In::Control(v) => {
-                        if v["type"] == "viewer" && v["event"] == "left" && let Some(l) = v["link"].as_u64() { link.forget(l); }
+                        if v["type"] == "viewer" && let Some(l) = v["link"].as_u64() {
+                            if v["event"] == "left" { link.forget(l); }
+                            if v["event"] == "joined" && let Some((here, _)) = present.as_mut() { here.insert(l); }
+                        }
                     }
                     In::Envelope(b) if b[1] == KIND_ACK => {
                         let upto = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
@@ -319,15 +414,46 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                                 let body = serde_json::to_vec(&Welcome { head, approvals: approvals.values().map(|(r, _)| r.clone()).collect() }).expect("json");
                                 if let (Some(w), Ok(sealed)) = (ws.as_mut(), link.welcome(from, &body)) && !super::send(w, sealed).await { ws = None; }
                             }
-                            Ok(Inbound::Frame { body, .. }) => match serde_json::from_slice::<Remote>(&body) {
-                                Ok(r) if !for_this_session(&r.command, &o.session) => {
+                            Ok(Inbound::Frame { body, .. }) => match serde_json::from_slice::<ViewerFrame>(&body) {
+                                Ok(ViewerFrame::CatchUp { after }) => {
+                                    let from_here = after.and_then(|a| log.iter().position(|e| e.id == a)).map_or(0, |i| i + 1);
+                                    let rest = &log[from_here..];
+                                    let pages: Vec<_> = rest.chunks(PAGE).collect();
+                                    if pages.is_empty() {
+                                        let _ = answers_tx.send((from, Answer::CatchUp { events: Vec::new(), more: false }));
+                                    }
+                                    for (i, p) in pages.iter().enumerate() {
+                                        let _ = answers_tx.send((from, Answer::CatchUp { events: p.to_vec(), more: i + 1 < pages.len() }));
+                                    }
+                                }
+                                // Run once: a command sent again (its ack lost, the
+                                // viewer reconnected) is answered with the ack it
+                                // had, or nothing while it is still being taken.
+                                Ok(ViewerFrame::Command(r)) if done.contains_key(&r.id) => {
+                                    let _ = answers_tx.send((from, done[&r.id].clone()));
+                                }
+                                Ok(ViewerFrame::Command(r)) if running.contains(&r.id) => {}
+                                Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &o.session) => {
                                     let _ = answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, and nothing else", o.session)) }));
                                 }
-                                Ok(r) => {
-                                    let (daemon, answers, tx) = (daemon.clone(), answers_tx.clone(), lines_tx.clone());
+                                Ok(ViewerFrame::Command(r)) => {
+                                    running.insert(r.id.clone());
+                                    let command = under_session_settings(r.command, mode);
+                                    let (daemon, answers, tx, turns) = (daemon.clone(), answers_tx.clone(), lines_tx.clone(), remote_turns.clone());
                                     tokio::spawn(async move {
-                                        let streaming = matches!(r.command, Command::Prompt { .. } | Command::Continue { .. });
-                                        let run = daemon.execute(r.command, tx);
+                                        let streaming = matches!(command, Command::Prompt { .. });
+                                        let (mine, mut rx) = mpsc::channel(1024);
+                                        // The turn's lines go where every other line
+                                        // goes, the turn remembered as a viewer's.
+                                        tokio::spawn(async move {
+                                            while let Some(l) = rx.recv().await {
+                                                if let StreamLine::Log(e) = &l && let LogBody::TurnStarted { turn_id, .. } = &e.body {
+                                                    turns.lock().unwrap_or_else(|e| e.into_inner()).insert(turn_id.clone());
+                                                }
+                                                if tx.send(l).await.is_err() { return; }
+                                            }
+                                        });
+                                        let run = daemon.execute(command, mine);
                                         if streaming {
                                             // A prompt is acknowledged as taken, not when its turn ends.
                                             let _ = answers.send((from, Answer::Ack { id: r.id, error: None }));
@@ -338,7 +464,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                                         }
                                     });
                                 }
-                                Err(e) => { let _ = answers_tx.send((from, Answer::Ack { id: String::new(), error: Some(format!("not a command: {e}")) })); }
+                                Err(e) => { let _ = answers_tx.send((from, Answer::Ack { id: String::new(), error: Some(format!("not a frame this host reads: {e}")) })); }
                             },
                             // What does not open is dropped: the relay or a stranger sent it.
                             Err(_) => {}
@@ -357,17 +483,20 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     }
     let _ = jobs.send(Write::Flush);
     drop(jobs);
-    halt.store(true, std::sync::atomic::Ordering::Relaxed);
+    halt.store(true, Ordering::Relaxed);
     // The lease goes back, so the next host takes it at once rather than
-    // after its TTL, once the writer has put its last chunk.
+    // after its TTL, once the writer has put its last chunk — unless it is
+    // another device's already.
     let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
-    let o2 = o.clone();
+    let (o2, lost2) = (o.clone(), lost.clone());
     let _ = tokio::task::spawn_blocking(move || {
         let _ = writing.join();
-        o2.api.release_lease(&o2.session, &token)
+        if !lost2.load(Ordering::Relaxed) {
+            let _ = o2.api.release_lease(&o2.session, &token);
+        }
     })
     .await;
-    Ok(())
+    ended
 }
 
 /// Waits for Ctrl-C or SIGTERM: `krowk sync host` then ends the stream with

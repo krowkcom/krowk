@@ -846,7 +846,7 @@ pub(crate) fn sha256_hex(b: &[u8]) -> String {
     sha2::Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
 }
 
-pub(crate) fn idempotency_key() -> Result<String, Error> {
+pub fn idempotency_key() -> Result<String, Error> {
     let mut b = [0u8; 16];
     std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).map_err(|_| {
         fail("no_idempotency_key", "this machine's random source is unreadable, so a retry could not be named safely")

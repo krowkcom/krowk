@@ -103,13 +103,17 @@ pub struct HostLink {
     stream: [u8; 16],
     batches: Sealer,
     viewers: HashMap<u64, Chain>,
+    /// Every challenge this host has opened a routed chain under: a hello
+    /// replayed — to the same link after it was forgotten, or to another —
+    /// never opens a second chain under an epoch already used.
+    challenges: std::collections::HashSet<[u8; 16]>,
 }
 
 impl HostLink {
     /// A fresh stream: 16 random bytes, its batches numbered from 1.
     pub fn new(key: &SessionKey, session: [u8; 16]) -> HostLink {
         let stream = e2e::random();
-        HostLink { key: key.clone(), session, stream, batches: Sealer::new(key, session, Direction::HostToClient, stream), viewers: HashMap::new() }
+        HostLink { key: key.clone(), session, stream, batches: Sealer::new(key, session, Direction::HostToClient, stream), viewers: HashMap::new(), challenges: Default::default() }
     }
 
     pub fn stream(&self) -> [u8; 16] {
@@ -152,6 +156,9 @@ impl HostLink {
             return Err(err("a viewer's first frame is its hello: counter 0, its challenge first"));
         }
         let challenge: [u8; 16] = plain[1..17].try_into().expect("sixteen bytes");
+        if !self.challenges.insert(challenge) {
+            return Err(err("a hello whose challenge this host has answered before: a replay, refused"));
+        }
         let chain = Chain { routed: Sealer::new(&self.key, self.session, Direction::HostToClient, challenge), frames: Opener::new(&self.key, self.session, Direction::ClientToHost), welcomed: false };
         self.viewers.insert(link, chain);
         Ok(Inbound::Hello { body: plain[17..].to_vec() })
@@ -187,6 +194,11 @@ impl HostLink {
     /// A viewer left: its chains go with it.
     pub fn forget(&mut self, link: u64) {
         self.viewers.remove(&link);
+    }
+
+    /// Every link with a chain, welcomed or not.
+    pub fn links(&self) -> Vec<u64> {
+        self.viewers.keys().copied().collect()
     }
 }
 
@@ -301,8 +313,22 @@ impl ViewerLink {
         Ok(Outbound::Welcome { stream, body: body[32..].to_vec() })
     }
 
-    /// Opens a batch of the stream the host announced. Before the welcome
-    /// there is none to open it with: the caller holds it until then.
+    /// Opens a batch of the stream the host announced, answering its body,
+    /// whether it ends the stream, and whether it followed the last batch
+    /// this viewer opened directly: a gap opens (the relay may drop, and a
+    /// viewer catches up from the host), but the caller must know of it.
+    /// Before the welcome there is no stream to open it with: the caller
+    /// holds it until then.
+    pub fn open_batch_gap(&mut self, envelope: &[u8]) -> Result<(Vec<u8>, bool, bool), Error> {
+        let stream = self.current.ok_or_else(|| err("a batch before the host announced its stream"))?;
+        let before = self.streams.get(&stream).and_then(|o| o.last());
+        let (body, last) = self.open_batch(envelope)?;
+        let now = self.streams.get(&stream).and_then(|o| o.last()).expect("just opened");
+        let gap = match before { Some(b) => now != b + 1, None => false };
+        Ok((body, last, gap))
+    }
+
+    /// `open_batch_gap` without the gap.
     pub fn open_batch(&mut self, envelope: &[u8]) -> Result<(Vec<u8>, bool), Error> {
         let (h, sealed) = split(envelope)?;
         check(&h, KIND_BATCH, &self.session)?;
@@ -432,6 +458,29 @@ mod tests {
         assert!(host.open(9, &hello).is_err(), "another link's hello");
         assert!(host.welcome(9, b"").is_err());
         assert!(viewer.hello(b"").is_err(), "once a connection");
+    }
+
+    /// A hello replayed after its link was forgotten, or to another link,
+    /// opens no second routed chain under the challenge it carries.
+    #[test]
+    fn r_e2e_1_a_replayed_hello_opens_no_second_chain() {
+        let (_, mut host, mut viewer) = pair(4);
+        let hello = viewer.hello(b"").unwrap();
+        host.open(4, &hello).unwrap();
+        host.forget(4);
+        assert!(host.open(4, &hello).is_err(), "the same link, forgotten");
+        assert!(host.welcome(4, b"").is_err());
+    }
+
+    /// A batch that skips one opens, and says so.
+    #[test]
+    fn r_e2e_1_a_skipped_batch_opens_and_shows_as_a_gap() {
+        let (_, mut host, mut viewer) = welcomed(1);
+        let b1 = host.batch(b"1", false).unwrap();
+        let _b2 = host.batch(b"2", false).unwrap();
+        let b3 = host.batch(b"3", false).unwrap();
+        assert!(!viewer.open_batch_gap(&b1).unwrap().2);
+        assert!(viewer.open_batch_gap(&b3).unwrap().2, "batch 2 was dropped");
     }
 
     #[test]

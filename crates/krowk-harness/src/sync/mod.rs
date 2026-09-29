@@ -120,11 +120,26 @@ pub async fn ping(ws: &mut Ws) -> bool {
 }
 
 /// A viewer's command to the host, sealed in its frames: `id` is the
-/// viewer's own, which the host's `ack` names back (R-LAG-8).
+/// viewer's own, random per viewer run, which the host's `ack` names back
+/// (R-LAG-8) and dedups by, so a command sent again after a reconnect —
+/// its ack lost — runs once.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Remote {
     pub id: String,
     pub command: crate::protocol::Command,
+}
+
+/// What a viewer's frame holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ViewerFrame {
+    Command(Remote),
+    /// The logged events after `after` (the last this viewer holds; none
+    /// for all the host has), answered in this viewer's routed chain: what
+    /// a viewer asks after every welcome and on any gap in the stream, so a
+    /// batch the relay dropped, a resync or a new stream loses nothing.
+    #[serde(rename_all = "camelCase")]
+    CatchUp { after: Option<String> },
 }
 
 /// What the host routes back to one viewer.
@@ -133,6 +148,9 @@ pub struct Remote {
 pub enum Answer {
     /// The command was taken (`error` none) or refused, by the viewer's id.
     Ack { id: String, error: Option<String> },
+    /// Logged events a viewer asked for, in order; `more` when another
+    /// page follows.
+    CatchUp { events: Vec<crate::protocol::LogEvent>, more: bool },
 }
 
 /// The body of the host's welcome to one viewer.
@@ -203,6 +221,7 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                             viewer::Update::Host(h) => json!({"type": "sync.host", "present": h}).to_string(),
                             viewer::Update::Sent { id, queued } => json!({"type": "sync.sent", "id": id, "queued": queued}).to_string(),
                             viewer::Update::Acked { id, error } => json!({"type": "sync.acked", "id": id, "error": error}).to_string(),
+                            viewer::Update::Gap => json!({"type": "sync.gap"}).to_string(),
                             viewer::Update::Failed(e) => return Err(e),
                         };
                         if !line.is_empty() {
