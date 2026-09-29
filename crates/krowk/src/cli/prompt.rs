@@ -374,6 +374,11 @@ pub(super) fn resolve_resume(ctx: &Ctx, sessions_dir: &std::path::Path, referenc
     if log::valid_id(reference) && sessions_dir.join(reference).join(log::EVENTS_FILE).is_file() {
         return Ok(reference.to_string());
     }
+    // Resuming an archived session brings it back first (R-VINT-4).
+    #[cfg(unix)]
+    if log::valid_id(reference) && sessions::restore_if_archived(ctx, reference)? {
+        return Ok(reference.to_string());
+    }
     let conn = sessions::open_store(ctx)?;
     let id = sessions::resolve_arg(ctx, &conn, &[reference.to_string()], "show")?;
     let d = sessions::load_by_id(ctx, &conn, &id)?;
@@ -383,6 +388,8 @@ pub(super) fn resolve_resume(ctx: &Ctx, sessions_dir: &std::path::Path, referenc
             format!("{reference:?} is a {} session — `krowk -p --resume` continues krowk's own sessions only", if d.session.harness.is_empty() { "foreign" } else { &d.session.harness }),
         ));
     }
+    #[cfg(unix)]
+    sessions::restore_if_archived(ctx, &d.session.foreign_session_id)?;
     Ok(d.session.foreign_session_id)
 }
 

@@ -35,6 +35,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
   running unsandboxed: bubblewrap missing or blocked, a Claude Code or Codex
   backend, `--daemon`, macOS (Seatbelt is not built yet) and Windows.
 
+- **Idle sessions move off the machine as weekly vintages.** `krowk sessions
+  archive` takes every native session idle for more than 14 days
+  (`--older-than DAYS`, or `KROWK_ARCHIVE_AFTER_DAYS`) and stores each ISO
+  week's sessions in the registry as one vintage: zstd-compressed JSONL,
+  sealed under the account key, so the registry only ever holds ciphertext.
+  An existing vintage for the week is merged, never overwritten. `--weekly`
+  runs only when a week has passed since the last run, so it can be put on
+  a schedule. An archived session keeps its title, summary, directory,
+  dates, models and cost on the machine, so `krowk sessions` still lists
+  it, and `krowk sessions show` or `krowk -p --resume` fetches its week and
+  restores it into krowk.db first. `krowk sessions restore <id>` does that
+  on its own. `krowk sessions pin <id>` keeps a session from ever being
+  archived, and `unpin` undoes it. It needs `krowk sync` set up on the
+  machine.
+
 - **`krowk sync attach` answers approvals and steers the turn.** Besides
   prompts, a line typed on its stdin can be `/approve REQUEST_ID`,
   `/allow-session REQUEST_ID` or `/deny REQUEST_ID`, answering the tool call

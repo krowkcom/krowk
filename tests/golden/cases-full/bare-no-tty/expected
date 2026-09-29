@@ -740,6 +740,61 @@ stdout:
               "usage": "Skip the models.dev price refresh"
             }
           ]
+        },
+        {
+          "name": "archive",
+          "usage": "krowk sessions archive [--older-than DAYS] [--weekly]",
+          "summary": "Move idle sessions into encrypted weekly vintages",
+          "flags": [
+            {
+              "name": "older-than",
+              "type": "string",
+              "default": "",
+              "usage": "Idle cut-off in days (default 14, or KROWK_ARCHIVE_AFTER_DAYS)"
+            },
+            {
+              "name": "weekly",
+              "type": "bool",
+              "default": "false",
+              "usage": "Run only a week after the last run: the weekly job"
+            }
+          ]
+        },
+        {
+          "name": "restore",
+          "usage": "krowk sessions restore <id>",
+          "summary": "Bring an archived session back from its vintage",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "pin",
+          "usage": "krowk sessions pin <id>",
+          "summary": "Never archive this session",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "unpin",
+          "usage": "krowk sessions unpin <id>",
+          "summary": "Let a pinned session be archived again",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
         }
       ]
     },
@@ -2056,6 +2111,61 @@ stdout:
               "type": "bool",
               "default": "false",
               "usage": "Skip the models.dev price refresh"
+            }
+          ]
+        },
+        {
+          "name": "archive",
+          "usage": "krowk sessions archive [--older-than DAYS] [--weekly]",
+          "summary": "Move idle sessions into encrypted weekly vintages",
+          "flags": [
+            {
+              "name": "older-than",
+              "type": "string",
+              "default": "",
+              "usage": "Idle cut-off in days (default 14, or KROWK_ARCHIVE_AFTER_DAYS)"
+            },
+            {
+              "name": "weekly",
+              "type": "bool",
+              "default": "false",
+              "usage": "Run only a week after the last run: the weekly job"
+            }
+          ]
+        },
+        {
+          "name": "restore",
+          "usage": "krowk sessions restore <id>",
+          "summary": "Bring an archived session back from its vintage",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "pin",
+          "usage": "krowk sessions pin <id>",
+          "summary": "Never archive this session",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "unpin",
+          "usage": "krowk sessions unpin <id>",
+          "summary": "Let a pinned session be archived again",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
             }
           ]
         }
@@ -3390,6 +3500,61 @@ stdout:
               "usage": "Skip the models.dev price refresh"
             }
           ]
+        },
+        {
+          "name": "archive",
+          "usage": "krowk sessions archive [--older-than DAYS] [--weekly]",
+          "summary": "Move idle sessions into encrypted weekly vintages",
+          "flags": [
+            {
+              "name": "older-than",
+              "type": "string",
+              "default": "",
+              "usage": "Idle cut-off in days (default 14, or KROWK_ARCHIVE_AFTER_DAYS)"
+            },
+            {
+              "name": "weekly",
+              "type": "bool",
+              "default": "false",
+              "usage": "Run only a week after the last run: the weekly job"
+            }
+          ]
+        },
+        {
+          "name": "restore",
+          "usage": "krowk sessions restore <id>",
+          "summary": "Bring an archived session back from its vintage",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "pin",
+          "usage": "krowk sessions pin <id>",
+          "summary": "Never archive this session",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "unpin",
+          "usage": "krowk sessions unpin <id>",
+          "summary": "Let a pinned session be archived again",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
         }
       ]
     },
@@ -4720,6 +4885,61 @@ tty:
               "type": "bool",
               "default": "false",
               "usage": "Skip the models.dev price refresh"
+            }
+          ]
+        },
+        {
+          "name": "archive",
+          "usage": "krowk sessions archive [--older-than DAYS] [--weekly]",
+          "summary": "Move idle sessions into encrypted weekly vintages",
+          "flags": [
+            {
+              "name": "older-than",
+              "type": "string",
+              "default": "",
+              "usage": "Idle cut-off in days (default 14, or KROWK_ARCHIVE_AFTER_DAYS)"
+            },
+            {
+              "name": "weekly",
+              "type": "bool",
+              "default": "false",
+              "usage": "Run only a week after the last run: the weekly job"
+            }
+          ]
+        },
+        {
+          "name": "restore",
+          "usage": "krowk sessions restore <id>",
+          "summary": "Bring an archived session back from its vintage",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "pin",
+          "usage": "krowk sessions pin <id>",
+          "summary": "Never archive this session",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "unpin",
+          "usage": "krowk sessions unpin <id>",
+          "summary": "Let a pinned session be archived again",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
             }
           ]
         }
