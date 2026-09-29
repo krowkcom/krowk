@@ -35,6 +35,9 @@ pub struct Pty {
     pub child: Child,
     seen: Arc<Mutex<Seen>>,
     pub started: Instant,
+    /// The size it was opened at, columns by rows; `resize` does not
+    /// change it.
+    pub size: (u16, u16),
 }
 
 fn open_pty(cols: u16, rows: u16) -> std::io::Result<(OwnedFd, OwnedFd)> {
@@ -123,7 +126,7 @@ impl Pty {
                 }
             }
         });
-        Pty { master, child, seen, started }
+        Pty { master, child, seen, started, size: (cols, rows) }
     }
 
     pub fn write(&mut self, bytes: &[u8]) {

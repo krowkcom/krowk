@@ -2,7 +2,8 @@
 //! demoed without Postgres, object storage or a Rails process.
 //!
 //! It implements the contract the real registry does — declare, upload,
-//! finalize; runs; the claim flow; one error envelope — including the parts
+//! finalize; runs; the claim flow; sync's devices, approvals, sessions and
+//! leases; one error envelope — including the parts
 //! that exist to catch a broken client: it refuses a finalize for bytes that
 //! never arrived, and bytes whose length or digest is not what was declared.
 //! A client that passes against this one is exercising the real sequence.
@@ -29,6 +30,8 @@ mod moves;
 mod page;
 mod runs;
 mod store;
+mod sync;
+pub use sync::{ticket_public_key, TICKET_KID, TICKET_SEED};
 mod uploads;
 mod view;
 mod xml;
@@ -54,6 +57,9 @@ pub struct Config {
     pub limit_bytes: i64,
     pub site: String,
     pub clock: Option<Clock>,
+    /// The most synced sessions a workspace holds; 0 is the registry's
+    /// 10,000.
+    pub max_sessions: usize,
 }
 
 /// A registry serving on its own thread, stopped when dropped.
@@ -92,7 +98,9 @@ impl Drop for Running {
 
 fn app(config: Config) -> Arc<App> {
     let clock = config.clock.unwrap_or_else(|| Arc::new(jiff::Timestamp::now));
-    Arc::new(App::new(config.limit_bytes, &config.site, clock))
+    let app = App::new(config.limit_bytes, &config.site, clock);
+    app.lock().sync.max_sessions = config.max_sessions;
+    Arc::new(app)
 }
 
 fn server(listener: TcpListener) -> io::Result<tiny_http::Server> {
@@ -234,6 +242,26 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         (_, ["v1", "runs", slug]) if get => runs::show(a, req, slug),
         ("PUT" | "PATCH", ["v1", "runs", slug, "completion"]) => runs::finish(a, req, slug),
         (_, ["v1", "runs", slug, "artifacts"]) if get => runs::artifacts(a, req, slug),
+        (_, ["v1", "devices"]) if get => sync::list_devices(a, req),
+        ("POST", ["v1", "devices"]) => sync::signed(a, req, sync::register_device),
+        (_, ["v1", "device_approvals"]) if get => sync::list_approvals(a, req),
+        ("POST", ["v1", "device_approvals"]) => sync::request_approval(a, req),
+        (_, ["v1", "device_approvals", slug]) if get => sync::show_approval(a, req, slug),
+        ("PUT" | "PATCH", ["v1", "device_approvals", slug, "approval"]) => sync::signed(a, req, |a, req, by| sync::approve(a, req, slug, by)),
+        (_, ["v1", "sessions"]) if get => sync::list_sessions(a, req),
+        (_, ["v1", "sessions", id]) if get => sync::show_session(a, req, id),
+        ("PUT" | "PATCH", ["v1", "sessions", id]) => sync::signed(a, req, |a, req, by| sync::put_session(a, req, id, by)),
+        (_, ["v1", "sessions", id, "relay_ticket"]) if get => sync::signed(a, req, |a, req, by| sync::viewer_ticket(a, req, id, by)),
+        ("POST", ["v1", "sessions", id, "lease"]) => sync::signed(a, req, |a, req, by| sync::acquire_lease(a, req, id, by)),
+        ("PUT" | "PATCH", ["v1", "sessions", id, "lease"]) => sync::signed(a, req, |a, req, by| sync::renew_lease(a, req, id, by)),
+        ("DELETE", ["v1", "sessions", id, "lease"]) => sync::signed(a, req, |a, req, by| sync::release_lease(a, req, id, by)),
+        ("POST", ["v1", "sessions", id, "chunks"]) => {
+            let site = site(req, &a.site);
+            sync::signed(a, req, |a, req, by| sync::declare_chunk(a, req, id, &site, by))
+        }
+        (_, ["v1", "sessions", id, "chunks"]) if get => sync::list_chunks(a, req, id, &site(req, &a.site)),
+        ("PUT" | "PATCH", ["v1", "sessions", id, "chunks", index, "finalization"]) => sync::signed(a, req, |a, req, by| sync::finalize_chunk(a, req, id, index, by)),
+        ("POST", ["_reset", "sync"]) => sync::reset(a, req),
         (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
         _ => no_such_endpoint(),
     }

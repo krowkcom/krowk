@@ -16,6 +16,8 @@
 //! - `net` — the connectivity probe behind the offline notice (R-OFF-1).
 //! - `connect` — `/connect` and `/disconnect`: the harness's sign-in, asked
 //!   through an overlay, and the first-run card.
+//! - `link` — where the sessions run: the host daemon over its socket, by
+//!   default, or a host in this process.
 //!
 //! The loop is event-driven end to end (R-PERF-2): it sleeps in one
 //! `select!` until a key, a frame of the stream, the turn's end or a
@@ -29,6 +31,7 @@ pub mod app;
 pub mod card;
 pub mod clipboard;
 pub mod connect;
+pub mod link;
 pub mod device;
 pub mod pr;
 pub mod presence;
@@ -73,6 +76,11 @@ const STALL: Duration = Duration::from_millis(700);
 const APPROVAL_SETTLE: Duration = Duration::from_millis(400);
 /// How often an interrupt the host could not take yet is asked again.
 const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
+/// A control command sent and not answered in time: it was written to the
+/// daemon, which takes it, so it is not sent again.
+const SLOW: &str = "host_slow";
+/// How long a control command sent from a key is waited for.
+const COMMAND_WAIT: Duration = Duration::from_secs(2);
 /// How long a Ctrl-C or Ctrl-D that would leave krowk waits for the second
 /// that does.
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
@@ -111,10 +119,21 @@ pub struct Options {
     /// krowk's config.json, which `/connect` writes definitions into; none
     /// (no home directory) and `/connect` says so.
     pub config: Option<PathBuf>,
+    /// The host daemon to run sessions in, started when none runs; none
+    /// runs them in this process.
+    pub daemon: Option<Daemon>,
     /// Brings a session's rows in krowk.db up to date from its log. Run on
     /// a thread of its own after each turn, while the person reads the
     /// answer, so leaving has little or nothing left to write.
     pub project: Option<Project>,
+}
+
+/// How to reach the host daemon (`krowk_harness::daemon::ensure`).
+pub struct Daemon {
+    pub env: Box<dyn Fn(&str) -> String>,
+    pub version: String,
+    /// Starts it, detached, when none answers.
+    pub spawn: Box<dyn Fn() -> Result<Option<std::process::Child>, String> + Send + Sync>,
 }
 
 pub type Project = Arc<dyn Fn(&str) + Send + Sync>;
@@ -247,9 +266,11 @@ async fn session(opts: Options) -> Outcome {
     // Where the session runs: a resumed one where it started.
     let mut runs_in = opts.host.cwd.clone();
     let started_in = opts.host.cwd.clone();
+    let mut replayed_to: Option<String> = None;
     if let Some(id) = &opts.resume {
         match read_session(&sessions_dir, id) {
             Ok(events) => {
+                replayed_to = events.last().map(|e| e.id.clone());
                 runs_in = replay(&mut app, id, &events, &opts.host.registry).unwrap_or(runs_in);
                 app.say(&format!("resumed session {id}"), app::dim());
             }
@@ -289,7 +310,40 @@ async fn session(opts: Options) -> Outcome {
     };
     let credentials = opts.host.credentials.clone();
     let permissions_cfg = opts.host.permissions.clone();
-    let host = Host::new(opts.host);
+    let local = Host::new(opts.host);
+    // The daemon first, when there is one to run the sessions in: a
+    // session there outlives this terminal (R-HOST-1). One that cannot be
+    // reached leaves them here, and says so.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut live: Vec<String> = Vec::new();
+    let host = match opts.daemon {
+        None => link::Link::Local(local),
+        #[cfg(not(unix))]
+        Some(_) => link::Link::Local(local),
+        #[cfg(unix)]
+        Some(d) => match krowk_harness::daemon::remote::Remote::connect(d.env, started_in.clone(), d.version.clone(), true, d.spawn).await {
+            Ok(client) => {
+                if client.krowk_version() != d.version {
+                    app.note(&format!("the host daemon (pid {}) runs krowk {}, and this is {} — `krowk host stop` once its sessions are done", client.pid(), client.krowk_version(), d.version));
+                }
+                // The sessions of this directory still running there, which
+                // `/sessions <id>` follows again.
+                if let Ok(st) = client.status().await {
+                    live = st.sessions.into_iter().filter(|s| s.running).map(|s| s.session_id).collect();
+                }
+                link::Link::Remote { host: local, client }
+            }
+            Err(e) => {
+                app.note(&format!("the host daemon could not be reached ({}) — this session runs in this process, and ends with it", e.message));
+                link::Link::Local(local)
+            }
+        },
+    };
+    for id in &live {
+        if opts.resume.as_deref() != Some(id.as_str()) && started_at(&sessions_dir, id).is_some_and(|cwd| cwd == runs_in) {
+            app.note(&format!("session {id} is still running here — `/sessions {id}` follows it"));
+        }
+    }
     // Routed now, while the first frame is drawn: the vendors it asks
     // (a Node start for `claude`) never hold the prompt up.
     let routing: Option<RouteFuture<'_>> = opts.route.map(|r| {
@@ -313,6 +367,7 @@ async fn session(opts: Options) -> Outcome {
         first_run_pending: false,
         host: &host,
         watch: host.watch(),
+        live: live.clone(),
         model: opts.model,
         chosen: opts.chosen,
         routing,
@@ -326,6 +381,13 @@ async fn session(opts: Options) -> Outcome {
         runs_in: runs_in.clone(),
         started_in,
         permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
+    // A resumed session still running in the daemon is followed from where
+    // its log left off: the turn so far, then live.
+    if let Some(id) = opts.resume.clone()
+        && live.contains(&id)
+    {
+        ui.reattach(&mut app, &id, replayed_to.clone());
+    }
     let result = ui.run(&mut app, &mut term).await;
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
@@ -354,7 +416,10 @@ async fn session(opts: Options) -> Outcome {
 }
 
 struct Ui<'h> {
-    host: &'h Host,
+    host: &'h link::Link,
+    /// Sessions running in the daemon when the TUI opened: `/sessions`
+    /// follows one of them rather than only replaying its log.
+    live: Vec<String>,
     /// Where `/connect` reads and writes; none without a config directory.
     paths: Option<connect::Paths>,
     /// krowk's provider credentials file, for the readiness marks.
@@ -445,6 +510,8 @@ struct Ui<'h> {
 /// SIGTERM and SIGHUP (`Signals::hangups`) ask the TUI to stop the way
 /// Ctrl-D does: the running turn is interrupted and its end waited for, the
 /// terminal restored, the session recorded; a second one does not wait.
+/// With the sessions in the host daemon it stops at once, and the turn
+/// runs on there.
 ///
 /// SIGINT and SIGQUIT (`Signals::interrupts`) reach krowk only while it has
 /// given the terminal up — raw mode off — to a vendor's login or a key's
@@ -706,6 +773,12 @@ impl<'h> Ui<'h> {
                 // SIGHUP are what ask it to from outside.
                 _ = interrupts.recv() => {}
                 _ = hangups.recv() => {
+                    // A turn in the daemon is the daemon's: the terminal
+                    // going takes nothing with it, and it runs on for
+                    // `krowk --resume` to follow (R-HOST-1).
+                    if self.host.remote().is_some() {
+                        return Ok(());
+                    }
                     if !app.running() || quitting {
                         self.abandoned = app.running();
                         return Ok(());
@@ -742,6 +815,9 @@ impl<'h> Ui<'h> {
                 }
                 r = finish(&mut self.turn) => {
                     self.turn = None;
+                    if let Some(n) = self.host.take_note() {
+                        app.note(&n);
+                    }
                     // What the host sent before answering is already queued.
                     if let Some(mut rx) = self.rx.take() {
                         while let Ok(line) = rx.try_recv() {
@@ -1168,6 +1244,26 @@ impl<'h> Ui<'h> {
         });
     }
 
+    /// Follows `id`'s turn running in the daemon as though this TUI had
+    /// sent it: what its log has after what was replayed, the turn so far,
+    /// then live, to its result.
+    /// `after` is the last event the replay drew: what the log gained since
+    /// comes from the daemon, never read here a second time.
+    fn reattach(&mut self, app: &mut App, id: &str, after: Option<String>) {
+        let Some(client) = self.host.remote() else { return };
+        let (tx, rx) = mpsc::channel(1024);
+        let id = id.to_string();
+        app.gap_say(&format!("session {id} is running in the host daemon — following it"));
+        self.turn = Some(Box::pin(async move { client.follow(&id, after.as_deref(), tx).await }));
+        self.rx = Some(rx);
+        app.start_turn(std::time::Instant::now());
+        // Its prompt is in the log already: an interrupt or steering goes
+        // straight to it.
+        if let Some(t) = &mut app.turn {
+            t.prompt_seen = true;
+        }
+    }
+
     fn prompt(&mut self, app: &mut App, text: String) {
         // Held until the model is routed and, on a backend, the repository
         // trusted: the turn would otherwise route it again, or be refused.
@@ -1215,13 +1311,13 @@ impl<'h> Ui<'h> {
         }
         if t.want_interrupt
             && !t.interrupt_sent
-            && self.command(Command::Interrupt { session_id: id.clone() }).await.is_ok()
+            && self.command(Command::Interrupt { session_id: id.clone() }).await.is_ok_or_slow()
             && let Some(t) = &mut app.turn
         {
             t.interrupt_sent = true;
         }
         while let Some(text) = app.unsent_steers.first().cloned() {
-            if self.command(Command::Steer { session_id: id.clone(), text: text.clone() }).await.is_err() {
+            if !self.command(Command::Steer { session_id: id.clone(), text: text.clone() }).await.is_ok_or_slow() {
                 break;
             }
             app.unsent_steers.remove(0);
@@ -1230,9 +1326,16 @@ impl<'h> Ui<'h> {
         app.touch();
     }
 
+    /// A control command — interrupt, steering, an approval — waited for
+    /// only so long: over the socket its answer never queues behind the
+    /// turn's frames, but the keys are not held up on a daemon that does not
+    /// answer. One not taken is asked again (`flush_requests`).
     async fn command(&self, cmd: Command) -> Result<(), EngineError> {
         let (tx, _rx) = mpsc::channel(1);
-        self.host.execute(cmd, tx).await.map(|_| ())
+        match tokio::time::timeout(COMMAND_WAIT, self.host.execute(cmd, tx)).await {
+            Ok(r) => r.map(|_| ()),
+            Err(_) => Err(EngineError::new(SLOW, "the host daemon did not answer in time; the command was sent")),
+        }
     }
 
     /// One terminal event. True when it asks for a connectivity probe.
@@ -1360,8 +1463,11 @@ impl<'h> Ui<'h> {
             };
             if let Some(d) = decision {
                 app.answered(&req.request_id);
-                if self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d }).await.is_err() {
-                    app.notice("that approval was already answered, or its turn is over");
+                match self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d }).await {
+                    Ok(()) => {}
+                    // Sent, and not answered in time: the daemon has it.
+                    Err(e) if e.code == SLOW => app.notice("the host daemon is slow to answer — the approval was sent, and the turn goes on once it takes it"),
+                    Err(_) => app.notice("that approval was already answered, or its turn is over"),
                 }
             }
             return false;
@@ -1830,6 +1936,10 @@ impl<'h> Ui<'h> {
         app.model = None;
         app.gap_say(&format!("continuing session {id}"));
         replay(app, id, &events, &self.host.registry());
+        if self.live.iter().any(|l| l == id) {
+            self.live.retain(|l| l != id);
+            self.reattach(app, id, events.last().map(|e| e.id.clone()));
+        }
         // Where that session's agent was at work, not this one's.
         self.look_for_pr(app);
         // Its own model from here, not the one the last session was on; one
@@ -1886,6 +1996,11 @@ impl<'h> Ui<'h> {
     /// The session shown, left for another: kept to be listed on the way
     /// out, and its last prompt no longer the title's.
     fn leave(&mut self, app: &mut App) {
+        // The daemon stops sending it here: no frame of it is taken for the
+        // next session's.
+        if let Some(old) = &app.session_id {
+            self.host.leave(old);
+        }
         if let Some(old) = app.session_id.clone().filter(|old| !app.left.contains(old)) {
             app.left.push(old);
         }
@@ -2349,6 +2464,37 @@ impl<'h> Ui<'h> {
 }
 
 /// Session `id`'s log, read whole, or why it could not be.
+/// A control command's outcome, where one sent and not answered in time
+/// counts as sent: sending it again would steer twice.
+trait Sent {
+    fn is_ok_or_slow(&self) -> bool;
+}
+
+impl Sent for Result<(), EngineError> {
+    fn is_ok_or_slow(&self) -> bool {
+        match self {
+            Ok(()) => true,
+            Err(e) => e.code == SLOW,
+        }
+    }
+}
+
+/// Where session `id` was started: its log's first line, read alone — the
+/// daemon's other sessions may be long, and the first frame waits on this.
+fn started_at(sessions_dir: &std::path::Path, id: &str) -> Option<PathBuf> {
+    use std::io::BufRead;
+    if !log::valid_id(id) {
+        return None;
+    }
+    let f = std::fs::File::open(sessions_dir.join(id).join(log::EVENTS_FILE)).ok()?;
+    let mut first = String::new();
+    std::io::BufReader::new(f).read_line(&mut first).ok()?;
+    match serde_json::from_str::<krowk_harness::protocol::LogEvent>(&first).ok()?.body {
+        krowk_harness::protocol::LogBody::SessionStarted { cwd, .. } => Some(PathBuf::from(cwd)),
+        _ => None,
+    }
+}
+
 fn read_session(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_harness::protocol::LogEvent>, String> {
     if !log::valid_id(id) {
         return Err(format!("{id:?} is not a krowk session id"));

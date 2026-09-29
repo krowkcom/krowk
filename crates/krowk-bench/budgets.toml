@@ -157,6 +157,69 @@ unit = "bytes"
 # Its review (krowk's own files deleted by name, never a directory whole;
 # the two key files merged entry by entry; a held key compared as it is;
 # a linked key file named) adds 6,336: 8,498,216, 152,536 under this.
+# The Harness P1 umbrella measures 8,628,168, 22,584 under this. Harness P1
+# ticket 13, the host daemon, adds no new crate. What it does add: the
+# socket server around Host (per-directory hosts, per-session fan-out,
+# catching up a late client, the idle exit and stop, tokio's LocalSet and
+# unix listener, linked but unused until now), its client and the
+# lock-guarded spawn, Deserialize for StreamLine, Command and RunResult,
+# which the socket's frames pull in, headless compiled for both
+# transports, `krowk host` and the service files. It measures 8,997,096
+# (8.58 MiB) in review, and 9,010,408 after review round 1 (approvals by the
+# client's capability, the per-home socket, config re-read per turn,
+# enable's handover): 382,240 over the umbrella, 360,008 over 8.25 MiB.
+# Raised 8.25 -> 8.75 MiB by ticket 13, leaving 164,632 bytes for the rest
+# of Harness P1.
+# Ticket 13b, the TUI on the daemon (no new crate: the link seam, following
+# a running session, per-session streams in the client, reload, settled,
+# `krowk host stop`), adds 78,912 bytes: 9,089,320 (8.67 MiB), 85,720
+# under this.
+# Ticket 14, the daemon's WebSocket transport and bounded queues, starts
+# from the umbrella at 9,110,984 and measures 9,411,752 (8.98 MiB): 300,768
+# more, 236,712 over 8.75 MiB. Two new crates pay most of it: ruzstd, the
+# batches' compression (about 81 KB of symbols), and tokio-tungstenite's
+# server handshake and framing with sha1 and futures-sink (about 51 KB);
+# the rest is the code — the envelope and its writer, the outboxes, the
+# bounded replay and catching a client up from its cursor. zstd (libzstd
+# through zstd-sys) was the alternative, not measured: it links the whole C
+# library and needs a C cross-compiler for every release target. A
+# hand-written RFC 6455 would save the 51 KB and cost a parser of our own
+# on a listening socket.
+# Raised 8.75 -> 9.00 MiB by ticket 14, leaving 25,432 bytes.
+# Its review round 1 (no new crate: per-session seq counters and the
+# epoch, paged catching up with held frames put back in place, the
+# session log's create/open and fsync off the daemon's thread, the shared
+# TLS configuration, the pre-auth checks and the Origin refusal) adds
+# 38,176 bytes: 9,449,928 (9.01 MiB), 12,744 over. Raised 9.00 -> 9.25
+# MiB, leaving 249,400 bytes for the rest of Harness P1.
+# Ticket 15, krowk-client's end-to-end keys and `krowk sync init` /
+# `recover`, takes the umbrella from 9,449,928 to 9,543,688 (9.10 MiB):
+# 93,760 bytes, 155,640 under this, so no raise. Spec R-E2E-2 names HPKE
+# and XChaCha20-Poly1305, neither of which ring (linked for TLS) has, so
+# the crates are RustCrypto's and dalek's: hpke with hkdf and hmac,
+# x25519-dalek on curve25519-dalek, chacha20poly1305 with poly1305 and
+# cipher, and the embedded 13 KB BIP-0039 word list; sha2, getrandom and
+# zeroize were linked already. The expectation written here before, that
+# 15 would fit only on ring's primitives, did not hold: it fits on these.
+# Ticket 17, the relay's contract and `krowk relay serve`, takes the
+# umbrella (tickets 16 and 16b merged) from 9,616,008 to 9,767,496 (9.32
+# MiB): 151,488 bytes, 68,168 over 9.25 MiB. One new crate: ed25519-dalek
+# for each device's relay signing key, on the curve25519-dalek that
+# x25519-dalek already links, with its SHA-512 from the sha2 already
+# linked and without `fast`'s precomputed tables; the rest is the relay —
+# the join and its checks, the per-stream ring buffer and resume, routing,
+# windows and token buckets, the roster file and the command. Raised 9.25
+# -> 9.50 MiB by ticket 17, leaving 193,976 bytes for the rest of Harness
+# P1. Its review round 1 (no new crate: canonical origins, per-channel
+# join ceilings, the pre-join read budget and per-address caps, overflow
+# said on every queue, idle channels forgotten) adds 44,256 bytes:
+# 9,811,752 (9.36 MiB), 149,720 under this.
+# Ticket 19's sync (no new crate: tokio-tungstenite's client half of the
+# handshake it already links for the daemon, `connect`; the relay link's
+# three sealed chains, the host bridge, the viewer, chunks and checkpoints,
+# `krowk sync sessions|host|attach` and `--resume` of a synced session)
+# adds 426,304 bytes on ticket 18's 9,840,744: 10,267,048 (9.79 MiB).
+# Raised 9.50 -> 10.00 MiB by ticket 19, leaving 218,712 bytes.
 # Main measured 8,648,392 before code in colour (syntect and two-face,
 # bat's grammars: fenced blocks in answers, written files and edits
 # highlighted in the TUI), which adds 2,225,888 bytes: 10,874,280
@@ -169,7 +232,13 @@ unit = "bytes"
 # the other agent CLIs ship a 242 MB (Claude Code) or 287 MB (Codex)
 # binary, and Cursor Agent a 547 MB install. A curated grammar set could
 # win back some of the highlighter's share later.
-max = { x86_64-linux = 11_534_336 }
+# Main merged into the umbrella again (code in colour, whose 11 MiB
+# ceiling main raised to; the two-press quit, the per-turn krowk.db
+# projection) measures 12,703,304 (12.11 MiB): the umbrella's daemon, sync
+# and relay on top of main's highlighter, 1,168,968 over 11.00 MiB. Raised
+# 11.00 -> 12.50 MiB by the merge, leaving 403,896 bytes for the rest of
+# Harness P1.
+max = { x86_64-linux = 13_107_200 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---
@@ -202,7 +271,8 @@ what = "Bare `krowk` to an interactive prompt, no daemon running"
 unit = "ms"
 # Spawn to the first complete frame (the end of the first synchronized
 # update), which is the prompt, on a pseudo-terminal answering the cursor
-# query; the startup connectivity probe is not waited for.
+# query; the startup connectivity probe is not waited for. Since ticket 13b
+# the TUI starts the host daemon and connects to it first: that is in here.
 max = 150
 runs = 21
 status = "enforced"
@@ -212,10 +282,12 @@ id = "tui.startup_warm"
 req = "R-PERF-1"
 what = "Bare `krowk` to an interactive prompt, daemon warm"
 unit = "ms"
+# Spawn to the first complete frame with the host daemon already up: the
+# TUI connects over its socket, says hello and asks its status before it
+# draws. Turned on by ticket 13b, when the TUI became the daemon's client.
 max = 50
 runs = 21
-status = "pending"
-owner = "13"
+status = "enforced"
 
 # --- Idle: no polling and no timers while nothing happens (Linux /proc) ---
 
@@ -353,6 +425,9 @@ id = "remote.attach"
 req = "R-PERF-6"
 what = "Attach from a checkpoint on a remote device"
 unit = "ms"
+# The sealed index, the checkpoint and ten chunks of tail, read from the
+# stand-in registry over loopback HTTP and opened: what a viewer does before
+# it goes live (crates/krowk-harness/src/sync/store.rs).
 max = 500
-status = "pending"
-owner = "19"
+runs = 11
+status = "enforced"

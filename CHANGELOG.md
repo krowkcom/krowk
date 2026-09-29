@@ -9,13 +9,268 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **`krowk sync attach` answers approvals and steers the turn.** Besides
+  prompts, a line typed on its stdin can be `/approve REQUEST_ID`,
+  `/allow-session REQUEST_ID` or `/deny REQUEST_ID`, answering the tool call
+  an `approval.requested` line names, `/interrupt`, which stops the running
+  turn, or `/steer TEXT`, which adds to it. Each `approval.requested` line
+  carries its `requestId`, and stderr says which command answers it. Any
+  other line starting with `/` goes as a prompt, so skills and paths still
+  work, and `//TEXT` sends `/TEXT`. `krowk help sync attach` lists them.
+
+- **A synced session goes direct over Tailscale when it can.** `krowk sync
+  host` reads this machine's tailnet address, MagicDNS name and LAN address
+  from the local `tailscaled`, listens there, and names the addresses to
+  each viewer inside the sealed channel. A viewer tries them all beside the
+  relay and moves onto the first that passes the same ticket, challenge and
+  handshake the relay does, mid-session and without losing a frame; if the
+  direct path goes, or its welcome is more than three seconds late, it
+  falls back to the relay by itself and tries again later, less often each
+  time nothing is found (10 seconds, doubling to 5 minutes). `krowk sync attach` prints the path in use (`sync.path`: `relay`,
+  `direct over Tailscale` or `direct over LAN`). Being on the tailnet lets
+  nobody in: direct paths are on only with the registry's ticket keys in
+  `KROWK_RELAY_TICKET_KEYS`, and `KROWK_TAILSCALE_SAME_USER=1` also turns
+  away a connection from another tailnet user. The LAN address is offered
+  only with `KROWK_DIRECT_LAN=1`, and never with the same-user check.
+  `krowk hosts` lists the
+  tailnet's machines tagged `tag:krowk-host`.
+- **A file a session publishes now says what made it.** Besides the session
+  (`krowk.session`), each artifact `publish` pushes records the engine that
+  ran the turn (`krowk.engine`: `krowk`, `claude-code` or
+  `codex-app-server`), the model (`gen_ai.request.model`) and its provider
+  (`gen_ai.system`), so its card on krowk.com can link back to the session
+  with a `krowk --resume` command. A subagent's file names the subagent's
+  model. Nothing from the session's log is sent; the session id, engine,
+  model and provider are, in the clear, even for a synced session.
+- **A session running on one machine can be watched and steered from
+  another.** The host keeps the session's lease, renewing it every 20
+  seconds, streams it over the relay sealed end to end, and writes its log
+  to the registry as sealed chunks with a checkpoint to attach from.
+  Another of your machines attaches from the latest checkpoint in well
+  under half a second, follows the session live, and can prompt it, steer
+  or stop it, and answer its approvals. When the host is away the other
+  machine is read-only, and a prompt typed there waits and runs when the
+  host is back. A dropped connection resumes by itself with nothing lost.
+  Neither the relay nor the registry ever sees the session's content.
+  `krowk sync host <session>` syncs a session of this machine, `krowk sync
+  sessions` lists what another machine can open, and `krowk sync attach
+  <session>` — or `krowk --resume <session>` on a machine without the
+  session's log — follows it there. The relay is `KROWK_RELAY_URL`, or
+  `krowk relay serve` on this machine.
+
+- **Sync calls that act as this machine are signed by its own key.**
+  Registering or approving a device, a lease call, writing a session or
+  its log, and asking for a relay ticket now carry `X-Krowk-Device`,
+  `X-Krowk-Timestamp` and `X-Krowk-Signature`, an Ed25519 signature by
+  this machine's signing key. The registry refuses them unsigned, signed by
+  another key, more than five minutes off its clock, or sent twice, so a
+  workspace API key alone can no longer act as one of its devices. A
+  clock more than five minutes out makes these calls fail with
+  `signature_stale`.
+- **A file a session publishes now says what made it.** Besides the session
+  (`krowk.session`), each artifact `publish` pushes records the engine that
+  ran the turn (`krowk.engine`: `krowk`, `claude-code` or
+  `codex-app-server`), the model (`gen_ai.request.model`) and its provider
+  (`gen_ai.system`), so its card on krowk.com can link back to the session
+  with a `krowk --resume` command. A subagent's file names the subagent's
+  model. Nothing from the session's log is sent; the session id, engine,
+  model and provider are, in the clear, even for a synced session.
+- **Setting up sync now registers this machine's relay signing key.**
+  `krowk sync init`, `recover` and `register`, and `krowk devices approve`,
+  send the public half of the signing key beside the device key, and `krowk
+  sync join` sends it with the approval request, so the approval registers
+  it. krowk's hosted relay uses it to tell this machine's connections from
+  anyone else's. The key is set once: a different one for the same device
+  is refused (`signing_key_mismatch`).
+- **The code `krowk sync join` shows to approve a machine changed.** It
+  now covers both of the new machine's keys, so a request that copied its
+  device key with someone else's signing key shows a different code, and
+  `krowk devices approve` approves only the one request whose code is
+  exactly the one you typed. Only one approval request per machine may
+  wait at a time.
+- **Relays admit devices on tickets the registry signs.** A device joins
+  a relay with a short-lived ticket, which comes with the session's lease
+  for the host and on request for a viewer. `krowk relay serve` now takes
+  `--ticket-keys FILE`, the registry's ticket-signing public keys, instead
+  of `--roster`. The ticket travels in the `X-Krowk-Ticket` header of the
+  WebSocket upgrade, and a connection without a good one is turned away
+  before it takes any room on the channel, so a flood of connections
+  cannot keep a session's devices off it.
+- **`krowk relay serve --state DIR` keeps each channel's fence across
+  restarts.** It is required when `--addr` is reachable from the network,
+  like `--origin`, so a restart never lets a machine that lost the lease
+  host again. On loopback the relay may keep it in memory.
+- **A relay keeps development sessions apart from production ones.**
+  A relay join now says which it is, `env` "production" or "development",
+  and `krowk relay serve` gives each its own channel of a session, so a
+  developer's session never shares a relay buffer or a viewer with a
+  user's. krowk says "development" for a debug build, for
+  `KROWK_ENV=development`, or for any registry but `api.krowk.com`.
+- **`krowk relay serve` runs a relay of your own.** It carries a synced
+  session between the machine running it and the devices watching it, and
+  only ever sealed bytes: it refuses anything not encrypted, and never
+  stores it. A device joins by signing the relay's challenge with a new
+  per-device signing key (`signing.json` in krowk's home, made the first
+  time it is needed); only the machine holding the session's lease may
+  host it. A device that reconnects picks up where it left off from the
+  relay's short buffer, and the relay answers heartbeats itself, so a busy
+  or quiet host never looks gone. It listens on 127.0.0.1:7790 unless
+  `--addr` says otherwise; an address reachable from the network also
+  needs `--origin`, the URL devices dial it by, and the banner says it is
+  open. Nothing connects to it on its own yet; the host daemon and the
+  terminal will once syncing sessions lands. `krowk help --all` lists it.
+- **A synced session's log can now be stored, encrypted, in the registry.**
+  The machine holding a session's lease seals each piece of the log on its
+  own side and uploads it straight to storage. Each piece is numbered,
+  names the lease it was written under, and is chained to the piece before
+  it, and the last one is marked. A device reading the log back refuses a
+  piece that is repeated, out of order, missing, or spliced in from another
+  machine's copy of the log, and can tell a finished log. A piece is
+  refused unless it comes with the lease's current token, and one a
+  previous lease holder left half-uploaded is replaced rather than blocking
+  the log. Pieces are at most 64 MiB. The registry and storage only ever hold the sealed bytes.
+  The pieces count on your workspace's storage meter, and never show up in
+  `krowk uploads list`, on a card, or anywhere else a push's artifacts do.
+  Nothing writes them yet on its own; the host daemon will once syncing
+  sessions lands.
+- **A device the workspace's owner revoked by resetting sync can come back.**
+  Run `krowk sync register` on it after the reset. The fix line on a
+  `device_revoked` refusal now says so, where it used to point at
+  `krowk sync recover`, which could not help.
+
+- **Add a machine to sync by approving it from one that already syncs,
+  with no recovery phrase.** On the new machine, `krowk sync join` shows a
+  32-character code and waits. On a machine that already syncs, `krowk
+  devices approve` asks for that code, shows which machine it belongs to,
+  and hands the account key over, encrypted to the new machine's key, once
+  you say yes. The new machine then asks for the account key id `approve`
+  printed (or takes it as `krowk sync join <id>`), asks you to confirm, and
+  keeps nothing unless the ids match. Read that id off your other machine,
+  never from an error message or a web page. Both commands need a person at
+  a terminal: an agent told to run them is refused. `krowk devices list`
+  shows the workspace's machines and the account key id this one holds.
+  All of it needs a key to a Pro workspace; on a free one the commands
+  refuse with a fix line. `krowk sync init` and `recover` still work with
+  no account, on a free plan, or with the registry unreachable: the keys
+  stay on this machine, and `krowk sync register` registers it later. With
+  a Pro key they register this machine themselves, and `recover` then
+  refuses a phrase that restored a different account key from the
+  workspace's, which is how a mistyped word that happens to pass the
+  checksum is caught. `--name` (or `KROWK_DEVICE_NAME`) sets what the device
+  list calls this machine instead of its host name.
+- **`krowk sync init` sets up the end-to-end encryption keys sync will
+  use, and shows your recovery phrase.** It makes a key for this machine
+  and an account key, prints the account key as 24 words, and keeps it
+  only once you type the words back (they are not echoed). Write them
+  down, with the key id shown beside them: krowk never stores the phrase
+  and cannot show it again, and it is the only way back to your sessions
+  if every device is lost. On another machine, `krowk sync recover` takes
+  the 24 words — typed at its prompt, or piped from a file (`< phrase.txt`),
+  never with `echo`, which keeps them in your shell history — restores the
+  same account key there and shows its key id; if the id differs, a word
+  was wrong, and running `recover` again with the right words replaces it. The keys
+  stay in krowk's home, `device.json` and `account-key.json`, both
+  `0600`, and the wrapped account key opens only with that machine's own
+  device key.
+- **The host daemon can serve its sessions over a WebSocket on this
+  machine**, the transport other devices will reach it through once the
+  relay lands. It is off unless `KROWK_HOST_WS` or `host.websocket` in
+  `config.json` names a loopback address (`127.0.0.1:7788`; port `0` picks
+  one, and `krowk host status` shows it); anything but loopback is
+  refused. A client proves it is you with the token in `host.token` beside
+  the daemon's socket, which is new each time the daemon starts. The
+  frames are the unix socket's, sent in compressed batches.
+- **The TUI's sessions now run in the host daemon, so closing the
+  terminal no longer ends them.** Bare `krowk` starts the daemon if none is
+  running and runs every turn there. When the window closes mid-reply, the
+  turn keeps going. Reopen `krowk` in the same directory and it tells you
+  which session is still running; `krowk --resume <id>` (or
+  `/sessions <id>`) then shows what happened while you were away and
+  follows the rest live. Several TUIs can follow one session and see the
+  same reply. `/connect` updates the daemon's providers too. Set
+  `KROWK_TUI_HOST=local` to keep the TUI's sessions in its own process, as
+  before. `krowk host stop` stops the daemon once no turn is running.
+- **A session can outlive its terminal: `krowk -p --daemon` runs the turn
+  in a per-user host daemon.** The first `krowk` that needs the daemon
+  starts it in the background; it listens on a private unix socket
+  (`$XDG_RUNTIME_DIR/krowk/host.sock`, or under `$TMPDIR` on macOS) and
+  exits after ten idle minutes with no session running — `host.idleMinutes`
+  in `config.json`, or `KROWK_HOST_IDLE` in seconds, changes that. Kill the
+  process or close the terminal mid-turn and the turn goes on; `krowk host
+  attach <session>` shows it — what it has done so far, the reply being
+  typed, then the rest live — and any number of clients can follow one
+  session and see the same events. `krowk host status` says whether the
+  daemon runs and what it holds. The daemon asks nobody whether to trust a
+  repository, so a backend runs there only once it is trusted. The TUI
+  still runs its sessions in its own process for now.
+- **`krowk host enable` keeps the daemon running on an always-on machine**,
+  as a systemd user service on Linux or a launchd agent on macOS, with no
+  idle exit; `krowk host disable` stops and removes it. A service has no
+  shell variables, so give it keys with `krowk connect` rather than an
+  exported `ANTHROPIC_API_KEY`.
+
 ### Changed
 
+- **The client protocol's types live in `krowk-client`.** The commands,
+  events and log lines, and the daemon's 28-byte frame header, are
+  declared in the crate the desktop app and the phones will link, which
+  pulls in no engine, tokio or reqwest; `krowk_harness::protocol`
+  still names the same types. The generated JSON Schema is unchanged.
 - Leaving the TUI takes two presses, as in Claude Code, so one stray key no longer ends a session. On an empty prompt, Ctrl-C or Ctrl-D shows "Press Ctrl-C again to exit" (or Ctrl-D) under the prompt, and the same key again within 1.5 seconds quits.
 - Keys the TUI suggests stand out: in hints, the help menu, the status line, approvals and questions, each key (`esc`, `enter`, `y`, `ctrl-g`, `?`) is white instead of grey like the words around it.
 
 ### Fixed
 
+- **A viewer that moves to the direct path mid-session keeps receiving
+  the session.** The direct listener replays from where the viewer was when
+  it started looking for the direct path. The viewer had already opened
+  those batches through the relay, so it never acked them, and once the
+  listener's window filled, no further event reached the viewer, though
+  its own prompts and their acks still went through. An approval request
+  waiting while the viewer moved is now shown once, not once per path. A
+  command still running when the viewer moved is answered on the path the
+  viewer is on now. A host that reconnects to the relay no longer drops the
+  viewers on its direct path.
+- **`krowk sync host` no longer hangs on a session this machine does not
+  have.** It used to take the session's lease and then wait, silent, until
+  interrupted; it now fails at once with `no_session` and how to start one,
+  before writing anything to the registry. A bridge that stops by itself
+  for any other reason also ends the command then, saying why.
+- **A turn sent the moment the host daemon starts no longer stalls every
+  other session.** The daemon waited on its thread for the TLS setup a
+  turn's first request needs, and read a new directory's configuration
+  there too; both now happen off it, so streams and heartbeats keep going.
+  A TLS setup that fails once is tried again, rather than failing every
+  turn until the daemon restarts.
+- **A turn caught up after its client fell behind no longer loses its
+  answer.** A terminal or phone that stopped reading, and was caught up
+  from where it stood just as the turn ended, could get the typing and the
+  end of the turn but not the finished answer. It now always gets it.
+- **A terminal whose connection to the host daemon drops mid-turn picks the
+  turn up where it left off.** It reconnects and follows on from the last
+  thing it had, with nothing shown twice and nothing skipped, instead of
+  reporting the turn lost. A model switch caught up by another terminal
+  also no longer shows up twice.
+- **`krowk host stop` straight after a turn keeps that turn on disk.** The
+  daemon waits for the turn's log to be flushed before it exits, for up to
+  ten seconds. Stopped by SIGTERM or Ctrl-C, it first interrupts the
+  running turns, a turn still starting included, so each is logged as
+  interrupted and flushed too. The waits add up: up to ten seconds for the
+  turns to end, ten for each backend to close, and ten for the flush. A
+  second SIGTERM or Ctrl-C exits at once. A prompt sent while it exits is
+  refused rather than lost, an idle exit's included.
+
+- **A terminal suspended while it follows a long session no longer grows
+  the host daemon's memory.** The daemon keeps a few megabytes for each
+  client that stops reading, then drops what it held and, once the client
+  reads again, sends what it missed from where it stopped — nothing twice,
+  nothing lost. `krowk host status --json` counts the bytes waiting for
+  clients and how often one was caught up.
+- **A slow disk no longer stalls every session in the host daemon.** Each
+  event a turn logs, and its context record, is written off the thread all
+  sessions and heartbeats share, and still before any client sees it.
 - Quitting the TUI is instant. On a Claude Code model it took most of a second, waiting on Claude Code to flush its telemetry as it exited; krowk now starts Claude Code with telemetry off (an instance can turn it back on by setting `DISABLE_TELEMETRY` in its `env`). The screen is also handed back before anything else is tidied up, and the session is saved into `krowk sessions` after each turn instead of on the way out, so leaving has nothing left to wait on. A quit now takes about 30 ms, down from 0.9 s.
 - A session resumed in the TUI shows what it has cost so far. On a model models.dev has no price for yet, such as a new Claude through Claude Code, the status bar showed `$—` until the next turn ran; it now counts what the backend reported for each past turn, the way the live figure does.
 

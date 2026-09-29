@@ -132,6 +132,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         notices: notices.into_iter().chain(mode_notices).collect(),
         version: super::VERSION.into(),
         config: Some(super::providers::config_path()?),
+        daemon: daemon(ctx)?,
         project: Some(projector.after_turns()),
     });
     // As after `krowk -p`: the log is the session, krowk.db its listing —
@@ -153,6 +154,23 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         Some(e) => Err(fail("tui_failed", e)),
         None => Ok(()),
     }
+}
+
+/// Where the TUI's sessions run: the host daemon, started when none runs,
+/// so a session outlives the terminal (R-HOST-1) — unless
+/// `KROWK_TUI_HOST=local` keeps them in this process.
+#[cfg(unix)]
+fn daemon(ctx: &Ctx) -> Result<Option<krowk_tui::Daemon>, Error> {
+    if ctx.env("KROWK_TUI_HOST") == "local" {
+        return Ok(None);
+    }
+    let spawn = super::host::spawner(ctx)?;
+    Ok(Some(krowk_tui::Daemon { env: Box::new(krowk_api::home::process_env), version: super::VERSION.into(), spawn: Box::new(spawn) }))
+}
+
+#[cfg(not(unix))]
+fn daemon(_: &Ctx) -> Result<Option<krowk_tui::Daemon>, Error> {
+    Ok(None)
 }
 
 /// Projects sessions into krowk.db, remembering how long each log was when

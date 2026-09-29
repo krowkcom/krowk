@@ -107,6 +107,21 @@ day, and comes back with a claim token that `krowk claim` spends to move it
 into a workspace — where a paid plan keeps it and a free one gives it another
 day.";
 
+#[cfg(feature = "harness")]
+const SYNC_ATTACH_ABOUT: &str = "\
+Prints the session as stream-json on stdout. Each line typed on stdin is a
+prompt to it, queued while no host is online, except these:
+
+  /approve REQUEST_ID        allow the tool call an approval.requested names
+  /allow-session REQUEST_ID  allow it, and calls like it for the session
+  /deny REQUEST_ID           refuse it
+  /interrupt                 stop the running turn
+  /steer TEXT                add TEXT to the running turn without stopping it
+
+Any other line starting with / is a prompt as typed; //TEXT sends /TEXT.
+Each approval.requested line carries its requestId, and a hint on stderr
+names the command that answers it.";
+
 const CLAIM_ABOUT: &str = "\
 Moves an anonymous upload into this key's workspace, spending the claim token
 it came back with: `krowk help push`.";
@@ -434,6 +449,8 @@ pub fn catalog(version: &str) -> Catalog {
             EnvVar { name: "KROWK_AGENT", usage: "Agent name to report", default: "" },
             EnvVar { name: "KROWK_NO_UPDATE_CHECK", usage: "1/true/yes/on — never check for or mention new releases", default: "" },
             EnvVar { name: "KROWK_HOME", usage: "Where krowk keeps its files, an absolute path", default: "~/.krowk" },
+            #[cfg(feature = "harness")]
+            EnvVar { name: "KROWK_TUI_HOST", usage: "local — the TUI runs its sessions in its own process, not the host daemon", default: "" },
         ],
     };
     #[cfg(feature = "harness")]
@@ -442,7 +459,94 @@ pub fn catalog(version: &str) -> Catalog {
     c.commands.push(providers_command());
     #[cfg(feature = "harness")]
     c.commands.push(cmd("status", "krowk status", "What's connected, and whether each is ready"));
+    #[cfg(all(feature = "harness", unix))]
+    c.commands.push(host_command());
+    #[cfg(all(feature = "harness", unix))]
+    c.commands.push(relay_command());
+    #[cfg(all(feature = "harness", unix))]
+    c.commands.push(cmd("hosts", "krowk hosts", "The tailnet's machines tagged tag:krowk-host, from Tailscale"));
+    #[cfg(feature = "harness")]
+    c.commands.push(sync_command());
+    #[cfg(feature = "harness")]
+    c.commands.push(devices_command());
     c
+}
+
+/// `krowk sync`: this machine's end-to-end keys (R-E2E-3, R-E2E-4).
+#[cfg(feature = "harness")]
+fn sync_command() -> Command {
+    Command {
+        subcommands: vec![
+            cmd("init", "krowk sync init", "Set up: a device key, an account key, its recovery phrase"),
+            cmd("recover", "krowk sync recover", "Restore the account key here from its recovery phrase"),
+            Command {
+                flags: vec![flag("name", STRING, "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
+                ..cmd("join", "krowk sync join [ACCOUNT_KEY_ID]", "Add this machine, approved from one that already syncs")
+            },
+            cmd("register", "krowk sync register [--name NAME]", "Tell the workspace this machine holds its account key"),
+            #[cfg(unix)]
+            cmd("sessions", "krowk sync sessions", "The synced sessions this machine can open"),
+            #[cfg(unix)]
+            cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
+            #[cfg(unix)]
+            cmd("attach", "krowk sync attach SESSION", "Follow a synced session; stdin takes prompts and /commands"),
+        ],
+        ..cmd("sync", "", "End-to-end encryption keys for syncing sessions")
+    }
+}
+
+/// `krowk relay`: the reference relay (R-RELAY-1), the contract of Canon's
+/// engineering/relay.md in Rust — the hermetic stand-in and a self-hosting
+/// path.
+#[cfg(all(feature = "harness", unix))]
+fn relay_command() -> Command {
+    Command {
+        subcommands: vec![Command {
+            flags: vec![
+                flag("addr", STRING, "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"),
+                flag("ticket-keys", STRING, "The JSON file of the registry's ticket-signing public keys (relay.md → Tickets)"),
+                flag("origin", STRING, "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"),
+                flag("state", STRING, "The directory each channel's fence is kept in across restarts; required off loopback"),
+            ],
+            ..cmd("serve", "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]", "Carry sealed sessions between their host and viewers")
+        }],
+        ..cmd("relay", "", "The relay other devices reach a session through")
+    }
+}
+
+/// `krowk devices`: the machines that sync the workspace (R-E2E-3).
+#[cfg(feature = "harness")]
+fn devices_command() -> Command {
+    Command {
+        subcommands: vec![
+            cmd("list", "krowk devices list", "The workspace's devices, and the account key this one holds"),
+            cmd("approve", "krowk devices approve [CODE]", "Approve a new device's `krowk sync join`"),
+        ],
+        ..cmd("devices", "", "The machines that sync this workspace's sessions")
+    }
+}
+
+/// `krowk host`: the per-user daemon sessions run in (R-HOST-1, R-HOST-2).
+/// `serve` is what the first `krowk` that needs the daemon starts, and what
+/// the service runs; it is not listed.
+#[cfg(all(feature = "harness", unix))]
+fn host_command() -> Command {
+    Command {
+        subcommands: vec![
+            cmd("status", "krowk host status", "Whether the daemon runs: socket, pid, uptime, sessions"),
+            Command {
+                args: vec![arg("session", "The session id a result names", true)],
+                ..cmd("attach", "krowk host attach <session>", "Follow a session in the daemon, live, as stream-json")
+            },
+            Command {
+                flags: vec![flag("force", BOOL, "Stop it though other clients are connected; each reconnects to the next daemon")],
+                ..cmd("stop", "krowk host stop [--force]", "Stop the daemon, once no turn runs in it")
+            },
+            cmd("enable", "krowk host enable", "Run the daemon as a systemd or launchd user service"),
+            cmd("disable", "krowk host disable", "Stop the service and remove it"),
+        ],
+        ..cmd("host", "", "The daemon sessions run in, which outlives the terminal")
+    }
 }
 
 /// Every flag the parser takes outside a command: the ones every command
@@ -607,6 +711,11 @@ fn prompt_flags() -> Vec<Flag> {
             BOOL,
             "With -p: let a backend (Claude Code, Codex) run in a repository not yet trusted — it runs the repository's hooks and MCP servers without asking. Without it, -p refuses unless a person at the terminal says yes",
         ),
+        flag(
+            "daemon",
+            BOOL,
+            "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it",
+        ),
     ]
 }
 
@@ -690,6 +799,8 @@ pub fn about(name: &str) -> &'static str {
 Signs an instance out: SuperGrok's tokens are deleted, a subscription's own
 logout is run, and an API key's variable is named for you to unset.",
         #[cfg(feature = "harness")]
+        "sync attach" => SYNC_ATTACH_ABOUT,
+        #[cfg(feature = "harness")]
         "providers add" => "\
 Also signs in to SuperGrok, or adds a Claude Code or Codex account (signed in
 with `claude auth login` or `codex login`).",
@@ -697,6 +808,28 @@ with `claude auth login` or `codex login`).",
         "providers list" => "Where each runs, too. The same check as `krowk status`.",
         #[cfg(feature = "harness")]
         "providers" => "Below `krowk connect`: API keys, logins, Claude Code and Codex accounts.",
+        #[cfg(feature = "harness")]
+        "sync" => "\
+Sessions are encrypted on this machine before they leave it. `init` shows the
+account key as 24 words once, with its key id; `recover` takes them on a new
+machine and shows the id it restored. Type them at its prompt, or pipe them
+from a file (`krowk sync recover < phrase.txt`) — never `echo`, which keeps
+them in your shell history. Or skip the words: `join` shows a code, and
+`krowk devices approve` on a machine that already syncs answers it; read the
+account key id off that machine, never from an error or a web page. The keys
+are kept in krowk's home, 0600; with a key to a Pro workspace the device is
+registered there too.",
+        #[cfg(feature = "harness")]
+        "devices" => "\
+Adding a machine: run `krowk sync join` on it, then `krowk devices approve`
+here and type the code it shows. Type back the account key id `approve`
+shows on the new machine, or pass it to `join`. Comparing both is what keeps
+a registry from slipping its own keys in. Needs a Pro workspace.",
+        #[cfg(feature = "harness")]
+        "host" => "\
+The first krowk that needs it starts the daemon, and it exits after ten idle
+minutes (host.idleMinutes in config.json, or KROWK_HOST_IDLE seconds).
+`krowk host enable` keeps it running instead, for an always-on machine.",
         _ => "",
     }
 }
@@ -715,6 +848,16 @@ pub const GROUPS: &[(&str, &[&str])] = &[
         &[
             #[cfg(feature = "harness")]
             "providers",
+            #[cfg(all(feature = "harness", unix))]
+            "host",
+            #[cfg(all(feature = "harness", unix))]
+            "hosts",
+            #[cfg(all(feature = "harness", unix))]
+            "relay",
+            #[cfg(feature = "harness")]
+            "sync",
+            #[cfg(feature = "harness")]
+            "devices",
             #[cfg(all(feature = "sessions", not(feature = "harness")))]
             "sessions",
             "config",
@@ -728,8 +871,17 @@ pub const GROUPS: &[(&str, &[&str])] = &[
 ];
 
 /// Listed by `krowk help --all` alone: the long forms of what the overview
-/// already lists, and help itself.
-pub const ALL_ONLY: &[&str] = &["auth", "help"];
+/// already lists, help itself, and the relay, which a person runs only to
+/// host one.
+pub const ALL_ONLY: &[&str] = &[
+    "auth",
+    "help",
+    #[cfg(all(feature = "harness", unix))]
+    "relay",
+    // Only for a tailnet whose machines are tagged for krowk.
+    #[cfg(all(feature = "harness", unix))]
+    "hosts",
+];
 
 #[cfg(test)]
 mod tests {

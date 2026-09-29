@@ -17,6 +17,11 @@ krowk-api = { path = "../krowk-api" }
 # The log projects into krowk.db through the same writer the importers use.
 krowk-store = { path = "../krowk-store" }
 krowk-import = { path = "../krowk-import" }
+# The end-to-end constructions: the relay checks a device's join signature
+# with them (engineering/relay.md), and ticket 19 seals frames with them.
+# The only crate that may call a primitive (tests/crypto_boundary.rs), and
+# linked into the full build already by `krowk sync`, so it costs nothing.
+krowk-client = { path = "../krowk-client" }
 serde = { version = "1", features = ["derive"] }
 # raw_value: the catalog reads one model out of the megabytes of the
 # models.dev cache without building the rest (the CLI already enables it).
@@ -50,8 +55,45 @@ regex-lite = "0.1"
 [target.'cfg(unix)'.dependencies]
 # Killing a timed-out bash call's whole process group.
 libc = "0.2"
+# The host daemon's WebSocket transport (R-PROTO-1), unix-only with the
+# daemon. The server handshake and nothing else: no TLS (loopback now, the
+# relay's TLS later), no client connector. It adds tungstenite, sha1 and
+# futures-sink; http, httparse, rand and the rest are linked already.
+# Hand-rolling RFC 6455 would save those three crates and cost a parser
+# of our own on a listening socket. Measured with ruzstd below: see
+# full.size in crates/krowk-bench/budgets.toml.
+# `connect` (ticket 19): the host daemon's bridge and a remote viewer dial
+# the relay as clients. Plain `ws://` only — the client half of the same
+# tungstenite handshake, no TLS connector, so it adds no crate.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake", "connect"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+# Direct paths over Tailscale (ticket 20) read tailscaled's LocalAPI —
+# `status` and `whois`, HTTP/1.0 on its unix socket — with the std socket
+# and serde_json already here (sync/tailscale.rs), not the
+# `tailscale-localapi` crate, which brings hyper, its body and connection
+# crates and chrono for two GETs. So Tailscale costs no crate, and nothing
+# of it links on Windows, where `sync` is not built.
+# Batches are zstd-compressed before they would be encrypted (R-LAG-5).
+# Pure Rust at level "fastest" (about zstd's 1): no C toolchain for a
+# cross build, and one crate against zstd-sys's libzstd; the batches are
+# small and compressed once, so the C library's speed buys nothing felt.
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
+
+[features]
+# Hooks for the integration tests only (`log::simulate_slow_disk`): turned
+# on by the dev-dependency below, never in a build krowk ships.
+test-hooks = []
 
 [dev-dependencies]
+# The stand-in registry, in-process, for the sync tests' two devices.
+krowk-devregistry = { path = "../krowk-devregistry" }
+# Itself, with the test hooks: no new crate, nothing in a shipped build.
+krowk-harness = { path = ".", features = ["test-hooks"] }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "macros", "io-util", "time"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+# The WebSocket tests' client: another implementation than the daemon's
+# own end, so a framing mistake cannot pass on both sides at once.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 # Validates recorded session logs against the generated schema in tests only.
 jsonschema = { version = "0.57", default-features = false }

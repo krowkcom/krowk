@@ -19,6 +19,8 @@
 //! Wire names are camelCase, and every id is a UUIDv7 in canonical lowercase
 //! form, the same ids krowk.db mints.
 
+pub mod frame;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -97,6 +99,33 @@ pub enum Effort {
     High,
     Xhigh,
     Max,
+}
+
+/// Every rung, lowest first.
+pub const LADDER: [Effort; 7] = [Effort::None, Effort::Minimal, Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh, Effort::Max];
+
+impl Effort {
+    /// The name on the ladder, which is also the wire value every provider
+    /// that takes the rung uses for it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Effort::None => "none",
+            Effort::Minimal => "minimal",
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Effort> {
+        LADDER.into_iter().find(|e| e.name() == s.trim().to_ascii_lowercase())
+    }
+
+    pub fn names() -> Vec<&'static str> {
+        LADDER.iter().map(|e| e.name()).collect()
+    }
 }
 
 /// State a provider needs back verbatim and nobody else may read: a thinking
@@ -813,6 +842,21 @@ pub enum StreamLine {
     Live(LiveEvent),
 }
 
+impl StreamLine {
+    /// The session the frame is about.
+    pub fn session_id(&self) -> &str {
+        match self {
+            StreamLine::Log(ev) => &ev.session_id,
+            StreamLine::Live(LiveEvent::ItemStarted { session_id, .. } | LiveEvent::ItemDelta { session_id, .. }) => session_id,
+            StreamLine::Live(LiveEvent::Cost { session_id, .. } | LiveEvent::Notice { session_id, .. } | LiveEvent::Limits { session_id, .. }) => session_id,
+            StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. }) => session_id,
+            StreamLine::Live(LiveEvent::ApprovalRequested(r)) => &r.session_id,
+            StreamLine::Live(LiveEvent::ApprovalResolved { session_id, .. }) => session_id,
+            StreamLine::Live(LiveEvent::Result(r)) => &r.session_id,
+        }
+    }
+}
+
 /// A tool as the model is shown it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -867,4 +911,197 @@ pub struct ContextRecord {
     /// with turns it did not run (`backend.handoff`): exactly the text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<String>,
+}
+
+/// What a client sends the host daemon over its unix socket (R-PROTO-1's
+/// second transport), one JSON object a line. The first line is `hello`;
+/// everything after it wraps the same `Command` the in-process client
+/// hands `Host::execute`, so a client is written once for both.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ClientFrame {
+    /// Names the protocol the client speaks, and the directory a new
+    /// session it starts runs in: the daemon serves every directory at once.
+    Hello {
+        protocol_version: u32,
+        cwd: String,
+        /// The client's own version, for the daemon's log.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        krowk_version: String,
+        /// Whether the client answers `approval.requested` (the TUI). A turn
+        /// it runs asks it, and a request left with no such client
+        /// following the session is denied. One that does not (`krowk -p`)
+        /// runs its turns as the in-process `-p` does: what would be asked
+        /// is refused, with what would allow it.
+        #[serde(default)]
+        answers_approvals: bool,
+        /// The daemon's bearer token (`host.token`, beside the socket): what
+        /// a WebSocket client proves it is this user with, since TCP cannot
+        /// say whose process connected. It rides the hello rather than a
+        /// header because browsers and Workers cannot set headers on a
+        /// WebSocket. The unix socket ignores it: its permissions already
+        /// keep everyone else out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
+    },
+    /// Runs a command; answered by `done` with the same `id`. The session a
+    /// `prompt` or `continue` runs in is followed from its first line.
+    Execute { id: u64, command: Command },
+    /// Follows a session: what its log holds after `afterEventId` (all of
+    /// it when absent), the running turn's frames so far, then every frame
+    /// as it happens — the same ones each other client following it gets.
+    /// Answered by `attached` once the catching-up is sent.
+    Attach {
+        id: u64,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_event_id: Option<String>,
+        /// The last `line.seq` of this session the client has: of the
+        /// running turn's frames, only later ones are sent, so a client
+        /// resuming from its cursor sees nothing twice.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_seq: Option<u64>,
+        /// The daemon's `welcome.epoch` the client's `afterSeq` is from. A
+        /// `seq` is a daemon's own: one from another daemon, or with no
+        /// epoch, is not honoured, and the client is caught up from
+        /// `afterEventId` alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u64>,
+    },
+    /// Asks how the daemon is; answered by `status`.
+    Status { id: u64 },
+    /// Reads the instances again — config.json and the credentials file —
+    /// for every host, after a client connected or signed one out
+    /// (`/connect`): `changed` is that instance, whose backend processes are
+    /// not reused; `renamedFrom` and `renamedTo` a rename, whose are.
+    /// Answered by `done`.
+    Reload {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        changed: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        renamed_from: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        renamed_to: Option<String>,
+    },
+    /// Asks the daemon to exit — `krowk host stop`, or `krowk host enable`
+    /// handing over to the service. Refused with `host_busy` while a turn
+    /// runs, and with `host_in_use` while another client is connected
+    /// unless `force` (a TUI connected to it reconnects to the next one);
+    /// answered by `done` just before it goes.
+    Stop {
+        id: u64,
+        #[serde(default)]
+        force: bool,
+    },
+    /// Stops following a session: the client moved to another (`/new`,
+    /// `/sessions`). Its frames no longer come, and a request only this
+    /// client could have answered is denied.
+    Leave { session_id: String },
+}
+
+/// What the host daemon sends a client, one JSON object a line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ServerFrame {
+    /// The answer to a `hello` the daemon can serve.
+    Welcome {
+        protocol_version: u32,
+        krowk_version: String,
+        pid: u32,
+        /// This daemon's run, as the time it started (ms since the epoch):
+        /// what a `line.seq` is numbered within, and what an `attach`
+        /// resuming by `afterSeq` names.
+        #[serde(default)]
+        epoch: u64,
+    },
+    /// The answer to one it cannot: a client of another protocol version.
+    /// The connection closes after it.
+    Refused { code: String, message: String, fix: String },
+    /// A frame of a session the client follows, exactly as the in-process
+    /// transport streams it. `session` is the followed session it belongs
+    /// to — the line's own, or its parent's for a subagent's — so a client
+    /// following several tells their streams apart.
+    Line {
+        line: StreamLine,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        session: String,
+        /// The `execute` whose own stream this is, on the lines sent to the
+        /// client that ran it: a prompt that starts a session is told its
+        /// lines by this, never by guessing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cmd: Option<u64>,
+        /// Its place in the followed session's stream: numbered by the
+        /// daemon as the host sends it, from 1, and never reused while the
+        /// daemon runs (`welcome.epoch`), however often the session is let
+        /// go and followed again. Absent on a line replayed from the log, whose
+        /// cursor is its event id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// A command's end: its result for a `prompt` or `continue`, nothing for
+    /// the rest, or why it did not run.
+    Done {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<RunResult>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<ErrorInfo>,
+    },
+    /// An `attach` has caught up: every frame after this one is live.
+    /// `running` says whether a turn of the session is under way.
+    Attached {
+        id: u64,
+        session_id: String,
+        running: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<ErrorInfo>,
+    },
+    Status { id: u64, status: HostStatus },
+    /// A followed session has no command streaming in it any more: its
+    /// turn is over (its `result` came first), or the command was refused
+    /// before a turn began. A client following it, not running it, stops
+    /// waiting here.
+    Settled { session: String },
+}
+
+/// How the host daemon is: `krowk host status`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HostStatus {
+    pub pid: u32,
+    pub krowk_version: String,
+    pub protocol_version: u32,
+    pub socket: String,
+    pub uptime_ms: u64,
+    /// Clients connected now, this one included.
+    pub clients: u32,
+    /// How long it stays up with nothing to do; none when it never exits
+    /// by itself (run as a service).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_exit_ms: Option<u64>,
+    /// The loopback address its WebSocket listener is bound to, when one
+    /// is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket: Option<String>,
+    /// Bytes waiting for clients to read, over every client and session:
+    /// bounded however far behind a client is (R-LAG-10).
+    #[serde(default)]
+    pub queued_bytes: u64,
+    /// How many times a client has fallen behind, to be caught up from its
+    /// cursor, since the daemon started.
+    #[serde(default)]
+    pub caught_up: u64,
+    /// The sessions it has run since it started, newest first.
+    pub sessions: Vec<HostSession>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HostSession {
+    pub session_id: String,
+    /// A turn of it is under way.
+    pub running: bool,
+    /// Clients following it now.
+    pub clients: u32,
 }

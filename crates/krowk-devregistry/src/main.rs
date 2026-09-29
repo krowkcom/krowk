@@ -148,7 +148,7 @@ fn bind(addr: &str) -> io::Result<TcpListener> {
 fn serve(w: &mut dyn Write, ln: TcpListener, asked: &str, site: &str, limit_bytes: i64) -> RunError {
     let bound = ln.local_addr().map(|a| a.to_string()).unwrap_or_default();
     let _ = w.write_all(banner(&bound, asked).as_bytes()).and_then(|_| w.flush());
-    let config = Config { limit_bytes, site: site.to_owned(), clock: None };
+    let config = Config { limit_bytes, site: site.to_owned(), clock: None, max_sessions: 0 };
     RunError::Stopped(asked.to_owned(), krowk_devregistry::serve(ln, config))
 }
 

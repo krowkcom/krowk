@@ -193,6 +193,14 @@ impl Host {
         self.shared.watch.subscribe()
     }
 
+    /// Denies every approval request of these sessions still waiting: the
+    /// daemon's, when the last client that could answer them went away.
+    pub fn deny_waiting(&self, sessions: &[String]) {
+        for s in sessions {
+            self.shared.approvals.deny_session(s);
+        }
+    }
+
     /// Keeps an idle session's backend process this long instead of
     /// `BACKEND_IDLE`.
     pub fn with_backend_idle(mut self, idle: std::time::Duration) -> Host {
@@ -630,7 +638,7 @@ impl Shared {
         if !log::valid_id(id) {
             return Err(EngineError::new("no_session", format!("{id:?} is not a krowk session id")));
         }
-        let events = log::read_events(&self.cfg.sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(log_failure)?;
+        let events = log::read_events_off(&self.cfg.sessions_dir.join(id).join(log::EVENTS_FILE)).await.map_err(log_failure)?;
         let past = replay(&log::branch(&events, events.last().map(|e| e.id.as_str()).unwrap_or_default()), &self.registry());
         // A subagent runs one turn, on the model its definition (or
         // `subagents.model`) chose: there is no next turn to switch.
@@ -652,7 +660,7 @@ impl Shared {
         // moment longer than its registration: asked again, briefly.
         let mut tries = 0;
         let (mut log, _) = loop {
-            match SessionLog::open(&self.cfg.sessions_dir, id) {
+            match SessionLog::open_off(&self.cfg.sessions_dir, id).await {
                 Err(LogError::Busy(_)) if tries < 40 => {
                     tries += 1;
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -665,8 +673,8 @@ impl Shared {
                 r => break r.map_err(log_failure)?,
             }
         };
-        let ev = log.append(LogBody::ModelSwitched { turn_id: None, from: past.model, to: model, reason: SwitchReason::Requested, detail: None }).map_err(log_failure)?;
-        log.sync().map_err(log_failure)?;
+        let ev = log.append_off(LogBody::ModelSwitched { turn_id: None, from: past.model, to: model, reason: SwitchReason::Requested, detail: None }).await.map_err(log_failure)?;
+        log.sync_off().await.map_err(log_failure)?;
         let _ = out.send(StreamLine::Log(ev)).await;
         Ok(())
     }
@@ -732,7 +740,7 @@ impl Shared {
             here.register(id)?;
         }
         let opened = match session_id {
-            Some(id) => Some(SessionLog::open(&self.cfg.sessions_dir, id).map_err(log_failure)?),
+            Some(id) => Some(SessionLog::open_off(&self.cfg.sessions_dir, id).await.map_err(log_failure)?),
             None => None,
         };
         let past = opened.as_ref().map(|(log, events)| replay(&log::branch(events, log.head().unwrap_or_default()), &self.registry())).unwrap_or_default();
@@ -796,7 +804,7 @@ impl Shared {
         let (log, events) = match opened {
             Some(opened) => opened,
             None => {
-                let (log, root) = SessionLog::create(&self.cfg.sessions_dir, &self.cfg.cwd, &self.cfg.krowk_version).map_err(log_failure)?;
+                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &self.cfg.cwd, &self.cfg.krowk_version, None, None).await.map_err(log_failure)?;
                 here.register(&log.session_id)?;
                 let _ = out.send(StreamLine::Log(root.clone())).await;
                 (log, vec![root])
@@ -821,7 +829,7 @@ impl Shared {
         // logs; this turn's calls are added as they are metered.
         let budget = Budget::new(limits, &session_id, &self.cfg.sessions_dir, self.cfg.pricer.clone(), &instance.provider, &model.model, &events);
         drop(events);
-        let evidence = self.cfg.publisher.clone().map(|p| Evidence::new(p, &session_id, past.run.clone()));
+        let evidence = self.cfg.publisher.clone().map(|p| Evidence::new(p, &session_id, past.run.clone(), crate::evidence::Producer::new(&instance, &model.model)));
         let first_here = self.started.lock().unwrap_or_else(|e| e.into_inner()).insert(session_id.clone());
         compat.session_start = first_here.then_some(if past.items.is_empty() { "startup" } else { "resume" });
         compat.transcript = self.cfg.sessions_dir.join(&session_id).join(log::EVENTS_FILE).display().to_string();
@@ -882,11 +890,12 @@ impl Shared {
         key_off_thread(&instance).await?;
         let engine = engine_for(&instance, wire, &self.cfg.credentials, &self.cfg.krowk_version)?;
         let p = &spawn.parent;
-        let (log, root) = SessionLog::create_child(&self.cfg.sessions_dir, &p.cwd, &self.cfg.krowk_version, Some(&p.session_id), run.name.as_deref()).map_err(log_failure)?;
+        let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &p.cwd, &self.cfg.krowk_version, Some(&p.session_id), run.name.as_deref()).await.map_err(log_failure)?;
         let _ = spawn.out.send(StreamLine::Log(root.clone())).await;
         let child = log.session_id.clone();
         let _ = events.send(EngineEvent::SubagentStarted { call_id: call_id.into(), session_id: child.clone(), description: description.into(), agent: run.name.clone(), model: model.clone() }).await;
         let budget = Budget::for_subagent(&p.budget, &child, &instance.provider, &model.model, std::slice::from_ref(&root));
+        let producer = crate::evidence::Producer::new(&instance, &model.model);
         let plan = TurnPlan {
             log,
             past: Past { cwd: Some(p.cwd.clone()), ..Past::default() },
@@ -902,7 +911,7 @@ impl Shared {
             cwd: p.cwd.clone(),
             backend_session: None,
             budget,
-            evidence: p.evidence.as_ref().map(|e| e.for_subagent(events.clone())),
+            evidence: p.evidence.as_ref().map(|e| e.for_subagent(events.clone(), producer)),
             // The parent's rules, instructions, skills and hooks, and its
             // session's grants: a subagent is judged as its parent would be,
             // in its parent's mode, and asks under its own session id.
@@ -1115,7 +1124,10 @@ impl Shared {
                 next = None;
             }
         }
-        plan.log.sync().map_err(log_failure)?;
+        // Off the daemon's thread, and not waited for: the result goes out
+        // as soon as the turn has ended, and the daemon waits for the sync
+        // on its way out (`log::synced`).
+        plan.log.sync_behind();
         let result = RunResult {
             session_id,
             turn_id,
@@ -1512,7 +1524,12 @@ struct Writer<'a> {
 
 impl Writer<'_> {
     async fn log(&mut self, body: LogBody) -> Result<LogEvent, EngineError> {
-        let ev = self.log.append(body).map_err(log_failure)?;
+        // Written, then sent: in the host daemon the write is awaited on
+        // the blocking pool (`log::off_thread`), so a disk that stalls
+        // stalls this turn's stream alone, never the thread every session
+        // and heartbeat shares (R-LAG-9), and no client sees an event the
+        // log does not have.
+        let ev = self.log.append_off(body).await.map_err(log_failure)?;
         let _ = self.out.send(StreamLine::Log(ev.clone())).await;
         Ok(ev)
     }
@@ -1602,7 +1619,8 @@ impl Writer<'_> {
                     tools,
                     handoff: self.handoff.take(),
                 };
-                self.log.record_context(&rec).map_err(log_failure)?;
+                // Off the thread like the event appends (see `Writer::log`).
+                self.log.record_context_off(&rec).await.map_err(log_failure)?;
             }
             EngineEvent::ItemStarted { item_id, kind } => {
                 self.live(LiveEvent::ItemStarted { session_id: session_id.into(), turn_id, item_id, item: kind }).await;

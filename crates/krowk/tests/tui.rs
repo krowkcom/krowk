@@ -17,6 +17,10 @@
 mod mock;
 #[path = "common/pty.rs"]
 mod pty;
+#[path = "common/tmux.rs"]
+mod tmux;
+
+use tmux::Tmux;
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -60,6 +64,10 @@ impl Sandbox {
             ("HOME".into(), home.display().to_string()),
             ("TERM".into(), "xterm-256color".into()),
             ("KROWK_NO_UPDATE_CHECK".into(), "1".into()),
+            // In this process, as before the daemon: the TUI's drawing is
+            // what these hold, and a test that runs the daemon says so
+            // (`Daemon`), with a runtime directory of its own.
+            ("KROWK_TUI_HOST".into(), "local".into()),
             ("ANTHROPIC_API_KEY".into(), "sk-test".into()),
             ("ANTHROPIC_BASE_URL".into(), url.into()),
         ]
@@ -597,125 +605,6 @@ fn steering_an_interrupted_turn_never_read_goes_back_into_the_prompt_not_sent() 
     assert!(!tail.contains("to interrupt"), "and no new turn was started with it: {tail:?}");
 }
 
-// ---- tmux ---------------------------------------------------------------------
-
-struct Tmux {
-    socket: String,
-}
-
-impl Tmux {
-    /// None when tmux is not installed and this is not CI.
-    fn start(name: &str, cols: u16, rows: u16, cwd: &Path, env: &[(String, String)], args: &[&str]) -> Option<Tmux> {
-        Tmux::start_after(name, cols, rows, cwd, env, args, "")
-    }
-
-    /// As `start`, with `before` run in the shell first — output a person's
-    /// terminal already holds when they type `krowk`.
-    fn start_after(name: &str, cols: u16, rows: u16, cwd: &Path, env: &[(String, String)], args: &[&str], before: &str) -> Option<Tmux> {
-        if Command::new("tmux").arg("-V").output().is_err() {
-            assert!(!cfg!(target_os = "linux") || std::env::var_os("CI").is_none(), "tmux is not installed, and CI on Linux must run this check");
-            eprintln!("skipped: tmux is not installed");
-            return None;
-        }
-        let socket = format!("krowk-tui-{name}-{}", std::process::id());
-        let conf = std::env::temp_dir().join(format!("{socket}.conf"));
-        std::fs::write(&conf, "set -g history-limit 100000\nset -g status off\n").unwrap();
-        let mut line = format!("cd '{}' && {before} exec env -i", cwd.display());
-        for (k, v) in env {
-            line += &format!(" {k}='{v}'");
-        }
-        line += &format!(" '{}'", env!("CARGO_BIN_EXE_krowk"));
-        for a in args {
-            line += &format!(" '{a}'");
-        }
-        let st = Command::new("tmux")
-            .args(["-L", &socket, "-f"])
-            .arg(&conf)
-            .args(["new-session", "-d", "-s", "t", "-x", &cols.to_string(), "-y", &rows.to_string(), &line])
-            .status()
-            .unwrap();
-        assert!(st.success(), "tmux new-session: {st}");
-        Some(Tmux { socket })
-    }
-
-    fn tmux(&self, args: &[&str]) -> String {
-        let out = Command::new("tmux").args(["-L", &self.socket]).args(args).output().unwrap();
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    }
-
-    fn keys(&self, keys: &[&str]) {
-        let mut a = vec!["send-keys", "-t", "t"];
-        a.extend_from_slice(keys);
-        self.tmux(&a);
-    }
-
-    fn screen(&self) -> String {
-        self.tmux(&["capture-pane", "-p", "-t", "t"])
-    }
-
-    fn history(&self) -> String {
-        self.tmux(&["capture-pane", "-p", "-t", "t", "-S", "-", "-E", "-"])
-    }
-
-    fn wait_for(&self, needle: &str, timeout: Duration) -> Option<Duration> {
-        let t0 = Instant::now();
-        while t0.elapsed() < timeout {
-            if self.screen().contains(needle) {
-                return Some(t0.elapsed());
-            }
-            std::thread::sleep(Duration::from_millis(40));
-        }
-        None
-    }
-
-    /// As `wait_for`, over the whole history: a fast stream scrolls a line
-    /// past the screen before a poll of the screen alone can see it.
-    fn wait_in_history(&self, needle: &str, timeout: Duration) -> Option<Duration> {
-        let t0 = Instant::now();
-        while t0.elapsed() < timeout {
-            if self.history().contains(needle) {
-                return Some(t0.elapsed());
-            }
-            std::thread::sleep(Duration::from_millis(40));
-        }
-        None
-    }
-
-    /// The whole history once the TUI has stopped drawing: the same across
-    /// two polls, with `ready` true of the screen.
-    fn wait_still(&self, ready: impl Fn(&str) -> bool, timeout: Duration) -> Option<String> {
-        let t0 = Instant::now();
-        let mut last = self.history();
-        while t0.elapsed() < timeout {
-            std::thread::sleep(Duration::from_millis(80));
-            let now = self.history();
-            if now == last && ready(&self.screen()) {
-                return Some(now);
-            }
-            last = now;
-        }
-        None
-    }
-
-    fn wait_gone(&self, needle: &str, timeout: Duration) -> Option<Duration> {
-        let t0 = Instant::now();
-        while t0.elapsed() < timeout {
-            if !self.screen().contains(needle) {
-                return Some(t0.elapsed());
-            }
-            std::thread::sleep(Duration::from_millis(40));
-        }
-        None
-    }
-}
-
-impl Drop for Tmux {
-    fn drop(&mut self) {
-        self.tmux(&["kill-server"]);
-        let _ = std::fs::remove_file(std::env::temp_dir().join(format!("{}.conf", self.socket)));
-    }
-}
-
 fn streamed(lines: usize, pace: Duration) -> mock::Mock {
     let body = mock::text_stream(&mock::numbered_lines(lines));
     mock::serve(move |_, _| mock::Reply::paced(body.clone(), pace))
@@ -1185,14 +1074,18 @@ fn r_tui_1_a_menu_opened_and_closed_on_a_short_session_puts_nothing_in_scrollbac
         let logo = rows.iter().position(|l| l.contains('▀')).unwrap_or_else(|| panic!("no logo:\n{h}"));
         logo - rows.iter().position(|l| l.trim() == "50").unwrap_or_else(|| panic!("no shell output:\n{h}"))
     };
-    let before = gap(&tm.history());
+    // The model is routed after the header is printed, and its `Model:` row
+    // comes in a later frame: a menu opened in that same frame grows the
+    // region under a printed line, which scrolls instead of taking the blank
+    // rows. Measured once it is in and the TUI has stopped drawing.
+    let before = gap(&tm.wait_still(|s| s.contains("Model:"), Duration::from_secs(10)).unwrap_or_else(|| panic!("the model never routed:\n{}", tm.screen())));
     for _ in 0..3 {
         tm.keys(&["?"]);
-        std::thread::sleep(Duration::from_millis(300));
+        assert!(tm.wait_for("Send the prompt", Duration::from_secs(5)).is_some(), "the help never opened:\n{}", tm.screen());
         tm.keys(&["Escape"]);
-        std::thread::sleep(Duration::from_millis(300));
+        assert!(tm.wait_gone("Send the prompt", Duration::from_secs(5)).is_some(), "the help never closed:\n{}", tm.screen());
     }
-    let history = tm.history();
+    let history = tm.wait_still(|s| s.lines().nth_back(1).is_some_and(|l| l.contains("? help")), Duration::from_secs(5)).unwrap_or_else(|| panic!("never settled:\n{}", tm.screen()));
     assert_eq!(gap(&history), before, "rows between the shell's output and the logo:\n{history}");
     let screen = tm.screen();
     assert!(screen.lines().nth_back(1).is_some_and(|l| l.contains(" help")), "the status line on the last rows:\n{screen}");
@@ -1349,11 +1242,12 @@ fn with_a_key_and_a_subscription_model_sonnet_is_refused_as_ambiguous_in_the_tui
 
 // ---- /connect, /disconnect and the first-run card ------------------------------
 
-/// What the TUI wrote after byte `from`, as words: a blank cell is skipped,
-/// not written — the next word starts with a move to its column — so each
-/// such move reads as the space it stands for, and styles as nothing.
-fn words(t: &pty::Pty, from: usize) -> String {
-    let raw = String::from_utf8_lossy(&t.output()[from..]).into_owned();
+/// What the TUI wrote after byte `from` of `out`, as words: a blank cell is
+/// skipped, not written — the next word starts with a move to its column —
+/// so each such move reads as the space it stands for, and styles as
+/// nothing.
+fn words(out: &[u8], from: usize) -> String {
+    let raw = String::from_utf8_lossy(&out[from..]).into_owned();
     let mut out = String::new();
     let mut rest = raw.as_str();
     while let Some(i) = rest.find('\x1b') {
@@ -1370,12 +1264,124 @@ fn words(t: &pty::Pty, from: usize) -> String {
     out
 }
 
-/// Whether `needle`, as words, is in what the TUI wrote after `from`,
+/// The rows of a `cols` by `rows` terminal once `out` is drawn on it, from
+/// the top left, where the pty says a fresh cursor is. Only what the TUI
+/// sends is followed: CR, LF, moves up, down and right, clearing to the
+/// end of the screen, inserting and deleting rows, saving and restoring the
+/// cursor, and the deferred wrap at the last column while autowrap is on.
+/// Every other sequence draws nothing, and every character takes one cell —
+/// what is looked for here is narrow.
+fn screen(out: &[u8], cols: u16, rows: u16) -> Vec<String> {
+    let (w, h) = (usize::from(cols.max(1)), usize::from(rows.max(1)));
+    let mut grid = vec![vec![' '; w]; h];
+    let (mut x, mut y, mut saved, mut wrap, mut pending) = (0usize, 0usize, (0usize, 0usize), true, false);
+    let text = String::from_utf8_lossy(out);
+    let mut chars = text.chars().peekable();
+    let feed = |grid: &mut Vec<Vec<char>>, y: &mut usize| {
+        if *y + 1 == h {
+            grid.remove(0);
+            grid.push(vec![' '; w]);
+        } else {
+            *y += 1;
+        }
+    };
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => (x, pending) = (0, false),
+            '\n' => {
+                feed(&mut grid, &mut y);
+                pending = false;
+            }
+            '\x07' | '\x08' => {}
+            '\x1b' => match chars.next() {
+                Some('7') => saved = (x, y),
+                Some('8') => ((x, y), pending) = (saved, false),
+                Some(']') => {
+                    // An OSC runs to BEL or ST.
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                Some('[') => {
+                    let mut params = String::new();
+                    while let Some(c) = chars.next_if(|c| ('\x30'..='\x3f').contains(c)) {
+                        params.push(c);
+                    }
+                    let intermediate = std::iter::from_fn(|| chars.next_if(|c| ('\x20'..='\x2f').contains(c))).count() > 0;
+                    let Some(fin) = chars.next() else { break };
+                    let n = params.parse::<usize>().unwrap_or(1).max(1);
+                    if intermediate || params.starts_with(['?', '>', '<', '=']) {
+                        if params == "?7" {
+                            wrap = fin == 'h';
+                        }
+                        continue;
+                    }
+                    pending = false;
+                    match fin {
+                        'A' => y = y.saturating_sub(n),
+                        'B' => y = (y + n).min(h - 1),
+                        'C' => x = (x + n).min(w - 1),
+                        'J' => {
+                            grid[y][x..].fill(' ');
+                            grid[y + 1..].iter_mut().for_each(|r| r.fill(' '));
+                        }
+                        'L' => {
+                            for _ in 0..n.min(h - y) {
+                                grid.pop();
+                                grid.insert(y, vec![' '; w]);
+                            }
+                        }
+                        'M' => {
+                            for _ in 0..n.min(h - y) {
+                                grid.remove(y);
+                                grid.push(vec![' '; w]);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            },
+            c if c < ' ' => {}
+            c => {
+                if pending {
+                    x = 0;
+                    feed(&mut grid, &mut y);
+                    pending = false;
+                }
+                grid[y][x] = c;
+                if x + 1 < w {
+                    x += 1;
+                } else {
+                    pending = wrap;
+                }
+            }
+        }
+    }
+    grid.into_iter().map(|r| r.into_iter().collect::<String>().trim_end().to_owned()).collect()
+}
+
+/// Whether `needle` is what the TUI said after byte `from` of `out`, on a
+/// `size` terminal. Two readings: the words it wrote since, or the screen
+/// it leaves, when `needle` was not on the screen at `from`. The second is
+/// for a frame drawn over another: a cell that already shows the right
+/// character is not written again, so the words of text drawn over text
+/// can come with letters missing — how the next frame looks depends on
+/// which frames the terminal saw before it, and so on how its input was
+/// read.
+fn said(out: &[u8], from: usize, needle: &str, (cols, rows): (u16, u16)) -> bool {
+    let on = |to: usize| screen(&out[..to], cols, rows).iter().any(|r| r.contains(needle));
+    words(out, from).contains(needle) || (on(out.len()) && !on(from))
+}
+
+/// Whether `needle` is what the TUI said after byte `from` (`said`),
 /// within `timeout`.
 fn says(t: &pty::Pty, from: usize, needle: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        if words(t, from).contains(needle) {
+        if said(&t.output(), from, needle, t.size) {
             return true;
         }
         if Instant::now() > deadline {
@@ -1384,6 +1390,24 @@ fn says(t: &pty::Pty, from: usize, needle: &str, timeout: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+/// What macOS CI's terminal got in the first-run test, up to `/connect`'s
+/// picker drawn over the slash menu with no frame between them: the words
+/// read "Conn c  which provider?", as the two cells the menu already showed
+/// were not written again, and the screen reads the question whole.
+#[test]
+fn a_frame_drawn_over_another_says_what_the_screen_shows() {
+    let out: &[u8] = include_bytes!("common/first-run-connect-macos.out");
+    let worked = out.windows(10).rposition(|w| w == b"Worked for").unwrap();
+    let from = worked + out[worked..].windows(pty::SYNC_END.len()).position(|w| w == pty::SYNC_END).unwrap();
+    let asked = "Connect which provider?";
+    assert!(!words(out, from).contains(asked), "{:?}", words(out, from));
+    assert!(screen(out, 110, 34).iter().any(|r| r.trim() == asked), "{:#?}", screen(out, 110, 34));
+    assert!(said(out, from, asked, (110, 34)));
+    // The turn's summary is still on screen, and was before: not said again.
+    assert!(screen(out, 110, 34).iter().any(|r| r.contains("Worked for 0.1s")));
+    assert!(!said(out, from, "Worked for", (110, 34)));
+}
+
 /// No key, no config, and a `claude` signed in to nothing: nothing here
 /// can run a model. `FAKE_CLAUDE_LOGIN=ask` makes its login wait for a line
 /// on the terminal, as the real one waits on a person.

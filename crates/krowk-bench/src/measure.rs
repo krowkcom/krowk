@@ -194,6 +194,65 @@ pub fn fresh_dir(work: &Path, name: &str) -> PathBuf {
     d
 }
 
+/// R-PERF-6: attaching to a synced session from its checkpoint on another
+/// device, in milliseconds — the sealed index, the checkpoint chunk and the
+/// tail after it, read from the stand-in registry over HTTP and opened
+/// under the session key, which is what a viewer does before it goes live.
+/// The session is 40 turns: a checkpoint cut after 30, ten turns of tail.
+#[cfg(unix)]
+pub fn remote_attach(runs: usize) -> Outcome {
+    use krowk_client::e2e::{self, AccountKey, DeviceKey, SessionKey};
+    use krowk_harness::sync::store;
+    let reg = match krowk_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").expect("loopback"), Default::default()) {
+        Ok(r) => r,
+        Err(e) => return Outcome::Error(e.to_string()),
+    };
+    let account = AccountKey::generate();
+    let device = DeviceKey::generate();
+    let signing = e2e::SigningKey::generate();
+    let signer = e2e::DeviceSigner::new(device.id(), e2e::SigningKey::from_secret(&*signing.secret_bytes()).expect("a key")).shared();
+    let api = std::sync::Arc::new(krowk_api::Client::new(&format!("{}/v1", reg.url()), "krowk_sk_bench_remote_attach_000000000").signed_by(signer));
+    let setup = || -> Result<(String, SessionKey), String> {
+        api.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), "bench", &account.id().to_string()).map_err(|e| e.to_string())?;
+        let id = "01a0ec7b-0000-7000-8000-00000000be0c".to_string();
+        let raw = krowk_harness::daemon::ws::uuid(&id);
+        let key = SessionKey::generate();
+        let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &raw, &account));
+        let index = store::Index { title: "bench".into(), ..Default::default() };
+        let sealed = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).map_err(|e| e.to_string())?));
+        api.put_sync_session(&id, &wrapped, Some(&sealed), None).map_err(|e| e.to_string())?;
+        let lease = api.acquire_lease(&id, &device.id().to_string(), 60, "development").map_err(|e| e.to_string())?;
+        let mut w = store::Writer::take_up(api.clone(), key.clone(), &id, wrapped, index, lease.fence)?;
+        let text = "The quick brown fox jumps over the lazy dog. ".repeat(40);
+        for turn in 0..40 {
+            for i in 0..6 {
+                w.push(serde_json::json!({"id": format!("{turn}-{i}"), "type": "item.completed", "item": {"type": "assistantText", "text": text}}));
+            }
+            w.flush(&lease.token)?;
+            if turn == 29 {
+                w.checkpoint(None, &lease.token)?;
+            }
+        }
+        Ok((id, key))
+    };
+    let (id, key) = match setup() {
+        Ok(x) => x,
+        Err(e) => return Outcome::Error(e),
+    };
+    let mut xs = Vec::with_capacity(runs);
+    let mut events = 0;
+    for _ in 0..runs.max(1) {
+        let t = Instant::now();
+        let got = api.show_sync_session(&id).map_err(|e| e.to_string()).and_then(|s| store::open_index(&key, &id, &s.sealed_index)).and_then(|index| store::attach(&api, &key, &id, index, None));
+        match got {
+            Ok(a) => events = a.events.len(),
+            Err(e) => return Outcome::Error(e),
+        }
+        xs.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    Outcome::Measured { value: median(&mut xs), note: format!("{} runs, {events} events from a checkpoint and 10 chunks of tail", xs.len()) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

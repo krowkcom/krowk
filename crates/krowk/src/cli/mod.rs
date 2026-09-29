@@ -11,13 +11,23 @@ pub mod help;
 #[cfg(feature = "sessions")]
 mod budget;
 #[cfg(feature = "harness")]
+mod devices;
+#[cfg(all(feature = "harness", unix))]
+mod host;
+#[cfg(feature = "harness")]
 mod prompt;
+#[cfg(all(feature = "harness", unix))]
+mod relay;
 #[cfg(feature = "harness")]
 mod providers;
 #[cfg(feature = "sessions")]
 mod sessions;
 #[cfg(feature = "harness")]
 mod status;
+#[cfg(feature = "harness")]
+mod sync;
+#[cfg(all(feature = "harness", unix))]
+mod synced;
 #[cfg(feature = "harness")]
 mod tui;
 mod upgrade;
@@ -163,6 +173,24 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
             }
         };
     }
+    // `krowk --resume <id>` for a session another machine runs: attach it
+    // through sync, terminal or not (ticket 21's cards copy this command).
+    #[cfg(all(feature = "harness", unix))]
+    let (io, f, filter) = if positionals.is_empty() && !f.resume.is_empty() {
+        let mut ctx = Ctx { io, f, format, colour, filter };
+        if let Some(r) = synced::resume(&mut ctx) {
+            return match r {
+                Ok(()) => exit::OK,
+                Err(e) => {
+                    let quiet = ctx.f.quiet;
+                    report(ctx.io, &e, format, quiet, colour, None)
+                }
+            };
+        }
+        (ctx.io, ctx.f, ctx.filter)
+    } else {
+        (io, f, filter)
+    };
     // Bare `krowk` with a person at the terminal: the agent (R-PKG-1).
     // Without one — a pipe, a file, CI capturing output — everything below
     // runs exactly as it did before the TUI existed.
@@ -264,6 +292,46 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["providers", "rename", ..] => providers::rename(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["status", ..] => status::status(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["host"] => host::status(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["host", "serve", ..] => host::serve(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["host", "status", ..] => host::status(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["host", "attach", ..] => host::attach(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["host", "stop", ..] => host::stop(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["host", "enable", ..] => host::enable(ctx, true),
+        #[cfg(all(feature = "harness", unix))]
+        ["host", "disable", ..] => host::enable(ctx, false),
+        #[cfg(all(feature = "harness", unix))]
+        ["hosts", ..] => synced::hosts(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["relay"] => show_help(ctx, p),
+        #[cfg(all(feature = "harness", unix))]
+        ["relay", "serve", ..] => relay::serve(ctx),
+        #[cfg(feature = "harness")]
+        ["sync"] => show_help(ctx, p),
+        #[cfg(feature = "harness")]
+        ["sync", "init", ..] => sync::init(ctx),
+        #[cfg(feature = "harness")]
+        ["sync", "recover", ..] => sync::recover(ctx),
+        #[cfg(feature = "harness")]
+        ["sync", "join", ..] => sync::join(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["sync", "register", ..] => sync::register_now(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["sync", "sessions", ..] => synced::sessions(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["sync", "host", ..] => synced::host_session(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["sync", "attach", ..] => synced::attach(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["devices"] | ["devices", "list", ..] => devices::list(ctx),
+        #[cfg(feature = "harness")]
+        ["devices", "approve", ..] => devices::approve(ctx, rest(2)),
         _ if missing(p) => Err(not_in_build(p)),
         _ => Err(fail("unknown_command", format!("`{}` is not a krowk command — run `krowk --help`", clip(p, 2).join(" ")))),
     }
@@ -400,7 +468,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
     ];
     #[cfg(feature = "harness")]
     {
-        for name in ["output-format", "model", "resume", "permission-mode", "toolset", "effort", "trust"] {
+        for name in ["output-format", "model", "resume", "permission-mode", "toolset", "effort", "trust", "daemon"] {
             if f.given.contains(name) && !f.print {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk -p`")));
             }
@@ -416,10 +484,19 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         }
         let add = words.starts_with(&["providers", "add"]);
         let connect = words.first() == Some(&"connect");
-        for name in ["name", "api-key-env", "base-url", "client-id", "binary", "config-dir"] {
+        // `--name` also names this machine where sync sets it up or
+        // registers it: what the workspace's device list calls it.
+        let names_device = matches!(words.as_slice(), ["sync", "init" | "recover" | "join" | "register", ..] | ["devices", "approve", ..]);
+        if f.given.contains("name") && !add && !connect && !names_device {
+            return Err(fail("bad_flag", "`--name` is only a flag of `krowk connect`, `krowk providers add`, `krowk sync` and `krowk devices approve`"));
+        }
+        for name in ["api-key-env", "base-url", "client-id", "binary", "config-dir"] {
             if f.given.contains(name) && !add && !connect {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk connect` and `krowk providers add`")));
             }
+        }
+        if f.given.contains("force") && !words.starts_with(&["host", "stop"]) {
+            return Err(fail("bad_flag", "`--force` is only a flag of `krowk host stop`"));
         }
         let owners = [("device", "`krowk providers add` (`krowk connect` takes --method device)", add), ("method", "`krowk connect`", connect), ("default", "`krowk connect`", connect), ("key-stdin", "`krowk connect`", connect), ("key-ref", "`krowk connect`", connect), ("remove", "`krowk disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`krowk disconnect`", words.first() == Some(&"disconnect"))];
         for (name, owner, allowed) in owners {

@@ -991,6 +991,159 @@ stdout:
       "name": "status",
       "usage": "krowk status",
       "summary": "What's connected, and whether each is ready"
+    },
+    {
+      "name": "host",
+      "summary": "The daemon sessions run in, which outlives the terminal",
+      "subcommands": [
+        {
+          "name": "status",
+          "usage": "krowk host status",
+          "summary": "Whether the daemon runs: socket, pid, uptime, sessions"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk host attach <session>",
+          "summary": "Follow a session in the daemon, live, as stream-json",
+          "args": [
+            {
+              "name": "session",
+              "summary": "The session id a result names",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "stop",
+          "usage": "krowk host stop [--force]",
+          "summary": "Stop the daemon, once no turn runs in it",
+          "flags": [
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Stop it though other clients are connected; each reconnects to the next daemon"
+            }
+          ]
+        },
+        {
+          "name": "enable",
+          "usage": "krowk host enable",
+          "summary": "Run the daemon as a systemd or launchd user service"
+        },
+        {
+          "name": "disable",
+          "usage": "krowk host disable",
+          "summary": "Stop the service and remove it"
+        }
+      ]
+    },
+    {
+      "name": "relay",
+      "summary": "The relay other devices reach a session through",
+      "subcommands": [
+        {
+          "name": "serve",
+          "usage": "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]",
+          "summary": "Carry sealed sessions between their host and viewers",
+          "flags": [
+            {
+              "name": "addr",
+              "type": "string",
+              "default": "",
+              "usage": "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"
+            },
+            {
+              "name": "ticket-keys",
+              "type": "string",
+              "default": "",
+              "usage": "The JSON file of the registry's ticket-signing public keys (relay.md → Tickets)"
+            },
+            {
+              "name": "origin",
+              "type": "string",
+              "default": "",
+              "usage": "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "default": "",
+              "usage": "The directory each channel's fence is kept in across restarts; required off loopback"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hosts",
+      "usage": "krowk hosts",
+      "summary": "The tailnet's machines tagged tag:krowk-host, from Tailscale"
+    },
+    {
+      "name": "sync",
+      "summary": "End-to-end encryption keys for syncing sessions",
+      "subcommands": [
+        {
+          "name": "init",
+          "usage": "krowk sync init",
+          "summary": "Set up: a device key, an account key, its recovery phrase"
+        },
+        {
+          "name": "recover",
+          "usage": "krowk sync recover",
+          "summary": "Restore the account key here from its recovery phrase"
+        },
+        {
+          "name": "join",
+          "usage": "krowk sync join [ACCOUNT_KEY_ID]",
+          "summary": "Add this machine, approved from one that already syncs",
+          "flags": [
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
+        },
+        {
+          "name": "register",
+          "usage": "krowk sync register [--name NAME]",
+          "summary": "Tell the workspace this machine holds its account key"
+        },
+        {
+          "name": "sessions",
+          "usage": "krowk sync sessions",
+          "summary": "The synced sessions this machine can open"
+        },
+        {
+          "name": "host",
+          "usage": "krowk sync host SESSION",
+          "summary": "Run a session here and sync it until interrupted"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sync attach SESSION",
+          "summary": "Follow a synced session; stdin takes prompts and /commands"
+        }
+      ]
+    },
+    {
+      "name": "devices",
+      "summary": "The machines that sync this workspace's sessions",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk devices list",
+          "summary": "The workspace's devices, and the account key this one holds"
+        },
+        {
+          "name": "approve",
+          "usage": "krowk devices approve [CODE]",
+          "summary": "Approve a new device's `krowk sync join`"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -1110,6 +1263,12 @@ stdout:
       "type": "bool",
       "default": "false",
       "usage": "With -p: let a backend (Claude Code, Codex) run in a repository not yet trusted — it runs the repository's hooks and MCP servers without asking. Without it, -p refuses unless a person at the terminal says yes"
+    },
+    {
+      "name": "daemon",
+      "type": "bool",
+      "default": "false",
+      "usage": "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it"
     }
   ],
   "environment": [
@@ -1142,6 +1301,10 @@ stdout:
       "name": "KROWK_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
       "default": "~/.krowk"
+    },
+    {
+      "name": "KROWK_TUI_HOST",
+      "usage": "local — the TUI runs its sessions in its own process, not the host daemon"
     }
   ]
 }
@@ -2140,6 +2303,159 @@ stdout:
       "name": "status",
       "usage": "krowk status",
       "summary": "What's connected, and whether each is ready"
+    },
+    {
+      "name": "host",
+      "summary": "The daemon sessions run in, which outlives the terminal",
+      "subcommands": [
+        {
+          "name": "status",
+          "usage": "krowk host status",
+          "summary": "Whether the daemon runs: socket, pid, uptime, sessions"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk host attach <session>",
+          "summary": "Follow a session in the daemon, live, as stream-json",
+          "args": [
+            {
+              "name": "session",
+              "summary": "The session id a result names",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "stop",
+          "usage": "krowk host stop [--force]",
+          "summary": "Stop the daemon, once no turn runs in it",
+          "flags": [
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Stop it though other clients are connected; each reconnects to the next daemon"
+            }
+          ]
+        },
+        {
+          "name": "enable",
+          "usage": "krowk host enable",
+          "summary": "Run the daemon as a systemd or launchd user service"
+        },
+        {
+          "name": "disable",
+          "usage": "krowk host disable",
+          "summary": "Stop the service and remove it"
+        }
+      ]
+    },
+    {
+      "name": "relay",
+      "summary": "The relay other devices reach a session through",
+      "subcommands": [
+        {
+          "name": "serve",
+          "usage": "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]",
+          "summary": "Carry sealed sessions between their host and viewers",
+          "flags": [
+            {
+              "name": "addr",
+              "type": "string",
+              "default": "",
+              "usage": "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"
+            },
+            {
+              "name": "ticket-keys",
+              "type": "string",
+              "default": "",
+              "usage": "The JSON file of the registry's ticket-signing public keys (relay.md → Tickets)"
+            },
+            {
+              "name": "origin",
+              "type": "string",
+              "default": "",
+              "usage": "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "default": "",
+              "usage": "The directory each channel's fence is kept in across restarts; required off loopback"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hosts",
+      "usage": "krowk hosts",
+      "summary": "The tailnet's machines tagged tag:krowk-host, from Tailscale"
+    },
+    {
+      "name": "sync",
+      "summary": "End-to-end encryption keys for syncing sessions",
+      "subcommands": [
+        {
+          "name": "init",
+          "usage": "krowk sync init",
+          "summary": "Set up: a device key, an account key, its recovery phrase"
+        },
+        {
+          "name": "recover",
+          "usage": "krowk sync recover",
+          "summary": "Restore the account key here from its recovery phrase"
+        },
+        {
+          "name": "join",
+          "usage": "krowk sync join [ACCOUNT_KEY_ID]",
+          "summary": "Add this machine, approved from one that already syncs",
+          "flags": [
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
+        },
+        {
+          "name": "register",
+          "usage": "krowk sync register [--name NAME]",
+          "summary": "Tell the workspace this machine holds its account key"
+        },
+        {
+          "name": "sessions",
+          "usage": "krowk sync sessions",
+          "summary": "The synced sessions this machine can open"
+        },
+        {
+          "name": "host",
+          "usage": "krowk sync host SESSION",
+          "summary": "Run a session here and sync it until interrupted"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sync attach SESSION",
+          "summary": "Follow a synced session; stdin takes prompts and /commands"
+        }
+      ]
+    },
+    {
+      "name": "devices",
+      "summary": "The machines that sync this workspace's sessions",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk devices list",
+          "summary": "The workspace's devices, and the account key this one holds"
+        },
+        {
+          "name": "approve",
+          "usage": "krowk devices approve [CODE]",
+          "summary": "Approve a new device's `krowk sync join`"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -2259,6 +2575,12 @@ stdout:
       "type": "bool",
       "default": "false",
       "usage": "With -p: let a backend (Claude Code, Codex) run in a repository not yet trusted — it runs the repository's hooks and MCP servers without asking. Without it, -p refuses unless a person at the terminal says yes"
+    },
+    {
+      "name": "daemon",
+      "type": "bool",
+      "default": "false",
+      "usage": "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it"
     }
   ],
   "environment": [
@@ -2291,6 +2613,10 @@ stdout:
       "name": "KROWK_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
       "default": "~/.krowk"
+    },
+    {
+      "name": "KROWK_TUI_HOST",
+      "usage": "local — the TUI runs its sessions in its own process, not the host daemon"
     }
   ]
 }
@@ -3303,6 +3629,159 @@ stdout:
       "name": "status",
       "usage": "krowk status",
       "summary": "What's connected, and whether each is ready"
+    },
+    {
+      "name": "host",
+      "summary": "The daemon sessions run in, which outlives the terminal",
+      "subcommands": [
+        {
+          "name": "status",
+          "usage": "krowk host status",
+          "summary": "Whether the daemon runs: socket, pid, uptime, sessions"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk host attach <session>",
+          "summary": "Follow a session in the daemon, live, as stream-json",
+          "args": [
+            {
+              "name": "session",
+              "summary": "The session id a result names",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "stop",
+          "usage": "krowk host stop [--force]",
+          "summary": "Stop the daemon, once no turn runs in it",
+          "flags": [
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Stop it though other clients are connected; each reconnects to the next daemon"
+            }
+          ]
+        },
+        {
+          "name": "enable",
+          "usage": "krowk host enable",
+          "summary": "Run the daemon as a systemd or launchd user service"
+        },
+        {
+          "name": "disable",
+          "usage": "krowk host disable",
+          "summary": "Stop the service and remove it"
+        }
+      ]
+    },
+    {
+      "name": "relay",
+      "summary": "The relay other devices reach a session through",
+      "subcommands": [
+        {
+          "name": "serve",
+          "usage": "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]",
+          "summary": "Carry sealed sessions between their host and viewers",
+          "flags": [
+            {
+              "name": "addr",
+              "type": "string",
+              "default": "",
+              "usage": "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"
+            },
+            {
+              "name": "ticket-keys",
+              "type": "string",
+              "default": "",
+              "usage": "The JSON file of the registry's ticket-signing public keys (relay.md → Tickets)"
+            },
+            {
+              "name": "origin",
+              "type": "string",
+              "default": "",
+              "usage": "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "default": "",
+              "usage": "The directory each channel's fence is kept in across restarts; required off loopback"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hosts",
+      "usage": "krowk hosts",
+      "summary": "The tailnet's machines tagged tag:krowk-host, from Tailscale"
+    },
+    {
+      "name": "sync",
+      "summary": "End-to-end encryption keys for syncing sessions",
+      "subcommands": [
+        {
+          "name": "init",
+          "usage": "krowk sync init",
+          "summary": "Set up: a device key, an account key, its recovery phrase"
+        },
+        {
+          "name": "recover",
+          "usage": "krowk sync recover",
+          "summary": "Restore the account key here from its recovery phrase"
+        },
+        {
+          "name": "join",
+          "usage": "krowk sync join [ACCOUNT_KEY_ID]",
+          "summary": "Add this machine, approved from one that already syncs",
+          "flags": [
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
+        },
+        {
+          "name": "register",
+          "usage": "krowk sync register [--name NAME]",
+          "summary": "Tell the workspace this machine holds its account key"
+        },
+        {
+          "name": "sessions",
+          "usage": "krowk sync sessions",
+          "summary": "The synced sessions this machine can open"
+        },
+        {
+          "name": "host",
+          "usage": "krowk sync host SESSION",
+          "summary": "Run a session here and sync it until interrupted"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sync attach SESSION",
+          "summary": "Follow a synced session; stdin takes prompts and /commands"
+        }
+      ]
+    },
+    {
+      "name": "devices",
+      "summary": "The machines that sync this workspace's sessions",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk devices list",
+          "summary": "The workspace's devices, and the account key this one holds"
+        },
+        {
+          "name": "approve",
+          "usage": "krowk devices approve [CODE]",
+          "summary": "Approve a new device's `krowk sync join`"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -3422,6 +3901,12 @@ stdout:
       "type": "bool",
       "default": "false",
       "usage": "With -p: let a backend (Claude Code, Codex) run in a repository not yet trusted — it runs the repository's hooks and MCP servers without asking. Without it, -p refuses unless a person at the terminal says yes"
+    },
+    {
+      "name": "daemon",
+      "type": "bool",
+      "default": "false",
+      "usage": "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it"
     }
   ],
   "environment": [
@@ -3454,6 +3939,10 @@ stdout:
       "name": "KROWK_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
       "default": "~/.krowk"
+    },
+    {
+      "name": "KROWK_TUI_HOST",
+      "usage": "local — the TUI runs its sessions in its own process, not the host daemon"
     }
   ]
 }
@@ -4466,6 +4955,159 @@ tty:
       "name": "status",
       "usage": "krowk status",
       "summary": "What's connected, and whether each is ready"
+    },
+    {
+      "name": "host",
+      "summary": "The daemon sessions run in, which outlives the terminal",
+      "subcommands": [
+        {
+          "name": "status",
+          "usage": "krowk host status",
+          "summary": "Whether the daemon runs: socket, pid, uptime, sessions"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk host attach <session>",
+          "summary": "Follow a session in the daemon, live, as stream-json",
+          "args": [
+            {
+              "name": "session",
+              "summary": "The session id a result names",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "stop",
+          "usage": "krowk host stop [--force]",
+          "summary": "Stop the daemon, once no turn runs in it",
+          "flags": [
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Stop it though other clients are connected; each reconnects to the next daemon"
+            }
+          ]
+        },
+        {
+          "name": "enable",
+          "usage": "krowk host enable",
+          "summary": "Run the daemon as a systemd or launchd user service"
+        },
+        {
+          "name": "disable",
+          "usage": "krowk host disable",
+          "summary": "Stop the service and remove it"
+        }
+      ]
+    },
+    {
+      "name": "relay",
+      "summary": "The relay other devices reach a session through",
+      "subcommands": [
+        {
+          "name": "serve",
+          "usage": "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]",
+          "summary": "Carry sealed sessions between their host and viewers",
+          "flags": [
+            {
+              "name": "addr",
+              "type": "string",
+              "default": "",
+              "usage": "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"
+            },
+            {
+              "name": "ticket-keys",
+              "type": "string",
+              "default": "",
+              "usage": "The JSON file of the registry's ticket-signing public keys (relay.md → Tickets)"
+            },
+            {
+              "name": "origin",
+              "type": "string",
+              "default": "",
+              "usage": "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "default": "",
+              "usage": "The directory each channel's fence is kept in across restarts; required off loopback"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hosts",
+      "usage": "krowk hosts",
+      "summary": "The tailnet's machines tagged tag:krowk-host, from Tailscale"
+    },
+    {
+      "name": "sync",
+      "summary": "End-to-end encryption keys for syncing sessions",
+      "subcommands": [
+        {
+          "name": "init",
+          "usage": "krowk sync init",
+          "summary": "Set up: a device key, an account key, its recovery phrase"
+        },
+        {
+          "name": "recover",
+          "usage": "krowk sync recover",
+          "summary": "Restore the account key here from its recovery phrase"
+        },
+        {
+          "name": "join",
+          "usage": "krowk sync join [ACCOUNT_KEY_ID]",
+          "summary": "Add this machine, approved from one that already syncs",
+          "flags": [
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
+        },
+        {
+          "name": "register",
+          "usage": "krowk sync register [--name NAME]",
+          "summary": "Tell the workspace this machine holds its account key"
+        },
+        {
+          "name": "sessions",
+          "usage": "krowk sync sessions",
+          "summary": "The synced sessions this machine can open"
+        },
+        {
+          "name": "host",
+          "usage": "krowk sync host SESSION",
+          "summary": "Run a session here and sync it until interrupted"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sync attach SESSION",
+          "summary": "Follow a synced session; stdin takes prompts and /commands"
+        }
+      ]
+    },
+    {
+      "name": "devices",
+      "summary": "The machines that sync this workspace's sessions",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk devices list",
+          "summary": "The workspace's devices, and the account key this one holds"
+        },
+        {
+          "name": "approve",
+          "usage": "krowk devices approve [CODE]",
+          "summary": "Approve a new device's `krowk sync join`"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -4585,6 +5227,12 @@ tty:
       "type": "bool",
       "default": "false",
       "usage": "With -p: let a backend (Claude Code, Codex) run in a repository not yet trusted — it runs the repository's hooks and MCP servers without asking. Without it, -p refuses unless a person at the terminal says yes"
+    },
+    {
+      "name": "daemon",
+      "type": "bool",
+      "default": "false",
+      "usage": "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it"
     }
   ],
   "environment": [
@@ -4617,6 +5265,10 @@ tty:
       "name": "KROWK_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
       "default": "~/.krowk"
+    },
+    {
+      "name": "KROWK_TUI_HOST",
+      "usage": "local — the TUI runs its sessions in its own process, not the host daemon"
     }
   ]
 }

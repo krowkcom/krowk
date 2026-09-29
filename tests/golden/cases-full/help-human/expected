@@ -28,6 +28,9 @@ ACCOUNT
 
 OTHER
   providers     Low-level instance config (add, list, rename, remove)
+  host          The daemon sessions run in, which outlives the terminal
+  sync          End-to-end encryption keys for syncing sessions
+  devices       The machines that sync this workspace's sessions
   config        Show or set configuration
   doctor        Check this machine's setup
   pricing       Refresh model prices
@@ -88,6 +91,22 @@ OTHER
   providers list    List every instance, and whether it is ready
   providers remove  Remove an instance's definition, and forget its login
   providers rename  Rename an instance; its login and sessions follow
+  host status       Whether the daemon runs: socket, pid, uptime, sessions
+  host attach       Follow a session in the daemon, live, as stream-json
+  host stop         Stop the daemon, once no turn runs in it
+  host enable       Run the daemon as a systemd or launchd user service
+  host disable      Stop the service and remove it
+  hosts             The tailnet's machines tagged tag:krowk-host, from Tailscale
+  relay serve       Carry sealed sessions between their host and viewers
+  sync init         Set up: a device key, an account key, its recovery phrase
+  sync recover      Restore the account key here from its recovery phrase
+  sync join         Add this machine, approved from one that already syncs
+  sync register     Tell the workspace this machine holds its account key
+  sync sessions     The synced sessions this machine can open
+  sync host         Run a session here and sync it until interrupted
+  sync attach       Follow a synced session; stdin takes prompts and /commands
+  devices list      The workspace's devices, and the account key this one holds
+  devices approve   Approve a new device's `krowk sync join`
   config show       The effective configuration, and which layer set each value
   config set        Write one value into the repo config, or the global one
   config unset      Remove one value from the repo config, or the global one
@@ -162,5 +181,9 @@ AGENT FLAGS (krowk, krowk -p)
                               repository's hooks and MCP servers without asking.
                               Without it, -p refuses unless a person at the
                               terminal says yes
+  --daemon                    With -p: run the turn in the host daemon (started
+                              when none runs) instead of this process, so it
+                              goes on if this process ends — `krowk host attach
+                              <session>` follows it
 exit: 0
 

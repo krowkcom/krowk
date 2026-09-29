@@ -1,0 +1,171 @@
+//! `krowk sync sessions`, `krowk sync host` and `krowk sync attach`: a
+//! session running on one machine, watched and steered from another
+//! (engineering/harness.md → Sync). The bridge and the viewer are
+//! `krowk_harness::sync`; this is the command line around them.
+//!
+//! - `sessions`: the synced sessions this machine can open, from their
+//!   sealed indexes.
+//! - `host <session>`: this machine's daemon runs the session, and the
+//!   bridge holds its lease and syncs it until interrupted. The session is
+//!   one this machine already has; any other id is refused up front.
+//! - `attach <session>`: follows it from another machine as stream-json on
+//!   stdout; each line typed on stdin is a prompt to it, queued while no
+//!   host is online, or a command: `/approve`, `/allow-session` and `/deny`
+//!   a request, `/interrupt` or `/steer` the turn.
+//!
+//! The relay is `KROWK_RELAY_URL`, else the reference relay on this
+//! machine (`krowk relay serve`), until the hosted relay has a published
+//! address.
+
+use super::sync::{keyed_client, keystore};
+use super::Ctx;
+use krowk_api::{fail, Client, Error};
+use krowk_client::e2e::{AccountKey, DeviceId, SigningKey};
+use krowk_harness::sync::{host, viewer};
+use serde_json::json;
+use std::sync::Arc;
+
+struct Keys {
+    device: DeviceId,
+    signing: SigningKey,
+    account: AccountKey,
+}
+
+fn keys(ctx: &Ctx) -> Result<Keys, Error> {
+    let ks = keystore(ctx)?;
+    let device = ks.device().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine has no sync keys — run `krowk sync init`, `recover` or `join` first"))?.id();
+    let account = ks.account().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine holds no account key — run `krowk sync join` or `recover` first"))?;
+    let signing = ks.signing_key().map_err(|e| fail("keys_unreadable", e))?;
+    Ok(Keys { device, signing, account })
+}
+
+/// The registry client for this machine's sync calls, signed by its own
+/// key: leases, chunks, the index and relay tickets act as this device.
+fn signed(ctx: &Ctx, k: &Keys, what: &str) -> Result<Client, Error> {
+    let key = SigningKey::from_secret(&*k.signing.secret_bytes()).map_err(|e| fail("keys_unreadable", e.to_string()))?;
+    Ok(keyed_client(ctx, what)?.signed_by(krowk_client::e2e::DeviceSigner::new(k.device, key).shared()))
+}
+
+fn relay(ctx: &Ctx) -> String {
+    let r = ctx.env("KROWK_RELAY_URL");
+    if r.trim().is_empty() { format!("ws://{}", super::relay::DEFAULT_ADDR) } else { r.trim().to_string() }
+}
+
+/// Direct paths beside the relay (R-NET-1): on when this machine can check
+/// a viewer's ticket as the relay does, with the registry's ticket-signing
+/// keys in `KROWK_RELAY_TICKET_KEYS` (the file `krowk relay serve
+/// --ticket-keys` reads). Without them there is no direct listener: nothing
+/// but a ticket may let a device in. `KROWK_TAILSCALE_SAME_USER=1` also
+/// requires tailscaled to name the far end as this tailnet user (R-NET-3).
+/// The LAN address is offered only with `KROWK_DIRECT_LAN=1`: it is off the
+/// tailnet, so plain `ws://` there is reachable by the whole network.
+fn direct(ctx: &Ctx) -> Result<Option<krowk_harness::sync::direct::Config>, Error> {
+    let keys = ctx.env("KROWK_RELAY_TICKET_KEYS");
+    if keys.trim().is_empty() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(keys.trim()).map_err(|e| fail("bad_ticket_keys", format!("KROWK_RELAY_TICKET_KEYS names {}, which could not be read: {e}", keys.trim())))?;
+    let roster = krowk_harness::relay::Roster::parse(&text).map_err(|e| fail("bad_ticket_keys", e))?;
+    Ok(Some(krowk_harness::sync::direct::Config { socket: krowk_harness::sync::tailscale::socket(ctx.io.env), roster, same_user: ctx.env("KROWK_TAILSCALE_SAME_USER") == "1", lan: ctx.env("KROWK_DIRECT_LAN") == "1", stop: None }))
+}
+
+/// `krowk hosts`: the tailnet's machines tagged `tag:krowk-host`, from the
+/// local tailscaled, with no pairing step (R-NET-4).
+pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
+    use krowk_harness::sync::tailscale;
+    let s = tailscale::status(&tailscale::socket(ctx.io.env)).map_err(|e| fail("tailscale_unavailable", format!("{e} — start Tailscale, or name its socket in KROWK_TAILSCALE_SOCKET")))?;
+    let hosts = s.hosts();
+    if ctx.format == crate::output::Format::Json {
+        let rows: Vec<_> = hosts.iter().map(|h| json!({"name": h.host_name, "dnsName": h.dns_name.trim_end_matches('.'), "addresses": h.tailscale_ips, "online": h.online})).collect();
+        return ctx.emit(&json!({"hosts": rows}).to_string());
+    }
+    for h in &hosts {
+        let ip = h.tailscale_ips.first().map(|i| i.to_string()).unwrap_or_default();
+        let _ = writeln!(ctx.io.stdout, "{}  {}  {}  {}", super::sync::printable(&h.host_name), super::sync::printable(h.dns_name.trim_end_matches('.')), ip, if h.online { "online" } else { "offline" });
+    }
+    if hosts.is_empty() {
+        let _ = writeln!(ctx.io.stdout, "no machine on this tailnet is tagged {}", tailscale::HOST_TAG);
+    }
+    Ok(())
+}
+
+fn one(args: &[String], what: &str) -> Result<String, Error> {
+    match args {
+        [s] => Ok(s.clone()),
+        _ => Err(fail("bad_args", format!("`krowk sync {what}` takes one session id"))),
+    }
+}
+
+pub(super) fn sessions(ctx: &mut Ctx) -> Result<(), Error> {
+    let k = keys(ctx)?;
+    let api = keyed_client(ctx, "krowk sync sessions")?;
+    let (listed, unreadable) = viewer::list(&api, &k.account).map_err(|e| fail("sync_failed", e))?;
+    let rows: Vec<_> = listed.iter().map(|s| json!({"id": s.id, "title": s.index.title, "cwd": s.index.cwd, "updatedMs": s.index.updated_ms, "host": s.holder})).collect();
+    if ctx.format == crate::output::Format::Json {
+        return ctx.emit(&json!({"sessions": rows, "unreadable": unreadable}).to_string());
+    }
+    for s in &listed {
+        let title = super::sync::printable(&s.index.title);
+        let _ = writeln!(ctx.io.stdout, "{}  {}  {}", s.id, if s.holder.is_some() { "hosted" } else { "offline" }, title);
+    }
+    if unreadable > 0 {
+        let _ = writeln!(ctx.io.stdout, "{unreadable} synced session(s) do not open with this machine's account key");
+    }
+    Ok(())
+}
+
+pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    let session = one(args, "host")?;
+    // The daemon runs only sessions it has a log of. Asked for any other,
+    // the bridge would take the session's lease in the registry and then
+    // have nothing to follow: said here, before anything is written there.
+    if !krowk_harness::log::valid_id(&session) {
+        return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sessions` lists this machine's")));
+    }
+    let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    if !dir.join(&session).join(krowk_harness::log::EVENTS_FILE).is_file() {
+        return Err(fail("no_session", format!("this machine has no session {session} to host — start one here (`krowk`, or `krowk -p \"...\"`), then `krowk sync host <its id>`; `krowk sessions` lists this machine's")));
+    }
+    let k = keys(ctx)?;
+    let api = Arc::new(signed(ctx, &k, "krowk sync host")?);
+    let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
+    let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
+    let spawn = super::host::spawner(ctx)?;
+    let o = host::Options { relay: relay(ctx), env, api, device: k.device, signing: k.signing, account: k.account, session, title: String::new(), cwd: cwd.display().to_string(), ttl: host::LEASE_TTL, keep: host::KEEP, direct: direct(ctx)? };
+    krowk_harness::sync::run_host(o, ctx.io.env, &cwd, super::VERSION, &spawn).map_err(|(code, message)| fail(&code, message))
+}
+
+pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    let session = one(args, "attach")?;
+    let k = keys(ctx)?;
+    let api = Arc::new(signed(ctx, &k, "krowk sync attach")?);
+    let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
+    let o = viewer::Options { relay: relay(ctx), env, api, device: k.device, signing: k.signing, account: k.account, session: session.clone(), known: None };
+    krowk_harness::sync::run_attach(o, &mut *ctx.io.stdout).map_err(|e| fail("sync_failed", e))
+}
+
+/// `krowk --resume <id>` for a session this machine does not have but can
+/// open from sync: it follows it as `krowk sync attach` does, so the
+/// command an artifact card copies works on any of the workspace's
+/// machines, not only the one holding the log. None when the id is local,
+/// or this machine does not sync, or the registry holds no session under it
+/// that this machine's account key opens: `--resume` then goes on as before.
+pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
+    let id = ctx.f.resume.trim().to_string();
+    if !krowk_harness::log::valid_id(&id) {
+        return None;
+    }
+    let dir = krowk_harness::log::sessions_dir(ctx.io.env).ok()?;
+    if dir.join(&id).join(krowk_harness::log::EVENTS_FILE).is_file() {
+        return None;
+    }
+    let k = keys(ctx).ok()?;
+    let api = keyed_client(ctx, "krowk --resume").ok()?;
+    let s = api.show_sync_session(&id).ok()?;
+    let wrapped = krowk_client::e2e::unhex(&s.wrapped_key)?;
+    krowk_client::e2e::unwrap_session_key(&wrapped, &krowk_harness::daemon::ws::uuid(&id), &k.account).ok()?;
+    // Said plainly, on stderr: the TUI does not draw a synced session yet,
+    // so what follows is stream-json, as `krowk sync attach` prints it.
+    let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sync attach`); the TUI does not attach synced sessions yet");
+    Some(attach(ctx, &[id]))
+}

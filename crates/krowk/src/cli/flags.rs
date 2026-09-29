@@ -65,6 +65,12 @@ pub struct Flags {
     /// `-p`: run a backend in a repository nobody has trusted yet.
     #[cfg(feature = "harness")]
     pub trust: bool,
+    /// `-p`: run the turn in the host daemon.
+    #[cfg(feature = "harness")]
+    pub daemon: bool,
+    /// `host stop`: even with clients connected.
+    #[cfg(feature = "harness")]
+    pub force: bool,
     /// `providers add`: the instance's name, its key's variable, its base
     /// URL, and how SuperGrok signs in.
     #[cfg(feature = "harness")]
@@ -99,6 +105,15 @@ pub struct Flags {
     pub key_stdin: bool,
     #[cfg(feature = "harness")]
     pub key_ref: String,
+    /// `relay serve`: where it listens, whom it trusts, and the origin
+    /// devices sign.
+    #[cfg(feature = "harness")]
+    pub addr: String,
+    #[cfg(feature = "harness")]
+    pub roster: String,
+    #[cfg(feature = "harness")]
+    pub origin: String,
+    pub relay_state: String,
     /// Which flags were typed, by canonical name — a different question from
     /// what they carry: `--jq "$UNSET"` was given and is empty.
     pub given: BTreeSet<String>,
@@ -264,6 +279,13 @@ impl Flags {
             "method" => text(&mut self.method),
             #[cfg(feature = "harness")]
             "key-ref" => text(&mut self.key_ref),
+            #[cfg(feature = "harness")]
+            "addr" => text(&mut self.addr),
+            #[cfg(feature = "harness")]
+            "ticket-keys" => text(&mut self.roster),
+            #[cfg(feature = "harness")]
+            "origin" => text(&mut self.origin),
+            "state" => text(&mut self.relay_state),
             _ => {
                 let b = parse_bool(name, v)?;
                 *match name {
@@ -286,6 +308,10 @@ impl Flags {
                     "device" => &mut self.device,
                     #[cfg(feature = "harness")]
                     "trust" => &mut self.trust,
+                    #[cfg(feature = "harness")]
+                    "daemon" => &mut self.daemon,
+                    #[cfg(feature = "harness")]
+                    "force" => &mut self.force,
                     #[cfg(feature = "harness")]
                     "default" => &mut self.default,
                     #[cfg(feature = "harness")]

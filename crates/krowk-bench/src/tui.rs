@@ -4,7 +4,13 @@
 //! only, like the other /proc readings; the pinned runner is Linux.
 //!
 //! - `tui.startup_cold` — spawn to the first complete frame (the end of the
-//!   first synchronized update), which is the prompt.
+//!   first synchronized update), which is the prompt, with no host daemon
+//!   running: the TUI starts one and connects before its first frame.
+//! - `tui.startup_warm` — the same with the daemon up already.
+//!
+//! Every other TUI budget runs the TUI's sessions in its own process
+//! (`KROWK_TUI_HOST=local`): they hold the TUI and the engine together, as
+//! they were written to.
 //! - `tui.idle_cpu`, `tui.idle_rss` — the TUI sitting at its prompt with
 //!   nothing running, read from /proc like `engine.idle_*`.
 //! - `tui.turn_cpu` — CPU ticks while a turn waits on a silent provider:
@@ -37,11 +43,45 @@ const PROMPT: &str = " help";
 const COLS: u16 = 100;
 const ROWS: u16 = 30;
 
-/// The full build on a terminal, in its own home, talking to `url`.
+/// The full build on a terminal, in its own home, talking to `url`, its
+/// sessions in its own process.
 fn tui(bin: &Path, home: &Path, url: &str, args: &[&str]) -> Command {
+    let mut c = on_daemon(bin, home, url, args, None);
+    c.env("KROWK_TUI_HOST", "local");
+    c
+}
+
+/// The full build on a terminal, its sessions in the host daemon of
+/// runtime directory `run` when given.
+fn on_daemon(bin: &Path, home: &Path, url: &str, args: &[&str], run: Option<&Path>) -> Command {
     let mut c = sandboxed(bin, home);
     c.args(args).env("TERM", "xterm-256color").env("KROWK_NO_UPDATE_CHECK", "1").env("ANTHROPIC_API_KEY", "sk-bench").env("ANTHROPIC_BASE_URL", url);
+    if let Some(run) = run {
+        c.env("XDG_RUNTIME_DIR", run);
+    }
     c
+}
+
+/// A runtime directory for the daemon: short, since a socket path is, and
+/// private, as the daemon requires.
+fn runtime_dir(name: &str) -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let run = std::path::PathBuf::from(format!("/tmp/krowk-bench-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&run);
+    std::fs::create_dir_all(&run).map_err(|e| format!("{}: {e}", run.display()))?;
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    Ok(run)
+}
+
+/// Whether a daemon's socket is in runtime directory `run`
+/// (`krowk/<home>/host.sock`).
+fn has_socket(run: &Path) -> bool {
+    std::fs::read_dir(run.join("krowk")).into_iter().flatten().flatten().any(|e| e.path().join("host.sock").exists())
+}
+
+/// `krowk host stop`, waited for: the next run starts with none.
+fn stop_daemon(bin: &Path, home: &Path, run: &Path) {
+    let _ = on_daemon(bin, home, "http://127.0.0.1:9", &["host", "stop", "--force"], Some(run)).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
 }
 
 /// A provider that is there — its port open, so the TUI's connectivity
@@ -63,12 +103,25 @@ fn quit(t: &mut pty::Pty) -> Result<(), String> {
 }
 
 /// Spawn to the first complete frame, the median of `runs` fresh processes
-/// after one discarded warm-up, as `startup` measures `--version`.
-pub fn startup(bin: &Path, home: &Path, runs: usize) -> Outcome {
+/// after one discarded warm-up, as `startup` measures `--version`: with the
+/// host daemon warm — started once, up for every run — or cold, stopped
+/// after each, so every run starts one.
+pub fn startup(bin: &Path, home: &Path, runs: usize, warm: bool) -> Outcome {
     std::fs::create_dir_all(home).ok();
+    let run = match runtime_dir(if warm { "warm" } else { "cold" }) {
+        Ok(r) => r,
+        Err(e) => return Outcome::Error(e),
+    };
+    let outcome = startup_in(bin, home, runs, warm, &run);
+    stop_daemon(bin, home, &run);
+    let _ = std::fs::remove_dir_all(&run);
+    outcome
+}
+
+fn startup_in(bin: &Path, home: &Path, runs: usize, warm: bool, run: &Path) -> Outcome {
     let m = provider(|| mock::Reply::sse(&mock::text_stream("ok")));
     let once = || -> Result<f64, String> {
-        let mut t = pty::Pty::spawn(tui(bin, home, &m.url, &[]), COLS, ROWS);
+        let mut t = pty::Pty::spawn(on_daemon(bin, home, &m.url, &[], Some(run)), COLS, ROWS);
         let deadline = t.started + Duration::from_secs(10);
         let first = loop {
             if let Some(end) = t.frame_ends().first() {
@@ -83,9 +136,18 @@ pub fn startup(bin: &Path, home: &Path, runs: usize) -> Outcome {
         if !t.text().contains(PROMPT) {
             return Err(format!("the first frame is not the prompt: {:?}", t.text()));
         }
+        // Measured on the daemon, or not at all: a TUI that fell back to
+        // its own process would pass this budget without one.
+        if t.text().contains("could not be reached") || !has_socket(run) {
+            return Err(format!("the TUI did not reach the host daemon: {:?}", t.text()));
+        }
         quit(&mut t)?;
+        if !warm {
+            stop_daemon(bin, home, run);
+        }
         Ok(ms)
     };
+    // The warm-up starts the daemon that a warm run finds up.
     if let Err(e) = once() {
         return Outcome::Error(e);
     }

@@ -71,6 +71,34 @@ fn proxy_from(get: &dyn Fn(&str) -> Option<String>, base_url: &str) -> Option<ur
     b.build().ok()
 }
 
+/// A device's key, signing the registry calls that act as the device
+/// (canon, engineering/crypto.md → Signed registry requests). The API key
+/// says only that the caller is the workspace's; the signature says which
+/// of its devices is asking. The key and the signing are krowk-client's —
+/// no crypto lives here (R-E2E-2) — and this crate builds the lines that
+/// are signed (`signing_input`) and sends the headers.
+pub trait RequestSigner: Send + Sync {
+    /// The device's id, hex: `X-Krowk-Device`.
+    fn device(&self) -> String;
+    /// An Ed25519 signature over `message` by the device's signing key.
+    fn sign(&self, message: &[u8]) -> [u8; 64];
+}
+
+/// What a device signs for a registry call, as the registry rebuilds it:
+/// the label, the method, the request target (path and query, exactly as
+/// sent), the timestamp's digits and the hex SHA-256 of the body, one per
+/// line. None of them can hold a newline, so the lines read one way only.
+pub fn signing_input(method: &str, target: &str, timestamp: &str, body: &[u8]) -> Vec<u8> {
+    format!("krowk/registry/v1\n{method}\n{target}\n{timestamp}\n{}", sha256_hex(body)).into_bytes()
+}
+
+/// The path and query of an absolute URL, which is what its request line
+/// carries and so what the registry sees and checks a signature over.
+fn request_target(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    rest.find('/').map_or("/", |i| &rest[i..])
+}
+
 /// One CLI invocation's client. It holds no state between calls.
 pub struct Client {
     pub base_url: String,
@@ -78,6 +106,9 @@ pub struct Client {
     agent: ureq::Agent,
     /// Swapped in tests so backoff costs no wall clock.
     pub sleep: fn(Duration),
+    /// This machine's device key, for the calls that act as it; none until
+    /// the caller has one (`signed_by`).
+    signer: Option<Arc<dyn RequestSigner>>,
 }
 
 impl Client {
@@ -98,7 +129,13 @@ impl Client {
             .build();
         let resolver = GuardResolver { guard: Arc::new(guard), inner: ureq::unversioned::resolver::DefaultResolver::default() };
         let agent = ureq::Agent::with_parts(config, ureq::unversioned::transport::DefaultConnector::default(), resolver);
-        Client { base_url, token: token.to_string(), agent, sleep: std::thread::sleep }
+        Client { base_url, token: token.to_string(), agent, sleep: std::thread::sleep, signer: None }
+    }
+
+    /// This client, signing the calls that act as a device with `signer`.
+    pub fn signed_by(mut self, signer: Arc<dyn RequestSigner>) -> Client {
+        self.signer = Some(signer);
+        self
     }
 
     /// Whether calls carry a key. Runs, and so all run metadata, need one.
@@ -252,14 +289,14 @@ impl Client {
     /// doctor tells a registry from something else that answers.
     pub fn root(&self) -> Result<Service, Error> {
         let url = format!("{}/", self.base_url.strip_suffix("/v1").unwrap_or(&self.base_url));
-        Ok(self.request_url("GET", &url, None, MAX_ATTEMPTS, None)?.0)
+        Ok(self.request_url("GET", &url, None, MAX_ATTEMPTS, None, None)?.0)
     }
 
-    fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
+    pub(crate) fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
         Ok(self.call("GET", path, None, MAX_ATTEMPTS, None)?.0)
     }
 
-    fn call<T: DeserializeOwned>(
+    pub(crate) fn call<T: DeserializeOwned>(
         &self,
         method: &str,
         path: &str,
@@ -267,7 +304,26 @@ impl Client {
         attempts: u32,
         idempotency: Option<String>,
     ) -> Result<(T, u16), Error> {
-        self.request_url(method, &format!("{}{path}", self.base_url), body, attempts, idempotency)
+        self.request_url(method, &format!("{}{path}", self.base_url), body, attempts, idempotency, None)
+    }
+
+    /// A call that acts as this machine's device, signed by its key. Refused
+    /// here without one, rather than sent for the registry to refuse.
+    pub(crate) fn call_as_device<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        attempts: u32,
+        idempotency: Option<String>,
+    ) -> Result<(T, u16), Error> {
+        self.request_url(method, &format!("{}{path}", self.base_url), body, attempts, idempotency, Some(self.device_signer()?))
+    }
+
+    pub(crate) fn device_signer(&self) -> Result<&dyn RequestSigner, Error> {
+        self.signer.as_deref().ok_or_else(|| {
+            fail("device_signature_missing", "this call acts as this machine's device and needs its signing key — set sync up on this machine first (`krowk sync init`, `recover` or `join`), then `krowk sync register`")
+        })
     }
 
     /// One registry request with retries; the idempotency key, when there is one,
@@ -280,8 +336,9 @@ impl Client {
         body: Option<Value>,
         attempts: u32,
         idempotency: Option<String>,
+        signer: Option<&dyn RequestSigner>,
     ) -> Result<(T, u16), Error> {
-        let (status, bytes) = self.request_raw(method, url, body, attempts, idempotency)?;
+        let (status, bytes) = self.request_signed(method, url, body, attempts, idempotency, signer)?;
         let value = if bytes.iter().all(u8::is_ascii_whitespace) {
             // A 204 carries nothing, which reads as an empty record.
             Value::Object(Map::new())
@@ -292,11 +349,26 @@ impl Client {
     }
 
     /// The status and body of a success, retried; the body not read as anything.
-    fn request_raw(&self, method: &str, url: &str, body: Option<Value>, attempts: u32, idempotency: Option<String>) -> Result<(u16, Vec<u8>), Error> {
+    pub(crate) fn request_raw(&self, method: &str, url: &str, body: Option<Value>, attempts: u32, idempotency: Option<String>) -> Result<(u16, Vec<u8>), Error> {
+        self.request_signed(method, url, body, attempts, idempotency, None)
+    }
+
+    /// As `request_raw`, signed by `signer` when there is one — afresh for
+    /// every attempt and every redirect hop, since each is a request of its
+    /// own, and the registry refuses a signature it has already seen.
+    pub(crate) fn request_signed(
+        &self,
+        method: &str,
+        url: &str,
+        body: Option<Value>,
+        attempts: u32,
+        idempotency: Option<String>,
+        signer: Option<&dyn RequestSigner>,
+    ) -> Result<(u16, Vec<u8>), Error> {
         let payload = body.map(|b| serde_json::to_vec(&b).expect("request body serializes"));
         let mut last = None;
         for attempt in 1..=attempts {
-            match self.once(method, url, payload.as_deref(), idempotency.as_deref()) {
+            match self.once(method, url, payload.as_deref(), idempotency.as_deref(), signer) {
                 Ok(success) => return Ok(success),
                 Err(e) => {
                     if !e.retryable() || attempt == attempts {
@@ -311,7 +383,7 @@ impl Client {
     }
 
     /// One attempt: the status and body of a success, or the failure flattened.
-    fn once(&self, method: &str, url: &str, payload: Option<&[u8]>, idempotency: Option<&str>) -> Result<(u16, Vec<u8>), Error> {
+    fn once(&self, method: &str, url: &str, payload: Option<&[u8]>, idempotency: Option<&str>, signer: Option<&dyn RequestSigner>) -> Result<(u16, Vec<u8>), Error> {
         let mut url = url.to_string();
         for hop in 0..=10 {
             let mut req = ureq::http::Request::builder().method(method).uri(&url).header("Accept", "application/json");
@@ -323,6 +395,13 @@ impl Client {
             }
             if let Some(key) = idempotency {
                 req = req.header("Idempotency-Key", key);
+            }
+            if let Some(signer) = signer {
+                // Milliseconds, so two calls of the same shape a moment apart
+                // are two requests to the registry's replay check, not one.
+                let at = jiff::Timestamp::now().as_millisecond().to_string();
+                let signature = signer.sign(&signing_input(method, request_target(&url), &at, payload.unwrap_or_default()));
+                req = req.header("X-Krowk-Device", signer.device()).header("X-Krowk-Timestamp", at).header("X-Krowk-Signature", hex(&signature));
             }
             let req = req.body(payload.map(<[u8]>::to_vec).unwrap_or_default()).map_err(|e| fail("bad_request", e.to_string()))?;
             let mut res = self.agent.run(req).map_err(|e| self.transport(method, &url, e, "network_unreachable"))?;
@@ -549,6 +628,67 @@ impl Client {
         Err(Error { status, body })
     }
 
+    /// Puts `bytes` to a presigned upload that is not an artifact's file — a
+    /// session chunk, sealed in memory. The same rules as `put_bytes`: always
+    /// PUT, the URL judged by `storage_origin`, no redirect followed, the
+    /// transport's headers never taken from the registry, retried only when
+    /// storage says a retry could help.
+    pub fn put_blob(&self, upload: &Upload, bytes: &[u8]) -> Result<(), Error> {
+        let endpoint = self.storage_origin(&upload.url)?;
+        let mut last = None;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let mut req = ureq::http::Request::builder().method("PUT").uri(&endpoint);
+            for (k, v) in upload.headers.iter().flatten() {
+                if !transport_header(k) {
+                    req = req.header(k.as_str(), v.as_str());
+                }
+            }
+            let req = req.header("Content-Length", bytes.len().to_string()).body(bytes.to_vec()).map_err(|e| fail("bad_upload_url", e.to_string()))?;
+            let status = match self.agent.run(req) {
+                Ok(res) => res.status().as_u16(),
+                Err(e) => {
+                    let e = self.transport("PUT", &endpoint, e, "storage_unreachable");
+                    if attempt == MAX_ATTEMPTS {
+                        return Err(e);
+                    }
+                    last = Some(e);
+                    (self.sleep)(Duration::from_millis(250 << attempt));
+                    continue;
+                }
+            };
+            if status < 300 {
+                return Ok(());
+            }
+            let mut body = BTreeMap::new();
+            body.insert("error".into(), json!(if (300..400).contains(&status) { "upload_redirected" } else { "storage_rejected_upload" }));
+            body.insert("fix".into(), json!("object storage refused the chunk — declare it again for a fresh URL, and report it if it persists"));
+            body.insert("retryable".into(), json!(status >= 500));
+            let e = Error { status, body };
+            if !e.retryable() || attempt == MAX_ATTEMPTS {
+                return Err(e);
+            }
+            last = Some(e);
+            (self.sleep)(Duration::from_millis(250 << attempt));
+        }
+        Err(last.expect("at least one attempt"))
+    }
+
+    /// Reads a stored object — a session chunk — from the URL the registry
+    /// listed, judged like an upload target, with no redirect followed and
+    /// at most `limit` bytes read.
+    pub fn get_blob(&self, url: &str, limit: u64) -> Result<Vec<u8>, Error> {
+        let endpoint = self.storage_origin(url)?;
+        let req = ureq::http::Request::builder().method("GET").uri(&endpoint).body(()).map_err(|e| fail("bad_download_url", e.to_string()))?;
+        let mut res = self.agent.run(req).map_err(|e| self.transport("GET", &endpoint, e, "storage_unreachable"))?;
+        let status = res.status().as_u16();
+        if status != 200 {
+            return Err(fail("storage_read_failed", format!("object storage answered {status} for a chunk the registry listed — list the chunks again, and report it if it persists")));
+        }
+        let mut bytes = Vec::new();
+        res.body_mut().as_reader().take(limit).read_to_end(&mut bytes).map_err(|e| fail("storage_read_failed", e.to_string()))?;
+        Ok(bytes)
+    }
+
     /// The storage host a presigned URL names, if it is one worth sending bytes
     /// to: http(s) only; a local registry's targets are local by definition; the
     /// API's own origin is trusted on the API's terms; anything else must be
@@ -680,6 +820,31 @@ fn fix_for(code: &str, status: u16) -> String {
             "the registry has no such endpoint — check KROWK_API_URL names the API host and version, and that the method is the one this call uses"
         }
         "parameter_missing" | "invalid" | "bad_request" => "",
+        // Sync's refusals (R-SYNC-1, R-SYNC-2). Everything local keeps
+        // working without an account; what the free plan does not get is
+        // sessions leaving the machine.
+        "sync_requires_paid_plan" => {
+            "syncing sessions between devices needs a paid plan — upgrade this workspace to Pro at https://app.krowk.com; everything else krowk does keeps working locally without it"
+        }
+        // Never "join with the id in this error": a hostile registry could
+        // name a key it holds, and joining with it would hand it every
+        // session this machine syncs. The id to trust is on a machine the
+        // person already syncs from.
+        "account_key_mismatch" => {
+            "the registry says this workspace syncs under another account key — if this key came from `krowk sync recover`, a word of the phrase is wrong: run it again with the right one. Compare with `krowk devices list` on a machine you already sync from, never with an id in an error message; if you have no such machine, do not join this workspace, and its owner can reset sync in the dashboard's settings"
+        }
+        // Never "write the next index": a gap is a log no reader gets past.
+        "chunk_exists" => "this session already has that chunk, and its log is append-only — list the session's chunks and continue from the last ready index + 1, chained onto that chunk",
+        "chunk_limit_reached" => "this session's log holds as many chunks as one may — start a new session",
+        "session_limit_reached" => "this workspace holds as many synced sessions as one may — report it if you need more",
+        "approval_expired" => "the new device's request lapsed before it was approved — run `krowk sync join` on it again",
+        "already_approved" => "this device has already been approved — run `krowk sync join` on it to collect its key, if it has not",
+        // Registering the same device key again is refused until the owner
+        // resets sync, which clears the slate for every device it revoked;
+        // `recover` alone keeps the revoked key and cannot help.
+        "device_revoked" => "this device has been revoked for the workspace — once its owner has reset sync in the dashboard's settings, run `krowk sync register` on it; until then, ask them",
+        "lease_held" => "another device holds this session's lease — send it commands through that device, or wait for the lease to lapse",
+        "lease_stale" => "this device does not hold the session's lease — another device took it, it lapsed, or the token is not the holder's; acquire it again before writing",
         "method_not_allowed" => {
             "the registry does not answer that HTTP method — read the Allow header on this response, if it carries one, for the methods it does"
         }
@@ -754,7 +919,17 @@ fn clip(s: &str, n: usize) -> String {
 /// 128 random bits shaped as a v4 UUID. Unguessable, not merely unique: on a
 /// keyless push it is the only thing a retry presents to prove it made the
 /// original call.
-fn idempotency_key() -> Result<String, Error> {
+/// SHA-256, hex: the digest a chunk is declared with and read back against.
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+pub(crate) fn sha256_hex(b: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+}
+
+pub fn idempotency_key() -> Result<String, Error> {
     let mut b = [0u8; 16];
     std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).map_err(|_| {
         fail("no_idempotency_key", "this machine's random source is unreadable, so a retry could not be named safely")
@@ -779,7 +954,7 @@ fn escape(s: &str, keep: &[u8]) -> String {
 }
 
 /// The cursor and page size every listing takes.
-fn paged(path: &str, before: &str, limit: i64) -> String {
+pub(crate) fn paged(path: &str, before: &str, limit: i64) -> String {
     let mut query = Vec::new();
     if !before.is_empty() {
         query.push(format!("before={}", escape(before, b"-._~")));
@@ -956,6 +1131,25 @@ impl ureq::unversioned::resolver::Resolver for GuardResolver {
 mod tests {
     use super::*;
 
+    /// A gap in a session's log is a log no reader gets past, so the fix for
+    /// a chunk that exists never says to skip to the next index.
+    #[test]
+    fn the_chunk_exists_fix_continues_the_log_rather_than_skipping() {
+        let fix = fix_for("chunk_exists", 409);
+        assert!(fix.contains("last ready index + 1") && !fix.contains("write the next index"), "{fix}");
+    }
+
+    /// A hostile registry answering `account_key_mismatch` with a key it
+    /// holds must not be able to talk the person into joining under it: the
+    /// fix never sends them to `join`, and names their own machines as the
+    /// place to read the id.
+    #[test]
+    fn the_account_key_mismatch_fix_never_points_at_join() {
+        let fix = fix_for("account_key_mismatch", 409);
+        assert!(!fix.contains("sync join"), "{fix}");
+        assert!(fix.contains("krowk devices list") && fix.contains("never with an id in an error message"), "{fix}");
+    }
+
     #[test]
     fn reserved_addresses_are_the_ones_inside_a_network() {
         for ip in ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "240.0.0.1", "::1", "fe80::1", "fd00::1", "64:ff9b::a9fe:a9fe", "::ffff:10.0.0.1"] {
@@ -1108,7 +1302,7 @@ mod boundary {
         let (port, _) = server(vec![respond("200 OK", "", "{}")]);
         let c = quiet(Client::new("https://api.krowk.com/v1", ""));
         for target in [format!("http://127.0.0.1:{port}/"), format!("http://[::1]:{port}/"), format!("http://localhost:{port}/")] {
-            let e = c.request_url::<Value>("GET", &target, None, 1, None).unwrap_err();
+            let e = c.request_url::<Value>("GET", &target, None, 1, None, None).unwrap_err();
             assert_eq!(e.code(), "untrusted_endpoint", "{target}");
         }
     }
@@ -1123,10 +1317,10 @@ mod boundary {
             respond("302 Found", "Location: http://evil.example/x\r\n", ""),
         ]);
         let c = quiet(Client::new(&format!("http://127.0.0.1:{port}/v1"), ""));
-        assert!(c.request_url::<Value>("GET", &format!("http://127.0.0.1:{port}/v1/x"), None, 1, None).is_ok());
+        assert!(c.request_url::<Value>("GET", &format!("http://127.0.0.1:{port}/v1/x"), None, 1, None, None).is_ok());
         assert!(log.lock().unwrap()[1].starts_with("GET /v1/moved "));
-        assert_eq!(c.request_url::<Value>("GET", &format!("http://127.0.0.1:{port}/v1/x"), None, 1, None).unwrap_err().code(), "unexpected_redirect");
-        assert_eq!(c.request_url::<Value>("GET", &format!("http://127.0.0.1:{port}/v1/x"), None, 1, None).unwrap_err().code(), "untrusted_redirect");
+        assert_eq!(c.request_url::<Value>("GET", &format!("http://127.0.0.1:{port}/v1/x"), None, 1, None, None).unwrap_err().code(), "unexpected_redirect");
+        assert_eq!(c.request_url::<Value>("GET", &format!("http://127.0.0.1:{port}/v1/x"), None, 1, None, None).unwrap_err().code(), "untrusted_redirect");
     }
 
     fn prepared(storage: u16, path: &str, headers: &[(&str, &str)]) -> Artifact {
@@ -1224,5 +1418,22 @@ mod boundary {
         ] {
             assert_eq!(resolve_location(from, location).as_deref(), Some(want), "{location}");
         }
+    }
+
+    /// Ticket 16c: the lines a device signs are the registry's, byte for
+    /// byte — label, method, the request target as sent, the timestamp and
+    /// the body's digest — and the target is the path and query alone.
+    #[test]
+    fn a_signed_call_signs_the_registrys_lines_over_the_target_as_sent() {
+        let lines = String::from_utf8(signing_input("GET", "/v1/sessions/x/relay_ticket?device=ab&env=production", "1790000000000", b"")).unwrap();
+        assert_eq!(
+            lines,
+            "krowk/registry/v1\nGET\n/v1/sessions/x/relay_ticket?device=ab&env=production\n1790000000000\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(request_target("https://api.krowk.com/v1/devices"), "/v1/devices");
+        assert_eq!(request_target("http://127.0.0.1:4000/v1/sessions/x?after=1"), "/v1/sessions/x?after=1");
+        assert_eq!(request_target("https://api.krowk.com"), "/");
+        let unsigned = Client::new("https://api.krowk.com/v1", "krowk_sk_x");
+        assert_eq!(unsigned.acquire_lease("x", "ab", 60, "production").unwrap_err().code(), "device_signature_missing");
     }
 }

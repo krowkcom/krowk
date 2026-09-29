@@ -8,8 +8,11 @@ build: ## Build target/release/krowk (the full build) and krowk-mcp
 	KROWK_VERSION=$(VERSION) cargo build --release -p krowk --features harness
 
 # With `harness`, which implies `sessions`: every test either build runs.
+# nextest runs no doctests, so cargo test runs those. CI sets
+# NEXTEST_PROFILE=ci, which retries a flaky test instead of failing the job.
 test: ## The unit and integration tests
-	cargo test --workspace --exclude krowk-golden --features krowk/harness
+	cargo nextest run --workspace --exclude krowk-golden --features krowk/harness
+	cargo test --doc --workspace --exclude krowk-golden --features krowk/harness
 
 # Both builds: the agent build (no sessions) is the one a container compiles
 # from source, and a cfg that only one of them sees is a lint only one catches.
@@ -40,6 +43,9 @@ bench: ## Hold the release builds to the performance and size budgets
 	rm -f $(BENCH_DIR)/krowk-full && cp target/release/krowk $(BENCH_DIR)/krowk-full
 	cargo run --profile bench-tool --locked -p krowk-bench -- --budgets crates/krowk-bench/budgets.toml \
 		--lean $(BENCH_DIR)/krowk-lean --full $(BENCH_DIR)/krowk-full --work $(BENCH_DIR)/work $(BENCH_FLAGS)
+	# R-LAG-2/3/9's load with the flood unpaced, which only an optimized
+	# daemon is held to (tests/daemon_ws.rs says why).
+	cargo test --release --locked -p krowk-harness --test daemon_ws r_lag_2_r_lag_3
 
 schema: ## Regenerate the harness protocol's JSON Schema after a type change
 	KROWK_SCHEMA_UPDATE=1 cargo test -p krowk-harness --test schema

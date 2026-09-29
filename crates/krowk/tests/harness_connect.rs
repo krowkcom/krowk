@@ -53,6 +53,9 @@ impl Sandbox {
             .env("PATH", format!("{}:/usr/bin:/bin", self.root.join("bin").display()))
             .env("HOME", self.root.join("home"))
             .env("KROWK_NO_UPDATE_CHECK", "1")
+            // The TUI runs its sessions in this process here: the daemon has
+            // its own tests (tui.rs, host_daemon), and none is left behind.
+            .env("KROWK_TUI_HOST", "local")
             .env("KROWK_API_URL", "http://127.0.0.1:9/v1")
             .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
             .env("FAKE_CODEX_LOG", self.root.join("fake.log"))
