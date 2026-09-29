@@ -84,7 +84,9 @@ const BATCH_BYTES: usize = 256 * 1024;
 /// `permissions.approvals` from the flag. It reads the config and the
 /// environment, so it runs on the blocking pool, not the daemon's thread
 /// (R-LAG-9): hence `Send + Sync`.
-pub type Factory = Box<dyn Fn(&Path, bool) -> Result<HostConfig, EngineError> + Send + Sync>;
+pub type Factory = Box<MakeHost>;
+
+type MakeHost = dyn Fn(&Path, bool) -> Result<HostConfig, EngineError> + Send + Sync;
 
 /// Serves until idle or told to stop (SIGTERM, SIGINT), on a runtime of its
 /// own.
@@ -103,7 +105,7 @@ pub fn run(opts: Options, factory: Factory) -> Result<(), String> {
 }
 
 pub(super) struct State {
-    factory: std::sync::Arc<dyn Fn(&Path, bool) -> Result<HostConfig, EngineError> + Send + Sync>,
+    factory: std::sync::Arc<MakeHost>,
     /// The WebSocket listener's address and token, when it listens.
     pub(super) websocket: Option<(SocketAddr, String)>,
     hosts: HashMap<(PathBuf, bool), Rc<Host>>,
@@ -743,18 +745,28 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     // directory, and whether it answers approvals; the rest go to the host
     // running the session.
     let known = if turn { None } else { root.as_ref().and_then(|r| state.borrow().hubs.get(r).map(|h| h.host.clone())) };
+    // Working from here: a `stop` while a new directory's configuration is
+    // read, or the log is counted below, must not end the daemon under a
+    // prompt it accepted.
+    if turn {
+        state.borrow_mut().working += 1;
+    }
     let host = match known {
         Some(h) => Ok(h),
         None => host_for(&state, &cwd, answers).await,
     };
     let host = match host {
         Ok(h) => h,
-        Err(e) => return state.borrow_mut().send(client, "", control(&ServerFrame::Done { id, result: None, error: Some(error_info(&e)) })),
+        Err(e) => {
+            let mut s = state.borrow_mut();
+            if turn {
+                s.working -= 1;
+                s.wake.notify_one();
+            }
+            return s.send(client, "", control(&ServerFrame::Done { id, result: None, error: Some(error_info(&e)) }));
+        }
     };
     if turn {
-        // Working from here: a `stop` while the log is counted below must
-        // not end the daemon under a prompt it accepted.
-        state.borrow_mut().working += 1;
         // Counted before it registers: nothing it writes is in the count.
         let dir = state.borrow().sessions_dir.clone();
         let base = match (&root, dir) {
