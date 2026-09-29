@@ -830,7 +830,7 @@ impl Shared {
         // logs; this turn's calls are added as they are metered.
         let budget = Budget::new(limits, &session_id, &self.cfg.sessions_dir, self.cfg.pricer.clone(), &instance.provider, &model.model, &events);
         drop(events);
-        let evidence = self.cfg.publisher.clone().map(|p| Evidence::new(p, &session_id, past.run.clone()));
+        let evidence = self.cfg.publisher.clone().map(|p| Evidence::new(p, &session_id, past.run.clone(), crate::evidence::Producer::new(&instance, &model.model)));
         let first_here = self.started.lock().unwrap_or_else(|e| e.into_inner()).insert(session_id.clone());
         compat.session_start = first_here.then_some(if past.items.is_empty() { "startup" } else { "resume" });
         compat.transcript = self.cfg.sessions_dir.join(&session_id).join(log::EVENTS_FILE).display().to_string();
@@ -896,6 +896,7 @@ impl Shared {
         let child = log.session_id.clone();
         let _ = events.send(EngineEvent::SubagentStarted { call_id: call_id.into(), session_id: child.clone(), description: description.into(), agent: run.name.clone(), model: model.clone() }).await;
         let budget = Budget::for_subagent(&p.budget, &child, &instance.provider, &model.model, std::slice::from_ref(&root));
+        let producer = crate::evidence::Producer::new(&instance, &model.model);
         let plan = TurnPlan {
             log,
             past: Past { cwd: Some(p.cwd.clone()), ..Past::default() },
@@ -911,7 +912,7 @@ impl Shared {
             cwd: p.cwd.clone(),
             backend_session: None,
             budget,
-            evidence: p.evidence.as_ref().map(|e| e.for_subagent(events.clone())),
+            evidence: p.evidence.as_ref().map(|e| e.for_subagent(events.clone(), producer)),
             // The parent's rules, instructions, skills and hooks, and its
             // session's grants: a subagent is judged as its parent would be,
             // in its parent's mode, and asks under its own session id.
