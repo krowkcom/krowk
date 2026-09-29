@@ -105,7 +105,9 @@ fn good_name(n: &str) -> bool {
 pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> Vec<Server> {
     let root = crate::trust::root(cwd);
     let trusted = cfg.trusted.as_ref().is_some_and(|t| t(&root));
-    let runs_in = if trusted { cwd.to_path_buf() } else { cfg.home.clone().unwrap_or_else(std::env::temp_dir) };
+    // Untrusted and with no home, there is nowhere safe to start a stdio
+    // server: a shared temporary directory is anyone's to plant in.
+    let runs_in = if trusted { Some(cwd.to_path_buf()) } else { cfg.home.clone() };
     let mut out: Vec<Server> = Vec::new();
     let mut add = |v: Option<&Value>, source: &str| {
         let Some(Value::Object(m)) = v else { return };
@@ -114,8 +116,9 @@ pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> Vec<Server> {
             if !good_name(name) {
                 continue;
             }
+            let Some(runs_in) = runs_in.clone().or_else(|| config.command.is_none().then(PathBuf::new)) else { continue };
             out.retain(|s| s.name != *name);
-            out.push(Server { name: name.clone(), config: expand(config), source: source.to_string(), cwd: runs_in.clone() });
+            out.push(Server { name: name.clone(), config: expand(config), source: source.to_string(), cwd: runs_in });
         }
     };
     let read = |p: &Path| std::fs::read(p).ok().and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
