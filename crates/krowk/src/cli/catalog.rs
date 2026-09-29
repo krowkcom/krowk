@@ -472,7 +472,7 @@ fn sync_command() -> Command {
             #[cfg(unix)]
             cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
             #[cfg(unix)]
-            cmd("attach", "krowk sync attach SESSION", "Follow a synced session from this machine; lines on stdin are prompts"),
+            cmd("attach", "krowk sync attach SESSION", "Follow a synced session here; each stdin line is a prompt"),
         ],
         ..cmd("sync", "", "End-to-end encryption keys for syncing sessions")
     }
