@@ -223,6 +223,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **Two quick Ctrl-Cs right after a prompt still print the resume line.**
+  Leaving that fast could beat the session's start to the TUI, so krowk
+  exited 130 without `krowk --resume <id>` although the host had already
+  started the session. The TUI now reads what the host already sent before it leaves.
+
 - **A viewer that moves to the direct path mid-session keeps receiving
   the session.** The direct listener replays from where the viewer was when
   it started looking for the direct path. The viewer had already opened
