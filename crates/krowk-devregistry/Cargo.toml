@@ -16,10 +16,10 @@ name = "devregistry"
 path = "src/main.rs"
 
 [dependencies]
-# Signs relay tickets as the registry does (relay.md → Tickets). The same
-# crate and version krowk-client links, so the build gains nothing; not
-# krowk-client itself, which depends on krowk-api, whose tests use this.
-ed25519-dalek = { version = "3", default-features = false, features = ["zeroize"] }
+# Signs relay tickets as the registry does (relay.md → Tickets), through
+# krowk-client's `relay_ticket`: crypto lives there alone (R-E2E-2). Test
+# infrastructure, so nothing released gains a crate.
+krowk-client = { path = "../krowk-client" }
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 sha2 = "0.11"
 tiny_http = "0.12"

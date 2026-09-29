@@ -286,31 +286,26 @@ pub const TICKET_KID: [u8; 8] = *b"standin1";
 const TICKET_TTL: i64 = 300;
 
 pub fn ticket_public_key() -> [u8; 32] {
-    ed25519_dalek::SigningKey::from_bytes(&TICKET_SEED).verifying_key().to_bytes()
+    krowk_client::e2e::SigningKey::from_secret(&TICKET_SEED).expect("a 32-byte seed").public().0
 }
 
-/// A relay ticket, in the registry's layout (relay.md → Tickets;
-/// krowk_client::relay_ticket reads it), with its expiry.
+/// A relay ticket, in the registry's layout (relay.md → Tickets), with its
+/// expiry.
 fn relay_ticket(role: u8, env: u8, session: &str, device: &Device, workspace: &str, fence: u64, now: Timestamp) -> (String, Timestamp) {
-    use ed25519_dalek::Signer as _;
     let iat = now.as_second() as u64;
-    let exp = iat + TICKET_TTL as u64;
-    let uuid = unhex(&session.replace('-', "")).unwrap_or_default();
-    let mut b = vec![1u8];
-    b.extend_from_slice(&TICKET_KID);
-    b.push(role);
-    b.push(env);
-    b.extend_from_slice(&uuid);
-    b.extend_from_slice(&unhex(&device.id).unwrap_or_default());
-    b.extend_from_slice(&unhex(&device.signing_key).unwrap_or_default());
-    b.extend_from_slice(&fence.to_be_bytes());
-    b.extend_from_slice(&iat.to_be_bytes());
-    b.extend_from_slice(&exp.to_be_bytes());
-    b.push(workspace.len() as u8);
-    b.extend_from_slice(workspace.as_bytes());
-    let sig = ed25519_dalek::SigningKey::from_bytes(&TICKET_SEED).sign(&[&b"krowk/relay-ticket/v1"[..], &b].concat());
-    b.extend_from_slice(&sig.to_bytes());
-    (hex(&b), now + SignedDuration::from_secs(TICKET_TTL))
+    let t = krowk_client::relay_ticket::Ticket {
+        kid: TICKET_KID,
+        role,
+        env,
+        session: unhex(&session.replace('-', "")).and_then(|b| b.try_into().ok()).unwrap_or_default(),
+        device: unhex(&device.id).and_then(|b| b.try_into().ok()).unwrap_or_default(),
+        signing_key: unhex(&device.signing_key).and_then(|b| b.try_into().ok()).unwrap_or_default(),
+        fence,
+        iat,
+        exp: iat + TICKET_TTL as u64,
+        workspace: workspace.to_string(),
+    };
+    (t.sign(&TICKET_SEED), now + SignedDuration::from_secs(TICKET_TTL))
 }
 
 /// `env` as a lease or ticket call names it: production when absent.
