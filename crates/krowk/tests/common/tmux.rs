@@ -119,6 +119,19 @@ impl Tmux {
 
 impl Drop for Tmux {
     fn drop(&mut self) {
+        // `kill-server` alone sends the pane a hangup, and a TUI that does not
+        // leave on it would be left running, reparented to init, long after
+        // the test. The pane's command runs in a session of its own, so its
+        // process group goes with it, whatever it did with the hangup.
+        // Killed while tmux still holds the pane, so the number cannot yet
+        // belong to anything else.
+        let pane: Option<i32> = self.tmux(&["display-message", "-p", "-t", "t", "#{pane_pid}"]).trim().parse().ok();
+        if let Some(pid) = pane.filter(|p| *p > 1) {
+            // SAFETY: a signal to the process group the pane's command leads.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
         self.tmux(&["kill-server"]);
         let _ = std::fs::remove_file(std::env::temp_dir().join(format!("{}.conf", self.socket)));
     }

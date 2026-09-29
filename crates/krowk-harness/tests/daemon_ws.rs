@@ -375,6 +375,17 @@ fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
 /// unpaced (`…_release_…`, run by `make bench`), since an unoptimized
 /// build spends tens of milliseconds parsing a provider's burst of
 /// hundreds of kilobytes on the thread.
+///
+/// The two limits, 30 ms and 50 ms, are held in the release build only,
+/// which `make bench` runs on a quiet machine, both variants. The
+/// unoptimized build's thread is busy for real stretches parsing the
+/// flood, and on a loaded machine the scheduler stretches that busy time by
+/// the thread's share of the cores: two busy cores and a debug daemon read
+/// 80–300 ms late, while a thread of the test's that only sleeps and wakes
+/// is on time within 2 ms, so no idle reference tells the machine's part
+/// from the code's. What `make check` holds here is the half that does not
+/// depend on the machine: every session typed whole, the flood too, with
+/// the numbers printed.
 #[test]
 fn r_lag_2_r_lag_3_three_sessions_at_500_tokens_a_second_and_a_flood_stall_none() {
     load(8_000, Some(Duration::from_micros(200)));
@@ -448,8 +459,11 @@ fn load(flood_words: usize, flood_pace: Option<Duration>) {
         }
         (arrivals, texts, late)
     });
+    // Held to the limits in the release build alone: the doc comment on
+    // the test says why.
+    let timed = !cfg!(debug_assertions);
     eprintln!("the daemon's thread was late by at most {late:?} while all four streamed");
-    assert!(late < Duration::from_millis(30), "something blocked the daemon's thread {late:?} while four sessions streamed");
+    assert!(!timed || late < Duration::from_millis(30), "something blocked the daemon's thread {late:?} while four sessions streamed");
     let paced_sessions: Vec<&String> = texts.iter().filter(|(_, t)| t.len() == paced.len()).map(|(s, _)| s).collect();
     assert_eq!(paced_sessions.len(), 3, "each paced session typed its answer whole");
     assert!(texts.values().any(|t| t == &flood), "and the flood its own");
@@ -458,7 +472,7 @@ fn load(flood_words: usize, flood_pace: Option<Duration>) {
         let worst = at.windows(2).map(|w| w[1] - w[0]).max().unwrap();
         let span = *at.last().unwrap() - at[0];
         eprintln!("session {s}: {} batches over {span:?}, longest gap {worst:?}", at.len());
-        assert!(worst < Duration::from_millis(50), "session {s} stalled {worst:?} while the others streamed");
+        assert!(!timed || worst < Duration::from_millis(50), "session {s} stalled {worst:?} while the others streamed");
     }
     daemon.join().unwrap().unwrap();
 }
