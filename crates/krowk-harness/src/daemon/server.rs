@@ -65,11 +65,15 @@ pub struct Options {
     /// late for a 5 ms tick since this was last set to 0 — how long
     /// something blocked every session and heartbeat at once (R-LAG-9).
     pub lateness: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    /// For tests: each time it is notified, every client is let go, as
+    /// one is that falls past what a catch-up can read (`extent`), so a
+    /// client's re-following from its cursor can be seen.
+    pub kick: Option<std::sync::Arc<Notify>>,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None }
+        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None }
     }
 }
 
@@ -232,6 +236,19 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     // what `warm` built, or fails with why there is none.
     crate::http::warm_only();
     tokio::task::spawn_blocking(crate::http::warm);
+    if let Some(kick) = state.borrow().opts.kick.clone() {
+        let state = state.clone();
+        tokio::task::spawn_local(async move {
+            loop {
+                kick.notified().await;
+                let mut s = state.borrow_mut();
+                let all: Vec<u64> = s.clients.keys().copied().collect();
+                for c in all {
+                    s.drop_client(c);
+                }
+            }
+        });
+    }
     if let Some(probe) = state.borrow().opts.lateness.clone() {
         tokio::task::spawn_local(async move {
             const TICK: Duration = Duration::from_millis(5);
@@ -362,6 +379,9 @@ async fn wind_down(state: &Shared) {
                 if s.working == 0 {
                     return;
                 }
+                // Interrupted once a turn: a session whose turn has ended
+                // is looked at again, should another start in it.
+                interrupted.retain(|id| s.hubs.get(id).is_some_and(|h| h.running));
                 s.hubs.iter().filter(|(id, h)| h.running && !interrupted.contains(*id)).map(|(id, h)| (id.clone(), h.host.clone())).collect()
             };
             for (session_id, host) in running {
@@ -843,6 +863,13 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     let Some((cwd, answers)) = state.borrow().clients.get(&client).map(|c| (c.cwd.clone(), c.answers)) else { return };
     let mut root = named(&cmd).map(String::from);
     let turn = matches!(cmd, Command::Prompt { .. } | Command::Continue { .. });
+    // Commands that log to the session they name before they publish it —
+    // a turn, and a model switch's `model.switched` — register with its hub
+    // (`in_flight`, `base`): a catch-up read that lands between the write
+    // and the publish then stops at what was sent live, and the event
+    // comes once, live, rather than in the page and again after it.
+    let switch = matches!(cmd, Command::SwitchModel { .. });
+    let registers = turn || switch;
     // A turn runs on the host of the client that asks for it — its
     // directory, and whether it answers approvals; the rest go to the host
     // running the session.
@@ -874,7 +901,7 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
             return s.send(client, "", control(&ServerFrame::Done { id, result: None, error: Some(error_info(&e)) }));
         }
     };
-    if turn {
+    if registers {
         // Counted before it registers: nothing it writes is in the count.
         let dir = state.borrow().sessions_dir.clone();
         let base = match (&root, dir) {
@@ -901,10 +928,11 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     // fails is remembered for a few seconds (`http::tls`), so the engine's
     // own call right after is refused at once rather than built again on
     // the thread; a turn that needs no TLS (a backend's) runs as it did.
-    // Any command, not only a turn: a model switch makes an engine to
-    // check the model, and the daemon's `client` never builds one itself
-    // (`http::warm_only`).
-    if !crate::http::warmed() {
+    // A model switch too, which makes an engine to check the model: the
+    // daemon's `client` never builds the configuration itself
+    // (`http::warm_only`). Nothing else waits for it — an interrupt least
+    // of all.
+    if registers && !crate::http::warmed() {
         let _ = tokio::task::spawn_blocking(crate::http::warm).await;
     }
     let (tx, mut rx) = mpsc::channel::<StreamLine>(1024);
@@ -935,6 +963,8 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     let mut s = state.borrow_mut();
     if turn {
         s.working -= 1;
+    }
+    if registers {
         if let Some(r) = &root
             && let Some(h) = s.hubs.get_mut(r)
         {
@@ -1017,20 +1047,27 @@ async fn page(state: &Shared, client: u64, session: &str, cursor: outbox::Cursor
         let p = path.clone();
         let events = match tokio::task::spawn_blocking(move || log::read_events(&p)).await {
             Ok(Ok(e)) => e,
+            // A log there that does not read whole: its last line caught
+            // half written, as a turn appends a large event. Not yet
+            // written, rather than no session: read again.
+            Ok(Err(_)) if path.is_file() && tries < MAX_READS => {
+                tokio::time::sleep(READ_GAP).await;
+                continue;
+            }
             _ => return Err(EngineError::new("no_session", format!("there is no session {session} — `krowk sessions` lists them"))),
         };
         if decide(state, client, session, &host, events, tries, &cursor) {
             return Ok(());
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(READ_GAP).await;
     }
 }
 
 /// How much of a read of `session`'s log a page may replay, matched
 /// against its hub as it is now: `under_way` whether a turn runs or a
 /// streaming command is registered, `head` the last of its own events sent
-/// live, `base` what the log held when the command registered. None: the
-/// read is behind what was sent live, and is to be read again.
+/// live, `base` what the log held when the command registered. `Ok(None)`:
+/// the read is behind what was sent live, and is to be read again.
 ///
 /// The read ran on the blocking pool while the daemon's thread went on, so
 /// the session may have moved past it — a turn may even have ended — and
@@ -1041,10 +1078,12 @@ async fn page(state: &Shared, client: u64, session: &str, cursor: outbox::Cursor
 /// it has all that was sent live: up to the head while a turn runs, since
 /// what lies beyond it comes live in order; all of it once none runs,
 /// since nothing more comes.
-/// With it, whether the running turn's frames after the head follow.
-/// `Err`: a read that has not reached the head in `MAX_READS` — a page
-/// from it could have a gap, so the client is let go instead, and
-/// reconnects from its cursor (fail closed).
+///
+/// `Ok(Some((upto, live)))`: replay the read up to `upto`, then — when
+/// `live` — the running turn's frames after the head. `Err`: a read that
+/// has not reached the head in `MAX_READS` — a page from it could have a
+/// gap, so the client is let go instead, to re-follow from its cursor
+/// (fail closed; `daemon::remote`).
 fn extent(under_way: bool, head: Option<&str>, base: usize, events: &[crate::protocol::LogEvent], tries: u32) -> Result<Option<(usize, bool)>, ()> {
     let n = events.len();
     let at = head.and_then(|h| events.iter().position(|e| e.id == h));
@@ -1062,8 +1101,9 @@ fn extent(under_way: bool, head: Option<&str>, base: usize, events: &[crate::pro
     })
 }
 
-/// Reads of the log, 10 ms apart, a page waits for to reach the head.
+/// Reads of the log, `READ_GAP` apart, a page waits for to reach the head.
 const MAX_READS: u32 = 100;
+const READ_GAP: Duration = Duration::from_millis(10);
 
 /// Matches a read of the log against the hub as it is now, and hands the
 /// client's outbox the next page, with the control frames it held put back
@@ -1197,6 +1237,12 @@ mod tests {
         // way, all of it when none is.
         assert_eq!(ex(true, None, 2, &whole, 1), Some((2, false)));
         assert_eq!(ex(false, None, 2, &whole, 1), Some((5, false)));
+        // A model switch registered (under way) whose `model.switched` is
+        // written but not yet published: the read has it, the head is
+        // before it, and the page stops at the head — it comes live, once.
+        let switched = [said("root"), said("user"), said("done"), said("switched")];
+        assert_eq!(ex(true, Some("done"), 3, &switched, 1), Some((3, true)));
+        assert_eq!(ex(true, None, 3, &switched, 1), Some((3, false)), "nothing sent live yet: the log before the switch");
         // A head never reached: the client is let go after the last read,
         // under way or not, rather than paged with a gap.
         assert_eq!(ex(true, Some("gone"), 2, &whole, MAX_READS - 1), None);

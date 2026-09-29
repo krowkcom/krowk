@@ -1175,6 +1175,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   answer.** A terminal or phone that stopped reading, and was caught up
   from where it stood just as the turn ended, could get the typing and the
   end of the turn but not the finished answer. It now always gets it.
+- **A terminal whose connection to the host daemon drops mid-turn picks the
+  turn up where it left off.** It reconnects and follows on from the last
+  thing it had, with nothing shown twice and nothing skipped, instead of
+  reporting the turn lost. A model switch caught up by another terminal
+  also no longer shows up twice.
 - **`krowk host stop` straight after a turn keeps that turn on disk.** The
   daemon waits for the turn's log to be flushed before it exits, for up to
   ten seconds. Stopped by SIGTERM or Ctrl-C, it first interrupts the
