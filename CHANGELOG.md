@@ -28,7 +28,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   a relay with a short-lived ticket, which comes with the session's lease
   for the host and on request for a viewer. `krowk relay serve` now takes
   `--ticket-keys FILE`, the registry's ticket-signing public keys, instead
-  of `--roster`.
+  of `--roster`. The ticket travels in the `X-Krowk-Ticket` header of the
+  WebSocket upgrade, and a connection without a good one is turned away
+  before it takes any room on the channel, so a flood of connections
+  cannot keep a session's devices off it.
 - **A relay keeps development sessions apart from production ones.**
   A relay join now says which it is, `env` "production" or "development",
   and `krowk relay serve` gives each its own channel of a session, so a

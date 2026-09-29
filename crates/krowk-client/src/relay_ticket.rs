@@ -33,9 +33,16 @@ pub const VERSION: u8 = 1;
 /// How long a ticket the registry issues lasts, and the longest a relay
 /// accepts: a ticket's lifetime is the revocation lag, so it is short.
 pub const TTL: u64 = 300;
-pub const MAX_LIFETIME: u64 = 600;
+pub const MAX_LIFETIME: u64 = TTL;
 /// How far ahead of the relay's clock an issue time may be.
 pub const SKEW: u64 = 60;
+/// How long a channel nobody is on keeps its facts, its fence among them,
+/// derived rather than chosen: a relay forgets a channel's fence only once
+/// every ticket issued before the lease last moved has expired, which is at
+/// most a lifetime and a skew after the last join (relay.md → Tickets).
+pub const IDLE_MARGIN: u64 = 60;
+pub const IDLE_FORGET: u64 = MAX_LIFETIME + SKEW + IDLE_MARGIN;
+const _: () = assert!(IDLE_FORGET >= MAX_LIFETIME + SKEW + IDLE_MARGIN && IDLE_FORGET == 420);
 pub const ENV_PRODUCTION: u8 = 1;
 pub const ENV_DEVELOPMENT: u8 = 2;
 const MAX_JSON_INT: u64 = (1 << 53) - 1;
@@ -103,6 +110,12 @@ fn bad(m: impl Into<String>) -> Refused {
 /// lifetime against `now`. Nothing about what it is presented for: that is
 /// the relay's to compare.
 pub fn verify(hex: &str, keys: &[([u8; 8], [u8; 32])], now: u64) -> Result<Ticket, Refused> {
+    verify_within(hex, keys, now, MAX_LIFETIME, SKEW)
+}
+
+/// `verify` with its lifetime cap and skew given: the production values,
+/// or shortened ones for a test of the idle-forget invariant.
+pub fn verify_within(hex: &str, keys: &[([u8; 8], [u8; 32])], now: u64, max_lifetime: u64, skew: u64) -> Result<Ticket, Refused> {
     let raw = (hex.len().is_multiple_of(2) && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| e2e::unhex(&hex.to_ascii_lowercase())).flatten().ok_or_else(|| bad("the ticket is not hex"))?;
     if raw.len() < FIXED + 1 + 64 {
         return Err(bad("the ticket is shorter than its layout"));
@@ -131,14 +144,14 @@ pub fn verify(hex: &str, keys: &[([u8; 8], [u8; 32])], now: u64) -> Result<Ticke
     if ![RELAY_ROLE_HOST, RELAY_ROLE_VIEWER].contains(&t.role) || ![ENV_PRODUCTION, ENV_DEVELOPMENT].contains(&t.env) {
         return Err(bad("the ticket names no role or env the relay knows"));
     }
-    if (t.role == RELAY_ROLE_VIEWER && t.fence != 0) || t.fence > MAX_JSON_INT || t.iat > MAX_JSON_INT || t.exp > MAX_JSON_INT || t.exp <= t.iat || t.exp - t.iat > MAX_LIFETIME || !workspace_ok(&t.workspace) {
+    if (t.role == RELAY_ROLE_VIEWER && t.fence != 0) || t.fence > MAX_JSON_INT || t.iat > MAX_JSON_INT || t.exp > MAX_JSON_INT || t.exp <= t.iat || t.exp - t.iat > max_lifetime || !workspace_ok(&t.workspace) {
         return Err(bad("the ticket's fields are out of range"));
     }
     let key = keys.iter().find(|(kid, _)| *kid == t.kid).map(|(_, k)| k).ok_or_else(|| bad(format!("no registry key {} signs tickets here", e2e::hex(&t.kid))))?;
     let key = VerifyingKey::from_bytes(key).map_err(|_| bad("the registry key is not an Ed25519 key"))?;
     let sig = ed25519_dalek::Signature::from_bytes(sig.try_into().expect("64"));
     key.verify_strict(&[LABEL, body].concat(), &sig).map_err(|_| bad("the ticket's signature is not the registry's"))?;
-    if now >= t.exp || t.iat > now + SKEW {
+    if now >= t.exp || t.iat > now + skew {
         return Err(Refused { code: "ticket_expired", message: "the ticket has expired, or is not yet valid".into() });
     }
     Ok(t)
@@ -181,7 +194,7 @@ mod tests {
         let mut flipped = e2e::unhex(&wire).unwrap();
         flipped[80] ^= 1;
         assert_eq!(verify(&e2e::hex(&flipped), &keys(), 1_100).unwrap_err().code, "bad_ticket", "a field changed after signing");
-        for t in [Ticket { role: 3, ..ticket() }, Ticket { env: 0, ..ticket() }, Ticket { role: RELAY_ROLE_VIEWER, ..ticket() }, Ticket { exp: 2_000, ..ticket() }, Ticket { workspace: "ws a".into(), ..ticket() }, Ticket { fence: 1 << 53, ..ticket() }] {
+        for t in [Ticket { role: 3, ..ticket() }, Ticket { env: 0, ..ticket() }, Ticket { role: RELAY_ROLE_VIEWER, ..ticket() }, Ticket { exp: 1_301, ..ticket() }, Ticket { workspace: "ws a".into(), ..ticket() }, Ticket { fence: 1 << 53, ..ticket() }] {
             assert_eq!(verify(&t.sign(&[1; 32]), &keys(), 1_100).unwrap_err().code, "bad_ticket", "{t:?}");
         }
     }

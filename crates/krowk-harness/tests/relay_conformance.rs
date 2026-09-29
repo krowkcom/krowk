@@ -39,7 +39,7 @@ const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/
 /// Every test, its devices and its session: `<test>-host` holds the lease
 /// of session `<test>`, `<test>-viewer` and `<test>-viewer2` watch it, all
 /// in workspace A.
-const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs", "xws", "tickets"];
+const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs", "xws", "tickets", "flood"];
 
 /// How long anything the relay should answer may take, and how long to
 /// wait to be sure nothing comes.
@@ -312,23 +312,39 @@ fn origin() -> String {
 }
 
 /// Dials `test`'s channel and reads the challenge.
+/// Dials `test`'s channel with `<test>-viewer`'s ticket, and reads the
+/// challenge.
 async fn dial(test: &str) -> (Conn, Value) {
-    dial_env(test, None).await
-}
-
-/// Dials `test`'s channel under an env (`?env=`), or none for production.
-async fn dial_env(test: &str, env: Option<&str>) -> (Conn, Value) {
-    let sid = session_id(test);
-    let query = env.map_or(String::new(), |e| format!("?env={e}"));
-    let (ws, _) = tokio_tungstenite::connect_async(format!("{}/v1/relay/{sid}{query}", relay_url())).await.expect("the relay accepts a WebSocket");
-    let session = krowk_harness::daemon::ws::uuid(&sid);
-    let mut c = Conn { ws, session };
-    let challenge = c.control().await;
+    let ticket = issue(test, &format!("{test}-viewer"), RELAY_ROLE_VIEWER, None).map(|t| t.sign(&ticket_seed()));
+    let (c, challenge) = dial_with(test, None, ticket.as_deref(), None).await;
     assert_eq!(challenge["type"], "challenge", "{challenge}");
     assert_eq!(challenge["version"], 1);
     // `challenge.relay` is informational (relay.md): a client never signs
     // it, so the suite holds a relay to nothing about it.
     (c, challenge)
+}
+
+/// The upgrade to `test`'s channel: under an env (`?env=`, none for
+/// production), with a ticket in `X-Krowk-Ticket` (relay.md → Joining),
+/// and as if from `address` where the relay can be told (a Worker reads
+/// `cf-connecting-ip`). Answers the first control message: the challenge,
+/// or the refusal of a ticket.
+async fn dial_with(test: &str, env: Option<&str>, ticket: Option<&str>, address: Option<&str>) -> (Conn, Value) {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let sid = session_id(test);
+    let query = env.map_or(String::new(), |e| format!("?env={e}"));
+    let mut req = format!("{}/v1/relay/{sid}{query}", relay_url()).into_client_request().unwrap();
+    if let Some(t) = ticket {
+        req.headers_mut().insert("x-krowk-ticket", t.parse().unwrap());
+    }
+    if let Some(a) = address {
+        req.headers_mut().insert("cf-connecting-ip", a.parse().unwrap());
+    }
+    let (ws, _) = tokio_tungstenite::connect_async(req).await.expect("the relay accepts a WebSocket");
+    let session = krowk_harness::daemon::ws::uuid(&sid);
+    let mut c = Conn { ws, session };
+    let first = c.control().await;
+    (c, first)
 }
 
 struct As<'a> {
@@ -396,7 +412,16 @@ fn stream_id(test: &str, n: u8) -> [u8; 16] {
 }
 
 async fn join_as(test: &str, a: &As<'_>) -> (Conn, Value) {
-    let (mut c, challenge) = dial_env(test, a.env).await;
+    let ticket = match &a.ticket {
+        Tk::Auto => issue(test, a.name, a.role, a.env).map(|t| t.sign(&ticket_seed())),
+        Tk::Absent => None,
+        Tk::Given(t) => Some(t.clone()),
+    };
+    let (mut c, challenge) = dial_with(test, a.env, ticket.as_deref(), None).await;
+    if challenge["type"] == "error" {
+        // Refused at the upgrade: no ticket the relay takes, so no challenge.
+        return (c, challenge);
+    }
     let nonce: [u8; 32] = e2e::unhex(challenge["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
     let key = SigningKey::from_secret(&seed(a.key_of.unwrap_or(a.name))).unwrap();
     let dialed = origin();
@@ -413,14 +438,6 @@ async fn join_as(test: &str, a: &As<'_>) -> (Conn, Value) {
     }
     if let Some(e) = a.env {
         join["env"] = e.into();
-    }
-    let ticket = match &a.ticket {
-        Tk::Auto => issue(test, a.name, a.role, a.env).map(|t| t.sign(&ticket_seed())),
-        Tk::Absent => None,
-        Tk::Given(t) => Some(t.clone()),
-    };
-    if let Some(t) = ticket {
-        join["ticket"] = t.into();
     }
     c.send_control(join).await;
     let answer = c.control().await;
@@ -460,12 +477,12 @@ async fn r_relay_1_only_a_trusted_device_with_its_own_signature_joins_and_only_t
     // A viewer's signature presented as a host's does not verify either:
     // the role is signed.
     {
-        let (mut c, challenge) = dial(t).await;
+        let ticket = issue(t, "auth-host", RELAY_ROLE_HOST, None).unwrap().sign(&ticket_seed());
+        let (mut c, challenge) = dial_with(t, None, Some(&ticket), None).await;
         let nonce: [u8; 32] = e2e::unhex(challenge["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
         let key = SigningKey::from_secret(&seed("auth-host")).unwrap();
         let sig = key.sign_relay_join(RELAY_ROLE_VIEWER, &c.session, &nonce, &device_id("auth-host"), &origin()).unwrap();
-        let ticket = issue(t, "auth-host", RELAY_ROLE_HOST, None).unwrap().sign(&ticket_seed());
-        c.send_control(json!({"type": "join", "role": "host", "device": device_id("auth-host").to_string(), "signature": e2e::hex(&sig), "fence": fence(t), "stream": e2e::hex(&stream_id(t, 1)), "ticket": ticket})).await;
+        c.send_control(json!({"type": "join", "role": "host", "device": device_id("auth-host").to_string(), "signature": e2e::hex(&sig), "fence": fence(t), "stream": e2e::hex(&stream_id(t, 1))})).await;
         c.refused("bad_signature").await;
     }
     // A viewer asking to host, knowing the lease's fence (it is public).
@@ -938,6 +955,9 @@ async fn r_relay_1_the_reference_relay_bounds_what_comes_before_a_join() {
 async fn r_relay_1_idle_connections_to_a_channel_cannot_lock_its_devices_out() {
     let t = "crowd";
     let url = format!("{}/v1/relay/{}", relay_url(), session_id(t));
+    // The idle connections hold a ticket of their own — a stranger without
+    // one is refused before it takes any room — here viewer2's.
+    let idle_ticket = issue(t, "crowd-viewer2", RELAY_ROLE_VIEWER, None).unwrap().sign(&ticket_seed());
     let authority = relay_url().split("://").nth(1).unwrap().to_string();
     let target: std::net::SocketAddr = tokio::net::lookup_host(&authority).await.unwrap().next().unwrap();
     // More than the channel's 16, from another address, each upgraded and
@@ -949,7 +969,10 @@ async fn r_relay_1_idle_connections_to_a_channel_cannot_lock_its_devices_out() {
             sock.bind("127.0.0.9:0".parse().unwrap()).unwrap();
         }
         let stream = sock.connect(target).await.unwrap();
-        if let Ok((ws, _)) = tokio_tungstenite::client_async(url.as_str(), stream).await {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut req = url.as_str().into_client_request().unwrap();
+        req.headers_mut().insert("x-krowk-ticket", idle_ticket.parse().unwrap());
+        if let Ok((ws, _)) = tokio_tungstenite::client_async(req, stream).await {
             idle.push(ws);
         }
     }
@@ -1026,7 +1049,8 @@ async fn r_relay_1_the_same_session_under_two_envs_is_two_channels() {
     dev_viewer.quiet().await;
     // Neither name, or another env than the URL's, is not a join.
     refused_join(t, &As { env: Some("staging"), ..viewer(t, "viewer") }, "bad_join").await;
-    let (mut c, challenge) = dial_env(t, Some("development")).await;
+    let dev_ticket = issue(t, "envs-viewer", RELAY_ROLE_VIEWER, Some("development")).unwrap().sign(&ticket_seed());
+    let (mut c, challenge) = dial_with(t, Some("development"), Some(&dev_ticket), None).await;
     let nonce: [u8; 32] = e2e::unhex(challenge["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
     let key = SigningKey::from_secret(&seed("envs-viewer")).unwrap();
     let sig = key.sign_relay_join(RELAY_ROLE_VIEWER, &c.session, &nonce, &device_id("envs-viewer"), &origin()).unwrap();
@@ -1076,6 +1100,28 @@ async fn r_relay_1_a_join_needs_a_live_ticket_the_registry_signed_for_it() {
     refused_join(t, &As { ticket: Tk::Given(truncated[..truncated.len() - 2].to_string()), ..viewer(t, "viewer") }, "bad_ticket").await;
     refused_join(t, &As { ticket: Tk::Given("not a ticket".into()), ..viewer(t, "viewer") }, "bad_ticket").await;
     refused_join(t, &As { ticket: Tk::Absent, ..viewer(t, "viewer") }, "bad_ticket").await;
+    // A ticket in the join that is not a string is not a join, in both
+    // relays alike.
+    {
+        let (mut c, challenge) = dial(t).await;
+        let nonce: [u8; 32] = e2e::unhex(challenge["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
+        let sig = SigningKey::from_secret(&seed("tickets-viewer")).unwrap().sign_relay_join(RELAY_ROLE_VIEWER, &c.session, &nonce, &device_id("tickets-viewer"), &origin()).unwrap();
+        c.send_control(json!({"type": "join", "role": "viewer", "device": device_id("tickets-viewer").to_string(), "signature": e2e::hex(&sig), "ticket": 5})).await;
+        c.refused("bad_join").await;
+    }
+    // A ticket naming a small-order signing key, with the signature such a
+    // key "verifies" under plain RFC 8032 (R the identity, S zero): refused,
+    // since a relay verifies strictly.
+    {
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        let weak = Ticket { signing_key: identity, ..good() }.sign(&ticket_seed());
+        let (mut c, _) = dial_with(t, None, Some(&weak), None).await;
+        let mut sig = [0u8; 64];
+        sig[0] = 1;
+        c.send_control(json!({"type": "join", "role": "viewer", "device": device_id("tickets-viewer").to_string(), "signature": e2e::hex(&sig)})).await;
+        c.refused("bad_signature").await;
+    }
     // The right one is let in.
     let (_v, j) = joined(t, &with(good(), ticket_seed())).await;
     assert_eq!(j["role"], "viewer");
@@ -1088,4 +1134,70 @@ async fn r_relay_1_a_join_needs_a_live_ticket_the_registry_signed_for_it() {
     // A host's ticket does not make a viewer of anyone either.
     let hosts = issue(t, "tickets-host", RELAY_ROLE_HOST, None).unwrap().sign(&ticket_seed());
     refused_join(t, &As { ticket: Tk::Given(hosts), ..viewer(t, "host") }, "bad_ticket").await;
+}
+
+/// R-RELAY-1: a flood of upgrades cannot keep a channel's devices off it.
+/// Ten addresses at ten upgrades a second each — without a ticket, with a
+/// forged one, and with one valid ticket replayed — while the lease holder
+/// and a viewer take 600 and 150 ms to answer their challenges, as a phone
+/// can: both join. A stranger is refused at the upgrade and takes no room,
+/// and a replayed ticket crowds out only the device it names.
+#[tokio::test]
+async fn r_relay_1_a_flood_of_upgrades_cannot_keep_the_host_off_its_channel() {
+    let t = "flood";
+    let replayed = issue(t, "flood-viewer2", RELAY_ROLE_VIEWER, None).unwrap().sign(&ticket_seed());
+    let forged = issue(t, "flood-viewer2", RELAY_ROLE_VIEWER, None).unwrap().sign(&seed("not-the-registry"));
+    let flood = {
+        let (replayed, forged) = (replayed.clone(), forged.clone());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            for round in 0..30u32 {
+                for addr in 0..10u32 {
+                    let address = format!("198.51.100.{}", addr + 1);
+                    let ticket = match (round + addr) % 3 {
+                        0 => None,
+                        1 => Some(forged.as_str()),
+                        _ => Some(replayed.as_str()),
+                    };
+                    held.push(dial_with(t, None, ticket, Some(&address)).await.0);
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            held
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    for (a, delay) in [(host(t), 600), (viewer(t, "viewer"), 150)] {
+        let ticket = issue(t, a.name, a.role, None).unwrap().sign(&ticket_seed());
+        let (mut c, challenge) = dial_with(t, None, Some(&ticket), None).await;
+        assert_eq!(challenge["type"], "challenge", "{challenge}");
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+        let nonce: [u8; 32] = e2e::unhex(challenge["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
+        let sig = SigningKey::from_secret(&seed(a.name)).unwrap().sign_relay_join(a.role, &c.session, &nonce, &device_id(a.name), &origin()).unwrap();
+        let mut join = json!({"type": "join", "role": if a.role == RELAY_ROLE_HOST { "host" } else { "viewer" }, "device": device_id(a.name).to_string(), "signature": e2e::hex(&sig)});
+        if a.role == RELAY_ROLE_HOST {
+            join["fence"] = fence(t).into();
+            join["stream"] = e2e::hex(&stream_id(t, 1)).into();
+        }
+        c.send_control(join).await;
+        let answer = c.control().await;
+        assert_eq!(answer["type"], "joined", "{} joined through the flood: {answer}", a.name);
+    }
+    let mut held = flood.await.unwrap();
+    // The replayed ticket's fifty-odd connections: at most two of them are
+    // still waiting, the rest let go for their own newer ones.
+    let mut open = 0;
+    for c in held.iter_mut() {
+        loop {
+            match c.recv(Duration::from_millis(100)).await {
+                Some(In::Closed(_)) => break,
+                None => {
+                    open += 1;
+                    break;
+                }
+                Some(_) => continue,
+            }
+        }
+    }
+    assert!(open <= 2, "{open} flood connections still wait on the channel");
 }
