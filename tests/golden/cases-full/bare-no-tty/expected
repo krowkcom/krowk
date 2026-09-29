@@ -1039,6 +1039,37 @@ stdout:
       ]
     },
     {
+      "name": "relay",
+      "summary": "The relay other devices reach a session through",
+      "subcommands": [
+        {
+          "name": "serve",
+          "usage": "krowk relay serve --roster FILE [--addr HOST:PORT] [--origin URL]",
+          "summary": "Carry sealed sessions between their host and viewers",
+          "flags": [
+            {
+              "name": "addr",
+              "type": "string",
+              "default": "",
+              "usage": "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"
+            },
+            {
+              "name": "roster",
+              "type": "string",
+              "default": "",
+              "usage": "The JSON file of trusted devices and session leases (relay.md → The reference relay)"
+            },
+            {
+              "name": "origin",
+              "type": "string",
+              "default": "",
+              "usage": "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "sync",
       "summary": "End-to-end encryption keys for syncing sessions",
       "subcommands": [
@@ -2290,6 +2321,37 @@ stdout:
           "name": "disable",
           "usage": "krowk host disable",
           "summary": "Stop the service and remove it"
+        }
+      ]
+    },
+    {
+      "name": "relay",
+      "summary": "The relay other devices reach a session through",
+      "subcommands": [
+        {
+          "name": "serve",
+          "usage": "krowk relay serve --roster FILE [--addr HOST:PORT] [--origin URL]",
+          "summary": "Carry sealed sessions between their host and viewers",
+          "flags": [
+            {
+              "name": "addr",
+              "type": "string",
+              "default": "",
+              "usage": "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"
+            },
+            {
+              "name": "roster",
+              "type": "string",
+              "default": "",
+              "usage": "The JSON file of trusted devices and session leases (relay.md → The reference relay)"
+            },
+            {
+              "name": "origin",
+              "type": "string",
+              "default": "",
+              "usage": "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"
+            }
+          ]
         }
       ]
     },
@@ -3563,6 +3625,37 @@ stdout:
       ]
     },
     {
+      "name": "relay",
+      "summary": "The relay other devices reach a session through",
+      "subcommands": [
+        {
+          "name": "serve",
+          "usage": "krowk relay serve --roster FILE [--addr HOST:PORT] [--origin URL]",
+          "summary": "Carry sealed sessions between their host and viewers",
+          "flags": [
+            {
+              "name": "addr",
+              "type": "string",
+              "default": "",
+              "usage": "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"
+            },
+            {
+              "name": "roster",
+              "type": "string",
+              "default": "",
+              "usage": "The JSON file of trusted devices and session leases (relay.md → The reference relay)"
+            },
+            {
+              "name": "origin",
+              "type": "string",
+              "default": "",
+              "usage": "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "sync",
       "summary": "End-to-end encryption keys for syncing sessions",
       "subcommands": [
@@ -4828,6 +4921,37 @@ tty:
           "name": "disable",
           "usage": "krowk host disable",
           "summary": "Stop the service and remove it"
+        }
+      ]
+    },
+    {
+      "name": "relay",
+      "summary": "The relay other devices reach a session through",
+      "subcommands": [
+        {
+          "name": "serve",
+          "usage": "krowk relay serve --roster FILE [--addr HOST:PORT] [--origin URL]",
+          "summary": "Carry sealed sessions between their host and viewers",
+          "flags": [
+            {
+              "name": "addr",
+              "type": "string",
+              "default": "",
+              "usage": "Where to listen; loopback unless you name another address (default 127.0.0.1:7790)"
+            },
+            {
+              "name": "roster",
+              "type": "string",
+              "default": "",
+              "usage": "The JSON file of trusted devices and session leases (relay.md → The reference relay)"
+            },
+            {
+              "name": "origin",
+              "type": "string",
+              "default": "",
+              "usage": "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"
+            }
+          ]
         }
       ]
     },
