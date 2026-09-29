@@ -13,11 +13,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 - **A synced session's log can now be stored, encrypted, in the registry.**
   The machine holding a session's lease seals each piece of the log on its
-  own side and uploads it straight to storage. Each piece is numbered, and
-  the last one is marked, so a device reading the log back refuses a piece
-  that is repeated, out of order or missing, and can tell a finished log
-  from one cut short. A piece is refused unless it comes with the lease's
-  current token. The registry and storage only ever hold the sealed bytes.
+  own side and uploads it straight to storage. Each piece is numbered,
+  names the lease it was written under, and is chained to the piece before
+  it, and the last one is marked. A device reading the log back refuses a
+  piece that is repeated, out of order, missing, or spliced in from another
+  machine's copy of the log, and can tell a finished log. A piece is
+  refused unless it comes with the lease's current token, and one a
+  previous lease holder left half-uploaded is replaced rather than blocking
+  the log. Pieces are at most 64 MiB. The registry and storage only ever hold the sealed bytes.
   The pieces count on your workspace's storage meter, and never show up in
   `krowk uploads list`, on a card, or anywhere else a push's artifacts do.
   Nothing writes them yet on its own; the host daemon will once syncing

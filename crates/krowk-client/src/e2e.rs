@@ -355,10 +355,13 @@ pub fn open_session_index(blob: &[u8], session: &[u8; 16], key: &SessionKey) -> 
 pub const CHUNK_V1: u8 = 1;
 /// A chunk's flag byte: this is the last chunk of the log.
 const CHUNK_FINAL: u8 = 1;
-/// `version | suite | flags | index (8, big-endian)`, then the nonce.
-const CHUNK_HEAD: usize = 3 + 8;
+/// `version | suite | flags | index (8) | fence (8)`, both big-endian, then
+/// the nonce.
+const CHUNK_HEAD: usize = 3 + 8 + 8;
 /// What sealing adds to a chunk's plaintext.
 pub const CHUNK_OVERHEAD: usize = CHUNK_HEAD + NONCE + TAG;
+/// What chunk 0 binds as the chunk before it.
+pub const NO_PREVIOUS_CHUNK: [u8; 32] = [0; 32];
 
 /// A session's chunk epoch: fixed by the session key, so every device that
 /// holds the key agrees on it without storing it, and a chunk sealed under
@@ -367,29 +370,42 @@ fn chunk_epoch(key: &SessionKey) -> [u8; 16] {
     id(b"krowk/chunk-epoch/v1", &key.0)
 }
 
-fn chunk_aad(head: &[u8], session: &[u8; 16], epoch: &[u8; 16]) -> Vec<u8> {
-    [&b"krowk/chunk/v1"[..], head, session, epoch].concat()
+/// The digest a chunk is chained by: SHA-256 of the whole sealed blob.
+pub fn chunk_digest(blob: &[u8]) -> [u8; 32] {
+    Sha256::digest(blob).into()
+}
+
+fn chunk_aad(head: &[u8], session: &[u8; 16], epoch: &[u8; 16], previous: &[u8; 32]) -> Vec<u8> {
+    [&b"krowk/chunk/v1"[..], head, session, epoch, previous].concat()
 }
 
 /// A session's log at rest, sealed chunk by chunk for R2 (crypto.md →
-/// chunks at rest): the chunk's index is its counter, the epoch is the
-/// session's own (derived from the session key when it is made), and the
-/// last chunk says it is the last, so a log with its tail cut off is told
-/// from a finished one. `version | suite | flags | index | nonce |
-/// ciphertext + tag`, the associated data a label, those first eleven bytes,
-/// the session id and the epoch.
+/// chunks at rest). The chunk's index is its counter, the epoch is the
+/// session's own (derived from the session key), the lease fence it was
+/// written under is in its header, and it binds the digest of the chunk
+/// before it — so the log is a chain: two holders' chunks cannot be spliced
+/// into one log, nor one of two chunks at an index swapped for the other,
+/// without the next chunk failing to open. The last chunk says it is the
+/// last. `version | suite | flags | index | fence | nonce | ciphertext +
+/// tag`, the associated data a label, those first nineteen bytes, the
+/// session id, the epoch and the previous chunk's digest.
 pub struct ChunkSealer {
     key: SessionKey,
     session: [u8; 16],
     next: u64,
+    previous: [u8; 32],
+    fence: u64,
     finished: bool,
 }
 
 impl ChunkSealer {
-    /// Sealing from index `next` — 0 for a new log, the next free index for
-    /// a holder taking up a log another device wrote.
-    pub fn new(key: &SessionKey, session: [u8; 16], next: u64) -> ChunkSealer {
-        ChunkSealer { key: key.clone(), session, next, finished: false }
+    /// Sealing from index `next` after the chunk whose digest is `previous`
+    /// (`NO_PREVIOUS_CHUNK` for a new log), under lease `fence`. A holder
+    /// taking up a log another device wrote reads it to the end first
+    /// (`ChunkReader::next`, `ChunkReader::previous`), so it chains onto the
+    /// log as it is and not as it last saw it.
+    pub fn new(key: &SessionKey, session: [u8; 16], next: u64, previous: [u8; 32], fence: u64) -> ChunkSealer {
+        ChunkSealer { key: key.clone(), session, next, previous, fence, finished: false }
     }
 
     /// The index the next chunk is sealed at.
@@ -402,31 +418,38 @@ impl ChunkSealer {
         if self.finished {
             return Err(err("this log has been ended by its final chunk; nothing is sealed after it"));
         }
-        let head = [&[CHUNK_V1, SUITE_XCHACHA20_POLY1305, if last { CHUNK_FINAL } else { 0 }][..], &self.next.to_be_bytes()].concat();
+        let head = [&[CHUNK_V1, SUITE_XCHACHA20_POLY1305, if last { CHUNK_FINAL } else { 0 }][..], &self.next.to_be_bytes(), &self.fence.to_be_bytes()].concat();
         let nonce: [u8; NONCE] = random();
-        let aad = chunk_aad(&head, &self.session, &chunk_epoch(&self.key));
+        let aad = chunk_aad(&head, &self.session, &chunk_epoch(&self.key), &self.previous);
         let sealed = cipher(&self.key.0).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).map_err(|_| err("the chunk is too large to seal"))?;
+        let blob = [&head[..], &nonce, &sealed].concat();
         self.next = self.next.checked_add(1).ok_or_else(|| err("a session's chunk index ran out"))?;
+        self.previous = chunk_digest(&blob);
         self.finished = last;
-        Ok([&head[..], &nonce, &sealed].concat())
+        Ok(blob)
     }
 }
 
 /// Reads a session's log back, chunk by chunk, in order: index 0 first and
-/// each one after it exactly one more, so a repeated, reordered or skipped
-/// chunk is refused rather than opened out of place, and nothing is opened
-/// after the final chunk. `finished` says whether the final one arrived — a
-/// log that stops without it was cut short.
+/// each one after it exactly one more, each bound to the one before it, and
+/// its fence never lower than the last one's — so a repeated, reordered,
+/// skipped, spliced or forked chunk is refused rather than opened out of
+/// place, and nothing is opened after the final chunk. `finished` says
+/// whether the final one arrived. A log without it may simply still be
+/// being written: a reader cannot tell a live log from one a hostile
+/// registry served only a prefix of (crypto.md → chunks at rest).
 pub struct ChunkReader {
     key: SessionKey,
     session: [u8; 16],
     next: u64,
+    previous: [u8; 32],
+    fence: u64,
     finished: bool,
 }
 
 impl ChunkReader {
     pub fn new(key: &SessionKey, session: [u8; 16]) -> ChunkReader {
-        ChunkReader { key: key.clone(), session, next: 0, finished: false }
+        ChunkReader { key: key.clone(), session, next: 0, previous: NO_PREVIOUS_CHUNK, fence: 0, finished: false }
     }
 
     pub fn finished(&self) -> bool {
@@ -438,8 +461,14 @@ impl ChunkReader {
         self.next
     }
 
+    /// The digest the next chunk must bind: what a holder resuming the log
+    /// hands its `ChunkSealer`.
+    pub fn previous(&self) -> [u8; 32] {
+        self.previous
+    }
+
     pub fn open(&mut self, blob: &[u8]) -> Result<Vec<u8>, Error> {
-        let refused = || err("the chunk does not open with this session's key: it was changed, or belongs to another session");
+        let refused = || err("the chunk does not open here: it was changed, belongs to another session, or does not follow the chunk before it");
         if blob.len() < CHUNK_OVERHEAD || blob[1] != SUITE_XCHACHA20_POLY1305 || blob[0] != CHUNK_V1 || blob[2] & !CHUNK_FINAL != 0 {
             return Err(match blob.first() {
                 Some(&v) if v > CHUNK_V1 => err(format!("the chunk is format {v}, newer than this krowk reads — upgrade krowk")),
@@ -449,15 +478,21 @@ impl ChunkReader {
         if self.finished {
             return Err(err("a chunk arrived after the log's final chunk, refused"));
         }
-        let index = u64::from_be_bytes(blob[3..CHUNK_HEAD].try_into().expect("eight bytes"));
+        let index = u64::from_be_bytes(blob[3..11].try_into().expect("eight bytes"));
         if index != self.next {
             return Err(err(format!("chunk {index} arrived where chunk {} belongs: a replay, a reordering or a gap, refused", self.next)));
         }
+        let fence = u64::from_be_bytes(blob[11..CHUNK_HEAD].try_into().expect("eight bytes"));
+        if fence < self.fence {
+            return Err(err(format!("chunk {index} was written under lease {fence}, before the chunk ahead of it ({}), refused", self.fence)));
+        }
         let nonce: [u8; NONCE] = blob[CHUNK_HEAD..CHUNK_HEAD + NONCE].try_into().expect("24 bytes");
-        let aad = chunk_aad(&blob[..CHUNK_HEAD], &self.session, &chunk_epoch(&self.key));
+        let aad = chunk_aad(&blob[..CHUNK_HEAD], &self.session, &chunk_epoch(&self.key), &self.previous);
         let plain = cipher(&self.key.0).decrypt(&XNonce::from(nonce), Payload { msg: &blob[CHUNK_HEAD + NONCE..], aad: &aad }).map_err(|_| refused())?;
         // Only an authentic chunk moves the reader on.
         self.next += 1;
+        self.previous = chunk_digest(blob);
+        self.fence = fence;
         self.finished = blob[2] & CHUNK_FINAL != 0;
         Ok(plain)
     }
@@ -808,12 +843,11 @@ mod tests {
         assert_eq!(KeyId::parse(&k.grouped()), Some(k));
     }
     /// R-E2E-1: a session's log at rest opens in order under its session key,
-    /// and a replayed, reordered, skipped, moved or changed chunk does not; a
-    /// log without its final chunk reads as cut short.
+    /// and a replayed, reordered, skipped, moved or changed chunk does not.
     #[test]
     fn r_e2e_1_chunks_open_in_order_and_only_for_their_session() {
         let key = SessionKey::generate();
-        let mut sealer = ChunkSealer::new(&key, SESSION, 0);
+        let mut sealer = ChunkSealer::new(&key, SESSION, 0, NO_PREVIOUS_CHUNK, 1);
         let (a, b, c) = (sealer.seal(b"turn one", false).unwrap(), sealer.seal(b"turn two", false).unwrap(), sealer.seal(b"end", true).unwrap());
         assert!(sealer.seal(b"after", false).is_err(), "nothing seals after the final chunk");
         assert!(!a.windows(4).any(|w| w == b"turn"), "the plaintext is not in the chunk");
@@ -832,21 +866,49 @@ mod tests {
         let mut changed = a.clone();
         changed[2] = CHUNK_FINAL;
         assert!(ChunkReader::new(&key, SESSION).open(&changed).is_err(), "the final flag is bound");
+        let mut refenced = a.clone();
+        refenced[18] ^= 1;
+        assert!(ChunkReader::new(&key, SESSION).open(&refenced).is_err(), "the fence is bound");
         let mut newer = a;
         newer[0] = CHUNK_V1 + 1;
         assert!(ChunkReader::new(&key, SESSION).open(&newer).unwrap_err().0.contains("upgrade krowk"));
     }
 
-    /// A holder taking up a log another device wrote seals from the next
-    /// free index, and a reader reads the two devices' chunks as one log.
+    /// R-SYNC-2: a holder taking up a log chains onto it as it stands, and a
+    /// reader reads the two holders' chunks as one log — while a displaced
+    /// holder's chunk at the same index, or a fork, does not splice in.
     #[test]
-    fn a_log_continues_across_holders() {
+    fn r_sync_2_the_log_is_a_chain_across_holders_and_a_splice_does_not_open() {
         let key = SessionKey::generate();
-        let first = ChunkSealer::new(&key, SESSION, 0).seal(b"one", false).unwrap();
-        let second = ChunkSealer::new(&key, SESSION, 1).seal(b"two", true).unwrap();
+        let mut a = ChunkSealer::new(&key, SESSION, 0, NO_PREVIOUS_CHUNK, 1);
+        let zero = a.seal(b"zero", false).unwrap();
+        // A writes chunk 1, then loses the lease before it reaches the log.
+        let a_one = a.seal(b"A's one", false).unwrap();
+
+        // B read the log to its end — chunk 0 — and chains onto that.
+        let mut resumed = ChunkReader::new(&key, SESSION);
+        resumed.open(&zero).unwrap();
+        let mut b = ChunkSealer::new(&key, SESSION, resumed.next(), resumed.previous(), 2);
+        let b_one = b.seal(b"B's one", false).unwrap();
+        let b_two = b.seal(b"B's two", true).unwrap();
+
         let mut reader = ChunkReader::new(&key, SESSION);
-        assert_eq!(reader.open(&first).unwrap(), b"one");
-        assert_eq!(reader.open(&second).unwrap(), b"two");
+        for (blob, text) in [(&zero, &b"zero"[..]), (&b_one, b"B's one"), (&b_two, b"B's two")] {
+            assert_eq!(reader.open(blob).unwrap(), text);
+        }
         assert!(reader.finished());
+
+        // A's chunk 1 followed by B's chunk 2: B's does not follow A's.
+        let mut spliced = ChunkReader::new(&key, SESSION);
+        spliced.open(&zero).unwrap();
+        spliced.open(&a_one).unwrap();
+        assert!(spliced.open(&b_two).is_err(), "a splice of two holders' logs");
+
+        // A chunk from an earlier lease after a later one's is refused.
+        let mut late = ChunkReader::new(&key, SESSION);
+        let mut c = ChunkSealer::new(&key, SESSION, 0, NO_PREVIOUS_CHUNK, 5);
+        late.open(&c.seal(b"five", false).unwrap()).unwrap();
+        let mut d = ChunkSealer::new(&key, SESSION, 1, late.previous(), 4);
+        assert!(late.open(&d.seal(b"four", false).unwrap()).unwrap_err().0.contains("before the chunk ahead of it"));
     }
 }

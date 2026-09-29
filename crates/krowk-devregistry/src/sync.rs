@@ -80,6 +80,8 @@ pub struct Session {
 pub struct Chunk {
     pub slug: String,
     pub index: u64,
+    /// The lease fence it was declared under: whose chunk it is.
+    pub fence: u64,
     pub byte_size: i64,
     pub checksum: String,
     pub storage_key: String,
@@ -95,12 +97,16 @@ const KEYED_BURST: usize = 120;
 /// The registry's SyncSession::MAX_PER_WORKSPACE.
 pub const MAX_SESSIONS: usize = 10_000;
 const CHUNK_CONTENT_TYPE: &str = "application/octet-stream";
+/// The registry's Artifact::MAX_CHUNK_BYTES, and krowk-api's read limit.
+const MAX_CHUNK_BYTES: i64 = 64 << 20;
+/// The registry's SyncSession::MAX_CHUNKS.
+const MAX_CHUNKS: usize = 100_000;
 
 #[derive(Default)]
 pub struct SyncStore {
     /// Workspace, session id and index → the chunk.
     pub chunks: HashMap<(String, String, u64), Chunk>,
-    /// Workspace and create → the minute its count began, and the count.
+    /// Key and create → the minute its count began, and the count.
     pub bursts: HashMap<(String, &'static str), (Timestamp, usize)>,
     /// 0 is MAX_SESSIONS.
     pub max_sessions: usize,
@@ -164,9 +170,15 @@ fn gate(req: &Req) -> Result<String, Resp> {
     Ok(workspace)
 }
 
+/// Who a keyed request's burst is counted against: the key, as the registry
+/// counts it (`by: Current.key.id`), not the workspace.
+fn caller(req: &Req) -> String {
+    crate::store::sha256_hex(req.header("Authorization").unwrap_or_default().as_bytes())
+}
+
 /// The keyed burst ceiling on a create: 429 with Retry-After past it.
-fn burst(s: &mut SyncStore, workspace: &str, name: &'static str, now: Timestamp) -> Result<(), Resp> {
-    let window = s.bursts.entry((workspace.to_owned(), name)).or_insert((now, 0));
+fn burst(s: &mut SyncStore, key: &str, name: &'static str, now: Timestamp) -> Result<(), Resp> {
+    let window = s.bursts.entry((key.to_owned(), name)).or_insert((now, 0));
     if now.duration_since(window.0) >= SignedDuration::from_mins(1) {
         *window = (now, 0);
     }
@@ -328,7 +340,7 @@ pub fn register_device(app: &App, req: &mut Req) -> Resp {
         let account = id_field("account_key_id", &required(&mut f, "account_key_id")?)?;
         let mut s = app.lock();
         let now = s.now();
-        burst(&mut s.sync, &workspace, "device_registrations", now)?;
+        burst(&mut s.sync, &caller(req), "device_registrations", now)?;
         adopt_account_key(&mut s.sync, &workspace, &account)?;
         let id = fingerprint(&key);
         let seq = s.sync.seq + 1;
@@ -378,7 +390,7 @@ pub fn request_approval(app: &App, req: &mut Req) -> Resp {
         let name = name_field(&mut f)?;
         let mut s = app.lock();
         let now = s.now();
-        burst(&mut s.sync, &workspace, "device_approval_requests", now)?;
+        burst(&mut s.sync, &caller(req), "device_approval_requests", now)?;
         let a = Approval {
             slug: generate_slug("dap"),
             workspace,
@@ -545,7 +557,7 @@ pub fn put_session(app: &App, req: &mut Req, id: &str) -> Resp {
         let token = f.string("lease_token");
         let mut s = app.lock();
         let now = s.now();
-        burst(&mut s.sync, &workspace, "session_writes", now)?;
+        burst(&mut s.sync, &caller(req), "session_writes", now)?;
         let seq = s.sync.seq + 1;
         let key = (workspace.clone(), id.clone());
         let holder_revoked = s.sync.sessions.get(&key).is_some_and(|x| revoked(&s.sync, &workspace, &x.holder));
@@ -764,6 +776,9 @@ pub fn declare_chunk(app: &App, req: &mut Req, id: &str, site: &str) -> Resp {
         if byte_size <= 0 {
             return Err(invalid("byte_size", "must be greater than 0"));
         }
+        if byte_size > MAX_CHUNK_BYTES {
+            return Err(invalid("byte_size", &format!("must be at most {MAX_CHUNK_BYTES} bytes")));
+        }
         let checksum = f.string("checksum").to_ascii_lowercase();
         if checksum.len() != 64 || !checksum.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(invalid("checksum", "must be a lowercase hex SHA-256"));
@@ -780,7 +795,7 @@ pub fn declare_chunk(app: &App, req: &mut Req, id: &str, site: &str) -> Resp {
         if revoked(&s.sync, &workspace, &x.holder) {
             return Err(device_revoked(&x.holder));
         }
-        burst(&mut s.sync, &workspace, "chunk_declares", now)?;
+        burst(&mut s.sync, &caller(req), "chunk_declares", now)?;
         let hash = crate::store::sha256_hex(format!("{id}\n{index}\n{byte_size}\n{checksum}").as_bytes());
         let ck = (workspace.clone(), id.clone(), index);
         if let Some(attempt) = &attempt
@@ -798,12 +813,23 @@ pub fn declare_chunk(app: &App, req: &mut Req, id: &str, site: &str) -> Resp {
             c.upload_til = now + crate::store::UPLOAD_URL_LIFETIME;
             return Ok(Resp::json(201, &declared_chunk(c, site)));
         }
-        if s.sync.chunks.contains_key(&ck) {
-            return Err(error(409, "chunk_exists", &format!("this session already has chunk {index} — its log is append-only"), None));
+        // A ready chunk, or one this lease declared, is the log's; a pending
+        // one an earlier lease declared is replaced, bytes and all.
+        let fence = s.sync.sessions[&key].fence;
+        if let Some(existing) = s.sync.chunks.get(&ck) {
+            if existing.ready || existing.fence == fence {
+                return Err(error(409, "chunk_exists", &format!("this session already has chunk {index} — its log is append-only"), None));
+            }
+            let displaced = s.sync.chunks.remove(&ck).unwrap();
+            s.objects.remove(&displaced.storage_key);
+        }
+        if s.sync.chunks.keys().filter(|(w, sid, _)| *w == workspace && *sid == id).count() >= MAX_CHUNKS {
+            return Err(error(422, "chunk_limit_reached", &format!("this session's log holds {MAX_CHUNKS} chunks, the most one may"), None));
         }
         let c = Chunk {
             slug: generate_slug("art"),
             index,
+            fence,
             byte_size,
             checksum,
             storage_key: format!("{}/{}/chunk-{index}.bin", crate::store::ARTIFACT_REGION, crate::store::random_base36()),
@@ -897,7 +923,16 @@ pub fn finalize_chunk(app: &App, req: &mut Req, id: &str, index: &str) -> Resp {
         if revoked(&s.sync, &workspace, &x.holder) {
             return Err(device_revoked(&x.holder));
         }
+        let fence = x.fence;
         let c = s.sync.chunks.get_mut(&(workspace.clone(), id.clone(), index)).ok_or_else(not_found)?;
+        if c.fence != fence {
+            return Err(error(
+                409,
+                "lease_stale",
+                &format!("chunk {index} was declared under fence {}, not this lease's {fence} — declare it again under this lease", c.fence),
+                None,
+            ));
+        }
         if !c.ready {
             match &c.uploaded_sum {
                 None => return Err(error(409, "upload_missing", &format!("nothing uploaded for {} yet", c.slug), None)),

@@ -754,7 +754,9 @@ fn fix_for(code: &str, status: u16) -> String {
         "account_key_mismatch" => {
             "the registry says this workspace syncs under another account key — if this key came from `krowk sync recover`, a word of the phrase is wrong: run it again with the right one. Compare with `krowk devices list` on a machine you already sync from, never with an id in an error message; if you have no such machine, do not join this workspace, and its owner can reset sync in the dashboard's settings"
         }
-        "chunk_exists" => "this session already has a chunk at that index, and its log is append-only — write the next index",
+        // Never "write the next index": a gap is a log no reader gets past.
+        "chunk_exists" => "this session already has that chunk, and its log is append-only — list the session's chunks and continue from the last ready index + 1, chained onto that chunk",
+        "chunk_limit_reached" => "this session's log holds as many chunks as one may — start a new session",
         "session_limit_reached" => "this workspace holds as many synced sessions as one may — report it if you need more",
         "approval_expired" => "the new device's request lapsed before it was approved — run `krowk sync join` on it again",
         "already_approved" => "this device has already been approved — run `krowk sync join` on it to collect its key, if it has not",
@@ -1045,6 +1047,14 @@ impl ureq::unversioned::resolver::Resolver for GuardResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A gap in a session's log is a log no reader gets past, so the fix for
+    /// a chunk that exists never says to skip to the next index.
+    #[test]
+    fn the_chunk_exists_fix_continues_the_log_rather_than_skipping() {
+        let fix = fix_for("chunk_exists", 409);
+        assert!(fix.contains("last ready index + 1") && !fix.contains("write the next index"), "{fix}");
+    }
 
     /// A hostile registry answering `account_key_mismatch` with a key it
     /// holds must not be able to talk the person into joining under it: the
