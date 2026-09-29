@@ -547,7 +547,14 @@ impl Scope {
     pub(crate) fn walk_hides(&self, root: &Path) -> impl Fn(&Path) -> bool + '_ {
         let real = self.sandbox.as_ref().map(|_| real_path(root, 0).unwrap_or_else(|_| root.to_path_buf()));
         move |rel: &Path| match (&self.sandbox, &real) {
-            (Some(plan), Some(real)) => plan.hides(&real.join(rel)),
+            (Some(plan), Some(real)) => {
+                let at = real.join(rel);
+                // A symlink the walk lists is opened through, so it is judged
+                // by where it leads: a link in the workspace to a key in a
+                // hidden `~/.ssh` is skipped. Only links are resolved, so the
+                // walk stays cheap.
+                plan.hides(&at) || (std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) && plan.hides(&real_path(&at, 0).unwrap_or(at)))
+            }
             _ => false,
         }
     }

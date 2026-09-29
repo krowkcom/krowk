@@ -157,7 +157,7 @@ impl Plan {
         let mut a: Vec<String> = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run"].map(String::from).to_vec();
         // The resolver `/etc/resolv.conf` leads to, where systemd or
         // NetworkManager keep it; nothing else of `/run` comes back.
-        for r in ["/run/systemd/resolve", "/run/NetworkManager"] {
+        for r in ["/run/systemd/resolve", "/run/NetworkManager", "/run/resolvconf"] {
             a.extend(["--ro-bind-try".into(), r.into(), r.into()]);
         }
         if let Some(home) = &self.home {

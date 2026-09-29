@@ -108,6 +108,12 @@ async fn r_perm_3_credentials_the_sandbox_hides_cannot_be_read() {
     assert!(err && !out.contains("PRIVATE KEY") && out.contains("hidden by the workspace sandbox"), "{out}");
     let (out, _) = tool(&ws, &scope, GREP, json!({ "pattern": "PRIVATE", "path": base.join("home") })).await;
     assert!(!out.contains("PRIVATE KEY"), "{out}");
+    // Nor through a link the sandboxed command makes in the workspace.
+    assert!(!bash(&ws, &scope, &format!("ln -s '{}' key", key.display())).await.1);
+    let (out, _) = tool(&ws, &scope, GREP, json!({ "pattern": "PRIVATE" })).await;
+    assert!(!out.contains("PRIVATE KEY"), "{out}");
+    let (out, err) = tool(&ws, &scope, READ, json!({ "path": "key" })).await;
+    assert!(err && !out.contains("PRIVATE KEY"), "{out}");
     let _ = std::fs::remove_dir_all(base);
 }
 
