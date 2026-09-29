@@ -62,7 +62,10 @@ libc = "0.2"
 # Hand-rolling RFC 6455 would save those three crates and cost a parser
 # of our own on a listening socket. Measured with ruzstd below: see
 # full.size in crates/krowk-bench/budgets.toml.
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+# `connect` (ticket 19): the host daemon's bridge and a remote viewer dial
+# the relay as clients. Plain `ws://` only — the client half of the same
+# tungstenite handshake, no TLS connector, so it adds no crate.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake", "connect"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 # Batches are zstd-compressed before they would be encrypted (R-LAG-5).
 # Pure Rust at level "fastest" (about zstd's 1): no C toolchain for a
@@ -76,6 +79,8 @@ ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 test-hooks = []
 
 [dev-dependencies]
+# The stand-in registry, in-process, for the sync tests' two devices.
+krowk-devregistry = { path = "../krowk-devregistry" }
 # Itself, with the test hooks: no new crate, nothing in a shipped build.
 krowk-harness = { path = ".", features = ["test-hooks"] }
 tokio = { version = "1", default-features = false, features = ["rt", "net", "macros", "io-util", "time"] }

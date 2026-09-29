@@ -92,7 +92,7 @@ pub fn random<const N: usize>() -> [u8; N] {
 
 /// A 16-byte id for a public thing, derived rather than stored, so it can
 /// never disagree with what it names: SHA-256 over a label and the bytes.
-fn id(label: &[u8], bytes: &[u8]) -> [u8; 16] {
+pub(crate) fn id(label: &[u8], bytes: &[u8]) -> [u8; 16] {
     let h = Sha256::new().chain_update(label).chain_update(bytes).finalize();
     h[..16].try_into().expect("sixteen bytes")
 }
@@ -459,6 +459,16 @@ impl ChunkReader {
         ChunkReader { key: key.clone(), session, next: 0, previous: NO_PREVIOUS_CHUNK, fence: 0, finished: false }
     }
 
+    /// Reading from chunk `next` on, the one after the chunk whose digest is
+    /// `previous`, written under a fence no lower than `fence`: a viewer
+    /// attaching from a checkpoint, where the session's sealed index says
+    /// where the checkpoint sits and what came before it. The chain holds
+    /// from there exactly as from 0. A holder that will write never starts
+    /// here: it reads from 0, so what it chains onto is the whole log.
+    pub fn resume(key: &SessionKey, session: [u8; 16], next: u64, previous: [u8; 32], fence: u64) -> ChunkReader {
+        ChunkReader { key: key.clone(), session, next, previous, fence, finished: false }
+    }
+
     pub fn finished(&self) -> bool {
         self.finished
     }
@@ -466,6 +476,11 @@ impl ChunkReader {
     /// The index the next chunk must have.
     pub fn next(&self) -> u64 {
         self.next
+    }
+
+    /// The fence of the last chunk opened: the next may not be lower.
+    pub fn fence(&self) -> u64 {
+        self.fence
     }
 
     /// The digest the next chunk must bind: what a holder resuming the log
@@ -587,6 +602,11 @@ impl Sealer {
         Sealer { key: key.clone(), session, direction, epoch, next: 0 }
     }
 
+    /// The counter the next message is sealed with.
+    pub fn next_counter(&self) -> u64 {
+        self.next
+    }
+
     /// `counter ‖ nonce ‖ ciphertext + tag`. The header's `enc` must be
     /// `ENC_XCHACHA20_POLY1305`. The nonce is 24 random bytes; the counter
     /// orders messages, never feeds the nonce.
@@ -620,6 +640,16 @@ impl Opener {
     /// must be given.
     pub fn new(key: &SessionKey, session: [u8; 16], direction: Direction) -> Opener {
         Opener { key: key.clone(), session, direction, epoch: random(), last: None }
+    }
+
+    /// A chain whose epoch the sender picked and announced: the host's
+    /// stream across the relay, taken only from an announcement sealed with
+    /// this receiver's own challenge bound in, and a viewer's first frame,
+    /// whose epoch both ends derive from its link (`relay_link`). Not public:
+    /// an epoch a receiver did not pick opens recordings, unless something
+    /// bound to this connection vouched for it.
+    pub(crate) fn for_epoch(key: &SessionKey, session: [u8; 16], direction: Direction, epoch: [u8; 16]) -> Opener {
+        Opener { key: key.clone(), session, direction, epoch, last: None }
     }
 
     pub fn epoch(&self) -> [u8; 16] {

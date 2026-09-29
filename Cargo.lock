@@ -1587,6 +1587,9 @@ dependencies = [
 name = "krowk-bench"
 version = "0.0.0"
 dependencies = [
+ "krowk-api",
+ "krowk-client",
+ "krowk-devregistry",
  "krowk-harness",
  "libc",
  "serde",
@@ -1640,6 +1643,7 @@ dependencies = [
  "jsonschema",
  "krowk-api",
  "krowk-client",
+ "krowk-devregistry",
  "krowk-harness",
  "krowk-import",
  "krowk-store",

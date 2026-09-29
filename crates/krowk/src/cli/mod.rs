@@ -26,6 +26,8 @@ mod sessions;
 mod status;
 #[cfg(feature = "harness")]
 mod sync;
+#[cfg(all(feature = "harness", unix))]
+mod synced;
 #[cfg(feature = "harness")]
 mod tui;
 mod upgrade;
@@ -171,6 +173,24 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
             }
         };
     }
+    // `krowk --resume <id>` for a session another machine runs: attach it
+    // through sync, terminal or not (ticket 21's cards copy this command).
+    #[cfg(all(feature = "harness", unix))]
+    let (io, f, filter) = if positionals.is_empty() && !f.resume.is_empty() {
+        let mut ctx = Ctx { io, f, format, colour, filter };
+        if let Some(r) = synced::resume(&mut ctx) {
+            return match r {
+                Ok(()) => exit::OK,
+                Err(e) => {
+                    let quiet = ctx.f.quiet;
+                    report(ctx.io, &e, format, quiet, colour, None)
+                }
+            };
+        }
+        (ctx.io, ctx.f, ctx.filter)
+    } else {
+        (io, f, filter)
+    };
     // Bare `krowk` with a person at the terminal: the agent (R-PKG-1).
     // Without one — a pipe, a file, CI capturing output — everything below
     // runs exactly as it did before the TUI existed.
@@ -300,6 +320,12 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["sync", "join", ..] => sync::join(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["sync", "register", ..] => sync::register_now(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["sync", "sessions", ..] => synced::sessions(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["sync", "host", ..] => synced::host_session(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["sync", "attach", ..] => synced::attach(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["devices"] | ["devices", "list", ..] => devices::list(ctx),
         #[cfg(feature = "harness")]

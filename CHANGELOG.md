@@ -11,6 +11,22 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A session running on one machine can be watched and steered from
+  another.** The host keeps the session's lease, renewing it every 20
+  seconds, streams it over the relay sealed end to end, and writes its log
+  to the registry as sealed chunks with a checkpoint to attach from.
+  Another of your machines attaches from the latest checkpoint in well
+  under half a second, follows the session live, and can prompt it, steer
+  or stop it, and answer its approvals. When the host is away the other
+  machine is read-only, and a prompt typed there waits and runs when the
+  host is back. A dropped connection resumes by itself with nothing lost.
+  Neither the relay nor the registry ever sees the session's content.
+  `krowk sync host <session>` syncs a session of this machine, `krowk sync
+  sessions` lists what another machine can open, and `krowk sync attach
+  <session>` — or `krowk --resume <session>` on a machine without the
+  session's log — follows it there. The relay is `KROWK_RELAY_URL`, or
+  `krowk relay serve` on this machine.
+
 - **Sync calls that act as this machine are signed by its own key.**
   Registering or approving a device, a lease call, writing a session or
   its log, and asking for a relay ticket now carry `X-Krowk-Device`,

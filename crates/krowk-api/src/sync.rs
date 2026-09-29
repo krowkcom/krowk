@@ -209,9 +209,17 @@ impl Client {
     /// lease token (R-SYNC-2). `sealed` is what `e2e::ChunkSealer` made; the
     /// registry and storage see only it (R-E2E-1).
     pub fn put_chunk(&self, session: &str, index: u64, sealed: &[u8], lease_token: &str) -> Result<Chunk, Error> {
+        self.put_chunk_keyed(session, index, sealed, lease_token, &crate::client::idempotency_key()?)
+    }
+
+    /// `put_chunk` under an Idempotency-Key the caller keeps: a writer that
+    /// retries one sealed chunk until it lands presents the same key every
+    /// time, so a declare whose answer was lost is the same chunk, not a
+    /// second one the registry refuses as `chunk_exists`.
+    pub fn put_chunk_keyed(&self, session: &str, index: u64, sealed: &[u8], lease_token: &str, key: &str) -> Result<Chunk, Error> {
         let checksum = crate::client::sha256_hex(sealed);
         let body = json!({ "chunk": { "index": index, "byte_size": sealed.len(), "checksum": checksum, "lease_token": lease_token } });
-        let declared: Chunk = self.call_as_device("POST", &format!("/sessions/{}/chunks", slug_path(session)), Some(body), ATTEMPTS, Some(crate::client::idempotency_key()?))?.0;
+        let declared: Chunk = self.call_as_device("POST", &format!("/sessions/{}/chunks", slug_path(session)), Some(body), ATTEMPTS, Some(key.to_string()))?.0;
         let upload = declared.upload.as_ref().filter(|u| !u.url.is_empty()).ok_or_else(|| crate::fail("no_upload_url", "the registry declared the chunk but did not say where to put its bytes"))?;
         self.put_blob(upload, sealed)?;
         let fin = json!({ "chunk": { "lease_token": lease_token } });

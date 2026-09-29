@@ -1106,6 +1106,21 @@ stdout:
           "name": "register",
           "usage": "krowk sync register [--name NAME]",
           "summary": "Tell the workspace this machine holds its account key"
+        },
+        {
+          "name": "sessions",
+          "usage": "krowk sync sessions",
+          "summary": "The synced sessions this machine can open"
+        },
+        {
+          "name": "host",
+          "usage": "krowk sync host SESSION",
+          "summary": "Run a session here and sync it until interrupted"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sync attach SESSION",
+          "summary": "Follow a synced session here; each stdin line is a prompt"
         }
       ]
     },
@@ -2398,6 +2413,21 @@ stdout:
           "name": "register",
           "usage": "krowk sync register [--name NAME]",
           "summary": "Tell the workspace this machine holds its account key"
+        },
+        {
+          "name": "sessions",
+          "usage": "krowk sync sessions",
+          "summary": "The synced sessions this machine can open"
+        },
+        {
+          "name": "host",
+          "usage": "krowk sync host SESSION",
+          "summary": "Run a session here and sync it until interrupted"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sync attach SESSION",
+          "summary": "Follow a synced session here; each stdin line is a prompt"
         }
       ]
     },
@@ -3704,6 +3734,21 @@ stdout:
           "name": "register",
           "usage": "krowk sync register [--name NAME]",
           "summary": "Tell the workspace this machine holds its account key"
+        },
+        {
+          "name": "sessions",
+          "usage": "krowk sync sessions",
+          "summary": "The synced sessions this machine can open"
+        },
+        {
+          "name": "host",
+          "usage": "krowk sync host SESSION",
+          "summary": "Run a session here and sync it until interrupted"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sync attach SESSION",
+          "summary": "Follow a synced session here; each stdin line is a prompt"
         }
       ]
     },
@@ -5010,6 +5055,21 @@ tty:
           "name": "register",
           "usage": "krowk sync register [--name NAME]",
           "summary": "Tell the workspace this machine holds its account key"
+        },
+        {
+          "name": "sessions",
+          "usage": "krowk sync sessions",
+          "summary": "The synced sessions this machine can open"
+        },
+        {
+          "name": "host",
+          "usage": "krowk sync host SESSION",
+          "summary": "Run a session here and sync it until interrupted"
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sync attach SESSION",
+          "summary": "Follow a synced session here; each stdin line is a prompt"
         }
       ]
     },
