@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 const TOKEN: &str = "krowk_sk_sync_devices";
@@ -27,15 +27,7 @@ fn root(name: &str) -> PathBuf {
     root.canonicalize().unwrap()
 }
 
-/// krowk with `home` as HOME and nothing else of this machine's. The debug
-/// build's stand-in for the person saying yes at `join` and `approve` is on;
-/// `attended` leaves it off.
-fn command(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
-    let mut c = attended(home, api, token, args);
-    c.env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1");
-    c
-}
-
+/// krowk with `home` as HOME and nothing else of this machine's.
 fn attended(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
     c.args(args)
@@ -48,12 +40,6 @@ fn attended(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
         .current_dir(home)
         .stdin(Stdio::null());
     c
-}
-
-fn run(home: &Path, api: &str, token: &str, args: &[&str], input: &str) -> Output {
-    let mut child = command(home, api, token, args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
-    child.wait_with_output().unwrap()
 }
 
 /// Sync on the account key, as the lease and relay tests still exercise
@@ -81,13 +67,10 @@ fn r_sync_1_a_free_workspace_is_refused_with_a_fix() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());
     let r = root("free");
-    let laptop = r.join("laptop");
     let free = "krowk_sk_free_workspace";
 
-    let listed = run(&laptop, &api, free, &["devices", "list", "--json"], "");
-    assert!(!listed.status.success());
-    let err = String::from_utf8_lossy(&listed.stderr);
-    assert!(err.contains("sync_requires_paid_plan") && err.contains("upgrade this workspace to Pro"), "{err}");
+    let refused = krowk_api::Client::new(&api, free).device_list_all().unwrap_err();
+    assert!(refused.code() == "sync_requires_paid_plan" && refused.fix().contains("upgrade this workspace to Pro"), "{refused:?}");
 
     let _ = std::fs::remove_dir_all(&r);
 }
