@@ -76,7 +76,6 @@ fn set_up(home: &Path, api: &str) -> UserKey {
     let recovery = Subject { kind: Kind::Recovery, name: "recovery kit".into(), os: String::new(), device: kit.key.public(), signing: kit.signing.public() };
     let (_, batch) = Chain::start(me, &signing, Some((recovery, &kit.signing)), None, now()).unwrap();
     let post = krowk_api::sync::ListPost {
-        carried: None,
         entries: batch.entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect(),
         links: vec![],
         wraps: batch.wraps.iter().map(|(d, w)| (d.to_string(), e2e::hex(w))).collect(),
@@ -416,7 +415,6 @@ fn chain_entries(api: &str) -> Vec<SignedEntry> {
 
 fn post(batch: &krowk_client::device_chain::Batch) -> krowk_api::sync::ListPost {
     krowk_api::sync::ListPost {
-        carried: None,
         entries: batch.entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect(),
         links: batch.links.iter().map(|l| e2e::hex(l)).collect(),
         wraps: batch.wraps.iter().map(|(d, w)| (d.to_string(), e2e::hex(w))).collect(),

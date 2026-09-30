@@ -58,7 +58,6 @@ impl People {
         let device = first.device().unwrap().unwrap();
         let user = self.user.as_ref().unwrap();
         let post = krowk_api::sync::ListPost {
-            carried: None,
             entries: self.entries.iter().map(|e| (krowk_client::e2e::hex(&e.bytes), krowk_client::e2e::hex(&e.signatures_bytes()))).collect(),
             links: Vec::new(),
             wraps: self.chain().devices().iter().map(|d| (d.id().to_string(), krowk_client::e2e::hex(&user.wrap_to(&d.device).unwrap()))).collect(),

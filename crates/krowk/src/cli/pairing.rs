@@ -385,7 +385,6 @@ fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut al
 /// list is read back: the post landed if the entry is on it.
 fn post_add(client: &Client, batch: &krowk_client::device_chain::Batch) -> Result<(), Error> {
     let post = ListPost {
-        carried: None,
         entries: batch.entries.iter().map(|e| (hex(&e.bytes), hex(&e.signatures_bytes()))).collect(),
         links: batch.links.iter().map(|l| hex(l)).collect(),
         wraps: batch.wraps.iter().map(|(d, w)| (d.to_string(), hex(w))).collect(),
