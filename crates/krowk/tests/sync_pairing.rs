@@ -74,7 +74,7 @@ fn set_up(home: &Path, api: &str) -> UserKey {
     let kit = RecoveryKit::generate().device();
     let me = Subject { kind: Kind::Device, name: "laptop".into(), os: "Linux".into(), device: device.public(), signing: signing.public() };
     let recovery = Subject { kind: Kind::Recovery, name: "recovery kit".into(), os: String::new(), device: kit.key.public(), signing: kit.signing.public() };
-    let (_, batch) = Chain::start(me, &signing, Some((recovery, &kit.signing)), None, now()).unwrap();
+    let (_, batch) = Chain::start(me, &signing, Some((recovery, &kit.signing)), now()).unwrap();
     let post = krowk_api::sync::ListPost {
         entries: batch.entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect(),
         links: vec![],
