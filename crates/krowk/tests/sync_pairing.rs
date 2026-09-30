@@ -10,7 +10,7 @@
 
 #![cfg(all(feature = "harness", unix))]
 
-use krowk_client::device_chain::{Chain, Kind, SignedEntry, Subject, Trust};
+use krowk_client::device_chain::{Chain, Kind, SignedEntry, Subject};
 use krowk_client::e2e::{self, DeviceSigner};
 use krowk_client::keystore::Keystore;
 use krowk_client::recovery::RecoveryKit;
@@ -74,8 +74,9 @@ fn set_up(home: &Path, api: &str) -> UserKey {
     let kit = RecoveryKit::generate().device();
     let me = Subject { kind: Kind::Device, name: "laptop".into(), os: "Linux".into(), device: device.public(), signing: signing.public() };
     let recovery = Subject { kind: Kind::Recovery, name: "recovery kit".into(), os: String::new(), device: kit.key.public(), signing: kit.signing.public() };
-    let (chain, batch) = Chain::start(me, &signing, Some((recovery, &kit.signing)), now()).unwrap();
+    let (_, batch) = Chain::start(me, &signing, Some((recovery, &kit.signing)), None, now()).unwrap();
     let post = krowk_api::sync::ListPost {
+        carried: None,
         entries: batch.entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect(),
         links: vec![],
         wraps: batch.wraps.iter().map(|(d, w)| (d.to_string(), e2e::hex(w))).collect(),
@@ -84,7 +85,7 @@ fn set_up(home: &Path, api: &str) -> UserKey {
     let client = krowk_api::Client::new(api, LAPTOP).signed_by(DeviceSigner::new(device.id(), store.signing_key().unwrap()).shared());
     client.init_device_list(&post).unwrap();
     store.save_user_keys(&UserKeys::new(batch.newest.clone(), []).unwrap()).unwrap();
-    store.save_device_list(&batch.entries, &chain, now()).unwrap();
+    store.save_device_list(&batch.entries).unwrap();
     batch.newest
 }
 
@@ -92,7 +93,7 @@ fn set_up(home: &Path, api: &str) -> UserKey {
 fn served(api: &str) -> Chain {
     let list = krowk_api::Client::new(api, DESKTOP).device_list_all().unwrap();
     let entries: Vec<SignedEntry> = list.entries.iter().map(|e| SignedEntry::from_parts(e2e::unhex(&e.entry).unwrap(), &e2e::unhex(&e.signatures).unwrap()).unwrap()).collect();
-    Chain::verify(&entries, Trust::Fresh { received_at: vec![now(); entries.len()] }, now()).unwrap()
+    Chain::verify(&entries, None).unwrap()
 }
 
 /// Every stderr line of a child, as it comes.
@@ -177,13 +178,13 @@ fn r_e2e_3_a_device_added_by_its_code_holds_the_user_key_and_a_pin_of_the_chain(
     assert_eq!(*store.user_keys().unwrap().unwrap().newest(), key, "the desktop holds the laptop's user key");
     let chain = served(&api);
     assert_eq!(chain.devices().iter().filter(|d| d.kind == Kind::Device).count(), 2);
-    let pinned = store.device_list(now()).unwrap().unwrap();
+    let pinned = store.device_list().unwrap().unwrap();
     assert_eq!(pinned.head(), chain.head(), "pinned at the head that adds it");
     let desktop_id = store.device().unwrap().unwrap().id();
     let signer = DeviceSigner::new(desktop_id, store.signing_key().unwrap()).shared();
     let wraps = krowk_api::Client::new(&api, DESKTOP).signed_by(signer).user_key().unwrap();
     assert_eq!(wraps.wraps.len(), 1, "the user key is wrapped to the desktop");
-    assert_eq!(keys(&laptop).device_list(now()).unwrap().unwrap().head().seq, 1, "the laptop pinned the entry it posted");
+    assert_eq!(keys(&laptop).device_list().unwrap().unwrap().head().seq, 1, "the laptop pinned the entry it posted");
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -208,7 +209,7 @@ fn r_e2e_3_a_wrong_code_adds_nothing_and_the_new_device_asks_for_a_new_one() {
     let said = rest(&a_err);
     assert!(!a.status.success() && !said.contains("[Y/n]"), "the laptop asked nothing: {said}");
     assert_eq!(served(&api).head().seq, 0, "nothing reached the chain");
-    assert!(keys(&desktop).user_keys().unwrap().is_none() && keys(&desktop).device_list(now()).unwrap().is_none());
+    assert!(keys(&desktop).user_keys().unwrap().is_none() && keys(&desktop).device_list().unwrap().is_none());
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -356,7 +357,7 @@ fn a_device_behind_a_rotation_catches_up_before_it_adds_one() {
     let client = krowk_api::Client::new(&api, LAPTOP).signed_by(DeviceSigner::new(device.id(), store.signing_key().unwrap()).shared());
     let phone = Subject { kind: Kind::Device, name: "phone".into(), os: "iOS".into(), device: e2e::DeviceKey::generate().public(), signing: e2e::SigningKey::generate().public() };
     let chain = served(&api);
-    let pinned = Chain::verify(&chain_entries(&api), Trust::Pinned { head: chain.head(), verified_at: now(), first_seen: None }, now()).unwrap();
+    let pinned = Chain::verify(&chain_entries(&api), Some(chain.head())).unwrap();
     let (added, add) = pinned.batch(&first, vec![krowk_client::device_chain::Change::Add(phone.clone())], device.id(), &signing, now()).unwrap();
     client.append_device_list(&post(&add)).unwrap();
     let (_, remove) = added.batch(&first, vec![krowk_client::device_chain::Change::Remove(phone)], device.id(), &signing, now()).unwrap();
@@ -409,6 +410,7 @@ fn chain_entries(api: &str) -> Vec<SignedEntry> {
 
 fn post(batch: &krowk_client::device_chain::Batch) -> krowk_api::sync::ListPost {
     krowk_api::sync::ListPost {
+        carried: None,
         entries: batch.entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect(),
         links: batch.links.iter().map(|l| e2e::hex(l)).collect(),
         wraps: batch.wraps.iter().map(|(d, w)| (d.to_string(), e2e::hex(w))).collect(),
@@ -492,7 +494,7 @@ fn a_removed_machine_is_told_to_join_with_new_keys() {
     let chain = served(&api);
     let gone = chain.devices().iter().find(|d| d.name == "desktop").unwrap();
     let subject = Subject { kind: Kind::Device, name: gone.name.clone(), os: gone.os.clone(), device: gone.device, signing: gone.signing };
-    let pinned = Chain::verify(&chain_entries(&api), Trust::Pinned { head: chain.head(), verified_at: now(), first_seen: None }, now()).unwrap();
+    let pinned = Chain::verify(&chain_entries(&api), Some(chain.head())).unwrap();
     let (_, remove) = pinned.batch(&key, vec![krowk_client::device_chain::Change::Remove(subject)], device.id(), &signing, now()).unwrap();
     krowk_api::Client::new(&api, LAPTOP).signed_by(DeviceSigner::new(device.id(), store.signing_key().unwrap()).shared()).append_device_list(&post(&remove)).unwrap();
     // Its key went with it; signed in again, it is told to start afresh.

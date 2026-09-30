@@ -100,7 +100,12 @@ impl World {
         let ks = Keystore::new(&home.join(".krowk"));
         ks.recover(AccountKey::from_bytes(*self.account.as_bytes())).unwrap();
         let (device, signing) = (ks.device().unwrap().unwrap(), ks.signing_key().unwrap());
-        self.people.lock().unwrap().enlist(&ks, name);
+        {
+            let mut people = self.people.lock().unwrap();
+            people.enlist(&ks, name);
+            // A host reads the registry's list before it seals.
+            people.publish(&self.api, TOKEN);
+        }
         let api = krowk_api::Client::new(&self.api, TOKEN).signed_by(e2e::DeviceSigner::new(device.id(), SigningKey::from_secret(&*signing.secret_bytes()).unwrap()).shared());
         api.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), name, &self.account.id().to_string()).unwrap();
         let env = vec![
@@ -278,4 +283,28 @@ fn sync_host_of_a_session_this_machine_does_not_have_fails_fast() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("no session") && err.contains("krowk sync host"), "says why and what to do: {err}");
     assert!(a.api.show_sync_session(id).is_err(), "nothing was made in the registry");
+}
+
+/// #206's review, M2: before it seals anything, a host takes the device
+/// list from the registry and extends its pin with it, so a machine that
+/// slept through a removal never seals under the generation it left
+/// behind. A registry that cannot be asked is a refusal — the kept list is
+/// never used in its place.
+#[test]
+fn sync_host_refuses_when_the_registry_cannot_give_it_the_device_list() {
+    let w = World::new("stale-list");
+    let a = w.machine("a");
+    let id = "01a0ec7b-3333-7000-8000-000000000033";
+    let log = a.home.join(".krowk/sessions").join(id);
+    std::fs::create_dir_all(&log).unwrap();
+    std::fs::write(log.join(krowk_harness::log::EVENTS_FILE), "").unwrap();
+    let dead = TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead_api = format!("http://{}/v1", dead.local_addr().unwrap());
+    drop(dead);
+    let started = Instant::now();
+    let out = a.command(&["sync", "host", id]).env("KROWK_API_URL", &dead_api).stdin(Stdio::null()).output().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(60), "it did not wait: {:?}", started.elapsed());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains("device list"), "refused, and says why: {err}");
+    assert!(a.api.show_sync_session(id).is_err(), "nothing was sealed or made in the registry");
 }

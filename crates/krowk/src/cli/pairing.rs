@@ -43,7 +43,7 @@ use super::sync::{device_name, keyed_client, keystore, printable};
 use crate::output::Format;
 use krowk_api::sync::{ListPost, Pairing, PairingStep};
 use krowk_api::{fail, Client, Error};
-use krowk_client::device_chain::{Action, Chain, Change, Entry, Kind, SignedEntry, Subject, Trust};
+use krowk_client::device_chain::{Action, Chain, Change, Entry, Kind, SignedEntry, Subject};
 use krowk_client::e2e::{self, DeviceId, DeviceKey, DeviceSigner, SigningKey, SigningPublic};
 use krowk_client::keystore::Keystore;
 use krowk_client::pairing::{self, Binding, NewDevice, PairA, PairB, PairingCode, PeerKind};
@@ -99,10 +99,6 @@ fn clip(s: &str, max: usize) -> String {
 struct Payload {
     v: u8,
     entries: Vec<(String, String)>,
-    /// When the registry received each entry, as A was served them (and now
-    /// for the new one): what a new machine with no pin counts a recovery
-    /// rotation's delay from, so a completed kit replacement verifies.
-    received_at: Vec<u64>,
     /// Every older generation of the user key wrapped under the next, so
     /// the new machine opens sessions sealed before it joined.
     previous: Vec<String>,
@@ -216,21 +212,16 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if store.user_keys().map_err(|e| fail("sync_setup_failed", e))?.is_none() {
         return Err(setup_first());
     }
-    let pinned = store.device_list(now()).map_err(|e| fail("sync_setup_failed", e))?.ok_or_else(setup_first)?;
+    if store.device_list().map_err(|e| fail("sync_setup_failed", e))?.is_none() {
+        return Err(setup_first());
+    }
     let (signing, shared) = signer(&store, &device)?;
     let client = keyed_client(ctx, "`krowk devices add`")?.signed_by(shared);
 
-    // The list this device wraps to is the one it verifies back to its pin,
-    // never what the registry says it is.
-    let served = client.device_list_all()?;
-    let served_entries = entries(&served)?;
-    let received: Vec<u64> = served.entries.iter().map(|e| e.received_at).collect();
-    let chain = extend_pinned(&pinned, &served_entries)?;
-    let keys = caught_up(&store, &client, &chain, &device)?;
+    let (served_entries, chain, keys) = current_list(&store, &client, &device)?;
     if !chain.devices().iter().any(|d| d.id() == device.id() && d.kind == Kind::Device) {
         return Err(fail("device_removed", "this machine is not on your device list — it was removed; pair it again with `krowk sync join`"));
     }
-    store.save_device_list(&served_entries, &chain, now()).map_err(|e| fail("sync_setup_failed", e))?;
 
     let user = client.verify_key()?.user_id;
     let a = PairA::new(PeerKind::SamePersonDevice, user, device.id()).map_err(|e| fail("pairing_failed", e.0))?;
@@ -238,7 +229,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let id = opened.id.clone();
     // Up to the reply, anything that goes wrong ends the pairing on the
     // registry too, so the new machine hears it at once, and adds nothing.
-    let sealed = match seal_reply(ctx, &client, &id, a, (&chain, served_entries, received), &keys, (&device, &signing)) {
+    let sealed = match seal_reply(ctx, &client, &id, a, (&chain, served_entries), &keys, (&device, &signing)) {
         Ok(sealed) => sealed,
         Err(e) => {
             let _ = client.end_pairing(&id);
@@ -257,7 +248,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     match (acked, posted) {
         (Ok(_), Ok(())) => {}
         (Err(_), Ok(())) => {
-            let _ = store.save_device_list(&sealed.entries, &sealed.next, now());
+            let _ = store.save_device_list(&sealed.entries);
             return Err(fail(
                 "pairing_unconfirmed",
                 format!("'{name}' was sent your key but never confirmed it. It is on your devices so you can take it off and rotate your key away from it: `krowk devices remove '{name}'`"),
@@ -270,7 +261,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             ));
         }
     }
-    store.save_device_list(&sealed.entries, &sealed.next, now()).map_err(|e| fail("sync_setup_failed", e))?;
+    store.save_device_list(&sealed.entries).map_err(|e| fail("sync_setup_failed", e))?;
     let seq = sealed.next.head().seq;
     let summary = format!("Added. '{name}' ({os}) syncs in every workspace you're a member of.");
     if ctx.format == Format::Human {
@@ -278,6 +269,23 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         return Ok(());
     }
     super::sessions::emit_data(ctx, json!({ "name": name, "os": os, "seq": seq }), summary)
+}
+
+/// The device list as the registry has it now, kept only if it extends
+/// this machine's pin (a shorter, forked or started-over list is refused),
+/// and this machine's user keys caught up to the generation it leaves
+/// current. What a device wraps to or seals under is this, never the list
+/// it kept from before, which a removal it slept through has left behind:
+/// a registry that cannot be reached is a refusal, not a fall back to it.
+pub(super) fn current_list(store: &Keystore, client: &Client, device: &DeviceKey) -> Result<(Vec<SignedEntry>, Chain, UserKeys), Error> {
+    let served = client.device_list_all().map_err(|mut e| {
+        e.body.insert("fix".into(), json!("the registry could not be asked for your device list, and nothing is sealed under a list that may be stale — try again when it answers"));
+        e
+    })?;
+    let served = entries(&served)?;
+    let chain = store.save_device_list(&served).map_err(|e| fail("device_list_refused", e))?;
+    let keys = caught_up(store, client, &chain, device)?;
+    Ok((served, chain, keys))
 }
 
 /// This device's user keys at the generation the verified chain leaves
@@ -320,23 +328,8 @@ fn a_step(client: &Client, id: &str, step: PairingStep, field: &str, message: &[
     }
 }
 
-/// The list A verified: the chain, and its entries as served with when the
-/// registry received each.
-type Verified<'a> = (&'a Chain, Vec<SignedEntry>, Vec<u64>);
-
-/// The served list, as an extension of the one this device pinned: the
-/// same entry at the pin's seq (the entries before it follow by their
-/// hashes), then each newer entry verified onto the pinned chain as a
-/// pinned device verifies it. A shorter, forked or started-over list is
-/// refused.
-fn extend_pinned(pinned: &Chain, served: &[SignedEntry]) -> Result<Chain, Error> {
-    let pin = pinned.head();
-    let refused = |why: String| fail("device_list_refused", why);
-    if served.get(pin.seq as usize).map(SignedEntry::hash) != Some(pin.hash) {
-        return Err(refused("the registry served a device list that does not extend the one this machine last verified — it is older, forked or was started over; if you started over, pair this machine again with `krowk sync join`".into()));
-    }
-    served[pin.seq as usize + 1..].iter().try_fold(pinned.clone(), |c, e| c.extend(e)).map_err(|e| refused(e.0))
-}
+/// The list A verified: the chain, and its entries as served.
+type Verified<'a> = (&'a Chain, Vec<SignedEntry>);
 
 /// A's side once the reply is out: what it posts, the chain it leaves,
 /// and the wait for B's ack.
@@ -352,7 +345,7 @@ struct Sealed {
 
 /// From the hello to the reply: B's confirmation checked before the person
 /// is asked anything, then the reply sealed and sent.
-fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut all, mut received): Verified<'_>, keys: &UserKeys, (device, signing): (&DeviceKey, &SigningKey)) -> Result<Sealed, Error> {
+fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut all): Verified<'_>, keys: &UserKeys, (device, signing): (&DeviceKey, &SigningKey)) -> Result<Sealed, Error> {
     let _ = writeln!(ctx.io.stderr, "Pair a new device\n  Code: {}          valid 10 minutes, once\nOn the new device run:  krowk sync join\nWaiting…", a.code());
     let _ = ctx.io.stderr.flush();
     let hello = wait_for(client, id, "joiner_message", &a_failed)?;
@@ -374,11 +367,9 @@ fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut al
     let (next, batch) = chain.batch(keys.newest(), vec![Change::Add(subject)], device.id(), signing, now()).map_err(|e| fail("device_list_refused", e.0))?;
     let wrapped = batch.wraps.iter().find(|(d, _)| *d == new.id()).map(|(_, w)| w.clone()).ok_or_else(|| fail("device_list_refused", "the new device's entry carried no wrap for it"))?;
     all.extend(batch.entries.iter().cloned());
-    received.extend(batch.entries.iter().map(|_| now()));
     let payload = Payload {
         v: 1,
         entries: all.iter().map(|e| (hex(&e.bytes), hex(&e.signatures_bytes()))).collect(),
-        received_at: received,
         previous: keys.wraps().map(|(_, w)| hex(w)).collect(),
         generation: next.generation(),
         wrapped_key: hex(&wrapped),
@@ -394,6 +385,7 @@ fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut al
 /// list is read back: the post landed if the entry is on it.
 fn post_add(client: &Client, batch: &krowk_client::device_chain::Batch) -> Result<(), Error> {
     let post = ListPost {
+        carried: None,
         entries: batch.entries.iter().map(|e| (hex(&e.bytes), hex(&e.signatures_bytes()))).collect(),
         links: batch.links.iter().map(|l| hex(l)).collect(),
         wraps: batch.wraps.iter().map(|(d, w)| (d.to_string(), hex(w))).collect(),
@@ -573,8 +565,7 @@ fn join_steps(client: &Client, id: &str, binding: Binding, code: PairingCode, me
     client.pairing_step(id, PairingStep::Confirmation, &confirm).map_err(|_| false)?;
     let reply = wait_for(client, id, "sealed_reply", &none).map_err(|_| false)?;
     let received = await_reply.receive_reply(&reply).map_err(|_| false)?;
-    let at = now();
-    let (key, entries, chain) = check_payload(received.payload(), a_device, &me, device, at).map_err(|_| false)?;
+    let (key, entries, chain) = check_payload(received.payload(), a_device, &me, device).map_err(|_| false)?;
     let seq = chain.head().seq;
     // Kept before the ack, so an ack that lands always leaves the keys
     // here; a failure after this forgets them again. A user key an earlier
@@ -582,7 +573,7 @@ fn join_steps(client: &Client, id: &str, binding: Binding, code: PairingCode, me
     // machine is new to the list.
     store.forget_user_keys().map_err(|_| false)?;
     store.save_user_keys(&key).map_err(|_| true)?;
-    store.save_device_list(&entries, &chain, at).map_err(|_| true)?;
+    store.save_device_list(&entries).map_err(|_| true)?;
     let (_, ack) = received.acknowledge();
     match client.pairing_step(id, PairingStep::Acknowledgement, &ack) {
         // Lost on the way back, it may have landed: the caller learns which
@@ -598,7 +589,7 @@ fn join_steps(client: &Client, id: &str, binding: Binding, code: PairingCode, me
 /// reply is where its trust comes from — and its last entry adds exactly
 /// this machine's keys, name and OS, signed by A alone, whose signing key
 /// the payload names; then the user key opens as the id the chain names.
-pub(super) fn check_payload(payload: &[u8], a_device: DeviceId, me: &NewDevice, device: &DeviceKey, at: u64) -> Result<(UserKeys, Vec<SignedEntry>, Chain), String> {
+pub(super) fn check_payload(payload: &[u8], a_device: DeviceId, me: &NewDevice, device: &DeviceKey) -> Result<(UserKeys, Vec<SignedEntry>, Chain), String> {
     let p: Payload = serde_json::from_slice(payload).map_err(|_| "the reply is not a payload krowk reads")?;
     if p.v != 1 {
         return Err("the reply is from a newer krowk".into());
@@ -608,10 +599,7 @@ pub(super) fn check_payload(payload: &[u8], a_device: DeviceId, me: &NewDevice, 
         .iter()
         .map(|(e, s)| SignedEntry::from_parts(e2e::unhex(e).ok_or("not hex")?, &e2e::unhex(s).ok_or("not hex")?).map_err(|e| e.0))
         .collect::<Result<Vec<_>, String>>()?;
-    if p.received_at.len() != entries.len() {
-        return Err("the reply's receipt times do not match its entries".into());
-    }
-    let chain = Chain::verify(&entries, Trust::Fresh { received_at: p.received_at.clone() }, at).map_err(|e| e.0)?;
+    let chain = Chain::verify(&entries, None).map_err(|e| e.0)?;
     let last = Entry::decode(&entries.last().ok_or("the chain is empty")?.bytes).map_err(|e| e.0)?;
     let mine = Subject { kind: Kind::Device, name: me.name.clone(), os: me.os.clone(), device: me.device, signing: me.signing };
     if last.action != Action::Add || last.subjects != [mine] || last.signers != [a_device] || last.seq == 0 {

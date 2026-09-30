@@ -41,6 +41,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   dropped connection included, ends the pairing and asks for a new code. A
   machine that was sent the key but never confirmed it is still listed, so
   `krowk devices remove` can take it off; ^C on `add` ends the pairing.
+- **`krowk sync host` seals under the device list as the registry has it
+  now,** extended from this machine's pin, and refuses when the registry
+  cannot be asked, rather than sealing under a list a removal left behind.
 - **The stand-in registry holds devices you own.** `krowk-devregistry` serves
   a person's signed device list (verified on every post by krowk-client's own
   verifier), the user key wrapped to each device, keys bound to one device,
