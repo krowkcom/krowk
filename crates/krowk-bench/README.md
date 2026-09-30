@@ -4,9 +4,11 @@ Every performance and size number krowk promises lives in one file,
 [`budgets.toml`](budgets.toml), beside this one. `make bench` builds the two
 release binaries — the agent build (no features) and the full build
 (`--features harness`) — measures each enforced budget, prints a table, and
-fails if any is broken. CI runs the same `make bench` on every pull request
-(the `bench` job in `.github/workflows/ci.yml`) and puts the same table in the
-job summary. A broken budget fails the job with a line naming it:
+fails if any is broken. CI runs the same `make bench` before every release
+(`.github/workflows/bench.yml`, which `release.yml` waits on) and puts the same
+table in the job summary. A branch that moves a number runs it by hand with
+`gh workflow run bench.yml --ref <branch>`. A broken budget fails the job with a
+line naming it:
 
 ```text
 budget lean.size (R-PKG-2) broken: Agent build (no features): release binary size — 5.12 MiB is over its budget of 4.00 MiB
@@ -56,4 +58,4 @@ NN`. The ticket that builds it turns it on in the same pull request:
    it is the spec's number.
 4. Run `make bench` and put the table in the PR.
 
-From then on it enforces, on every pull request.
+From then on it enforces, on every release.
