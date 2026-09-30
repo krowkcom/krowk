@@ -34,7 +34,7 @@ impl People {
                 self.chain = Some(chain);
             }
             _ => {
-                let (chain, start) = Chain::start(subject, &signing, None, None, T0).unwrap();
+                let (chain, start) = Chain::start(subject, &signing, None, T0).unwrap();
                 self.entries = start.entries;
                 self.chain = Some(chain);
                 self.user = Some(start.newest);

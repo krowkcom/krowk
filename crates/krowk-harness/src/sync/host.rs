@@ -664,7 +664,7 @@ mod tests {
 
     /// A laptop and a desktop on one person's list, generation 1.
     fn list(laptop: &Dev, desktop: &Dev) -> (Chain, UserKey) {
-        let (chain, start) = Chain::start(laptop.subject("laptop"), &laptop.signing, None, None, T0).unwrap();
+        let (chain, start) = Chain::start(laptop.subject("laptop"), &laptop.signing, None, T0).unwrap();
         let (chain, _) = chain.batch(&start.newest, vec![Change::Add(desktop.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 1).unwrap();
         (chain, start.newest)
     }
