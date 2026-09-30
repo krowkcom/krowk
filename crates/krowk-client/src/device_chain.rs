@@ -79,7 +79,11 @@
 //!   pinned device counts from when it first saw the proposal and refuses a
 //!   new entry dated more than `CLOCK_SKEW` (1 hour) before it last
 //!   verified the list, as backdated; a fresh machine counts from the
-//!   registry's receipt time, which is thief defense only.
+//!   registry's receipt time, which is thief defense only, and takes a
+//!   completion only if the registry received it after the delay. Entries
+//!   at or before a pin were judged when first verified and are not judged
+//!   again. The backdating rule means an entry signed offline and posted
+//!   more than an hour later is refused; the CLI signs at post time.
 //! - A removal and a `rotate-recovery` that takes effect rotate the key:
 //!   they must leave the generation exactly one higher, with a key id the
 //!   chain has not held. Every other entry — a pending proposal and a
@@ -422,6 +426,14 @@ pub enum Trust {
     /// and not against the registry.
     Fresh { received_at: Vec<u64> },
 }
+/// What `Chain::verify_prefix` returns: the chain as far as every entry
+/// verified, and the first entry it refused, if any, with why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verified {
+    pub chain: Chain,
+    pub rejected: Option<(u64, Error)>,
+}
+
 /// A `rotate-recovery` a device authorized, waiting out its delay. Until it
 /// takes effect the current recovery device stays the recovery device —
 /// wrapped to, able to sign, unremovable — and the new one is nothing.
@@ -507,8 +519,34 @@ impl Chain {
     /// Verifies a whole chain from seq 0, by this device's clock `now`.
     /// With a pin, it must also reach at least the pin's seq and hold the
     /// pinned hash there: a shorter chain is an older list, another hash a
-    /// forked one, and both are refused.
+    /// forked one, and both are refused. Any entry refused refuses the lot;
+    /// `verify_prefix` says how far it got.
     pub fn verify(entries: &[SignedEntry], trust: Trust, now: u64) -> Result<Chain, Error> {
+        let v = Chain::verify_prefix(entries, trust, now)?;
+        match v.rejected {
+            Some((_, e)) => Err(e),
+            None => Ok(v.chain),
+        }
+    }
+
+    /// As `verify`, but an entry after the pin that is refused ends the
+    /// chain there rather than refusing it all: the chain up to it comes
+    /// back with the seq and the reason. An entry at or before the pin, a
+    /// shorter or forked list, or a bad entry 0 still refuses everything.
+    ///
+    /// This is how a client that was offline through a recovery rotation's
+    /// whole delay, and so receives the proposal and its completion at once,
+    /// gets past it: the completion is refused (seen just now), the prefix
+    /// ends with the proposal pending, and the client pins that prefix and
+    /// stores `(pending.seq, pending.since)` as `first_seen`. Seven days on
+    /// by its own clock, the completion verifies. Recovery on a fresh
+    /// machine works from the prefix the same way, so the kit can cancel a
+    /// rotation whose completion it cannot yet accept. A client only ever
+    /// wraps to, adopts keys from and pins the prefix. When it pins a
+    /// prefix whose tail was refused it keeps its `verified_at` as it was:
+    /// the tail it saw is older than now, and should not read as backdated
+    /// when it verifies again.
+    pub fn verify_prefix(entries: &[SignedEntry], trust: Trust, now: u64) -> Result<Verified, Error> {
         let (first, rest) = entries.split_first().ok_or_else(|| Error("the device list is empty".into()))?;
         let pin = match &trust {
             Trust::Pinned { head, .. } => Some(*head),
@@ -525,11 +563,16 @@ impl Chain {
         };
         let mut chain = Chain::genesis(first, trust, now)?;
         pinned(&chain)?;
-        for e in rest {
-            chain = chain.extend(e)?;
+        for (i, e) in rest.iter().enumerate() {
+            let seq = i as u64 + 1;
+            match chain.extend(e) {
+                Ok(next) => chain = next,
+                Err(err) if pin.is_none_or(|p| seq > p.seq) => return Ok(Verified { chain, rejected: Some((seq, err)) }),
+                Err(err) => return Err(err),
+            }
             pinned(&chain)?;
         }
-        Ok(chain)
+        Ok(Verified { chain, rejected: None })
     }
 
     /// Verifies seq 0 alone; `trust` and `now` are kept for what follows.
@@ -573,6 +616,9 @@ impl Chain {
         if e.subjects.len() != 1 {
             return Err(refuse(seq, "only entry 0 is about two devices"));
         }
+        // Entries at or before the pin were checked when this device first
+        // verified them; neither the backdating nor the delay check runs on
+        // them again.
         if let Trust::Pinned { head, verified_at, .. } = &self.trust
             && seq > head.seq
             && e.time.saturating_add(CLOCK_SKEW) < *verified_at
@@ -588,6 +634,13 @@ impl Chain {
             Action::Add => {
                 if subject.kind != Kind::Device {
                     return Err(refuse(seq, "a recovery device is added only by rotate-recovery"));
+                }
+                // Nor may a device take the pending recovery device's keys or
+                // name, which would jam the rotation's completion.
+                if let Some(p) = &self.pending
+                    && ([subject.device.0, subject.signing.0].iter().any(|k| *k == p.subject.device.0 || *k == p.subject.signing.0) || subject.name.to_lowercase() == p.subject.name.to_lowercase())
+                {
+                    return Err(refuse(seq, "it adds the keys or name of the recovery device a rotation is pending to"));
                 }
                 next.add(subject, seq)?;
             }
@@ -665,8 +718,20 @@ impl Chain {
                 match (&self.pending, self.recovery().is_none() || by_recovery) {
                     (_, true) => Step::Rotate,
                     (Some(p), false) if p.subject == *subject => {
-                        if self.now < p.effective_at {
-                            return Err(refuse(seq, format!("the recovery rotation proposed at entry {} takes effect only at {} by this device's clock", p.seq, p.effective_at)));
+                        match &self.trust {
+                            Trust::Pinned { head, .. } if seq <= head.seq => {}
+                            _ if self.now < p.effective_at => {
+                                return Err(refuse(seq, format!("the recovery rotation proposed at entry {} takes effect only at {} by this device's clock", p.seq, p.effective_at)));
+                            }
+                            // A fresh machine also needs the registry to have
+                            // received the completion no earlier than the
+                            // delay allows: judged by its own clock alone, a
+                            // completion posted on day one would pass on day
+                            // eight.
+                            Trust::Fresh { received_at } if received_at.get(seq as usize).is_none_or(|r| *r < p.effective_at) => {
+                                return Err(refuse(seq, format!("the registry received the completion of the recovery rotation proposed at entry {} before its delay was over", p.seq)));
+                            }
+                            _ => {}
                         }
                         Step::Rotate
                     }
@@ -794,7 +859,8 @@ impl Chain {
         Ok((chain, Batch { entries: vec![entry], newest, links: Vec::new(), wraps }))
     }
 
-    /// Changes made as one post, signed by `signer`, a device on the list
+    /// Changes made as one post at `time`, this device's clock, signed by
+    /// `signer`, a device on the list
     /// that stays on it, holding `held`, the current generation. Adds, a
     /// proposed recovery rotation and a cancellation leave the generation;
     /// each removal and each rotate-recovery that takes effect makes the
@@ -808,7 +874,9 @@ impl Chain {
         if held.generation() != self.generation() || held.id() != self.key_id() {
             return Err(Error("the user key held is not the one the device list leaves current".into()));
         }
-        let mut chain = self.clone();
+        // This device makes these entries now, so it judges them as a pinned
+        // device at its own head; a registry's receipt times play no part.
+        let mut chain = Chain { trust: Trust::Pinned { head: self.head, verified_at: 0, first_seen: None }, now: time, ..self.clone() };
         let mut current = held.clone();
         let (mut entries, mut links, mut added) = (Vec::new(), Vec::new(), Vec::new());
         for change in changes {
@@ -1099,7 +1167,8 @@ mod tests {
         }
         // Posted as it is, every client accepts it.
         let posted = [entries.clone(), adds.entries, b.entries].concat();
-        assert_eq!(chain(&posted), c);
+        let again = chain(&posted);
+        assert_eq!((again.head(), again.devices(), again.key_id()), (c.head(), c.devices(), c.key_id()));
         // A signer removing itself before the batch ends, or a stale held
         // key, is refused.
         assert!(before.batch(&g1, vec![Change::Remove(laptop.subject())], laptop.id(), &laptop.signing, T).is_ok());
@@ -1219,9 +1288,9 @@ mod tests {
         assert!(c.batch(&g1, vec![Change::RotateRecovery(other.subject(), &other.signing)], laptop.id(), &laptop.signing, T + 20).err().unwrap().0.contains("already pending"));
         // After the delay, by this device's clock, it can be completed: the
         // kit is replaced and the key rotated away from the old one.
-        let early = c.at(p.effective_at - 1).batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, T + 30);
+        let early = c.batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, p.effective_at - 1);
         assert!(early.is_err());
-        let (done, b) = c.at(p.effective_at).batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, T + 30).unwrap();
+        let (done, b) = c.batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, p.effective_at).unwrap();
         assert_eq!(done.recovery().unwrap().id(), thief_kit.id());
         assert!(done.pending().is_none());
         assert_eq!(done.generation(), 2);
@@ -1290,7 +1359,7 @@ mod tests {
         let c = Chain::verify(&all, near.clone(), NOW).unwrap();
         assert_eq!(c.pending().unwrap().effective_at, NOW + RECOVERY_ROTATION_DELAY);
         // Its completion posted at once stays refused on this device …
-        let (_, done) = c.at(NOW + RECOVERY_ROTATION_DELAY).batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, NOW).unwrap();
+        let (_, done) = c.batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, NOW + RECOVERY_ROTATION_DELAY).unwrap();
         let with_completion = [all.clone(), done.entries].concat();
         assert!(Chain::verify(&with_completion, near.clone(), NOW + DAY).is_err());
         // … and is taken once seven days have passed since it first saw the
@@ -1299,13 +1368,97 @@ mod tests {
         assert!(Chain::verify(&with_completion, recorded.clone(), NOW + DAY).is_err());
         assert!(Chain::verify(&with_completion, recorded, NOW + RECOVERY_ROTATION_DELAY).is_ok());
         // A fresh machine counts from the registry's receipt time: honest
-        // receipts keep it pending, and a hostile registry's (backdated
-        // too) make it no control — the documented limit.
+        // receipts keep it pending, and a hostile registry's, made up to
+        // fit the delay, make it no control — the documented limit.
         let honest = Trust::Fresh { received_at: vec![T, T, NOW, NOW] };
         assert!(Chain::verify(&with_completion, honest, NOW + DAY).is_err());
-        let hostile = Trust::Fresh { received_at: vec![T - 8 * DAY; 4] };
+        let hostile = Trust::Fresh { received_at: vec![T - 8 * DAY, T - 8 * DAY, T - 8 * DAY, T - DAY] };
         assert!(Chain::verify(&with_completion, hostile, NOW + DAY).is_ok());
         assert!(Chain::verify(&with_completion, Trust::Fresh { received_at: vec![T; 2] }, NOW + DAY).unwrap_err().0.contains("receipt"));
+    }
+
+    /// The three devices, a proposal by the laptop at T+10, and its
+    /// completion at T+10+7 days.
+    fn completed() -> (Vec<SignedEntry>, Dev, Dev) {
+        let (laptop, _kit, _phone, entries, g1) = three();
+        let thief_kit = Dev::recovery(&RecoveryKit::generate());
+        let (c, p) = chain(&entries).batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, T + 10).unwrap();
+        let (_, done) = c.at(T + 10 + 7 * DAY).batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, T + 10 + 7 * DAY).unwrap();
+        ([entries, p.entries, done.entries].concat(), laptop, thief_kit)
+    }
+
+    /// R1 (re-check of #199): once a device has pinned past a completed
+    /// rotation, it re-verifies from seq 0 with nothing pending recorded.
+    #[test]
+    fn d1_a_pinned_device_re_verifies_past_a_completed_rotation() {
+        let (all, _, thief_kit) = completed();
+        let done = T + 10 + 7 * DAY;
+        let first = Trust::Pinned { head: Head { seq: 1, hash: all[1].hash() }, verified_at: T + 10, first_seen: Some((2, T + 10)) };
+        let c = Chain::verify(&all, first, done + 1).unwrap();
+        let later = Trust::Pinned { head: c.head(), verified_at: done + 1, first_seen: None };
+        let again = Chain::verify(&all, later, done + 100 * DAY).unwrap();
+        assert_eq!(again.recovery().unwrap().id(), thief_kit.id());
+    }
+
+    /// R2 (re-check of #199): a device offline through the whole delay gets
+    /// the proposal and the completion at once. It verifies the prefix, pins
+    /// it with the proposal recorded, and takes the completion seven days
+    /// later by its own clock.
+    #[test]
+    fn d1_an_offline_device_takes_a_completed_rotation_seven_days_after_it_sees_it() {
+        let (all, laptop, thief_kit) = completed();
+        let pin = Head { seq: 1, hash: all[1].hash() };
+        let now = T + 20 * DAY;
+        assert!(Chain::verify(&all, Trust::Pinned { head: pin, verified_at: T + 5, first_seen: None }, now).is_err());
+        let v = Chain::verify_prefix(&all, Trust::Pinned { head: pin, verified_at: T + 5, first_seen: None }, now).unwrap();
+        let (seq, why) = v.rejected.clone().unwrap();
+        assert_eq!(seq, 3);
+        assert!(why.0.contains("takes effect only"), "{why}");
+        let p = v.chain.pending().unwrap().clone();
+        assert_eq!((p.seq, p.since, p.authorizer), (2, now, laptop.id()));
+        // It pins the prefix but keeps its last clean verification time: the
+        // refused completion is older than `now`, and is not backdated.
+        let recorded = Trust::Pinned { head: v.chain.head(), verified_at: T + 5, first_seen: Some((p.seq, p.since)) };
+        assert!(Chain::verify(&all, recorded.clone(), now + 6 * DAY).is_err());
+        assert_eq!(Chain::verify(&all, recorded, now + 7 * DAY).unwrap().recovery().unwrap().id(), thief_kit.id());
+        // A refused entry at or before the pin still refuses everything.
+        let mut bad = all.clone();
+        bad[1].signatures[0].1[0] ^= 1;
+        assert!(Chain::verify_prefix(&bad, Trust::Pinned { head: pin, verified_at: T + 5, first_seen: None }, now).is_err());
+    }
+
+    /// R3 (re-check of #199): on a fresh machine a completion the registry
+    /// received before the delay was over is refused, however late the
+    /// machine verifies; the prefix leaves the old kit able to cancel.
+    #[test]
+    fn d1_a_fresh_machine_refuses_a_completion_received_early() {
+        let (laptop, kit, _phone, entries, g1) = three();
+        let thief_kit = Dev::recovery(&RecoveryKit::generate());
+        let (c, p) = chain(&entries).batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, T + 10).unwrap();
+        let (_, done) = c.batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, T + 10 + 7 * DAY).unwrap();
+        let all = [entries, p.entries, done.entries].concat();
+        let early = Trust::Fresh { received_at: vec![T, T, T + 10, T + DAY] };
+        assert!(Chain::verify(&all, early.clone(), T + 8 * DAY).unwrap_err().0.contains("before its delay was over"));
+        let v = Chain::verify_prefix(&all, early, T + 8 * DAY).unwrap();
+        assert_eq!(v.chain.recovery().unwrap().id(), kit.id());
+        assert!(v.chain.pending().is_some());
+        // Received after the delay, it is taken.
+        let on_time = Trust::Fresh { received_at: vec![T, T, T + 10, T + 10 + 7 * DAY] };
+        assert_eq!(Chain::verify(&all, on_time, T + 8 * DAY).unwrap().recovery().unwrap().id(), thief_kit.id());
+    }
+
+    /// Minor (re-check of #199): a pending rotation cannot be jammed by
+    /// adding a device with its kit's keys or name.
+    #[test]
+    fn d1_an_add_cannot_take_the_pending_kits_keys_or_name() {
+        let (laptop, _kit, _phone, thief_kit, c, g1) = proposed(T + 10);
+        let mut same_keys = thief_kit.subject();
+        same_keys.kind = Kind::Device;
+        same_keys.name = "other".into();
+        assert!(c.batch(&g1, vec![Change::Add(same_keys)], laptop.id(), &laptop.signing, T + 20).err().unwrap().0.contains("pending"));
+        let mut same_name = Dev::new("x").subject();
+        same_name.name = "Recovery Kit".into();
+        assert!(c.batch(&g1, vec![Change::Add(same_name)], laptop.id(), &laptop.signing, T + 20).err().unwrap().0.contains("pending"));
     }
 
     /// Known answer, frozen: a genesis entry over fixed keys and a fixed
