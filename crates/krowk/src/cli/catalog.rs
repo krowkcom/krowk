@@ -539,6 +539,7 @@ fn devices_command() -> Command {
         subcommands: vec![
             cmd("list", "krowk devices list", "The devices on your device list, this one marked"),
             cmd("add", "krowk devices add", "Show a code that adds a new machine to your devices"),
+            cmd("remove", "krowk devices remove NAME", "Take a device off your list and rotate your key"),
         ],
         ..cmd("devices", "", "The machines that sync this workspace's sessions")
     }

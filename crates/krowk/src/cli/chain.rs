@@ -41,6 +41,12 @@ fn unattended(ctx: &Ctx) -> bool {
     cfg!(debug_assertions) && ctx.env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL") == "1"
 }
 
+/// Whether a person is at the terminal to answer: stdin and stderr both
+/// one, or the debug build's test suite standing in.
+pub(super) fn attended(ctx: &Ctx) -> bool {
+    unattended(ctx) || (ctx.io.stdin_tty && ctx.io.err_tty)
+}
+
 /// Refused off a terminal: every command here makes a change to the list
 /// of devices that can read a person's sessions, or shows the kit that
 /// can, and an agent following instructions it read somewhere is not the
@@ -48,7 +54,7 @@ fn unattended(ctx: &Ctx) -> bool {
 /// that follow read the terminal itself. Debug builds let the test suite
 /// answer.
 pub(super) fn need_person(ctx: &Ctx, what: &str, piped_words: bool) -> Result<(), Error> {
-    if unattended(ctx) || (ctx.io.err_tty && (ctx.io.stdin_tty || piped_words)) {
+    if attended(ctx) || (ctx.io.err_tty && piped_words) {
         return Ok(());
     }
     Err(fail("confirmation_required", format!("{what}, so it needs a person at a terminal — run it in one")))

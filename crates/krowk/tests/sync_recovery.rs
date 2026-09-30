@@ -198,3 +198,31 @@ fn d6_recover_on_a_new_machine_keeps_or_removes_each_device_and_opens_the_old_se
     assert!(!refused.status.success(), "{}", String::from_utf8_lossy(&refused.stdout));
     let _ = std::fs::remove_dir_all(&r);
 }
+
+/// D7: `devices remove` takes a device off the list and rotates the key
+/// away from it, so a session sealed afterwards does not open with what
+/// the removed device holds — and the registry refuses it besides.
+#[test]
+fn d7_a_removed_device_cannot_open_a_session_sealed_after_its_removal() {
+    let (_r, api) = registry();
+    let r = root("remove");
+    let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
+    let words = init(&laptop, &api, LAPTOP, &r.join("kit"));
+    let back = ok(&krowk(&desktop, &api, DESKTOP, &["sync", "recover", "--json"], "y", &format!("{words}\n")));
+    assert_eq!(back["data"]["kept"], serde_json::json!(["laptop"]), "{back}");
+    let held = keys(&desktop).user_keys().unwrap().unwrap();
+    // The laptop takes the desktop's list in, then removes it.
+    ok(&krowk(&laptop, &api, LAPTOP, &["sync", "status", "--json"], "", ""));
+    let v = ok(&krowk(&laptop, &api, LAPTOP, &["devices", "remove", "desktop", "--json"], "y", ""));
+    assert_eq!(v["data"]["generation"], 2, "{v}");
+
+    let id = "01a0ec7b-6666-7000-8000-000000000071";
+    let key = publish(&laptop, &api, LAPTOP, id);
+    assert_eq!(open(&laptop, &api, LAPTOP, id).unwrap().as_bytes(), key.as_bytes());
+    let s = krowk_api::Client::new(&api, LAPTOP).show_sync_session(id).unwrap();
+    let wrapped = e2e::unhex(&s.wrapped_key).unwrap();
+    assert!(e2e::unwrap_session_key(&wrapped, &krowk_harness::daemon::ws::uuid(id), &held).is_err(), "the desktop's keys do not open it");
+    let refused = krowk(&desktop, &api, DESKTOP, &["sync", "status", "--json"], "", "");
+    assert!(!refused.status.success(), "and the desktop is off the list: {}", String::from_utf8_lossy(&refused.stdout));
+    let _ = std::fs::remove_dir_all(&r);
+}

@@ -108,6 +108,7 @@ OTHER
   sync attach       Follow a synced session; stdin takes prompts and /commands
   devices list      The devices on your device list, this one marked
   devices add       Show a code that adds a new machine to your devices
+  devices remove    Take a device off your list and rotate your key
   config show       The effective configuration, and which layer set each value
   config set        Write one value into the repo config, or the global one
   config unset      Remove one value from the repo config, or the global one

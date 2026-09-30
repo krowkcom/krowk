@@ -262,7 +262,17 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
     let devices: Vec<_> = v.chain.devices().iter().map(|d| json!({ "id": d.id().to_string(), "kind": if d.kind == Kind::Recovery { "recovery" } else { "device" }, "name": d.name, "os": d.os, "this_device": d.id() == me.device.id(), "revoked": revoked.iter().any(|r| r.id() == d.id()) })).collect();
     let data = json!({ "checked": true, "seq": v.chain.head().seq, "generation": v.chain.generation(), "devices": devices, "recovery_kit": v.chain.recovery().is_some() });
     let summary = status_lines(&v, &me, &revoked).join("\n");
-    say(ctx, data, summary)
+    say(ctx, data, summary)?;
+    // A dashboard Revoke is finished from a device: the web can't sign the
+    // list. Asked only of a person at a terminal reading the human format —
+    // after `--json` the document stays the one thing on stdout — and
+    // everyone else was told.
+    let attended = ctx.format == crate::output::Format::Human && chain::attended(ctx);
+    let revoked: Vec<_> = revoked.into_iter().filter(|d| d.id() != me.device.id()).collect();
+    if attended && !revoked.is_empty() && chain::ask(ctx, "Finish removing the device(s) revoked on the dashboard now?")? {
+        return super::devices::finish(ctx, &me, &v, &revoked);
+    }
+    Ok(())
 }
 
 fn status_lines(v: &chain::Verified, me: &Me, revoked: &[&Device]) -> Vec<String> {
@@ -329,7 +339,7 @@ fn review(ctx: &mut Ctx, chain: &Chain, entries: &[SignedEntry], revoked: &[&Dev
         if ask(ctx, &format!("Keep {}{note}?", describe(d, entries)))? {
             kept.push(d.name.clone());
         } else {
-            changes.push(Change::Remove(Subject { kind: d.kind, name: d.name.clone(), os: d.os.clone(), device: d.device, signing: d.signing }));
+            changes.push(Change::Remove(Subject::of(d)));
         }
     }
     Ok((changes, kept))

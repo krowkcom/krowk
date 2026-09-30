@@ -348,6 +348,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["devices"] | ["devices", "list", ..] => devices::list(ctx),
         #[cfg(feature = "harness")]
         ["devices", "add", ..] => pairing::add(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["devices", "remove", ..] => devices::remove(ctx, rest(2)),
         _ if missing(p) => Err(not_in_build(p)),
         _ => Err(fail("unknown_command", format!("`{}` is not a krowk command — run `krowk --help`", clip(p, 2).join(" ")))),
     }

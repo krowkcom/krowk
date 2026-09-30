@@ -28,6 +28,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   workspace's key, for that workspace's) goes through what is left, and
   `krowk sync recovery discard-old` drops the old keys when you say so. The 24-word recovery phrase is gone, and so is
   `krowk sync register`: a device is registered by being on the list.
+- **`krowk devices remove NAME`** takes a device off your list and rotates
+  your key away from it. It names every device the new key goes to before it
+  asks, needs a fresh sign-in, and removes any device revoked on the dashboard
+  in the same post, so no new key reaches one. `krowk sync status` offers to
+  finish a dashboard Revoke. Your other devices take the new key at their next
+  sync.
 - **`krowk sync recover`** gets back in on a new machine from the kit's
   words, typed at a prompt that doesn't echo them or piped in. It verifies
   the list from its first entry, goes through every device on it with you to
