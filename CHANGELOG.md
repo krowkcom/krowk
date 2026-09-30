@@ -25,8 +25,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   12-word recovery kit that derives a recovery device; and a signed,
   chained device list that every client verifies against the head it last
   saw, refusing an older or forked list and any removal of the recovery
-  device. A kit replaced from a device rather than by the kit itself waits
-  seven days, during which the old kit can cancel it.
+  device. Only the current kit can replace the kit, or any device when there
+  is none; a chain started over from a device carries the user key forward,
+  so older sessions stay readable.
 
 ### Changed
 
@@ -49,6 +50,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Sessions sealed under the account key no longer open: clean break. No
   command puts a user key or a device list on a machine yet, so these
   commands say it holds none until adding a device does.
+
+### Fixed
+
+- **`/name` loads the skill on every agent, not only krowk's own.** A skill
+  picked from the TUI's slash menu reached Claude Code or Codex as a bare
+  `/implement`, and a vendor that did not have that skill answered that there
+  was no such skill. krowk now loads the skill's instructions itself and sends
+  them ahead of your words, whichever agent runs the session.
+- **Skills installed with `npx skills` are found.** krowk reads
+  `~/.agents/skills` and `.agents/skills` from the repository's root down to
+  the working directory, beside the `.claude/skills` it already read, so a
+  skill in the shared directory is listed and can be used with `/name`.
 
 ## [0.12.0] - 2026-09-30
 

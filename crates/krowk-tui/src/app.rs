@@ -1854,6 +1854,8 @@ impl App {
     // ---- the live region -------------------------------------------------------
 
     /// The live region's rows, and where the caret goes among them.
+    // Legacy: lays out every part of the live region in one pass. TODO: split into helpers and drop this allow.
+    #[allow(clippy::cognitive_complexity)]
     pub fn view(&self, now: Instant) -> (Vec<Line<'static>>, (u16, u16)) {
         let width = usize::from(self.width.max(1));
         let mut held = self.held.lines();

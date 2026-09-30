@@ -859,6 +859,29 @@ impl State {
     }
 }
 
+/// Registers a command that logs to the session it names with that
+/// session's hub, counting the log first so nothing it writes is in the
+/// count (see `execute`).
+async fn register(state: &Shared, root: Option<&str>, host: &Rc<Host>, client: u64) {
+    let dir = state.borrow().sessions_dir.clone();
+    let base = match (root, dir) {
+        (Some(r), Some(dir)) if log::valid_id(r) => {
+            let p = dir.join(r).join(log::EVENTS_FILE);
+            tokio::task::spawn_blocking(move || log::read_events(&p).map(|e| e.len()).unwrap_or(0)).await.unwrap_or(0)
+        }
+        _ => 0,
+    };
+    let mut s = state.borrow_mut();
+    s.wake.notify_one();
+    if let Some(r) = root {
+        let hub = s.follow(r, host, client);
+        if hub.in_flight == 0 {
+            hub.base = base;
+        }
+        hub.in_flight += 1;
+    }
+}
+
 async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     let Some((cwd, answers)) = state.borrow().clients.get(&client).map(|c| (c.cwd.clone(), c.answers)) else { return };
     let mut root = named(&cmd).map(String::from);
@@ -902,24 +925,7 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
         }
     };
     if registers {
-        // Counted before it registers: nothing it writes is in the count.
-        let dir = state.borrow().sessions_dir.clone();
-        let base = match (&root, dir) {
-            (Some(r), Some(dir)) if log::valid_id(r) => {
-                let p = dir.join(r).join(log::EVENTS_FILE);
-                tokio::task::spawn_blocking(move || log::read_events(&p).map(|e| e.len()).unwrap_or(0)).await.unwrap_or(0)
-            }
-            _ => 0,
-        };
-        let mut s = state.borrow_mut();
-        s.wake.notify_one();
-        if let Some(r) = &root {
-            let hub = s.follow(r, &host, client);
-            if hub.in_flight == 0 {
-                hub.base = base;
-            }
-            hub.in_flight += 1;
-        }
+        register(&state, root.as_deref(), &host, client).await;
     }
     // The engine a turn makes needs the TLS configuration, whose build
     // reads the platform's roots: tens of milliseconds, a hundred on a

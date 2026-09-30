@@ -733,6 +733,8 @@ async fn until(at: Option<Instant>) {
 }
 
 impl<'h> Ui<'h> {
+    // Legacy: the TUI's event loop, one select over every source. TODO: split into helpers and drop this allow.
+    #[allow(clippy::cognitive_complexity)]
     async fn run<W: Write>(&mut self, app: &mut App, term: &mut Term<W>) -> std::io::Result<()> {
         self.keys = Some(EventStream::new());
         let mut frame_at: Option<Instant> = None;
@@ -1531,6 +1533,8 @@ impl<'h> Ui<'h> {
     /// A key no question or overlay took: the prompt's, the menus' and the
     /// commands'. `armed`: the key before this one that asked for a second
     /// to leave krowk.
+    // Legacy: one match over every prompt key. TODO: split into helpers and drop this allow.
+    #[allow(clippy::cognitive_complexity)]
     async fn on_prompt_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool, armed: Option<char>) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         // Shift-enter is alt-enter: a new line wherever alt-enter makes one.

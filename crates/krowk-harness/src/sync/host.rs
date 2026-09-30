@@ -268,6 +268,8 @@ const PAGE: usize = 256;
 
 /// Runs the bridge until `stop`. `daemon` is a client of the daemon that
 /// says it answers approvals.
+// Legacy: the bridge's whole run loop, one select over every source. TODO: split into helpers and drop this allow.
+#[allow(clippy::cognitive_complexity)]
 pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool>, mut on_demand: mpsc::UnboundedReceiver<()>) -> Result<(), String> {
     let o = Arc::new(o);
     let taken = {

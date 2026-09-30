@@ -1,0 +1,40 @@
+name: Bench
+
+# R-PERF-7: the performance and size budgets, on one pinned runner class so
+# every number is read on the same kind of machine — an image named by
+# version, not -latest, which moves under the numbers. Each check is the
+# median of repeated runs held against the absolute number in
+# crates/krowk-bench/budgets.toml, never against an earlier run, and the
+# idle checks read Linux /proc, so this runner is also the one machine where
+# nothing may be skipped (--strict). The table lands in the job summary.
+#
+# A release gates on it (release.yml). A branch that moves a number asks for
+# it by hand:
+#   gh workflow run bench.yml --ref <branch>
+on:
+  workflow_call:
+  workflow_dispatch:
+
+# Actions pinned by commit, because release.yml runs this; dist.yml says why.
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.97 --profile minimal
+          rustup default 1.97
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Performance and size budgets
+        run: make bench BENCH_FLAGS=--strict
