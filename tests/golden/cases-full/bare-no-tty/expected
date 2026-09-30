@@ -1154,8 +1154,8 @@ stdout:
         },
         {
           "name": "join",
-          "usage": "krowk sync join [ACCOUNT_KEY_ID]",
-          "summary": "Add this machine, approved from one that already syncs",
+          "usage": "krowk sync join",
+          "summary": "Add this machine by the code `krowk devices add` shows",
           "flags": [
             {
               "name": "name",
@@ -1192,9 +1192,9 @@ stdout:
           "summary": "The workspace's devices, and the account key this one holds"
         },
         {
-          "name": "approve",
-          "usage": "krowk devices approve [CODE]",
-          "summary": "Approve a new device's `krowk sync join`"
+          "name": "add",
+          "usage": "krowk devices add",
+          "summary": "Show a code that adds a new machine to your devices"
         }
       ]
     }
@@ -2519,8 +2519,8 @@ stdout:
         },
         {
           "name": "join",
-          "usage": "krowk sync join [ACCOUNT_KEY_ID]",
-          "summary": "Add this machine, approved from one that already syncs",
+          "usage": "krowk sync join",
+          "summary": "Add this machine by the code `krowk devices add` shows",
           "flags": [
             {
               "name": "name",
@@ -2557,9 +2557,9 @@ stdout:
           "summary": "The workspace's devices, and the account key this one holds"
         },
         {
-          "name": "approve",
-          "usage": "krowk devices approve [CODE]",
-          "summary": "Approve a new device's `krowk sync join`"
+          "name": "add",
+          "usage": "krowk devices add",
+          "summary": "Show a code that adds a new machine to your devices"
         }
       ]
     }
@@ -3898,8 +3898,8 @@ stdout:
         },
         {
           "name": "join",
-          "usage": "krowk sync join [ACCOUNT_KEY_ID]",
-          "summary": "Add this machine, approved from one that already syncs",
+          "usage": "krowk sync join",
+          "summary": "Add this machine by the code `krowk devices add` shows",
           "flags": [
             {
               "name": "name",
@@ -3936,9 +3936,9 @@ stdout:
           "summary": "The workspace's devices, and the account key this one holds"
         },
         {
-          "name": "approve",
-          "usage": "krowk devices approve [CODE]",
-          "summary": "Approve a new device's `krowk sync join`"
+          "name": "add",
+          "usage": "krowk devices add",
+          "summary": "Show a code that adds a new machine to your devices"
         }
       ]
     }
@@ -5277,8 +5277,8 @@ tty:
         },
         {
           "name": "join",
-          "usage": "krowk sync join [ACCOUNT_KEY_ID]",
-          "summary": "Add this machine, approved from one that already syncs",
+          "usage": "krowk sync join",
+          "summary": "Add this machine by the code `krowk devices add` shows",
           "flags": [
             {
               "name": "name",
@@ -5315,9 +5315,9 @@ tty:
           "summary": "The workspace's devices, and the account key this one holds"
         },
         {
-          "name": "approve",
-          "usage": "krowk devices approve [CODE]",
-          "summary": "Approve a new device's `krowk sync join`"
+          "name": "add",
+          "usage": "krowk devices add",
+          "summary": "Show a code that adds a new machine to your devices"
         }
       ]
     }

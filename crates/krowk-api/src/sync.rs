@@ -1,6 +1,7 @@
-//! Sync's records and calls (canon, engineering/crypto.md): the devices that
-//! hold the account key, the mailbox a new device is approved through, and
-//! sessions with their leases. Every call needs a key to a paid workspace
+//! Sync's records and calls (canon, engineering/crypto.md, devices.md): the
+//! devices that hold the account key, a person's device list and user key,
+//! the mailbox a new device is paired through, and sessions with their
+//! leases. Every call needs a key to a paid workspace
 //! (R-SYNC-1), and nothing here carries plaintext: keys and sealed blobs are
 //! hex, and a session's title and the rest of what a listing shows travel
 //! inside `sealed_index`, sealed by the caller before it gets here.
@@ -23,7 +24,7 @@ use crate::client::{Client, slug_path};
 use crate::types::Upload;
 use crate::error::Error;
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 const ATTEMPTS: u32 = 3;
 
@@ -59,40 +60,6 @@ struct Devices {
     devices: Vec<Device>,
 }
 
-/// A new device's request to be approved, and once approved the account key
-/// wrapped to it with the account key's id.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct DeviceApproval {
-    #[serde(default, deserialize_with = "nullable")]
-    pub slug: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub signing_key: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub id: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub public_key: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub name: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub state: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub expires_at: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub created_at: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub approved_by: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub account_key_id: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub wrapped_account_key: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct DeviceApprovals {
-    #[serde(default, deserialize_with = "nullable")]
-    device_approvals: Vec<DeviceApproval>,
-}
-
 /// A device as the registry indexes the person's device list: for showing,
 /// and for a dashboard Revoke the chain has not caught up with
 /// (`revoked_at` set, `removed_seq` not). What a client trusts is the chain
@@ -125,8 +92,8 @@ struct ListedDevices {
     devices: Vec<ListedDevice>,
 }
 
-/// One entry of the device list as the registry serves it: the entry's
-/// bytes and its signature list, hex, exactly as posted.
+/// One entry of a person's device list, exactly as it was posted, with when
+/// the registry received it (Unix seconds).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ListEntry {
     #[serde(default, deserialize_with = "nullable")]
@@ -135,55 +102,61 @@ pub struct ListEntry {
     pub entry: String,
     #[serde(default, deserialize_with = "nullable")]
     pub signatures: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub received_at: u64,
 }
 
-/// The person's device list, whole: every entry from seq 0 and the epoch it
-/// belongs to. A start-over is a new epoch, never a shorter chain.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct DeviceList {
-    pub epoch: u64,
-    pub entries: Vec<ListEntry>,
+/// The head of the chain as the registry holds it: what a client checks
+/// against its pin, never what it pins.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ListHead {
+    #[serde(default, deserialize_with = "nullable")]
+    pub seq: u64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub hash: String,
 }
 
+/// A page of a person's device list from `after`, the epoch it belongs to
+/// (a start-over is a new epoch, never a shorter chain) and the head.
 #[derive(Debug, Clone, Default, Deserialize)]
-struct DeviceListPage {
+pub struct DeviceList {
     #[serde(default, deserialize_with = "nullable")]
-    epoch: u64,
+    pub epoch: u64,
     #[serde(default, deserialize_with = "nullable")]
-    entries: Vec<ListEntry>,
+    pub entries: Vec<ListEntry>,
     #[serde(default, deserialize_with = "nullable")]
-    next: Option<u64>,
+    pub head: Option<ListHead>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub next: Option<u64>,
 }
 
-/// What a device list post carries: the signed entries in order, each
-/// generation it makes after the first wrapped under the next (`links`,
-/// oldest first), and its newest generation wrapped to each device
-/// (`wraps`, device id → blob). Hex throughout.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// What a device list post carries, hex throughout: the signed entries, each
+/// generation it makes wrapped under the next (`links`, oldest first), and
+/// the newest generation wrapped to each device it names.
+#[derive(Debug, Clone, Default)]
 pub struct ListPost {
     pub entries: Vec<(String, String)>,
     pub links: Vec<String>,
     pub wraps: Vec<(String, String)>,
+    pub start_over: bool,
 }
 
 impl ListPost {
-    fn body(&self, start_over: Option<bool>) -> serde_json::Value {
-        let mut list = json!({
-            "entries": self.entries.iter().map(|(e, s)| json!({ "entry": e, "signatures": s })).collect::<Vec<_>>(),
-            "links": self.links,
-            "wraps": self.wraps.iter().map(|(d, w)| json!({ "device": d, "wrapped_key": w })).collect::<Vec<_>>(),
-        });
-        if let Some(s) = start_over {
-            list["start_over"] = json!(s);
+    fn body(&self) -> Value {
+        let entries: Vec<Value> = self.entries.iter().map(|(e, s)| json!({ "entry": e, "signatures": s })).collect();
+        let wraps: Vec<Value> = self.wraps.iter().map(|(d, w)| json!({ "device": d, "wrapped_key": w })).collect();
+        let mut list = json!({ "entries": entries, "links": self.links, "wraps": wraps });
+        if self.start_over {
+            list["start_over"] = json!(true);
         }
         json!({ "device_list": list })
     }
 }
 
-/// One generation of the person's user key as the registry holds it: its
-/// id, and its wrap of the generation before (empty for generation 1).
+/// One generation of the user key: its id, and its wrap of the one before
+/// (empty for generation 1).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct Generation {
+pub struct KeyGeneration {
     #[serde(default, deserialize_with = "nullable")]
     pub generation: u32,
     #[serde(default, deserialize_with = "nullable")]
@@ -192,23 +165,85 @@ pub struct Generation {
     pub wrapped_previous: String,
 }
 
-/// A generation wrapped to the device that asked.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct UserKeyWrap {
+pub struct KeyWrap {
     #[serde(default, deserialize_with = "nullable")]
     pub generation: u32,
     #[serde(default, deserialize_with = "nullable")]
     pub wrapped_key: String,
 }
 
-/// The user key as the signing device can open it. The registry's word
-/// for any of it counts for nothing until the verified chain names the id.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+/// The user key as the signing device can open it: every generation, and
+/// the ones wrapped to this device.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct UserKeyWraps {
     #[serde(default, deserialize_with = "nullable")]
-    pub generations: Vec<Generation>,
+    pub generations: Vec<KeyGeneration>,
     #[serde(default, deserialize_with = "nullable")]
-    pub wraps: Vec<UserKeyWrap>,
+    pub wraps: Vec<KeyWrap>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PairingDevice {
+    #[serde(default, deserialize_with = "nullable")]
+    pub id: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub name: String,
+}
+
+/// A pairing as the mailbox holds it: where it is, and whichever of its
+/// messages have arrived, hex. Everything in it is opaque to the registry.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Pairing {
+    #[serde(default, deserialize_with = "nullable")]
+    pub id: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub state: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub initiator_device: PairingDevice,
+    #[serde(default, deserialize_with = "nullable")]
+    pub initiator_message: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub joiner_message: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub joiner_confirmation: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub sealed_reply: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub joiner_ack: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub expires_at: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub poll_interval: u64,
+}
+
+/// A step of a pairing, in the order they are taken after the open: B's
+/// hello, A's SPAKE2 message, B's confirmation, A's sealed reply, B's ack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairingStep {
+    Join,
+    Answer,
+    Confirmation,
+    Reply,
+    Acknowledgement,
+}
+
+impl PairingStep {
+    fn route(self) -> (&'static str, &'static str) {
+        match self {
+            PairingStep::Join => ("join", "joiner_message"),
+            PairingStep::Answer => ("answer", "initiator_message"),
+            PairingStep::Confirmation => ("confirmation", "joiner_confirmation"),
+            PairingStep::Reply => ("reply", "sealed_reply"),
+            PairingStep::Acknowledgement => ("acknowledgement", "joiner_ack"),
+        }
+    }
+
+    /// The paired device's steps, which are signed; the new machine's are
+    /// its key's alone, since it is not a device yet.
+    fn signed(self) -> bool {
+        matches!(self, PairingStep::Answer | PairingStep::Reply)
+    }
 }
 
 /// A lease call's answer: the session's one writer, until when, the fence
@@ -393,106 +428,90 @@ impl Client {
         Ok(self.get::<Devices>("/devices")?.devices)
     }
 
-    /// A new device asks to be approved. Once: a retried create is a second
-    /// request, and only the one whose id the person was shown is answered.
-    /// It carries the device's relay signing key, which the approval then
-    /// registers for it.
-    pub fn request_device_approval(&self, public_key: &str, signing_key: &str, name: &str) -> Result<DeviceApproval, Error> {
-        let body = json!({ "device_approval": { "public_key": public_key, "signing_key": signing_key, "name": name } });
-        Ok(self.call("POST", "/device_approvals", Some(body), 1, None)?.0)
-    }
-
-    /// What is waiting to be approved.
-    pub fn list_device_approvals(&self) -> Result<Vec<DeviceApproval>, Error> {
-        Ok(self.get::<DeviceApprovals>("/device_approvals")?.device_approvals)
-    }
-
-    pub fn show_device_approval(&self, slug: &str) -> Result<DeviceApproval, Error> {
-        self.get(&format!("/device_approvals/{}", slug_path(slug)))
-    }
-
-    /// Answers a request with the account key wrapped to its public key, from
-    /// `device`, this machine. Sent once: every wrap is a different blob, so
-    /// a retry after a lost answer would be refused as already approved and
-    /// read as a failure when it had worked.
-    pub fn approve_device(&self, slug: &str, device: &str, account_key_id: &str, wrapped_account_key: &str) -> Result<DeviceApproval, Error> {
-        let body = json!({ "approval": { "device": device, "account_key_id": account_key_id, "wrapped_account_key": wrapped_account_key } });
-        Ok(self.call_as_device("PUT", &format!("/device_approvals/{}/approval", slug_path(slug)), Some(body), 1, None)?.0)
-    }
-
-    /// The person's device list from seq 0, every page, with the epoch.
-    /// Not signed: reading it proves nothing, and a recovering machine has
-    /// no device to sign as yet. A page that changes epoch midway, or
-    /// entries out of order, are refused rather than stitched together.
-    pub fn device_list(&self) -> Result<DeviceList, Error> {
-        let mut list = DeviceList::default();
-        let mut after: Option<u64> = None;
-        loop {
-            let path = match after {
-                Some(a) => format!("/device_list?after={a}"),
-                None => "/device_list".to_string(),
-            };
-            // A person with no list yet is told so, by some registries, as a
-            // refusal rather than an empty list.
-            let page: DeviceListPage = match self.get(&path) {
-                Err(e) if after.is_none() && e.code() == "no_device_list" => return Ok(list),
-                other => other?,
-            };
-            if after.is_some() && page.epoch != list.epoch {
-                return Err(crate::fail("device_list_changed", "the device list was reset while it was being read — try again"));
-            }
-            list.epoch = page.epoch;
-            for e in page.entries {
-                if e.seq != list.entries.len() as u64 {
-                    return Err(crate::fail("malformed_response", "the registry served the device list out of order"));
-                }
-                list.entries.push(e);
-            }
-            match page.next {
-                Some(n) if Some(n) != after && !list.entries.is_empty() => after = Some(n),
-                _ => return Ok(list),
-            }
-        }
-    }
-
-    /// `krowk sync init`: sequence 0 and generation 1 wrapped to the devices
-    /// it adds. `start_over` replaces a chain the person already has with a
-    /// new epoch. Signed by the first device. Sent once: a lost answer is
-    /// read back from the list, not posted again.
-    pub fn init_device_list(&self, post: &ListPost, start_over: bool) -> Result<u64, Error> {
-        #[derive(Deserialize)]
-        struct Created {
-            #[serde(default, deserialize_with = "nullable")]
-            epoch: u64,
-        }
-        let created: Created = self.call_as_device("POST", "/device_list", Some(post.body(Some(start_over))), 1, None)?.0;
-        Ok(created.epoch)
-    }
-
-    /// Appends entries to the device list, whole or not at all. Signed by a
-    /// device that signed every entry. Sent once: an entry names its seq,
-    /// so a retry after a lost answer is refused as stale anyway.
-    pub fn append_device_list(&self, post: &ListPost) -> Result<(), Error> {
-        let _: serde_json::Value = self.call_as_device("POST", "/device_list/entries", Some(post.body(None)), 1, None)?.0;
-        Ok(())
-    }
-
-    /// The user key's generations and the wraps to the signing device.
-    pub fn user_key(&self) -> Result<UserKeyWraps, Error> {
-        Ok(self.call_as_device("GET", "/user_key", None, ATTEMPTS, None)?.0)
-    }
-
-    /// Says the API key speaks for the signing device: after `recover`
-    /// adds this machine, and after a fresh sign-in on a device already on
-    /// the list. Set once per key.
-    pub fn claim_key_device(&self) -> Result<(), Error> {
-        let _: serde_json::Value = self.call_as_device("PUT", "/key/device", Some(json!({})), ATTEMPTS, None)?.0;
-        Ok(())
+    /// A page of this person's device list from after `after`. Not signed: a
+    /// machine recovering has no device to sign as yet. What it returns is
+    /// the registry's word, and trusted only once krowk-client has verified
+    /// it against the pin.
+    pub fn device_list(&self, after: Option<u64>) -> Result<DeviceList, Error> {
+        self.get(&after.map_or_else(|| "/device_list".to_string(), |a| format!("/device_list?after={a}")))
     }
 
     /// Every device the person's list has named, removed ones too.
     pub fn listed_devices(&self) -> Result<Vec<ListedDevice>, Error> {
         Ok(self.get::<ListedDevices>("/devices")?.devices)
+    }
+
+    /// The whole device list, every page, from seq 0.
+    pub fn device_list_all(&self) -> Result<DeviceList, Error> {
+        let mut all = self.device_list(None)?;
+        while let Some(after) = all.next.take() {
+            let page = self.device_list(Some(after))?;
+            if page.epoch != all.epoch {
+                return Err(crate::fail("device_list_changed", "the device list was started over while it was read — read it again"));
+            }
+            all.entries.extend(page.entries);
+            all.head = page.head;
+            all.next = page.next;
+        }
+        Ok(all)
+    }
+
+    /// `krowk sync init`'s post: seq 0, signed by the first device. Once: an
+    /// init that landed and is sent again is refused as `chain_exists`.
+    pub fn init_device_list(&self, post: &ListPost) -> Result<Value, Error> {
+        Ok(self.call_as_device("POST", "/device_list", Some(post.body()), 1, None)?.0)
+    }
+
+    /// Appends to the device list, signed by the device that signed every
+    /// entry. Once: an entry names its seq, so a post that landed and is
+    /// sent again is refused as `device_list_stale` — read the list to see
+    /// whether it did.
+    pub fn append_device_list(&self, post: &ListPost) -> Result<Value, Error> {
+        Ok(self.call_as_device("POST", "/device_list/entries", Some(post.body()), 1, None)?.0)
+    }
+
+    /// This machine's key claims the device it speaks for, signed by it: the
+    /// new machine after `join` or `recover`. Set once; the same device
+    /// again is a no-op, so it is retried.
+    pub fn claim_key_device(&self) -> Result<Value, Error> {
+        Ok(self.call_as_device("PUT", "/key/device", Some(json!({})), ATTEMPTS, None)?.0)
+    }
+
+    /// The user key's generations, and those wrapped to this device.
+    pub fn user_key(&self) -> Result<UserKeyWraps, Error> {
+        Ok(self.call_as_device("GET", "/user_key", None, ATTEMPTS, None)?.0)
+    }
+
+    /// Opens a pairing from this device. Once: a pairing is one per person,
+    /// so an open that landed and is sent again is `pairing_open`.
+    pub fn open_pairing(&self) -> Result<Pairing, Error> {
+        Ok(self.call_as_device("POST", "/pairings", Some(json!({ "pairing": {} })), 1, None)?.0)
+    }
+
+    /// The one open pairing of the person this key speaks for, as a new
+    /// machine finds it.
+    pub fn find_open_pairing(&self) -> Result<Pairing, Error> {
+        self.get("/open_pairing")
+    }
+
+    pub fn show_pairing(&self, id: &str) -> Result<Pairing, Error> {
+        self.get(&format!("/pairings/{}", slug_path(id)))
+    }
+
+    /// One step, sent once and never retried: a step sent twice is out of
+    /// turn, and ends the pairing. A caller whose answer was lost reads the
+    /// pairing (`show_pairing`) to see whether the step landed.
+    pub fn pairing_step(&self, id: &str, step: PairingStep, message: &[u8]) -> Result<Pairing, Error> {
+        let (route, field) = step.route();
+        let path = format!("/pairings/{}/{route}", slug_path(id));
+        let body = Some(json!({ "pairing": { field: crate::client::hex(message) } }));
+        Ok(if step.signed() { self.call_as_device("PUT", &path, body, 1, None)? } else { self.call("PUT", &path, body, 1, None)? }.0)
+    }
+
+    /// Ends a pairing for good: a check that failed, a no, a ^C.
+    pub fn end_pairing(&self, id: &str) -> Result<(), Error> {
+        let url = format!("{}/pairings/{}", self.base_url, slug_path(id));
+        self.request_raw("DELETE", &url, None, 1, None).map(|_| ())
     }
 
     pub fn list_sync_sessions(&self, before: &str, limit: i64) -> Result<SyncSessionPage, Error> {

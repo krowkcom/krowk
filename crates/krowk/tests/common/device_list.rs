@@ -48,6 +48,28 @@ impl People {
         }
     }
 
+    /// The list as it now stands, put in the registry at `api` for the
+    /// person `token` names — as the first device's `sync init` would, a
+    /// start-over each time so it can be called after every `enlist` — so a
+    /// host that reads the registry's list finds this one.
+    #[allow(dead_code)]
+    pub fn publish(&self, api: &str, token: &str) {
+        let first = &self.homes[0];
+        let device = first.device().unwrap().unwrap();
+        let user = self.user.as_ref().unwrap();
+        let post = krowk_api::sync::ListPost {
+            entries: self.entries.iter().map(|e| (krowk_client::e2e::hex(&e.bytes), krowk_client::e2e::hex(&e.signatures_bytes()))).collect(),
+            links: Vec::new(),
+            wraps: self.chain().devices().iter().map(|d| (d.id().to_string(), krowk_client::e2e::hex(&user.wrap_to(&d.device).unwrap()))).collect(),
+            start_over: true,
+        };
+        // Another key of the same person (`tok#…`), freshly signed in, as
+        // an init needs; the machines' own keys stay unbound.
+        let fresh = format!("{}#people-fresh", token.split('#').next().unwrap());
+        let signer = krowk_client::e2e::DeviceSigner::new(device.id(), first.signing_key().unwrap()).shared();
+        krowk_api::Client::new(api, &fresh).signed_by(signer).init_device_list(&post).unwrap();
+    }
+
     #[allow(dead_code)] // Not every test that shares this reads it.
     pub fn chain(&self) -> &Chain {
         self.chain.as_ref().expect("a device first")

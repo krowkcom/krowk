@@ -167,16 +167,6 @@ impl DevicePublic {
     }
 }
 
-/// The code a person compares when a device is approved: a hash of both
-/// of the new device's public keys, X25519 and Ed25519 signing. It covers
-/// the signing key too, so a request carrying the new device's X25519 key
-/// but another signing key — which anyone holding the workspace's API key
-/// could post — shows another code, and is never approved by mistake for
-/// the real one (`crypto.md` → Adding a device).
-pub fn approval_code(device: &DevicePublic, signing: &SigningPublic) -> DeviceId {
-    DeviceId(id(b"krowk/approval-code/v1", &[&device.0[..], &signing.0[..]].concat()))
-}
-
 /// A device's id: a hash of its public key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceId(pub [u8; 16]);
@@ -836,6 +826,14 @@ impl std::fmt::Debug for SigningKey {
 pub struct SigningPublic(pub [u8; 32]);
 
 impl SigningPublic {
+    /// Whether this is an Ed25519 key anything can verify with: a point of
+    /// the curve, in its one canonical encoding, not of small order. The
+    /// registry refuses any other on a device list entry
+    /// (`Sync.refuse_weak_signing_key!`), and so does the verifier.
+    pub fn is_strong(&self) -> bool {
+        ed25519_dalek::VerifyingKey::from_bytes(&self.0).is_ok_and(|k| !k.is_weak() && k.to_edwards().compress().to_bytes() == self.0)
+    }
+
     /// Checks a join's signature, strictly (RFC 8032's checks and no
     /// small-order or non-canonical keys or signatures), so one signature
     /// has one encoding and a key cannot be chosen to verify anything.

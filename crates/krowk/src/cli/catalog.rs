@@ -499,7 +499,7 @@ fn sync_command() -> Command {
             },
             Command {
                 flags: vec![flag("name", STRING, "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
-                ..cmd("join", "krowk sync join [ACCOUNT_KEY_ID]", "Add this machine, approved from one that already syncs")
+                ..cmd("join", "krowk sync join", "Add this machine by the code `krowk devices add` shows")
             },
             #[cfg(unix)]
             cmd("sessions", "krowk sync sessions", "The synced sessions this machine can open"),
@@ -537,7 +537,7 @@ fn devices_command() -> Command {
     Command {
         subcommands: vec![
             cmd("list", "krowk devices list", "The workspace's devices, and the account key this one holds"),
-            cmd("approve", "krowk devices approve [CODE]", "Approve a new device's `krowk sync join`"),
+            cmd("add", "krowk devices add", "Show a code that adds a new machine to your devices"),
         ],
         ..cmd("devices", "", "The machines that sync this workspace's sessions")
     }
@@ -835,10 +835,11 @@ which keeps them in your shell history. `init`, `recovery new` and removing
 a device ask you to sign in again in the browser.",
         #[cfg(feature = "harness")]
         "devices" => "\
-Adding a machine: run `krowk sync join` on it, then `krowk devices approve`
-here and type the code it shows. Type back the account key id `approve`
-shows on the new machine, or pass it to `join`. Comparing both is what keeps
-a registry from slipping its own keys in. Needs a Pro workspace.",
+Adding a machine: `krowk devices add` here shows a code, valid 10 minutes and
+once; run `krowk sync join` on the new machine and type it there. The code is
+checked by both machines, not by the registry, and this one asks you to
+confirm the new machine by name before anything is added. A wrong code ends
+it: run `add` again for a new one. Needs a Pro workspace.",
         #[cfg(feature = "harness")]
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle

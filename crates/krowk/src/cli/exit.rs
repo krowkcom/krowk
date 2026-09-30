@@ -32,6 +32,14 @@ fn client(code: &str) -> Option<i32> {
         // keyed, the same class as a missing login.
         #[cfg(feature = "harness")]
         "none_ready" => AUTH,
+        // A pairing that failed is over, and its code with it; a mistyped
+        // code started nothing (devices.md → Adding a device).
+        #[cfg(feature = "harness")]
+        "pairing_failed" => GONE,
+        #[cfg(feature = "harness")]
+        "bad_pairing_code" => USAGE,
+        #[cfg(feature = "harness")]
+        "no_pairing" => NOT_FOUND,
         "authorization_expired" => GONE,
         _ => return None,
     })

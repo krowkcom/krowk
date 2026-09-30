@@ -25,9 +25,6 @@ const TOKEN: &str = "krowk_sk_sync_resume_0000000000000000";
 const MARKER: &str = "the session machine A ran, read on machine B";
 
 #[test]
-// Attaching now brings the kept device list up to date from the registry
-// first (D6), and this stand-in serves no `/device_list` until #201.
-#[ignore = "needs #201's /device_list on the stand-in"]
 fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_sync() {
     let root = std::env::temp_dir().join(format!("krowk-sync-resume-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -54,6 +51,9 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
     people.enlist(&a_keys, "machine-a");
     let (b_home, ks) = home("b");
     people.enlist(&ks, "machine-b");
+    // The registry holds the list too: B brings the list it keeps up to
+    // date from it before it attaches.
+    people.publish(&api_url, TOKEN);
 
     // Machine A wrote the session to the registry, its record signed, and
     // went away.

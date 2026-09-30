@@ -183,6 +183,15 @@ pub struct Key {
     pub workspace: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
     pub workspace_name: String,
+    /// The person the key speaks for, which a pairing binds (devices.md →
+    /// Adding a device); empty for a service key, which cannot sync. Read,
+    /// never printed: `krowk auth verify` shows what it always has.
+    #[serde(default, deserialize_with = "nullable", skip_serializing)]
+    pub user_id: String,
+    /// The person's email, which `krowk sync join` names them by; read,
+    /// never printed, like `user_id`.
+    #[serde(default, deserialize_with = "nullable", skip_serializing)]
+    pub email: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
     pub expires_at: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]

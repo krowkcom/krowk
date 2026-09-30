@@ -177,7 +177,7 @@ impl Me {
 /// the one it replaces did; every sync call after needs that. Any refusal
 /// is said: a key bound to another device fails every call after.
 pub(super) fn claim(client: &Client, me: &Me) -> Result<(), Error> {
-    me.sign(client).claim_key_device()
+    me.sign(client).claim_key_device().map(|_| ())
 }
 
 /// What must hold before this device seals anything new — a session, a
@@ -187,7 +187,12 @@ pub(super) fn claim(client: &Client, me: &Me) -> Result<(), Error> {
 /// device holds. A device with no list kept, or that cannot reach the
 /// registry, seals nothing new.
 pub(super) fn before_sealing(ctx: &Ctx, client: &Client, me: &Me) -> Result<u32, Error> {
-    let v = verified(ctx, client, me)?;
+    let v = verified(ctx, client, me).map_err(|mut e| {
+        if e.code() == "network_unreachable" || e.status >= 500 {
+            e.body.insert("fix".into(), serde_json::json!("the registry could not be asked for your device list, and nothing is sealed under a list that may be stale — try again when it answers"));
+        }
+        e
+    })?;
     let held = held_keys(ctx)?.map(|k| k.newest().generation());
     sealing_generation(held, v.chain.generation())
 }
@@ -238,7 +243,7 @@ pub(super) struct Verified {
 pub(super) fn verified(ctx: &Ctx, client: &Client, me: &Me) -> Result<Verified, Error> {
     let store = keystore(ctx)?;
     let kept = store.device_list().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(not_set_up)?;
-    let entries = decode(&client.device_list()?)?;
+    let entries = decode(&client.device_list_all()?)?;
     if entries.first().map(SignedEntry::hash) != Some(kept.root()) {
         return Err(reset(entry_time(&entries, 0)));
     }
@@ -321,6 +326,7 @@ pub(super) fn post_of(batch: &Batch) -> ListPost {
         entries: batch.entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect(),
         links: batch.links.iter().map(|l| e2e::hex(l)).collect(),
         wraps: batch.wraps.iter().map(|(d, w)| (d.to_string(), e2e::hex(w))).collect(),
+        start_over: false,
     }
 }
 

@@ -931,7 +931,7 @@ fn clip(s: &str, n: usize) -> String {
 /// keyless push it is the only thing a retry presents to prove it made the
 /// original call.
 /// SHA-256, hex: the digest a chunk is declared with and read back against.
-fn hex(b: &[u8]) -> String {
+pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 

@@ -92,10 +92,9 @@ fn wire_shape_matches_the_registrys_routes() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// The sync calls (R-SYNC-1, R-E2E-3): a device registered, the listing, a new device's `krowk sync join` answered by the
-/// first one's `krowk devices approve` — run by the proxy the moment the
-/// request is opened, so the join polls once — and the session and lease
-/// calls krowk-api makes for the host (ticket 19 puts them behind a command).
+/// The sync calls (R-SYNC-1): a device registered by `krowk sync recover`,
+/// the listing, and the session and lease calls krowk-api makes for the
+/// host (ticket 19 puts them behind a command).
 #[cfg(all(feature = "harness", unix))]
 #[test]
 fn sync_wire_shape_matches_the_registrys_routes() {
@@ -109,28 +108,14 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     std::fs::create_dir_all(dir.join("desktop/home")).unwrap();
     let api = Arc::new(Mutex::new(String::new()));
     let laptop_home = dir.join("laptop/home");
-    let (hook_api, hook_home) = (api.clone(), laptop_home.clone());
-    let hook: Hook = Arc::new(move |_registry, method: &str, path: &str, answer: &[u8]| {
-        if method != "POST" || path != "/v1/device_approvals" {
-            return Ok(());
-        }
-        let request: Value = serde_json::from_slice(&response_body(answer)).map_err(|e| e.to_string())?;
-        let key: [u8; 32] = krowk_client::e2e::unhex(request["public_key"].as_str().unwrap_or_default()).and_then(|b| b.try_into().ok()).ok_or("no public key")?;
-        let signing: [u8; 32] = krowk_client::e2e::unhex(request["signing_key"].as_str().unwrap_or_default()).and_then(|b| b.try_into().ok()).ok_or("no signing key")?;
-        let code = krowk_client::e2e::approval_code(&krowk_client::e2e::DevicePublic(key), &krowk_client::e2e::SigningPublic(signing)).to_string();
-        let laptop = Krowk { home: hook_home.clone(), api: hook_api.lock().unwrap().clone() };
-        match laptop.run(&["devices", "approve", &code], true) {
-            (true, _) => Ok(()),
-            (false, out) => Err(format!("approving the new device failed:\n{out}")),
-        }
-    });
+    // Pairing is sync_pairing.rs, which runs both sides of it.
+    let hook: Hook = Arc::new(|_registry, _method: &str, _path: &str, _answer: &[u8]| Ok(()));
     let proxy = start_proxy(registry.addr(), calls.clone(), failures.clone(), hook);
     *api.lock().unwrap() = format!("http://{proxy}/v1");
     let laptop = Krowk { home: laptop_home, api: api.lock().unwrap().clone() };
-    let desktop = Krowk { home: dir.join("desktop/home"), api: api.lock().unwrap().clone() };
 
-    // Sync on the account key, as joining still runs on it: set up in the
-    // laptop's home and registered, as `sync recover` did from the phrase.
+    // Sync on the account key, as the lease calls still run on it: set up in
+    // the laptop's home and registered, as `sync recover` did from the phrase.
     let keys = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk"));
     let (setup, _) = keys.recover(krowk_client::e2e::AccountKey::generate()).unwrap();
     let signing = keys.signing_key().unwrap();
@@ -139,9 +124,7 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         .signed_by(krowk_client::e2e::DeviceSigner::new(setup.device.id(), signing).shared())
         .register_device(&krowk_client::e2e::hex(&setup.device.public().0), &signing_public, "laptop", &setup.account.id().to_string())
         .unwrap();
-    let account = setup.account.id().to_string();
     laptop.ok(&["devices", "list"], true);
-    desktop.ok(&["sync", "join", &account], true);
 
     let store = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk"));
     let device_id = store.device().unwrap().unwrap().id();
@@ -170,14 +153,6 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         // Signed registry requests), and only they are.
         "POST /v1/devices +signed",
         "GET /v1/devices",
-        // `join` opens a request; the proxy answers it as `devices approve`
-        // does — registering itself, listing, answering — before the join
-        // hears back, and the join then polls it once.
-        "POST /v1/device_approvals",
-        "POST /v1/devices +signed",
-        "GET /v1/device_approvals",
-        "PUT /v1/device_approvals/{slug}/approval +signed",
-        "GET /v1/device_approvals/{slug}",
         // A session is PUT under the id its client minted; its lease is a
         // singular resource: POST acquires, PUT renews or hands over, DELETE
         // lets go.

@@ -110,11 +110,11 @@ fn confirm_start_over(ctx: &mut Ctx, carries: bool) -> Result<(), Error> {
 /// for the first to go stale. The client that posted comes back: init binds
 /// its key to this device.
 fn post_init(ctx: &mut Ctx, client: Client, me: &Me, batch: &Batch, start_over: bool) -> Result<Client, Error> {
-    let post = post_of(batch);
-    match me.sign(&client).init_device_list(&post, start_over) {
+    let post = krowk_api::sync::ListPost { start_over, ..post_of(batch) };
+    match me.sign(&client).init_device_list(&post) {
         Err(e) if e.code() == "fresh_sign_in_required" => {
             let again = fresh_sign_in(ctx, "That sign-in is more than five minutes old")?;
-            me.sign(&again).init_device_list(&post, start_over)?;
+            me.sign(&again).init_device_list(&post)?;
             Ok(again)
         }
         other => other.map(|_| client),
@@ -134,7 +134,7 @@ pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
     }
     let old = if ctx.f.start_over { held_old(ctx)? } else { None };
     let client = fresh_sign_in(ctx, "Setting sync up changes which devices can read your sessions")?;
-    let exists = !client.device_list()?.entries.is_empty();
+    let exists = !client.device_list_all()?.entries.is_empty();
     if exists && !ctx.f.start_over {
         return Err(fail("chain_exists", "you already have a device list — add this machine from one of your devices with `krowk sync join`, or back in with the kit's words with `krowk sync recover`. Only if every device and the kit are lost: `krowk sync init --start-over`"));
     }
@@ -194,7 +194,7 @@ fn reseal_and_keep(ctx: &Ctx, client: &Client, me: &Me, old: &Old, keys: &UserKe
 fn finish_start_over(ctx: &mut Ctx, old: Old) -> Result<(), Error> {
     let me = Me::load(ctx)?;
     let client = super::sync::keyed_client(ctx, "`krowk sync init --start-over`")?;
-    let entries = chain::decode(&client.device_list()?)?;
+    let entries = chain::decode(&client.device_list_all()?)?;
     let new = Chain::verify(&entries, None).map_err(|e| fail("device_list_refused", format!("{} — nothing was changed", e.0)))?;
     let keys = chain::held_keys(ctx)?.ok_or_else(chain::not_set_up)?;
     let keys = keys.verified_by(&new).map_err(|e| fail("user_key_refused", format!("{} — the list the registry serves is not the one this device started", e.0)))?;
@@ -325,7 +325,7 @@ pub(super) fn recover(ctx: &mut Ctx) -> Result<(), Error> {
     refuse_if_set_up(ctx, "this machine is already set up for sync — `krowk sync recover` is for a new machine; `krowk devices remove` takes a lost device off from here")?;
     let rdev = read_kit(ctx, "Recovery kit (12 words):")?.ok_or_else(|| fail("bad_recovery_kit", "no words were entered, so nothing was done"))?.device();
     let client = fresh_sign_in(ctx, "Getting back in changes which devices can read your sessions")?;
-    let entries = chain::decode(&client.device_list()?)?;
+    let entries = chain::decode(&client.device_list_all()?)?;
     if entries.is_empty() {
         return Err(fail("no_device_list", "you have no device list to recover — `krowk sync init` sets sync up"));
     }

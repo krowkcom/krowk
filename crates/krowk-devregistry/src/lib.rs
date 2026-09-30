@@ -2,8 +2,8 @@
 //! demoed without Postgres, object storage or a Rails process.
 //!
 //! It implements the contract the real registry does — declare, upload,
-//! finalize; runs; the claim flow; sync's devices, approvals, sessions and
-//! leases; one error envelope — including the parts
+//! finalize; runs; the claim flow; sync's device lists, user keys, pairings,
+//! sessions and leases; one error envelope — including the parts
 //! that exist to catch a broken client: it refuses a finalize for bytes that
 //! never arrived, and bytes whose length or digest is not what was declared.
 //! A client that passes against this one is exercising the real sequence.
@@ -21,6 +21,7 @@
 
 mod artifacts;
 mod auth;
+mod devices;
 mod encode;
 mod errors;
 mod http;
@@ -28,6 +29,7 @@ mod image;
 mod json;
 mod moves;
 mod page;
+mod pairings;
 mod runs;
 mod store;
 mod sync;
@@ -230,9 +232,13 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
             moves::update_visibility(a, req, slug, &site)
         }
         (_, ["v1", "key"]) if get => auth::show_key(req),
+        ("PUT" | "PATCH", ["v1", "key", "device"]) => devices::claim(a, req),
         // The approval screen is served by this process and nothing else, so its
         // link names the request's own host, never --site.
-        ("POST", ["v1", "cli", "authorizations"]) => auth::create_cli_authorization(a, &site(req, "")),
+        ("POST", ["v1", "cli", "authorizations"]) => {
+            let site = site(req, "");
+            auth::create_cli_authorization(a, req, &site)
+        }
         (_, ["v1", "cli", "authorizations", slug]) if get => auth::show_cli_authorization(app, slug),
         (_, ["_approve", "cli", "authorizations", "new"]) if get => auth::cli_authorization_page(a, req),
         ("POST", ["_approve", "cli", "authorizations", code, "approval"]) => auth::decide_cli_authorization(a, code, true),
@@ -244,10 +250,7 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         (_, ["v1", "runs", slug, "artifacts"]) if get => runs::artifacts(a, req, slug),
         (_, ["v1", "devices"]) if get => sync::list_devices(a, req),
         ("POST", ["v1", "devices"]) => sync::signed(a, req, sync::register_device),
-        (_, ["v1", "device_approvals"]) if get => sync::list_approvals(a, req),
-        ("POST", ["v1", "device_approvals"]) => sync::request_approval(a, req),
-        (_, ["v1", "device_approvals", slug]) if get => sync::show_approval(a, req, slug),
-        ("PUT" | "PATCH", ["v1", "device_approvals", slug, "approval"]) => sync::signed(a, req, |a, req, by| sync::approve(a, req, slug, by)),
+        (_, ["v1", "device_approvals", ..] | ["v1", "device_list", ..] | ["v1", "user_key"] | ["v1", "open_pairing"] | ["v1", "pairings", ..]) => devices_route(a, req, &m, segs.as_slice()),
         (_, ["v1", "sessions"]) if get => sync::list_sessions(a, req),
         (_, ["v1", "sessions", id]) if get => sync::show_session(a, req, id),
         ("PUT" | "PATCH", ["v1", "sessions", id]) => sync::signed(a, req, |a, req, by| sync::put_session(a, req, id, by)),
@@ -263,6 +266,33 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         ("PUT" | "PATCH", ["v1", "sessions", id, "chunks", index, "finalization"]) => sync::signed(a, req, |a, req, by| sync::finalize_chunk(a, req, id, index, by)),
         ("POST", ["_reset", "sync"]) => sync::reset(a, req),
         (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
+        _ => no_such_endpoint(),
+    }
+}
+
+/// A person's devices: the device list, the user key and the pairing
+/// mailbox — and the approval mailbox, gone (devices.md → Clean break), which
+/// a client from before pairing is told so whatever it asks.
+fn devices_route(a: &App, req: &mut Req, m: &str, segs: &[&str]) -> Resp {
+    let get = m == "GET" || m == "HEAD";
+    match (m, segs) {
+        (_, ["v1", "device_approvals", ..]) => sync::sync_reset(),
+        (_, ["v1", "device_list"]) if get => devices::show(a, req),
+        ("POST", ["v1", "device_list"]) => devices::create(a, req),
+        ("POST", ["v1", "device_list", "entries"]) => devices::append_entries(a, req),
+        (_, ["v1", "user_key"]) if get => devices::user_key(a, req),
+        (_, ["v1", "open_pairing"]) if get => pairings::find_open(a, req),
+        ("POST", ["v1", "pairings"]) => pairings::open(a, req),
+        (_, ["v1", "pairings", id]) if get => pairings::show(a, req, id),
+        ("DELETE", ["v1", "pairings", id]) => pairings::destroy(a, req, id),
+        ("PUT" | "PATCH", ["v1", "pairings", id, step]) => match *step {
+            "join" => pairings::step(a, req, id, pairings::Side::Joiner, "joiner_message"),
+            "answer" => pairings::step(a, req, id, pairings::Side::Initiator, "initiator_message"),
+            "confirmation" => pairings::step(a, req, id, pairings::Side::Joiner, "joiner_confirmation"),
+            "reply" => pairings::step(a, req, id, pairings::Side::Initiator, "sealed_reply"),
+            "acknowledgement" => pairings::step(a, req, id, pairings::Side::Joiner, "joiner_ack"),
+            _ => no_such_endpoint(),
+        },
         _ => no_such_endpoint(),
     }
 }
