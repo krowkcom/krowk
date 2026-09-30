@@ -20,6 +20,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   failed step ends the pairing, and the new device's code is consumed by the
   attempt, so a hostile registry gets one guess against each side. The SPAKE2 crate is held to magic-wormhole's vectors. Nothing
   calls it yet.
+- **The client crypto for devices you own**, not yet wired to any command:
+  a user key per person with generations, each wrapping the one before; a
+  12-word recovery kit that derives a recovery device; and a signed,
+  chained device list that every client verifies against the head it last
+  saw, refusing an older or forked list and any removal of the recovery
+  device. A kit replaced from a device rather than by the kit itself waits
+  seven days, during which the old kit can cancel it.
 
 ## [0.12.0] - 2026-09-30
 
