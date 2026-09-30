@@ -5088,6 +5088,1725 @@
           "rejected": null
         }
       }
+    },
+    {
+      "name": "unicode_final_sigma",
+      "rule": "Greek capitals and final-sigma lowercase are distinct names (ce91cea3 vs ceb1cf82)",
+      "entries": [
+        {
+          "bytes": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000101010004ce91cea300056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cd5fd2190641194bacc02b418643d22fd627dd4baaa13094275020f54c6c745959b8ad62cd52835c13a0a7813d9eb5684681225a64b4f95552263e26176a8ff05"
+        },
+        {
+          "bytes": "0100000000000000012d32e54aa1385c81503830a280c8838b09d72a8de12e46311aab82022c0750270101010004ceb1cf8200056c696e7578ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d5934b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a74600000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b810197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c529831a0d8407dc8d0e4636635f2d710c6ba148cf2d0d89c2d0e49af7b5c0e20efcc203735a231234da823d6b9071b60d83f6fc88a97106007f03357b07e6006"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000,
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "accept": {
+            "head": {
+              "seq": 1,
+              "hash": "e8b097a4284556591322e26a77fa0a9dc4fad1583af56eb947dd16866c9b0656"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "ΑΣ",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              },
+              {
+                "id": "8321f34eb2572c7a3cf59b2b4cc83579",
+                "kind": "device",
+                "name": "ας",
+                "os": "linux",
+                "x25519": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+                "ed25519": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+                "added": 1
+              }
+            ],
+            "pending": null
+          }
+        },
+        "prefix": {
+          "chain": {
+            "head": {
+              "seq": 1,
+              "hash": "e8b097a4284556591322e26a77fa0a9dc4fad1583af56eb947dd16866c9b0656"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "ΑΣ",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              },
+              {
+                "id": "8321f34eb2572c7a3cf59b2b4cc83579",
+                "kind": "device",
+                "name": "ας",
+                "os": "linux",
+                "x25519": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+                "ed25519": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+                "added": 1
+              }
+            ],
+            "pending": null
+          },
+          "rejected": null
+        }
+      }
+    },
+    {
+      "name": "unicode_sigma",
+      "rule": "Σ and σ are distinct names (cea3 vs cf83)",
+      "entries": [
+        {
+          "bytes": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000101010002cea300056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c7dfe319e0850b4811c4595da039e6888767f021b11871a06b31ff466cb2f2fca0fffc8cd289bfaadeb36d3727d81574d5b0fee195a95e5c78f536034e9259106"
+        },
+        {
+          "bytes": "010000000000000001bf36f0b3a1f46b29ac49bec038f158349ff54e7c65503d34607c3da077f6ce950101010002cf8300056c696e7578ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d5934b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a74600000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b810197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c59008848fdeb8a9265004a760ef84e1636357feb6a1b68dfebeefa888cf600fec7575c6497eced5e29e38b19596be9d3ea6135e469800345d3dafb6084d67a00"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000,
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "accept": {
+            "head": {
+              "seq": 1,
+              "hash": "97b33b79512bcdff3a502d48098a8f6ef4e632491e929494a189d449fd837d6f"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "Σ",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              },
+              {
+                "id": "8321f34eb2572c7a3cf59b2b4cc83579",
+                "kind": "device",
+                "name": "σ",
+                "os": "linux",
+                "x25519": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+                "ed25519": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+                "added": 1
+              }
+            ],
+            "pending": null
+          }
+        },
+        "prefix": {
+          "chain": {
+            "head": {
+              "seq": 1,
+              "hash": "97b33b79512bcdff3a502d48098a8f6ef4e632491e929494a189d449fd837d6f"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "Σ",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              },
+              {
+                "id": "8321f34eb2572c7a3cf59b2b4cc83579",
+                "kind": "device",
+                "name": "σ",
+                "os": "linux",
+                "x25519": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+                "ed25519": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+                "added": 1
+              }
+            ],
+            "pending": null
+          },
+          "rejected": null
+        }
+      }
+    },
+    {
+      "name": "unicode_dotted_i",
+      "rule": "İ (U+0130) and i + U+0307 are distinct names (c4b0 vs 69cc87)",
+      "entries": [
+        {
+          "bytes": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000101010002c4b000056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cfe9cf315307c638a9a15e5edce29ce55aed6c2f806e3cde180727d2d9ab441d50cb68b00624d4b8179f34c21428d53ea6be7647a6239a18f0ef206f1fb493e0b"
+        },
+        {
+          "bytes": "01000000000000000176775daf4e3e742d475ecbe5109a1b507145425e5cae88db4174b4ad904ccef9010101000369cc8700056c696e7578ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d5934b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a74600000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b810197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c988106381812291e40f4def7115b5318c3f596e7ab3d56d954ac92678b91b11d088f5665ad456a3f9e8ddb144c18020c246972423c00a100d507bf204aacc705"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000,
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "accept": {
+            "head": {
+              "seq": 1,
+              "hash": "64f024529c95baede82e4e53b9d03a875e7f5c2695685d6df2660e05ef0fa306"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "İ",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              },
+              {
+                "id": "8321f34eb2572c7a3cf59b2b4cc83579",
+                "kind": "device",
+                "name": "i̇",
+                "os": "linux",
+                "x25519": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+                "ed25519": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+                "added": 1
+              }
+            ],
+            "pending": null
+          }
+        },
+        "prefix": {
+          "chain": {
+            "head": {
+              "seq": 1,
+              "hash": "64f024529c95baede82e4e53b9d03a875e7f5c2695685d6df2660e05ef0fa306"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "İ",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              },
+              {
+                "id": "8321f34eb2572c7a3cf59b2b4cc83579",
+                "kind": "device",
+                "name": "i̇",
+                "os": "linux",
+                "x25519": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+                "ed25519": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+                "added": 1
+              }
+            ],
+            "pending": null
+          },
+          "rejected": null
+        }
+      }
+    },
+    {
+      "name": "unicode_sharp_s",
+      "rule": "ẞ (U+1E9E) and ß are distinct names (e1ba9e vs c39f)",
+      "entries": [
+        {
+          "bytes": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000101010003e1ba9e00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c4df0db760b421bd04c4ed35a2d906c858c4722d3fd3d4762073da8183e097486dc15de3b4a81b3534873d75ae4717a971df7a83d88cdec0ecc29ddd2ac8bd102"
+        },
+        {
+          "bytes": "0100000000000000018b1a395ea87cfad6a2a04c0b9150f486694579422ef16cf5ee90c3147ea571260101010002c39f00056c696e7578ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d5934b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a74600000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b810197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c63e877d7eec1ca3a8022b0b3097c3287ddd7496784b8108f6e114837df5bf5b5fefa65ccfbf5f32c47063104d59ea61402ccbfd4b4dfc00111c2a1947659e407"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000,
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "accept": {
+            "head": {
+              "seq": 1,
+              "hash": "ed004127b4ad2338b86133a7704715b946ba669daca7f373c38c6c61b0d92298"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "ẞ",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              },
+              {
+                "id": "8321f34eb2572c7a3cf59b2b4cc83579",
+                "kind": "device",
+                "name": "ß",
+                "os": "linux",
+                "x25519": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+                "ed25519": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+                "added": 1
+              }
+            ],
+            "pending": null
+          }
+        },
+        "prefix": {
+          "chain": {
+            "head": {
+              "seq": 1,
+              "hash": "ed004127b4ad2338b86133a7704715b946ba669daca7f373c38c6c61b0d92298"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "ẞ",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              },
+              {
+                "id": "8321f34eb2572c7a3cf59b2b4cc83579",
+                "kind": "device",
+                "name": "ß",
+                "os": "linux",
+                "x25519": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+                "ed25519": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+                "added": 1
+              }
+            ],
+            "pending": null
+          },
+          "rejected": null
+        }
+      }
+    },
+    {
+      "name": "unicode_ogonek",
+      "rule": "Ą and ą are distinct names (c484 vs c485)",
+      "entries": [
+        {
+          "bytes": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000101010002c48400056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cb0f9922d45f355305fb6026ce08dedc3277f5c85a00a6ac72847314450c9adc2587fcaff8db5569e5423bcc9fd4a701ea15edd4b5bfbb2ba6be798573f93a809"
+        },
+        {
+          "bytes": "0100000000000000015cf1b13932494cc727d662349880e0dee08e2a4e2b5cf192ba84b6c24728084f0101010002c48500056c696e7578ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d5934b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a74600000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b810197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c6c30e7cab4da90a222027459349c37b13686534b6f24db5ce5b072533bcabc9de6d33ca25de57257fd090acc14f80dbff0e258d49d12f4a6087eb6e71e5e970d"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000,
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "accept": {
+            "head": {
+              "seq": 1,
+              "hash": "e945ea9ce65b712d064b584848386a39f3f33a4b0fbff3881fd248353fc739bb"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "Ą",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              },
+              {
+                "id": "8321f34eb2572c7a3cf59b2b4cc83579",
+                "kind": "device",
+                "name": "ą",
+                "os": "linux",
+                "x25519": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+                "ed25519": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+                "added": 1
+              }
+            ],
+            "pending": null
+          }
+        },
+        "prefix": {
+          "chain": {
+            "head": {
+              "seq": 1,
+              "hash": "e945ea9ce65b712d064b584848386a39f3f33a4b0fbff3881fd248353fc739bb"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "Ą",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              },
+              {
+                "id": "8321f34eb2572c7a3cf59b2b4cc83579",
+                "kind": "device",
+                "name": "ą",
+                "os": "linux",
+                "x25519": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+                "ed25519": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+                "added": 1
+              }
+            ],
+            "pending": null
+          },
+          "rejected": null
+        }
+      }
+    },
+    {
+      "name": "unicode_kelvin",
+      "rule": "ASCII K and the Kelvin sign are distinct names (4b vs e284aa)",
+      "entries": [
+        {
+          "bytes": "010000000000000000000000000000000000000000000000000000000000000000000000000000000001010100014b00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cc2e8687d25ef53a91ad9f0880b356d5709866229153d018d504d6968bad26136ab5aa06537c22a2876f245c7e3c1cdecaa4b60c6038e920ecd1e186898f73604"
+        },
+        {
+          "bytes": "010000000000000001cf3b4eeb1ad285352c05ac630309aecab024f45d337ed94b59f58a7932ba3f670101010003e284aa00056c696e7578ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d5934b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a74600000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b810197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758ca1436d2cee4be5d1f562d12016a82f4eeae6515813e42d53bba84f296560216d7e7e556888f2bb61b220da68ca4a880fcfaba627525ca6a28ff9378e3630bc0b"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000,
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "accept": {
+            "head": {
+              "seq": 1,
+              "hash": "f4c57a5945dbcc39fb24ca9f41decddcbcc67b9b54cd4c9e678e6e860d188cb2"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "K",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              },
+              {
+                "id": "8321f34eb2572c7a3cf59b2b4cc83579",
+                "kind": "device",
+                "name": "K",
+                "os": "linux",
+                "x25519": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+                "ed25519": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+                "added": 1
+              }
+            ],
+            "pending": null
+          }
+        },
+        "prefix": {
+          "chain": {
+            "head": {
+              "seq": 1,
+              "hash": "f4c57a5945dbcc39fb24ca9f41decddcbcc67b9b54cd4c9e678e6e860d188cb2"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "K",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              },
+              {
+                "id": "8321f34eb2572c7a3cf59b2b4cc83579",
+                "kind": "device",
+                "name": "K",
+                "os": "linux",
+                "x25519": "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59",
+                "ed25519": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+                "added": 1
+              }
+            ],
+            "pending": null
+          },
+          "rejected": null
+        }
+      }
+    },
+    {
+      "name": "ascii_case_duplicate",
+      "rule": "names equal with ASCII A–Z folded are one name (4c6170746f70 vs 6c4150544f50)",
+      "entries": [
+        {
+          "bytes": "010000000000000000000000000000000000000000000000000000000000000000000000000000000001010100064c6170746f7000056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c3127208b22094d90af1c42b1b10891f5f72ec2cee8b298d6154f7c016ebec076709cefc27576857f92d510630b4537d6f2e05499df63473d6c30e6b12c09e90e"
+        },
+        {
+          "bytes": "010000000000000001cb8d7f368d57c2f28bbecc34ca084727f7bf28f8ddd4bb33bb1532123585e1d901010100066c4150544f5000056c696e7578ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d5934b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a74600000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b810197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cc68b74cbd63bb962f453fd0727972d0ccd8a724621a8e90db5fdfe0b4fc352ed11391eab3222843771eb26aaba133e8dbf5b5fd4c7a4383fa2fc613ddedfbc03"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000,
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "duplicate_name",
+            "seq": 1
+          }
+        },
+        "prefix": {
+          "chain": {
+            "head": {
+              "seq": 0,
+              "hash": "cb8d7f368d57c2f28bbecc34ca084727f7bf28f8ddd4bb33bb1532123585e1d9"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "Laptop",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              }
+            ],
+            "pending": null
+          },
+          "rejected": {
+            "code": "duplicate_name",
+            "seq": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "ascii_case_duplicate_mixed",
+      "rule": "the ASCII letters of a name fold, the rest compare exact (c48462 vs c48442)",
+      "entries": [
+        {
+          "bytes": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000101010003c4846200056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cd811c464cee0b9ff8d656834c491882677989464b1f572601cf7b95625fbc319da5c58ad5ff4bb4b8bb19456baf214e2c492bf99ef07ce3e30e4774cfd70b403"
+        },
+        {
+          "bytes": "010000000000000001663f2bc46edcd9ab89b3807bef24d70a93f0335b6c795d9fc3f6151af62743d30101010003c4844200056c696e7578ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d5934b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a74600000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b810197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c37ac148443408a56862a8211d719d59ed6910ef8927cda2b20e118f99150780ef6e59711397abc60bfa6aff4df83e527a6547a9ecd267140e5fc62647377ed0f"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000,
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "duplicate_name",
+            "seq": 1
+          }
+        },
+        "prefix": {
+          "chain": {
+            "head": {
+              "seq": 0,
+              "hash": "663f2bc46edcd9ab89b3807bef24d70a93f0335b6c795d9fc3f6151af62743d3"
+            },
+            "generation": 1,
+            "key_id": "bd61af8af0b004940eb38abb3e4fa94c",
+            "devices": [
+              {
+                "id": "97600b1f412f2eabe05995110207758c",
+                "kind": "device",
+                "name": "Ąb",
+                "os": "linux",
+                "x25519": "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209",
+                "ed25519": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+                "added": 0
+              }
+            ],
+            "pending": null
+          },
+          "rejected": {
+            "code": "duplicate_name",
+            "seq": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u0000",
+      "rule": "a name may not hold U+0000 (range U+0000–001F; name bytes 7800)",
+      "entries": [
+        {
+          "bytes": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000101010002780000056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c5a342172180b566ef6a7ae6739b0be8f5b63cff12a7e9d894212db70850300354c81a2c9eac4442f751a39677cca987e816e258cb8c9020138c131098ef50401"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u001f",
+      "rule": "a name may not hold U+001F (range U+0000–001F; name bytes 781f)",
+      "entries": [
+        {
+          "bytes": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000101010002781f00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c5a342172180b566ef6a7ae6739b0be8f5b63cff12a7e9d894212db70850300354c81a2c9eac4442f751a39677cca987e816e258cb8c9020138c131098ef50401"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u007f",
+      "rule": "a name may not hold U+007F (range U+007F–009F; name bytes 787f)",
+      "entries": [
+        {
+          "bytes": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000101010002787f00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c5a342172180b566ef6a7ae6739b0be8f5b63cff12a7e9d894212db70850300354c81a2c9eac4442f751a39677cca987e816e258cb8c9020138c131098ef50401"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u009f",
+      "rule": "a name may not hold U+009F (range U+007F–009F; name bytes 78c29f)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000378c29f00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c866b5e58612647150d7c0ca2a18ac3002656a2d0f0dfd2b3409a6c0ac69f896d1f407e0d924bf722a7c12a67aa6045ef170d05d46977826645205dd350ea7d00"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u00ad",
+      "rule": "a name may not hold U+00AD (range U+00AD–00AD; name bytes 78c2ad)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000378c2ad00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c866b5e58612647150d7c0ca2a18ac3002656a2d0f0dfd2b3409a6c0ac69f896d1f407e0d924bf722a7c12a67aa6045ef170d05d46977826645205dd350ea7d00"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u0600",
+      "rule": "a name may not hold U+0600 (range U+0600–0605; name bytes 78d880)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000378d88000056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c866b5e58612647150d7c0ca2a18ac3002656a2d0f0dfd2b3409a6c0ac69f896d1f407e0d924bf722a7c12a67aa6045ef170d05d46977826645205dd350ea7d00"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u0605",
+      "rule": "a name may not hold U+0605 (range U+0600–0605; name bytes 78d885)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000378d88500056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c866b5e58612647150d7c0ca2a18ac3002656a2d0f0dfd2b3409a6c0ac69f896d1f407e0d924bf722a7c12a67aa6045ef170d05d46977826645205dd350ea7d00"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u061c",
+      "rule": "a name may not hold U+061C (range U+061C–061C; name bytes 78d89c)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000378d89c00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c866b5e58612647150d7c0ca2a18ac3002656a2d0f0dfd2b3409a6c0ac69f896d1f407e0d924bf722a7c12a67aa6045ef170d05d46977826645205dd350ea7d00"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u06dd",
+      "rule": "a name may not hold U+06DD (range U+06DD–06DD; name bytes 78db9d)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000378db9d00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c866b5e58612647150d7c0ca2a18ac3002656a2d0f0dfd2b3409a6c0ac69f896d1f407e0d924bf722a7c12a67aa6045ef170d05d46977826645205dd350ea7d00"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u070f",
+      "rule": "a name may not hold U+070F (range U+070F–070F; name bytes 78dc8f)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000378dc8f00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c866b5e58612647150d7c0ca2a18ac3002656a2d0f0dfd2b3409a6c0ac69f896d1f407e0d924bf722a7c12a67aa6045ef170d05d46977826645205dd350ea7d00"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u0890",
+      "rule": "a name may not hold U+0890 (range U+0890–0891; name bytes 78e0a290)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478e0a29000056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u0891",
+      "rule": "a name may not hold U+0891 (range U+0890–0891; name bytes 78e0a291)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478e0a29100056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u08e2",
+      "rule": "a name may not hold U+08E2 (range U+08E2–08E2; name bytes 78e0a3a2)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478e0a3a200056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u180e",
+      "rule": "a name may not hold U+180E (range U+180E–180E; name bytes 78e1a08e)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478e1a08e00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u200b",
+      "rule": "a name may not hold U+200B (range U+200B–200F; name bytes 78e2808b)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478e2808b00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u200f",
+      "rule": "a name may not hold U+200F (range U+200B–200F; name bytes 78e2808f)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478e2808f00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u2028",
+      "rule": "a name may not hold U+2028 (range U+2028–202E; name bytes 78e280a8)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478e280a800056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u202e",
+      "rule": "a name may not hold U+202E (range U+2028–202E; name bytes 78e280ae)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478e280ae00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u2060",
+      "rule": "a name may not hold U+2060 (range U+2060–206F; name bytes 78e281a0)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478e281a000056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u206f",
+      "rule": "a name may not hold U+206F (range U+2060–206F; name bytes 78e281af)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478e281af00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_ufeff",
+      "rule": "a name may not hold U+FEFF (range U+FEFF–FEFF; name bytes 78efbbbf)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478efbbbf00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_ufff9",
+      "rule": "a name may not hold U+FFF9 (range U+FFF9–FFFB; name bytes 78efbfb9)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478efbfb900056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_ufffb",
+      "rule": "a name may not hold U+FFFB (range U+FFF9–FFFB; name bytes 78efbfbb)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000478efbfbb00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758cbec15c8d64bca7908ea50d6d98149d763a2fc2dc3e1a72b9ec7ddddd7af1699526ee6cfe65b57594a190347517626da6f257ba5436a2cb7d1904a7d7632fac09"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u110bd",
+      "rule": "a name may not hold U+110BD (range U+110BD–110BD; name bytes 78f09182bd)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000578f09182bd00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c0349b9143a6be2d8152744acb9e776c1197155c19b2b6483b7ccc8b8eb138548ccfeac36be10c0cbf80dbb84a77a1d18c479ba3aac07598f860a1891fbb5d100"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u110cd",
+      "rule": "a name may not hold U+110CD (range U+110CD–110CD; name bytes 78f091838d)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000578f091838d00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c0349b9143a6be2d8152744acb9e776c1197155c19b2b6483b7ccc8b8eb138548ccfeac36be10c0cbf80dbb84a77a1d18c479ba3aac07598f860a1891fbb5d100"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u13430",
+      "rule": "a name may not hold U+13430 (range U+13430–1343F; name bytes 78f09390b0)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000578f09390b000056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c0349b9143a6be2d8152744acb9e776c1197155c19b2b6483b7ccc8b8eb138548ccfeac36be10c0cbf80dbb84a77a1d18c479ba3aac07598f860a1891fbb5d100"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u1343f",
+      "rule": "a name may not hold U+1343F (range U+13430–1343F; name bytes 78f09390bf)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000578f09390bf00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c0349b9143a6be2d8152744acb9e776c1197155c19b2b6483b7ccc8b8eb138548ccfeac36be10c0cbf80dbb84a77a1d18c479ba3aac07598f860a1891fbb5d100"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u1bca0",
+      "rule": "a name may not hold U+1BCA0 (range U+1BCA0–1BCA3; name bytes 78f09bb2a0)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000578f09bb2a000056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c0349b9143a6be2d8152744acb9e776c1197155c19b2b6483b7ccc8b8eb138548ccfeac36be10c0cbf80dbb84a77a1d18c479ba3aac07598f860a1891fbb5d100"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u1bca3",
+      "rule": "a name may not hold U+1BCA3 (range U+1BCA0–1BCA3; name bytes 78f09bb2a3)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000578f09bb2a300056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c0349b9143a6be2d8152744acb9e776c1197155c19b2b6483b7ccc8b8eb138548ccfeac36be10c0cbf80dbb84a77a1d18c479ba3aac07598f860a1891fbb5d100"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u1d173",
+      "rule": "a name may not hold U+1D173 (range U+1D173–1D17A; name bytes 78f09d85b3)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000578f09d85b300056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c0349b9143a6be2d8152744acb9e776c1197155c19b2b6483b7ccc8b8eb138548ccfeac36be10c0cbf80dbb84a77a1d18c479ba3aac07598f860a1891fbb5d100"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_u1d17a",
+      "rule": "a name may not hold U+1D17A (range U+1D173–1D17A; name bytes 78f09d85ba)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000578f09d85ba00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c0349b9143a6be2d8152744acb9e776c1197155c19b2b6483b7ccc8b8eb138548ccfeac36be10c0cbf80dbb84a77a1d18c479ba3aac07598f860a1891fbb5d100"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_ue0001",
+      "rule": "a name may not hold U+E0001 (range U+E0001–E0001; name bytes 78f3a08081)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000578f3a0808100056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c0349b9143a6be2d8152744acb9e776c1197155c19b2b6483b7ccc8b8eb138548ccfeac36be10c0cbf80dbb84a77a1d18c479ba3aac07598f860a1891fbb5d100"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_ue0020",
+      "rule": "a name may not hold U+E0020 (range U+E0020–E007F; name bytes 78f3a080a0)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000578f3a080a000056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c0349b9143a6be2d8152744acb9e776c1197155c19b2b6483b7ccc8b8eb138548ccfeac36be10c0cbf80dbb84a77a1d18c479ba3aac07598f860a1891fbb5d100"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_ue007f",
+      "rule": "a name may not hold U+E007F (range U+E0020–E007F; name bytes 78f3a081bf)",
+      "entries": [
+        {
+          "bytes": "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010101000578f3a081bf00056c696e7578a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c0349b9143a6be2d8152744acb9e776c1197155c19b2b6483b7ccc8b8eb138548ccfeac36be10c0cbf80dbb84a77a1d18c479ba3aac07598f860a1891fbb5d100"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "refused_in_os",
+      "rule": "an OS may not hold a refused code point (U+0007)",
+      "entries": [
+        {
+          "bytes": "010000000000000000000000000000000000000000000000000000000000000000000000000000000001010100066c6170746f7000056c696e7507a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb800000001bd61af8af0b004940eb38abb3e4fa94c000000006ab13b800197600b1f412f2eabe05995110207758c",
+          "signatures": "0197600b1f412f2eabe05995110207758c277f8555ed60c9b3683270ed59fcbbdc15e57984edab773d7edf60b85ad2b7cd4aa61c66fab498bcda50733c1564a90851568c8452b6c224e09b05cfb4cfaa06"
+        }
+      ],
+      "trust": {
+        "mode": "fresh",
+        "received_at": [
+          1790000000
+        ]
+      },
+      "now": 1790000100,
+      "expect": {
+        "verify": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        },
+        "prefix": {
+          "refuse": {
+            "code": "name_characters",
+            "seq": 0
+          }
+        }
+      }
     }
   ]
 }
