@@ -66,6 +66,14 @@ pub struct Options {
     /// session's key is sealed under the newest, an existing one opened
     /// under the generation it names.
     pub keys: UserKeys,
+    /// The user key generation the verified device chain names as current:
+    /// a new session's key is sealed only when `keys` holds it
+    /// (`e2e::seal_session_key`).
+    pub current_generation: u32,
+    /// This device's keystore, whose record of the sessions it published
+    /// (`Keystore::published`) is the only session key the bridge takes
+    /// back from the registry.
+    pub keystore: krowk_client::keystore::Keystore,
     pub session: String,
     pub title: String,
     pub cwd: String,
@@ -91,15 +99,26 @@ struct Held {
 fn take(o: &Options) -> Result<(SessionKey, Writer, Held), String> {
     let id = &o.session;
     let raw = crate::daemon::ws::uuid(id);
-    let (key, wrapped, index) = match o.api.show_sync_session(id) {
-        Ok(s) => {
+    let published = o.keystore.published(id)?;
+    let (key, wrapped, index) = match (o.api.show_sync_session(id), published) {
+        // Only the key this device published is taken back: the registry's
+        // record must be that one, byte for byte. Anything else — an id this
+        // device never published, or a key swapped since — could be one a
+        // removed device sealed under a generation it still holds.
+        (Ok(s), Some(p)) if s.wrapped_key == p.wrapped => {
             let key = store::open_session_key(&s, id, &o.keys)?;
             let index = store::open_index(&key, id, &s.sealed_index)?;
             (key, s.wrapped_key, index)
         }
-        Err(_) => {
+        (Ok(_), Some(_)) => return Err(format!("the registry's key for session {id} is not the one this device published — refused, since it could be one a removed device holds; nothing was hosted")),
+        (Ok(_), None) => return Err(format!("the registry already holds a session {id} that this device did not publish — refused, since its key could be one a removed device holds; start a new session here (`krowk`) and `krowk sync host` that")),
+        (Err(e), Some(_)) => return Err(format!("session {id} was published from this device, but the registry did not return it ({e}) — try again")),
+        (Err(_), None) => {
             let key = SessionKey::generate();
-            let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &raw, o.keys.newest()));
+            let wrapped = e2e::hex(&e2e::seal_session_key(&key, &raw, &o.keys, o.current_generation).map_err(|e| e.to_string())?);
+            // Recorded before the registry hears of it, so a crash between
+            // the two leaves this device able to take its own key back.
+            o.keystore.record_published(id, &wrapped, o.keys.newest().generation())?;
             let index = Index { title: o.title.clone(), cwd: o.cwd.clone(), ..Index::default() };
             let sealed = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).expect("json")));
             o.api.put_sync_session(id, &wrapped, Some(&sealed), None).map_err(|e| e.to_string())?;
@@ -620,5 +639,90 @@ mod tests {
         }
         let Command::Prompt { permission_mode, .. } = under_session_settings(prompt(PermissionMode::Unhinged), PermissionMode::Plan) else { unreachable!() };
         assert_eq!(permission_mode, PermissionMode::Plan, "plan asks more, and stays");
+    }
+
+    /// A device of the stand-in registry, with its keystore under `root`,
+    /// holding `keys`, hosting `session`.
+    fn options(root: &std::path::Path, url: &str, keys: UserKeys, session: &str) -> Options {
+        let (device, signing) = (e2e::DeviceKey::generate(), SigningKey::generate());
+        let signer = e2e::DeviceSigner::new(device.id(), SigningKey::from_secret(&*signing.secret_bytes()).unwrap()).shared();
+        let api = Arc::new(Client::new(url, "krowk_sk_sync_host_take_000000000000").signed_by(signer));
+        api.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), "host", &"0".repeat(32)).unwrap();
+        let current_generation = keys.newest().generation();
+        Options {
+            relay: String::new(),
+            env: "development".into(),
+            api,
+            device: device.id(),
+            signing,
+            keys,
+            current_generation,
+            keystore: krowk_client::keystore::Keystore::new(&root.join("keys")),
+            session: session.into(),
+            title: "t".into(),
+            cwd: String::new(),
+            ttl: LEASE_TTL,
+            keep: KEEP,
+            direct: None,
+        }
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("krowk-host-take-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// D8 (M1 of #200's review): a device T removed before a rotation to
+    /// g2, with the registry, plants a record under g1 — which T holds and
+    /// the host can still open down the chain — for the id the host is
+    /// about to publish. The host does not take it up: nothing it seals
+    /// afterwards is under a key T holds.
+    #[test]
+    fn d8_the_host_never_adopts_a_session_key_it_did_not_publish() {
+        let reg = krowk_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
+        let url = format!("{}/v1", reg.url());
+        let root = scratch("planted");
+        let g1 = krowk_client::user_key::UserKey::first();
+        let g2 = g1.next().unwrap();
+        let keys = UserKeys::new(g2.clone(), [g2.wrap_previous(&g1).unwrap()]).unwrap();
+        let id = "01a0ec7b-3333-7000-8000-0000000000d8";
+        let o = options(&root, &url, keys, id);
+        let raw = crate::daemon::ws::uuid(id);
+        let thiefs = SessionKey::generate();
+        let planted = e2e::hex(&e2e::wrap_session_key(&thiefs, &raw, &g1));
+        o.api.put_sync_session(id, &planted, Some(&e2e::hex(&e2e::seal_session_index(&thiefs, &raw, b"{}"))), None).unwrap();
+        assert!(e2e::unwrap_session_key(&e2e::unhex(&planted).unwrap(), &raw, &o.keys).is_ok(), "the planted key opens down the chain");
+        let refused = take(&o).err().expect("a record this device did not publish is refused");
+        assert!(refused.contains("did not publish"), "{refused}");
+
+        // Its own session is taken back — and only its own key for it.
+        let own = "01a0ec7b-3333-7000-8000-0000000000d9";
+        let mut o = o;
+        o.session = own.into();
+        let (key, _, held) = take(&o).unwrap();
+        o.api.release_lease(own, &held.token).unwrap();
+        let (again, _, _) = take(&o).unwrap();
+        assert_eq!(key.as_bytes(), again.as_bytes());
+        assert_eq!(o.keystore.published(own).unwrap().unwrap().generation, 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D8 (M2 of #200's review): a host behind the generation the chain
+    /// names publishes nothing, and records nothing.
+    #[test]
+    fn d8_a_host_behind_the_chains_generation_publishes_nothing() {
+        let reg = krowk_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
+        let url = format!("{}/v1", reg.url());
+        let root = scratch("behind");
+        let id = "01a0ec7b-4444-7000-8000-0000000000d8";
+        let mut o = options(&root, &url, UserKeys::new(krowk_client::user_key::UserKey::first(), []).unwrap(), id);
+        o.current_generation = 2;
+        let refused = take(&o).err().expect("generation 1 seals nothing when the chain names 2");
+        assert!(refused.contains("names generation 2"), "{refused}");
+        assert!(o.keystore.published(id).unwrap().is_none());
+        assert!(o.api.show_sync_session(id).is_err(), "nothing reached the registry");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

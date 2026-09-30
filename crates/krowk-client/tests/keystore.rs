@@ -190,3 +190,25 @@ fn d8_the_user_keys_held_are_never_lost_or_swapped() {
     assert_eq!(store.user_keys().unwrap().unwrap().open(1).unwrap(), g1);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// D8 (m1 of #200's review): a save that omits or garbles an older wrap —
+/// as a hostile registry's set could — keeps the ones already held.
+#[test]
+fn d8_a_save_never_drops_the_older_wraps_held() {
+    let root = scratch("user-keys-wraps");
+    let store = Keystore::new(&root.join("home"));
+    let g1 = UserKey::first();
+    let g2 = g1.next().unwrap();
+    let g3 = g2.next().unwrap();
+    store.save_user_keys(&UserKeys::new(g2.clone(), [g2.wrap_previous(&g1).unwrap()]).unwrap()).unwrap();
+    store.save_user_keys(&UserKeys::new(g2.clone(), []).unwrap()).unwrap();
+    assert_eq!(store.user_keys().unwrap().unwrap().open(1).unwrap(), g1, "the same generation without its wraps");
+    let mut bad = g2.wrap_previous(&g1).unwrap();
+    let n = bad.len();
+    bad[n - 1] ^= 1;
+    store.save_user_keys(&UserKeys::new(g3.clone(), [g3.wrap_previous(&g2).unwrap(), bad]).unwrap()).unwrap();
+    let held = store.user_keys().unwrap().unwrap();
+    assert_eq!(held.newest(), &g3);
+    assert_eq!(held.open(1).unwrap(), g1, "a rotation with a garbled older wrap");
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -140,6 +140,11 @@ impl World {
         Arc::new(c)
     }
 
+    /// The host's keystore, which records the sessions it published.
+    fn host_keystore(&self) -> krowk_client::keystore::Keystore {
+        krowk_client::keystore::Keystore::new(&self.root.join("host-keys"))
+    }
+
     /// The user keys both devices hold: generation 1 alone.
     fn keys(&self) -> UserKeys {
         UserKeys::new(self.user.clone(), []).unwrap()
@@ -222,6 +227,8 @@ impl World {
             device: a.key.id(),
             signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
             keys: self.keys(),
+            current_generation: self.user.generation(),
+            keystore: self.host_keystore(),
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),
@@ -243,6 +250,8 @@ impl World {
             device: a.key.id(),
             signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
             keys: self.keys(),
+            current_generation: self.user.generation(),
+            keystore: self.host_keystore(),
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),

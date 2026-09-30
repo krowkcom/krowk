@@ -37,7 +37,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   the chain of wraps. A machine holding only an older generation, such as one
   removed before a rotation, can't open a newer session, and is told which
   generation it would need. The user keys a machine holds live in
-  `user-keys.json` (`0600`, wrapped to its device key, replaced by rename).
+  `user-keys.json` (`0600`, wrapped to its device key, replaced by rename),
+  and a save never drops an older generation's wrap it already holds.
+  `krowk sync host` takes a session key back from the registry only if this
+  machine published it: `published-sessions.json` records each one, and a
+  record the machine didn't publish, or whose key changed, is refused.
   Sessions sealed under the account key no longer open: clean break. No
   command puts a user key on a machine yet, so these commands say it holds
   none until adding a device does.

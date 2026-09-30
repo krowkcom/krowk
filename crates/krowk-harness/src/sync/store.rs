@@ -358,7 +358,7 @@ pub struct Attached {
 /// key is what decides either way.
 pub fn open_session_key(s: &krowk_api::sync::SyncSession, id: &str, keys: &UserKeys) -> Result<SessionKey, String> {
     if !s.seal.is_empty() && s.seal != SEAL_USER {
-        return Err(format!("session {id} is sealed to its {} key, which this krowk does not open yet — upgrade krowk", printable_seal(&s.seal)));
+        return Err(format!("the registry says session {id} is sealed to a {} key, not your user key — this krowk opens only sessions sealed to the user key", printable_seal(&s.seal)));
     }
     let wrapped = e2e::unhex(&s.wrapped_key).ok_or("the session's wrapped key is not hex")?;
     e2e::unwrap_session_key(&wrapped, &crate::daemon::ws::uuid(id), keys).map_err(|e| e.to_string())

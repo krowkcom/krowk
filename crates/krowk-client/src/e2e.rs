@@ -557,6 +557,19 @@ pub fn wrap_session_key(session_key: &SessionKey, session: &[u8; 16], user: &Use
     blob
 }
 
+/// A new session's key wrapped under the newest generation this device
+/// holds, refused unless that is the generation the verified device chain
+/// names as current (`current_generation`, from `Chain::generation`). A
+/// device behind a rotation — offline, or fed a stale list — would
+/// otherwise seal under a generation a removed device still holds.
+pub fn seal_session_key(session_key: &SessionKey, session: &[u8; 16], keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, Error> {
+    let held = keys.newest().generation();
+    if held < current_generation {
+        return Err(err(format!("this device holds user key generation {held}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk devices`) and try again")));
+    }
+    Ok(wrap_session_key(session_key, session, keys.newest()))
+}
+
 /// The user key generation a wrapped session key names, read before
 /// anything is opened. Refused for a blob that is not one.
 pub fn session_key_generation(blob: &[u8]) -> Result<u32, Error> {
@@ -1110,6 +1123,18 @@ mod tests {
         assert!(unwrap_session_key(&blob, &SESSION, &impostor).is_err());
         let zero = [&blob[..2], &[0u8; 4][..], &blob[6..]].concat();
         assert!(session_key_generation(&zero).is_err());
+    }
+
+    /// D8 (M2 of #200's review): a device behind the generation the chain
+    /// names seals nothing.
+    #[test]
+    fn d8_a_device_behind_the_chains_generation_seals_nothing() {
+        let (_, held) = generations(2);
+        let key = SessionKey::generate();
+        let e = seal_session_key(&key, &SESSION, &held[0], 2).unwrap_err().0;
+        assert!(e.contains("generation 1") && e.contains("names generation 2") && e.contains("catch this device up"), "{e}");
+        let blob = seal_session_key(&key, &SESSION, &held[1], 2).unwrap();
+        assert_eq!(session_key_generation(&blob).unwrap(), 2);
     }
 
     /// Frozen: a later change to the layout or the associated data makes

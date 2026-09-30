@@ -134,7 +134,27 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let spawn = super::host::spawner(ctx)?;
-    let o = host::Options { relay: relay(ctx), env, api, device: k.device, signing: k.signing, keys: k.user, session, title: String::new(), cwd: cwd.display().to_string(), ttl: host::LEASE_TTL, keep: host::KEEP, direct: direct(ctx)? };
+    // TODO(D5/D6): `current_generation` must be the generation the
+    // verified device chain names, fetched and checked before anything is
+    // sealed (#200's review, M2). Until the sync commands read the chain,
+    // it is the newest this device holds, which refuses nothing.
+    let current_generation = k.user.newest().generation();
+    let o = host::Options {
+        relay: relay(ctx),
+        env,
+        api,
+        device: k.device,
+        signing: k.signing,
+        keys: k.user,
+        current_generation,
+        keystore: keystore(ctx)?,
+        session,
+        title: String::new(),
+        cwd: cwd.display().to_string(),
+        ttl: host::LEASE_TTL,
+        keep: host::KEEP,
+        direct: direct(ctx)?,
+    };
     krowk_harness::sync::run_host(o, ctx.io.env, &cwd, super::VERSION, &spawn).map_err(|(code, message)| fail(&code, message))
 }
 

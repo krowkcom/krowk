@@ -15,6 +15,9 @@
 //!   wrap of each older generation under the next. Every session key is
 //!   sealed under these (engineering/devices.md → Keys). Written only by
 //!   `save_user_keys`, which never goes back a generation.
+//! - `published-sessions.json`: the sessions this device published, each
+//!   with its wrapped key and generation — what a host checks the
+//!   registry's record against before taking a session key back.
 //!
 //! - `signing.json`: the device's Ed25519 relay signing key
 //!   (`e2e::SigningKey`), made the first time a relay is joined. It proves
@@ -34,6 +37,25 @@ pub const DEVICE_FILE: &str = "device.json";
 pub const ACCOUNT_FILE: &str = "account-key.json";
 pub const SIGNING_FILE: &str = "signing.json";
 pub const USER_KEYS_FILE: &str = "user-keys.json";
+pub const PUBLISHED_FILE: &str = "published-sessions.json";
+
+/// A session this device published: its wrapped key, hex, and the user key
+/// generation it was sealed under.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Published {
+    #[serde(default)]
+    pub wrapped: String,
+    #[serde(default)]
+    pub generation: u32,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct PublishedFile {
+    #[serde(default)]
+    version: u8,
+    #[serde(default)]
+    sessions: std::collections::BTreeMap<String, Published>,
+}
 
 #[derive(Default, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct DeviceFile {
@@ -318,19 +340,26 @@ impl Keystore {
     /// What the device already holds is never lost or swapped: `keys` must
     /// be the same newest generation, or a newer one that opens back down
     /// to exactly the one held (`UserKeys::adopt` checks a wrap the
-    /// registry delivered the same way). The caller has checked the newest
-    /// key against the verified device chain.
+    /// registry delivered the same way). The wraps of generations below the
+    /// one held are the ones already kept; `keys` adds only the links from
+    /// it up to its newest, and any the store lacked, so a set that omits
+    /// or garbles an older wrap loses nothing. The caller has checked the
+    /// newest key against the verified device chain.
     pub fn save_user_keys(&self, keys: &UserKeys) -> Result<(), String> {
         krowk_api::home::make(&self.home)?;
         let _lock = krowk_api::creds::lock(&self.account_path())?;
         let new = keys.newest();
+        let mut wraps: std::collections::BTreeMap<u32, Vec<u8>> = keys.wraps().map(|(g, w)| (g, w.to_vec())).collect();
         if let Some(held) = self.user_keys()? {
-            let held = held.newest();
-            if new.generation() < held.generation() {
-                return Err(format!("this device holds user key generation {}, newer than generation {} — refused, so no generation is lost", held.generation(), new.generation()));
+            let top = held.newest();
+            if new.generation() < top.generation() {
+                return Err(format!("this device holds user key generation {}, newer than generation {} — refused, so no generation is lost", top.generation(), new.generation()));
             }
-            if keys.open(held.generation()).ok().as_ref() != Some(held) {
-                return Err(format!("the user keys do not lead back to generation {} this device holds ({}) — refused", held.generation(), held.id()));
+            if keys.open(top.generation()).ok().as_ref() != Some(top) {
+                return Err(format!("the user keys do not lead back to generation {} this device holds ({}) — refused", top.generation(), top.id()));
+            }
+            for (g, w) in held.wraps() {
+                wraps.insert(g, w.to_vec());
             }
         }
         let (device, _) = self.device_or_create()?;
@@ -341,9 +370,46 @@ impl Keystore {
             generation: new.generation(),
             key_id: new.id().to_string(),
             wrapped: e2e::hex(&wrapped),
-            previous: keys.wraps().map(e2e::hex).collect(),
+            previous: wraps.values().map(|w| e2e::hex(w)).collect(),
         };
         krowk_api::creds::write(&self.user_keys_path(), &file)
+    }
+
+    pub fn published_path(&self) -> PathBuf {
+        self.home.join(PUBLISHED_FILE)
+    }
+
+    /// The wrapped key this device published for session `id`, if it
+    /// published one: the only session key a host takes back from the
+    /// registry. A record the registry serves for an id this device never
+    /// published could be one a removed device sealed, under a generation
+    /// it still holds, so it is never adopted.
+    pub fn published(&self, id: &str) -> Result<Option<Published>, String> {
+        let path = self.published_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let f: PublishedFile = krowk_api::creds::read(&path)?;
+        if f.version != 1 {
+            return Err(format!("{} is not a record of published sessions krowk reads — move it aside", path.display()));
+        }
+        Ok(f.sessions.get(id).cloned())
+    }
+
+    /// Records that this device published session `id` with `wrapped` (hex,
+    /// `e2e::seal_session_key`'s blob) under `generation`, before the
+    /// registry is told of it. A record already there for `id` is kept
+    /// unless it is replaced by the same.
+    pub fn record_published(&self, id: &str, wrapped: &str, generation: u32) -> Result<(), String> {
+        krowk_api::home::make(&self.home)?;
+        let path = self.published_path();
+        let _lock = krowk_api::creds::lock(&path)?;
+        let mut f: PublishedFile = if path.exists() { krowk_api::creds::read(&path)? } else { PublishedFile { version: 1, ..Default::default() } };
+        if f.version != 1 {
+            return Err(format!("{} is not a record of published sessions krowk reads — move it aside", path.display()));
+        }
+        f.sessions.insert(id.to_string(), Published { wrapped: wrapped.to_string(), generation });
+        krowk_api::creds::write(&path, &f)
     }
 
     fn save(&self, device: &DeviceKey, account: &AccountKey, origin: &str) -> Result<(), String> {
