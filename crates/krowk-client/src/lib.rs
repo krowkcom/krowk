@@ -9,6 +9,8 @@
 //!   and the only way back to it on a fresh machine (R-E2E-4).
 //! - `keystore`: the device key and the wrapped account key in krowk's
 //!   home, `0600`.
+//! - `pairing`: adding a device by a short code — SPAKE2 with key
+//!   confirmation both ways, as a sans-IO state machine for each side.
 //! - `protocol`: the typed commands, events and log lines every client
 //!   speaks, and the daemon's frame-envelope layout (`protocol::frame`).
 //!
@@ -17,6 +19,7 @@
 
 pub mod e2e;
 pub mod keystore;
+pub mod pairing;
 pub mod phrase;
 pub mod protocol;
 pub mod relay_link;
