@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn d8b_a_record_signed_by_a_listed_device_verifies_and_nothing_else_does() {
         let (laptop, phone) = (Dev::new("laptop"), Dev::new("phone"));
-        let (chain, start) = Chain::start(laptop.subject(), &laptop.signing, None, None, T).unwrap();
+        let (chain, start) = Chain::start(laptop.subject(), &laptop.signing, None, T).unwrap();
         let (chain, _) = chain.batch(&start.newest, vec![Change::Add(phone.subject())], laptop.id(), &laptop.signing, T + 1).unwrap();
         let (wrapped, sig) = record(&phone, &start.newest);
         let check = |session: &[u8; 16], wrapped: &[u8], seal: &str, signer: DeviceId, sig: &[u8], chain: &Chain| verify(session, wrapped, seal, signer, sig, chain, Signer::EverHeld);
@@ -131,7 +131,7 @@ mod tests {
         let (w, s) = record(&stranger, &start.newest);
         assert!(check(&SESSION, &w, SEAL_USER, stranger.id(), &s, &chain).unwrap_err().0.contains("never held"));
         // Another person's list: its generation 1 is another key id.
-        let (theirs, _) = Chain::start(phone.subject(), &phone.signing, None, None, T).unwrap();
+        let (theirs, _) = Chain::start(phone.subject(), &phone.signing, None, T).unwrap();
         assert!(check(&SESSION, &wrapped, SEAL_USER, phone.id(), &sig, &theirs).is_err(), "another person's list");
         let g2 = start.newest.next().unwrap();
         let (w, s) = record(&laptop, &g2);
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn d8b_a_removed_devices_record_is_read_but_never_written_under() {
         let (laptop, thief) = (Dev::new("laptop"), Dev::new("thief"));
-        let (chain, start) = Chain::start(laptop.subject(), &laptop.signing, None, None, T).unwrap();
+        let (chain, start) = Chain::start(laptop.subject(), &laptop.signing, None, T).unwrap();
         let (chain, _) = chain.batch(&start.newest, vec![Change::Add(thief.subject())], laptop.id(), &laptop.signing, T + 1).unwrap();
         let (chain, _) = chain.batch(&start.newest, vec![Change::Remove(thief.subject())], laptop.id(), &laptop.signing, T + 2).unwrap();
         let (w, s) = record(&thief, &start.newest);

@@ -229,7 +229,7 @@ fn d8b_the_device_list_is_kept_and_only_ever_extended() {
     let (laptop, laptop_signing) = (e2e::DeviceKey::generate(), e2e::SigningKey::generate());
     let (phone, phone_signing) = (e2e::DeviceKey::generate(), e2e::SigningKey::generate());
     let t = 1_790_000_000;
-    let (first, start) = Chain::start(subject("laptop", &laptop, &laptop_signing), &laptop_signing, None, None, t).unwrap();
+    let (first, start) = Chain::start(subject("laptop", &laptop, &laptop_signing), &laptop_signing, None, t).unwrap();
     assert_eq!(store.save_device_list(&start.entries).unwrap().head(), first.head());
     assert_eq!(std::fs::metadata(store.device_list_path()).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(store.device_list().unwrap().unwrap().head(), first.head());
@@ -240,7 +240,7 @@ fn d8b_the_device_list_is_kept_and_only_ever_extended() {
     assert_eq!((read.head(), read.devices().len()), (second.head(), 2));
     assert!(store.save_device_list(&start.entries).is_err(), "a shorter list");
     // Another person's list, as long: forked at the kept head.
-    let (_, theirs) = Chain::start(subject("other", &phone, &phone_signing), &phone_signing, None, None, t).unwrap();
+    let (_, theirs) = Chain::start(subject("other", &phone, &phone_signing), &phone_signing, None, t).unwrap();
     let (other, more) = Chain::verify(&theirs.entries, None).unwrap().batch(&theirs.newest, vec![Change::Add(subject("laptop", &laptop, &laptop_signing))], phone.id(), &phone_signing, t + 1).unwrap();
     assert_eq!(other.head().seq, second.head().seq);
     assert!(store.save_device_list(&[theirs.entries, more.entries].concat()).is_err(), "another list at the same seq");

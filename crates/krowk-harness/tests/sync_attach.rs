@@ -165,7 +165,7 @@ impl World {
         let mut list = self.list.lock().unwrap();
         let next = match list.take() {
             None => {
-                let (chain, start) = Chain::start(subject, &d.signing, None, None, T0).unwrap();
+                let (chain, start) = Chain::start(subject, &d.signing, None, T0).unwrap();
                 (chain, start.newest)
             }
             Some((chain, user)) => {

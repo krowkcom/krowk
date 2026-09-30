@@ -56,13 +56,13 @@ fn sign(e: &Entry, by: &[&K]) -> SignedEntry {
 }
 
 fn genesis(subjects: Vec<Subject>, generation: u32, time: u64) -> Entry {
-    Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects, generation, key_id: uk(generation.max(1)), carried: None, time, signers: Vec::new() }
+    Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects, generation, key_id: uk(generation.max(1)), time, signers: Vec::new() }
 }
 
 /// The entry after `prev`, carrying generation `g`.
 fn after(prev: &SignedEntry, action: Action, subject: Subject, g: u32, time: u64) -> Entry {
     let seq = Entry::decode(&prev.bytes).unwrap().seq + 1;
-    Entry { seq, prev: prev.hash(), action, subjects: vec![subject], generation: g, key_id: uk(g), carried: None, time, signers: Vec::new() }
+    Entry { seq, prev: prev.hash(), action, subjects: vec![subject], generation: g, key_id: uk(g), time, signers: Vec::new() }
 }
 
 struct World {
@@ -111,8 +111,6 @@ fn code(e: &Error) -> &'static str {
         ("the device list is empty", "empty"),
         ("which this krowk does not read", "unknown_version"),
         ("unknown action", "unknown_action"),
-        ("bad carried flag", "malformed"),
-        ("only entry 0 carries", "carried_after_genesis"),
         ("unknown device kind", "unknown_kind"),
         ("an entry is about one device", "subject_count"),
         ("only entry 0 is about two devices", "subject_count"),
@@ -178,7 +176,6 @@ fn state(c: &Chain) -> Value {
         "generation": c.generation(),
         "key_id": c.key_id().to_string(),
         "devices": devices,
-        "carried": c.carried().map(|k| k.to_string()),
     })
 }
 
@@ -325,26 +322,6 @@ fn cases() -> Vec<Value> {
         let replaced = push(b.clone(), propose(&b[1], &w.kit2, &w.kit, 2, T + 2));
         add("rotated_kit_cannot_sign", "the replaced kit is no longer on the list", push(replaced.clone(), sign(&after(&replaced[2], Action::Add, w.tablet.subject(), 2, T + 3), &[&w.kit])), None);
     }
-    // Start-over carry-forward: entry 0 may name the previous chain's
-    // newest user key id; the chain only records it.
-    {
-        let mut g = genesis(vec![w.laptop.subject()], 1, T);
-        g.carried = Some(uk(9));
-        let carried = sign(&g, &[&w.laptop]);
-        add("carried_at_genesis", "entry 0 may carry the previous chain's newest user key id", vec![carried.clone()], None);
-        let mut reuse = after(&carried, Action::RotateRecovery, w.kit2.subject(), 2, T + 1);
-        reuse.key_id = uk(9);
-        add("rotation_to_carried_id", "a rotation may not take the carried key id", vec![carried.clone(), sign(&reuse, &[&w.laptop, &w.kit2])], None);
-        let mut later = sign(&after(&carried, Action::Add, w.phone.subject(), 1, T + 1), &[&w.laptop]);
-        let flag_at = later.bytes.len() - 8 - 1 - 16 - 1;
-        later.bytes[flag_at] = 1;
-        later.bytes.splice(flag_at + 1..flag_at + 1, uk(9).0);
-        add("carried_after_genesis", "only entry 0 carries a key id", vec![carried.clone(), later], None);
-        let mut flag = b[0].clone();
-        let at = flag.bytes.len() - 8 - 1 - 16 * 2 - 1;
-        flag.bytes[at] = 2;
-        add("carried_bad_flag", "the carried flag is 0 or 1", vec![flag], None);
-    }
     add("time_is_informational", "nothing checks an entry's time", push(b.clone(), sign(&after(&b[1], Action::Add, w.tablet.subject(), 1, 1), &[&w.laptop])), pin(&b, 1));
     // Unicode. Names are compared with ASCII A–Z folded and every other
     // byte exact, and refused characters are a literal code-point list, so
@@ -427,14 +404,13 @@ fn d1_the_corpus_covers_both_outcomes_of_each_rule() {
     let v: Value = serde_json::from_str(&corpus()).unwrap();
     let cases = v["cases"].as_array().unwrap();
     let get = |n: &str| cases.iter().find(|c| c["name"] == n).unwrap_or_else(|| panic!("no case {n}"));
-    for n in ["genesis_device_only", "genesis_with_kit", "add_device", "remove_device", "batch_of_removals", "rotate_by_kit", "rotate_no_kit", "pinned_same_head", "pinned_longer", "carried_at_genesis", "time_is_informational"] {
+    for n in ["genesis_device_only", "genesis_with_kit", "add_device", "remove_device", "batch_of_removals", "rotate_by_kit", "rotate_no_kit", "pinned_same_head", "pinned_longer", "time_is_informational"] {
         assert!(get(n)["expect"]["accept"].is_object(), "{n} should be accepted");
     }
     let refused = cases.iter().filter(|c| c["expect"]["refuse"].is_object()).count();
     assert!(refused >= 40, "{refused} refusals");
     assert_eq!(get("remove_recovery")["expect"]["refuse"]["code"], "remove_recovery");
     assert_eq!(get("rotate_by_device_while_kit")["expect"]["refuse"]["code"], "signer_not_eligible");
-    assert_eq!(get("carried_at_genesis")["expect"]["accept"]["carried"], uk(9).to_string());
     for n in ["unicode_final_sigma", "unicode_sigma", "unicode_dotted_i", "unicode_sharp_s", "unicode_ogonek", "unicode_kelvin"] {
         assert!(get(n)["expect"]["accept"].is_object(), "{n} should be distinct names");
     }

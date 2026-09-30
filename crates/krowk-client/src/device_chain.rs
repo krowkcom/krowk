@@ -23,9 +23,6 @@
 //!   ed25519   [32]        the key it signs with
 //! generation  u32       the user key generation the entry leaves current
 //! key id      [16]      that generation's user key id (`user_key`)
-//! carried     u8        0, or 1 and then [16]: at seq 0 of a chain started
-//!                       over, the previous chain's newest user key id; 0
-//!                       at every other seq
 //! time        u64       Unix seconds, as the signer's clock read it;
 //!                       informational, nothing checks it
 //! signers     u8        how many (1–3), then each signer's device id [16],
@@ -72,9 +69,6 @@
 //! - A removal and a `rotate-recovery` rotate the key: they must leave the
 //!   generation exactly one higher, with a key id the chain has not held.
 //!   Every other entry carries the current key id unchanged.
-//! - `carried` is informational to the chain: it names the key the new
-//!   generation 1 wraps as its link back (`user_key::UserKeys::carry`),
-//!   which checks the carried key's id against it.
 //! - **Names** are what a person reads at every prompt and in recovery's
 //!   review. A name or OS may not hold any code point in these inclusive
 //!   ranges (`REFUSED_IN_NAMES`, Unicode 16's `Cc`, `Cf`, `Zl` and `Zp`):
@@ -168,8 +162,6 @@ pub struct Entry {
     pub subjects: Vec<Subject>,
     pub generation: u32,
     pub key_id: UserKeyId,
-    /// At seq 0 of a chain started over: the previous chain's newest key id.
-    pub carried: Option<UserKeyId>,
     pub time: u64,
     pub signers: Vec<DeviceId>,
 }
@@ -190,7 +182,6 @@ impl Entry {
         }
         b.extend_from_slice(&self.generation.to_be_bytes());
         b.extend_from_slice(&self.key_id.0);
-        put_carried(&mut b, self.carried);
         b.extend_from_slice(&self.time.to_be_bytes());
         b.push(self.signers.len() as u8);
         self.signers.iter().for_each(|s| b.extend_from_slice(&s.0));
@@ -200,9 +191,6 @@ impl Entry {
     fn check_counts(&self) -> Result<(), Error> {
         if self.subjects.is_empty() || self.subjects.len() > 2 {
             return Err(refuse(self.seq, "an entry is about one device, or two at entry 0"));
-        }
-        if self.carried.is_some() && self.seq != 0 {
-            return Err(refuse(self.seq, "only entry 0 carries a previous chain's key"));
         }
         let ordered = self.signers.windows(2).all(|w| w[0].0 < w[1].0);
         if self.signers.is_empty() || self.signers.len() > 3 || !ordered {
@@ -242,15 +230,6 @@ impl Entry {
     }
 }
 
-fn put_carried(b: &mut Vec<u8>, carried: Option<UserKeyId>) {
-    match carried {
-        None => b.push(0),
-        Some(id) => {
-            b.push(1);
-            b.extend_from_slice(&id.0);
-        }
-    }
-}
 
 fn signed_message(bytes: &[u8]) -> Vec<u8> {
     [SIGNATURE_LABEL, bytes].concat()
@@ -367,19 +346,10 @@ impl Reader<'_> {
         let subjects = (0..n).map(|_| self.subject()).collect::<Result<Vec<_>, _>>()?;
         let generation = u32::from_be_bytes(self.array()?);
         let key_id = UserKeyId(self.array()?);
-        let carried = self.carried()?;
         let time = u64::from_be_bytes(self.array()?);
         let n = self.u8()?;
         let signers = (0..n).map(|_| self.array().map(DeviceId)).collect::<Result<Vec<_>, _>>()?;
-        Ok(Entry { seq, prev, action, subjects, generation, key_id, carried, time, signers })
-    }
-
-    fn carried(&mut self) -> Result<Option<UserKeyId>, Error> {
-        match self.u8()? {
-            0 => Ok(None),
-            1 => Ok(Some(UserKeyId(self.array()?))),
-            f => Err(refuse(self.seq, format!("bad carried flag {f}"))),
-        }
+        Ok(Entry { seq, prev, action, subjects, generation, key_id, time, signers })
     }
 
     fn subject(&mut self) -> Result<Subject, Error> {
@@ -498,15 +468,12 @@ impl<'a> Change<'a> {
 
 /// What a batch or a new chain posts, all at once: the signed entries, the
 /// newest user key, each generation it made wrapped under the next
-/// (`links`, oldest first), the newest wrapped to devices (`wraps`), and,
-/// for a chain started over, the previous chain's newest key wrapped under
-/// the new generation 1 (`carried`, `user_key::UserKey::wrap_carried`).
+/// (`links`, oldest first), and the newest wrapped to devices (`wraps`).
 pub struct Batch {
     pub entries: Vec<SignedEntry>,
     pub newest: UserKey,
     pub links: Vec<Vec<u8>>,
     pub wraps: Vec<(DeviceId, Vec<u8>)>,
-    pub carried: Option<Vec<u8>>,
 }
 
 /// A chain verified up to its head: the devices on it now, and the user
@@ -516,7 +483,6 @@ pub struct Chain {
     head: Head,
     /// Every generation's key id, generation 1 first.
     key_ids: Vec<UserKeyId>,
-    carried: Option<UserKeyId>,
     devices: Vec<Device>,
     /// Every X25519 and Ed25519 key this chain has ever added, so none is
     /// added twice, a removed device included.
@@ -559,7 +525,7 @@ impl Chain {
     pub fn genesis(entry: &SignedEntry) -> Result<Chain, Error> {
         let e = Entry::decode(&entry.bytes)?;
         check_genesis(&e)?;
-        let mut chain = Chain { head: Head { seq: 0, hash: entry.hash() }, key_ids: vec![e.key_id], carried: e.carried, devices: Vec::new(), seen: Vec::new(), held: Vec::new(), root: entry.hash() };
+        let mut chain = Chain { head: Head { seq: 0, hash: entry.hash() }, key_ids: vec![e.key_id], devices: Vec::new(), seen: Vec::new(), held: Vec::new(), root: entry.hash() };
         chain.check_signatures(&e, entry)?;
         for s in &e.subjects {
             chain.add(s, 0)?;
@@ -641,7 +607,7 @@ impl Chain {
         if Some(e.generation) != g.checked_add(1) {
             return Err(refuse(e.seq, format!("it leaves user key generation {}, and a {:?} must leave {}", e.generation, e.action, g as u64 + 1)));
         }
-        if self.key_ids.contains(&e.key_id) || self.carried == Some(e.key_id) {
+        if self.key_ids.contains(&e.key_id) {
             return Err(refuse(e.seq, "it rotates to a user key id this list has held before"));
         }
         self.key_ids.push(e.key_id);
@@ -738,12 +704,6 @@ impl Chain {
         self.key_ids.get((generation as usize).checked_sub(1)?).copied()
     }
 
-    /// For a chain started over, the previous chain's newest key id, which
-    /// the carried link must open to (`UserKeys::carry`).
-    pub fn carried(&self) -> Option<UserKeyId> {
-        self.carried
-    }
-
     /// Every device on the list, the recovery device included: exactly the
     /// devices the current user key is wrapped to.
     pub fn devices(&self) -> &[Device] {
@@ -757,15 +717,13 @@ impl Chain {
     /// The next entry after this head, unsigned, carrying the current
     /// generation and key id; a rotation's caller sets both.
     pub fn next_entry(&self, action: Action, subject: Subject, time: u64) -> Entry {
-        Entry { seq: self.head.seq + 1, prev: self.head.hash, action, subjects: vec![subject], generation: self.generation(), key_id: self.key_id(), carried: None, time, signers: Vec::new() }
+        Entry { seq: self.head.seq + 1, prev: self.head.hash, action, subjects: vec![subject], generation: self.generation(), key_id: self.key_id(), time, signers: Vec::new() }
     }
 
     /// A new chain: seq 0 adding the first device and, if the person made a
     /// kit, the recovery device, each signing it; generation 1 made and
-    /// wrapped to both. Started over from a device that holds the previous
-    /// chain's newest key (`carry`), seq 0 names that key and generation 1
-    /// wraps it, so sessions sealed under the old chain stay readable.
-    pub fn start(first: Subject, first_key: &SigningKey, recovery: Option<(Subject, &SigningKey)>, carry: Option<&UserKey>, time: u64) -> Result<(Chain, Batch), Error> {
+    /// wrapped to both.
+    pub fn start(first: Subject, first_key: &SigningKey, recovery: Option<(Subject, &SigningKey)>, time: u64) -> Result<(Chain, Batch), Error> {
         let newest = UserKey::first();
         let mut subjects = vec![first.clone()];
         let mut keys = vec![(first.id(), first_key)];
@@ -773,12 +731,10 @@ impl Chain {
             subjects.push(r.clone());
             keys.push((r.id(), *k));
         }
-        let carried = carry.map(UserKey::id);
-        let entry = Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects, generation: 1, key_id: newest.id(), carried, time, signers: Vec::new() }.sign(&keys)?;
+        let entry = Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects, generation: 1, key_id: newest.id(), time, signers: Vec::new() }.sign(&keys)?;
         let chain = Chain::genesis(&entry)?;
         let wraps = chain.wrap_to(&newest, |_| true)?;
-        let carried = carry.map(|old| newest.wrap_carried(old)).transpose()?;
-        Ok((chain, Batch { entries: vec![entry], newest, links: Vec::new(), wraps, carried }))
+        Ok((chain, Batch { entries: vec![entry], newest, links: Vec::new(), wraps }))
     }
 
     /// Changes made as one post at `time`, signed by `signer`, a device on
@@ -799,7 +755,7 @@ impl Chain {
         }
         let rotated = !b.links.is_empty();
         let wraps = b.chain.wrap_to(&b.current, |d| rotated || b.added.contains(&d.id()))?;
-        Ok((b.chain, Batch { entries: b.entries, newest: b.current, links: b.links, wraps, carried: None }))
+        Ok((b.chain, Batch { entries: b.entries, newest: b.current, links: b.links, wraps }))
     }
 
     fn wrap_to(&self, key: &UserKey, to: impl Fn(&Device) -> bool) -> Result<Vec<(DeviceId, Vec<u8>)>, Error> {
@@ -908,7 +864,7 @@ mod tests {
         let laptop = Dev::new("laptop");
         let kit = Dev::recovery(&RecoveryKit::generate());
         let phone = Dev::new("phone");
-        let (chain, start) = Chain::start(laptop.subject(), &laptop.signing, Some((kit.subject(), &kit.signing)), None, T).unwrap();
+        let (chain, start) = Chain::start(laptop.subject(), &laptop.signing, Some((kit.subject(), &kit.signing)), T).unwrap();
         let (_, add) = chain.batch(&start.newest, vec![Change::Add(phone.subject())], laptop.id(), &laptop.signing, T + 1).unwrap();
         let entries = [start.entries, add.entries].concat();
         (laptop, kit, phone, entries, start.newest)
@@ -950,7 +906,7 @@ mod tests {
         let (laptop, other) = (Dev::new("laptop"), Dev::new("other"));
         let kit = Dev::recovery(&RecoveryKit::generate());
         let id = UserKey::first().id();
-        let genesis = |subjects: Vec<Subject>| Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects, generation: 1, key_id: id, carried: None, time: T, signers: Vec::new() };
+        let genesis = |subjects: Vec<Subject>| Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects, generation: 1, key_id: id, time: T, signers: Vec::new() };
         let e = genesis(vec![laptop.subject()]);
         assert!(gen0(&e.sign(&[laptop.signs()]).unwrap()).is_ok());
         assert!(gen0(&e.sign(&[other.signs()]).unwrap()).unwrap_err().0.contains("has not signed"));
@@ -980,7 +936,7 @@ mod tests {
     fn d1_a_chain_the_registry_builds_around_the_real_kit_is_refused() {
         let kit = Dev::recovery(&RecoveryKit::generate());
         let fake = Dev::new("laptop");
-        let e = Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects: vec![fake.subject(), kit.subject()], generation: 1, key_id: UserKey::first().id(), carried: None, time: T, signers: Vec::new() };
+        let e = Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects: vec![fake.subject(), kit.subject()], generation: 1, key_id: UserKey::first().id(), time: T, signers: Vec::new() };
         assert!(gen0(&e.sign(&[fake.signs()]).unwrap()).is_err());
         // Nor can it claim the kit signed, with a signature of its own.
         let claimed = e.sign(&[fake.signs(), (kit.id(), &fake.signing)]).unwrap();
@@ -1120,41 +1076,11 @@ mod tests {
     #[test]
     fn d1_with_no_kit_a_device_makes_one_at_once() {
         let laptop = Dev::new("laptop");
-        let (c, s) = Chain::start(laptop.subject(), &laptop.signing, None, None, T).unwrap();
+        let (c, s) = Chain::start(laptop.subject(), &laptop.signing, None, T).unwrap();
         let kit = Dev::recovery(&RecoveryKit::generate());
         let (c, b) = c.batch(&s.newest, vec![Change::RotateRecovery(kit.subject(), &kit.signing)], laptop.id(), &laptop.signing, T + 1).unwrap();
         assert_eq!(c.recovery().unwrap().id(), kit.id());
         assert_eq!((c.generation(), b.links.len()), (2, 1));
-    }
-
-    /// Start-over carry-forward: a new chain started from a device holding
-    /// the old chain's key names that key at entry 0, and its generation 1
-    /// wraps it, so the old chain's generations still open; nothing but the
-    /// named key passes as the carried one.
-    #[test]
-    fn d1_a_chain_started_over_carries_the_old_user_key_forward() {
-        let (laptop, _kit, phone, entries, g1) = three();
-        let (_, b) = chain(&entries).batch(&g1, vec![Change::Remove(phone.subject())], laptop.id(), &laptop.signing, T + 2).unwrap();
-        let old_newest = b.newest.clone();
-        let (c, start) = Chain::start(laptop.subject(), &laptop.signing, None, Some(&old_newest), T + 3).unwrap();
-        assert_eq!(c.carried(), Some(old_newest.id()));
-        let link = start.carried.clone().unwrap();
-        let keys = UserKeys::new(start.newest.clone(), []).unwrap().carry(&link, c.carried().unwrap(), b.links.clone()).unwrap();
-        let old = keys.carried().unwrap();
-        assert_eq!(old.newest(), &old_newest);
-        assert_eq!(old.open(1).unwrap(), g1);
-        // A link to another key, or checked against another id, is refused.
-        let impostor = UserKey::from_bytes(2, [7; 32]).unwrap();
-        let forged = start.newest.wrap_carried(&impostor).unwrap();
-        assert!(UserKeys::new(start.newest.clone(), []).unwrap().carry(&forged, c.carried().unwrap(), []).is_err());
-        assert!(UserKeys::new(start.newest.clone(), []).unwrap().carry(&link, impostor.id(), []).is_err());
-        // Only entry 0 carries.
-        let mut e = c.next_entry(Action::Add, Dev::new("x").subject(), T + 4);
-        e.carried = Some(old_newest.id());
-        assert!(e.sign(&[laptop.signs()]).is_err());
-        // A chain started from nothing carries nothing.
-        let (fresh, s0) = Chain::start(laptop.subject(), &laptop.signing, None, None, T).unwrap();
-        assert!(fresh.carried().is_none() && s0.carried.is_none());
     }
 
     #[test]
@@ -1177,7 +1103,7 @@ mod tests {
         fork.push(signed(&fork, Action::Add, Dev::new("rogue").subject(), &[&laptop], |_| {}));
         assert!(Chain::verify(&fork, Some(pin)).unwrap_err().0.contains("forked"));
         // A fork at seq 0: another genesis entirely, by the same devices.
-        let (c, s) = Chain::start(laptop.subject(), &laptop.signing, Some((kit.subject(), &kit.signing)), None, T + 5).unwrap();
+        let (c, s) = Chain::start(laptop.subject(), &laptop.signing, Some((kit.subject(), &kit.signing)), T + 5).unwrap();
         let (_, add) = c.batch(&s.newest, vec![Change::Add(phone.subject())], laptop.id(), &laptop.signing, T).unwrap();
         let other = [s.entries, add.entries].concat();
         assert!(Chain::verify(&other, Some(pin)).unwrap_err().0.contains("forked"));
@@ -1269,12 +1195,12 @@ mod tests {
         let first = Subject { kind: Kind::Device, name: "elvinas-arch".into(), os: "linux".into(), device: device.public(), signing: signing.public() };
         let recovery = Subject { kind: Kind::Recovery, name: "recovery kit".into(), os: String::new(), device: kit.key.public(), signing: kit.signing.public() };
         let key_id = UserKey::from_bytes(1, [0x42; 32]).unwrap().id();
-        (Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects: vec![first, recovery], generation: 1, key_id, carried: None, time: T, signers: Vec::new() }, signing, kit.signing)
+        (Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects: vec![first, recovery], generation: 1, key_id, time: T, signers: Vec::new() }, signing, kit.signing)
     }
 
-    const KAT_BYTES: &str = "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010201000c656c76696e61732d6172636800056c696e7578ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d598a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c02000c7265636f76657279206b6974000099431817513a8a27a56fef4349664cd4cfaada795fd8c5fa1e5720d05d554f3bdce4476f44aa387f22d70ae566ba8619e62aa418fc878b6c99166d5a80f5c4f30000000144a301e5d533c38411bc62b3f83654bb00000000006ab13b80028321f34eb2572c7a3cf59b2b4cc83579add03dec5d1aa3cbb5a9dd321d2c028d";
-    const KAT_HASH: &str = "49d01967e178f71e8547c8f4fe9d2df6dd5d69696912e557abc108a66d1cc265";
-    const KAT_SIGNATURES: &str = "028321f34eb2572c7a3cf59b2b4cc835796e7b25113bcd3007b841aca93a378ebd0aae501747e6386d63d5fe52b674991cba5cb7d8f3a949e5adb08f6b23f03ada31a6db205cb97b81fb3067f527f85500add03dec5d1aa3cbb5a9dd321d2c028dafadd977884fa25948e79d9cfc43b9a9e967f2565f4a456f2c1add738b5bd34278618ee926895c66b4ea143b43002a1f52c88b652c93648cd58813159e3f9e07";
+    const KAT_BYTES: &str = "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010201000c656c76696e61732d6172636800056c696e7578ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d598a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c02000c7265636f76657279206b6974000099431817513a8a27a56fef4349664cd4cfaada795fd8c5fa1e5720d05d554f3bdce4476f44aa387f22d70ae566ba8619e62aa418fc878b6c99166d5a80f5c4f30000000144a301e5d533c38411bc62b3f83654bb000000006ab13b80028321f34eb2572c7a3cf59b2b4cc83579add03dec5d1aa3cbb5a9dd321d2c028d";
+    const KAT_HASH: &str = "fbde1c49577f61b1d1d4d3afd122aad39a8cc4bc1382dcd2ce23d4e0a0fa33dd";
+    const KAT_SIGNATURES: &str = "028321f34eb2572c7a3cf59b2b4cc83579a765f0efce33c8001e7ae5fc8d8cc79fd8a3c25e7655f5929cde72aa8ae0622af72674badd438d7d23038627fe588890b5509bed73548014d2a3984e2c1ba20dadd03dec5d1aa3cbb5a9dd321d2c028d0615562c0c5831b6f737c0e431d1982a3fca4e811917d36af2e5a72615b5f37d8cc598f982b7761b98dacd6868a2cc351c56aa18d76691bb557f78ddc3ac4d0a";
 
     /// Prints the known answer above: run once with `--ignored
     /// --nocapture` when the format is meant to change.
@@ -1322,7 +1248,7 @@ mod review_attacks {
         let (rk, rs) = (DeviceKey::generate(), SigningKey::generate());
         let fake_first = subj(Kind::Device, "elvinas-arch", &rk, &rs);
         let rec = Subject { kind: Kind::Recovery, name: "recovery kit".into(), os: String::new(), device: rd.key.public(), signing: rd.signing.public() };
-        let e = Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects: vec![fake_first, rec], generation: 1, key_id: UserKey::first().id(), carried: None, time: 1, signers: Vec::new() };
+        let e = Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects: vec![fake_first, rec], generation: 1, key_id: UserKey::first().id(), time: 1, signers: Vec::new() };
         let g = e.sign(&[(rk.id(), &rs)]).unwrap();
         assert!(Chain::verify(&[g], None).is_err());
     }
@@ -1335,7 +1261,7 @@ mod review_attacks {
         let (pk, ps) = (DeviceKey::generate(), SigningKey::generate());
         let kit = RecoveryKit::generate().device();
         let rec = Subject { kind: Kind::Recovery, name: "recovery kit".into(), os: String::new(), device: kit.key.public(), signing: kit.signing.public() };
-        let (c, start) = Chain::start(subj(Kind::Device, "phone", &pk, &ps), &ps, Some((rec, &kit.signing)), None, 1).unwrap();
+        let (c, start) = Chain::start(subj(Kind::Device, "phone", &pk, &ps), &ps, Some((rec, &kit.signing)), 1).unwrap();
         let (c, _) = c.batch(&start.newest, vec![Change::Add(subj(Kind::Device, "laptop", &lk, &ls))], pk.id(), &ps, 2).unwrap();
         let thief_kit = RecoveryKit::generate().device();
         let trec = Subject { kind: Kind::Recovery, name: "thief kit".into(), os: String::new(), device: thief_kit.key.public(), signing: thief_kit.signing.public() };
@@ -1350,6 +1276,6 @@ mod review_attacks {
         let (k, s) = (DeviceKey::generate(), SigningKey::generate());
         let mut sub = subj(Kind::Device, "x", &k, &s);
         sub.name = "laptop\u{202E}kcabpu".into();
-        assert!(Chain::start(sub, &s, None, None, 1).is_err());
+        assert!(Chain::start(sub, &s, None, 1).is_err());
     }
 }
