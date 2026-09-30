@@ -8,7 +8,7 @@ use crate::http::{Req, Resp};
 use crate::page::{escape, page};
 use crate::store::{
     App, Authorization, CLI_AUTHORIZATION_GRACE, CLI_AUTHORIZATION_INTERVAL, CLI_AUTHORIZATION_LIFETIME,
-    FREE_PLAN_KEY_MARKER, generate_code, generate_slug, random_token, rfc3339, sha256_hex, workspace_for,
+    FREE_PLAN_KEY_MARKER, generate_code, person_for, generate_slug, random_token, rfc3339, sha256_hex, workspace_for,
 };
 use std::sync::Arc;
 
@@ -40,6 +40,11 @@ pub fn require_key(req: &Req) -> Result<String, Resp> {
     req.header("Authorization").and_then(bearer).map(|t| workspace_for(&t)).ok_or_else(unauthorized)
 }
 
+/// The request's bearer token, if it sent one that parses.
+pub fn token(req: &Req) -> Option<String> {
+    req.header("Authorization").and_then(bearer)
+}
+
 /// Whether the request's key belongs to a free workspace.
 pub fn free_plan(req: &Req) -> bool {
     req.header("Authorization").and_then(bearer).is_some_and(|t| t.contains(FREE_PLAN_KEY_MARKER))
@@ -59,13 +64,18 @@ pub fn show_key(req: &Req) -> Resp {
             ("name", Json::str("local")),
             ("workspace", Json::str(workspace_for(&token))),
             ("workspace_name", Json::str("Local workspace")),
+            // The person the key speaks for, which a pairing binds (devices.md
+            // → Adding a device). The registry's KeySerializer has no such
+            // field yet; this is the stand-in's guess at it.
+            ("user_id", Json::str(person_for(&token))),
         ]),
     )
 }
 
 /// Opens a browser login and answers both halves. No Idempotency-Key: a lost
 /// response means nobody saw the code, so the login charges nothing and lapses.
-pub fn create_cli_authorization(app: &App, site: &str) -> Resp {
+pub fn create_cli_authorization(app: &App, req: &Req, site: &str) -> Resp {
+    let fresh = matches!(req.query_get("fresh").as_str(), "true" | "1");
     let mut s = app.lock();
     // Swept here, the only moment the set grows, and only past a grace period
     // so a late poll still hears `410 expired` rather than `404`.
@@ -86,6 +96,7 @@ pub fn create_cli_authorization(app: &App, site: &str) -> Resp {
         key_id: String::new(),
         workspace: String::new(),
         spent: false,
+        fresh,
     };
     let body = Json::map([
         ("slug", Json::str(&auth.slug)),
@@ -186,7 +197,9 @@ pub fn decide_cli_authorization(app: &App, code: &str, approve: bool) -> Resp {
     if s.authorization_expired(&s.authorizations[&slug]) {
         return error(410, "expired", "This authorization has expired.", None);
     }
-    let a = s.authorizations.get_mut(&slug).unwrap();
+    let now = s.now();
+    let store = &mut *s;
+    let a = store.authorizations.get_mut(&slug).unwrap();
     if a.state != PENDING {
         return error(409, "already_decided", "This authorization was already answered.", None);
     }
@@ -195,6 +208,9 @@ pub fn decide_cli_authorization(app: &App, code: &str, approve: bool) -> Resp {
         a.token = format!("krowk_sk_{}", &random_token()[..32]);
         a.key_id = format!("key_{}", &sha256_hex(a.token.as_bytes())[..8]);
         a.workspace = workspace_for(&a.token);
+        if a.fresh {
+            store.sync.stamps.insert(sha256_hex(a.token.as_bytes()), now);
+        }
         APPROVED
     } else {
         a.state = DENIED;

@@ -183,6 +183,10 @@ pub struct Key {
     pub workspace: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
     pub workspace_name: String,
+    /// The person the key speaks for, which a pairing binds (devices.md →
+    /// Adding a device); empty for a service key, which cannot sync.
+    #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
+    pub user_id: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
     pub expires_at: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
