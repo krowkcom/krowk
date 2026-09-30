@@ -1,6 +1,6 @@
 //! Adding a device and syncing a session to it, end to end on two scratch
 //! homes against the stand-in registry (R-E2E-3, R-E2E-1, R-SYNC-1,
-//! R-SYNC-2): the laptop sets sync up from its phrase and puts a session in
+//! R-SYNC-2): the laptop sets sync up with an account key and puts a session in
 //! the registry, the desktop asks to join, the laptop approves the code it
 //! shows, and the desktop then opens the laptop's session — while nothing
 //! that crossed the wire, in either direction, held the session's title.
@@ -63,6 +63,20 @@ fn run(home: &Path, api: &str, token: &str, args: &[&str], input: &str) -> Outpu
     let mut child = command(home, api, token, args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
     child.wait_with_output().unwrap()
+}
+
+/// Sync on the account key, as joining and leases still run on it until
+/// sessions move to the user key: an account key in `home`, and the device
+/// registered with the workspace. What `krowk sync recover` did from the
+/// 24-word phrase before the recovery kit replaced it.
+fn set_up(home: &Path, api: &str, token: &str) -> Value {
+    let keys = Keystore::new(&home.join(".krowk"));
+    let (setup, _) = keys.recover(AccountKey::generate()).unwrap();
+    let signing = keys.signing_key().unwrap();
+    let public = e2e::hex(&signing.public().0);
+    let client = krowk_api::Client::new(api, token).signed_by(e2e::DeviceSigner::new(setup.device.id(), signing).shared());
+    let registered = client.register_device(&e2e::hex(&setup.device.public().0), &public, "laptop", &setup.account.id().to_string());
+    serde_json::json!({ "data": { "registered": registered.is_ok(), "account_key": setup.account.id().to_string() } })
 }
 
 fn json(out: &Output) -> Value {
@@ -139,8 +153,7 @@ fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
 
     // The laptop: sync set up from a phrase (no terminal needed), which
     // registers it with the workspace.
-    let words = krowk_client::phrase::encode(&AccountKey::generate());
-    let set_up = json(&run(&laptop, api, token, &["sync", "recover", "--json"], &format!("{}\n", *words)));
+    let set_up = set_up(&laptop, api, token);
     assert_eq!(set_up["data"]["registered"], true, "{set_up}");
     let account_id = set_up["data"]["account_key"].as_str().unwrap().to_string();
 
@@ -244,8 +257,7 @@ fn r_e2e_3_a_join_keeps_nothing_when_the_approved_key_is_not_the_one_named() {
     let api = format!("{}/v1", registry.url());
     let r = root("mismatch");
     let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
-    let words = krowk_client::phrase::encode(&AccountKey::generate());
-    json(&run(&laptop, &api, TOKEN, &["sync", "recover", "--json"], &format!("{}\n", *words)));
+    set_up(&laptop, &api, TOKEN);
 
     let other = AccountKey::generate().id().to_string();
     let mut join = command(&desktop, &api, TOKEN, &["sync", "join", &other, "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
@@ -253,28 +265,6 @@ fn r_e2e_3_a_join_keeps_nothing_when_the_approved_key_is_not_the_one_named() {
     json(&run(&laptop, &api, TOKEN, &["devices", "approve", &code, "--json"], ""));
     assert!(!join.wait().unwrap().success());
     assert!(!desktop.join(".krowk/account-key.json").exists(), "nothing was kept");
-    let _ = std::fs::remove_dir_all(&r);
-}
-
-/// R-SYNC-1: a free workspace is refused every sync call with a fix, and
-/// setting sync up still works locally — it just is not registered.
-#[test]
-fn r_sync_1_a_free_workspace_is_refused_with_a_fix_and_sync_still_sets_up_locally() {
-    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
-    let api = format!("{}/v1", registry.url());
-    let r = root("free");
-    let laptop = r.join("laptop");
-    let free = "krowk_sk_free_workspace";
-
-    let listed = run(&laptop, &api, free, &["devices", "list", "--json"], "");
-    assert!(!listed.status.success());
-    let err = String::from_utf8_lossy(&listed.stderr);
-    assert!(err.contains("sync_requires_paid_plan") && err.contains("upgrade this workspace to Pro"), "{err}");
-
-    let words = krowk_client::phrase::encode(&AccountKey::generate());
-    let set_up = json(&run(&laptop, &api, free, &["sync", "recover", "--json"], &format!("{}\n", *words)));
-    assert_eq!(set_up["data"]["registered"], false, "{set_up}");
-    assert!(laptop.join(".krowk/account-key.json").exists());
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -327,8 +317,7 @@ fn r_e2e_3_approve_and_join_refuse_without_a_person_at_a_terminal() {
     let api = format!("{}/v1", registry.url());
     let r = root("headless");
     let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
-    let words = krowk_client::phrase::encode(&AccountKey::generate());
-    json(&run(&laptop, &api, TOKEN, &["sync", "recover", "--json"], &format!("{}\n", *words)));
+    set_up(&laptop, &api, TOKEN);
 
     for (home, args) in [(&laptop, vec!["devices", "approve", &"0".repeat(32), "--json"]), (&desktop, vec!["sync", "join", &"0".repeat(32), "--json"])] {
         let out = attended(home, &api, TOKEN, &args).stdout(Stdio::piped()).stderr(Stdio::piped()).output().unwrap();
@@ -336,26 +325,6 @@ fn r_e2e_3_approve_and_join_refuse_without_a_person_at_a_terminal() {
         assert!(!out.status.success() && err.contains("confirmation_required") && err.contains("a person at a terminal"), "{err}");
     }
     assert!(!desktop.join(".krowk/device.json").exists(), "join asked for nothing");
-    let _ = std::fs::remove_dir_all(&r);
-}
-
-/// R-SYNC-1: with a key but no registry answering, setting sync up still
-/// succeeds, locally, and `krowk sync register` registers it later.
-#[test]
-fn r_sync_1_setup_with_the_registry_unreachable_stays_local_and_registers_later() {
-    let r = root("offline");
-    let laptop = r.join("laptop");
-    let words = krowk_client::phrase::encode(&AccountKey::generate());
-    let set_up = json(&run(&laptop, "http://127.0.0.1:9/v1", TOKEN, &["sync", "recover", "--json"], &format!("{}\n", *words)));
-    assert_eq!(set_up["data"]["registered"], false, "{set_up}");
-    assert!(set_up["summary"].as_str().unwrap().contains("krowk sync register"), "{set_up}");
-
-    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
-    let api = format!("{}/v1", registry.url());
-    let registered = json(&run(&laptop, &api, TOKEN, &["sync", "register", "--name", "work laptop", "--json"], ""));
-    assert_eq!(registered["data"]["registered"], true, "{registered}");
-    let listed = json(&run(&laptop, &api, TOKEN, &["devices", "list", "--json"], ""));
-    assert_eq!(listed["data"]["devices"][0]["name"], "work laptop");
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -511,8 +480,7 @@ fn r_relay_1_a_signing_key_is_required_and_set_once() {
     let api = format!("{}/v1", registry.url());
     let r = root("signing");
     let laptop = r.join("laptop");
-    let words = krowk_client::phrase::encode(&AccountKey::generate());
-    let set_up = json(&run(&laptop, &api, TOKEN, &["sync", "recover", "--json"], &format!("{}\n", *words)));
+    let set_up = set_up(&laptop, &api, TOKEN);
     assert_eq!(set_up["data"]["registered"], true, "{set_up}");
     let keys = Keystore::new(&laptop.join(".krowk"));
     let public = e2e::hex(&keys.device().unwrap().unwrap().public().0);
@@ -600,8 +568,7 @@ fn r_relay_1_an_approval_request_cannot_be_doubled_or_approved_by_its_device_key
     // signing keys, is no code at all.
     let r = root("doubled");
     let laptop = r.join("laptop");
-    let words = krowk_client::phrase::encode(&AccountKey::generate());
-    json(&run(&laptop, &api, TOKEN, &["sync", "recover", "--json"], &format!("{}\n", *words)));
+    set_up(&laptop, &api, TOKEN);
     let by_id = run(&laptop, &api, TOKEN, &["devices", "approve", &device.public().id().to_string(), "--json"], "");
     assert!(!by_id.status.success() && String::from_utf8_lossy(&by_id.stderr).contains("no_such_device_code"), "{}", String::from_utf8_lossy(&by_id.stderr));
     let code = e2e::approval_code(&device.public(), &own.public()).to_string();

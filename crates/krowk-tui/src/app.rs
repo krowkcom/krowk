@@ -61,6 +61,7 @@ enum Rank {
     Cost,
     /// Cut short rather than dropped.
     Model,
+    Kit,
     Offline,
     Help,
 }
@@ -538,6 +539,8 @@ pub struct App {
     pub offline: Option<String>,
     /// `<user>/<host>`, read once at start, for the status line.
     pub device: Option<String>,
+    /// Sync is set up and there is no recovery kit (`Options`).
+    pub no_recovery_kit: bool,
     /// Where the agent is at work: the branch and pull request are read
     /// there.
     pub follow: crate::pr::Follow,
@@ -691,6 +694,7 @@ impl App {
             turns: 0,
             offline: None,
             device: None,
+            no_recovery_kit: false,
             follow: crate::pr::Follow::default(),
             branch: String::new(),
             pr: None,
@@ -2169,6 +2173,11 @@ impl App {
                 StatusItem::Help => {}
             }
         }
+        // Whatever the list says, until there is a kit: losing every device
+        // without one loses every session.
+        if self.no_recovery_kit {
+            first.push(Part { rank: Rank::Kit, text: "no recovery kit".into(), style: yellow(), url: None });
+        }
         // Whatever the list says: being offline is news (R-OFF-1).
         if self.offline.is_some() {
             first.push(Part { rank: Rank::Offline, text: "offline".into(), style: yellow(), url: None });
@@ -3613,6 +3622,15 @@ mod tests {
         let mut a = app();
         a.on_line(&log(switch_turn("claude:work", "haiku")));
         assert_eq!(a.status_bar(), "Haiku (claude:work) | ? help\n$0.00");
+    }
+
+    /// D6: until a kit exists, the status line says there is none.
+    #[test]
+    fn d6_the_status_line_says_there_is_no_recovery_kit_until_there_is_one() {
+        let mut a = app();
+        assert!(!a.status_bar().contains("no recovery kit"));
+        a.no_recovery_kit = true;
+        assert!(a.status_bar().contains("no recovery kit"), "{}", a.status_bar());
     }
 
     #[test]

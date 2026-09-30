@@ -11,6 +11,8 @@ pub mod help;
 #[cfg(feature = "sessions")]
 mod budget;
 #[cfg(feature = "harness")]
+mod chain;
+#[cfg(feature = "harness")]
 mod devices;
 #[cfg(all(feature = "harness", unix))]
 mod host;
@@ -24,6 +26,10 @@ mod providers;
 mod sessions;
 #[cfg(feature = "harness")]
 mod status;
+#[cfg(feature = "harness")]
+mod recovery;
+#[cfg(feature = "harness")]
+mod reseal;
 #[cfg(feature = "harness")]
 mod sync;
 #[cfg(all(feature = "harness", unix))]
@@ -315,13 +321,19 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(feature = "harness")]
         ["sync"] => show_help(ctx, p),
         #[cfg(feature = "harness")]
-        ["sync", "init", ..] => sync::init(ctx),
+        ["sync", "init", ..] => recovery::init(ctx),
         #[cfg(feature = "harness")]
-        ["sync", "recover", ..] => sync::recover(ctx),
+        ["sync", "recover", ..] => recovery::recover(ctx),
+        #[cfg(feature = "harness")]
+        ["sync", "status", ..] => recovery::status(ctx),
+        #[cfg(feature = "harness")]
+        ["sync", "recovery"] => show_help(ctx, p),
+        #[cfg(feature = "harness")]
+        ["sync", "recovery", "new", ..] => recovery::new_kit(ctx),
+        #[cfg(feature = "harness")]
+        ["sync", "recovery", "check", ..] => recovery::check(ctx),
         #[cfg(feature = "harness")]
         ["sync", "join", ..] => sync::join(ctx, rest(2)),
-        #[cfg(feature = "harness")]
-        ["sync", "register", ..] => sync::register_now(ctx),
         #[cfg(all(feature = "harness", unix))]
         ["sync", "sessions", ..] => synced::sessions(ctx),
         #[cfg(all(feature = "harness", unix))]
@@ -486,7 +498,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         let connect = words.first() == Some(&"connect");
         // `--name` also names this machine where sync sets it up or
         // registers it: what the workspace's device list calls it.
-        let names_device = matches!(words.as_slice(), ["sync", "init" | "recover" | "join" | "register", ..] | ["devices", "approve", ..]);
+        let names_device = matches!(words.as_slice(), ["sync", "init" | "recover" | "join", ..] | ["devices", "approve", ..]);
         if f.given.contains("name") && !add && !connect && !names_device {
             return Err(fail("bad_flag", "`--name` is only a flag of `krowk connect`, `krowk providers add`, `krowk sync` and `krowk devices approve`"));
         }
@@ -494,6 +506,13 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
             if f.given.contains(name) && !add && !connect {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk connect` and `krowk providers add`")));
             }
+        }
+        let kit = words.starts_with(&["sync", "init"]) || words.starts_with(&["sync", "recovery", "new"]);
+        if f.given.contains("save") && !kit {
+            return Err(fail("bad_flag", "`--save` is only a flag of `krowk sync init` and `krowk sync recovery new`"));
+        }
+        if f.given.contains("start-over") && !words.starts_with(&["sync", "init"]) {
+            return Err(fail("bad_flag", "`--start-over` is only a flag of `krowk sync init`"));
         }
         if f.given.contains("force") && !words.starts_with(&["host", "stop"]) {
             return Err(fail("bad_flag", "`--force` is only a flag of `krowk host stop`"));

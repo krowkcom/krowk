@@ -93,6 +93,124 @@ struct DeviceApprovals {
     device_approvals: Vec<DeviceApproval>,
 }
 
+/// A device as the registry indexes the person's device list: for showing,
+/// and for a dashboard Revoke the chain has not caught up with
+/// (`revoked_at` set, `removed_seq` not). What a client trusts is the chain
+/// itself (`device_list`), verified against its pin; this is never a list
+/// anything is wrapped to.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ListedDevice {
+    #[serde(default, deserialize_with = "nullable")]
+    pub id: String,
+    /// `device` or `recovery`.
+    #[serde(default, deserialize_with = "nullable")]
+    pub kind: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub name: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub os: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub added_seq: Option<u64>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub removed_seq: Option<u64>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub last_seen_at: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub revoked_at: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ListedDevices {
+    #[serde(default, deserialize_with = "nullable")]
+    devices: Vec<ListedDevice>,
+}
+
+/// One entry of the device list as the registry serves it: the entry's
+/// bytes and its signature list, hex, exactly as posted.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ListEntry {
+    #[serde(default, deserialize_with = "nullable")]
+    pub seq: u64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub entry: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub signatures: String,
+}
+
+/// The person's device list, whole: every entry from seq 0 and the epoch it
+/// belongs to. A start-over is a new epoch, never a shorter chain.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeviceList {
+    pub epoch: u64,
+    pub entries: Vec<ListEntry>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct DeviceListPage {
+    #[serde(default, deserialize_with = "nullable")]
+    epoch: u64,
+    #[serde(default, deserialize_with = "nullable")]
+    entries: Vec<ListEntry>,
+    #[serde(default, deserialize_with = "nullable")]
+    next: Option<u64>,
+}
+
+/// What a device list post carries: the signed entries in order, each
+/// generation it makes after the first wrapped under the next (`links`,
+/// oldest first), and its newest generation wrapped to each device
+/// (`wraps`, device id → blob). Hex throughout.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ListPost {
+    pub entries: Vec<(String, String)>,
+    pub links: Vec<String>,
+    pub wraps: Vec<(String, String)>,
+}
+
+impl ListPost {
+    fn body(&self, start_over: Option<bool>) -> serde_json::Value {
+        let mut list = json!({
+            "entries": self.entries.iter().map(|(e, s)| json!({ "entry": e, "signatures": s })).collect::<Vec<_>>(),
+            "links": self.links,
+            "wraps": self.wraps.iter().map(|(d, w)| json!({ "device": d, "wrapped_key": w })).collect::<Vec<_>>(),
+        });
+        if let Some(s) = start_over {
+            list["start_over"] = json!(s);
+        }
+        json!({ "device_list": list })
+    }
+}
+
+/// One generation of the person's user key as the registry holds it: its
+/// id, and its wrap of the generation before (empty for generation 1).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Generation {
+    #[serde(default, deserialize_with = "nullable")]
+    pub generation: u32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub key_id: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub wrapped_previous: String,
+}
+
+/// A generation wrapped to the device that asked.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct UserKeyWrap {
+    #[serde(default, deserialize_with = "nullable")]
+    pub generation: u32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub wrapped_key: String,
+}
+
+/// The user key as the signing device can open it. The registry's word
+/// for any of it counts for nothing until the verified chain names the id.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct UserKeyWraps {
+    #[serde(default, deserialize_with = "nullable")]
+    pub generations: Vec<Generation>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub wraps: Vec<UserKeyWrap>,
+}
+
 /// A lease call's answer: the session's one writer, until when, the fence
 /// that orders holders, and — from an acquire or a hand-over only — the
 /// token every write the holder makes presents (R-SYNC-2). The token is the
@@ -300,6 +418,81 @@ impl Client {
     pub fn approve_device(&self, slug: &str, device: &str, account_key_id: &str, wrapped_account_key: &str) -> Result<DeviceApproval, Error> {
         let body = json!({ "approval": { "device": device, "account_key_id": account_key_id, "wrapped_account_key": wrapped_account_key } });
         Ok(self.call_as_device("PUT", &format!("/device_approvals/{}/approval", slug_path(slug)), Some(body), 1, None)?.0)
+    }
+
+    /// The person's device list from seq 0, every page, with the epoch.
+    /// Not signed: reading it proves nothing, and a recovering machine has
+    /// no device to sign as yet. A page that changes epoch midway, or
+    /// entries out of order, are refused rather than stitched together.
+    pub fn device_list(&self) -> Result<DeviceList, Error> {
+        let mut list = DeviceList::default();
+        let mut after: Option<u64> = None;
+        loop {
+            let path = match after {
+                Some(a) => format!("/device_list?after={a}"),
+                None => "/device_list".to_string(),
+            };
+            // A person with no list yet is told so, by some registries, as a
+            // refusal rather than an empty list.
+            let page: DeviceListPage = match self.get(&path) {
+                Err(e) if after.is_none() && e.code() == "no_device_list" => return Ok(list),
+                other => other?,
+            };
+            if after.is_some() && page.epoch != list.epoch {
+                return Err(crate::fail("device_list_changed", "the device list was reset while it was being read — try again"));
+            }
+            list.epoch = page.epoch;
+            for e in page.entries {
+                if e.seq != list.entries.len() as u64 {
+                    return Err(crate::fail("malformed_response", "the registry served the device list out of order"));
+                }
+                list.entries.push(e);
+            }
+            match page.next {
+                Some(n) if Some(n) != after && !list.entries.is_empty() => after = Some(n),
+                _ => return Ok(list),
+            }
+        }
+    }
+
+    /// `krowk sync init`: sequence 0 and generation 1 wrapped to the devices
+    /// it adds. `start_over` replaces a chain the person already has with a
+    /// new epoch. Signed by the first device. Sent once: a lost answer is
+    /// read back from the list, not posted again.
+    pub fn init_device_list(&self, post: &ListPost, start_over: bool) -> Result<u64, Error> {
+        #[derive(Deserialize)]
+        struct Created {
+            #[serde(default, deserialize_with = "nullable")]
+            epoch: u64,
+        }
+        let created: Created = self.call_as_device("POST", "/device_list", Some(post.body(Some(start_over))), 1, None)?.0;
+        Ok(created.epoch)
+    }
+
+    /// Appends entries to the device list, whole or not at all. Signed by a
+    /// device that signed every entry. Sent once: an entry names its seq,
+    /// so a retry after a lost answer is refused as stale anyway.
+    pub fn append_device_list(&self, post: &ListPost) -> Result<(), Error> {
+        let _: serde_json::Value = self.call_as_device("POST", "/device_list/entries", Some(post.body(None)), 1, None)?.0;
+        Ok(())
+    }
+
+    /// The user key's generations and the wraps to the signing device.
+    pub fn user_key(&self) -> Result<UserKeyWraps, Error> {
+        Ok(self.call_as_device("GET", "/user_key", None, ATTEMPTS, None)?.0)
+    }
+
+    /// Says the API key speaks for the signing device: after `recover`
+    /// adds this machine, and after a fresh sign-in on a device already on
+    /// the list. Set once per key.
+    pub fn claim_key_device(&self) -> Result<(), Error> {
+        let _: serde_json::Value = self.call_as_device("PUT", "/key/device", Some(json!({})), ATTEMPTS, None)?.0;
+        Ok(())
+    }
+
+    /// Every device the person's list has named, removed ones too.
+    pub fn listed_devices(&self) -> Result<Vec<ListedDevice>, Error> {
+        Ok(self.get::<ListedDevices>("/devices")?.devices)
     }
 
     pub fn list_sync_sessions(&self, before: &str, limit: i64) -> Result<SyncSessionPage, Error> {

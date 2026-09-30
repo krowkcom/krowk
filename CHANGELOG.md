@@ -11,6 +11,26 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk sync init` sets up your device list, with a 12-word recovery
+  kit.** It asks you to sign in again in the browser, then makes the list's
+  first entry: this device and the recovery device the kit derives, with your
+  user key wrapped to both. The kit's words are shown once on stderr ([Enter]
+  when written down, [s] to skip) or written to `--save FILE`, 0600, and are
+  never typed back. `--start-over` makes a new list; every other device on
+  the old one stops syncing and asks to be paired again. Run from a device
+  that holds your key, it seals the sessions it can open again under the new
+  list, and running it again finishes any it could not. The 24-word recovery phrase is gone, and so is
+  `krowk sync register`: a device is registered by being on the list.
+- **`krowk sync recover`** gets back in on a new machine from the kit's
+  words, typed at a prompt that doesn't echo them or piped in. It verifies
+  the list from its first entry, goes through every device on it with you to
+  keep or remove, and only then wraps your key, to what you kept.
+- **`krowk sync recovery new`** replaces the kit at once, with the old kit's
+  words, or from any device when you have none. **`krowk sync recovery
+  check`** tests the words against the list, locally. **`krowk sync status`**
+  verifies the list against the head this device pinned, and says when there
+  is no kit; so does the TUI's status line.
+
 - **Pairing a device by a short code, in the library.** `krowk_client::pairing`
   holds both sides of `krowk devices add` as sans-IO state machines: an
   eight-character code (Crockford base32 less `0` and `1`, shown `XXXX-XXXX`,

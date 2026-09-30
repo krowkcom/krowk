@@ -92,8 +92,7 @@ fn wire_shape_matches_the_registrys_routes() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// The sync calls (R-SYNC-1, R-E2E-3): a device registered by `krowk sync
-/// recover`, the listing, a new device's `krowk sync join` answered by the
+/// The sync calls (R-SYNC-1, R-E2E-3): a device registered, the listing, a new device's `krowk sync join` answered by the
 /// first one's `krowk devices approve` — run by the proxy the moment the
 /// request is opened, so the join polls once — and the session and lease
 /// calls krowk-api makes for the host (ticket 19 puts them behind a command).
@@ -130,9 +129,17 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     let laptop = Krowk { home: laptop_home, api: api.lock().unwrap().clone() };
     let desktop = Krowk { home: dir.join("desktop/home"), api: api.lock().unwrap().clone() };
 
-    let words = krowk_client::phrase::encode(&krowk_client::e2e::AccountKey::generate());
-    let recovered = laptop.piped(&["sync", "recover"], &format!("{}\n", *words));
-    let account = recovered["data"]["account_key"].as_str().unwrap().to_string();
+    // Sync on the account key, as joining still runs on it: set up in the
+    // laptop's home and registered, as `sync recover` did from the phrase.
+    let keys = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk"));
+    let (setup, _) = keys.recover(krowk_client::e2e::AccountKey::generate()).unwrap();
+    let signing = keys.signing_key().unwrap();
+    let signing_public = krowk_client::e2e::hex(&signing.public().0);
+    krowk_api::Client::new(&laptop.api, "krowk_sk_test")
+        .signed_by(krowk_client::e2e::DeviceSigner::new(setup.device.id(), signing).shared())
+        .register_device(&krowk_client::e2e::hex(&setup.device.public().0), &signing_public, "laptop", &setup.account.id().to_string())
+        .unwrap();
+    let account = setup.account.id().to_string();
     laptop.ok(&["devices", "list"], true);
     desktop.ok(&["sync", "join", &account], true);
 
@@ -158,7 +165,7 @@ fn sync_wire_shape_matches_the_registrys_routes() {
 
     assert!(failures.lock().unwrap().is_empty(), "{:?}", failures.lock().unwrap());
     let want = [
-        // `recover` with a key registers the device it set up. +signed marks
+        // The laptop's device, registered. +signed marks
         // the calls that act as a device, signed by its key (crypto.md →
         // Signed registry requests), and only they are.
         "POST /v1/devices +signed",
@@ -219,29 +226,6 @@ impl Krowk {
         }
         let out = cmd.output().unwrap();
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
-    }
-
-    /// `run`, keyed, with `input` on stdin.
-    #[cfg(all(feature = "harness", unix))]
-    fn piped(&self, args: &[&str], input: &str) -> Value {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_krowk"));
-        cmd.args(args)
-            .arg("--json")
-            .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", &self.home)
-            .env("KROWK_API_URL", &self.api)
-            .env("KROWK_NO_UPDATE_CHECK", "1")
-            .env("KROWK_TOKEN", "krowk_sk_test")
-            .current_dir(self.home.parent().unwrap())
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        let mut child = cmd.spawn().unwrap();
-        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
-        let out = child.wait_with_output().unwrap();
-        assert!(out.status.success(), "krowk {} failed:\n{}", args.join(" "), String::from_utf8_lossy(&out.stderr));
-        serde_json::from_slice(&out.stdout).unwrap()
     }
 
     fn ok(&self, args: &[&str], keyed: bool) -> Value {

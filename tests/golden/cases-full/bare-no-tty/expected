@@ -1086,13 +1086,71 @@ stdout:
       "subcommands": [
         {
           "name": "init",
-          "usage": "krowk sync init",
-          "summary": "Set up: a device key, an account key, its recovery phrase"
+          "usage": "krowk sync init [--save FILE] [--start-over]",
+          "summary": "Set up sync: this device, your user key and a recovery kit",
+          "flags": [
+            {
+              "name": "save",
+              "type": "string",
+              "default": "",
+              "usage": "Write the recovery kit to this file (0600) instead of showing it"
+            },
+            {
+              "name": "start-over",
+              "type": "bool",
+              "default": "false",
+              "usage": "Replace your device list; this device's sessions come along"
+            },
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
         },
         {
           "name": "recover",
           "usage": "krowk sync recover",
-          "summary": "Restore the account key here from its recovery phrase"
+          "summary": "Back in from the recovery kit's 12 words, on a new machine",
+          "flags": [
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
+        },
+        {
+          "name": "status",
+          "usage": "krowk sync status",
+          "summary": "This device's list, key generation and recovery kit, checked"
+        },
+        {
+          "name": "recovery",
+          "usage": "krowk sync recovery new|check",
+          "summary": "Your recovery kit: make a new one, or test its words",
+          "subcommands": [
+            {
+              "name": "new",
+              "usage": "krowk sync recovery new [--save FILE]",
+              "summary": "Make a new recovery kit",
+              "flags": [
+                {
+                  "name": "save",
+                  "type": "string",
+                  "default": "",
+                  "usage": "Write the new kit to this file (0600) instead of showing it"
+                }
+              ]
+            },
+            {
+              "name": "check",
+              "usage": "krowk sync recovery check",
+              "summary": "Test the kit's words against your device list, locally"
+            }
+          ]
         },
         {
           "name": "join",
@@ -1106,11 +1164,6 @@ stdout:
               "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
             }
           ]
-        },
-        {
-          "name": "register",
-          "usage": "krowk sync register [--name NAME]",
-          "summary": "Tell the workspace this machine holds its account key"
         },
         {
           "name": "sessions",
@@ -2398,13 +2451,71 @@ stdout:
       "subcommands": [
         {
           "name": "init",
-          "usage": "krowk sync init",
-          "summary": "Set up: a device key, an account key, its recovery phrase"
+          "usage": "krowk sync init [--save FILE] [--start-over]",
+          "summary": "Set up sync: this device, your user key and a recovery kit",
+          "flags": [
+            {
+              "name": "save",
+              "type": "string",
+              "default": "",
+              "usage": "Write the recovery kit to this file (0600) instead of showing it"
+            },
+            {
+              "name": "start-over",
+              "type": "bool",
+              "default": "false",
+              "usage": "Replace your device list; this device's sessions come along"
+            },
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
         },
         {
           "name": "recover",
           "usage": "krowk sync recover",
-          "summary": "Restore the account key here from its recovery phrase"
+          "summary": "Back in from the recovery kit's 12 words, on a new machine",
+          "flags": [
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
+        },
+        {
+          "name": "status",
+          "usage": "krowk sync status",
+          "summary": "This device's list, key generation and recovery kit, checked"
+        },
+        {
+          "name": "recovery",
+          "usage": "krowk sync recovery new|check",
+          "summary": "Your recovery kit: make a new one, or test its words",
+          "subcommands": [
+            {
+              "name": "new",
+              "usage": "krowk sync recovery new [--save FILE]",
+              "summary": "Make a new recovery kit",
+              "flags": [
+                {
+                  "name": "save",
+                  "type": "string",
+                  "default": "",
+                  "usage": "Write the new kit to this file (0600) instead of showing it"
+                }
+              ]
+            },
+            {
+              "name": "check",
+              "usage": "krowk sync recovery check",
+              "summary": "Test the kit's words against your device list, locally"
+            }
+          ]
         },
         {
           "name": "join",
@@ -2418,11 +2529,6 @@ stdout:
               "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
             }
           ]
-        },
-        {
-          "name": "register",
-          "usage": "krowk sync register [--name NAME]",
-          "summary": "Tell the workspace this machine holds its account key"
         },
         {
           "name": "sessions",
@@ -3724,13 +3830,71 @@ stdout:
       "subcommands": [
         {
           "name": "init",
-          "usage": "krowk sync init",
-          "summary": "Set up: a device key, an account key, its recovery phrase"
+          "usage": "krowk sync init [--save FILE] [--start-over]",
+          "summary": "Set up sync: this device, your user key and a recovery kit",
+          "flags": [
+            {
+              "name": "save",
+              "type": "string",
+              "default": "",
+              "usage": "Write the recovery kit to this file (0600) instead of showing it"
+            },
+            {
+              "name": "start-over",
+              "type": "bool",
+              "default": "false",
+              "usage": "Replace your device list; this device's sessions come along"
+            },
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
         },
         {
           "name": "recover",
           "usage": "krowk sync recover",
-          "summary": "Restore the account key here from its recovery phrase"
+          "summary": "Back in from the recovery kit's 12 words, on a new machine",
+          "flags": [
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
+        },
+        {
+          "name": "status",
+          "usage": "krowk sync status",
+          "summary": "This device's list, key generation and recovery kit, checked"
+        },
+        {
+          "name": "recovery",
+          "usage": "krowk sync recovery new|check",
+          "summary": "Your recovery kit: make a new one, or test its words",
+          "subcommands": [
+            {
+              "name": "new",
+              "usage": "krowk sync recovery new [--save FILE]",
+              "summary": "Make a new recovery kit",
+              "flags": [
+                {
+                  "name": "save",
+                  "type": "string",
+                  "default": "",
+                  "usage": "Write the new kit to this file (0600) instead of showing it"
+                }
+              ]
+            },
+            {
+              "name": "check",
+              "usage": "krowk sync recovery check",
+              "summary": "Test the kit's words against your device list, locally"
+            }
+          ]
         },
         {
           "name": "join",
@@ -3744,11 +3908,6 @@ stdout:
               "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
             }
           ]
-        },
-        {
-          "name": "register",
-          "usage": "krowk sync register [--name NAME]",
-          "summary": "Tell the workspace this machine holds its account key"
         },
         {
           "name": "sessions",
@@ -5050,13 +5209,71 @@ tty:
       "subcommands": [
         {
           "name": "init",
-          "usage": "krowk sync init",
-          "summary": "Set up: a device key, an account key, its recovery phrase"
+          "usage": "krowk sync init [--save FILE] [--start-over]",
+          "summary": "Set up sync: this device, your user key and a recovery kit",
+          "flags": [
+            {
+              "name": "save",
+              "type": "string",
+              "default": "",
+              "usage": "Write the recovery kit to this file (0600) instead of showing it"
+            },
+            {
+              "name": "start-over",
+              "type": "bool",
+              "default": "false",
+              "usage": "Replace your device list; this device's sessions come along"
+            },
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
         },
         {
           "name": "recover",
           "usage": "krowk sync recover",
-          "summary": "Restore the account key here from its recovery phrase"
+          "summary": "Back in from the recovery kit's 12 words, on a new machine",
+          "flags": [
+            {
+              "name": "name",
+              "type": "string",
+              "default": "",
+              "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+            }
+          ]
+        },
+        {
+          "name": "status",
+          "usage": "krowk sync status",
+          "summary": "This device's list, key generation and recovery kit, checked"
+        },
+        {
+          "name": "recovery",
+          "usage": "krowk sync recovery new|check",
+          "summary": "Your recovery kit: make a new one, or test its words",
+          "subcommands": [
+            {
+              "name": "new",
+              "usage": "krowk sync recovery new [--save FILE]",
+              "summary": "Make a new recovery kit",
+              "flags": [
+                {
+                  "name": "save",
+                  "type": "string",
+                  "default": "",
+                  "usage": "Write the new kit to this file (0600) instead of showing it"
+                }
+              ]
+            },
+            {
+              "name": "check",
+              "usage": "krowk sync recovery check",
+              "summary": "Test the kit's words against your device list, locally"
+            }
+          ]
         },
         {
           "name": "join",
@@ -5070,11 +5287,6 @@ tty:
               "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
             }
           ]
-        },
-        {
-          "name": "register",
-          "usage": "krowk sync register [--name NAME]",
-          "summary": "Tell the workspace this machine holds its account key"
         },
         {
           "name": "sessions",

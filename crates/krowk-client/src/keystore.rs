@@ -233,28 +233,12 @@ impl Keystore {
         e2e::unwrap_account_key(&blob, id, &device).map(Some).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// First sync setup: a device key if there is none, and a new account
-    /// key wrapped to it. `confirm` is shown the key (to show its phrase and
-    /// have it entered again) before anything about the account is written;
-    /// when it refuses, nothing is kept but the device key.
-    pub fn init(&self, confirm: impl FnOnce(&AccountKey) -> Result<(), String>) -> Result<Setup, String> {
-        krowk_api::home::make(&self.home)?;
-        let _lock = krowk_api::creds::lock(&self.account_path())?;
-        if let Some(id) = self.account_id()? {
-            return Err(format!("this home already holds account key {id} — sync is set up here; `krowk sync recover` restores a different one"));
-        }
-        let (device, device_created) = self.device_or_create()?;
-        let account = AccountKey::generate();
-        confirm(&account)?;
-        self.save(&device, &account, "init")?;
-        Ok(Setup { device, device_created, account })
-    }
-
-    /// A fresh machine: the account key from its recovery phrase, wrapped
-    /// to this device (made now if it has no key). A different account key
-    /// already here is replaced only when a phrase put it here too — the
-    /// retry after a word typed wrong — and refused when `init` made it.
-    /// `replaced` names the key a retry replaced.
+    /// The account key, wrapped to this device (made now if it has no
+    /// key). A different account key already here is replaced only when
+    /// `recover` put it here too, and refused when `join` did.
+    /// `replaced` names the key it replaced. What sets the account key up
+    /// for the session sync that still runs on it, until that moves to the
+    /// user key.
     pub fn recover(&self, account: AccountKey) -> Result<(Setup, Option<KeyId>), String> {
         krowk_api::home::make(&self.home)?;
         let _lock = krowk_api::creds::lock(&self.account_path())?;

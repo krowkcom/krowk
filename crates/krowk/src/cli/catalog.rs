@@ -477,13 +477,30 @@ pub fn catalog(version: &str) -> Catalog {
 fn sync_command() -> Command {
     Command {
         subcommands: vec![
-            cmd("init", "krowk sync init", "Set up: a device key, an account key, its recovery phrase"),
-            cmd("recover", "krowk sync recover", "Restore the account key here from its recovery phrase"),
+            Command {
+                flags: vec![
+                    flag("save", STRING, "Write the recovery kit to this file (0600) instead of showing it"),
+                    flag("start-over", BOOL, "Replace your device list; this device's sessions come along"),
+                    flag("name", STRING, "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"),
+                ],
+                ..cmd("init", "krowk sync init [--save FILE] [--start-over]", "Set up sync: this device, your user key and a recovery kit")
+            },
+            Command {
+                flags: vec![flag("name", STRING, "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
+                ..cmd("recover", "krowk sync recover", "Back in from the recovery kit's 12 words, on a new machine")
+            },
+            cmd("status", "krowk sync status", "This device's list, key generation and recovery kit, checked"),
+            Command {
+                subcommands: vec![
+                    Command { flags: vec![flag("save", STRING, "Write the new kit to this file (0600) instead of showing it")], ..cmd("new", "krowk sync recovery new [--save FILE]", "Make a new recovery kit") },
+                    cmd("check", "krowk sync recovery check", "Test the kit's words against your device list, locally"),
+                ],
+                ..cmd("recovery", "krowk sync recovery new|check", "Your recovery kit: make a new one, or test its words")
+            },
             Command {
                 flags: vec![flag("name", STRING, "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
                 ..cmd("join", "krowk sync join [ACCOUNT_KEY_ID]", "Add this machine, approved from one that already syncs")
             },
-            cmd("register", "krowk sync register [--name NAME]", "Tell the workspace this machine holds its account key"),
             #[cfg(unix)]
             cmd("sessions", "krowk sync sessions", "The synced sessions this machine can open"),
             #[cfg(unix)]
@@ -810,15 +827,12 @@ with `claude auth login` or `codex login`).",
         "providers" => "Below `krowk connect`: API keys, logins, Claude Code and Codex accounts.",
         #[cfg(feature = "harness")]
         "sync" => "\
-Sessions are encrypted on this machine before they leave it. `init` shows the
-account key as 24 words once, with its key id; `recover` takes them on a new
-machine and shows the id it restored. Type them at its prompt, or pipe them
-from a file (`krowk sync recover < phrase.txt`) — never `echo`, which keeps
-them in your shell history. Or skip the words: `join` shows a code, and
-`krowk devices approve` on a machine that already syncs answers it; read the
-account key id off that machine, never from an error or a web page. The keys
-are kept in krowk's home, 0600; with a key to a Pro workspace the device is
-registered there too.",
+Sessions are encrypted on this machine before they leave it. `init` sets up
+your device list and shows a recovery kit, 12 words, once: the only way back
+in if every device is lost. `recover` takes them on a new machine — at its
+prompt, or piped from a file (`krowk sync recover < kit.txt`), never `echo`,
+which keeps them in your shell history. `init`, `recovery new` and removing
+a device ask you to sign in again in the browser.",
         #[cfg(feature = "harness")]
         "devices" => "\
 Adding a machine: run `krowk sync join` on it, then `krowk devices approve`

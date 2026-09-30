@@ -1,29 +1,26 @@
-//! `krowk sync init` and `krowk sync recover`, the built binary on scratch
-//! homes (R-E2E-3, R-E2E-4): first setup at a terminal shows a phrase and
-//! keeps the account key only once it is typed back; a second home given
-//! the phrase holds the identical account key; the phrase is in no file.
+//! The recovery kit on the built binary, on scratch homes and with no
+//! registry to reach (D6): what `krowk sync init`, `recover` and `recovery
+//! check` refuse or decide before anything leaves the machine.
 
 #![cfg(all(feature = "harness", unix))]
 
-#[path = "common/pty.rs"]
-mod pty;
-
-use serde_json::Value;
+use krowk_client::device_chain::{Chain, Kind, Subject};
+use krowk_client::keystore::Keystore;
+use krowk_client::recovery::RecoveryKit;
+use krowk_client::user_key::UserKeys;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::Duration;
 
 fn root(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("krowk-sync-{name}-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("krowk-kit-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    for d in ["laptop", "desktop"] {
-        std::fs::create_dir_all(root.join(d)).unwrap();
-    }
+    std::fs::create_dir_all(&root).unwrap();
     root.canonicalize().unwrap()
 }
 
-/// krowk with `home` as HOME and nothing else of this machine's.
+/// krowk with `home` as HOME and nothing else of this machine's, and a
+/// registry nobody answers at.
 fn command(home: &Path, args: &[&str]) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
     c.args(args)
@@ -32,123 +29,149 @@ fn command(home: &Path, args: &[&str]) -> Command {
         .env("HOME", home)
         .env("KROWK_NO_UPDATE_CHECK", "1")
         .env("KROWK_API_URL", "http://127.0.0.1:9/v1")
+        .env("KROWK_TOKEN", "krowk_sk_kit")
         .current_dir(home)
         .stdin(Stdio::null());
     c
 }
 
+/// With the debug build's stand-in for the person, and `input` piped in.
 fn piped(home: &Path, args: &[&str], input: &str) -> Output {
-    let mut child = command(home, args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut c = command(home, args);
+    c.env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1");
+    let mut child = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
     child.wait_with_output().unwrap()
 }
 
-/// The 24 numbered words `init` printed.
-fn phrase_in(text: &str) -> String {
-    let tokens: Vec<&str> = text.split_whitespace().collect();
-    let words: Vec<&str> = tokens.windows(2).filter(|w| w[0].strip_suffix('.').is_some_and(|n| n.parse::<u8>().is_ok_and(|n| (1..=24).contains(&n)))).map(|w| w[1]).take(24).collect();
-    assert_eq!(words.len(), 24, "{text}");
-    words.join(" ")
+/// `home` set up as `sync init` leaves it: its device first on a list,
+/// with `kit` as the recovery device when there is one, the list kept and
+/// generation 1 held.
+fn set_up(home: &Path, kit: Option<&RecoveryKit>) {
+    let ks = Keystore::new(&home.join(".krowk"));
+    let (device, signing) = (ks.device_key().unwrap(), ks.signing_key().unwrap());
+    let me = Subject { kind: Kind::Device, name: "laptop".into(), os: "linux".into(), device: device.public(), signing: signing.public() };
+    let kd = kit.map(RecoveryKit::device);
+    let recovery = kd.as_ref().map(|d| (Subject { kind: Kind::Recovery, name: "recovery kit".into(), os: String::new(), device: d.key.public(), signing: d.signing.public() }, &d.signing));
+    let (_, start) = Chain::start(me, &signing, recovery, 1_790_000_000).unwrap();
+    ks.save_device_list(&start.entries).unwrap();
+    ks.save_user_keys(&UserKeys::new(start.newest, []).unwrap()).unwrap();
 }
 
-fn files_holding(dir: &Path, needle: &str) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let p = e.path();
-        if p.is_dir() && !p.is_symlink() {
-            found.extend(files_holding(&p, needle));
-        } else if std::fs::read(&p).is_ok_and(|b| String::from_utf8_lossy(&b).contains(needle)) {
-            found.push(p);
-        }
-    }
-    found
+fn err(out: &Output) -> String {
+    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
+/// D6: init shows the kit and asks for a fresh sign-in, so off a terminal
+/// it refuses before either, and nothing is written.
 #[test]
-fn r_e2e_4_sync_init_needs_a_terminal() {
+fn d6_sync_init_needs_a_person_at_a_terminal() {
     let r = root("notty");
-    let out = command(&r.join("laptop"), &["sync", "init", "--json"]).output().unwrap();
-    assert!(!out.status.success());
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("confirmation_required") && err.contains("needs a person at a terminal"), "{err}");
-    assert!(!r.join("laptop/.krowk/account-key.json").exists());
+    let e = err(&command(&r, &["sync", "init", "--json"]).output().unwrap());
+    assert!(e.contains("confirmation_required") && e.contains("a person at a terminal"), "{e}");
+    assert!(!r.join(".krowk/device-list.json").exists() && !r.join(".krowk/user-keys.json").exists());
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// D6: the kit is 12 words. The 24-word phrase is gone, and a word typed
+/// wrong is refused with which, before anything is asked of the registry.
+#[test]
+fn d6_recover_refuses_words_that_are_not_a_kit_before_anything_leaves_the_machine() {
+    let r = root("words");
+    let kit = RecoveryKit::generate();
+    let words = kit.words().to_string();
+    let first = words.split(' ').next().unwrap().to_string();
+    for (input, why) in [
+        (format!("{words} {words}"), "12 words, and this is 24"),
+        (words.replacen(&first, "zzzz", 1), "word 1 is not one a recovery kit uses"),
+    ] {
+        let e = err(&piped(&r, &["sync", "recover", "--json"], &input));
+        assert!(e.contains("bad_recovery_kit") && e.contains(why), "{e}");
+        assert!(!e.contains(&words[..12]), "the words are never echoed: {e}");
+    }
+    assert!(!r.join(".krowk/device-list.json").exists());
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// D6: `recovery check` tests the words against the list as this device
+/// last verified it, with no registry to ask.
+#[test]
+fn d6_recovery_check_tests_the_words_locally() {
+    let r = root("check");
+    let (kit, other) = (RecoveryKit::generate(), RecoveryKit::generate());
+    set_up(&r, Some(&kit));
+
+    let out = piped(&r, &["sync", "recovery", "check", "--json"], &kit.words());
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["data"]["matches"], true, "{v}");
+
+    let e = err(&piped(&r, &["sync", "recovery", "check", "--json"], &other.words()));
+    assert!(e.contains("kit_not_on_list"), "{e}");
+
+    // And a list with no kit says so, rather than that the words are wrong.
+    let bare = root("check-bare");
+    set_up(&bare, None);
+    let r = bare;
+    let e = err(&piped(&r, &["sync", "recovery", "check", "--json"], &kit.words()));
+    assert!(e.contains("no recovery kit") && e.contains("krowk sync recovery new"), "{e}");
     let _ = std::fs::remove_dir_all(&r);
 }
 
 #[test]
-fn r_e2e_4_the_phrase_from_sync_init_restores_the_account_key_on_a_fresh_home() {
-    let r = root("recover");
-    let wait = Duration::from_secs(20);
+fn d6_status_on_a_machine_not_set_up_says_how_to_set_it_up() {
+    let r = root("status");
+    let e = err(&command(&r, &["sync", "status", "--json"]).output().unwrap());
+    assert!(e.contains("not_set_up") && e.contains("krowk sync init") && e.contains("krowk sync recover"), "{e}");
+    let _ = std::fs::remove_dir_all(&r);
+}
 
-    let mut c = command(&r.join("laptop"), &["sync", "init", "--json"]);
-    c.env("TERM", "xterm-256color");
-    let mut t = pty::Pty::spawn(c, 120, 30);
-    assert!(t.wait_for("Type the phrase back", wait).is_some(), "{}", t.text());
-    let phrase = phrase_in(&t.text());
-    // A wrong word first: asked again, nothing kept yet.
-    let wrong = phrase.replacen(phrase.split(' ').next().unwrap(), "zzzz", 1);
-    t.write(format!("{wrong}\r").as_bytes());
-    assert!(t.wait_for("is not one a recovery phrase uses", wait).is_some(), "{}", t.text());
-    assert!(!r.join("laptop/.krowk/account-key.json").exists());
-    std::thread::sleep(Duration::from_millis(300));
-    t.write(format!("{phrase}\r").as_bytes());
-    let exit = t.wait(wait).expect("krowk sync init finished");
-    assert!(exit.success(), "{}", t.text());
-    let text = t.text();
-    // The result, pretty-printed on the terminal after the prompts.
-    let json_at = text.rfind("{\r\n  \"ok\"").unwrap_or_else(|| panic!("{text}"));
-    let made: Value = serde_json::Deserializer::from_str(&text[json_at..].replace("\r\n", "\n")).into_iter::<Value>().next().unwrap().unwrap();
-    let account = made["data"]["account_key"].as_str().unwrap().to_string();
-    assert_eq!(made["data"]["device_created"], true, "{made}");
-    // Typed back, it was never echoed: the words appear once, as printed.
-    assert_eq!(text.matches(&phrase.split(' ').take(3).collect::<Vec<_>>().join(" ")).count(), 0, "the typed phrase was echoed");
+#[test]
+fn d6_the_kits_flags_belong_to_the_commands_that_make_one() {
+    let r = root("flags");
+    let e = err(&command(&r, &["sync", "status", "--save", "kit.txt"]).output().unwrap());
+    assert!(e.contains("`--save` is only a flag of `krowk sync init` and `krowk sync recovery new`"), "{e}");
+    let e = err(&command(&r, &["sync", "recover", "--start-over"]).output().unwrap());
+    assert!(e.contains("`--start-over` is only a flag of `krowk sync init`"), "{e}");
+    let _ = std::fs::remove_dir_all(&r);
+}
 
-    // The fresh home, from the words alone.
-    let out = piped(&r.join("desktop"), &["sync", "recover", "--json"], &format!("{phrase}\n"));
+/// D6: a device on a device list hosts or attaches to nothing — and so
+/// seals nothing new — until it has verified the list from its pin. With
+/// the registry out of reach it refuses, rather than seal under a
+/// generation a removed device may hold.
+#[test]
+fn d6_a_device_that_cannot_verify_its_list_seals_nothing_new() {
+    let r = root("seal");
+    set_up(&r, None);
+    let e = err(&command(&r, &["sync", "attach", "0190f3a8-7c1e-7a9b-8c2d-3e4f5a6b7c8d", "--json"]).output().unwrap());
+    assert!(e.contains("network") || e.contains("unreachable"), "{e}");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// D6: a second `sync init` on a machine already set up is refused before
+/// the sign-in, which would replace its key with one that speaks for no
+/// device.
+#[test]
+fn d6_init_on_a_machine_already_set_up_is_refused_before_the_sign_in() {
+    let r = root("again");
+    set_up(&r, None);
+    let e = err(&piped(&r, &["sync", "init", "--json"], ""));
+    assert!(e.contains("already_set_up") && e.contains("--start-over"), "{e}");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// D6: with the registry out of reach, `status` says what this device last
+/// verified — no kit, here — and that it was not checked.
+#[test]
+fn d6_status_offline_says_what_was_last_verified() {
+    let r = root("offline");
+    set_up(&r, None);
+    let out = command(&r, &["sync", "status", "--json"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let restored: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(restored["data"]["account_key"], account.as_str(), "the identical account key");
-    assert_eq!(restored["data"]["recovered"], true);
-    assert_ne!(restored["data"]["device"], made["data"]["device"], "a new home is a new device");
-
-    // `init` showed the key id beside the words, to compare with `recover`'s.
-    assert!(text.contains(&format!("Key id {account}")), "{text}");
-
-    // A valid phrase for another key (a typo that passed the checksum) is
-    // restored, and the right one entered next replaces it.
-    let retry = r.join("retry");
-    std::fs::create_dir_all(&retry).unwrap();
-    let other_key = format!("{} art", ["abandon"; 23].join(" "));
-    let out = piped(&retry, &["sync", "recover", "--json"], &other_key);
-    let wrong_id = serde_json::from_slice::<Value>(&out.stdout).unwrap()["data"]["account_key"].clone();
-    assert_ne!(wrong_id, account.as_str());
-    let out = piped(&retry, &["sync", "recover", "--json"], &phrase);
-    let fixed: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
-    assert_eq!((&fixed["data"]["account_key"], &fixed["data"]["replaced"]), (&Value::from(account.as_str()), &wrong_id));
-
-    // For a person, the result is its sentence, not the JSON envelope.
-    let third = r.join("third");
-    std::fs::create_dir_all(&third).unwrap();
-    let out = piped(&third, &["sync", "recover", "--format", "human"], &phrase);
-    let said = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success() && said.starts_with(&format!("account key {account} restored")) && !said.contains('{'), "{said}");
-
-    // A phrase with a word changed is refused, and nothing is written.
-    let other = r.join("other");
-    std::fs::create_dir_all(&other).unwrap();
-    let out = piped(&other, &["sync", "recover", "--json"], &wrong);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("bad_recovery_phrase"));
-    assert!(!other.join(".krowk/account-key.json").exists());
-
-    // The phrase is in no file krowk wrote, on either home.
-    assert_eq!(files_holding(&r, &phrase), Vec::<PathBuf>::new());
-    for home in ["laptop", "desktop"] {
-        use std::os::unix::fs::PermissionsExt;
-        for f in ["device.json", "account-key.json"] {
-            let mode = std::fs::metadata(r.join(home).join(".krowk").join(f)).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "{home}/{f}");
-        }
-    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!((v["data"]["checked"].clone(), v["data"]["recovery_kit"].clone()), (false.into(), false.into()), "{v}");
+    assert!(v["summary"].as_str().unwrap().contains("no recovery kit"), "{v}");
     let _ = std::fs::remove_dir_all(&r);
 }

@@ -67,7 +67,7 @@ pub(super) fn approve(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let device = store.device().map_err(|e| fail("sync_setup_failed", e))?;
     let account = store.account().map_err(|e| fail("sync_setup_failed", e))?;
     let (Some(device), Some(account)) = (device, account) else {
-        return Err(fail("no_account_key", "this machine holds no account key to approve with — set sync up here first: `krowk sync init`, `krowk sync recover` or `krowk sync join`"));
+        return Err(fail("no_account_key", "this machine holds no account key to approve with — `krowk devices approve` belongs to the account-key flow `krowk devices add` replaces"));
     };
     // Registered first, so the registry knows the device the answer is
     // from; the same key again is the same row. Both calls act as this

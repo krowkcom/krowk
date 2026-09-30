@@ -222,6 +222,9 @@ pub struct CliAuthorization {
     pub workspace: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
     pub workspace_name: String,
+    /// Whether the approval asks for the person's credential again.
+    #[serde(default, deserialize_with = "nullable", skip_serializing_if = "std::ops::Not::not")]
+    pub fresh: bool,
 }
 
 fn is_zero(n: &i64) -> bool {

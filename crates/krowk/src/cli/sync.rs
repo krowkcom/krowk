@@ -1,46 +1,22 @@
-//! `krowk sync`: this machine's end-to-end keys (R-E2E-3, R-E2E-4). The
-//! keys, their files and the phrase are `krowk_client`; this is the command
-//! line around them.
-//!
-//! - `init`: first sync setup. Makes this device's key when it has none and
-//!   a new account key, shows the account key's recovery phrase, and keeps
-//!   the key only once the phrase has been typed back — mandatory, so it
-//!   needs a person at the terminal.
-//! - `recover`: a fresh machine. The phrase, typed at a prompt that does not
-//!   echo it (or piped from a file, never `echo`, which lands in the shell's
-//!   history), restores the account key and wraps it to this device, and
-//!   shows its key id to compare with the one `init` showed. Run again with
-//!   the right phrase, it replaces a key an earlier `recover` put here.
+//! `krowk sync join`, and what the sync commands share: this machine's
+//! keystore, its name on the device list, the registry client they call.
+//! Setting sync up, checking it and getting back in are `recovery`'s; the
+//! device list's plumbing is `chain`'s.
 //!
 //! - `join`: a fresh machine, added by approving it from one that already
-//!   syncs (`krowk devices approve`) rather than from the phrase. It shows
-//!   this device's id, waits for the approval, and keeps the account key it
-//!   carries only if it opens as the key id the person read off the
-//!   approving device — typed at the prompt, or given as the argument — and
-//!   they say yes to keeping it. A terminal is required: an agent told by a
-//!   web page to join with some id must not be able to.
-//! - `register`: says this machine holds its account key to the workspace,
-//!   for a machine set up offline or before it had a key.
-//!
-//! With a key to a workspace, `init` and `recover` register this device
-//! with the registry (a paid plan's, R-SYNC-1); without one, or with the
-//! registry unreachable or failing, nothing leaves the machine, everything
-//! local works the same, and `register` does it later.
-//!
-//! The phrase goes to the terminal (stderr) and nowhere else: never stdout,
-//! never a file, never `--json`.
+//!   syncs (`krowk devices approve`). It shows this device's id, waits for
+//!   the approval, and keeps the account key it carries only if it opens as
+//!   the key id the person read off the approving device — typed at the
+//!   prompt, or given as the argument — and they say yes to keeping it. A
+//!   terminal is required: an agent told by a web page to join with some id
+//!   must not be able to.
 
 use super::Ctx;
-use crate::output::Format;
 use krowk_api::{fail, Client, Error};
 use krowk_client::e2e::{self, KeyId};
 use krowk_client::keystore::{Keystore, Setup};
-use krowk_client::phrase;
 use serde_json::json;
 use std::time::Duration;
-
-/// How many times `init` asks for the phrase back before giving up.
-const TRIES: usize = 3;
 
 /// How often `join` asks whether it has been approved yet. Someone is
 /// walking between two machines; a second is quick enough to feel instant.
@@ -110,167 +86,18 @@ fn host_name() -> String {
     "krowk device".into()
 }
 
-/// Says this machine holds the account key, when there is a key to a
-/// workspace to say it with. `None` when there is not: sync set up without
-/// an account stays on the machine (R-SYNC-1).
-fn register(ctx: &Ctx, s: &Setup) -> Result<Option<krowk_api::sync::Device>, Error> {
-    let Ok(client) = super::agent::new_client(ctx) else { return Ok(None) };
-    if !client.authenticated() {
-        return Ok(None);
-    }
-    // A free workspace does not sync (R-SYNC-1), and a registry that cannot
-    // be reached or fails on its side is not a reason for setup to fail:
-    // the keys made here are complete without it. Set up, not registered,
-    // the summary says so, and `krowk sync register` does it later.
-    let signing = keystore(ctx)?.signing_key().map_err(|e| fail("sync_setup_failed", e))?;
-    let signing_public = e2e::hex(&signing.public().0);
-    // Signed by the key it registers, which is how the registry knows the
-    // caller holds it (crypto.md → Signed registry requests).
-    let client = client.signed_by(e2e::DeviceSigner::new(s.device.id(), signing).shared());
-    let registered = client.register_device(&e2e::hex(&s.device.public().0), &signing_public, &device_name(ctx), &s.account.id().to_string());
-    if registered.as_ref().is_err_and(|e| e.code() == "sync_requires_paid_plan" || e.status == 0 || e.status >= 500) {
-        return Ok(None);
-    }
-    registered.map(Some).map_err(|e| {
-        let mut e = e;
-        let kept = "the keys are kept on this machine all the same";
-        let fix = match e.fix() {
-            f if f.is_empty() => kept.to_string(),
-            f => format!("{f} ({kept})"),
-        };
-        e.body.insert("fix".into(), json!(fix));
-        e
-    })
-}
-
-fn report(ctx: &mut Ctx, s: &Setup, how: &str, replaced: Option<KeyId>) -> Result<(), Error> {
-    let recovered = how == "recover";
-    // A joined device's row, signing key and all, was made by its approval.
-    let registered = if how == "join" { true } else { register(ctx, s)?.is_some() };
+/// What `join` kept, said. The device's row, signing key and all, was
+/// made by its approval.
+fn report(ctx: &mut Ctx, s: &Setup) -> Result<(), Error> {
     let data = json!({
         "device": s.device.id().to_string(),
         "device_created": s.device_created,
         "account_key": s.account.id().to_string(),
-        "recovered": recovered,
-        "joined": how == "join",
-        "registered": registered,
-        "replaced": replaced.map(|id| id.to_string()),
+        "joined": true,
+        "registered": true,
     });
-    let summary = match how {
-        "join" => format!("account key {} approved and kept on this device ({})", s.account.id(), s.device.id()),
-        // A mistyped word can make another valid phrase (1 in 256). The
-        // registry catches it once this device registers there (it refuses
-        // a key other than the workspace's); without an account the person
-        // compares the id with the one `init` showed.
-        "recover" => format!(
-            "account key {} restored and wrapped to this device ({}){} — check it is the key id `krowk sync init` showed; if not, a word is wrong: run `krowk sync recover` again with the right phrase",
-            s.account.id(),
-            s.device.id(),
-            replaced.map(|id| format!(", replacing {id}")).unwrap_or_default()
-        ),
-        _ => format!("account key {} made and wrapped to this device ({}); keep the recovery phrase", s.account.id(), s.device.id()),
-    };
-    let summary = match registered {
-        true => summary,
-        false => format!("{summary}. Not registered with a workspace — that takes a key to a Pro workspace (`krowk login`) and a registry that answers; run `krowk sync register` then. Nothing leaves this machine until it is"),
-    };
-    if ctx.format == Format::Human {
-        let _ = writeln!(ctx.io.stdout, "{summary}");
-        return Ok(());
-    }
-    super::sessions::emit_data(ctx, data, summary)
-}
-
-pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
-    if !ctx.io.stdin_tty || !ctx.io.err_tty {
-        return Err(fail(
-            "confirmation_required",
-            "`krowk sync init` shows a recovery phrase and has it typed back, so it needs a person at a terminal — run it in one",
-        ));
-    }
-    let store = keystore(ctx)?;
-    let colour = ctx.colour;
-    let stderr = &mut *ctx.io.stderr;
-    let setup = store
-        .init(|key| {
-            let words = phrase::encode(key);
-            let _ = writeln!(stderr, "Your recovery phrase — the only way back to your sessions if every device is lost:\n");
-            // Four rows of six, numbered, so it is copied in order. Each
-            // word goes straight to the terminal: no copy of it is built
-            // here that the phrase's own wiping would miss.
-            for (i, w) in words.split(' ').enumerate() {
-                let (start, end) = (i % 6 == 0, i % 6 == 5);
-                let _ = write!(stderr, "{}{:>2}. {w}", if start { "  " } else { "" }, i + 1);
-                let _ = match end {
-                    true => writeln!(stderr),
-                    false => write!(stderr, "{:pad$}", "", pad = 10usize.saturating_sub(w.len())),
-                };
-            }
-            let _ = writeln!(stderr, "\nKey id {} — `krowk sync recover` shows the same id when the phrase is right. Note it with the words.", key.id());
-            let _ = writeln!(stderr, "{}", crate::output::paint(colour, crate::output::DIM, "Write it down and keep it offline. krowk never stores it and cannot show it again."));
-            let _ = stderr.flush();
-            for left in (0..TRIES).rev() {
-                let typed = krowk_client::Zeroizing::new(
-                    inquire::Password::new("Type the phrase back to confirm:").without_confirmation().prompt().map_err(|_| "nothing was confirmed, so no account key was kept".to_string())?,
-                );
-                match phrase::decode(&typed) {
-                    Ok(k) if k == *key => return Ok(()),
-                    Ok(_) => {
-                        let _ = writeln!(stderr, "That is a valid phrase, but not this one.");
-                    }
-                    Err(why) => {
-                        let _ = writeln!(stderr, "{why}.");
-                    }
-                }
-                if left > 0 {
-                    let _ = writeln!(stderr, "{left} more {}.", if left == 1 { "try" } else { "tries" });
-                }
-            }
-            Err("the phrase was not typed back, so no account key was kept — run `krowk sync init` again for a new one".into())
-        })
-        .map_err(|e| fail("sync_setup_failed", e))?;
-    report(ctx, &setup, "init", None)
-}
-
-pub(super) fn recover(ctx: &mut Ctx) -> Result<(), Error> {
-    let store = keystore(ctx)?;
-    let words = krowk_client::Zeroizing::new(if ctx.io.stdin_tty {
-        inquire::Password::new("Recovery phrase (24 words):").without_confirmation().prompt().map_err(|_| fail("selection_cancelled", "no phrase was entered and nothing was changed"))?
-    } else {
-        use std::io::Read;
-        // Room for the most it reads, so the phrase is never reallocated
-        // (and an unwiped copy left behind).
-        let mut raw = String::with_capacity(4097);
-        std::io::stdin().take(4097).read_to_string(&mut raw).map_err(|e| fail("bad_recovery_phrase", format!("the phrase could not be read from stdin: {e}")))?;
-        if raw.len() > 4096 {
-            return Err(fail("bad_recovery_phrase", "more than 4 KiB was piped in, which is no recovery phrase"));
-        }
-        raw
-    });
-    let key = phrase::decode(&words).map_err(|e| fail("bad_recovery_phrase", e))?;
-    drop(words);
-    let (setup, replaced) = store.recover(key).map_err(|e| fail("sync_setup_failed", e))?;
-    report(ctx, &setup, "recover", replaced)
-}
-
-/// `krowk sync register`: tells the workspace this machine holds its account
-/// key — after an `init` or `recover` that ran offline, on a free plan since
-/// upgraded, or before `krowk login`. The keys are not touched.
-pub(super) fn register_now(ctx: &mut Ctx) -> Result<(), Error> {
-    let store = keystore(ctx)?;
-    let (Some(device), Some(account)) = (store.device().map_err(|e| fail("sync_setup_failed", e))?, store.account_id().map_err(|e| fail("sync_setup_failed", e))?) else {
-        return Err(fail("no_account_key", "this machine holds no account key to register — set sync up first: `krowk sync init`, `recover` or `join`"));
-    };
-    let signing = store.signing_key().map_err(|e| fail("sync_setup_failed", e))?;
-    let signing_public = e2e::hex(&signing.public().0);
-    let client = keyed_client(ctx, "`krowk sync register`")?.signed_by(e2e::DeviceSigner::new(device.id(), signing).shared());
-    let d = client.register_device(&e2e::hex(&device.public().0), &signing_public, &device_name(ctx), &account.to_string())?;
-    let summary = format!("this machine ({}) is registered as {}, holding account key {account}", device.id(), printable(&d.name));
-    if ctx.format == Format::Human {
-        let _ = writeln!(ctx.io.stdout, "{summary}");
-        return Ok(());
-    }
-    super::sessions::emit_data(ctx, json!({ "device": device.id().to_string(), "name": printable(&d.name), "account_key": account.to_string(), "registered": true }), summary)
+    let summary = format!("account key {} approved and kept on this device ({})", s.account.id(), s.device.id());
+    super::chain::say(ctx, data, summary)
 }
 
 /// A fresh machine, approved from one that already syncs (R-E2E-3). HPKE's
@@ -331,7 +158,7 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     confirm(ctx, &format!("Keep account key {}, approved by device {approver}?", expected.grouped()), OFF_TERMINAL)?;
     let wrapped = e2e::unhex(&approved.wrapped_account_key).ok_or_else(|| fail("malformed_response", "the approval's wrapped key is not hex — nothing was kept"))?;
     let setup = store.join(&wrapped, expected).map_err(|e| fail("sync_setup_failed", e))?;
-    report(ctx, &setup, "join", None)
+    report(ctx, &setup)
 }
 
 #[cfg(test)]

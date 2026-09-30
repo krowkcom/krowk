@@ -122,6 +122,18 @@ fn login_with_token(ctx: &mut Ctx) -> Result<(), Error> {
 /// confirms and can only approve or deny — so the half that travels cannot be
 /// turned into a key by whoever sees it. The key arrives exactly once.
 fn login_in_browser(ctx: &mut Ctx) -> Result<(), Error> {
+    let (_, result) = browser_login(ctx, false)?;
+    let rendered = output::stored_key(&result, ctx.format, ctx.f.quiet, ctx.colour);
+    ctx.emit(&rendered)
+}
+
+/// A browser login, its key stored as `krowk login` stores one. `fresh`
+/// has the approval page ask for the person's credential again — what a
+/// destructive device-list change needs (canon, devices.md → Destructive
+/// actions need a fresh sign-in). Returns the key itself beside what was
+/// stored, so a caller acts with the key just minted even where
+/// KROWK_TOKEN would shadow it.
+pub(super) fn browser_login(ctx: &mut Ctx, fresh: bool) -> Result<(String, Login), Error> {
     if in_ci(ctx) && !ctx.f.no_browser {
         return Err(fail(
             "no_one_to_approve",
@@ -132,7 +144,7 @@ fn login_in_browser(ctx: &mut Ctx) -> Result<(), Error> {
     // Keyless whatever the environment holds: the endpoint exists for a
     // machine with no key.
     let client = Client::new(&krowk_api::base_url_for(ctx.f.dev, ctx.io.env), "");
-    let auth = client.start_cli_authorization().map_err(|mut e| {
+    let auth = client.start_cli_authorization(fresh).map_err(|mut e| {
         if e.status == 404 {
             e.body.insert(
                 "fix".into(),
@@ -174,8 +186,7 @@ fn login_in_browser(ctx: &mut Ctx) -> Result<(), Error> {
         shadowed: !ctx.env("KROWK_TOKEN").is_empty(),
         reason: if confirmed { String::new() } else { "the registry approved it without naming the key or its workspace".into() },
     };
-    let rendered = output::stored_key(&result, ctx.format, ctx.f.quiet, ctx.colour);
-    ctx.emit(&rendered)
+    Ok((granted.token, result))
 }
 
 /// Polls until somebody answers or the window closes. Approved, denied and a
