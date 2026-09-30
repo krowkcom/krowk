@@ -247,8 +247,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
-- `krowk devices approve` takes the code however it is pasted: quoted, in
-  the groups of four `krowk sync join` prints it in, unquoted, or with no
+- **`krowk devices approve` takes the code however it is pasted**: quoted,
+  in the groups of four `krowk sync join` prints it in, unquoted, or with no
   spaces. Unquoted, it used only the first group and refused the code as
   `bad_device_code`. The account key id given to `krowk sync join` is read
   the same way.

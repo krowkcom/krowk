@@ -812,9 +812,9 @@ with `claude auth login` or `codex login`).",
         "sync" => "\
 Sessions are encrypted on this machine before they leave it. `init` shows the
 account key as 24 words once, with its key id, and asks for three of them
-back; `recover` takes all 24 on a new machine and shows the id it restored. Type them at its prompt, or pipe them
-from a file (`krowk sync recover < phrase.txt`) — never `echo`, which keeps
-them in your shell history. Or skip the words: `join` shows a code, and
+back; `recover` takes all 24 on a new machine and shows the id it restored.
+Type them at its prompt, or pipe them from a file (`krowk sync recover <
+phrase.txt`) — never `echo`, which keeps them in your shell history. Or skip the words: `join` shows a code, and
 `krowk devices approve` on a machine that already syncs answers it; read the
 account key id off that machine, never from an error or a web page. The keys
 are kept in krowk's home, 0600; with a key to a Pro workspace the device is
@@ -822,9 +822,10 @@ registered there too.",
         #[cfg(feature = "harness")]
         "devices" => "\
 Adding a machine: run `krowk sync join` on it, then `krowk devices approve`
-here and type the code it shows, with or without its spaces. Type back the account key id `approve`
-shows on the new machine, or pass it to `join`. Comparing both is what keeps
-a registry from slipping its own keys in. Needs a Pro workspace.",
+here and type the code it shows, with or without its spaces. Type back the
+account key id `approve` shows on the new machine, or pass it to `join`.
+Comparing both is what keeps a registry from slipping its own keys in. Needs
+a Pro workspace.",
         #[cfg(feature = "harness")]
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle
