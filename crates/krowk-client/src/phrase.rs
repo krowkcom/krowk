@@ -12,6 +12,11 @@
 //! `recover` shows the id it restored, for the person to compare. A word
 //! not on the list is caught every time.
 //!
+//! The recovery kit (`encode_kit`, `decode_kit`) is the same encoding over
+//! 128 bits: 12 words, with BIP39's 4-bit checksum. It replaces the phrase
+//! once the device chain ships (engineering/devices.md in Canon); the
+//! 24-word phrase stays until the CLI moves over.
+//!
 //! The phrase is never written to disk or to a log: the caller shows it and
 //! drops it, and every copy here is wiped when dropped.
 
@@ -33,12 +38,47 @@ fn list() -> &'static [&'static str] {
 
 /// The key as its 24 words, one space between each.
 pub fn encode(key: &AccountKey) -> Zeroizing<String> {
-    let mut bits = Zeroizing::new([0u8; 33]);
-    bits[..32].copy_from_slice(key.as_bytes());
-    bits[32] = Sha256::digest(key.as_bytes())[0];
+    to_words(key.as_bytes())
+}
+
+/// The key back from its words: any case, any whitespace between them.
+/// Refused with the word or the count that is wrong, or the checksum — never
+/// echoing the phrase.
+pub fn decode(phrase: &str) -> Result<AccountKey, String> {
+    let mut bytes = [0u8; 32];
+    from_words(phrase, &mut bytes, "recovery phrase")?;
+    let account = AccountKey::from_bytes(bytes);
+    bytes.zeroize();
+    Ok(account)
+}
+
+/// The words in a recovery kit (engineering/devices.md in Canon →
+/// Recovery): BIP39's encoding of 128 bits, with its 4-bit checksum.
+pub const KIT_WORDS: usize = 12;
+
+/// A recovery kit's 128 bits as its 12 words.
+pub fn encode_kit(kit: &[u8; 16]) -> Zeroizing<String> {
+    to_words(kit)
+}
+
+/// A recovery kit's 128 bits back from its words, as `decode` reads a
+/// phrase. The checksum catches a wrong word 15 times in 16; the rest are
+/// caught when the derived recovery device is not on the device chain.
+pub fn decode_kit(words: &str) -> Result<Zeroizing<[u8; 16]>, String> {
+    let mut kit = Zeroizing::new([0u8; 16]);
+    from_words(words, &mut kit[..], "recovery kit")?;
+    Ok(kit)
+}
+
+/// BIP39's encoding of `entropy` (16 or 32 bytes): the bytes, then the
+/// first `len × 8 / 32` bits of their SHA-256, in groups of 11 bits.
+fn to_words(entropy: &[u8]) -> Zeroizing<String> {
+    let count = (entropy.len() * 8 + entropy.len() / 4) / 11;
+    let mut bits = Zeroizing::new(entropy.to_vec());
+    bits.push(Sha256::digest(entropy)[0]);
     let words = list();
-    let mut out = Zeroizing::new(String::with_capacity(WORDS * 9));
-    for i in 0..WORDS {
+    let mut out = Zeroizing::new(String::with_capacity(count * 9));
+    for i in 0..count {
         let mut n = 0usize;
         for b in i * 11..i * 11 + 11 {
             n = (n << 1) | ((bits[b / 8] >> (7 - b % 8)) & 1) as usize;
@@ -51,19 +91,20 @@ pub fn encode(key: &AccountKey) -> Zeroizing<String> {
     out
 }
 
-/// The key back from its words: any case, any whitespace between them.
-/// Refused with the word or the count that is wrong, or the checksum — never
-/// echoing the phrase.
-pub fn decode(phrase: &str) -> Result<AccountKey, String> {
+/// The inverse of `to_words`, into `out`, whose length says how many words
+/// to expect. `what` names the thing in the error.
+fn from_words(phrase: &str, out: &mut [u8], what: &str) -> Result<(), String> {
+    let count = (out.len() * 8 + out.len() / 4) / 11;
+    let check_bits = out.len() / 4;
     let words = list();
     let mut lower = Zeroizing::new(phrase.to_lowercase());
     let given: Vec<&str> = lower.split_whitespace().collect();
-    if given.len() != WORDS {
-        return Err(format!("a recovery phrase is {WORDS} words, and this is {} — enter every word, in order", given.len()));
+    if given.len() != count {
+        return Err(format!("a {what} is {count} words, and this is {} — enter every word, in order", given.len()));
     }
-    let mut bits = Zeroizing::new([0u8; 33]);
+    let mut bits = Zeroizing::new(vec![0u8; out.len() + 1]);
     for (i, w) in given.iter().enumerate() {
-        let n = words.binary_search(w).map_err(|_| format!("word {} is not one a recovery phrase uses — check its spelling", i + 1))?;
+        let n = words.binary_search(w).map_err(|_| format!("word {} is not one a {what} uses — check its spelling", i + 1))?;
         for k in 0..11 {
             if n >> (10 - k) & 1 == 1 {
                 let b = i * 11 + k;
@@ -73,15 +114,13 @@ pub fn decode(phrase: &str) -> Result<AccountKey, String> {
     }
     drop(given);
     lower.zeroize();
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&bits[..32]);
-    let ok = Sha256::digest(key)[0] == bits[32];
-    let account = AccountKey::from_bytes(key);
-    key.zeroize();
-    if !ok {
-        return Err("the recovery phrase does not check out — a word is wrong or two are swapped; check each against where you wrote it down".into());
+    out.copy_from_slice(&bits[..out.len()]);
+    let mask = !0xffu8.checked_shr(check_bits as u32).unwrap_or(0);
+    if Sha256::digest(&*out)[0] & mask != bits[out.len()] & mask {
+        out.zeroize();
+        return Err(format!("the {what} does not check out — a word is wrong or two are swapped; check each against where you wrote it down"));
     }
-    Ok(account)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -142,5 +181,41 @@ mod tests {
         assert!(decode(short).unwrap_err().contains("this is 23"));
         // The error never repeats the phrase.
         assert!(!decode(&swapped).unwrap_err().contains("abandon"));
+    }
+
+    /// BIP39's own vectors for 128-bit entropy (trezor/python-mnemonic's
+    /// vectors.json), so a kit written by another BIP39 tool from the same
+    /// bytes reads the same.
+    #[test]
+    fn d1_the_recovery_kit_is_bip39s_12_word_encoding_of_128_bits() {
+        let cases: [([u8; 16], &str); 4] = [
+            ([0; 16], "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"),
+            ([0x7f; 16], "legal winner thank year wave sausage worth useful legal winner thank yellow"),
+            ([0x80; 16], "letter advice cage absurd amount doctor acoustic avoid letter advice cage above"),
+            ([0xff; 16], "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong"),
+        ];
+        for (bytes, words) in cases {
+            assert_eq!(&*encode_kit(&bytes), words);
+            assert_eq!(*decode_kit(words).unwrap(), bytes);
+        }
+        for _ in 0..64 {
+            let kit: [u8; 16] = crate::e2e::random();
+            let words = encode_kit(&kit);
+            assert_eq!(words.split(' ').count(), KIT_WORDS);
+            assert_eq!(*decode_kit(&words.to_uppercase()).unwrap(), kit);
+        }
+    }
+
+    /// `about` → `abandon` as the last word of the all-zero kit changes only
+    /// the 4 checksum bits (0011 → 0000), so the checksum refuses it.
+    #[test]
+    fn d1_a_wrong_word_in_the_kit_is_refused() {
+        let right = encode_kit(&[0; 16]);
+        let swapped = right.replace(" about", " abandon");
+        let e = decode_kit(&swapped).unwrap_err();
+        assert!(e.contains("recovery kit does not check out"), "{e}");
+        assert!(!e.contains("abandon"));
+        assert!(decode_kit(&encode(&key([0; 32]))).unwrap_err().contains("12 words, and this is 24"));
+        assert!(decode(&right).unwrap_err().contains("24 words, and this is 12"));
     }
 }
