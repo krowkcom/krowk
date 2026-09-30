@@ -40,7 +40,10 @@ chacha20poly1305 = { version = "0.11", default-features = false, features = ["al
 # Wiping every secret this crate holds when it is dropped. Linked already.
 zeroize = { version = "1", features = ["derive"] }
 # The recovery phrase's checksum and the key and device ids. Linked already.
-sha2 = "0.11"
+# `zeroize` wipes a hasher's state on drop, so HKDF's pseudorandom key (held
+# in an HMAC-SHA-256 state) does not outlive the recovery kit's derivation;
+# it adds no crate, zeroize being linked already.
+sha2 = { version = "0.11", features = ["zeroize"] }
 # The operating system's random numbers, for keys and nonces. Linked already.
 getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -69,7 +72,8 @@ ed25519-dalek = { version = "3", default-features = false, features = ["zeroize"
 # through its re-exported rand_core. No audit: tests/pairing.rs holds it to
 # the python-spake2 vectors magic-wormhole interoperates with.
 spake2 = { version = "=0.5.0-pre.0", default-features = false }
-# HKDF-SHA256 and HMAC-SHA256 for pairing's key confirmation. Both linked
-# already, by hpke.
+# HKDF-SHA256 and HMAC-SHA256 for pairing's key confirmation, and HKDF for
+# deriving the recovery device from the kit's 128 bits. Both linked already,
+# by hpke.
 hkdf = "0.13"
 hmac = "0.13"

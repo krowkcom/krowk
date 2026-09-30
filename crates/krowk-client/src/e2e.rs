@@ -701,7 +701,7 @@ impl SigningKey {
 
     /// The key from its stored 32-byte seed.
     pub fn from_secret(bytes: &[u8]) -> Result<SigningKey, Error> {
-        let seed: [u8; 32] = bytes.try_into().map_err(|_| err("the signing key is not a 32-byte Ed25519 seed"))?;
+        let seed = zeroize::Zeroizing::new(<[u8; 32]>::try_from(bytes).map_err(|_| err("the signing key is not a 32-byte Ed25519 seed"))?);
         Ok(SigningKey(ed25519_dalek::SigningKey::from_bytes(&seed)))
     }
 
@@ -845,6 +845,49 @@ pub fn relay_join_message(role: u8, session: &[u8; 16], nonce: &[u8; 32], device
     m.extend_from_slice(&device.0);
     m.extend_from_slice(origin.as_bytes());
     m
+}
+
+// The primitives the user key (`user_key`) and the device chain
+// (`device_chain`) are built on, kept here so the suite and the key types'
+// private halves stay in this one module.
+
+/// HPKE Base-mode seal to a device, in the pinned suite: `(enc, sealed)`.
+pub(crate) fn hpke_seal(plain: &[u8], to: &DevicePublic, info: &[u8], aad: &[u8]) -> Result<([u8; 32], Vec<u8>), Error> {
+    let pk = <Kem as hpke::Kem>::PublicKey::from_bytes(&to.0).map_err(|_| err("the device's public key is not an X25519 key"))?;
+    let (enc, sealed) = hpke::single_shot_seal::<HpkeAead, Kdf, Kem>(&OpModeS::Base, &pk, info, plain, aad).map_err(|_| err("the key could not be wrapped"))?;
+    Ok((enc.to_bytes().into(), sealed))
+}
+
+/// HPKE Base-mode open with this device's private key. None for anything
+/// that does not open; the caller says what it was.
+pub(crate) fn hpke_open(device: &DeviceKey, enc: &[u8], sealed: &[u8], info: &[u8], aad: &[u8]) -> Option<zeroize::Zeroizing<Vec<u8>>> {
+    let enc = <Kem as hpke::Kem>::EncappedKey::from_bytes(enc).ok()?;
+    hpke::single_shot_open::<HpkeAead, Kdf, Kem>(&OpModeR::Base, &device.secret, &enc, info, sealed, aad).ok().map(zeroize::Zeroizing::new)
+}
+
+/// RFC 9180's DeriveKeyPair: the same keypair from the same 32 bytes, for
+/// a device whose key is derived rather than drawn (the recovery device).
+pub(crate) fn derive_device_key(ikm: &[u8; 32]) -> DeviceKey {
+    let (secret, public) = Kem::derive_keypair(ikm);
+    DeviceKey { secret, public }
+}
+
+impl SigningKey {
+    /// An Ed25519 signature over `message`, which the caller has already
+    /// prefixed with its own label.
+    pub(crate) fn sign(&self, message: &[u8]) -> [u8; 64] {
+        use ed25519_dalek::Signer as _;
+        self.0.sign(message).to_bytes()
+    }
+}
+
+impl SigningPublic {
+    /// Checks a signature strictly, as `verify_relay_join` does.
+    pub(crate) fn verify(&self, message: &[u8], signature: &[u8; 64]) -> Result<(), Error> {
+        let bad = || err("the signature does not verify");
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&self.0).map_err(|_| bad())?;
+        key.verify_strict(message, &ed25519_dalek::Signature::from_bytes(signature)).map_err(|_| bad())
+    }
 }
 
 #[cfg(test)]
