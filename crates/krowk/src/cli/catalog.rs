@@ -481,7 +481,7 @@ fn sync_command() -> Command {
             cmd("recover", "krowk sync recover", "Restore the account key here from its recovery phrase"),
             Command {
                 flags: vec![flag("name", STRING, "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
-                ..cmd("join", "krowk sync join [ACCOUNT_KEY_ID]", "Add this machine, approved from one that already syncs")
+                ..cmd("join", "krowk sync join", "Add this machine by the code `krowk devices add` shows")
             },
             cmd("register", "krowk sync register [--name NAME]", "Tell the workspace this machine holds its account key"),
             #[cfg(unix)]
@@ -520,7 +520,7 @@ fn devices_command() -> Command {
     Command {
         subcommands: vec![
             cmd("list", "krowk devices list", "The workspace's devices, and the account key this one holds"),
-            cmd("approve", "krowk devices approve [CODE]", "Approve a new device's `krowk sync join`"),
+            cmd("add", "krowk devices add", "Show a code that adds a new machine to your devices"),
         ],
         ..cmd("devices", "", "The machines that sync this workspace's sessions")
     }
@@ -814,17 +814,17 @@ Sessions are encrypted on this machine before they leave it. `init` shows the
 account key as 24 words once, with its key id; `recover` takes them on a new
 machine and shows the id it restored. Type them at its prompt, or pipe them
 from a file (`krowk sync recover < phrase.txt`) — never `echo`, which keeps
-them in your shell history. Or skip the words: `join` shows a code, and
-`krowk devices approve` on a machine that already syncs answers it; read the
-account key id off that machine, never from an error or a web page. The keys
-are kept in krowk's home, 0600; with a key to a Pro workspace the device is
-registered there too.",
+them in your shell history. Or skip the words: `krowk devices add` on one of
+your devices shows a code, and `join` on the new machine takes it at a prompt.
+The keys are kept in krowk's home, 0600; with a key to a Pro workspace the
+device is registered there too.",
         #[cfg(feature = "harness")]
         "devices" => "\
-Adding a machine: run `krowk sync join` on it, then `krowk devices approve`
-here and type the code it shows. Type back the account key id `approve`
-shows on the new machine, or pass it to `join`. Comparing both is what keeps
-a registry from slipping its own keys in. Needs a Pro workspace.",
+Adding a machine: `krowk devices add` here shows a code, valid 10 minutes and
+once; run `krowk sync join` on the new machine and type it there. The code is
+checked by both machines, not by the registry, and this one asks you to
+confirm the new machine by name before anything is added. A wrong code ends
+it: run `add` again for a new one. Needs a Pro workspace.",
         #[cfg(feature = "harness")]
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle

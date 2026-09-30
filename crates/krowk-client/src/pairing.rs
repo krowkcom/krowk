@@ -88,9 +88,12 @@ const NONCE: usize = 24;
 const TAG: usize = 16;
 
 /// A device name and an OS reach a terminal prompt, so both are bounded
-/// and hold no control or direction-changing characters.
-pub const MAX_NAME: usize = 128;
-pub const MAX_OS: usize = 64;
+/// and hold no control or direction-changing characters. The bounds are the
+/// device list's (`device_chain`: a name of 1–64 bytes, an OS of at most
+/// 32), since what B confirms here is what A's `add` entry names: a longer
+/// one would pass the pairing and be refused by every verifier after it.
+pub const MAX_NAME: usize = 64;
+pub const MAX_OS: usize = 32;
 
 fn failed() -> Error {
     Error("the pairing failed — run `krowk devices add` again for a new code".into())
@@ -591,7 +594,7 @@ impl PairB {
     /// offline. The caller must not keep the typed string to parse again.
     pub fn start(binding: Binding, code: PairingCode, me: NewDevice) -> Result<(PairB, Vec<u8>), Error> {
         if binding.b_device != me.id() || !printable(&me.name, MAX_NAME) || !printable(&me.os, MAX_OS) {
-            return Err(Error("the new device's name or OS cannot be sent: use printable text, 128 and 64 bytes at most".into()));
+            return Err(Error("the new device's name or OS cannot be sent: use printable text, 64 and 32 bytes at most".into()));
         }
         let (id_a, id_b, identities) = binding.identities()?;
         let (state, msg_b) = Spake2::<Ed25519Group>::start_b_with_rng(&Password::new(code.as_bytes()), &id_a, &id_b, OsRng);
