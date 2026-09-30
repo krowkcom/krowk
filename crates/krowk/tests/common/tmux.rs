@@ -65,6 +65,11 @@ impl Tmux {
         self.tmux(&["capture-pane", "-p", "-t", "t", "-S", "-", "-E", "-"])
     }
 
+    /// The whole history with its colours, as `capture-pane -e` has them.
+    pub fn history_styled(&self) -> String {
+        self.tmux(&["capture-pane", "-p", "-e", "-t", "t", "-S", "-", "-E", "-"])
+    }
+
     pub fn wait_for(&self, needle: &str, timeout: Duration) -> Option<Duration> {
         let t0 = Instant::now();
         while t0.elapsed() < timeout {
