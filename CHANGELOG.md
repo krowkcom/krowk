@@ -26,8 +26,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   chained device list that every client verifies against the head it last
   saw, refusing an older or forked list and any removal of the recovery
   device. Only the current kit can replace the kit, or any device when there
-  is none; a chain started over from a device carries the user key forward,
-  so older sessions stay readable.
+  is none.
 
 ### Changed
 
