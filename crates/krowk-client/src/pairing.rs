@@ -5,8 +5,11 @@
 //! The new device, **B**, has the person type it. Under the code is SPAKE2
 //! (magic-wormhole's construction on the Ed25519 group, asymmetric mode),
 //! so the registry that carries the messages learns nothing it can test a
-//! guess against offline: it gets one online guess per code, and a wrong
-//! one ends the pairing. The SPAKE2 identities bind the protocol label, the
+//! guess against offline. Playing man in the middle, it gets one online
+//! guess against each side — one posing as B to A, one posing as A to B —
+//! so 2 in 30⁸, about 2⁻³⁸, and a wrong guess ends that side's pairing.
+//! That bound holds only if B never starts twice with one code (see
+//! `PairB::start`). The SPAKE2 identities bind the protocol label, the
 //! kind of peer, the person's user id and both devices' ids, so a
 //! transcript cannot be moved to another person or another pair of
 //! devices.
@@ -32,6 +35,18 @@
 //! returns nothing to go on with: there is no retry against the same code.
 //! Failures read alike, "the pairing failed", and never say which check it
 //! was, which is all an attacker should learn.
+//!
+//! **What is not wiped.** The code, the derived keys, the payload and the
+//! states' own secrets are zeroized on drop. What the `spake2` crate holds
+//! is not: its `Password` copy of the code and its two scalars have no
+//! `Zeroize`, and neither do the HKDF and HMAC states, so they are left in
+//! freed memory. A memory disclosure during or just after a pairing could
+//! show them; the code is single-use and dies with the pairing, so that is
+//! accepted rather than worked around.
+//!
+//! **What the registry sees.** The hello and the confirmation go in the
+//! clear: B's device id, public keys, name and OS, all of which the
+//! registry records once the device is added anyway.
 
 use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
@@ -86,13 +101,22 @@ fn failed() -> Error {
 /// Crockford's base32 alphabet less `0` and `1`: 30 symbols, none of
 /// `0 O 1 I L U`, so nothing on the screen reads as something else.
 pub const ALPHABET: &[u8; 30] = b"23456789ABCDEFGHJKMNPQRSTVWXYZ";
-/// Eight symbols: 30⁸, about 39 bits, enough for one online guess.
+/// Eight symbols: 30⁸, about 39 bits, enough for one online guess a side.
 pub const CODE_LEN: usize = 8;
 
 /// The code the paired device shows and the new device's person types.
 /// Held in canonical form (upper case, no separators), which is also the
 /// SPAKE2 password. Wiped when dropped; `Debug` never shows it.
-#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+///
+/// Neither `Clone` nor `PartialEq`: B's `PairB::start` takes it by value,
+/// so one code starts one pairing, and nothing compares a typed code with
+/// a shown one (SPAKE2 is the only comparison).
+///
+/// ```compile_fail,E0599
+/// let code = krowk_client::pairing::PairingCode::generate();
+/// let _again = code.clone();
+/// ```
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct PairingCode([u8; CODE_LEN]);
 
 impl PairingCode {
@@ -115,12 +139,12 @@ impl PairingCode {
         PairingCode(code)
     }
 
-    /// A code as typed: case, spaces and dashes are ignored, and anything
-    /// else — a symbol outside the alphabet, the wrong length — is refused.
+    /// A code as typed: case, spaces and dashes are ignored, as is
+    /// whitespace around it (a pasted newline), and anything else — a symbol outside the alphabet, the wrong length — is refused.
     pub fn parse(typed: &str) -> Option<PairingCode> {
         let mut code = [0u8; CODE_LEN];
         let mut n = 0;
-        for c in typed.bytes() {
+        for c in typed.trim().bytes() {
             if c == b' ' || c == b'-' {
                 continue;
             }
@@ -162,23 +186,30 @@ impl std::fmt::Debug for PairingCode {
 // --------------------------------------------------------- the identities
 
 /// Who the two peers are to each other. Both sides must agree, since it is
-/// in the SPAKE2 identities: a transcript for one kind fails as the other.
+/// in the SPAKE2 identities: a transcript for one kind fails as another.
+///
+/// The kind byte comes right after the label, before any other field, so
+/// each kind defines its own fields under `krowk/pair/v1` without two
+/// kinds ever encoding alike. Kind 2 is reserved for ticket 32's workspace
+/// invite, which binds the inviter's user id, the invitee's user id and the
+/// workspace id; it is not defined until then, since one user id cannot
+/// bind two people and a workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerKind {
-    /// Another device of the same person (`krowk devices add`).
+    /// Another device of the same person (`krowk devices add`): kind 1.
     SamePersonDevice,
-    /// A teammate's device, for workspace invites later (ticket 32).
-    WorkspaceMember,
 }
 
 impl PeerKind {
     fn byte(self) -> u8 {
         match self {
             PeerKind::SamePersonDevice => 1,
-            PeerKind::WorkspaceMember => 2,
         }
     }
 }
+
+/// A user id is a UUID; anything longer is refused, never truncated.
+pub const MAX_USER_ID: usize = 64;
 
 /// What both sides bind: the peer kind, the person's user id, and the ids
 /// of the paired device (A) and the new one (B). A knows all but B's id
@@ -198,7 +229,10 @@ impl Binding {
         let mut v = Vec::with_capacity(LABEL.len() + 3 + self.user_id.len() + 16);
         v.extend_from_slice(LABEL);
         v.push(self.kind.byte());
-        put_str(&mut v, &self.user_id, usize::from(u16::MAX))?;
+        if self.user_id.is_empty() {
+            return Err(failed());
+        }
+        put_str(&mut v, &self.user_id, MAX_USER_ID)?;
         v.extend_from_slice(&device.0);
         Ok(v)
     }
@@ -207,8 +241,8 @@ impl Binding {
         let a = self.identity(&self.a_device)?;
         let b = self.identity(&self.b_device)?;
         let mut both = Vec::with_capacity(a.len() + b.len() + 4);
-        put_bytes(&mut both, &a);
-        put_bytes(&mut both, &b);
+        put_bytes(&mut both, &a)?;
+        put_bytes(&mut both, &b)?;
         Ok((Identity::new(&a), Identity::new(&b), both))
     }
 }
@@ -230,30 +264,39 @@ impl NewDevice {
 }
 
 /// A name or an OS a terminal can print as it stands: not empty, bounded,
-/// and no control characters or ones that turn the text's direction, which
-/// could make the prompt read as something it isn't. Refused, not cleaned.
+/// and no control characters, and none of Unicode's format or separator
+/// characters (`Cf`, `Zl`, `Zp`: the direction marks and overrides, zero
+/// widths, the soft hyphen, tags), which could make the prompt read as
+/// something it isn't. Refused, not cleaned. Confusable letters (a
+/// Cyrillic `а`) still pass: only the code's holder reaches the prompt.
 fn printable(s: &str, max: usize) -> bool {
-    !s.is_empty()
-        && s.len() <= max
-        && !s.chars().any(|c| {
-            c.is_control() || matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
-        })
+    !s.is_empty() && s.len() <= max && !s.chars().any(|c| c.is_control() || invisible(c))
+}
+
+/// Unicode 16's `Cf` characters, and `Zl` and `Zp`.
+fn invisible(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{0600}'..='\u{0605}' | '\u{061C}' | '\u{06DD}' | '\u{070F}' | '\u{0890}'..='\u{0891}'
+        | '\u{08E2}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{2064}'
+        | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}' | '\u{110BD}' | '\u{110CD}'
+        | '\u{13430}'..='\u{1343F}' | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}' | '\u{E0001}'
+        | '\u{E0020}'..='\u{E007F}')
 }
 
 // ------------------------------------------------------------- the wire
 
-fn put_bytes(v: &mut Vec<u8>, b: &[u8]) {
-    let n = u16::try_from(b.len()).expect("a length the caller has bounded");
+fn put_bytes(v: &mut Vec<u8>, b: &[u8]) -> Result<(), Error> {
+    let n = u16::try_from(b.len()).map_err(|_| failed())?;
     v.extend_from_slice(&n.to_be_bytes());
     v.extend_from_slice(b);
+    Ok(())
 }
 
 fn put_str(v: &mut Vec<u8>, s: &str, max: usize) -> Result<(), Error> {
     if s.len() > max.min(usize::from(u16::MAX)) {
         return Err(failed());
     }
-    put_bytes(v, s.as_bytes());
-    Ok(())
+    put_bytes(v, s.as_bytes())
 }
 
 /// Reads a message front to back and refuses anything left over.
@@ -395,9 +438,14 @@ pub struct PairA {
 }
 
 impl PairA {
-    /// A new pairing, with a new code from the OS random source.
-    pub fn new(kind: PeerKind, user_id: impl Into<String>, a_device: DeviceId) -> PairA {
-        PairA { code: PairingCode::generate(), kind, user_id: user_id.into(), a_device }
+    /// A new pairing, with a new code from the OS random source. Refused
+    /// for a user id that is empty or longer than `MAX_USER_ID`.
+    pub fn new(kind: PeerKind, user_id: impl Into<String>, a_device: DeviceId) -> Result<PairA, Error> {
+        let user_id = user_id.into();
+        if user_id.is_empty() || user_id.len() > MAX_USER_ID {
+            return Err(Error(format!("a user id is 1 to {MAX_USER_ID} bytes")));
+        }
+        Ok(PairA { code: PairingCode::generate(), kind, user_id, a_device })
     }
 
     /// The code to show, `XXXX-XXXX` when displayed.
@@ -507,11 +555,22 @@ impl AwaitAck {
 }
 
 /// Both sides confirmed: the one value A's caller posts to the registry
-/// with.
+/// with. Its fields are private, so it comes only from a verified ack.
 #[derive(Debug)]
 pub struct Paired {
-    pub binding: Binding,
-    pub device: NewDevice,
+    binding: Binding,
+    device: NewDevice,
+}
+
+impl Paired {
+    pub fn binding(&self) -> &Binding {
+        &self.binding
+    }
+
+    /// The device to add: the keys, name and OS B's MAC covered.
+    pub fn device(&self) -> &NewDevice {
+        &self.device
+    }
 }
 
 // ------------------------------------------------------ B, the new device
@@ -530,7 +589,15 @@ impl PairB {
     /// Starts with the code the person typed and the binding: A's device id
     /// from the registry's routing, B's own from its key. A lying registry
     /// makes the keys differ, and the pairing fails at A.
-    pub fn start(binding: Binding, code: &PairingCode, me: NewDevice) -> Result<(PairB, Vec<u8>), Error> {
+    ///
+    /// **The code is consumed.** Any failure on B's side — a step that
+    /// fails, a timeout, a dropped connection, a transport error before or
+    /// after the confirmation — throws the code away, and the person asks A
+    /// for a new one. Never call `start` again with the same code, and never
+    /// restart on the caller's own: every start gives a registry posing as
+    /// A one more guess, since B's confirmation MAC lets it test one code
+    /// offline. The caller must not keep the typed string to parse again.
+    pub fn start(binding: Binding, code: PairingCode, me: NewDevice) -> Result<(PairB, Vec<u8>), Error> {
         if binding.b_device != me.id() || !printable(&me.name, MAX_NAME) || !printable(&me.os, MAX_OS) {
             return Err(Error("the new device's name or OS cannot be sent: use printable text, 128 and 64 bytes at most".into()));
         }
@@ -597,7 +664,10 @@ pub struct Received {
 
 impl Received {
     /// What A sealed: the chain, the wrap and A's signing key, for the
-    /// caller to check.
+    /// caller to check before `acknowledge`. This module does not look
+    /// inside, so those checks are the caller's: that the signing key and
+    /// the chain entry's signer are `binding().a_device`'s, and that the
+    /// new entry adds exactly this device's X25519 and Ed25519 keys.
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }

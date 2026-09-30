@@ -17,8 +17,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   typed in any case with spaces and dashes ignored), SPAKE2 in asymmetric mode
   bound to the peer kind, the person and both device ids, and key confirmation
   both ways before the new device's name is shown or anything is posted. One
-  failed step ends the pairing on both sides; there is no retry against the
-  same code. The SPAKE2 crate is held to magic-wormhole's vectors. Nothing
+  failed step ends the pairing, and the new device's code is consumed by the
+  attempt, so a hostile registry gets one guess against each side. The SPAKE2 crate is held to magic-wormhole's vectors. Nothing
   calls it yet.
 
 ## [0.12.0] - 2026-09-30

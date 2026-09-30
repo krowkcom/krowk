@@ -26,6 +26,12 @@ fn sides() -> Sides {
     Sides { a_device: DeviceKey::generate().id(), b }
 }
 
+/// The code as B's person types it off A's screen: a new value, since a
+/// `PairingCode` is neither `Clone` nor reusable.
+fn typed(a: &PairA) -> PairingCode {
+    PairingCode::parse(&a.code().to_string()).unwrap()
+}
+
 fn binding(s: &Sides) -> Binding {
     Binding { kind: PeerKind::SamePersonDevice, user_id: USER.into(), a_device: s.a_device, b_device: s.b.id() }
 }
@@ -40,9 +46,9 @@ struct Run {
 }
 
 fn full_run(s: &Sides) -> (Run, Paired, Vec<u8>) {
-    let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device);
+    let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
     let code = PairingCode::parse(&a.code().to_string().to_lowercase()).unwrap();
-    let (b, hello) = PairB::start(binding(s), &code, s.b.clone()).unwrap();
+    let (b, hello) = PairB::start(binding(s), code, s.b.clone()).unwrap();
     let (a, spake) = a.receive_hello(&hello).unwrap();
     let (b, confirm) = b.receive_spake(&spake).unwrap();
     let a = a.receive_confirm(&confirm).unwrap();
@@ -57,8 +63,8 @@ fn full_run(s: &Sides) -> (Run, Paired, Vec<u8>) {
 
 /// A and B up to B waiting for the reply and A holding B's confirmation.
 fn to_confirm(s: &Sides) -> (AwaitConfirm, AwaitReply, Vec<u8>) {
-    let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device);
-    let (b, hello) = PairB::start(binding(s), a.code(), s.b.clone()).unwrap();
+    let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
+    let (b, hello) = PairB::start(binding(s), typed(&a), s.b.clone()).unwrap();
     let (a, spake) = a.receive_hello(&hello).unwrap();
     let (b, confirm) = b.receive_spake(&spake).unwrap();
     (a, b, confirm)
@@ -111,11 +117,11 @@ fn d2_the_code_draws_every_symbol() {
 fn d2_the_code_parser_ignores_case_spaces_and_dashes_only() {
     let want = PairingCode::parse("K7QF-9M3X").unwrap();
     assert_eq!(want.to_string(), "K7QF-9M3X");
-    for typed in ["k7qf9m3x", "k7qf 9m3x", " K7QF - 9M3X ", "k-7-q-f-9-m-3-x"] {
-        assert_eq!(PairingCode::parse(typed).as_ref(), Some(&want), "{typed:?}");
+    for typed in ["k7qf9m3x", "k7qf 9m3x", " K7QF - 9M3X ", "k-7-q-f-9-m-3-x", "K7QF-9M3X\n", "\tk7qf-9m3x\r\n"] {
+        assert_eq!(PairingCode::parse(typed).map(|c| *c.as_bytes()), Some(*want.as_bytes()), "{typed:?}");
     }
     for typed in ["", "K7QF-9M3", "K7QF-9M3XX", "K7QF-9M30", "K7QF-9M31", "K7QF-9M3O", "K7QF-9M3I", "K7QF-9M3L", "K7QF-9M3U",
-        "K7QF_9M3X", "K7QF\t9M3X", "K7QF.9M3X", "K7QF-9M3Ⅹ", "Ｋ7QF-9M3X"]
+        "K7QF_9M3X", "K7QF\t9M3X", "K7QF\n9M3X", "K7QF.9M3X", "K7QF-9M3Ⅹ", "Ｋ7QF-9M3X"]
     {
         assert!(PairingCode::parse(typed).is_none(), "{typed:?}");
     }
@@ -129,21 +135,8 @@ fn d2_a_pairing_completes_and_both_sides_agree() {
     let s = sides();
     let (_, paired, payload) = full_run(&s);
     assert_eq!(payload, PAYLOAD);
-    assert_eq!(paired.device, s.b);
-    assert_eq!(paired.binding, binding(&s));
-}
-
-#[test]
-fn d2_workspace_member_pairs_under_its_own_kind() {
-    let s = sides();
-    let a = PairA::new(PeerKind::WorkspaceMember, USER, s.a_device);
-    let bind = Binding { kind: PeerKind::WorkspaceMember, ..binding(&s) };
-    let (b, hello) = PairB::start(bind, a.code(), s.b.clone()).unwrap();
-    let (a, spake) = a.receive_hello(&hello).unwrap();
-    let (b, confirm) = b.receive_spake(&spake).unwrap();
-    let (a, reply) = a.receive_confirm(&confirm).unwrap().approve(PAYLOAD).unwrap();
-    let (_, ack) = b.receive_reply(&reply).unwrap().acknowledge();
-    assert_eq!(a.receive_ack(&ack).unwrap().binding.kind, PeerKind::WorkspaceMember);
+    assert_eq!(paired.device(), &s.b);
+    assert_eq!(paired.binding(), &binding(&s));
 }
 
 /// One wrong guess ends it on both sides: A's state is consumed by the
@@ -152,12 +145,12 @@ fn d2_workspace_member_pairs_under_its_own_kind() {
 #[test]
 fn d2_a_wrong_code_is_one_guess_then_dead_on_both_sides() {
     let s = sides();
-    let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device);
+    let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
     let mut wrong = a.code().to_string();
     let last = wrong.pop().unwrap();
     wrong.push(if last == 'Z' { 'Y' } else { 'Z' });
     let wrong = PairingCode::parse(&wrong).unwrap();
-    let (b, hello) = PairB::start(binding(&s), &wrong, s.b.clone()).unwrap();
+    let (b, hello) = PairB::start(binding(&s), wrong, s.b.clone()).unwrap();
     let (a, spake) = a.receive_hello(&hello).unwrap();
     let (b, confirm) = b.receive_spake(&spake).unwrap();
     assert!(a.receive_confirm(&confirm).is_err());
@@ -170,26 +163,28 @@ fn d2_a_wrong_code_is_one_guess_then_dead_on_both_sides() {
 #[test]
 fn d2_the_code_a_generates_is_new_every_time() {
     let s = sides();
-    let a1 = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device);
-    let a2 = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device);
-    assert_ne!(a1.code(), a2.code());
+    let a1 = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
+    let a2 = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
+    assert_ne!(a1.code().as_bytes(), a2.code().as_bytes());
 }
 
 // ------------------------------------------------------ swapped identities
 
 fn swapped_fails_at_a(bind_b: Binding, kind_a: PeerKind, user_a: &str, s: &Sides) {
-    let a = PairA::new(kind_a, user_a, s.a_device);
-    let (b, hello) = PairB::start(bind_b, a.code(), s.b.clone()).unwrap();
+    let a = PairA::new(kind_a, user_a, s.a_device).unwrap();
+    let (b, hello) = PairB::start(bind_b, typed(&a), s.b.clone()).unwrap();
     let (a, spake) = a.receive_hello(&hello).unwrap();
     let (_, confirm) = b.receive_spake(&spake).unwrap();
     assert!(a.receive_confirm(&confirm).is_err());
 }
 
+/// Only kind 1 (same-person device) is defined; ticket 32 defines kind 2
+/// with its own fields under the same label.
 #[test]
-fn d2_a_swapped_peer_kind_fails() {
+fn d2_the_only_peer_kind_is_same_person_device() {
     let s = sides();
-    swapped_fails_at_a(Binding { kind: PeerKind::WorkspaceMember, ..binding(&s) }, PeerKind::SamePersonDevice, USER, &s);
-    swapped_fails_at_a(binding(&s), PeerKind::WorkspaceMember, USER, &s);
+    let (_, paired, _) = full_run(&s);
+    assert_eq!(paired.binding().kind, PeerKind::SamePersonDevice);
 }
 
 #[test]
@@ -212,10 +207,10 @@ fn d2_a_swapped_paired_device_fails() {
 fn d2_a_new_device_whose_key_is_not_its_id_is_refused() {
     let s = sides();
     let other = DeviceKey::generate().public();
-    assert!(PairB::start(Binding { b_device: other.id(), ..binding(&s) }, &PairingCode::generate(), s.b.clone()).is_err());
+    assert!(PairB::start(Binding { b_device: other.id(), ..binding(&s) }, PairingCode::generate(), s.b.clone()).is_err());
     // At A: rewrite the hello's device id in flight.
-    let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device);
-    let (b, mut hello) = PairB::start(binding(&s), a.code(), s.b.clone()).unwrap();
+    let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
+    let (b, mut hello) = PairB::start(binding(&s), typed(&a), s.b.clone()).unwrap();
     hello[2..18].copy_from_slice(&other.id().0);
     let (a, spake) = a.receive_hello(&hello).unwrap();
     let (_, confirm) = b.receive_spake(&spake).unwrap();
@@ -225,11 +220,12 @@ fn d2_a_new_device_whose_key_is_not_its_id_is_refused() {
 #[test]
 fn d2_a_name_or_os_a_terminal_would_misprint_is_refused() {
     let s = sides();
-    for (name, os) in [("", "macOS"), ("x", ""), ("evil\x1b[2J", "macOS"), ("x", "mac\nOS"), ("a\u{202E}koobcam", "macOS"),
+    for (name, os) in [("", "macOS"), ("x", ""), ("evil\x1b[2J", "macOS"), ("x", "mac\nOS"), ("a\u{202E}koobcam", "macOS"), ("elvinas-macbook\u{200B}", "macOS"),
+        ("x", "mac\u{2028}OS"), ("soft\u{00AD}hyphen", "macOS"), ("tag\u{E0041}", "macOS"), ("x", "\u{FEFF}macOS"),
         (&"n".repeat(129) as &str, "macOS")]
     {
         let me = NewDevice { name: name.into(), os: os.into(), ..s.b.clone() };
-        assert!(PairB::start(binding(&s), &PairingCode::generate(), me).is_err(), "{name:?} {os:?}");
+        assert!(PairB::start(binding(&s), PairingCode::generate(), me).is_err(), "{name:?} {os:?}");
     }
 }
 
@@ -240,12 +236,12 @@ fn d2_a_tampered_hello_fails() {
     let s = sides();
     // Every byte: the header, the device id, the SPAKE2 message.
     let probe = {
-        let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device);
-        PairB::start(binding(&s), a.code(), s.b.clone()).unwrap().1.len()
+        let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
+        PairB::start(binding(&s), typed(&a), s.b.clone()).unwrap().1.len()
     };
     for i in 0..probe {
-        let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device);
-        let (b, hello) = PairB::start(binding(&s), a.code(), s.b.clone()).unwrap();
+        let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
+        let (b, hello) = PairB::start(binding(&s), typed(&a), s.b.clone()).unwrap();
         let Ok((a, spake)) = a.receive_hello(&flip(&hello, i)) else { continue };
         let (_, confirm) = b.receive_spake(&spake).unwrap();
         assert!(a.receive_confirm(&confirm).is_err(), "byte {i}");
@@ -256,8 +252,8 @@ fn d2_a_tampered_hello_fails() {
 fn d2_a_tampered_spake_message_fails() {
     let s = sides();
     for i in 0..35 {
-        let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device);
-        let (b, hello) = PairB::start(binding(&s), a.code(), s.b.clone()).unwrap();
+        let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
+        let (b, hello) = PairB::start(binding(&s), typed(&a), s.b.clone()).unwrap();
         let (a, spake) = a.receive_hello(&hello).unwrap();
         let Ok((_, confirm)) = b.receive_spake(&flip(&spake, i)) else { continue };
         assert!(a.receive_confirm(&confirm).is_err(), "byte {i}");
@@ -320,9 +316,9 @@ fn d2_one_mac_cannot_stand_in_for_another() {
 #[test]
 fn d2_a_replayed_reply_is_refused() {
     let s = sides();
-    let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device);
-    let code = a.code().clone();
-    let (b, hello) = PairB::start(binding(&s), &code, s.b.clone()).unwrap();
+    let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
+    let (b, hello) = PairB::start(binding(&s), typed(&a), s.b.clone()).unwrap();
+    let shown = a.code().to_string();
     let (a, spake) = a.receive_hello(&hello).unwrap();
     let (b, confirm) = b.receive_spake(&spake).unwrap();
     let (_, reply1) = a.receive_confirm(&confirm).unwrap().approve(PAYLOAD).unwrap();
@@ -331,7 +327,7 @@ fn d2_a_replayed_reply_is_refused() {
     // Session two: a registry holding the code (it never does, but grant it)
     // still cannot make the first reply open, since each side's SPAKE2
     // scalar is fresh.
-    let (b2, _hello2) = PairB::start(binding(&s), &code, s.b.clone()).unwrap();
+    let (b2, _hello2) = PairB::start(binding(&s), PairingCode::parse(&shown).unwrap(), s.b.clone()).unwrap();
     let (b2, _) = b2.receive_spake(&spake).unwrap();
     assert!(b2.receive_reply(&reply1).is_err());
 }
@@ -354,7 +350,7 @@ fn d2_a_confirmation_or_ack_from_another_session_is_refused() {
     assert!(a3.receive_ack(&run1.ack).is_err());
     // A replayed hello against a fresh A with another code fails at the
     // confirmation, whatever B answers.
-    let a4 = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device);
+    let a4 = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
     let (a4, _) = a4.receive_hello(&run1.hello).unwrap();
     assert!(a4.receive_confirm(&run1.confirm).is_err());
 }
@@ -418,4 +414,35 @@ fn d2_spake2_matches_the_magic_wormhole_vectors() {
     let kb = sb.finish(&msg_a).unwrap();
     assert_eq!(ka, kb);
     assert_eq!(hex(&ka), "712295de7219c675ddd31942184aa26e0a957cf216bc230d165b215047b520c1");
+}
+
+// ------------------------------------------------------------- hardening
+
+/// A user id past `MAX_USER_ID` is refused with an error on both sides,
+/// never a panic, whatever a registry hands B.
+#[test]
+fn d2_an_overlong_user_id_is_an_error_not_a_panic() {
+    let s = sides();
+    for n in [65, 65_504, 65_535, 70_000] {
+        let long = "u".repeat(n);
+        assert!(PairA::new(PeerKind::SamePersonDevice, long.clone(), s.a_device).is_err(), "{n}");
+        assert!(PairB::start(Binding { user_id: long, ..binding(&s) }, PairingCode::generate(), s.b.clone()).is_err(), "{n}");
+    }
+    assert!(PairA::new(PeerKind::SamePersonDevice, "", s.a_device).is_err());
+    assert!(PairA::new(PeerKind::SamePersonDevice, "u".repeat(64), s.a_device).is_ok());
+}
+
+/// B's code is consumed by `start`: once moved in, the caller holds nothing
+/// to start again with (`PairingCode` is not `Clone`; the doc test on it
+/// shows `clone` does not compile). A second pairing needs a new code, and
+/// a new parse of the same string is the caller's rule to refuse, as
+/// `PairB::start`'s doc says.
+#[test]
+fn d2_bs_code_is_consumed_by_start() {
+    type Start = fn(Binding, PairingCode, NewDevice) -> Result<(PairB, Vec<u8>), krowk_client::e2e::Error>;
+    let _by_value: Start = PairB::start;
+    let s = sides();
+    let code = PairingCode::generate();
+    let (_b, _hello) = PairB::start(binding(&s), code, s.b.clone()).unwrap();
+    // `code` is moved: using it here would not compile.
 }
