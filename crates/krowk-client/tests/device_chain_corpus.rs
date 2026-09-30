@@ -16,7 +16,7 @@
 //! are this file's contract: `code` below maps the verifier's refusals to
 //! them, and a refusal it does not know fails the test.
 
-use krowk_client::device_chain::{Action, Chain, Entry, Head, Kind, Pending, SignedEntry, Subject, Trust, CLOCK_SKEW, RECOVERY_ROTATION_DELAY};
+use krowk_client::device_chain::{Action, Chain, Entry, Head, Kind, Pending, SignedEntry, Subject, Trust, CLOCK_SKEW, RECOVERY_ROTATION_DELAY, REFUSED_IN_NAMES};
 use krowk_client::e2e::{hex, DeviceKey, Error, SigningKey};
 use krowk_client::recovery::RecoveryKit;
 use krowk_client::user_key::{UserKey, UserKeyId};
@@ -387,6 +387,56 @@ fn cases() -> Vec<Value> {
         add("propose_backdated_pinned", "a backdated proposal is refused on a pinned device", push(b.clone(), backdated.clone()), pinned_at(&b, 1, T, None), now);
         add("propose_backdated_within_skew", "within the skew it is pending from first sight", push(b.clone(), backdated), pinned_at(&b, 1, T - 8 * DAY + CLOCK_SKEW, None), now);
     }
+    // Unicode. Names are compared with ASCII A–Z folded and every other
+    // byte exact, and refused characters are a literal code-point list, so
+    // no case here depends on a runtime's Unicode tables. Each pair: the
+    // laptop at seq 0 takes the first name, the phone added at seq 1 the
+    // second; the names' UTF-8 is in the entry bytes, and in `rule`.
+    let named = |first: &str, second: &str| {
+        let mut l = w.laptop.subject();
+        l.name = first.into();
+        let mut p = w.phone.subject();
+        p.name = second.into();
+        let g = sign(&genesis(vec![l], 1, T), &[&w.laptop]);
+        let a = sign(&after(&g, Action::Add, p, 1, T + 1), &[&w.laptop]);
+        vec![g, a]
+    };
+    let utf8 = |s: &str| hex(s.as_bytes());
+    for (name, first, second, rule) in [
+        ("unicode_final_sigma", "ΑΣ", "ας", "Greek capitals and final-sigma lowercase are distinct names"),
+        ("unicode_sigma", "Σ", "σ", "Σ and σ are distinct names"),
+        ("unicode_dotted_i", "İ", "i\u{307}", "İ (U+0130) and i + U+0307 are distinct names"),
+        ("unicode_sharp_s", "ẞ", "ß", "ẞ (U+1E9E) and ß are distinct names"),
+        ("unicode_ogonek", "Ą", "ą", "Ą and ą are distinct names"),
+        ("unicode_kelvin", "K", "\u{212A}", "ASCII K and the Kelvin sign are distinct names"),
+        ("ascii_case_duplicate", "Laptop", "lAPTOP", "names equal with ASCII A–Z folded are one name"),
+        ("ascii_case_duplicate_mixed", "Ąb", "ĄB", "the ASCII letters of a name fold, the rest compare exact"),
+    ] {
+        add(name, &format!("{rule} ({} vs {})", utf8(first), utf8(second)), named(first, second), fresh(2), now);
+    }
+    // One refused name per end of each refused range: "x" and the code
+    // point, patched into a valid entry's bytes (the encoder refuses to
+    // write it), so the refusal is the reader's.
+    for &(lo, hi) in REFUSED_IN_NAMES {
+        for cp in if lo == hi { vec![lo] } else { vec![lo, hi] } {
+            let c = char::from_u32(cp).unwrap();
+            let bad = format!("x{c}");
+            let placeholder = format!("x{}", "q".repeat(c.len_utf8()));
+            let mut l = w.laptop.subject();
+            l.name = placeholder.clone();
+            let mut g = sign(&genesis(vec![l], 1, T), &[&w.laptop]);
+            let at = g.bytes.windows(placeholder.len()).position(|x| x == placeholder.as_bytes()).unwrap();
+            g.bytes[at..at + placeholder.len()].copy_from_slice(bad.as_bytes());
+            add(&format!("refused_u{cp:04x}"), &format!("a name may not hold U+{cp:04X} (range U+{lo:04X}–{hi:04X}; name bytes {})", utf8(&bad)), vec![g], fresh(1), now);
+        }
+    }
+    // And the OS field refuses the same list.
+    {
+        let mut g = sign(&genesis(vec![w.laptop.subject()], 1, T), &[&w.laptop]);
+        let at = g.bytes.windows(5).position(|x| x == b"linux").unwrap();
+        g.bytes[at + 4] = 0x07;
+        add("refused_in_os", "an OS may not hold a refused code point (U+0007)", vec![g], fresh(1), now);
+    }
     out
 }
 
@@ -427,4 +477,13 @@ fn d1_the_corpus_covers_both_outcomes_of_each_rule() {
     assert_eq!(get("propose")["expect"]["verify"]["accept"]["pending"]["authorizer"], get("propose")["expect"]["verify"]["accept"]["devices"][0]["id"]);
     assert_eq!(get("complete_early_pinned")["expect"]["prefix"]["rejected"]["code"], "rotation_not_due");
     assert_eq!(get("remove_recovery")["expect"]["verify"]["refuse"]["code"], "remove_recovery");
+    for n in ["unicode_final_sigma", "unicode_sigma", "unicode_dotted_i", "unicode_sharp_s", "unicode_ogonek", "unicode_kelvin"] {
+        assert!(get(n)["expect"]["verify"]["accept"].is_object(), "{n} should be distinct names");
+    }
+    for n in ["ascii_case_duplicate", "ascii_case_duplicate_mixed"] {
+        assert_eq!(get(n)["expect"]["verify"]["refuse"]["code"], "duplicate_name", "{n}");
+    }
+    for c in cases.iter().filter(|c| c["name"].as_str().unwrap().starts_with("refused_")) {
+        assert_eq!(c["expect"]["verify"]["refuse"]["code"], "name_characters", "{}", c["name"]);
+    }
 }

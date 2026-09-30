@@ -264,23 +264,15 @@ impl NewDevice {
 }
 
 /// A name or an OS a terminal can print as it stands: not empty, bounded,
-/// and no control characters, and none of Unicode's format or separator
-/// characters (`Cf`, `Zl`, `Zp`: the direction marks and overrides, zero
-/// widths, the soft hyphen, tags), which could make the prompt read as
-/// something it isn't. Refused, not cleaned. Confusable letters (a
-/// Cyrillic `а`) still pass: only the code's holder reaches the prompt.
+/// and none of the code points `device_chain::REFUSED_IN_NAMES` lists —
+/// the control characters and Unicode's format and separator characters
+/// (the direction marks and overrides, zero widths, the soft hyphen,
+/// tags), which could make the prompt read as something it isn't. A
+/// literal list, the chain's own, so the name pairing shows is one the
+/// chain takes. Refused, not cleaned. Confusable letters (a Cyrillic `а`)
+/// still pass: only the code's holder reaches the prompt.
 fn printable(s: &str, max: usize) -> bool {
-    !s.is_empty() && s.len() <= max && !s.chars().any(|c| c.is_control() || invisible(c))
-}
-
-/// Unicode 16's `Cf` characters, and `Zl` and `Zp`.
-fn invisible(c: char) -> bool {
-    matches!(c,
-        '\u{00AD}' | '\u{0600}'..='\u{0605}' | '\u{061C}' | '\u{06DD}' | '\u{070F}' | '\u{0890}'..='\u{0891}'
-        | '\u{08E2}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{2064}'
-        | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}' | '\u{110BD}' | '\u{110CD}'
-        | '\u{13430}'..='\u{1343F}' | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}' | '\u{E0001}'
-        | '\u{E0020}'..='\u{E007F}')
+    !s.is_empty() && s.len() <= max && !s.chars().any(crate::device_chain::refused_in_name)
 }
 
 // ------------------------------------------------------------- the wire

@@ -91,10 +91,15 @@
 //!   proposal rotates nothing because nothing changes until it completes;
 //!   the completion rotates, so the old kit opens nothing sealed after it.
 //! - **Names** are what a person reads at every prompt and in recovery's
-//!   review, so they refuse control characters, bidirectional marks and
-//!   overrides, zero-width characters and line and paragraph separators,
-//!   and a device may not take a name (ignoring case) a device on the list
-//!   already has.
+//!   review. A name or OS may not hold any code point in these inclusive
+//!   ranges (`REFUSED_IN_NAMES`, Unicode 16's `Cc`, `Cf`, `Zl` and `Zp`):
+//!   U+0000–001F, U+007F–009F, U+00AD, U+0600–0605, U+061C, U+06DD,
+//!   U+070F, U+0890–0891, U+08E2, U+180E, U+200B–200F, U+2028–202E,
+//!   U+2060–206F, U+FEFF, U+FFF9–FFFB, U+110BD, U+110CD, U+13430–1343F,
+//!   U+1BCA0–1BCA3, U+1D173–1D17A, U+E0001, U+E0020–E007F. A device may
+//!   not take a name a device on the list already has, compared with ASCII
+//!   `A`–`Z` folded and every other byte exact (`same_name`). No rule of
+//!   the chain's validity reads the runtime's Unicode tables.
 //!
 //! A pinned client refuses a chain shorter than its pin, or whose entry at
 //! the pin's seq has another hash: an older list, or a forked one.
@@ -251,18 +256,58 @@ fn signed_message(bytes: &[u8]) -> Vec<u8> {
     [SIGNATURE_LABEL, bytes].concat()
 }
 
-/// Characters a device name or os may not hold: what a terminal would act
-/// on, reorder or hide. The bidirectional set is pairing's; zero-width
-/// characters and line and paragraph separators are refused here as well.
-fn forbidden(c: char) -> bool {
-    c.is_control() || matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+/// The code points a device name or OS may not hold, as inclusive ranges:
+/// what a terminal would act on, reorder or hide. A literal list, never a
+/// lookup in the runtime's Unicode tables, so every implementation of the
+/// chain — the registry's included — refuses exactly these and no others
+/// whatever its Unicode version. It is Unicode 16's `Cc`, `Cf`, `Zl` and
+/// `Zp` (U+2065, unassigned, rides along in U+2060–206F). Pairing refuses
+/// the same list.
+pub const REFUSED_IN_NAMES: &[(u32, u32)] = &[
+    (0x0000, 0x001F),
+    (0x007F, 0x009F),
+    (0x00AD, 0x00AD),
+    (0x0600, 0x0605),
+    (0x061C, 0x061C),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x180E, 0x180E),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x206F),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0001, 0xE0001),
+    (0xE0020, 0xE007F),
+];
+
+/// Whether `c` is one of `REFUSED_IN_NAMES`.
+pub fn refused_in_name(c: char) -> bool {
+    let c = c as u32;
+    REFUSED_IN_NAMES.iter().any(|&(lo, hi)| (lo..=hi).contains(&c))
+}
+
+/// Two names are one name when they are equal with ASCII `A`–`Z` folded to
+/// `a`–`z`, and every other byte compared exactly: `Σ` and `σ`, `Ą` and
+/// `ą`, `ẞ` and `ß` are distinct. No Unicode case mapping, which differs
+/// between runtimes (Ruby's `downcase` has no final sigma), decides
+/// whether a chain is valid.
+pub fn same_name(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
 }
 
 fn check_text(seq: u64, what: &str, s: &str, min: usize, max: usize) -> Result<(), Error> {
     if s.len() < min || s.len() > max {
         return Err(refuse(seq, format!("a device {what} is {min}–{max} bytes")));
     }
-    if s.chars().any(forbidden) {
+    if s.chars().any(refused_in_name) {
         return Err(refuse(seq, format!("a device {what} has a control, bidirectional or invisible character")));
     }
     Ok(())
@@ -638,7 +683,7 @@ impl Chain {
                 // Nor may a device take the pending recovery device's keys or
                 // name, which would jam the rotation's completion.
                 if let Some(p) = &self.pending
-                    && ([subject.device.0, subject.signing.0].iter().any(|k| *k == p.subject.device.0 || *k == p.subject.signing.0) || subject.name.to_lowercase() == p.subject.name.to_lowercase())
+                    && ([subject.device.0, subject.signing.0].iter().any(|k| *k == p.subject.device.0 || *k == p.subject.signing.0) || same_name(&subject.name, &p.subject.name))
                 {
                     return Err(refuse(seq, "it adds the keys or name of the recovery device a rotation is pending to"));
                 }
@@ -667,7 +712,7 @@ impl Chain {
                 }
                 // The kit it would replace aside, its name may not be one a
                 // device on the list has, as it may not be at completion.
-                if next.devices.iter().any(|d| d.kind != Kind::Recovery && d.name.to_lowercase() == subject.name.to_lowercase()) {
+                if next.devices.iter().any(|d| d.kind != Kind::Recovery && same_name(&d.name, &subject.name)) {
                     return Err(refuse(seq, format!("a device on the list is already called {:?}", subject.name)));
                 }
                 let since = match &self.trust {
@@ -787,7 +832,7 @@ impl Chain {
         if self.seen.contains(&s.device.0) || self.seen.contains(&s.signing.0) || s.device.0 == s.signing.0 {
             return Err(refuse(seq, "it adds a key this list has held before"));
         }
-        if self.devices.iter().any(|d| d.name.to_lowercase() == s.name.to_lowercase()) {
+        if self.devices.iter().any(|d| same_name(&d.name, &s.name)) {
             return Err(refuse(seq, format!("a device on the list is already called {:?}", s.name)));
         }
         self.seen.extend([s.device.0, s.signing.0]);
@@ -1510,6 +1555,24 @@ mod tests {
         clash.name = "Phone".into();
         let r = chain(&entries).batch(&g1, vec![Change::RotateRecovery(clash, &thief_kit.signing)], laptop.id(), &laptop.signing, T + 10);
         assert!(r.err().unwrap().0.contains("already called"));
+    }
+
+    /// Names compare with ASCII folded only, and the refused list is
+    /// literal: it holds every `Cc` character, as `char::is_control` agrees
+    /// today, and the doc's ranges are the constant's.
+    #[test]
+    fn d1_names_fold_ascii_only_and_refuse_a_literal_list() {
+        assert!(same_name("Laptop", "lAPTOP"));
+        for (a, b) in [("ΑΣ", "ας"), ("Σ", "σ"), ("İ", "i\u{307}"), ("ẞ", "ß"), ("Ą", "ą"), ("K", "\u{212A}")] {
+            assert!(!same_name(a, b), "{a} {b}");
+        }
+        for c in (0..=0x10FFFF).filter_map(char::from_u32) {
+            if c.is_control() {
+                assert!(refused_in_name(c), "U+{:04X}", c as u32);
+            }
+        }
+        assert!(!refused_in_name('a') && !refused_in_name('Ą') && !refused_in_name(' '));
+        assert!(refused_in_name('\u{2065}'), "unassigned, inside U+2060–206F");
     }
 
     /// Known answer, frozen: a genesis entry over fixed keys and a fixed
