@@ -9,6 +9,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **Pairing a device by a short code, in the library.** `krowk_client::pairing`
+  holds both sides of `krowk devices add` as sans-IO state machines: an
+  eight-character code (Crockford base32 less `0` and `1`, shown `XXXX-XXXX`,
+  typed in any case with spaces and dashes ignored), SPAKE2 in asymmetric mode
+  bound to the peer kind, the person and both device ids, and key confirmation
+  both ways before the new device's name is shown or anything is posted. One
+  failed step ends the pairing on both sides; there is no retry against the
+  same code. The SPAKE2 crate is held to magic-wormhole's vectors. Nothing
+  calls it yet.
+
 ## [0.12.0] - 2026-09-30
 
 ### Added
