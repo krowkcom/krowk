@@ -151,6 +151,12 @@ impl Subject {
     pub fn id(&self) -> DeviceId {
         self.device.id()
     }
+
+    /// A device on the list as the subject an entry about it names — what
+    /// a `remove` must name exactly.
+    pub fn of(d: &Device) -> Subject {
+        Subject { kind: d.kind, name: d.name.clone(), os: d.os.clone(), device: d.device, signing: d.signing }
+    }
 }
 
 /// One entry, before it is signed. `signers` is filled in by `sign`.

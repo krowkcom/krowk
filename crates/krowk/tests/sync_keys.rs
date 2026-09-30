@@ -175,3 +175,16 @@ fn d6_status_offline_says_what_was_last_verified() {
     assert!(v["summary"].as_str().unwrap().contains("no recovery kit"), "{v}");
     let _ = std::fs::remove_dir_all(&r);
 }
+
+/// D7: `devices remove` takes a device off the list and rotates the key,
+/// so it needs a person at a terminal and a name, and refuses before
+/// asking anything of the registry otherwise.
+#[test]
+fn d7_devices_remove_needs_a_person_and_a_name() {
+    let r = root("remove");
+    let e = err(&command(&r, &["devices", "remove", "old-laptop", "--json"]).output().unwrap());
+    assert!(e.contains("confirmation_required") && e.contains("a person at a terminal"), "{e}");
+    let e = err(&piped(&r, &["devices", "remove", "--json"], ""));
+    assert!(e.contains("missing_argument") && e.contains("krowk devices remove NAME"), "{e}");
+    let _ = std::fs::remove_dir_all(&r);
+}

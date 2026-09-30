@@ -1200,6 +1200,11 @@ stdout:
           "name": "add",
           "usage": "krowk devices add",
           "summary": "Show a code that adds a new machine to your devices"
+        },
+        {
+          "name": "remove",
+          "usage": "krowk devices remove NAME",
+          "summary": "Take a device off your list and rotate your key"
         }
       ]
     }
@@ -2570,6 +2575,11 @@ stdout:
           "name": "add",
           "usage": "krowk devices add",
           "summary": "Show a code that adds a new machine to your devices"
+        },
+        {
+          "name": "remove",
+          "usage": "krowk devices remove NAME",
+          "summary": "Take a device off your list and rotate your key"
         }
       ]
     }
@@ -3954,6 +3964,11 @@ stdout:
           "name": "add",
           "usage": "krowk devices add",
           "summary": "Show a code that adds a new machine to your devices"
+        },
+        {
+          "name": "remove",
+          "usage": "krowk devices remove NAME",
+          "summary": "Take a device off your list and rotate your key"
         }
       ]
     }
@@ -5338,6 +5353,11 @@ tty:
           "name": "add",
           "usage": "krowk devices add",
           "summary": "Show a code that adds a new machine to your devices"
+        },
+        {
+          "name": "remove",
+          "usage": "krowk devices remove NAME",
+          "summary": "Take a device off your list and rotate your key"
         }
       ]
     }
