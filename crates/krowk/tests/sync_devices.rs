@@ -15,6 +15,7 @@
 use krowk_api::client::RequestSigner;
 use krowk_client::e2e::{self, AccountKey, Direction, SessionKey};
 use krowk_client::keystore::Keystore;
+use krowk_client::user_key::{UserKey, UserKeys};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -143,16 +144,18 @@ fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
     assert_eq!(set_up["data"]["registered"], true, "{set_up}");
     let account_id = set_up["data"]["account_key"].as_str().unwrap().to_string();
 
-    // A session the laptop hosts: its key wrapped under the account key, its
+    // A session the laptop hosts: its key wrapped under the person's user key, its
     // title sealed under its key, and the lease taken before a later write.
     let laptop_keys = Keystore::new(&laptop.join(".krowk"));
     let account = laptop_keys.account().unwrap().unwrap();
+    let user = UserKey::first();
+    laptop_keys.save_user_keys(&UserKeys::new(user.clone(), []).unwrap()).unwrap();
     let laptop_id = laptop_keys.device().unwrap().unwrap().id();
     let client = krowk_api::Client::new(api, token).signed_by(e2e::DeviceSigner::new(laptop_id, laptop_keys.signing_key().unwrap()).shared());
     let laptop_device = laptop_id.to_string();
     let id: [u8; 16] = e2e::random();
     let session_key = SessionKey::generate();
-    let wrapped = e2e::hex(&e2e::wrap_session_key(&session_key, &id, &account));
+    let wrapped = e2e::hex(&e2e::wrap_session_key(&session_key, &id, &user));
     let sealed = e2e::hex(&e2e::seal_session_index(&session_key, &id, TITLE.as_bytes()));
     client.put_sync_session(&uuid(&id), &wrapped, Some(&sealed), None).unwrap();
     let lease = client.acquire_lease(&uuid(&id), &laptop_device, 60, "production").unwrap();
@@ -177,9 +180,15 @@ fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
     assert_eq!(joined["data"]["joined"], true);
 
     // The desktop opens the laptop's session with nothing but its own home.
-    let desktop_account = Keystore::new(&desktop.join(".krowk")).account().unwrap().expect("the desktop kept the account key");
+    // Until adding a device carries the user key to it (D5), the test hands
+    // the laptop's over, wrapped to the desktop's device key as the join
+    // would leave it.
+    let desktop_home = Keystore::new(&desktop.join(".krowk"));
+    desktop_home.save_user_keys(&UserKeys::new(user.clone(), []).unwrap()).unwrap();
+    let desktop_user = desktop_home.user_keys().unwrap().expect("the desktop kept the user key");
     let held = client.show_sync_session(&uuid(&id)).unwrap();
-    let key = e2e::unwrap_session_key(&e2e::unhex(&held.wrapped_key).unwrap(), &id, &desktop_account).expect("the desktop unwraps the session key");
+    assert_eq!(held.seal, "user", "a private session is sealed under its owner's user key");
+    let key = e2e::unwrap_session_key(&e2e::unhex(&held.wrapped_key).unwrap(), &id, &desktop_user).expect("the desktop unwraps the session key");
     let title = e2e::open_session_index(&e2e::unhex(&held.sealed_index).unwrap(), &id, &key).unwrap();
     assert_eq!(title, TITLE.as_bytes());
     // And the frames the session streams, under the key it now holds.
@@ -223,6 +232,7 @@ fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
     assert!(real.is_some() || !wire.is_empty());
     assert!(!wire.windows(TITLE.len()).any(|w| w == TITLE.as_bytes()), "the session's title went over the wire in the clear");
     assert!(!wire.windows(16).any(|w| w == &account.as_bytes()[..16]), "the account key went over the wire in the clear");
+    assert!(!wire.windows(16).any(|w| w == &user.as_bytes()[..16]), "the user key went over the wire in the clear");
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -278,7 +288,7 @@ fn r_sync_2_a_stale_lease_holders_write_is_refused() {
     let ((a, client, _), (b, cb, _)) = (machine(&api, &account), machine(&api, &account));
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
-    let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &id, &account));
+    let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first()));
     client.put_sync_session(&uuid(&id), &wrapped, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"one"))), None).unwrap();
 
     let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap();
@@ -359,7 +369,7 @@ fn r_sync_2_a_chunk_with_a_stale_or_missing_lease_token_is_refused() {
     let ((a, client, _), (b, cb, _)) = (machine(&api, &account), machine(&api, &account));
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
-    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&key, &id, &account)), None, None).unwrap();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first())), None, None).unwrap();
     let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap();
     let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60, "production").unwrap();
 
@@ -395,7 +405,7 @@ fn the_stand_in_models_the_session_cap_the_burst_ceiling_and_revocation() {
     client.sleep = |_| {};
     let public = e2e::hex(&device.public().0);
     client.register_device(&public, &signing_public, "laptop", &account.id().to_string()).unwrap();
-    let wrapped = |id: &[u8; 16]| e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), id, &account));
+    let wrapped = |id: &[u8; 16]| e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), id, &UserKey::first()));
 
     let first: [u8; 16] = e2e::random();
     client.put_sync_session(&uuid(&first), &wrapped(&first), None, None).unwrap();
@@ -432,7 +442,7 @@ fn r_sync_2_a_displaced_holders_pending_chunk_is_replaced_not_finalized() {
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
     let session = uuid(&id);
-    client.put_sync_session(&session, &e2e::hex(&e2e::wrap_session_key(&key, &id, &account)), None, None).unwrap();
+    client.put_sync_session(&session, &e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first())), None, None).unwrap();
 
     // A declares chunk 0 by hand and is displaced before finalizing it.
     let held = client.acquire_lease(&session, &a.id().to_string(), 60, "production").unwrap();
@@ -544,7 +554,7 @@ fn r_relay_1_leases_and_viewers_are_issued_tickets_the_relay_can_check() {
         c.register_device(&e2e::hex(&d.public().0), &e2e::hex(&s.0), "machine", &account.id().to_string()).unwrap();
     }
     let id: [u8; 16] = e2e::random();
-    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &account)), None, None).unwrap();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None).unwrap();
 
     let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "development").unwrap();
     let t = relay_ticket::verify(&held.relay_ticket, &keys, relay_ticket::now()).unwrap();
@@ -614,7 +624,7 @@ fn signed_calls_refuse_the_api_key_alone_a_replay_a_stale_signature_and_a_revoke
     let account = AccountKey::generate();
     let (a, client, signer) = machine(&api, &account);
     let id: [u8; 16] = e2e::random();
-    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &account)), None, None).unwrap();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None).unwrap();
 
     let unsigned = krowk_api::Client::new(&api, TOKEN);
     assert_eq!(unsigned.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap_err().code(), "device_signature_missing");

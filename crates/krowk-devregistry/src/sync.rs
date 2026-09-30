@@ -445,7 +445,10 @@ fn serialize_session(s: &Session, now: Timestamp, listing: bool) -> Json {
     } else {
         Json::Null
     };
-    let mut pairs = vec![("id".to_owned(), Json::str(&s.id)), ("wrapped_key".to_owned(), Json::str(&s.wrapped_key))];
+    // Every session here is private, sealed under its owner's user key, as
+    // the registry's `seal` says (engineering/devices.md → Keys). The
+    // stand-in has no people, so it names no owner.
+    let mut pairs = vec![("id".to_owned(), Json::str(&s.id)), ("wrapped_key".to_owned(), Json::str(&s.wrapped_key)), ("seal".to_owned(), Json::str("user"))];
     if !listing {
         pairs.push(("sealed_index".to_owned(), if s.sealed_index.is_empty() { Json::Null } else { Json::str(&s.sealed_index) }));
     }

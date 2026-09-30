@@ -24,7 +24,8 @@ use super::{Answer, Batch, In, Join, ViewerFrame, Welcome, DEAD, FRAME, PING};
 use crate::daemon::client::Client as Daemon;
 use crate::protocol::{ApprovalDecision, ApprovalRequest, Command, LiveEvent, LogBody, PermissionMode, StreamLine};
 use krowk_api::Client;
-use krowk_client::e2e::{self, AccountKey, DeviceId, SessionKey, SigningKey};
+use krowk_client::e2e::{self, DeviceId, SessionKey, SigningKey};
+use krowk_client::user_key::UserKeys;
 use krowk_client::protocol::frame::{KIND_ACK, KIND_ROUTED, HEADER};
 use krowk_client::relay_link::{HostLink, Inbound};
 use serde_json::{json, Value};
@@ -61,7 +62,10 @@ pub struct Options {
     pub api: Arc<Client>,
     pub device: DeviceId,
     pub signing: SigningKey,
-    pub account: AccountKey,
+    /// The person's user key, by the generations this device holds: a new
+    /// session's key is sealed under the newest, an existing one opened
+    /// under the generation it names.
+    pub keys: UserKeys,
     pub session: String,
     pub title: String,
     pub cwd: String,
@@ -89,13 +93,13 @@ fn take(o: &Options) -> Result<(SessionKey, Writer, Held), String> {
     let raw = crate::daemon::ws::uuid(id);
     let (key, wrapped, index) = match o.api.show_sync_session(id) {
         Ok(s) => {
-            let key = e2e::unwrap_session_key(&e2e::unhex(&s.wrapped_key).ok_or("the session's wrapped key is not hex")?, &raw, &o.account).map_err(|e| e.to_string())?;
+            let key = store::open_session_key(&s, id, &o.keys)?;
             let index = store::open_index(&key, id, &s.sealed_index)?;
             (key, s.wrapped_key, index)
         }
         Err(_) => {
             let key = SessionKey::generate();
-            let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &raw, &o.account));
+            let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &raw, o.keys.newest()));
             let index = Index { title: o.title.clone(), cwd: o.cwd.clone(), ..Index::default() };
             let sealed = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).expect("json")));
             o.api.put_sync_session(id, &wrapped, Some(&sealed), None).map_err(|e| e.to_string())?;
