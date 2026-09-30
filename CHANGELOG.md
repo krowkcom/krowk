@@ -40,12 +40,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   generation it would need. The user keys a machine holds live in
   `user-keys.json` (`0600`, wrapped to its device key, replaced by rename),
   and a save never drops an older generation's wrap it already holds.
-  `krowk sync host` takes a session key back from the registry only if this
-  machine published it: `published-sessions.json` records each one, and a
-  record the machine didn't publish, or whose key changed, is refused.
+  Each session's record is signed by the machine that published it. Every
+  machine that opens a session — `sync host`, `attach`, `sessions` and
+  `--resume` — checks that signature against your verified device list
+  (`device-list.json`), so any machine of yours can take a session up again,
+  and a record no device of yours signed opens nowhere. A session published
+  by a machine since removed from your devices still opens to read, but no
+  machine hosts it again: start a new one.
   Sessions sealed under the account key no longer open: clean break. No
-  command puts a user key on a machine yet, so these commands say it holds
-  none until adding a device does.
+  command puts a user key or a device list on a machine yet, so these
+  commands say it holds none until adding a device does.
 
 ### Fixed
 

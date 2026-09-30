@@ -18,6 +18,8 @@ use super::{Answer, Batch, In, Join, Remote, ViewerFrame, Welcome, DEAD, FRAME, 
 use crate::protocol::{Command, LiveEvent, StreamLine};
 use krowk_api::Client;
 use krowk_client::e2e::{self, DeviceId, SessionKey, SigningKey};
+use krowk_client::device_chain::Chain;
+use krowk_client::session_record::Signer;
 use krowk_client::user_key::UserKeys;
 use krowk_client::protocol::frame::{KIND_ACK, KIND_BATCH};
 use krowk_client::relay_link::{Outbound, ViewerLink};
@@ -36,10 +38,10 @@ pub struct Listed {
 }
 
 /// Every synced session this device can open, most recently written first.
-/// One whose key or index does not open under the user keys this device
-/// holds — one sealed under a generation newer than it has, say — is left
+/// One whose record no device on the verified list signed, or whose key or
+/// index does not open under the user keys this device holds — one sealed under a generation newer than it has, say — is left
 /// out and counted.
-pub fn list(api: &Client, keys: &UserKeys) -> Result<(Vec<Listed>, usize), String> {
+pub fn list(api: &Client, keys: &UserKeys, chain: &Chain) -> Result<(Vec<Listed>, usize), String> {
     let mut out = Vec::new();
     let mut unreadable = 0;
     let mut before = String::new();
@@ -48,7 +50,7 @@ pub fn list(api: &Client, keys: &UserKeys) -> Result<(Vec<Listed>, usize), Strin
         for s in &page.sessions {
             // A listing leaves the index out; `show` has it.
             let full = api.show_sync_session(&s.id).map_err(|e| e.to_string())?;
-            match store::open_session_key(&full, &s.id, keys).and_then(|k| store::open_index(&k, &s.id, &full.sealed_index)) {
+            match store::open_session_key(&full, &s.id, keys, chain, Signer::EverHeld).and_then(|k| store::open_index(&k, &s.id, &full.sealed_index)) {
                 Ok(index) => out.push(Listed { id: s.id.clone(), index, holder: full.lease.map(|l| l.device) }),
                 Err(_) => unreadable += 1,
             }
@@ -100,6 +102,9 @@ pub struct Options {
     pub signing: SigningKey,
     /// The person's user key, by the generations this device holds.
     pub keys: UserKeys,
+    /// The device list as this device verified it: whose signatures a
+    /// session record is checked against.
+    pub chain: Chain,
     pub session: String,
     /// The highest head this device has seen of the session before: a log
     /// served shorter is refused.
@@ -125,7 +130,7 @@ pub async fn attach(o: Options) -> Result<Viewer, String> {
         let o = o.clone();
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let s = o.api.show_sync_session(&o.session).map_err(|e| e.to_string())?;
-            let key = store::open_session_key(&s, &o.session, &o.keys)?;
+            let key = store::open_session_key(&s, &o.session, &o.keys, &o.chain, Signer::EverHeld)?;
             let index = store::open_index(&key, &o.session, &s.sealed_index)?;
             let a = store::attach(&o.api, &key, &o.session, index, o.known)?;
             Ok((key, a))

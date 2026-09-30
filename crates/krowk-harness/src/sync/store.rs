@@ -17,6 +17,8 @@
 
 use krowk_api::Client;
 use krowk_client::e2e::{self, ChunkReader, ChunkSealer, SessionKey};
+use krowk_client::device_chain::Chain;
+use krowk_client::session_record;
 use krowk_client::user_key::UserKeys;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -299,7 +301,7 @@ impl Writer {
         self.index.updated_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
         let plain = serde_json::to_vec(&self.index).map_err(|e| e.to_string())?;
         let sealed = e2e::hex(&e2e::seal_session_index(&self.key, &self.session, &plain));
-        self.client.put_sync_session(&self.id, &self.wrapped, Some(&sealed), Some(token)).map_err(api)?;
+        self.client.put_sync_session(&self.id, &self.wrapped, None, Some(&sealed), Some(token)).map_err(api)?;
         self.index_owed = false;
         Ok(())
     }
@@ -349,28 +351,20 @@ pub struct Attached {
     pub heads: Vec<Head>,
 }
 
-/// A session's key, out of the session record: sealed under its owner's
-/// user key (`seal` "user"), at the generation the wrapped key names, and
-/// opened with the generations this device holds. A session sealed some
-/// other way — a workspace key, once shared sessions exist — is refused
-/// here rather than tried under the user key. A registry that says nothing
-/// of the seal is read as `user`, the only seal there is today; the wrapped
-/// key is what decides either way.
-pub fn open_session_key(s: &krowk_api::sync::SyncSession, id: &str, keys: &UserKeys) -> Result<SessionKey, String> {
-    if !s.seal.is_empty() && s.seal != SEAL_USER {
-        return Err(format!("the registry says session {id} is sealed to a {} key, not your user key — this krowk opens only sessions sealed to the user key", printable_seal(&s.seal)));
-    }
+/// A session's key, out of the session record: only a record signed by a
+/// device the verified list has held — listed now, `from` `Listed`, when a
+/// host takes it up to write under (`session_record::verify`) — and then
+/// opened with the generations this device holds. An unsigned record, one
+/// signed by a device the list never held, and one sealed some way other
+/// than to the user key, are refused before anything is unwrapped.
+pub fn open_session_key(s: &krowk_api::sync::SyncSession, id: &str, keys: &UserKeys, chain: &Chain, from: session_record::Signer) -> Result<SessionKey, String> {
+    let raw = crate::daemon::ws::uuid(id);
     let wrapped = e2e::unhex(&s.wrapped_key).ok_or("the session's wrapped key is not hex")?;
-    e2e::unwrap_session_key(&wrapped, &crate::daemon::ws::uuid(id), keys).map_err(|e| e.to_string())
-}
-
-/// The seal of a private session: its key is wrapped under its owner's
-/// user key (engineering/devices.md → Keys).
-pub const SEAL_USER: &str = "user";
-
-/// A seal as the registry named it, cut to something safe to print.
-fn printable_seal(seal: &str) -> String {
-    seal.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(32).collect()
+    let seal = if s.seal.is_empty() { session_record::SEAL_USER } else { s.seal.as_str() };
+    let signer = e2e::DeviceId::parse(&s.signer).ok_or_else(|| format!("the registry's record of session {id} names no signer — refused, since anyone could have made it"))?;
+    let signature = e2e::unhex(&s.record_signature).ok_or_else(|| format!("the registry's record of session {id} carries no signature — refused"))?;
+    session_record::verify(&raw, &wrapped, seal, signer, &signature, chain, from).map_err(|e| e.to_string())?;
+    e2e::unwrap_session_key(&wrapped, &raw, keys).map_err(|e| e.to_string())
 }
 
 /// Opens a session's sealed index.

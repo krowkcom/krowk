@@ -221,7 +221,7 @@ pub fn remote_attach(runs: usize) -> Outcome {
         let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &raw, &user));
         let index = store::Index { title: "bench".into(), ..Default::default() };
         let sealed = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).map_err(|e| e.to_string())?));
-        api.put_sync_session(&id, &wrapped, Some(&sealed), None).map_err(|e| e.to_string())?;
+        api.put_sync_session(&id, &wrapped, None, Some(&sealed), None).map_err(|e| e.to_string())?;
         let lease = api.acquire_lease(&id, &device.id().to_string(), 60, "development").map_err(|e| e.to_string())?;
         let mut w = store::Writer::take_up(api.clone(), key.clone(), &id, wrapped, index, lease.fence)?;
         let text = "The quick brown fox jumps over the lazy dog. ".repeat(40);

@@ -157,10 +157,10 @@ fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
     let session_key = SessionKey::generate();
     let wrapped = e2e::hex(&e2e::wrap_session_key(&session_key, &id, &user));
     let sealed = e2e::hex(&e2e::seal_session_index(&session_key, &id, TITLE.as_bytes()));
-    client.put_sync_session(&uuid(&id), &wrapped, Some(&sealed), None).unwrap();
+    client.put_sync_session(&uuid(&id), &wrapped, None, Some(&sealed), None).unwrap();
     let lease = client.acquire_lease(&uuid(&id), &laptop_device, 60, "production").unwrap();
     let resealed = e2e::hex(&e2e::seal_session_index(&session_key, &id, TITLE.as_bytes()));
-    client.put_sync_session(&uuid(&id), &wrapped, Some(&resealed), Some(&lease.token)).unwrap();
+    client.put_sync_session(&uuid(&id), &wrapped, None, Some(&resealed), Some(&lease.token)).unwrap();
 
     // The desktop asks to join, naming the account key id it was told.
     let mut join = command(&desktop, api, token, &["sync", "join", &account_id, "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
@@ -289,7 +289,7 @@ fn r_sync_2_a_stale_lease_holders_write_is_refused() {
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
     let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first()));
-    client.put_sync_session(&uuid(&id), &wrapped, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"one"))), None).unwrap();
+    client.put_sync_session(&uuid(&id), &wrapped, None, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"one"))), None).unwrap();
 
     let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap();
     assert_eq!(held.token.len(), 32, "the acquirer, and only it, is handed a token");
@@ -308,12 +308,12 @@ fn r_sync_2_a_stale_lease_holders_write_is_refused() {
     let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60, "production").unwrap();
     assert!(moved.fence > held.fence && !moved.token.is_empty() && moved.token != held.token);
 
-    let stale = client.put_sync_session(&uuid(&id), &wrapped, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"two"))), Some(&held.token)).unwrap_err();
+    let stale = client.put_sync_session(&uuid(&id), &wrapped, None, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"two"))), Some(&held.token)).unwrap_err();
     assert_eq!(stale.code(), "lease_stale");
     assert!(stale.fix().contains("acquire it again"), "{:?}", stale.body);
-    cb.put_sync_session(&uuid(&id), &wrapped, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"two"))), Some(&moved.token)).unwrap();
+    cb.put_sync_session(&uuid(&id), &wrapped, None, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"two"))), Some(&moved.token)).unwrap();
     // A write that names no index leaves it as it was.
-    cb.put_sync_session(&uuid(&id), &wrapped, None, Some(&moved.token)).unwrap();
+    cb.put_sync_session(&uuid(&id), &wrapped, None, None, Some(&moved.token)).unwrap();
     let shown = client.show_sync_session(&uuid(&id)).unwrap();
     assert_eq!(e2e::open_session_index(&e2e::unhex(&shown.sealed_index).unwrap(), &id, &key).unwrap(), b"two");
     cb.release_lease(&uuid(&id), &moved.token).unwrap();
@@ -369,7 +369,7 @@ fn r_sync_2_a_chunk_with_a_stale_or_missing_lease_token_is_refused() {
     let ((a, client, _), (b, cb, _)) = (machine(&api, &account), machine(&api, &account));
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
-    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first())), None, None).unwrap();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first())), None, None, None).unwrap();
     let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap();
     let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60, "production").unwrap();
 
@@ -408,9 +408,9 @@ fn the_stand_in_models_the_session_cap_the_burst_ceiling_and_revocation() {
     let wrapped = |id: &[u8; 16]| e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), id, &UserKey::first()));
 
     let first: [u8; 16] = e2e::random();
-    client.put_sync_session(&uuid(&first), &wrapped(&first), None, None).unwrap();
+    client.put_sync_session(&uuid(&first), &wrapped(&first), None, None, None).unwrap();
     let second: [u8; 16] = e2e::random();
-    assert_eq!(client.put_sync_session(&uuid(&second), &wrapped(&second), None, None).unwrap_err().code(), "session_limit_reached");
+    assert_eq!(client.put_sync_session(&uuid(&second), &wrapped(&second), None, None, None).unwrap_err().code(), "session_limit_reached");
 
     // The owner's reset revokes the device: it cannot act until it registers again.
     let mut conn = TcpStream::connect(registry.addr()).unwrap();
@@ -442,7 +442,7 @@ fn r_sync_2_a_displaced_holders_pending_chunk_is_replaced_not_finalized() {
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
     let session = uuid(&id);
-    client.put_sync_session(&session, &e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first())), None, None).unwrap();
+    client.put_sync_session(&session, &e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first())), None, None, None).unwrap();
 
     // A declares chunk 0 by hand and is displaced before finalizing it.
     let held = client.acquire_lease(&session, &a.id().to_string(), 60, "production").unwrap();
@@ -554,7 +554,7 @@ fn r_relay_1_leases_and_viewers_are_issued_tickets_the_relay_can_check() {
         c.register_device(&e2e::hex(&d.public().0), &e2e::hex(&s.0), "machine", &account.id().to_string()).unwrap();
     }
     let id: [u8; 16] = e2e::random();
-    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None).unwrap();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None, None).unwrap();
 
     let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "development").unwrap();
     let t = relay_ticket::verify(&held.relay_ticket, &keys, relay_ticket::now()).unwrap();
@@ -624,7 +624,7 @@ fn signed_calls_refuse_the_api_key_alone_a_replay_a_stale_signature_and_a_revoke
     let account = AccountKey::generate();
     let (a, client, signer) = machine(&api, &account);
     let id: [u8; 16] = e2e::random();
-    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None).unwrap();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None, None).unwrap();
 
     let unsigned = krowk_api::Client::new(&api, TOKEN);
     assert_eq!(unsigned.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap_err().code(), "device_signature_missing");

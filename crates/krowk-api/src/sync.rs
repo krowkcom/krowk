@@ -152,6 +152,13 @@ pub struct SyncSession {
     /// shared sessions exist (engineering/devices.md → Keys).
     #[serde(default, deserialize_with = "nullable")]
     pub seal: String,
+    /// The publishing device's Ed25519 signature over the record, hex, and
+    /// that device's id: stored and returned as they came, and checked by
+    /// every device against its verified device list.
+    #[serde(default, deserialize_with = "nullable")]
+    pub record_signature: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub signer: String,
     #[serde(default, deserialize_with = "nullable")]
     pub sealed_index: String,
     #[serde(default, deserialize_with = "nullable")]
@@ -304,10 +311,18 @@ impl Client {
     }
 
     /// Creates the session under its own id, or writes its sealed index.
-    /// `sealed_index` None leaves the stored one as it is; `lease_token` is
-    /// the holder's, and a write after the first needs it.
-    pub fn put_sync_session(&self, id: &str, wrapped_key: &str, sealed_index: Option<&str>, lease_token: Option<&str>) -> Result<SyncSession, Error> {
+    /// `record` is the publisher's signature over the record and its device
+    /// id, hex (`krowk_client::session_record`), sent with the create; the
+    /// registry keeps them as they are, and every device that opens the
+    /// session checks them. `sealed_index` None leaves the stored one as it
+    /// is; `lease_token` is the holder's, and a write after the first needs
+    /// it.
+    pub fn put_sync_session(&self, id: &str, wrapped_key: &str, record: Option<(&str, &str)>, sealed_index: Option<&str>, lease_token: Option<&str>) -> Result<SyncSession, Error> {
         let mut session = json!({ "wrapped_key": wrapped_key });
+        if let Some((signature, signer)) = record {
+            session["record_signature"] = json!(signature);
+            session["signer"] = json!(signer);
+        }
         if let Some(index) = sealed_index {
             session["sealed_index"] = json!(index);
         }
