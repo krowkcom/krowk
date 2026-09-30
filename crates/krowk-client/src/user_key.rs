@@ -26,6 +26,12 @@
 //!   the very next generation and only as the generation it names.
 //! - **`UserKeys`** holds the newest generation and those wraps, and opens
 //!   any older generation by walking down one step at a time.
+//! - A chain **started over** from a device that holds the user key carries
+//!   it forward: the new generation 1 wraps the previous chain's newest key
+//!   in the same link format (`wrap_carried`), whatever its generation, and
+//!   `UserKeys::carry` opens it only as the id the new chain's entry 0
+//!   carries — so old sessions stay readable, and nothing but that key can
+//!   be passed off as the previous chain's.
 //!
 //! Every refusal reads "does not open"; every secret is wiped when dropped.
 
@@ -137,37 +143,79 @@ impl UserKey {
         if older.generation.checked_add(1) != Some(self.generation) {
             return Err(Error(format!("generation {} wraps only generation {}, not {}", self.generation, self.generation - 1, older.generation)));
         }
-        let head = head(e2e::SUITE_XCHACHA20_POLY1305, older.generation, older.id());
-        let nonce: [u8; NONCE] = e2e::random();
-        let aad = chain_aad(&head, self);
-        let sealed = cipher(&self.key).encrypt(&XNonce::from(nonce), Payload { msg: &older.key, aad: &aad }).expect("sealing 32 bytes cannot fail");
-        Ok([&head[..], &nonce, &sealed].concat())
+        Ok(self.seal_link(older))
     }
 
     /// The generation before this one, out of a blob `wrap_previous` made.
     pub fn unwrap_previous(&self, blob: &[u8]) -> Result<UserKey, Error> {
-        let refused = || Error("the wrapped earlier user key does not open with this generation: it was changed, or belongs to another generation".into());
-        if blob.len() != WRAPPED_PREVIOUS || blob[0] != e2e::BLOB_V1 || blob[1] != e2e::SUITE_XCHACHA20_POLY1305 {
-            return Err(match blob.first() {
-                Some(&v) if v > e2e::BLOB_V1 => newer(v),
-                _ => refused(),
-            });
-        }
-        let (g, key_id) = parse_head(blob);
-        if g == 0 || g.checked_add(1) != Some(self.generation) {
-            return Err(refused());
-        }
-        let nonce: [u8; NONCE] = blob[HEAD..HEAD + NONCE].try_into().expect("24 bytes");
-        let aad = chain_aad(&blob[..HEAD], self);
-        let mut plain = cipher(&self.key).decrypt(&XNonce::from(nonce), Payload { msg: &blob[HEAD + NONCE..], aad: &aad }).map_err(|_| refused())?;
-        let out = <[u8; KEY]>::try_from(&plain[..]);
-        plain.zeroize();
-        let key = UserKey { generation: g, key: out.map_err(|_| refused())? };
-        if key.id() != key_id {
-            return Err(refused());
+        let key = self.open_link(blob)?;
+        if key.generation.checked_add(1) != Some(self.generation) {
+            return Err(link_refused());
         }
         Ok(key)
     }
+
+    /// A chain started over carries the previous chain's newest key
+    /// forward: its generation 1 wraps that key, whatever its generation,
+    /// in the same link format (`WRAPPED_PREVIOUS` bytes).
+    pub fn wrap_carried(&self, old: &UserKey) -> Result<Vec<u8>, Error> {
+        if self.generation != 1 {
+            return Err(Error("only generation 1 carries a previous chain's key".into()));
+        }
+        Ok(self.seal_link(old))
+    }
+
+    /// The previous chain's newest key out of a blob `wrap_carried` made,
+    /// refused unless its id is `expected`, the id the new chain's entry 0
+    /// carries (`Chain::carried`).
+    pub fn unwrap_carried(&self, blob: &[u8], expected: UserKeyId) -> Result<UserKey, Error> {
+        if self.generation != 1 {
+            return Err(link_refused());
+        }
+        let key = self.open_link(blob)?;
+        if key.id() != expected {
+            return Err(link_refused());
+        }
+        Ok(key)
+    }
+
+    /// `older` wrapped under this key: the link format, with no rule about
+    /// which generations it joins.
+    fn seal_link(&self, older: &UserKey) -> Vec<u8> {
+        let head = head(e2e::SUITE_XCHACHA20_POLY1305, older.generation, older.id());
+        let nonce: [u8; NONCE] = e2e::random();
+        let aad = chain_aad(&head, self);
+        let sealed = cipher(&self.key).encrypt(&XNonce::from(nonce), Payload { msg: &older.key, aad: &aad }).expect("sealing 32 bytes cannot fail");
+        [&head[..], &nonce, &sealed].concat()
+    }
+
+    /// The key a link holds, checked against the id its header names.
+    fn open_link(&self, blob: &[u8]) -> Result<UserKey, Error> {
+        if blob.len() != WRAPPED_PREVIOUS || blob[0] != e2e::BLOB_V1 || blob[1] != e2e::SUITE_XCHACHA20_POLY1305 {
+            return Err(match blob.first() {
+                Some(&v) if v > e2e::BLOB_V1 => newer(v),
+                _ => link_refused(),
+            });
+        }
+        let (g, key_id) = parse_head(blob);
+        if g == 0 {
+            return Err(link_refused());
+        }
+        let nonce: [u8; NONCE] = blob[HEAD..HEAD + NONCE].try_into().expect("24 bytes");
+        let aad = chain_aad(&blob[..HEAD], self);
+        let mut plain = cipher(&self.key).decrypt(&XNonce::from(nonce), Payload { msg: &blob[HEAD + NONCE..], aad: &aad }).map_err(|_| link_refused())?;
+        let out = <[u8; KEY]>::try_from(&plain[..]);
+        plain.zeroize();
+        let key = UserKey { generation: g, key: out.map_err(|_| link_refused())? };
+        if key.id() != key_id {
+            return Err(link_refused());
+        }
+        Ok(key)
+    }
+}
+
+fn link_refused() -> Error {
+    Error("the wrapped earlier user key does not open with this generation: it was changed, or belongs to another generation".into())
 }
 
 impl PartialEq for UserKey {
@@ -194,6 +242,9 @@ pub struct UserKeys {
     /// generation `open` reaches is then checked against it, not only
     /// against its wrap's own header.
     pinned: Option<Vec<UserKeyId>>,
+    /// The previous chain's keys, when this chain was started over from a
+    /// device that held them (`carry`).
+    carried: Option<Box<UserKeys>>,
 }
 
 impl UserKeys {
@@ -212,7 +263,7 @@ impl UserKeys {
                 return Err(Error("two wraps name the same user key generation".into()));
             }
         }
-        Ok(UserKeys { newest, wraps: map, pinned: None })
+        Ok(UserKeys { newest, wraps: map, pinned: None, carried: None })
     }
 
     /// A newer generation, taken up by a device that holds `held`: the
@@ -256,6 +307,22 @@ impl UserKeys {
         }
         self.pinned = Some(ids);
         Ok(self)
+    }
+
+    /// These keys with the previous chain's reached through `link`, the
+    /// previous chain's newest key wrapped under this chain's generation 1:
+    /// its id must be `expected`, the id this chain's entry 0 carries
+    /// (`Chain::carried`). `older` are the previous chain's own wraps.
+    pub fn carry(mut self, link: &[u8], expected: UserKeyId, older: impl IntoIterator<Item = Vec<u8>>) -> Result<UserKeys, Error> {
+        let old_newest = self.open(1)?.unwrap_carried(link, expected)?;
+        self.carried = Some(Box::new(UserKeys::new(old_newest, older)?));
+        Ok(self)
+    }
+
+    /// The previous chain's keys, if `carry` reached them: sessions sealed
+    /// before the start-over open under these.
+    pub fn carried(&self) -> Option<&UserKeys> {
+        self.carried.as_deref()
     }
 
     /// Generation `generation`, opened by walking down from the newest.
@@ -433,6 +500,21 @@ mod tests {
         let honest = UserKeys::new(g2.clone(), [g2.wrap_previous(&g1).unwrap()]).unwrap().pinned_to(vec![g1.id(), g2.id()]).unwrap();
         assert_eq!(honest.open(1).unwrap(), g1);
         assert!(UserKeys::new(g2.clone(), []).unwrap().pinned_to(vec![g1.id()]).is_err(), "a newest the chain does not name");
+    }
+
+    /// A carried link joins a new chain's generation 1 to the old chain's
+    /// newest key, whatever its generation, and opens only as the id the
+    /// new chain carries.
+    #[test]
+    fn d1_generation_1_carries_the_previous_chains_key() {
+        let old = UserKey::from_bytes(5, [5; 32]).unwrap();
+        let g1 = UserKey::first();
+        let link = g1.wrap_carried(&old).unwrap();
+        assert_eq!(g1.unwrap_carried(&link, old.id()).unwrap(), old);
+        assert!(g1.unwrap_carried(&link, g1.id()).is_err(), "another id");
+        assert!(g1.unwrap_previous(&link).is_err(), "not a link to generation 0");
+        let g2 = g1.next().unwrap();
+        assert!(g2.wrap_carried(&old).is_err() && g2.unwrap_carried(&link, old.id()).is_err(), "only generation 1 carries");
     }
 
     /// Frozen blobs from this format: a later change to the layout, the

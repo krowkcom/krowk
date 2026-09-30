@@ -8,22 +8,20 @@
 //! write; `KROWK_UPDATE_CORPUS=1 cargo test -p krowk-client --test
 //! device_chain_corpus` rewrites it after an intended change.
 //!
-//! A case holds its entries (`bytes` and the wire `signatures`, in hex), the
-//! trust it is verified under, `now`, and two expectations: `verify` (the
-//! whole chain accepted with its state, or refused with a reason code and
-//! the seq) and `prefix` (`verify_prefix`: the chain as far as it verified
-//! and the entry refused after it, or refused outright). The reason codes
-//! are this file's contract: `code` below maps the verifier's refusals to
-//! them, and a refusal it does not know fails the test.
+//! A case holds its entries (`bytes` and the wire `signatures`, in hex),
+//! the pin it is verified against (`null` to verify from seq 0), and what
+//! `Chain::verify` returns: the chain accepted with its state, or refused
+//! with a reason code and the seq. The reason codes are this file's
+//! contract: `code` below maps the verifier's refusals to them, and a
+//! refusal it does not know fails the test.
 
-use krowk_client::device_chain::{Action, Chain, Entry, Head, Kind, Pending, SignedEntry, Subject, Trust, CLOCK_SKEW, RECOVERY_ROTATION_DELAY, REFUSED_IN_NAMES};
+use krowk_client::device_chain::{Action, Chain, Entry, Head, Kind, SignedEntry, Subject, REFUSED_IN_NAMES};
 use krowk_client::e2e::{hex, DeviceKey, Error, SigningKey};
 use krowk_client::recovery::RecoveryKit;
 use krowk_client::user_key::{UserKey, UserKeyId};
 use serde_json::{json, Value};
 
 const T: u64 = 1_790_000_000;
-const DAY: u64 = 24 * 60 * 60;
 const GENERATOR: &str = "crates/krowk-client/tests/device_chain_corpus.rs (krowk-cli)";
 const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device_chain_corpus.json");
 
@@ -58,13 +56,13 @@ fn sign(e: &Entry, by: &[&K]) -> SignedEntry {
 }
 
 fn genesis(subjects: Vec<Subject>, generation: u32, time: u64) -> Entry {
-    Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects, generation, key_id: uk(generation.max(1)), time, signers: Vec::new() }
+    Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects, generation, key_id: uk(generation.max(1)), carried: None, time, signers: Vec::new() }
 }
 
 /// The entry after `prev`, carrying generation `g`.
 fn after(prev: &SignedEntry, action: Action, subject: Subject, g: u32, time: u64) -> Entry {
     let seq = Entry::decode(&prev.bytes).unwrap().seq + 1;
-    Entry { seq, prev: prev.hash(), action, subjects: vec![subject], generation: g, key_id: uk(g), time, signers: Vec::new() }
+    Entry { seq, prev: prev.hash(), action, subjects: vec![subject], generation: g, key_id: uk(g), carried: None, time, signers: Vec::new() }
 }
 
 struct World {
@@ -101,12 +99,9 @@ fn push(mut v: Vec<SignedEntry>, e: SignedEntry) -> Vec<SignedEntry> {
     v
 }
 
-fn pinned_at(entries: &[SignedEntry], seq: usize, verified_at: u64, first_seen: Option<(u64, u64)>) -> Trust {
-    Trust::Pinned { head: Head { seq: seq as u64, hash: entries[seq].hash() }, verified_at, first_seen }
-}
-
-fn fresh(n: usize) -> Trust {
-    Trust::Fresh { received_at: vec![T; n] }
+/// A pin at `entries[seq]`.
+fn pin(entries: &[SignedEntry], seq: usize) -> Option<Head> {
+    Some(Head { seq: seq as u64, hash: entries[seq].hash() })
 }
 
 /// The corpus's reason code for a refusal, from the verifier's message.
@@ -116,8 +111,9 @@ fn code(e: &Error) -> &'static str {
         ("the device list is empty", "empty"),
         ("which this krowk does not read", "unknown_version"),
         ("unknown action", "unknown_action"),
+        ("bad carried flag", "malformed"),
+        ("only entry 0 carries", "carried_after_genesis"),
         ("unknown device kind", "unknown_kind"),
-        ("bad recovery flag", "malformed"),
         ("an entry is about one device", "subject_count"),
         ("only entry 0 is about two devices", "subject_count"),
         ("its signers are not one to three", "signers_malformed"),
@@ -142,8 +138,6 @@ fn code(e: &Error) -> &'static str {
         ("its signatures are not the signers it names", "signature_list_mismatch"),
         ("it does not follow entry", "seq_gap"),
         ("it does not extend entry", "prev_mismatch"),
-        ("it is backdated", "backdated"),
-        ("keys or name of the recovery device a rotation is pending to", "pending_kit_taken"),
         ("a recovery device is added only by rotate-recovery", "add_recovery_kind"),
         ("removes a device that is not on the list", "remove_unknown"),
         ("cannot be removed", "remove_recovery"),
@@ -152,12 +146,6 @@ fn code(e: &Error) -> &'static str {
         ("rotates to a user key id this list has held before", "key_id_reused"),
         ("adds a key this list has held before", "key_reused"),
         ("is already called", "duplicate_name"),
-        ("cancels a recovery rotation that is not pending", "cancel_not_pending"),
-        ("takes effect only at", "rotation_not_due"),
-        ("before its delay was over", "rotation_received_early"),
-        ("already pending", "rotation_already_pending"),
-        ("gave no receipt time", "missing_receipt"),
-        ("its time is out of range", "time_out_of_range"),
         (", and a ", "generation_not_next"),
         ("and its key id as they were", "generation_changed"),
         ("older than entry", "pin_older"),
@@ -179,10 +167,6 @@ fn refusal(e: &Error) -> Value {
     json!({ "code": code(e), "seq": refused_seq(e) })
 }
 
-fn pending(p: &Pending) -> Value {
-    json!({ "subject": p.subject.id().to_string(), "authorizer": p.authorizer.to_string(), "seq": p.seq, "time": p.time, "since": p.since, "effective_at": p.effective_at })
-}
-
 fn state(c: &Chain) -> Value {
     let devices: Vec<Value> = c
         .devices()
@@ -194,199 +178,174 @@ fn state(c: &Chain) -> Value {
         "generation": c.generation(),
         "key_id": c.key_id().to_string(),
         "devices": devices,
-        "pending": c.pending().map_or(Value::Null, pending),
+        "carried": c.carried().map(|k| k.to_string()),
     })
 }
 
-fn trust_json(t: &Trust) -> Value {
-    match t {
-        Trust::Pinned { head, verified_at, first_seen } => json!({ "mode": "pinned", "head": { "seq": head.seq, "hash": hex(&head.hash) }, "verified_at": verified_at, "first_seen": first_seen.map(|(s, t)| json!([s, t])) }),
-        Trust::Fresh { received_at } => json!({ "mode": "fresh", "received_at": received_at }),
-    }
-}
-
-fn case(name: &str, rule: &str, entries: Vec<SignedEntry>, trust: Trust, now: u64) -> Value {
-    let verify = match Chain::verify(&entries, trust.clone(), now) {
+fn case(name: &str, rule: &str, entries: Vec<SignedEntry>, pin: Option<Head>) -> Value {
+    let expect = match Chain::verify(&entries, pin) {
         Ok(c) => json!({ "accept": state(&c) }),
-        Err(e) => json!({ "refuse": refusal(&e) }),
-    };
-    let prefix = match Chain::verify_prefix(&entries, trust.clone(), now) {
-        Ok(v) => json!({ "chain": state(&v.chain), "rejected": v.rejected.as_ref().map(|(_, e)| refusal(e)) }),
         Err(e) => json!({ "refuse": refusal(&e) }),
     };
     json!({
         "name": name,
         "rule": rule,
         "entries": entries.iter().map(|e| json!({ "bytes": hex(&e.bytes), "signatures": hex(&e.signatures_bytes()) })).collect::<Vec<_>>(),
-        "trust": trust_json(&trust),
-        "now": now,
-        "expect": { "verify": verify, "prefix": prefix },
+        "pin": pin.map(|h| json!({ "seq": h.seq, "hash": hex(&h.hash) })),
+        "expect": expect,
     })
 }
 
 fn cases() -> Vec<Value> {
     let w = world();
     let b = base(&w);
-    let now = T + 100;
     let mut out = Vec::new();
-    let mut add = |name: &str, rule: &str, entries: Vec<SignedEntry>, trust: Trust, now: u64| out.push(case(name, rule, entries, trust, now));
+    let mut add = |name: &str, rule: &str, entries: Vec<SignedEntry>, pin: Option<Head>| out.push(case(name, rule, entries, pin));
 
     // Seq 0.
-    add("genesis_device_only", "seq 0 adds the first device, self-signed, generation 1", vec![sign(&genesis(vec![w.laptop.subject()], 1, T), &[&w.laptop])], fresh(1), now);
-    add("genesis_with_kit", "seq 0 may add the recovery device, which signs too", b[..1].to_vec(), fresh(1), now);
-    add("empty", "an empty list is refused", vec![], fresh(0), now);
-    add("genesis_not_self_signed", "seq 0 must be signed by the device it adds", vec![sign(&genesis(vec![w.laptop.subject()], 1, T), &[&w.phone])], fresh(1), now);
-    add("genesis_kit_unsigned", "the recovery device seq 0 adds signs it itself", vec![sign(&genesis(vec![w.laptop.subject(), w.kit.subject()], 1, T), &[&w.laptop])], fresh(1), now);
-    add("genesis_extra_signer", "seq 0 has no signer beyond the devices it adds", vec![sign(&genesis(vec![w.laptop.subject()], 1, T), &[&w.laptop, &w.phone])], fresh(1), now);
-    add("genesis_generation_2", "seq 0 leaves generation 1", vec![sign(&genesis(vec![w.laptop.subject()], 2, T), &[&w.laptop])], fresh(1), now);
-    add("genesis_kit_alone", "seq 0 adds a device first", vec![sign(&genesis(vec![w.kit.subject()], 1, T), &[&w.kit])], fresh(1), now);
-    add("genesis_second_device", "seq 0's second subject is a recovery device", vec![sign(&genesis(vec![w.laptop.subject(), w.phone.subject()], 1, T), &[&w.laptop, &w.phone])], fresh(1), now);
+    add("genesis_device_only", "seq 0 adds the first device, self-signed, generation 1", vec![sign(&genesis(vec![w.laptop.subject()], 1, T), &[&w.laptop])], None);
+    add("genesis_with_kit", "seq 0 may add the recovery device, which signs too", b[..1].to_vec(), None);
+    add("empty", "an empty list is refused", vec![], None);
+    add("genesis_not_self_signed", "seq 0 must be signed by the device it adds", vec![sign(&genesis(vec![w.laptop.subject()], 1, T), &[&w.phone])], None);
+    add("genesis_kit_unsigned", "the recovery device seq 0 adds signs it itself", vec![sign(&genesis(vec![w.laptop.subject(), w.kit.subject()], 1, T), &[&w.laptop])], None);
+    add("genesis_extra_signer", "seq 0 has no signer beyond the devices it adds", vec![sign(&genesis(vec![w.laptop.subject()], 1, T), &[&w.laptop, &w.phone])], None);
+    add("genesis_generation_2", "seq 0 leaves generation 1", vec![sign(&genesis(vec![w.laptop.subject()], 2, T), &[&w.laptop])], None);
+    add("genesis_kit_alone", "seq 0 adds a device first", vec![sign(&genesis(vec![w.kit.subject()], 1, T), &[&w.kit])], None);
+    add("genesis_second_device", "seq 0's second subject is a recovery device", vec![sign(&genesis(vec![w.laptop.subject(), w.phone.subject()], 1, T), &[&w.laptop, &w.phone])], None);
     {
         let mut g = genesis(vec![w.laptop.subject()], 1, T);
         g.prev = [1; 32];
-        add("genesis_prev", "seq 0 names no previous entry", vec![sign(&g, &[&w.laptop])], fresh(1), now);
+        add("genesis_prev", "seq 0 names no previous entry", vec![sign(&g, &[&w.laptop])], None);
         let mut g = genesis(vec![w.laptop.subject()], 1, T);
         g.seq = 1;
-        add("genesis_seq", "a list starts at seq 0", vec![sign(&g, &[&w.laptop])], fresh(1), now);
+        add("genesis_seq", "a list starts at seq 0", vec![sign(&g, &[&w.laptop])], None);
     }
     // Encoding.
     {
         let mut t = b[0].clone();
         t.bytes.push(0);
-        add("trailing_bytes", "an entry has no trailing bytes", vec![t], fresh(1), now);
+        add("trailing_bytes", "an entry has no trailing bytes", vec![t], None);
         let mut v = b[0].clone();
         v.bytes[0] = 2;
-        add("unknown_version", "an entry's version is 1", vec![v], fresh(1), now);
+        add("unknown_version", "an entry's version is 1", vec![v], None);
         let mut a = b.clone();
         a[1].bytes[41] = 9;
-        add("unknown_action", "actions are 1–4", a, fresh(2), now);
+        add("unknown_action", "actions are 1–3", a, None);
         let mut bidi = b[0].clone();
         let at = bidi.bytes.windows(6).position(|x| x == b"laptop").unwrap();
         bidi.bytes[at..at + 6].copy_from_slice("lap\u{202E}".as_bytes());
-        add("name_bidi", "names refuse control, bidirectional and invisible characters", vec![bidi], fresh(1), now);
+        add("name_bidi", "names refuse control, bidirectional and invisible characters", vec![bidi], None);
         let mut sig = b[0].clone();
         sig.signatures[0].1[0] ^= 1;
-        add("bad_signature", "every signature verifies", vec![sig], fresh(1), now);
+        add("bad_signature", "every signature verifies", vec![sig], None);
         let mut ids = b.clone();
         ids[1].signatures[0].0 = w.phone.key.id();
-        add("signature_list_mismatch", "the signature list's ids are the signers the bytes name", ids, fresh(2), now);
+        add("signature_list_mismatch", "the signature list's ids are the signers the bytes name", ids, None);
     }
     // Add, remove, signers.
-    add("add_device", "a listed device adds a device, generation unchanged", b.clone(), fresh(2), now);
-    add("remove_device", "a removal rotates the generation by one", push(b.clone(), sign(&after(&b[1], Action::Remove, w.laptop.subject(), 2, T + 2), &[&w.phone])), fresh(3), now);
-    add("signer_not_listed", "the authorizer is a device on the list", push(b.clone(), sign(&after(&b[1], Action::Add, w.tablet.subject(), 1, T + 2), &[&w.outsider])), fresh(3), now);
+    add("add_device", "a listed device adds a device, generation unchanged", b.clone(), None);
+    add("remove_device", "a removal rotates the generation by one", push(b.clone(), sign(&after(&b[1], Action::Remove, w.laptop.subject(), 2, T + 2), &[&w.phone])), None);
+    add("signer_not_listed", "the authorizer is a device on the list", push(b.clone(), sign(&after(&b[1], Action::Add, w.tablet.subject(), 1, T + 2), &[&w.outsider])), None);
     {
         let mut forged = sign(&after(&b[1], Action::Add, w.tablet.subject(), 1, T + 2), &[&w.laptop]);
         let other = sign(&after(&b[1], Action::Add, w.tablet.subject(), 1, T + 2), &[&w.outsider]);
         forged.signatures[0].1 = other.signatures[0].1;
-        add("forged_signer", "a listed device's id with another key's signature is refused", push(b.clone(), forged), fresh(3), now);
+        add("forged_signer", "a listed device's id with another key's signature is refused", push(b.clone(), forged), None);
     }
-    add("two_authorizers", "exactly one authorizer", push(b.clone(), sign(&after(&b[1], Action::Add, w.tablet.subject(), 1, T + 2), &[&w.laptop, &w.phone])), fresh(3), now);
+    add("two_authorizers", "exactly one authorizer", push(b.clone(), sign(&after(&b[1], Action::Add, w.tablet.subject(), 1, T + 2), &[&w.laptop, &w.phone])), None);
     {
         let r = push(b.clone(), sign(&after(&b[1], Action::Remove, w.laptop.subject(), 2, T + 2), &[&w.phone]));
         let after_removal = push(r.clone(), sign(&after(&r[2], Action::Add, w.tablet.subject(), 2, T + 3), &[&w.laptop]));
-        add("removed_signer", "a removed device cannot sign", after_removal, fresh(4), now);
+        add("removed_signer", "a removed device cannot sign", after_removal, None);
         let back = push(r.clone(), sign(&after(&r[2], Action::Add, w.laptop.subject(), 2, T + 3), &[&w.phone]));
-        add("readd_removed_keys", "no key is added twice", back, fresh(4), now);
+        add("readd_removed_keys", "no key is added twice", back, None);
     }
-    add("remove_recovery", "the recovery device cannot be removed", push(b.clone(), sign(&after(&b[1], Action::Remove, w.kit.subject(), 2, T + 2), &[&w.laptop])), fresh(3), now);
+    add("remove_recovery", "the recovery device cannot be removed", push(b.clone(), sign(&after(&b[1], Action::Remove, w.kit.subject(), 2, T + 2), &[&w.laptop])), None);
     {
         let mut disguised = w.kit.subject();
         disguised.kind = Kind::Device;
-        add("remove_recovery_disguised", "the recovery device cannot be removed as a device either", push(b.clone(), sign(&after(&b[1], Action::Remove, disguised, 2, T + 2), &[&w.laptop])), fresh(3), now);
+        add("remove_recovery_disguised", "the recovery device cannot be removed as a device either", push(b.clone(), sign(&after(&b[1], Action::Remove, disguised, 2, T + 2), &[&w.laptop])), None);
         let mut wrong = w.phone.subject();
         wrong.name = "other".into();
-        add("remove_mismatch", "a removal names the device exactly as listed", push(b.clone(), sign(&after(&b[1], Action::Remove, wrong, 2, T + 2), &[&w.laptop])), fresh(3), now);
+        add("remove_mismatch", "a removal names the device exactly as listed", push(b.clone(), sign(&after(&b[1], Action::Remove, wrong, 2, T + 2), &[&w.laptop])), None);
     }
-    add("remove_unknown", "a removal names a listed device", push(b.clone(), sign(&after(&b[1], Action::Remove, w.tablet.subject(), 2, T + 2), &[&w.laptop])), fresh(3), now);
-    add("add_recovery_kind", "a recovery device is added only by rotate-recovery", push(b.clone(), sign(&after(&b[1], Action::Add, w.kit2.subject(), 1, T + 2), &[&w.laptop])), fresh(3), now);
+    add("remove_unknown", "a removal names a listed device", push(b.clone(), sign(&after(&b[1], Action::Remove, w.tablet.subject(), 2, T + 2), &[&w.laptop])), None);
+    add("add_recovery_kind", "a recovery device is added only by rotate-recovery", push(b.clone(), sign(&after(&b[1], Action::Add, w.kit2.subject(), 1, T + 2), &[&w.laptop])), None);
     {
         let mut twin = w.tablet.subject();
         twin.name = "Laptop".into();
-        add("duplicate_name", "no two listed devices share a name, ignoring case", push(b.clone(), sign(&after(&b[1], Action::Add, twin, 1, T + 2), &[&w.laptop])), fresh(3), now);
+        add("duplicate_name", "no two listed devices share a name, ignoring case", push(b.clone(), sign(&after(&b[1], Action::Add, twin, 1, T + 2), &[&w.laptop])), None);
     }
     // Generations and key ids.
-    add("remove_generation_same", "a removal must move the generation up by one", push(b.clone(), sign(&after(&b[1], Action::Remove, w.laptop.subject(), 1, T + 2), &[&w.phone])), fresh(3), now);
-    add("remove_generation_skip", "a removal must move the generation up by exactly one", push(b.clone(), sign(&after(&b[1], Action::Remove, w.laptop.subject(), 3, T + 2), &[&w.phone])), fresh(3), now);
-    add("add_generation_moves", "an add leaves the generation", push(b.clone(), sign(&after(&b[1], Action::Add, w.tablet.subject(), 2, T + 2), &[&w.laptop])), fresh(3), now);
+    add("remove_generation_same", "a removal must move the generation up by one", push(b.clone(), sign(&after(&b[1], Action::Remove, w.laptop.subject(), 1, T + 2), &[&w.phone])), None);
+    add("remove_generation_skip", "a removal must move the generation up by exactly one", push(b.clone(), sign(&after(&b[1], Action::Remove, w.laptop.subject(), 3, T + 2), &[&w.phone])), None);
+    add("add_generation_moves", "an add leaves the generation", push(b.clone(), sign(&after(&b[1], Action::Add, w.tablet.subject(), 2, T + 2), &[&w.laptop])), None);
     {
         let mut e = after(&b[1], Action::Add, w.tablet.subject(), 1, T + 2);
         e.key_id = uk(7);
-        add("add_key_id_changes", "every entry carries the current key id", push(b.clone(), sign(&e, &[&w.laptop])), fresh(3), now);
+        add("add_key_id_changes", "every entry carries the current key id", push(b.clone(), sign(&e, &[&w.laptop])), None);
         let mut e = after(&b[1], Action::Remove, w.laptop.subject(), 2, T + 2);
         e.key_id = uk(1);
-        add("rotation_key_id_reused", "a rotation takes a key id the list has not held", push(b.clone(), sign(&e, &[&w.phone])), fresh(3), now);
+        add("rotation_key_id_reused", "a rotation takes a key id the list has not held", push(b.clone(), sign(&e, &[&w.phone])), None);
     }
     {
         let r1 = sign(&after(&b[1], Action::Remove, w.phone.subject(), 2, T + 2), &[&w.laptop]);
         let t = sign(&after(&r1, Action::Add, w.tablet.subject(), 2, T + 3), &[&w.laptop]);
         let r2 = sign(&after(&t, Action::Remove, w.tablet.subject(), 3, T + 4), &[&w.laptop]);
-        add("batch_of_removals", "N removals are N generations", [b.clone(), vec![r1, t, r2]].concat(), fresh(5), now);
+        add("batch_of_removals", "N removals are N generations", [b.clone(), vec![r1, t, r2]].concat(), None);
     }
     // Sequence and pins.
     {
         let mut gap = after(&b[1], Action::Add, w.tablet.subject(), 1, T + 2);
         gap.seq = 3;
-        add("seq_gap", "seq is one more than the previous entry's", push(b.clone(), sign(&gap, &[&w.laptop])), fresh(3), now);
+        add("seq_gap", "seq is one more than the previous entry's", push(b.clone(), sign(&gap, &[&w.laptop])), None);
         let mut fork = after(&b[1], Action::Add, w.tablet.subject(), 1, T + 2);
         fork.prev = b[0].hash();
-        add("prev_mismatch", "prev is the previous entry's hash", push(b.clone(), sign(&fork, &[&w.laptop])), fresh(3), now);
+        add("prev_mismatch", "prev is the previous entry's hash", push(b.clone(), sign(&fork, &[&w.laptop])), None);
         let longer = push(b.clone(), sign(&after(&b[1], Action::Add, w.tablet.subject(), 1, T + 2), &[&w.laptop]));
-        add("pinned_same_head", "a pinned device takes its own head", b.clone(), pinned_at(&b, 1, T + 1, None), now);
-        add("pinned_longer", "a pinned device takes a list that extends its pin", longer.clone(), pinned_at(&b, 1, T + 1, None), now);
-        add("pinned_older", "a pinned device refuses a list shorter than its pin", b.clone(), pinned_at(&longer, 2, T + 2, None), now);
+        add("pinned_same_head", "a pinned device takes its own head", b.clone(), pin(&b, 1));
+        add("pinned_longer", "a pinned device takes a list that extends its pin", longer.clone(), pin(&b, 1));
+        add("pinned_older", "a pinned device refuses a list shorter than its pin", b.clone(), pin(&longer, 2));
         let rogue = push(b[..1].to_vec(), sign(&after(&b[0], Action::Add, w.tablet.subject(), 1, T + 1), &[&w.laptop]));
-        add("pinned_forked", "a pinned device refuses a list with another entry at its pin", rogue, pinned_at(&b, 1, T + 1, None), now);
-        let old = push(b.clone(), sign(&after(&b[1], Action::Add, w.tablet.subject(), 1, T - 2 * CLOCK_SKEW), &[&w.laptop]));
-        add("backdated", "a pinned device refuses a new entry dated before it last verified, less the skew", old, pinned_at(&b, 1, T, None), now);
+        add("pinned_forked", "a pinned device refuses a list with another entry at its pin", rogue, pin(&b, 1));
     }
     // Recovery rotation.
     let propose = |prev: &SignedEntry, kit: &K, by: &K, g: u32, time: u64| sign(&after(prev, Action::RotateRecovery, kit.subject(), g, time), &[by, kit]);
-    add("rotate_by_kit", "the recovery device replaces itself at once, rotating the key", push(b.clone(), propose(&b[1], &w.kit2, &w.kit, 2, T + 2)), fresh(3), now);
-    add("rotate_new_kit_unsigned", "the new recovery device signs its own entry", push(b.clone(), sign(&after(&b[1], Action::RotateRecovery, w.kit2.subject(), 2, T + 2), &[&w.kit])), fresh(3), now);
+    add("rotate_by_kit", "the recovery device replaces itself at once, rotating the key", push(b.clone(), propose(&b[1], &w.kit2, &w.kit, 2, T + 2)), None);
+    add("rotate_new_kit_unsigned", "the new recovery device signs its own entry", push(b.clone(), sign(&after(&b[1], Action::RotateRecovery, w.kit2.subject(), 2, T + 2), &[&w.kit])), None);
     {
         let g = sign(&genesis(vec![w.laptop.subject()], 1, T), &[&w.laptop]);
-        add("rotate_no_kit", "with no recovery device a device makes one at once", vec![g.clone(), propose(&g, &w.kit2, &w.laptop, 2, T + 1)], fresh(2), now);
+        add("rotate_no_kit", "with no recovery device a device makes one at once", vec![g.clone(), propose(&g, &w.kit2, &w.laptop, 2, T + 1)], None);
     }
-    let p = propose(&b[1], &w.thief_kit, &w.laptop, 1, T + 10);
-    let proposed = push(b.clone(), p.clone());
-    add("propose", "a device-authorized rotation is pending; the old kit stays", proposed.clone(), fresh(3), now);
-    add("propose_rotating", "a proposal leaves the generation", push(b.clone(), propose(&b[1], &w.thief_kit, &w.laptop, 2, T + 10)), fresh(3), now);
+    add("rotate_by_device_while_kit", "while a kit exists, only the kit authorizes rotate-recovery", push(b.clone(), propose(&b[1], &w.thief_kit, &w.laptop, 2, T + 10)), None);
     {
         let mut clash = w.thief_kit.subject();
         clash.name = "Phone".into();
-        add("propose_name_clash", "a proposed kit may not take a listed device's name", push(b.clone(), sign(&after(&b[1], Action::RotateRecovery, clash, 1, T + 10), &[&w.laptop, &w.thief_kit])), fresh(3), now);
+        add("rotate_name_clash", "a new kit may not take a listed device's name", push(b.clone(), sign(&after(&b[1], Action::RotateRecovery, clash, 2, T + 10), &[&w.kit, &w.thief_kit])), None);
+        let replaced = push(b.clone(), propose(&b[1], &w.kit2, &w.kit, 2, T + 2));
+        add("rotated_kit_cannot_sign", "the replaced kit is no longer on the list", push(replaced.clone(), sign(&after(&replaced[2], Action::Add, w.tablet.subject(), 2, T + 3), &[&w.kit])), None);
     }
-    add("pending_second_proposal", "one rotation is pending at a time", push(proposed.clone(), propose(&p, &w.kit2, &w.phone, 1, T + 11)), fresh(4), now);
-    add("pending_kit_has_no_rights", "a proposed kit cannot sign", push(proposed.clone(), sign(&after(&p, Action::Add, w.tablet.subject(), 1, T + 11), &[&w.thief_kit])), fresh(4), now);
-    add("pending_kit_unremovable", "the old kit stays unremovable while a rotation is pending", push(proposed.clone(), sign(&after(&p, Action::Remove, w.kit.subject(), 2, T + 11), &[&w.laptop])), fresh(4), now);
+    // Start-over carry-forward: entry 0 may name the previous chain's
+    // newest user key id; the chain only records it.
     {
-        let mut taken = w.thief_kit.subject();
-        taken.kind = Kind::Device;
-        taken.name = "other".into();
-        add("pending_kit_taken", "an add may not take the pending kit's keys or name", push(proposed.clone(), sign(&after(&p, Action::Add, taken, 1, T + 11), &[&w.laptop])), fresh(4), now);
+        let mut g = genesis(vec![w.laptop.subject()], 1, T);
+        g.carried = Some(uk(9));
+        let carried = sign(&g, &[&w.laptop]);
+        add("carried_at_genesis", "entry 0 may carry the previous chain's newest user key id", vec![carried.clone()], None);
+        let mut reuse = after(&carried, Action::RotateRecovery, w.kit2.subject(), 2, T + 1);
+        reuse.key_id = uk(9);
+        add("rotation_to_carried_id", "a rotation may not take the carried key id", vec![carried.clone(), sign(&reuse, &[&w.laptop, &w.kit2])], None);
+        let mut later = sign(&after(&carried, Action::Add, w.phone.subject(), 1, T + 1), &[&w.laptop]);
+        let flag_at = later.bytes.len() - 8 - 1 - 16 - 1;
+        later.bytes[flag_at] = 1;
+        later.bytes.splice(flag_at + 1..flag_at + 1, uk(9).0);
+        add("carried_after_genesis", "only entry 0 carries a key id", vec![carried.clone(), later], None);
+        let mut flag = b[0].clone();
+        let at = flag.bytes.len() - 8 - 1 - 16 * 2 - 1;
+        flag.bytes[at] = 2;
+        add("carried_bad_flag", "the carried flag is 0 or 1", vec![flag], None);
     }
-    let cancel = sign(&after(&p, Action::CancelRecoveryRotation, w.thief_kit.subject(), 1, T + 11), &[&w.kit]);
-    add("cancel_by_kit", "the recovery device cancels a pending rotation", push(proposed.clone(), cancel.clone()), fresh(4), now);
-    add("cancel_by_device", "only the recovery device cancels", push(proposed.clone(), sign(&after(&p, Action::CancelRecoveryRotation, w.thief_kit.subject(), 1, T + 11), &[&w.phone])), fresh(4), now);
-    add("cancel_nothing_pending", "a cancellation names the pending rotation", push(b.clone(), sign(&after(&b[1], Action::CancelRecoveryRotation, w.thief_kit.subject(), 1, T + 11), &[&w.kit])), fresh(3), now);
-    add("remove_authorizer_voids", "removing the proposer voids the rotation", push(proposed.clone(), sign(&after(&p, Action::Remove, w.laptop.subject(), 2, T + 11), &[&w.phone])), fresh(4), now);
-    let done_at = T + 10 + RECOVERY_ROTATION_DELAY;
-    let completion = propose(&p, &w.thief_kit, &w.laptop, 2, done_at);
-    let completed = push(proposed.clone(), completion.clone());
-    add("complete_early_pinned", "a completion before the delay, by this device's clock, is refused; the prefix ends at the proposal", completed.clone(), pinned_at(&b, 1, T + 5, None), T + 20 * DAY);
-    add("complete_pinned_first_seen", "a pinned device takes the completion seven days after it first saw the proposal", completed.clone(), pinned_at(&proposed, 2, T + 5, Some((2, T + 10))), done_at);
-    add("complete_pinned_first_seen_early", "and not a second sooner", completed.clone(), pinned_at(&proposed, 2, T + 5, Some((2, T + 10))), done_at - 1);
-    add("complete_reverify_past_pin", "entries at or before the pin are not judged by the clock again", completed.clone(), pinned_at(&completed, 3, done_at + 1, None), done_at + 100 * DAY);
-    add("complete_fresh_on_time", "a fresh machine takes a completion the registry received after the delay", completed.clone(), Trust::Fresh { received_at: vec![T, T, T + 10, done_at] }, done_at + DAY);
-    add("complete_fresh_received_early", "a fresh machine refuses a completion the registry received before the delay", completed.clone(), Trust::Fresh { received_at: vec![T, T, T + 10, T + DAY] }, done_at + DAY);
-    add("complete_fresh_not_due", "a fresh machine refuses a completion before the delay by its own clock", completed.clone(), Trust::Fresh { received_at: vec![T, T, T + 10, done_at] }, T + DAY);
-    add("complete_fresh_missing_receipt", "a fresh machine needs a receipt time for a proposal", completed.clone(), Trust::Fresh { received_at: vec![T, T] }, done_at + DAY);
-    {
-        let backdated = propose(&b[1], &w.thief_kit, &w.laptop, 1, T - 8 * DAY);
-        add("propose_backdated_pinned", "a backdated proposal is refused on a pinned device", push(b.clone(), backdated.clone()), pinned_at(&b, 1, T, None), now);
-        add("propose_backdated_within_skew", "within the skew it is pending from first sight", push(b.clone(), backdated), pinned_at(&b, 1, T - 8 * DAY + CLOCK_SKEW, None), now);
-    }
+    add("time_is_informational", "nothing checks an entry's time", push(b.clone(), sign(&after(&b[1], Action::Add, w.tablet.subject(), 1, 1), &[&w.laptop])), pin(&b, 1));
     // Unicode. Names are compared with ASCII A–Z folded and every other
     // byte exact, and refused characters are a literal code-point list, so
     // no case here depends on a runtime's Unicode tables. Each pair: the
@@ -412,7 +371,7 @@ fn cases() -> Vec<Value> {
         ("ascii_case_duplicate", "Laptop", "lAPTOP", "names equal with ASCII A–Z folded are one name"),
         ("ascii_case_duplicate_mixed", "Ąb", "ĄB", "the ASCII letters of a name fold, the rest compare exact"),
     ] {
-        add(name, &format!("{rule} ({} vs {})", utf8(first), utf8(second)), named(first, second), fresh(2), now);
+        add(name, &format!("{rule} ({} vs {})", utf8(first), utf8(second)), named(first, second), None);
     }
     // One refused name per end of each refused range: "x" and the code
     // point, patched into a valid entry's bytes (the encoder refuses to
@@ -427,7 +386,7 @@ fn cases() -> Vec<Value> {
             let mut g = sign(&genesis(vec![l], 1, T), &[&w.laptop]);
             let at = g.bytes.windows(placeholder.len()).position(|x| x == placeholder.as_bytes()).unwrap();
             g.bytes[at..at + placeholder.len()].copy_from_slice(bad.as_bytes());
-            add(&format!("refused_u{cp:04x}"), &format!("a name may not hold U+{cp:04X} (range U+{lo:04X}–{hi:04X}; name bytes {})", utf8(&bad)), vec![g], fresh(1), now);
+            add(&format!("refused_u{cp:04x}"), &format!("a name may not hold U+{cp:04X} (range U+{lo:04X}–{hi:04X}; name bytes {})", utf8(&bad)), vec![g], None);
         }
     }
     // And the OS field refuses the same list.
@@ -435,7 +394,7 @@ fn cases() -> Vec<Value> {
         let mut g = sign(&genesis(vec![w.laptop.subject()], 1, T), &[&w.laptop]);
         let at = g.bytes.windows(5).position(|x| x == b"linux").unwrap();
         g.bytes[at + 4] = 0x07;
-        add("refused_in_os", "an OS may not hold a refused code point (U+0007)", vec![g], fresh(1), now);
+        add("refused_in_os", "an OS may not hold a refused code point (U+0007)", vec![g], None);
     }
     out
 }
@@ -443,8 +402,7 @@ fn cases() -> Vec<Value> {
 fn corpus() -> String {
     let v = json!({
         "generator": GENERATOR,
-        "about": "Device-chain verifier cases (engineering/devices.md in Canon). Entry bytes and the wire signature list are hex; expect.verify is Chain::verify, expect.prefix is Chain::verify_prefix. Codes and seqs are the contract; see the generator's module doc.",
-        "constants": { "recovery_rotation_delay": RECOVERY_ROTATION_DELAY, "clock_skew": CLOCK_SKEW },
+        "about": "Device-chain verifier cases (engineering/devices.md in Canon). Entry bytes and the wire signature list are hex; pin is the head the verifier holds, or null to verify from seq 0; expect is Chain::verify's result. Codes and seqs are the contract; see the generator's module doc.",
         "cases": cases(),
     });
     serde_json::to_string_pretty(&v).unwrap() + "\n"
@@ -469,21 +427,21 @@ fn d1_the_corpus_covers_both_outcomes_of_each_rule() {
     let v: Value = serde_json::from_str(&corpus()).unwrap();
     let cases = v["cases"].as_array().unwrap();
     let get = |n: &str| cases.iter().find(|c| c["name"] == n).unwrap_or_else(|| panic!("no case {n}"));
-    for n in ["genesis_device_only", "genesis_with_kit", "add_device", "remove_device", "batch_of_removals", "rotate_by_kit", "rotate_no_kit", "propose", "cancel_by_kit", "remove_authorizer_voids", "complete_pinned_first_seen", "complete_reverify_past_pin", "complete_fresh_on_time", "pinned_same_head", "pinned_longer", "propose_backdated_within_skew"] {
-        assert!(get(n)["expect"]["verify"]["accept"].is_object(), "{n} should be accepted");
+    for n in ["genesis_device_only", "genesis_with_kit", "add_device", "remove_device", "batch_of_removals", "rotate_by_kit", "rotate_no_kit", "pinned_same_head", "pinned_longer", "carried_at_genesis", "time_is_informational"] {
+        assert!(get(n)["expect"]["accept"].is_object(), "{n} should be accepted");
     }
-    let refused = cases.iter().filter(|c| c["expect"]["verify"]["refuse"].is_object()).count();
+    let refused = cases.iter().filter(|c| c["expect"]["refuse"].is_object()).count();
     assert!(refused >= 40, "{refused} refusals");
-    assert_eq!(get("propose")["expect"]["verify"]["accept"]["pending"]["authorizer"], get("propose")["expect"]["verify"]["accept"]["devices"][0]["id"]);
-    assert_eq!(get("complete_early_pinned")["expect"]["prefix"]["rejected"]["code"], "rotation_not_due");
-    assert_eq!(get("remove_recovery")["expect"]["verify"]["refuse"]["code"], "remove_recovery");
+    assert_eq!(get("remove_recovery")["expect"]["refuse"]["code"], "remove_recovery");
+    assert_eq!(get("rotate_by_device_while_kit")["expect"]["refuse"]["code"], "signer_not_eligible");
+    assert_eq!(get("carried_at_genesis")["expect"]["accept"]["carried"], uk(9).to_string());
     for n in ["unicode_final_sigma", "unicode_sigma", "unicode_dotted_i", "unicode_sharp_s", "unicode_ogonek", "unicode_kelvin"] {
-        assert!(get(n)["expect"]["verify"]["accept"].is_object(), "{n} should be distinct names");
+        assert!(get(n)["expect"]["accept"].is_object(), "{n} should be distinct names");
     }
     for n in ["ascii_case_duplicate", "ascii_case_duplicate_mixed"] {
-        assert_eq!(get(n)["expect"]["verify"]["refuse"]["code"], "duplicate_name", "{n}");
+        assert_eq!(get(n)["expect"]["refuse"]["code"], "duplicate_name", "{n}");
     }
     for c in cases.iter().filter(|c| c["name"].as_str().unwrap().starts_with("refused_")) {
-        assert_eq!(c["expect"]["verify"]["refuse"]["code"], "name_characters", "{}", c["name"]);
+        assert_eq!(c["expect"]["refuse"]["code"], "name_characters", "{}", c["name"]);
     }
 }

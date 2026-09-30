@@ -14,8 +14,7 @@
 //! version     u8        1
 //! seq         u64
 //! prev        [32]      SHA-256 of the previous entry's bytes; zeros at seq 0
-//! action      u8        1 add, 2 remove, 3 rotate-recovery,
-//!                       4 cancel-recovery-rotation
+//! action      u8        1 add, 2 remove, 3 rotate-recovery
 //! subjects    u8        how many: 1, or 2 at seq 0 (first device, recovery)
 //!   kind      u8          1 device, 2 recovery
 //!   name      u16 + utf8  1–64 bytes (see "Names" below)
@@ -24,7 +23,11 @@
 //!   ed25519   [32]        the key it signs with
 //! generation  u32       the user key generation the entry leaves current
 //! key id      [16]      that generation's user key id (`user_key`)
-//! time        u64       Unix seconds, as the signer's clock read it
+//! carried     u8        0, or 1 and then [16]: at seq 0 of a chain started
+//!                       over, the previous chain's newest user key id; 0
+//!                       at every other seq
+//! time        u64       Unix seconds, as the signer's clock read it;
+//!                       informational, nothing checks it
 //! signers     u8        how many (1–3), then each signer's device id [16],
 //!                       strictly ascending
 //! ```
@@ -46,8 +49,8 @@
 //!   without the kit's words;
 //! - except at seq 0, exactly one authorizer: a device on the list, not
 //!   removed before this entry, that `may_authorize` the action — any
-//!   device for every action but `cancel-recovery-rotation`, which only the
-//!   recovery device authorizes.
+//!   device, except that `rotate-recovery` is authorized only by the
+//!   current recovery device, or by any device when there is none.
 //!
 //! A reader decodes strictly — unknown versions, actions and kinds, bad
 //! UTF-8, out-of-range lengths and counts, unsorted signers and trailing
@@ -64,32 +67,14 @@
 //!   refused too), and leaves the generation and key id as they were.
 //! - `remove` names an active `device` exactly as the list holds it. A
 //!   `recovery` device cannot be removed.
-//! - `rotate-recovery` replaces the recovery device — at once when the
-//!   recovery device itself authorizes it, or when there is none yet (setup
-//!   skipped the kit). Authorized by any other device it is only
-//!   **pending**: for `RECOVERY_ROTATION_DELAY` (7 days) the current kit
-//!   stays the recovery device — wrapped to, able to sign, unremovable —
-//!   and the proposed one has no wraps and no rights. After the delay a
-//!   second `rotate-recovery` naming the same device, authorized by any
-//!   device, completes it. `cancel-recovery-rotation`, authorized by the
-//!   recovery device, voids it, and so does removing the device that
-//!   proposed it. One rotation is pending at a time. `Chain::pending` says
-//!   who proposed it and when it can take effect, for every device to warn.
-//! - The delay is judged by the verifying device's own clock (`Trust`): a
-//!   pinned device counts from when it first saw the proposal and refuses a
-//!   new entry dated more than `CLOCK_SKEW` (1 hour) before it last
-//!   verified the list, as backdated; a fresh machine counts from the
-//!   registry's receipt time, which is thief defense only, and takes a
-//!   completion only if the registry received it after the delay. Entries
-//!   at or before a pin were judged when first verified and are not judged
-//!   again. The backdating rule means an entry signed offline and posted
-//!   more than an hour later is refused; the CLI signs at post time.
-//! - A removal and a `rotate-recovery` that takes effect rotate the key:
-//!   they must leave the generation exactly one higher, with a key id the
-//!   chain has not held. Every other entry — a pending proposal and a
-//!   cancellation included — carries the current key id unchanged. A
-//!   proposal rotates nothing because nothing changes until it completes;
-//!   the completion rotates, so the old kit opens nothing sealed after it.
+//! - `rotate-recovery` replaces the recovery device at once (or makes the
+//!   first, when setup skipped the kit).
+//! - A removal and a `rotate-recovery` rotate the key: they must leave the
+//!   generation exactly one higher, with a key id the chain has not held.
+//!   Every other entry carries the current key id unchanged.
+//! - `carried` is informational to the chain: it names the key the new
+//!   generation 1 wraps as its link back (`user_key::UserKeys::carry`),
+//!   which checks the carried key's id against it.
 //! - **Names** are what a person reads at every prompt and in recovery's
 //!   review. A name or OS may not hold any code point in these inclusive
 //!   ranges (`REFUSED_IN_NAMES`, Unicode 16's `Cc`, `Cf`, `Zl` and `Zp`):
@@ -134,7 +119,22 @@ pub enum Action {
     Add = 1,
     Remove = 2,
     RotateRecovery = 3,
-    CancelRecoveryRotation = 4,
+}
+
+impl Action {
+    fn from_byte(a: u8, seq: u64) -> Result<Action, Error> {
+        match a {
+            1 => Ok(Action::Add),
+            2 => Ok(Action::Remove),
+            3 => Ok(Action::RotateRecovery),
+            a => Err(refuse(seq, format!("unknown action {a}"))),
+        }
+    }
+
+    /// Whether the entry moves the user key up a generation.
+    fn rotates(self) -> bool {
+        self != Action::Add
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +168,8 @@ pub struct Entry {
     pub subjects: Vec<Subject>,
     pub generation: u32,
     pub key_id: UserKeyId,
+    /// At seq 0 of a chain started over: the previous chain's newest key id.
+    pub carried: Option<UserKeyId>,
     pub time: u64,
     pub signers: Vec<DeviceId>,
 }
@@ -176,30 +178,37 @@ impl Entry {
     /// The canonical bytes (the module doc has the layout). Refused for
     /// anything a reader would refuse.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
-        let seq = self.seq;
-        if self.subjects.is_empty() || self.subjects.len() > 2 {
-            return Err(refuse(seq, "an entry is about one device, or two at entry 0"));
-        }
-        if self.signers.is_empty() || self.signers.len() > 3 || !self.signers.windows(2).all(|w| w[0].0 < w[1].0) {
-            return Err(refuse(seq, "its signers are not one to three distinct ids in order"));
-        }
+        self.check_counts()?;
         let mut b = Vec::with_capacity(320);
         b.push(ENTRY_V1);
-        b.extend_from_slice(&seq.to_be_bytes());
+        b.extend_from_slice(&self.seq.to_be_bytes());
         b.extend_from_slice(&self.prev);
         b.push(self.action as u8);
         b.push(self.subjects.len() as u8);
         for s in &self.subjects {
-            put_subject(&mut b, s, seq)?;
+            put_subject(&mut b, s, self.seq)?;
         }
         b.extend_from_slice(&self.generation.to_be_bytes());
         b.extend_from_slice(&self.key_id.0);
+        put_carried(&mut b, self.carried);
         b.extend_from_slice(&self.time.to_be_bytes());
         b.push(self.signers.len() as u8);
-        for s in &self.signers {
-            b.extend_from_slice(&s.0);
-        }
+        self.signers.iter().for_each(|s| b.extend_from_slice(&s.0));
         Ok(b)
+    }
+
+    fn check_counts(&self) -> Result<(), Error> {
+        if self.subjects.is_empty() || self.subjects.len() > 2 {
+            return Err(refuse(self.seq, "an entry is about one device, or two at entry 0"));
+        }
+        if self.carried.is_some() && self.seq != 0 {
+            return Err(refuse(self.seq, "only entry 0 carries a previous chain's key"));
+        }
+        let ordered = self.signers.windows(2).all(|w| w[0].0 < w[1].0);
+        if self.signers.is_empty() || self.signers.len() > 3 || !ordered {
+            return Err(refuse(self.seq, "its signers are not one to three distinct ids in order"));
+        }
+        Ok(())
     }
 
     /// An entry from its bytes, strictly: see the module doc.
@@ -209,32 +218,13 @@ impl Entry {
         if version != ENTRY_V1 {
             return Err(Error(format!("the device list entry is format {version}, which this krowk does not read — upgrade krowk")));
         }
-        let seq = u64::from_be_bytes(r.array()?);
-        r.seq = seq;
-        let prev = r.array::<32>()?;
-        let action = match r.u8()? {
-            1 => Action::Add,
-            2 => Action::Remove,
-            3 => Action::RotateRecovery,
-            4 => Action::CancelRecoveryRotation,
-            a => return Err(refuse(seq, format!("unknown action {a}"))),
-        };
-        let n = r.u8()?;
-        if !(1..=2).contains(&n) {
-            return Err(refuse(seq, "an entry is about one device, or two at entry 0"));
-        }
-        let subjects = (0..n).map(|_| r.subject()).collect::<Result<Vec<_>, _>>()?;
-        let generation = u32::from_be_bytes(r.array()?);
-        let key_id = UserKeyId(r.array()?);
-        let time = u64::from_be_bytes(r.array()?);
-        let n = r.u8()?;
-        let signers = (0..n).map(|_| r.array().map(DeviceId)).collect::<Result<Vec<_>, _>>()?;
+        r.seq = u64::from_be_bytes(r.array()?);
+        let entry = r.entry_after_seq()?;
         if !r.b.is_empty() {
-            return Err(refuse(seq, "trailing bytes"));
+            return Err(refuse(entry.seq, "trailing bytes"));
         }
-        let entry = Entry { seq, prev, action, subjects, generation, key_id, time, signers };
         if entry.encode()? != bytes {
-            return Err(refuse(seq, "not in canonical form"));
+            return Err(refuse(entry.seq, "not in canonical form"));
         }
         Ok(entry)
     }
@@ -249,6 +239,16 @@ impl Entry {
         let message = signed_message(&bytes);
         let signatures = keys.iter().map(|(id, k)| (*id, k.sign(&message))).collect();
         Ok(SignedEntry { bytes, signatures })
+    }
+}
+
+fn put_carried(b: &mut Vec<u8>, carried: Option<UserKeyId>) {
+    match carried {
+        None => b.push(0),
+        Some(id) => {
+            b.push(1);
+            b.extend_from_slice(&id.0);
+        }
     }
 }
 
@@ -355,6 +355,33 @@ impl Reader<'_> {
         String::from_utf8(self.take(n)?.to_vec()).map_err(|_| refuse(seq, "a device name or os is not UTF-8"))
     }
 
+    /// Everything after `version` and `seq` (already read into `self.seq`).
+    fn entry_after_seq(&mut self) -> Result<Entry, Error> {
+        let seq = self.seq;
+        let prev = self.array::<32>()?;
+        let action = Action::from_byte(self.u8()?, seq)?;
+        let n = self.u8()?;
+        if !(1..=2).contains(&n) {
+            return Err(refuse(seq, "an entry is about one device, or two at entry 0"));
+        }
+        let subjects = (0..n).map(|_| self.subject()).collect::<Result<Vec<_>, _>>()?;
+        let generation = u32::from_be_bytes(self.array()?);
+        let key_id = UserKeyId(self.array()?);
+        let carried = self.carried()?;
+        let time = u64::from_be_bytes(self.array()?);
+        let n = self.u8()?;
+        let signers = (0..n).map(|_| self.array().map(DeviceId)).collect::<Result<Vec<_>, _>>()?;
+        Ok(Entry { seq, prev, action, subjects, generation, key_id, carried, time, signers })
+    }
+
+    fn carried(&mut self) -> Result<Option<UserKeyId>, Error> {
+        match self.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(UserKeyId(self.array()?))),
+            f => Err(refuse(self.seq, format!("bad carried flag {f}"))),
+        }
+    }
+
     fn subject(&mut self) -> Result<Subject, Error> {
         let kind = match self.u8()? {
             1 => Kind::Device,
@@ -434,82 +461,11 @@ impl Device {
     }
 }
 
-/// Which current devices may authorize an action: only the recovery
-/// device cancels a pending recovery rotation; any device on the list
-/// authorizes the rest. Whether a `rotate-recovery` takes effect at once
-/// or waits is state, not eligibility (`Chain::step`).
-fn may_authorize(action: Action, signer: &Device) -> bool {
-    action != Action::CancelRecoveryRotation || signer.kind == Kind::Recovery
-}
-
-/// How long a `rotate-recovery` a device authorized, rather than the
-/// recovery device itself, waits before it can take effect.
-pub const RECOVERY_ROTATION_DELAY: u64 = 7 * 24 * 60 * 60;
-
-/// How far a new entry's `time` may fall before the moment this device
-/// last verified its head, for clocks that disagree, before the entry is
-/// refused as backdated.
-pub const CLOCK_SKEW: u64 = 60 * 60;
-
-/// What this device knows about the list before it verifies it, and so
-/// what a recovery rotation's delay is counted from. An entry's `time` is
-/// written by its signer and never counted from alone: a thief would
-/// backdate it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Trust {
-    /// A device that has verified this list before: its pinned head, when
-    /// (by its own clock) it last verified it, and, for a pending rotation
-    /// it saw then, `(seq, since)` from `Chain::pending`. An entry after
-    /// the pin whose `time` is more than `CLOCK_SKEW` before `verified_at`
-    /// is refused as backdated. A pending rotation's delay runs from when
-    /// this device first saw it: `first_seen` if it matches, else now.
-    Pinned { head: Head, verified_at: u64, first_seen: Option<(u64, u64)> },
-    /// A fresh machine with no pin — recovery. Its delay runs from the
-    /// registry's receipt time for each entry, `received_at[seq]`, as the
-    /// registry returns it. Under a hostile registry that is no control at
-    /// all: the delay defends against a thief, as the fresh sign-in does,
-    /// and not against the registry.
-    Fresh { received_at: Vec<u64> },
-}
-/// What `Chain::verify_prefix` returns: the chain as far as every entry
-/// verified, and the first entry it refused, if any, with why.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Verified {
-    pub chain: Chain,
-    pub rejected: Option<(u64, Error)>,
-}
-
-/// A `rotate-recovery` a device authorized, waiting out its delay. Until it
-/// takes effect the current recovery device stays the recovery device —
-/// wrapped to, able to sign, unremovable — and the new one is nothing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pending {
-    /// The recovery device proposed.
-    pub subject: Subject,
-    /// The device that authorized it: removing it voids the rotation.
-    pub authorizer: DeviceId,
-    /// The entry that proposed it.
-    pub seq: u64,
-    /// The entry's own time, as its signer's clock read it.
-    pub time: u64,
-    /// When the delay started for this device: when it first saw the entry
-    /// (pinned), or the later of the entry's time and the registry's
-    /// receipt time (fresh).
-    pub since: u64,
-    /// When, by this device's clock, the rotation may be completed:
-    /// `since` + `RECOVERY_ROTATION_DELAY`. Clock skew between devices
-    /// moves this by the skew and no more; the registry cannot move it on
-    /// a pinned device.
-    pub effective_at: u64,
-}
-
-/// What an entry does to the key: nothing, a rotation, or a pending
-/// recovery rotation, which changes nothing yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Step {
-    Plain,
-    Rotate,
-    Propose,
+/// Which current devices may authorize an action: any device on the list,
+/// except that only the recovery device replaces itself — or, when there
+/// is none (setup skipped the kit), any device makes the first.
+fn may_authorize(action: Action, signer: &Device, recovery: Option<&Device>) -> bool {
+    action != Action::RotateRecovery || recovery.is_none() || signer.kind == Kind::Recovery
 }
 
 /// Who must sign an entry: the subjects that prove possession of their
@@ -518,7 +474,6 @@ fn required_signers(e: &Entry) -> (&[Subject], usize) {
     match (e.seq, e.action) {
         (0, _) => (&e.subjects[..], 0),
         (_, Action::RotateRecovery) => (&e.subjects[..], 1),
-        (_, Action::CancelRecoveryRotation) => (&[], 1),
         _ => (&[], 1),
     }
 }
@@ -529,18 +484,29 @@ pub enum Change<'a> {
     Remove(Subject),
     /// The new recovery device, and its signing key for its own signature.
     RotateRecovery(Subject, &'a SigningKey),
-    /// Signed by the recovery device: voids the pending rotation to this one.
-    CancelRecoveryRotation(Subject),
+}
+
+impl<'a> Change<'a> {
+    fn parts(self) -> (Action, Subject, Option<&'a SigningKey>) {
+        match self {
+            Change::Add(s) => (Action::Add, s, None),
+            Change::Remove(s) => (Action::Remove, s, None),
+            Change::RotateRecovery(s, k) => (Action::RotateRecovery, s, Some(k)),
+        }
+    }
 }
 
 /// What a batch or a new chain posts, all at once: the signed entries, the
 /// newest user key, each generation it made wrapped under the next
-/// (`links`, oldest first), and the newest wrapped to devices (`wraps`).
+/// (`links`, oldest first), the newest wrapped to devices (`wraps`), and,
+/// for a chain started over, the previous chain's newest key wrapped under
+/// the new generation 1 (`carried`, `user_key::UserKey::wrap_carried`).
 pub struct Batch {
     pub entries: Vec<SignedEntry>,
     pub newest: UserKey,
     pub links: Vec<Vec<u8>>,
     pub wraps: Vec<(DeviceId, Vec<u8>)>,
+    pub carried: Option<Vec<u8>>,
 }
 
 /// A chain verified up to its head: the devices on it now, and the user
@@ -550,95 +516,45 @@ pub struct Chain {
     head: Head,
     /// Every generation's key id, generation 1 first.
     key_ids: Vec<UserKeyId>,
+    carried: Option<UserKeyId>,
     devices: Vec<Device>,
     /// Every X25519 and Ed25519 key this chain has ever added, so none is
     /// added twice, a removed device included.
     seen: Vec<[u8; 32]>,
-    pending: Option<Pending>,
-    trust: Trust,
-    /// This device's clock, Unix seconds.
-    now: u64,
 }
 
 impl Chain {
-    /// Verifies a whole chain from seq 0, by this device's clock `now`.
-    /// With a pin, it must also reach at least the pin's seq and hold the
-    /// pinned hash there: a shorter chain is an older list, another hash a
-    /// forked one, and both are refused. Any entry refused refuses the lot;
-    /// `verify_prefix` says how far it got.
-    pub fn verify(entries: &[SignedEntry], trust: Trust, now: u64) -> Result<Chain, Error> {
-        let v = Chain::verify_prefix(entries, trust, now)?;
-        match v.rejected {
-            Some((_, e)) => Err(e),
-            None => Ok(v.chain),
-        }
-    }
-
-    /// As `verify`, but an entry after the pin that is refused ends the
-    /// chain there rather than refusing it all: the chain up to it comes
-    /// back with the seq and the reason. An entry at or before the pin, a
-    /// shorter or forked list, or a bad entry 0 still refuses everything.
-    ///
-    /// This is how a client that was offline through a recovery rotation's
-    /// whole delay, and so receives the proposal and its completion at once,
-    /// gets past it: the completion is refused (seen just now), the prefix
-    /// ends with the proposal pending, and the client pins that prefix and
-    /// stores `(pending.seq, pending.since)` as `first_seen`. Seven days on
-    /// by its own clock, the completion verifies. Recovery on a fresh
-    /// machine works from the prefix the same way, so the kit can cancel a
-    /// rotation whose completion it cannot yet accept. A client only ever
-    /// wraps to, adopts keys from and pins the prefix. When it pins a
-    /// prefix whose tail was refused it keeps its `verified_at` as it was:
-    /// the tail it saw is older than now, and should not read as backdated
-    /// when it verifies again.
-    pub fn verify_prefix(entries: &[SignedEntry], trust: Trust, now: u64) -> Result<Verified, Error> {
+    /// Verifies a whole chain from seq 0. With a pin, it must also reach at
+    /// least the pin's seq and hold the pinned hash there: a shorter chain
+    /// is an older list, another hash a forked one, and both are refused.
+    pub fn verify(entries: &[SignedEntry], pin: Option<Head>) -> Result<Chain, Error> {
         let (first, rest) = entries.split_first().ok_or_else(|| Error("the device list is empty".into()))?;
-        let pin = match &trust {
-            Trust::Pinned { head, .. } => Some(*head),
-            Trust::Fresh { .. } => None,
-        };
-        if let Some(pin) = pin
-            && (entries.len() as u64) <= pin.seq
+        if let Some(p) = pin
+            && (entries.len() as u64) <= p.seq
         {
-            return Err(Error(format!("the device list ends at entry {}, older than entry {} this device last verified — the registry served an old list", entries.len() - 1, pin.seq)));
+            return Err(Error(format!("the device list ends at entry {}, older than entry {} this device last verified — the registry served an old list", entries.len() - 1, p.seq)));
         }
-        let pinned = |c: &Chain| match pin {
-            Some(p) if c.head.seq == p.seq && c.head.hash != p.hash => Err(Error(format!("the device list differs at entry {} from the one this device last verified — the registry served a forked list", p.seq))),
-            _ => Ok(()),
-        };
-        let mut chain = Chain::genesis(first, trust, now)?;
-        pinned(&chain)?;
-        for (i, e) in rest.iter().enumerate() {
-            let seq = i as u64 + 1;
-            match chain.extend(e) {
-                Ok(next) => chain = next,
-                Err(err) if pin.is_none_or(|p| seq > p.seq) => return Ok(Verified { chain, rejected: Some((seq, err)) }),
-                Err(err) => return Err(err),
-            }
-            pinned(&chain)?;
+        let mut chain = Chain::genesis(first)?;
+        chain.check_pin(pin)?;
+        for e in rest {
+            chain = chain.extend(e)?;
+            chain.check_pin(pin)?;
         }
-        Ok(Verified { chain, rejected: None })
+        Ok(chain)
     }
 
-    /// Verifies seq 0 alone; `trust` and `now` are kept for what follows.
-    pub fn genesis(entry: &SignedEntry, trust: Trust, now: u64) -> Result<Chain, Error> {
+    fn check_pin(&self, pin: Option<Head>) -> Result<(), Error> {
+        match pin {
+            Some(p) if self.head.seq == p.seq && self.head.hash != p.hash => Err(Error(format!("the device list differs at entry {} from the one this device last verified — the registry served a forked list", p.seq))),
+            _ => Ok(()),
+        }
+    }
+
+    /// Verifies seq 0 alone.
+    pub fn genesis(entry: &SignedEntry) -> Result<Chain, Error> {
         let e = Entry::decode(&entry.bytes)?;
-        if e.seq != 0 {
-            return Err(refuse(e.seq, "the list does not start at entry 0"));
-        }
-        if e.prev != [0; 32] {
-            return Err(refuse(0, "entry 0 names a previous entry"));
-        }
-        if e.action != Action::Add || e.subjects[0].kind != Kind::Device {
-            return Err(refuse(0, "entry 0 must add the first device"));
-        }
-        if e.subjects.get(1).is_some_and(|r| r.kind != Kind::Recovery) {
-            return Err(refuse(0, "entry 0's second device must be the recovery device"));
-        }
-        if e.generation != 1 {
-            return Err(refuse(0, "entry 0 must leave user key generation 1"));
-        }
-        let mut chain = Chain { head: Head { seq: 0, hash: entry.hash() }, key_ids: vec![e.key_id], devices: Vec::new(), seen: Vec::new(), pending: None, trust, now };
+        check_genesis(&e)?;
+        let mut chain = Chain { head: Head { seq: 0, hash: entry.hash() }, key_ids: vec![e.key_id], carried: e.carried, devices: Vec::new(), seen: Vec::new() };
         chain.check_signatures(&e, entry)?;
         for s in &e.subjects {
             chain.add(s, 0)?;
@@ -651,181 +567,125 @@ impl Chain {
     /// after its head: the entry must extend exactly this head.
     pub fn extend(&self, entry: &SignedEntry) -> Result<Chain, Error> {
         let e = Entry::decode(&entry.bytes)?;
-        let seq = e.seq;
-        if Some(seq) != self.head.seq.checked_add(1) {
-            return Err(refuse(seq, format!("it does not follow entry {}", self.head.seq)));
-        }
-        if e.prev != self.head.hash {
-            return Err(refuse(seq, format!("it does not extend entry {} as this device verified it — a forked list", self.head.seq)));
-        }
-        if e.subjects.len() != 1 {
-            return Err(refuse(seq, "only entry 0 is about two devices"));
-        }
-        // Entries at or before the pin were checked when this device first
-        // verified them; neither the backdating nor the delay check runs on
-        // them again.
-        if let Trust::Pinned { head, verified_at, .. } = &self.trust
-            && seq > head.seq
-            && e.time.saturating_add(CLOCK_SKEW) < *verified_at
-        {
-            return Err(refuse(seq, "its time is before this device last verified the list — it is backdated"));
-        }
-        let authorizer = self.check_signatures(&e, entry)?;
-        let subject = &e.subjects[0];
-        let step = self.step(e.action, &authorizer, subject, seq)?;
+        self.check_follows(&e)?;
+        self.check_signatures(&e, entry)?;
         let mut next = self.clone();
-        next.head = Head { seq, hash: entry.hash() };
-        match e.action {
-            Action::Add => {
-                if subject.kind != Kind::Device {
-                    return Err(refuse(seq, "a recovery device is added only by rotate-recovery"));
-                }
-                // Nor may a device take the pending recovery device's keys or
-                // name, which would jam the rotation's completion.
-                if let Some(p) = &self.pending
-                    && ([subject.device.0, subject.signing.0].iter().any(|k| *k == p.subject.device.0 || *k == p.subject.signing.0) || same_name(&subject.name, &p.subject.name))
-                {
-                    return Err(refuse(seq, "it adds the keys or name of the recovery device a rotation is pending to"));
-                }
-                next.add(subject, seq)?;
-            }
-            Action::Remove => {
-                let at = next.devices.iter().position(|d| d.id() == subject.id()).ok_or_else(|| refuse(seq, "it removes a device that is not on the list"))?;
-                if next.devices[at].kind == Kind::Recovery || subject.kind == Kind::Recovery {
-                    return Err(refuse(seq, "the recovery device cannot be removed, only replaced by rotate-recovery"));
-                }
-                if !next.devices[at].matches(subject) {
-                    return Err(refuse(seq, "it names a device other than the one on the list"));
-                }
-                next.devices.remove(at);
-                // Removing the device that proposed a recovery rotation voids it.
-                if next.pending.as_ref().is_some_and(|p| p.authorizer == subject.id()) {
-                    next.pending = None;
-                }
-            }
-            Action::RotateRecovery if step == Step::Propose => {
-                if subject.kind != Kind::Recovery {
-                    return Err(refuse(seq, "rotate-recovery must add a recovery device"));
-                }
-                if next.seen.contains(&subject.device.0) || next.seen.contains(&subject.signing.0) || subject.device.0 == subject.signing.0 {
-                    return Err(refuse(seq, "it adds a key this list has held before"));
-                }
-                // The kit it would replace aside, its name may not be one a
-                // device on the list has, as it may not be at completion.
-                if next.devices.iter().any(|d| d.kind != Kind::Recovery && same_name(&d.name, &subject.name)) {
-                    return Err(refuse(seq, format!("a device on the list is already called {:?}", subject.name)));
-                }
-                let since = match &self.trust {
-                    Trust::Pinned { first_seen: Some((s, t)), .. } if *s == seq => *t,
-                    Trust::Pinned { .. } => self.now,
-                    Trust::Fresh { received_at } => e.time.max(*received_at.get(seq as usize).ok_or_else(|| refuse(seq, "the registry gave no receipt time for it"))?),
-                };
-                let effective_at = since.checked_add(RECOVERY_ROTATION_DELAY).ok_or_else(|| refuse(seq, "its time is out of range"))?;
-                next.pending = Some(Pending { subject: subject.clone(), authorizer: authorizer.expect("rotate-recovery has an authorizer"), seq, time: e.time, since, effective_at });
-            }
-            Action::RotateRecovery => {
-                if subject.kind != Kind::Recovery {
-                    return Err(refuse(seq, "rotate-recovery must add a recovery device"));
-                }
-                next.devices.retain(|d| d.kind != Kind::Recovery);
-                next.add(subject, seq)?;
-                next.pending = None;
-            }
-            Action::CancelRecoveryRotation => {
-                if next.pending.as_ref().map(|p| &p.subject) != Some(subject) {
-                    return Err(refuse(seq, "it cancels a recovery rotation that is not pending"));
-                }
-                next.pending = None;
-            }
-        }
-        let g = self.generation();
-        if step == Step::Rotate {
-            if Some(e.generation) != g.checked_add(1) {
-                return Err(refuse(seq, format!("it leaves user key generation {}, and a {:?} must leave {}", e.generation, e.action, g as u64 + 1)));
-            }
-            if next.key_ids.contains(&e.key_id) {
-                return Err(refuse(seq, "it rotates to a user key id this list has held before"));
-            }
-            next.key_ids.push(e.key_id);
-        } else if e.generation != g || e.key_id != self.key_id() {
-            return Err(refuse(seq, format!("it must leave user key generation {g} and its key id as they were")));
-        }
+        next.head = Head { seq: e.seq, hash: entry.hash() };
+        next.apply(e.action, &e.subjects[0], e.seq)?;
+        next.check_generation(self, &e)?;
         Ok(next)
     }
 
-    /// What an entry does to the key, from the state before it. A
-    /// `rotate-recovery` takes effect at once when there is no recovery
-    /// device yet or the recovery device authorized it; authorized by any
-    /// other device it is only proposed, and a second one naming the same
-    /// recovery device completes it once the delay has passed by this
-    /// device's clock. One rotation is pending at a time.
-    fn step(&self, action: Action, authorizer: &Option<DeviceId>, subject: &Subject, seq: u64) -> Result<Step, Error> {
-        Ok(match action {
-            Action::Add | Action::CancelRecoveryRotation => Step::Plain,
-            Action::Remove => Step::Rotate,
-            Action::RotateRecovery => {
-                let by_recovery = self.recovery().is_some_and(|r| Some(r.id()) == *authorizer);
-                match (&self.pending, self.recovery().is_none() || by_recovery) {
-                    (_, true) => Step::Rotate,
-                    (Some(p), false) if p.subject == *subject => {
-                        match &self.trust {
-                            Trust::Pinned { head, .. } if seq <= head.seq => {}
-                            _ if self.now < p.effective_at => {
-                                return Err(refuse(seq, format!("the recovery rotation proposed at entry {} takes effect only at {} by this device's clock", p.seq, p.effective_at)));
-                            }
-                            // A fresh machine also needs the registry to have
-                            // received the completion no earlier than the
-                            // delay allows: judged by its own clock alone, a
-                            // completion posted on day one would pass on day
-                            // eight.
-                            Trust::Fresh { received_at } if received_at.get(seq as usize).is_none_or(|r| *r < p.effective_at) => {
-                                return Err(refuse(seq, format!("the registry received the completion of the recovery rotation proposed at entry {} before its delay was over", p.seq)));
-                            }
-                            _ => {}
-                        }
-                        Step::Rotate
-                    }
-                    (Some(p), false) => return Err(refuse(seq, format!("a recovery rotation is already pending, from entry {}", p.seq))),
-                    (None, false) => Step::Propose,
-                }
+    fn check_follows(&self, e: &Entry) -> Result<(), Error> {
+        if Some(e.seq) != self.head.seq.checked_add(1) {
+            return Err(refuse(e.seq, format!("it does not follow entry {}", self.head.seq)));
+        }
+        if e.prev != self.head.hash {
+            return Err(refuse(e.seq, format!("it does not extend entry {} as this device verified it — a forked list", self.head.seq)));
+        }
+        if e.subjects.len() != 1 {
+            return Err(refuse(e.seq, "only entry 0 is about two devices"));
+        }
+        Ok(())
+    }
+
+    fn apply(&mut self, action: Action, subject: &Subject, seq: u64) -> Result<(), Error> {
+        match action {
+            Action::Add => self.apply_add(subject, seq),
+            Action::Remove => self.apply_remove(subject, seq),
+            Action::RotateRecovery => self.apply_rotate_recovery(subject, seq),
+        }
+    }
+
+    fn apply_add(&mut self, subject: &Subject, seq: u64) -> Result<(), Error> {
+        if subject.kind != Kind::Device {
+            return Err(refuse(seq, "a recovery device is added only by rotate-recovery"));
+        }
+        self.add(subject, seq)
+    }
+
+    fn apply_remove(&mut self, subject: &Subject, seq: u64) -> Result<(), Error> {
+        let at = self.devices.iter().position(|d| d.id() == subject.id()).ok_or_else(|| refuse(seq, "it removes a device that is not on the list"))?;
+        if self.devices[at].kind == Kind::Recovery || subject.kind == Kind::Recovery {
+            return Err(refuse(seq, "the recovery device cannot be removed, only replaced by rotate-recovery"));
+        }
+        if !self.devices[at].matches(subject) {
+            return Err(refuse(seq, "it names a device other than the one on the list"));
+        }
+        self.devices.remove(at);
+        Ok(())
+    }
+
+    fn apply_rotate_recovery(&mut self, subject: &Subject, seq: u64) -> Result<(), Error> {
+        if subject.kind != Kind::Recovery {
+            return Err(refuse(seq, "rotate-recovery must add a recovery device"));
+        }
+        self.devices.retain(|d| d.kind != Kind::Recovery);
+        self.add(subject, seq)
+    }
+
+    /// The generation and key id `e` leaves, checked against `before`.
+    fn check_generation(&mut self, before: &Chain, e: &Entry) -> Result<(), Error> {
+        let g = before.generation();
+        if !e.action.rotates() {
+            if e.generation != g || e.key_id != before.key_id() {
+                return Err(refuse(e.seq, format!("it must leave user key generation {g} and its key id as they were")));
             }
-        })
+            return Ok(());
+        }
+        if Some(e.generation) != g.checked_add(1) {
+            return Err(refuse(e.seq, format!("it leaves user key generation {}, and a {:?} must leave {}", e.generation, e.action, g as u64 + 1)));
+        }
+        if self.key_ids.contains(&e.key_id) || self.carried == Some(e.key_id) {
+            return Err(refuse(e.seq, "it rotates to a user key id this list has held before"));
+        }
+        self.key_ids.push(e.key_id);
+        Ok(())
     }
 
     /// The signers an entry needs, then each signature: see the module doc.
     /// `self` is the chain before the entry.
-    fn check_signatures(&self, e: &Entry, entry: &SignedEntry) -> Result<Option<DeviceId>, Error> {
-        let seq = e.seq;
-        let (possession, authorizers) = required_signers(e);
+    fn check_signatures(&self, e: &Entry, entry: &SignedEntry) -> Result<(), Error> {
         let ids: Vec<DeviceId> = entry.signatures.iter().map(|(id, _)| *id).collect();
         if ids != e.signers {
-            return Err(refuse(seq, "its signatures are not the signers it names"));
+            return Err(refuse(e.seq, "its signatures are not the signers it names"));
         }
+        let keys = self.signer_keys(e)?;
+        let message = signed_message(&entry.bytes);
+        for (id, sig) in &entry.signatures {
+            let key = keys.iter().find(|(k, _)| k == id).expect("every signer has a key").1;
+            key.verify(&message, sig).map_err(|_| refuse(e.seq, "a signature does not verify"))?;
+        }
+        Ok(())
+    }
+
+    /// The key for each signer `e` needs: every subject proving possession,
+    /// then exactly the authorizers `required_signers` asks for.
+    fn signer_keys(&self, e: &Entry) -> Result<Vec<(DeviceId, SigningPublic)>, Error> {
+        let (possession, authorizers) = required_signers(e);
         let mut keys = Vec::new();
         for s in possession {
             if !e.signers.contains(&s.id()) {
-                return Err(refuse(seq, format!("the device it adds, {:?}, has not signed it", s.name)));
+                return Err(refuse(e.seq, format!("the device it adds, {:?}, has not signed it", s.name)));
             }
             keys.push((s.id(), s.signing));
         }
         let others: Vec<DeviceId> = e.signers.iter().filter(|id| !keys.iter().any(|(k, _)| k == *id)).copied().collect();
         if others.len() != authorizers {
-            return Err(refuse(seq, if authorizers == 0 { "it has a signer beyond the devices it adds" } else { "it needs exactly one signer already on the list" }));
+            return Err(refuse(e.seq, if authorizers == 0 { "it has a signer beyond the devices it adds" } else { "it needs exactly one signer already on the list" }));
         }
-        let authorizer = others.first().copied();
         for id in others {
-            let d = self.devices.iter().find(|d| d.id() == id).ok_or_else(|| refuse(seq, "its signer is not a device on the list"))?;
-            if !may_authorize(e.action, d) {
-                return Err(refuse(seq, format!("{:?} may not sign a {:?}", d.name, e.action)));
-            }
-            keys.push((id, d.signing));
+            keys.push((id, self.authorizer(e, id)?.signing));
         }
-        let message = signed_message(&entry.bytes);
-        for (id, sig) in &entry.signatures {
-            let key = keys.iter().find(|(k, _)| k == id).expect("every signer has a key").1;
-            key.verify(&message, sig).map_err(|_| refuse(seq, "a signature does not verify"))?;
+        Ok(keys)
+    }
+
+    fn authorizer(&self, e: &Entry, id: DeviceId) -> Result<&Device, Error> {
+        let d = self.devices.iter().find(|d| d.id() == id).ok_or_else(|| refuse(e.seq, "its signer is not a device on the list"))?;
+        if !may_authorize(e.action, d, self.recovery()) {
+            return Err(refuse(e.seq, format!("{:?} may not sign a {:?}", d.name, e.action)));
         }
-        Ok(authorizer)
+        Ok(d)
     }
 
     fn add(&mut self, s: &Subject, seq: u64) -> Result<(), Error> {
@@ -861,6 +721,12 @@ impl Chain {
         self.key_ids.get((generation as usize).checked_sub(1)?).copied()
     }
 
+    /// For a chain started over, the previous chain's newest key id, which
+    /// the carried link must open to (`UserKeys::carry`).
+    pub fn carried(&self) -> Option<UserKeyId> {
+        self.carried
+    }
+
     /// Every device on the list, the recovery device included: exactly the
     /// devices the current user key is wrapped to.
     pub fn devices(&self) -> &[Device] {
@@ -871,30 +737,18 @@ impl Chain {
         self.devices.iter().find(|d| d.kind == Kind::Recovery)
     }
 
-    /// A recovery rotation waiting out its delay, for every device to warn
-    /// about until it is completed, cancelled or voided. The caller stores
-    /// `(seq, since)` as its `Trust::Pinned::first_seen` the first time it
-    /// sees one.
-    pub fn pending(&self) -> Option<&Pending> {
-        self.pending.as_ref()
-    }
-
-    /// This chain judged by a later reading of this device's clock, as a
-    /// long-running client does before completing a pending rotation.
-    pub fn at(&self, now: u64) -> Chain {
-        Chain { now, ..self.clone() }
-    }
-
     /// The next entry after this head, unsigned, carrying the current
     /// generation and key id; a rotation's caller sets both.
     pub fn next_entry(&self, action: Action, subject: Subject, time: u64) -> Entry {
-        Entry { seq: self.head.seq + 1, prev: self.head.hash, action, subjects: vec![subject], generation: self.generation(), key_id: self.key_id(), time, signers: Vec::new() }
+        Entry { seq: self.head.seq + 1, prev: self.head.hash, action, subjects: vec![subject], generation: self.generation(), key_id: self.key_id(), carried: None, time, signers: Vec::new() }
     }
 
     /// A new chain: seq 0 adding the first device and, if the person made a
     /// kit, the recovery device, each signing it; generation 1 made and
-    /// wrapped to both.
-    pub fn start(first: Subject, first_key: &SigningKey, recovery: Option<(Subject, &SigningKey)>, time: u64) -> Result<(Chain, Batch), Error> {
+    /// wrapped to both. Started over from a device that holds the previous
+    /// chain's newest key (`carry`), seq 0 names that key and generation 1
+    /// wraps it, so sessions sealed under the old chain stay readable.
+    pub fn start(first: Subject, first_key: &SigningKey, recovery: Option<(Subject, &SigningKey)>, carry: Option<&UserKey>, time: u64) -> Result<(Chain, Batch), Error> {
         let newest = UserKey::first();
         let mut subjects = vec![first.clone()];
         let mut keys = vec![(first.id(), first_key)];
@@ -902,73 +756,89 @@ impl Chain {
             subjects.push(r.clone());
             keys.push((r.id(), *k));
         }
-        let entry = Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects, generation: 1, key_id: newest.id(), time, signers: Vec::new() }.sign(&keys)?;
-        let head = Head { seq: 0, hash: entry.hash() };
-        let chain = Chain::genesis(&entry, Trust::Pinned { head, verified_at: time, first_seen: None }, time)?;
-        let wraps = chain.devices.iter().map(|d| Ok((d.id(), newest.wrap_to(&d.device)?))).collect::<Result<_, Error>>()?;
-        Ok((chain, Batch { entries: vec![entry], newest, links: Vec::new(), wraps }))
+        let carried = carry.map(UserKey::id);
+        let entry = Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects, generation: 1, key_id: newest.id(), carried, time, signers: Vec::new() }.sign(&keys)?;
+        let chain = Chain::genesis(&entry)?;
+        let wraps = chain.wrap_to(&newest, |_| true)?;
+        let carried = carry.map(|old| newest.wrap_carried(old)).transpose()?;
+        Ok((chain, Batch { entries: vec![entry], newest, links: Vec::new(), wraps, carried }))
     }
 
-    /// Changes made as one post at `time`, this device's clock, signed by
-    /// `signer`, a device on the list
-    /// that stays on it, holding `held`, the current generation. Adds, a
-    /// proposed recovery rotation and a cancellation leave the generation;
-    /// each removal and each rotate-recovery that takes effect makes the
-    /// next. A proposed recovery device is wrapped nothing.
-    /// Only the last generation is wrapped to devices — every device left
-    /// on the list when anything rotated, else just the devices added —
-    /// and each earlier generation is wrapped under the one after it. Each
-    /// entry is verified onto the chain as it is made, so a batch this
-    /// returns is one every client accepts.
+    /// Changes made as one post at `time`, signed by `signer`, a device on
+    /// the list that stays on it, holding `held`, the current generation.
+    /// Adds leave the generation; each removal and each rotate-recovery
+    /// makes the next. Only the last generation is wrapped to devices —
+    /// every device left on the list when anything rotated, else just the
+    /// devices added — and each earlier generation is wrapped under the one
+    /// after it. Each entry is verified onto the chain as it is made, so a
+    /// batch this returns is one every client accepts.
     pub fn batch(&self, held: &UserKey, changes: Vec<Change<'_>>, signer: DeviceId, key: &SigningKey, time: u64) -> Result<(Chain, Batch), Error> {
         if held.generation() != self.generation() || held.id() != self.key_id() {
             return Err(Error("the user key held is not the one the device list leaves current".into()));
         }
-        // This device makes these entries now, so it judges them as a pinned
-        // device at its own head; a registry's receipt times play no part.
-        let mut chain = Chain { trust: Trust::Pinned { head: self.head, verified_at: 0, first_seen: None }, now: time, ..self.clone() };
-        let mut current = held.clone();
-        let (mut entries, mut links, mut added) = (Vec::new(), Vec::new(), Vec::new());
+        let mut b = Building { chain: self.clone(), current: held.clone(), entries: Vec::new(), links: Vec::new(), added: Vec::new() };
         for change in changes {
-            let (action, subject, own) = match change {
-                Change::Add(s) => (Action::Add, s, None),
-                Change::Remove(s) => (Action::Remove, s, None),
-                Change::RotateRecovery(s, k) => (Action::RotateRecovery, s, Some(k)),
-                Change::CancelRecoveryRotation(s) => (Action::CancelRecoveryRotation, s, None),
-            };
-            let mut entry = chain.next_entry(action, subject.clone(), time);
-            let mut next = None;
-            if chain.step(action, &Some(signer), &subject, entry.seq)? == Step::Rotate {
-                let n = current.next()?;
-                entry.generation = n.generation();
-                entry.key_id = n.id();
-                next = Some(n);
-            }
-            let mut keys = vec![(signer, key)];
-            if let Some(k) = own {
-                keys.push((subject.id(), k));
-            }
-            let signed = entry.sign(&keys)?;
-            chain = chain.extend(&signed)?;
-            entries.push(signed);
-            if let Some(n) = next {
-                links.push(n.wrap_previous(&current)?);
-                current = n;
-            }
-            if action == Action::Add {
-                added.push(subject.id());
-            }
+            b.push(change, signer, key, time)?;
         }
-        // The chain handed back is pinned at its new head as of `time`: this
-        // device made and verified every entry in it, and whatever it
-        // extends next is judged as a pinned device judges it — backdating,
-        // and the delay from first sight — never by the trust it was built
-        // under, which for a fresh machine would drop the receipt check.
-        chain.trust = Trust::Pinned { head: chain.head, verified_at: time, first_seen: chain.pending.as_ref().map(|p| (p.seq, p.since)) };
-        chain.now = time;
-        let rotated = !links.is_empty();
-        let wraps = chain.devices.iter().filter(|d| rotated || added.contains(&d.id())).map(|d| Ok((d.id(), current.wrap_to(&d.device)?))).collect::<Result<_, Error>>()?;
-        Ok((chain, Batch { entries, newest: current, links, wraps }))
+        let rotated = !b.links.is_empty();
+        let wraps = b.chain.wrap_to(&b.current, |d| rotated || b.added.contains(&d.id()))?;
+        Ok((b.chain, Batch { entries: b.entries, newest: b.current, links: b.links, wraps, carried: None }))
+    }
+
+    fn wrap_to(&self, key: &UserKey, to: impl Fn(&Device) -> bool) -> Result<Vec<(DeviceId, Vec<u8>)>, Error> {
+        self.devices.iter().filter(|d| to(d)).map(|d| Ok((d.id(), key.wrap_to(&d.device)?))).collect()
+    }
+}
+
+fn check_genesis(e: &Entry) -> Result<(), Error> {
+    let why = if e.seq != 0 {
+        "the list does not start at entry 0"
+    } else if e.prev != [0; 32] {
+        "entry 0 names a previous entry"
+    } else if e.action != Action::Add || e.subjects[0].kind != Kind::Device {
+        "entry 0 must add the first device"
+    } else if e.subjects.get(1).is_some_and(|r| r.kind != Kind::Recovery) {
+        "entry 0's second device must be the recovery device"
+    } else if e.generation != 1 {
+        "entry 0 must leave user key generation 1"
+    } else {
+        return Ok(());
+    };
+    Err(refuse(e.seq, why))
+}
+
+/// A batch as it is built: the chain so far, the newest key, and what the
+/// post will carry.
+struct Building {
+    chain: Chain,
+    current: UserKey,
+    entries: Vec<SignedEntry>,
+    links: Vec<Vec<u8>>,
+    added: Vec<DeviceId>,
+}
+
+impl Building {
+    fn push(&mut self, change: Change<'_>, signer: DeviceId, key: &SigningKey, time: u64) -> Result<(), Error> {
+        let (action, subject, own) = change.parts();
+        let mut entry = self.chain.next_entry(action, subject.clone(), time);
+        let next = if action.rotates() { Some(self.current.next()?) } else { None };
+        if let Some(n) = &next {
+            entry.generation = n.generation();
+            entry.key_id = n.id();
+        }
+        let mut keys = vec![(signer, key)];
+        keys.extend(own.map(|k| (subject.id(), k)));
+        let signed = entry.sign(&keys)?;
+        self.chain = self.chain.extend(&signed)?;
+        self.entries.push(signed);
+        if let Some(n) = next {
+            self.links.push(n.wrap_previous(&self.current)?);
+            self.current = n;
+        }
+        if action == Action::Add {
+            self.added.push(subject.id());
+        }
+        Ok(())
     }
 }
 
@@ -981,21 +851,8 @@ mod tests {
 
     const T: u64 = 1_790_000_000;
 
-    /// This device's clock in most tests: a little after every entry.
-    const NOW: u64 = T + 100;
-
-    /// A fresh machine, the registry saying it received every entry at T.
-    fn fresh() -> Trust {
-        Trust::Fresh { received_at: vec![T; 64] }
-    }
-
     fn gen0(e: &SignedEntry) -> Result<Chain, Error> {
-        Chain::genesis(e, fresh(), NOW)
-    }
-
-    /// A device that last verified `head` at T.
-    fn pinned(head: Head) -> Trust {
-        Trust::Pinned { head, verified_at: T, first_seen: None }
+        Chain::genesis(e)
     }
 
     struct Dev {
@@ -1034,14 +891,14 @@ mod tests {
         let laptop = Dev::new("laptop");
         let kit = Dev::recovery(&RecoveryKit::generate());
         let phone = Dev::new("phone");
-        let (chain, start) = Chain::start(laptop.subject(), &laptop.signing, Some((kit.subject(), &kit.signing)), T).unwrap();
+        let (chain, start) = Chain::start(laptop.subject(), &laptop.signing, Some((kit.subject(), &kit.signing)), None, T).unwrap();
         let (_, add) = chain.batch(&start.newest, vec![Change::Add(phone.subject())], laptop.id(), &laptop.signing, T + 1).unwrap();
         let entries = [start.entries, add.entries].concat();
         (laptop, kit, phone, entries, start.newest)
     }
 
     fn chain(entries: &[SignedEntry]) -> Chain {
-        Chain::verify(entries, fresh(), NOW).unwrap()
+        Chain::verify(entries, None).unwrap()
     }
 
     /// An entry after `entries`, signed by `by`, adjusted by `edit` first.
@@ -1076,7 +933,7 @@ mod tests {
         let (laptop, other) = (Dev::new("laptop"), Dev::new("other"));
         let kit = Dev::recovery(&RecoveryKit::generate());
         let id = UserKey::first().id();
-        let genesis = |subjects: Vec<Subject>| Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects, generation: 1, key_id: id, time: T, signers: Vec::new() };
+        let genesis = |subjects: Vec<Subject>| Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects, generation: 1, key_id: id, carried: None, time: T, signers: Vec::new() };
         let e = genesis(vec![laptop.subject()]);
         assert!(gen0(&e.sign(&[laptop.signs()]).unwrap()).is_ok());
         assert!(gen0(&e.sign(&[other.signs()]).unwrap()).unwrap_err().0.contains("has not signed"));
@@ -1095,7 +952,7 @@ mod tests {
         // A kit alone cannot start a list, nor a second device of kind device.
         assert!(gen0(&genesis(vec![kit.subject()]).sign(&[kit.signs()]).unwrap()).is_err());
         assert!(gen0(&genesis(vec![laptop.subject(), other.subject()]).sign(&[laptop.signs(), other.signs()]).unwrap()).is_err());
-        assert!(Chain::verify(&[], fresh(), NOW).is_err());
+        assert!(Chain::verify(&[], None).is_err());
     }
 
     /// C2 (review of #199): the registry knows the recovery device's public
@@ -1106,7 +963,7 @@ mod tests {
     fn d1_a_chain_the_registry_builds_around_the_real_kit_is_refused() {
         let kit = Dev::recovery(&RecoveryKit::generate());
         let fake = Dev::new("laptop");
-        let e = Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects: vec![fake.subject(), kit.subject()], generation: 1, key_id: UserKey::first().id(), time: T, signers: Vec::new() };
+        let e = Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects: vec![fake.subject(), kit.subject()], generation: 1, key_id: UserKey::first().id(), carried: None, time: T, signers: Vec::new() };
         assert!(gen0(&e.sign(&[fake.signs()]).unwrap()).is_err());
         // Nor can it claim the kit signed, with a signature of its own.
         let claimed = e.sign(&[fake.signs(), (kit.id(), &fake.signing)]).unwrap();
@@ -1231,14 +1088,56 @@ mod tests {
         assert!(before.batch(&g1, vec![Change::Remove(laptop.subject())], laptop.id(), &laptop.signing, T).is_ok());
         assert!(before.batch(&g1, vec![Change::Remove(laptop.subject()), Change::Remove(phone.subject())], laptop.id(), &laptop.signing, T).is_err());
         assert!(before.batch(&UserKey::first(), vec![Change::Remove(phone.subject())], laptop.id(), &laptop.signing, T).is_err());
-        // rotate-recovery through a batch, by a device: the new kit signs
-        // its own entry, and it is only proposed — no generation, no wrap.
+        // rotate-recovery through a batch, by the kit: the new kit signs
+        // its own entry, and the key rotates to every device but the old kit.
         let kit2 = Dev::recovery(&RecoveryKit::generate());
-        let (c2, b2) = before.batch(&g1, vec![Change::RotateRecovery(kit2.subject(), &kit2.signing)], laptop.id(), &laptop.signing, T).unwrap();
-        assert_eq!(c2.recovery().unwrap().id(), kit.id());
-        assert_eq!(c2.pending().unwrap().subject, kit2.subject());
+        let (c2, b2) = before.batch(&g1, vec![Change::RotateRecovery(kit2.subject(), &kit2.signing)], kit.id(), &kit.signing, T).unwrap();
+        assert_eq!(c2.recovery().unwrap().id(), kit2.id());
         assert_eq!(b2.entries[0].signatures.len(), 2);
-        assert!(b2.links.is_empty() && b2.wraps.is_empty());
+        assert!(b2.wraps.iter().any(|w| w.0 == kit2.id()) && !b2.wraps.iter().any(|w| w.0 == kit.id()));
+        // By a device, while a kit exists: refused.
+        let err = before.batch(&g1, vec![Change::RotateRecovery(kit2.subject(), &kit2.signing)], laptop.id(), &laptop.signing, T).err().unwrap();
+        assert!(err.0.contains("may not sign"), "{err}");
+    }
+
+    #[test]
+    fn d1_with_no_kit_a_device_makes_one_at_once() {
+        let laptop = Dev::new("laptop");
+        let (c, s) = Chain::start(laptop.subject(), &laptop.signing, None, None, T).unwrap();
+        let kit = Dev::recovery(&RecoveryKit::generate());
+        let (c, b) = c.batch(&s.newest, vec![Change::RotateRecovery(kit.subject(), &kit.signing)], laptop.id(), &laptop.signing, T + 1).unwrap();
+        assert_eq!(c.recovery().unwrap().id(), kit.id());
+        assert_eq!((c.generation(), b.links.len()), (2, 1));
+    }
+
+    /// Start-over carry-forward: a new chain started from a device holding
+    /// the old chain's key names that key at entry 0, and its generation 1
+    /// wraps it, so the old chain's generations still open; nothing but the
+    /// named key passes as the carried one.
+    #[test]
+    fn d1_a_chain_started_over_carries_the_old_user_key_forward() {
+        let (laptop, _kit, phone, entries, g1) = three();
+        let (_, b) = chain(&entries).batch(&g1, vec![Change::Remove(phone.subject())], laptop.id(), &laptop.signing, T + 2).unwrap();
+        let old_newest = b.newest.clone();
+        let (c, start) = Chain::start(laptop.subject(), &laptop.signing, None, Some(&old_newest), T + 3).unwrap();
+        assert_eq!(c.carried(), Some(old_newest.id()));
+        let link = start.carried.clone().unwrap();
+        let keys = UserKeys::new(start.newest.clone(), []).unwrap().carry(&link, c.carried().unwrap(), b.links.clone()).unwrap();
+        let old = keys.carried().unwrap();
+        assert_eq!(old.newest(), &old_newest);
+        assert_eq!(old.open(1).unwrap(), g1);
+        // A link to another key, or checked against another id, is refused.
+        let impostor = UserKey::from_bytes(2, [7; 32]).unwrap();
+        let forged = start.newest.wrap_carried(&impostor).unwrap();
+        assert!(UserKeys::new(start.newest.clone(), []).unwrap().carry(&forged, c.carried().unwrap(), []).is_err());
+        assert!(UserKeys::new(start.newest.clone(), []).unwrap().carry(&link, impostor.id(), []).is_err());
+        // Only entry 0 carries.
+        let mut e = c.next_entry(Action::Add, Dev::new("x").subject(), T + 4);
+        e.carried = Some(old_newest.id());
+        assert!(e.sign(&[laptop.signs()]).is_err());
+        // A chain started from nothing carries nothing.
+        let (fresh, s0) = Chain::start(laptop.subject(), &laptop.signing, None, None, T).unwrap();
+        assert!(fresh.carried().is_none() && s0.carried.is_none());
     }
 
     #[test]
@@ -1246,11 +1145,11 @@ mod tests {
         let (laptop, _kit, phone, mut entries, _) = three();
         entries.push(signed(&entries, Action::Remove, laptop.subject(), &[&phone], rotate));
         let pin = chain(&entries).head();
-        let e = Chain::verify(&entries[..2], pinned(pin), NOW).unwrap_err();
+        let e = Chain::verify(&entries[..2], Some(pin)).unwrap_err();
         assert!(e.0.contains("old list"), "{e}");
-        assert_eq!(Chain::verify(&entries, pinned(pin), NOW).unwrap().head(), pin);
+        assert_eq!(Chain::verify(&entries, Some(pin)).unwrap().head(), pin);
         entries.push(signed(&entries, Action::Add, Dev::new("new").subject(), &[&phone], |_| {}));
-        assert!(Chain::verify(&entries, pinned(pin), NOW).is_ok());
+        assert!(Chain::verify(&entries, Some(pin)).is_ok());
     }
 
     #[test]
@@ -1259,13 +1158,13 @@ mod tests {
         let pin = chain(&entries).head();
         let mut fork = entries[..1].to_vec();
         fork.push(signed(&fork, Action::Add, Dev::new("rogue").subject(), &[&laptop], |_| {}));
-        assert!(Chain::verify(&fork, pinned(pin), NOW).unwrap_err().0.contains("forked"));
+        assert!(Chain::verify(&fork, Some(pin)).unwrap_err().0.contains("forked"));
         // A fork at seq 0: another genesis entirely, by the same devices.
-        let (c, s) = Chain::start(laptop.subject(), &laptop.signing, Some((kit.subject(), &kit.signing)), T + 5).unwrap();
+        let (c, s) = Chain::start(laptop.subject(), &laptop.signing, Some((kit.subject(), &kit.signing)), None, T + 5).unwrap();
         let (_, add) = c.batch(&s.newest, vec![Change::Add(phone.subject())], laptop.id(), &laptop.signing, T).unwrap();
         let other = [s.entries, add.entries].concat();
-        assert!(Chain::verify(&other, pinned(pin), NOW).unwrap_err().0.contains("forked"));
-        assert!(Chain::verify(&other, pinned(Head { seq: 0, hash: entries[0].hash() }), NOW).unwrap_err().0.contains("forked"));
+        assert!(Chain::verify(&other, Some(pin)).unwrap_err().0.contains("forked"));
+        assert!(Chain::verify(&other, Some(Head { seq: 0, hash: entries[0].hash() })).unwrap_err().0.contains("forked"));
         // Extending from a pinned state: an entry that does not follow the
         // head, by seq or by hash, is refused.
         let c = chain(&entries);
@@ -1314,249 +1213,6 @@ mod tests {
         assert!(chain(&entries).extend(&e).unwrap_err().0.contains("already called"));
     }
 
-    const DAY: u64 = 24 * 60 * 60;
-
-    /// The three devices, and the laptop (a thief, say) proposing a kit of
-    /// its own at `at`, as a device with no record of it first sees it.
-    fn proposed(at: u64) -> (Dev, Dev, Dev, Dev, Chain, UserKey) {
-        let (laptop, kit, phone, entries, g1) = three();
-        let thief_kit = Dev::recovery(&RecoveryKit::generate());
-        let (c, _) = chain(&entries).batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, at).unwrap();
-        (laptop, kit, phone, thief_kit, c, g1)
-    }
-
-    #[test]
-    fn d1_a_device_authorized_recovery_rotation_waits_seven_days() {
-        let (laptop, kit, _phone, thief_kit, c, g1) = proposed(T + 10);
-        let p = c.pending().unwrap().clone();
-        assert_eq!((p.authorizer, p.seq, p.since, p.effective_at), (laptop.id(), 2, T + 10, T + 10 + 7 * DAY));
-        // Meanwhile the old kit is the recovery device, the new one nothing.
-        assert_eq!(c.recovery().unwrap().id(), kit.id());
-        assert!(!c.devices().iter().any(|d| d.id() == thief_kit.id()));
-        assert_eq!(c.generation(), 1);
-        let e = c.next_entry(Action::Add, Dev::new("x").subject(), T + 20).sign(&[thief_kit.signs()]).unwrap();
-        assert!(c.extend(&e).unwrap_err().0.contains("not a device on the list"), "the new kit has no rights yet");
-        let e = c.next_entry(Action::Remove, kit.subject(), T + 20);
-        let mut e = e;
-        rotate(&mut e);
-        assert!(c.extend(&e.sign(&[laptop.signs()]).unwrap()).unwrap_err().0.contains("cannot be removed"));
-        // One pending at a time.
-        let other = Dev::recovery(&RecoveryKit::generate());
-        assert!(c.batch(&g1, vec![Change::RotateRecovery(other.subject(), &other.signing)], laptop.id(), &laptop.signing, T + 20).err().unwrap().0.contains("already pending"));
-        // After the delay, by this device's clock, it can be completed: the
-        // kit is replaced and the key rotated away from the old one.
-        let early = c.batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, p.effective_at - 1);
-        assert!(early.is_err());
-        let (done, b) = c.batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, p.effective_at).unwrap();
-        assert_eq!(done.recovery().unwrap().id(), thief_kit.id());
-        assert!(done.pending().is_none());
-        assert_eq!(done.generation(), 2);
-        assert!(b.wraps.iter().any(|(id, _)| *id == thief_kit.id()) && !b.wraps.iter().any(|(id, _)| *id == kit.id()));
-    }
-
-    #[test]
-    fn d1_the_old_kit_cancels_a_pending_rotation() {
-        let (laptop, kit, _phone, thief_kit, c, g1) = proposed(T + 10);
-        // Only the recovery device may cancel.
-        assert!(c.batch(&g1, vec![Change::CancelRecoveryRotation(thief_kit.subject())], laptop.id(), &laptop.signing, T + 20).is_err());
-        let (c, b) = c.batch(&g1, vec![Change::CancelRecoveryRotation(thief_kit.subject()), Change::Remove(laptop.subject())], kit.id(), &kit.signing, T + 20).unwrap();
-        assert!(c.pending().is_none());
-        assert_eq!(c.recovery().unwrap().id(), kit.id());
-        assert!(!b.wraps.iter().any(|(id, _)| *id == laptop.id()));
-        // Nothing left to cancel.
-        assert!(c.batch(&b.newest, vec![Change::CancelRecoveryRotation(thief_kit.subject())], kit.id(), &kit.signing, T + 30).is_err());
-        // The kit itself rotates to a new kit at once.
-        let kit2 = Dev::recovery(&RecoveryKit::generate());
-        let (c, _) = c.batch(&b.newest, vec![Change::RotateRecovery(kit2.subject(), &kit2.signing)], kit.id(), &kit.signing, T + 30).unwrap();
-        assert_eq!(c.recovery().unwrap().id(), kit2.id());
-    }
-
-    #[test]
-    fn d1_removing_the_authorizer_voids_a_pending_rotation() {
-        let (laptop, kit, phone, thief_kit, c, g1) = proposed(T + 10);
-        let (c, b) = c.batch(&g1, vec![Change::Remove(laptop.subject())], phone.id(), &phone.signing, T + 20).unwrap();
-        assert!(c.pending().is_none());
-        assert_eq!(c.recovery().unwrap().id(), kit.id());
-        // Its completion, even after the delay, is now a new proposal by
-        // whoever signs it, not a replacement.
-        let later = c.at(T + 30 * DAY);
-        let (c, _) = later.batch(&b.newest, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], phone.id(), &phone.signing, T + 30 * DAY).unwrap();
-        assert_eq!(c.recovery().unwrap().id(), kit.id());
-        assert_eq!(c.pending().unwrap().authorizer, phone.id());
-    }
-
-    #[test]
-    fn d1_with_no_kit_a_device_makes_one_at_once() {
-        let laptop = Dev::new("laptop");
-        let (c, s) = Chain::start(laptop.subject(), &laptop.signing, None, T).unwrap();
-        let kit = Dev::recovery(&RecoveryKit::generate());
-        let (c, b) = c.batch(&s.newest, vec![Change::RotateRecovery(kit.subject(), &kit.signing)], laptop.id(), &laptop.signing, T + 1).unwrap();
-        assert_eq!(c.recovery().unwrap().id(), kit.id());
-        assert!(c.pending().is_none());
-        assert_eq!((c.generation(), b.links.len()), (2, 1));
-    }
-
-    /// The delay is counted from this device's own first sight of the
-    /// entry, never its `time` alone: a thief backdating the proposal by
-    /// eight days gains nothing on a pinned device.
-    #[test]
-    fn d1_a_backdated_rotation_is_refused_or_stays_pending_on_a_pinned_device() {
-        let (laptop, _kit, _phone, entries, g1) = three();
-        let pin = chain(&entries).head();
-        let thief_kit = Dev::recovery(&RecoveryKit::generate());
-        let mut e = chain(&entries).next_entry(Action::RotateRecovery, thief_kit.subject(), T - 8 * DAY);
-        e.time = T - 8 * DAY;
-        let backdated = e.sign(&[laptop.signs(), thief_kit.signs()]).unwrap();
-        let all = [entries.clone(), vec![backdated.clone()]].concat();
-        // Verified at T: refused as backdated.
-        let e = Chain::verify(&all, pinned(pin), NOW).unwrap_err();
-        assert!(e.0.contains("backdated"), "{e}");
-        // Within the skew allowance it is taken, and pending from now.
-        let near = Trust::Pinned { head: pin, verified_at: T - 8 * DAY + CLOCK_SKEW, first_seen: None };
-        let c = Chain::verify(&all, near.clone(), NOW).unwrap();
-        assert_eq!(c.pending().unwrap().effective_at, NOW + RECOVERY_ROTATION_DELAY);
-        // Its completion posted at once stays refused on this device …
-        let (_, done) = c.batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, NOW + RECOVERY_ROTATION_DELAY).unwrap();
-        let with_completion = [all.clone(), done.entries].concat();
-        assert!(Chain::verify(&with_completion, near.clone(), NOW + DAY).is_err());
-        // … and is taken once seven days have passed since it first saw the
-        // proposal, which it recorded.
-        let recorded = Trust::Pinned { head: c.head(), verified_at: NOW, first_seen: Some((c.pending().unwrap().seq, NOW)) };
-        assert!(Chain::verify(&with_completion, recorded.clone(), NOW + DAY).is_err());
-        assert!(Chain::verify(&with_completion, recorded, NOW + RECOVERY_ROTATION_DELAY).is_ok());
-        // A fresh machine counts from the registry's receipt time: honest
-        // receipts keep it pending, and a hostile registry's, made up to
-        // fit the delay, make it no control — the documented limit.
-        let honest = Trust::Fresh { received_at: vec![T, T, NOW, NOW] };
-        assert!(Chain::verify(&with_completion, honest, NOW + DAY).is_err());
-        let hostile = Trust::Fresh { received_at: vec![T - 8 * DAY, T - 8 * DAY, T - 8 * DAY, T - DAY] };
-        assert!(Chain::verify(&with_completion, hostile, NOW + DAY).is_ok());
-        assert!(Chain::verify(&with_completion, Trust::Fresh { received_at: vec![T; 2] }, NOW + DAY).unwrap_err().0.contains("receipt"));
-    }
-
-    /// The three devices, a proposal by the laptop at T+10, and its
-    /// completion at T+10+7 days.
-    fn completed() -> (Vec<SignedEntry>, Dev, Dev) {
-        let (laptop, _kit, _phone, entries, g1) = three();
-        let thief_kit = Dev::recovery(&RecoveryKit::generate());
-        let (c, p) = chain(&entries).batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, T + 10).unwrap();
-        let (_, done) = c.at(T + 10 + 7 * DAY).batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, T + 10 + 7 * DAY).unwrap();
-        ([entries, p.entries, done.entries].concat(), laptop, thief_kit)
-    }
-
-    /// R1 (re-check of #199): once a device has pinned past a completed
-    /// rotation, it re-verifies from seq 0 with nothing pending recorded.
-    #[test]
-    fn d1_a_pinned_device_re_verifies_past_a_completed_rotation() {
-        let (all, _, thief_kit) = completed();
-        let done = T + 10 + 7 * DAY;
-        let first = Trust::Pinned { head: Head { seq: 1, hash: all[1].hash() }, verified_at: T + 10, first_seen: Some((2, T + 10)) };
-        let c = Chain::verify(&all, first, done + 1).unwrap();
-        let later = Trust::Pinned { head: c.head(), verified_at: done + 1, first_seen: None };
-        let again = Chain::verify(&all, later, done + 100 * DAY).unwrap();
-        assert_eq!(again.recovery().unwrap().id(), thief_kit.id());
-    }
-
-    /// R2 (re-check of #199): a device offline through the whole delay gets
-    /// the proposal and the completion at once. It verifies the prefix, pins
-    /// it with the proposal recorded, and takes the completion seven days
-    /// later by its own clock.
-    #[test]
-    fn d1_an_offline_device_takes_a_completed_rotation_seven_days_after_it_sees_it() {
-        let (all, laptop, thief_kit) = completed();
-        let pin = Head { seq: 1, hash: all[1].hash() };
-        let now = T + 20 * DAY;
-        assert!(Chain::verify(&all, Trust::Pinned { head: pin, verified_at: T + 5, first_seen: None }, now).is_err());
-        let v = Chain::verify_prefix(&all, Trust::Pinned { head: pin, verified_at: T + 5, first_seen: None }, now).unwrap();
-        let (seq, why) = v.rejected.clone().unwrap();
-        assert_eq!(seq, 3);
-        assert!(why.0.contains("takes effect only"), "{why}");
-        let p = v.chain.pending().unwrap().clone();
-        assert_eq!((p.seq, p.since, p.authorizer), (2, now, laptop.id()));
-        // It pins the prefix but keeps its last clean verification time: the
-        // refused completion is older than `now`, and is not backdated.
-        let recorded = Trust::Pinned { head: v.chain.head(), verified_at: T + 5, first_seen: Some((p.seq, p.since)) };
-        assert!(Chain::verify(&all, recorded.clone(), now + 6 * DAY).is_err());
-        assert_eq!(Chain::verify(&all, recorded, now + 7 * DAY).unwrap().recovery().unwrap().id(), thief_kit.id());
-        // A refused entry at or before the pin still refuses everything.
-        let mut bad = all.clone();
-        bad[1].signatures[0].1[0] ^= 1;
-        assert!(Chain::verify_prefix(&bad, Trust::Pinned { head: pin, verified_at: T + 5, first_seen: None }, now).is_err());
-    }
-
-    /// R3 (re-check of #199): on a fresh machine a completion the registry
-    /// received before the delay was over is refused, however late the
-    /// machine verifies; the prefix leaves the old kit able to cancel.
-    #[test]
-    fn d1_a_fresh_machine_refuses_a_completion_received_early() {
-        let (laptop, kit, _phone, entries, g1) = three();
-        let thief_kit = Dev::recovery(&RecoveryKit::generate());
-        let (c, p) = chain(&entries).batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, T + 10).unwrap();
-        let (_, done) = c.batch(&g1, vec![Change::RotateRecovery(thief_kit.subject(), &thief_kit.signing)], laptop.id(), &laptop.signing, T + 10 + 7 * DAY).unwrap();
-        let all = [entries, p.entries, done.entries].concat();
-        let early = Trust::Fresh { received_at: vec![T, T, T + 10, T + DAY] };
-        assert!(Chain::verify(&all, early.clone(), T + 8 * DAY).unwrap_err().0.contains("before its delay was over"));
-        let v = Chain::verify_prefix(&all, early, T + 8 * DAY).unwrap();
-        assert_eq!(v.chain.recovery().unwrap().id(), kit.id());
-        assert!(v.chain.pending().is_some());
-        // Received after the delay, it is taken.
-        let on_time = Trust::Fresh { received_at: vec![T, T, T + 10, T + 10 + 7 * DAY] };
-        assert_eq!(Chain::verify(&all, on_time, T + 8 * DAY).unwrap().recovery().unwrap().id(), thief_kit.id());
-    }
-
-    /// Minor (re-check of #199): a pending rotation cannot be jammed by
-    /// adding a device with its kit's keys or name.
-    #[test]
-    fn d1_an_add_cannot_take_the_pending_kits_keys_or_name() {
-        let (laptop, _kit, _phone, thief_kit, c, g1) = proposed(T + 10);
-        let mut same_keys = thief_kit.subject();
-        same_keys.kind = Kind::Device;
-        same_keys.name = "other".into();
-        assert!(c.batch(&g1, vec![Change::Add(same_keys)], laptop.id(), &laptop.signing, T + 20).err().unwrap().0.contains("pending"));
-        let mut same_name = Dev::new("x").subject();
-        same_name.name = "Recovery Kit".into();
-        assert!(c.batch(&g1, vec![Change::Add(same_name)], laptop.id(), &laptop.signing, T + 20).err().unwrap().0.contains("pending"));
-    }
-
-    /// Re-check 2 of #199: the chain `batch` hands back is pinned at its
-    /// new head, so a fresh machine that recovered through it still judges
-    /// what comes next by its own clock — an early completion is refused.
-    #[test]
-    fn d1_a_batch_hands_back_a_chain_pinned_at_its_new_head() {
-        let (laptop, kit, _phone, entries, g1) = three();
-        let fresh = Chain::verify(&entries, Trust::Fresh { received_at: vec![T, T] }, NOW).unwrap();
-        let recovered = Dev::new("recovered");
-        let (c, _) = fresh.batch(&g1, vec![Change::Add(recovered.subject())], kit.id(), &kit.signing, NOW).unwrap();
-        let head = c.head();
-        // A thief's proposal and its completion arrive together a day later.
-        let thief_kit = Dev::recovery(&RecoveryKit::generate());
-        let mut p = c.next_entry(Action::RotateRecovery, thief_kit.subject(), NOW + DAY);
-        p.seq = head.seq + 1;
-        let proposal = p.sign(&[laptop.signs(), thief_kit.signs()]).unwrap();
-        let c1 = c.extend(&proposal).unwrap();
-        assert_eq!(c1.pending().unwrap().since, NOW, "counted from this device's clock, not a receipt");
-        let completion = c1.next_entry(Action::RotateRecovery, thief_kit.subject(), NOW + DAY);
-        let mut completion = completion;
-        rotate(&mut completion);
-        let completion = completion.sign(&[laptop.signs(), thief_kit.signs()]).unwrap();
-        assert!(c1.at(NOW + 2 * DAY).extend(&completion).unwrap_err().0.contains("takes effect only"));
-        // A backdated entry after the new head is refused.
-        let mut old = c.next_entry(Action::Add, Dev::new("old").subject(), NOW - 2 * CLOCK_SKEW);
-        old.seq = head.seq + 1;
-        assert!(c.extend(&old.sign(&[kit.signs()]).unwrap()).unwrap_err().0.contains("backdated"));
-    }
-
-    /// Re-check 2 nit: a proposed kit may not take a listed device's name.
-    #[test]
-    fn d1_a_proposed_kit_may_not_take_a_listed_devices_name() {
-        let (laptop, _kit, _phone, entries, g1) = three();
-        let thief_kit = Dev::recovery(&RecoveryKit::generate());
-        let mut clash = thief_kit.subject();
-        clash.name = "Phone".into();
-        let r = chain(&entries).batch(&g1, vec![Change::RotateRecovery(clash, &thief_kit.signing)], laptop.id(), &laptop.signing, T + 10);
-        assert!(r.err().unwrap().0.contains("already called"));
-    }
-
     /// Names compare with ASCII folded only, and the refused list is
     /// literal: it holds every `Cc` character, as `char::is_control` agrees
     /// today, and the doc's ranges are the constant's.
@@ -1596,12 +1252,12 @@ mod tests {
         let first = Subject { kind: Kind::Device, name: "elvinas-arch".into(), os: "linux".into(), device: device.public(), signing: signing.public() };
         let recovery = Subject { kind: Kind::Recovery, name: "recovery kit".into(), os: String::new(), device: kit.key.public(), signing: kit.signing.public() };
         let key_id = UserKey::from_bytes(1, [0x42; 32]).unwrap().id();
-        (Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects: vec![first, recovery], generation: 1, key_id, time: T, signers: Vec::new() }, signing, kit.signing)
+        (Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects: vec![first, recovery], generation: 1, key_id, carried: None, time: T, signers: Vec::new() }, signing, kit.signing)
     }
 
-    const KAT_BYTES: &str = "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010201000c656c76696e61732d6172636800056c696e7578ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d598a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c02000c7265636f76657279206b6974000099431817513a8a27a56fef4349664cd4cfaada795fd8c5fa1e5720d05d554f3bdce4476f44aa387f22d70ae566ba8619e62aa418fc878b6c99166d5a80f5c4f30000000144a301e5d533c38411bc62b3f83654bb000000006ab13b80028321f34eb2572c7a3cf59b2b4cc83579add03dec5d1aa3cbb5a9dd321d2c028d";
-    const KAT_HASH: &str = "fbde1c49577f61b1d1d4d3afd122aad39a8cc4bc1382dcd2ce23d4e0a0fa33dd";
-    const KAT_SIGNATURES: &str = "028321f34eb2572c7a3cf59b2b4cc83579a765f0efce33c8001e7ae5fc8d8cc79fd8a3c25e7655f5929cde72aa8ae0622af72674badd438d7d23038627fe588890b5509bed73548014d2a3984e2c1ba20dadd03dec5d1aa3cbb5a9dd321d2c028d0615562c0c5831b6f737c0e431d1982a3fca4e811917d36af2e5a72615b5f37d8cc598f982b7761b98dacd6868a2cc351c56aa18d76691bb557f78ddc3ac4d0a";
+    const KAT_BYTES: &str = "0100000000000000000000000000000000000000000000000000000000000000000000000000000000010201000c656c76696e61732d6172636800056c696e7578ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d598a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c02000c7265636f76657279206b6974000099431817513a8a27a56fef4349664cd4cfaada795fd8c5fa1e5720d05d554f3bdce4476f44aa387f22d70ae566ba8619e62aa418fc878b6c99166d5a80f5c4f30000000144a301e5d533c38411bc62b3f83654bb00000000006ab13b80028321f34eb2572c7a3cf59b2b4cc83579add03dec5d1aa3cbb5a9dd321d2c028d";
+    const KAT_HASH: &str = "49d01967e178f71e8547c8f4fe9d2df6dd5d69696912e557abc108a66d1cc265";
+    const KAT_SIGNATURES: &str = "028321f34eb2572c7a3cf59b2b4cc835796e7b25113bcd3007b841aca93a378ebd0aae501747e6386d63d5fe52b674991cba5cb7d8f3a949e5adb08f6b23f03ada31a6db205cb97b81fb3067f527f85500add03dec5d1aa3cbb5a9dd321d2c028dafadd977884fa25948e79d9cfc43b9a9e967f2565f4a456f2c1add738b5bd34278618ee926895c66b4ea143b43002a1f52c88b652c93648cd58813159e3f9e07";
 
     /// Prints the known answer above: run once with `--ignored
     /// --nocapture` when the format is meant to change.
@@ -1649,31 +1305,26 @@ mod review_attacks {
         let (rk, rs) = (DeviceKey::generate(), SigningKey::generate());
         let fake_first = subj(Kind::Device, "elvinas-arch", &rk, &rs);
         let rec = Subject { kind: Kind::Recovery, name: "recovery kit".into(), os: String::new(), device: rd.key.public(), signing: rd.signing.public() };
-        let e = Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects: vec![fake_first, rec], generation: 1, key_id: UserKey::first().id(), time: 1, signers: Vec::new() };
+        let e = Entry { seq: 0, prev: [0; 32], action: Action::Add, subjects: vec![fake_first, rec], generation: 1, key_id: UserKey::first().id(), carried: None, time: 1, signers: Vec::new() };
         let g = e.sign(&[(rk.id(), &rs)]).unwrap();
-        assert!(Chain::verify(&[g], Trust::Fresh { received_at: vec![1] }, 2).is_err());
+        assert!(Chain::verify(&[g], None).is_err());
     }
 
-    /// M1: a stolen laptop proposes a kit of its own and removes the
-    /// owner's other device. Within the delay the owner's kit is still the
-    /// recovery device, still wrapped to, and cannot be removed.
+    /// M1: a stolen laptop cannot replace the kit with its own: only the
+    /// kit authorizes rotate-recovery while one exists.
     #[test]
-    fn m1_a_thief_cannot_dislodge_the_kit_within_the_delay() {
+    fn m1_a_thief_cannot_replace_the_kit() {
         let (lk, ls) = (DeviceKey::generate(), SigningKey::generate());
         let (pk, ps) = (DeviceKey::generate(), SigningKey::generate());
         let kit = RecoveryKit::generate().device();
         let rec = Subject { kind: Kind::Recovery, name: "recovery kit".into(), os: String::new(), device: kit.key.public(), signing: kit.signing.public() };
-        let (c, start) = Chain::start(subj(Kind::Device, "phone", &pk, &ps), &ps, Some((rec, &kit.signing)), 1).unwrap();
+        let (c, start) = Chain::start(subj(Kind::Device, "phone", &pk, &ps), &ps, Some((rec, &kit.signing)), None, 1).unwrap();
         let (c, _) = c.batch(&start.newest, vec![Change::Add(subj(Kind::Device, "laptop", &lk, &ls))], pk.id(), &ps, 2).unwrap();
         let thief_kit = RecoveryKit::generate().device();
         let trec = Subject { kind: Kind::Recovery, name: "thief kit".into(), os: String::new(), device: thief_kit.key.public(), signing: thief_kit.signing.public() };
-        let (c, b) = c.batch(&start.newest, vec![Change::RotateRecovery(trec.clone(), &thief_kit.signing), Change::Remove(subj(Kind::Device, "phone", &pk, &ps))], lk.id(), &ls, 3).unwrap();
+        let r = c.batch(&start.newest, vec![Change::RotateRecovery(trec, &thief_kit.signing)], lk.id(), &ls, 3);
+        assert!(r.err().unwrap().0.contains("may not sign"));
         assert_eq!(c.recovery().unwrap().device, kit.key.public());
-        assert!(b.wraps.iter().any(|(id, _)| *id == kit.key.id()), "the old kit still gets the new generation");
-        assert!(!b.wraps.iter().any(|(id, _)| *id == thief_kit.key.id()));
-        // Completing it early is refused.
-        let early = c.batch(&b.newest, vec![Change::RotateRecovery(trec, &thief_kit.signing)], lk.id(), &ls, 4);
-        assert!(early.err().unwrap().0.contains("takes effect only"));
     }
 
     /// m2: a bidirectional override no longer passes the name check.
@@ -1682,6 +1333,6 @@ mod review_attacks {
         let (k, s) = (DeviceKey::generate(), SigningKey::generate());
         let mut sub = subj(Kind::Device, "x", &k, &s);
         sub.name = "laptop\u{202E}kcabpu".into();
-        assert!(Chain::start(sub, &s, None, 1).is_err());
+        assert!(Chain::start(sub, &s, None, None, 1).is_err());
     }
 }
