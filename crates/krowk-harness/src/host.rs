@@ -973,9 +973,9 @@ impl Shared {
         let mut history = std::mem::take(&mut plan.past.items);
         // `/name` for a skill, in a session's own turn on any engine: its
         // instructions come right after the prompt. A vendor's agent cannot
-        // be left to expand its own — it may not have the skill (Codex reads
-        // no `.claude/skills`, nothing reads every `.agents/skills`) and then
-        // refuses the name. A backend is sent only the last item, so it gets
+        // be left to expand its own — it may not have the skill (Claude Code
+        // reads no `.agents/skills`, Codex no `.claude/skills` nor
+        // `~/.agents/skills`) and then refuses the name. A backend is sent only the last item, so it gets
         // one text, the skill first: a leading `/` is the vendor's command.
         let asked = match &prompt_item {
             Item::UserText { text } if plan.agent.is_none() => compat::skills::invoked(&plan.compat.skills, text).map(|skill| (skill, text.clone())),

@@ -96,12 +96,15 @@ pub const INVOKED: &str = "<skill name=\"";
 
 /// A prompt that asks for a skill — `/name`, then what it is for — as the
 /// model reads it next to the prompt: the skill's instructions, loaded as
-/// the `skill` tool would. None when the prompt names no skill the person
-/// may ask for.
+/// the `skill` tool would, with `$ARGUMENTS` replaced by the words after
+/// the name, as Claude Code does. None when the prompt names no skill the
+/// person may ask for.
 pub fn invoked(list: &[Skill], prompt: &str) -> Option<String> {
-    let name = prompt.strip_prefix('/')?.split_whitespace().next()?;
+    let rest = prompt.strip_prefix('/')?;
+    let name = rest.split_whitespace().next()?;
     list.iter().find(|k| k.name == name && k.user_invocable)?;
     let (body, failed) = load(list, &serde_json::json!({ "name": name }));
+    let body = body.replace("$ARGUMENTS", rest.trim_start()[name.len()..].trim());
     (!failed).then(|| format!("{INVOKED}{name}\">\nThe person asked for this skill with /{name}; follow it for the rest of their message.\n\n{body}\n</skill>"))
 }
 
@@ -187,6 +190,11 @@ mod tests {
         let text = invoked(&found, "/implement the login page").expect("a skill only in .agents is loaded by /name");
         assert!(text.starts_with(&format!("{INVOKED}implement\">")) && text.contains("BODY shared by every agent"), "{text}");
         assert_eq!(invoked(&found, "/nope do it"), None, "a name no skill has is left to the prompt");
+
+        std::fs::write(base.join("repo/.agents/skills/deploy/SKILL.md"), "---\nname: deploy\ndescription: ship\n---\nDeploy $ARGUMENTS now.").unwrap();
+        let found = discover(&cfg, &base.join("repo"));
+        assert!(invoked(&found, "/deploy  staging eu ").unwrap().contains("Deploy staging eu now."), "$ARGUMENTS is the words after the name");
+        assert!(invoked(&found, "/deploy").unwrap().contains("Deploy  now."), "and empty without any");
         let _ = std::fs::remove_dir_all(&base);
     }
 }
