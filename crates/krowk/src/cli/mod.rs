@@ -276,6 +276,14 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         ["sessions", "rebuild", ..] => sessions::rebuild(ctx),
         #[cfg(feature = "sessions")]
         ["sessions", "sync", ..] => sessions::sync(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["sessions", "archive", ..] => sessions::archive(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["sessions", "restore", ..] => sessions::restore(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["sessions", "pin", ..] => sessions::pin(ctx, rest(2), true),
+        #[cfg(all(feature = "harness", unix))]
+        ["sessions", "unpin", ..] => sessions::pin(ctx, rest(2), false),
         #[cfg(feature = "sessions")]
         ["pricing", "refresh", ..] => sessions::pricing_refresh(ctx),
         #[cfg(feature = "harness")]
@@ -463,12 +471,14 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         ("worktree", "`krowk sessions`", list),
         ("all", ALL_OWNERS, list),
         ("thinking", "`krowk sessions show`", show),
+        ("older-than", "`krowk sessions archive`", words.starts_with(&["sessions", "archive"])),
+        ("weekly", "`krowk sessions archive`", words.starts_with(&["sessions", "archive"])),
         ("yes", "`krowk sessions rebuild`", rebuild),
         ("no-network", "`krowk sessions sync`", sync),
     ];
     #[cfg(feature = "harness")]
     {
-        for name in ["output-format", "model", "resume", "permission-mode", "toolset", "effort", "trust", "daemon"] {
+        for name in ["output-format", "model", "resume", "permission-mode", "toolset", "effort", "trust", "daemon", "sandbox"] {
             if f.given.contains(name) && !f.print {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk -p`")));
             }

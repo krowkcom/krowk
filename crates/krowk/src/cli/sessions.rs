@@ -61,6 +61,126 @@ pub(super) fn project_native(env: krowk_import::Env, session_id: &str) -> Result
     Ok(())
 }
 
+/// Brings an archived native session back into its directory and into
+/// krowk.db (R-VINT-4): fetched from its week's vintage, opened, written
+/// back, then projected as a `krowk -p` turn's log is, the archive's
+/// stand-in rows dropped first.
+#[cfg(all(feature = "harness", unix))]
+pub(super) fn restore_native(ctx: &Ctx, session_id: &str) -> Result<(), Error> {
+    let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    let (client, account) = super::sync::vintage_keys(ctx)?;
+    krowk_harness::vintage::restore(&client, &account, &dir, session_id).map_err(|e| fail("restore_failed", e))?;
+    let conn = open_store(ctx)?;
+    krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, session_id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
+    drop(conn);
+    project_native(ctx.io.env, session_id)
+}
+
+/// Restores a native session named by its log id when it is archived; a
+/// no-op for any other.
+#[cfg(all(feature = "harness", unix))]
+pub(super) fn restore_if_archived(ctx: &Ctx, session_id: &str) -> Result<bool, Error> {
+    let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    if !krowk_harness::vintage::is_archived(&dir, session_id) {
+        return Ok(false);
+    }
+    restore_native(ctx, session_id)?;
+    Ok(true)
+}
+
+/// The idle cut-off `krowk sessions archive` uses: `--older-than`, else
+/// KROWK_ARCHIVE_AFTER_DAYS, else 14 days.
+#[cfg(all(feature = "harness", unix))]
+fn idle_days(ctx: &Ctx) -> Result<u64, Error> {
+    let (given, from) = match ctx.f.older_than.trim() {
+        "" => (ctx.env("KROWK_ARCHIVE_AFTER_DAYS"), "KROWK_ARCHIVE_AFTER_DAYS"),
+        v => (v.to_string(), "--older-than"),
+    };
+    if given.trim().is_empty() {
+        return Ok(krowk_harness::vintage::DEFAULT_IDLE_DAYS);
+    }
+    given.trim().parse().map_err(|_| fail("bad_flag", format!("{from} is a whole number of days, got {:?}", given.trim())))
+}
+
+/// `krowk sessions archive`: every native session idle past the cut-off
+/// leaves the machine for its week's vintage (R-VINT-1, R-VINT-2), and
+/// keeps its index row in krowk.db (R-VINT-3). `--weekly` is the weekly
+/// job: it does nothing until a week has passed since the last run.
+#[cfg(all(feature = "harness", unix))]
+pub fn archive(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    check_os()?;
+    if !args.is_empty() {
+        return Err(fail("bad_flag", format!("`krowk sessions archive` takes no arguments, got {}", args.join(" "))));
+    }
+    let days = idle_days(ctx)?;
+    let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    let now = now_ms();
+    if ctx.f.weekly && !krowk_harness::vintage::due(&dir, now) {
+        return emit_data(ctx, json!({ "archived": [], "due": false }), "not due: the last archive ran less than a week ago".into());
+    }
+    let (client, account) = super::sync::vintage_keys(ctx)?;
+    let run = krowk_harness::vintage::archive(&client, &account, &dir, now, days);
+    // The weeks stored before a failure are archived: their bodies leave
+    // krowk.db whether or not the rest of the run went through.
+    let done = run.archived;
+    let conn = open_store(ctx)?;
+    for a in &done {
+        krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, &a.id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
+    }
+    drop(conn);
+    for a in &done {
+        project_native(ctx.io.env, &a.id)?;
+    }
+    if let Some(e) = run.failed {
+        return Err(fail("archive_failed", if done.is_empty() { e } else { format!("{e} ({} session(s) archived before it)", done.len()) }));
+    }
+    let rows: Vec<Value> = done.iter().map(|a| json!({ "id": a.id, "week": a.week })).collect();
+    let n = rows.len();
+    emit_data(ctx, json!({ "archived": rows, "due": true }), format!("{n} session{} archived", if n == 1 { "" } else { "s" }))
+}
+
+/// `krowk sessions restore <id>`: an archived session back on the machine.
+#[cfg(all(feature = "harness", unix))]
+pub fn restore(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    check_os()?;
+    let id = native_arg(ctx, args, "restore")?;
+    if !restore_if_archived(ctx, &id)? {
+        return Err(fail("not_archived", format!("session {id} is not archived on this machine")));
+    }
+    emit_data(ctx, json!({ "restored": id }), format!("session {id} restored"))
+}
+
+/// `krowk sessions pin|unpin <id>`: a pinned session is never archived.
+#[cfg(all(feature = "harness", unix))]
+pub fn pin(ctx: &mut Ctx, args: &[String], pinned: bool) -> Result<(), Error> {
+    check_os()?;
+    let verb = if pinned { "pin" } else { "unpin" };
+    let id = native_arg(ctx, args, verb)?;
+    let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    krowk_harness::vintage::pin(&dir, &id, pinned).map_err(|e| fail("no_session", e))?;
+    emit_data(ctx, json!({ "id": id, "pinned": pinned }), format!("session {id} {verb}ned"))
+}
+
+/// The native session a `krowk sessions <verb>` argument names, by its log
+/// id: the id itself when its directory is here, else krowk.db's answer.
+#[cfg(all(feature = "harness", unix))]
+fn native_arg(ctx: &Ctx, args: &[String], verb: &str) -> Result<String, Error> {
+    let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    if let [a] = args
+        && krowk_harness::log::valid_id(a.trim())
+        && dir.join(a.trim()).is_dir()
+    {
+        return Ok(a.trim().to_string());
+    }
+    let conn = open_store(ctx)?;
+    let id = resolve_arg(ctx, &conn, args, verb)?;
+    let d = load_by_id(ctx, &conn, &id)?;
+    if d.session.harness != krowk_harness::project::HARNESS {
+        return Err(fail("no_session", format!("{id} is a {} session — only krowk's own sessions are archived", d.session.harness)));
+    }
+    Ok(d.session.foreign_session_id)
+}
+
 pub(super) fn check_os() -> Result<(), Error> {
     krowk_import::check_os().map_err(|_| fail("unsupported_os", UNSUPPORTED_OS))
 }
@@ -678,7 +798,14 @@ fn lock_store_waiting(store_path: &str, wait: Duration) -> Result<std::fs::File,
 
 pub fn show(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     check_os()?;
-    let d = load_detail(ctx, args, "show")?;
+    #[allow(unused_mut)]
+    let mut d = load_detail(ctx, args, "show")?;
+    // Opening an archived session brings it back first (R-VINT-4).
+    #[cfg(all(feature = "harness", unix))]
+    if d.session.harness == krowk_harness::project::HARNESS && restore_if_archived(ctx, &d.session.foreign_session_id)? {
+        let conn = open_store(ctx)?;
+        d = load_by_id(ctx, &conn, &d.session.id)?;
+    }
     if ctx.format != Format::Human {
         let (data, summary) = session_show_json(ctx, &d);
         return emit_data(ctx, data, summary);

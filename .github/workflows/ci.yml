@@ -61,6 +61,16 @@ jobs:
         if: runner.os == 'Linux'
         run: command -v tmux || (sudo apt-get update && sudo apt-get install -y tmux)
 
+      # R-PERM-3: the OS sandbox's escape tests fail rather than skip under
+      # CI on Linux, so bubblewrap is installed and allowed the unprivileged
+      # user namespaces Ubuntu 24.04's AppArmor withholds by default.
+      - name: Ensure bubblewrap
+        if: runner.os == 'Linux'
+        run: |
+          command -v bwrap || (sudo apt-get update && sudo apt-get install -y bubblewrap)
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-net --unshare-pid --new-session -- true
+
       # The relay's per-address limits are tested from other loopback
       # addresses, which macOS does not answer for until lo0 is given them.
       - name: Loopback aliases
@@ -75,6 +85,32 @@ jobs:
         run: make check
         env:
           NEXTEST_PROFILE: ci
+
+  # R-OSS-3: every crate both builds link, on every target the release ships,
+  # held to deny.toml — no RustSec advisory, no licence outside its list,
+  # nothing from outside crates.io. On every pull request, because a
+  # dependency bump is where a bad crate arrives; the release runs it again.
+  deny:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # cargo deny reads the graph through `cargo metadata`, so the same
+      # toolchain as the rest.
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.97 --profile minimal
+          rustup default 1.97
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Advisories, licences and sources
+        run: cargo deny check
 
   # R-BACK-3: krowk drives `codex app-server`, and the schema of that
   # protocol is pinned in crates/krowk-harness/schema/codex/ for the Codex

@@ -404,7 +404,14 @@ unit = "tokens"
 # longer description has to fit here or raise this with a reason. The unit
 # test `r_tool_1_the_system_prompt_and_tool_definitions_stay_small` holds
 # every preset's JSON form to this same number.
-max = 1500
+# Ticket 25 (R-TOOL-3) offers `mcp_search` and `mcp_call` when MCP servers
+# are configured — two definitions whatever the number of tools, which stay
+# deferred until searched for. With three servers they measure 141 tokens:
+# 1,613 (gpt; claude 1,578, grok 1,591), inside 1,625. Without MCP servers,
+# as this bench runs, nothing changes (1,472). The unit test
+# `r_tool_3_the_mcp_meta_tools_fit_the_context_budget_however_many_tools_the_servers_have`
+# and the end-to-end test with fifty MCP tools hold that case to this number.
+max = 1625
 runs = 1
 status = "enforced"
 

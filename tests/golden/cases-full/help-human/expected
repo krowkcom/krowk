@@ -61,6 +61,10 @@ AGENT
   sessions rebuild  Delete the local store and re-import every transcript
   sessions budget   Check a session against a spend limit
   sessions sync     Import what changed since the last import, refresh prices
+  sessions archive  Move idle sessions into encrypted weekly vintages
+  sessions restore  Bring an archived session back from its vintage
+  sessions pin      Never archive this session
+  sessions unpin    Let a pinned session be archived again
 
 PUBLISH
   push              Upload files, get a link for each
@@ -160,6 +164,15 @@ AGENT FLAGS (krowk, krowk -p)
                               rule, ask rule or protected directory holds.
                               Without it, the settings' permissions.defaultMode;
                               in every other mode a deny rule holds
+  --sandbox <string>          With -p: run the tools in an OS sandbox —
+                              workspace (the working directory writable,
+                              credentials hidden), read-only, or strict (no
+                              network, the home hidden) — or off. .git, .claude
+                              and krowk's settings stay read-only inside it, and
+                              a sandbox this machine cannot enforce refuses the
+                              run. Without it, a run with no mode set takes the
+                              workspace sandbox and acceptEdits where bubblewrap
+                              works
   --toolset <string>          With -p: the tools' preset — claude (str_replace),
                               gpt (apply_patch) or grok (search_replace). The
                               model's family picks one when absent

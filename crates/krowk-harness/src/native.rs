@@ -241,6 +241,10 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
             if !ctx.compat.skills.is_empty() && offered(crate::compat::skills::TOOL) {
                 tool_defs.push(crate::compat::skills::definition());
             }
+            // However many MCP tools there are, two definitions (R-TOOL-3).
+            if !ctx.compat.mcp.is_empty() && offered(crate::mcp::SEARCH) && offered(crate::mcp::CALL) {
+                tool_defs.extend(ctx.compat.mcp.definitions());
+            }
             if let Some(run) = &ctx.agent {
                 system = crate::subagent::system_prompt(&system, run);
             }
@@ -598,6 +602,19 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
     let (call, claude, tool_input) = if let Some(c) = own.clone() {
         let claude = c.call.tool.clone();
         (c.call, claude, c.hook_input)
+    } else if name == crate::mcp::SEARCH && !ctx.compat.mcp.is_empty() {
+        (crate::permissions::Call { tool: "McpSearch".into(), access: crate::permissions::Access::Free, subject: None }, "McpSearch".to_string(), input.clone())
+    } else if name == crate::mcp::CALL && !ctx.compat.mcp.is_empty() {
+        // Judged, and seen by hooks, as the MCP tool itself, under Claude
+        // Code's name for it: `Mcp(server:tool)` and `mcp__server__tool`
+        // rules and hooks hold as they would there.
+        match crate::mcp::target(input) {
+            Ok((server, tool)) => {
+                let claude = format!("mcp__{server}__{tool}");
+                (crate::permissions::Call { tool: claude.clone(), access: crate::permissions::Access::Mcp { server, tool }, subject: None }, claude, crate::mcp::arguments(input))
+            }
+            Err(e) => return e,
+        }
     } else if skill {
         match crate::compat::skills::call(&ctx.compat.skills, input) {
             Ok((call, skill_name)) => (call, "Skill".to_string(), json!({ "skill": skill_name })),
@@ -640,6 +657,12 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
             }
             Err(e) => (e, true),
         },
+        // Searching starts the servers, each a command: plan mode runs none.
+        None if name == crate::mcp::SEARCH && ctx.permission_mode == crate::protocol::PermissionMode::Plan => {
+            (format!("{name} was not run: it starts the MCP servers, and plan mode runs no commands — search for MCP tools once the plan is approved"), true)
+        }
+        None if name == crate::mcp::SEARCH && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.search(input, &|s, t| mcp_denied(ctx, s, t), &ctx.cancel).await,
+        None if name == crate::mcp::CALL && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.call(input, &|s, t| mcp_denied(ctx, s, t), &ctx.cancel).await,
         None if skill => crate::compat::skills::load(&ctx.compat.skills, input),
         None => tools::execute(name, input, env, ctx.gate.scope(opens)).await,
     };
@@ -651,6 +674,14 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
         output.push_str(&format!("\n\n(a hook adds: {c})"));
     }
     (output, is_error)
+}
+
+/// Whether a deny rule covers an MCP tool — `*` for the whole server:
+/// search leaves such a tool out, as Claude Code leaves it out of the tool
+/// list, and a server denied whole is never started.
+fn mcp_denied(ctx: &TurnContext, server: &str, tool: &str) -> bool {
+    let call = crate::permissions::Call { tool: format!("mcp__{server}__{tool}"), access: crate::permissions::Access::Mcp { server: server.into(), tool: tool.into() }, subject: None };
+    matches!(ctx.gate.verdict(&call, None), crate::permissions::Verdict::Deny(_))
 }
 
 #[cfg(test)]
@@ -674,6 +705,16 @@ mod tests {
     /// tool: the JSON budget plus the grammar (about 125 tokens) with
     /// headroom. Ticket 10 measured 1,617 with a long working directory.
     const FREEFORM_CONTEXT_TOKENS: u64 = 1650;
+
+    /// The ceiling with no MCP servers, which is what the bench measures:
+    /// `context.tokens` in budgets.toml was raised to 1,625 for the two MCP
+    /// meta-tools (ticket 25), and this keeps the core toolset held to the
+    /// 1,500 it had before, so that headroom is MCP's alone.
+    const BASE_CONTEXT_TOKENS: u64 = 1500;
+
+    fn freeform_or(ts: &Toolset) -> bool {
+        tools::definitions(ts).iter().any(|d| d.grammar.is_some())
+    }
 
     #[test]
     fn r_switch_1_downgraded_reasoning_cannot_close_its_frame() {
@@ -744,6 +785,22 @@ mod tests {
     }
 
     #[test]
+    fn r_tool_3_the_mcp_meta_tools_fit_the_context_budget_however_many_tools_the_servers_have() {
+        // Definitions depend on the servers' names alone, never on their
+        // tools: this is the whole cost of any number of MCP tools. Three
+        // servers, measured from `/` as the bench measures.
+        let server = |n: &str| crate::mcp::Server { name: n.into(), config: serde_json::from_value(json!({"command": "x"})).unwrap(), source: "test".into(), cwd: "/".into() };
+        let mcp = crate::mcp::Mcp::new(vec![server("github"), server("linear"), server("sentry")]);
+        let budget = context_tokens_budget();
+        for preset in PRESETS {
+            let ts = Toolset { preset, custom_tools: false };
+            let (s, t, m) = (estimate_tokens(&system_prompt(std::path::Path::new("/"), &ts)), tools_tokens(&tools::definitions(&ts)), tools_tokens(&mcp.definitions()));
+            println!("R-TOOL-3 context tokens: {}: system {s} + tools {t} + MCP {m} = {}", preset.name, s + t + m);
+            assert!(s + t + m <= budget, "{}: {} tokens with MCP servers, over context.tokens' {budget}", preset.name, s + t + m);
+        }
+    }
+
+    #[test]
     fn r_tool_1_the_system_prompt_and_tool_definitions_stay_small() {
         // A long, realistic working directory: it is the one variable part.
         let cwd = std::path::Path::new("/home/someone/Repositories/a-project-with-a-long-name");
@@ -753,6 +810,7 @@ mod tests {
                 let ts = Toolset { preset, custom_tools };
                 let system = system_prompt(cwd, &ts);
                 let (s, t) = (estimate_tokens(&system), tools_tokens(&tools::definitions(&ts)));
+                assert!(freeform_or(&ts) || s + t <= BASE_CONTEXT_TOKENS, "{}: system + tools is {} tokens with no MCP servers, over {BASE_CONTEXT_TOKENS}", preset.name, s + t);
                 println!("R-TOOL-1 context tokens: {} (custom tools {custom_tools}): system {s} + tools {t} = {}", preset.name, s + t);
                 assert!(s < 150, "the system prompt is {s} tokens: keep it a few lines");
                 // The freeform apply_patch carries its Lark grammar, which

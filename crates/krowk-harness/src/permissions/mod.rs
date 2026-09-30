@@ -92,6 +92,10 @@ pub struct Policy {
     /// What no file tool reads, searches or changes unasked: krowk's whole
     /// home, its keys, logins, sessions and settings (`Scope::secrets`).
     pub secrets: Vec<PathBuf>,
+    /// The OS sandbox the session's tools run in (R-PERM-3).
+    pub sandbox: Option<crate::sandbox::Sandbox>,
+    /// The turn's workspace search, shared by its calls' sandbox plans.
+    pub walk: crate::sandbox::Walk,
 }
 
 impl Policy {
@@ -105,7 +109,7 @@ impl Policy {
         // exist, as they lead (`Scope::secret`).
         let default = cfg.home.as_ref().map(|h| krowk_api::home::lexical(h).join(".krowk"));
         let secrets = cfg.krowk_dir.iter().chain(default.iter()).flat_map(|d| krowk_api::home::siblings(d)).flat_map(|d| [d.canonicalize().ok(), Some(d)]).flatten().collect();
-        Ok(Policy { loaded, cwd: cwd.to_path_buf(), home: cfg.home.clone(), read_dirs: Vec::new(), protected, secrets })
+        Ok(Policy { loaded, cwd: cwd.to_path_buf(), home: cfg.home.clone(), read_dirs: Vec::new(), protected, secrets, sandbox: cfg.sandbox, walk: Default::default() })
     }
 
     /// A policy with no settings: the modes alone.
@@ -134,7 +138,7 @@ impl Policy {
     }
 
     fn scope(&self, opens: Opens) -> Scope {
-        Scope {
+        let mut scope = Scope {
             cwd: self.cwd.clone(),
             roots: self.loaded.dirs.clone(),
             read_roots: self.read_dirs.clone(),
@@ -143,7 +147,15 @@ impl Policy {
             protected: self.protected.clone(),
             secrets: self.secrets.clone(),
             hidden: Hidden::default(),
+            sandbox: None,
+        };
+        if let Some(sandbox) = self.sandbox {
+            let plan = crate::sandbox::Plan::new_with(sandbox, &scope.cwd, &scope.roots, &scope.read_roots, &scope.protected, &scope.secrets, self.home.as_deref(), self.walk.clone());
+            // What the sandbox hides, a search skips as it skips krowk's home.
+            scope.secrets.extend(plan.hidden.iter().cloned());
+            scope.sandbox = Some(Arc::new(plan));
         }
+        scope
     }
 }
 
