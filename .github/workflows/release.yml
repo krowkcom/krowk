@@ -20,9 +20,9 @@ permissions:
 # Third-party actions are pinned by commit, for the reason dist.yml gives.
 
 jobs:
-  # The same gate as a pull request. A tag that cannot pass it should not
-  # become bytes anyone downloads. The release notes are checked here too, so
-  # a tag with no CHANGELOG.md section stops before anything is built.
+  # The release notes, the advisories and the SBOMs. A tag with no
+  # CHANGELOG.md section, or a crate with a fresh advisory, stops here in
+  # seconds, before anything is built. `make check` itself is `full`'s.
   check:
     runs-on: ubuntu-latest
     outputs:
@@ -60,7 +60,7 @@ jobs:
 
       - name: Set up Rust
         run: |
-          rustup toolchain install 1.97 --profile minimal --component clippy
+          rustup toolchain install 1.97 --profile minimal
           rustup default 1.97
 
       # R-OSS-3: the same advisory and licence check as a pull request, run
@@ -73,20 +73,6 @@ jobs:
 
       - name: Advisories, licences and sources
         run: cargo deny check
-
-      # `make test` runs on nextest, the version in mise.toml.
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
-        with:
-          tool: cargo-nextest@0.9.146
-
-      # The opencode fixture is built from SQL at case time.
-      - name: Ensure sqlite3
-        run: command -v sqlite3 || (sudo apt-get update && sudo apt-get install -y sqlite3)
-
-      - name: Check
-        run: make check
-        env:
-          NEXTEST_PROFILE: ci
 
       # R-OSS-3: a CycloneDX SBOM of each build, over every target the
       # release ships. It is a superset of what a binary links — the tool
@@ -117,8 +103,19 @@ jobs:
           name: sbom
           path: sbom/
 
+  # `make check` on every platform, at the tag's commit. A pull request is
+  # signed off on one machine and main is checked after the merge, so this is
+  # where a release is held to all of them at once.
+  full:
+    uses: ./.github/workflows/full.yml
+
+  # R-PERF-7: the budgets are held here rather than on every pull request.
+  bench:
+    uses: ./.github/workflows/bench.yml
+
+  # Nothing is built for release until every gate has passed.
   dist:
-    needs: check
+    needs: [check, full, bench]
     uses: ./.github/workflows/dist.yml
     with:
       version: ${{ needs.check.outputs.version }}
