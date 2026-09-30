@@ -172,7 +172,13 @@ fn r_e2e_3_a_device_added_by_its_code_holds_the_user_key_and_a_pin_of_the_chain(
     let a = wait(a, Duration::from_secs(30));
     let said = rest(&a_err);
     assert!(a.status.success(), "{}\n{said}", String::from_utf8_lossy(&a.stdout));
-    assert!(said.contains("Add 'desktop' (Linux) to your devices? [Y/n]"), "{said}");
+    // The OS is this machine's own, as the new device names it.
+    let os = match std::env::consts::OS {
+        "macos" => "macOS",
+        "linux" => "Linux",
+        other => other,
+    };
+    assert!(said.contains(&format!("Add 'desktop' ({os}) to your devices? [Y/n]")), "{said}");
 
     let store = keys(&desktop);
     assert_eq!(*store.user_keys().unwrap().unwrap().newest(), key, "the desktop holds the laptop's user key");
