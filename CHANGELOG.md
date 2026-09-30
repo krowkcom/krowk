@@ -9,6 +9,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Removed
+
+- **`krowk devices approve` and the 32-hex device code.** Pairing by a short
+  code replaces them; `krowk sync join` takes no argument.
+
 ### Added
 
 - **Pairing a device by a short code, in the library.** `krowk_client::pairing`
@@ -27,6 +32,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
   saw, refusing an older or forked list and any removal of the recovery
   device. Only the current kit can replace the kit, or any device when there
   is none.
+- **`krowk devices add` and `krowk sync join` pair a machine by a short
+  code.** `add` shows `XXXX-XXXX`, valid ten minutes and once; `join` on the
+  new machine takes it at a prompt, never as an argument. Both machines check
+  the code, the paired one asks `Add '<name>' (<os>) to your devices? [Y/n]`,
+  and the new machine keeps the user key only once the chain it was sent
+  adds exactly its keys. A wrong code, or any failure on the new machine, a
+  dropped connection included, ends the pairing and asks for a new code. A
+  machine that was sent the key but never confirmed it is still listed, so
+  `krowk devices remove` can take it off; ^C on `add` ends the pairing.
+- **`krowk sync host` seals under the device list as the registry has it
+  now,** extended from this machine's pin, and refuses when the registry
+  cannot be asked, rather than sealing under a list a removal left behind.
 - **The stand-in registry holds devices you own.** `krowk-devregistry` serves
   a person's signed device list (verified on every post by krowk-client's own
   verifier), the user key wrapped to each device, keys bound to one device,

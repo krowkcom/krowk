@@ -1,6 +1,7 @@
-//! Sync's records and calls (canon, engineering/crypto.md): the devices that
-//! hold the account key, the mailbox a new device is approved through, and
-//! sessions with their leases. Every call needs a key to a paid workspace
+//! Sync's records and calls (canon, engineering/crypto.md, devices.md): the
+//! devices that hold the account key, a person's device list and user key,
+//! the mailbox a new device is paired through, and sessions with their
+//! leases. Every call needs a key to a paid workspace
 //! (R-SYNC-1), and nothing here carries plaintext: keys and sealed blobs are
 //! hex, and a session's title and the rest of what a listing shows travel
 //! inside `sealed_index`, sealed by the caller before it gets here.
@@ -57,40 +58,6 @@ pub struct Device {
 struct Devices {
     #[serde(default, deserialize_with = "nullable")]
     devices: Vec<Device>,
-}
-
-/// A new device's request to be approved, and once approved the account key
-/// wrapped to it with the account key's id.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct DeviceApproval {
-    #[serde(default, deserialize_with = "nullable")]
-    pub slug: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub signing_key: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub id: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub public_key: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub name: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub state: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub expires_at: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub created_at: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub approved_by: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub account_key_id: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub wrapped_account_key: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct DeviceApprovals {
-    #[serde(default, deserialize_with = "nullable")]
-    device_approvals: Vec<DeviceApproval>,
 }
 
 /// One entry of a person's device list, exactly as it was posted, with when
@@ -427,33 +394,6 @@ impl Client {
 
     pub fn list_devices(&self) -> Result<Vec<Device>, Error> {
         Ok(self.get::<Devices>("/devices")?.devices)
-    }
-
-    /// A new device asks to be approved. Once: a retried create is a second
-    /// request, and only the one whose id the person was shown is answered.
-    /// It carries the device's relay signing key, which the approval then
-    /// registers for it.
-    pub fn request_device_approval(&self, public_key: &str, signing_key: &str, name: &str) -> Result<DeviceApproval, Error> {
-        let body = json!({ "device_approval": { "public_key": public_key, "signing_key": signing_key, "name": name } });
-        Ok(self.call("POST", "/device_approvals", Some(body), 1, None)?.0)
-    }
-
-    /// What is waiting to be approved.
-    pub fn list_device_approvals(&self) -> Result<Vec<DeviceApproval>, Error> {
-        Ok(self.get::<DeviceApprovals>("/device_approvals")?.device_approvals)
-    }
-
-    pub fn show_device_approval(&self, slug: &str) -> Result<DeviceApproval, Error> {
-        self.get(&format!("/device_approvals/{}", slug_path(slug)))
-    }
-
-    /// Answers a request with the account key wrapped to its public key, from
-    /// `device`, this machine. Sent once: every wrap is a different blob, so
-    /// a retry after a lost answer would be refused as already approved and
-    /// read as a failure when it had worked.
-    pub fn approve_device(&self, slug: &str, device: &str, account_key_id: &str, wrapped_account_key: &str) -> Result<DeviceApproval, Error> {
-        let body = json!({ "approval": { "device": device, "account_key_id": account_key_id, "wrapped_account_key": wrapped_account_key } });
-        Ok(self.call_as_device("PUT", &format!("/device_approvals/{}/approval", slug_path(slug)), Some(body), 1, None)?.0)
     }
 
     /// A page of this person's device list from after `after`. Not signed: a

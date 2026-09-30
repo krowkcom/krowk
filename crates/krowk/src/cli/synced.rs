@@ -45,11 +45,8 @@ fn keys(ctx: &Ctx) -> Result<Keys, Error> {
     // generation a new session is sealed under: the list as this machine
     // keeps it, verified again from entry 0. Without it nothing opens or
     // seals.
-    // TODO(D5): before `host` seals, fetch the list from the registry and
-    // extend it from the kept head (`Keystore::save_device_list`), so a
-    // machine offline through a removal, or fed a stale list, does not seal
-    // under the old generation (#206's review, M2). It needs D5's
-    // `device_list_all` and the stand-in's `/device_list` (#201).
+    // A host takes the registry's list first (`host_session`), so it never
+    // seals under a generation a removal it slept through left behind.
     let chain = ks.device_list().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine has not verified your device list yet — add it to your devices from one that has, or recover with your kit"))?;
     let user = user.verified_by(&chain).map_err(|e| fail("keys_unreadable", e.0))?;
     let signing = ks.signing_key().map_err(|e| fail("keys_unreadable", e))?;
@@ -143,8 +140,12 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
     if !dir.join(&session).join(krowk_harness::log::EVENTS_FILE).is_file() {
         return Err(fail("no_session", format!("this machine has no session {session} to host — start one here (`krowk`, or `krowk -p \"...\"`), then `krowk sync host <its id>`; `krowk sessions` lists this machine's")));
     }
-    let k = keys(ctx)?;
-    let api = Arc::new(signed(ctx, &k, "krowk sync host")?);
+    let mut k = keys(ctx)?;
+    let api = signed(ctx, &k, "krowk sync host")?;
+    let ks = keystore(ctx)?;
+    let device = ks.device().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine has no sync keys"))?;
+    (_, k.chain, k.user) = super::pairing::current_list(&ks, &api, &device)?;
+    let api = Arc::new(api);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let spawn = super::host::spawner(ctx)?;

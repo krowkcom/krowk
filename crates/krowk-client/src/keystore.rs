@@ -24,9 +24,8 @@
 //!   (`e2e::SigningKey`), made the first time a relay is joined. It proves
 //!   which device connects, and opens nothing.
 //!
-//! The registry holds the account key wrapped to a device only while an
-//! approval carries it to that device (`join`); once collected it lives
-//! here, so these files and the recovery phrase are the copies that last.
+//! These files and the recovery phrase are the copies that last: the
+//! registry holds keys only wrapped to devices.
 
 use crate::e2e::{self, AccountKey, DeviceKey, KeyId, SigningKey};
 use crate::device_chain::{Chain, SignedEntry};
@@ -277,31 +276,6 @@ impl Keystore {
         Ok((Setup { device, device_created, account }, replaced))
     }
 
-    /// A device another one approved: the account key it wrapped to this
-    /// device (`e2e::wrap_account_key`'s blob), opened only as the key whose
-    /// id the person was shown on the approving device. That id is the whole
-    /// of the check against a registry that wrapped a key of its own choosing
-    /// to this device: HPKE's Base mode does not say who sealed a blob, and
-    /// `unwrap_account_key` refuses one that is not for `expected`.
-    ///
-    /// A home that already holds an account key keeps it unless it is the
-    /// same key: joining is for a machine that has none.
-    pub fn join(&self, wrapped: &[u8], expected: KeyId) -> Result<Setup, String> {
-        krowk_api::home::make(&self.home)?;
-        let _lock = krowk_api::creds::lock(&self.account_path())?;
-        if let Some(id) = self.account_id()?
-            && id != expected
-        {
-            return Err(format!("this home already holds account key {id} — joining would replace it; use a fresh krowk home, or move {} aside", self.account_path().display()));
-        }
-        let (device, device_created) = self.device_or_create()?;
-        let account = e2e::unwrap_account_key(wrapped, expected, &device).map_err(|e| {
-            format!("the approved key did not open as account key {expected} on this device ({e}) — check the id was typed as the approving device showed it; if it was, do not trust this approval, and ask again")
-        })?;
-        self.save(&device, &account, "join")?;
-        Ok(Setup { device, device_created, account })
-    }
-
     pub fn user_keys_path(&self) -> PathBuf {
         self.home.join(USER_KEYS_FILE)
     }
@@ -408,6 +382,22 @@ impl Keystore {
             return Err(bad());
         }
         f.entries.iter().map(|(e, s)| e2e::unhex(e).zip(e2e::unhex(s)).and_then(|(e, s)| SignedEntry::from_parts(e, &s).ok())).collect::<Option<Vec<_>>>().ok_or_else(bad)
+    }
+
+    /// Forgets the user keys and the device list: a pairing that failed
+    /// after they were kept leaves nothing behind. Only for a machine that is
+    /// not on the list — `save_user_keys` never goes back a generation and
+    /// `save_device_list` never moves the pin back, and this is not a way
+    /// round either for a device that is.
+    pub fn forget_user_keys(&self) -> Result<(), String> {
+        let _lock = krowk_api::creds::lock(&self.account_path())?;
+        for path in [self.user_keys_path(), self.device_list_path()] {
+            match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("could not remove {}: {e}", path.display())),
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn save(&self, device: &DeviceKey, account: &AccountKey, origin: &str) -> Result<(), String> {

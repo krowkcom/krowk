@@ -15,6 +15,8 @@ mod devices;
 #[cfg(all(feature = "harness", unix))]
 mod host;
 #[cfg(feature = "harness")]
+mod pairing;
+#[cfg(feature = "harness")]
 mod prompt;
 #[cfg(all(feature = "harness", unix))]
 mod relay;
@@ -319,7 +321,7 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(feature = "harness")]
         ["sync", "recover", ..] => sync::recover(ctx),
         #[cfg(feature = "harness")]
-        ["sync", "join", ..] => sync::join(ctx, rest(2)),
+        ["sync", "join", ..] => pairing::join(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["sync", "register", ..] => sync::register_now(ctx),
         #[cfg(all(feature = "harness", unix))]
@@ -331,7 +333,7 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(feature = "harness")]
         ["devices"] | ["devices", "list", ..] => devices::list(ctx),
         #[cfg(feature = "harness")]
-        ["devices", "approve", ..] => devices::approve(ctx, rest(2)),
+        ["devices", "add", ..] => pairing::add(ctx, rest(2)),
         _ if missing(p) => Err(not_in_build(p)),
         _ => Err(fail("unknown_command", format!("`{}` is not a krowk command — run `krowk --help`", clip(p, 2).join(" ")))),
     }
@@ -486,9 +488,9 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         let connect = words.first() == Some(&"connect");
         // `--name` also names this machine where sync sets it up or
         // registers it: what the workspace's device list calls it.
-        let names_device = matches!(words.as_slice(), ["sync", "init" | "recover" | "join" | "register", ..] | ["devices", "approve", ..]);
+        let names_device = matches!(words.as_slice(), ["sync", "init" | "recover" | "join" | "register", ..] );
         if f.given.contains("name") && !add && !connect && !names_device {
-            return Err(fail("bad_flag", "`--name` is only a flag of `krowk connect`, `krowk providers add`, `krowk sync` and `krowk devices approve`"));
+            return Err(fail("bad_flag", "`--name` is only a flag of `krowk connect`, `krowk providers add`, and `krowk sync`"));
         }
         for name in ["api-key-env", "base-url", "client-id", "binary", "config-dir"] {
             if f.given.contains(name) && !add && !connect {
