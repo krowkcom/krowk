@@ -62,8 +62,7 @@
 //!   line, never a scroll region: a scroll that starts at the top row puts
 //!   what it scrolls in tmux's history.
 
-use crossterm::terminal::{Clear, ClearType as CtClear};
-use crossterm::{queue, QueueableCommand};
+use crossterm::QueueableCommand;
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Rect, Size};
@@ -177,6 +176,19 @@ impl FrameBuf {
             write!(b.bytes, "\x1b[{x}C")?;
         }
         b.row = y;
+        Ok(())
+    }
+
+    /// To the start of row `y` and clears from there to the end of the
+    /// screen. From the top-left corner the clear is sent from the second
+    /// column, and the first cleared on its own: a clear to the end of the
+    /// screen from there is a clear of the whole screen to tmux, which
+    /// scrolls what was on it into history first (`scroll-on-clear`) — a
+    /// live region as tall as the screen would be left in scrollback.
+    fn clear_down(&self, y: u16) -> io::Result<()> {
+        self.goto(0, y)?;
+        let mut b = self.0.borrow_mut();
+        b.bytes.extend_from_slice(if y == 0 { b"\x1b[1C\x1b[J\x1b[1K\r" } else { b"\x1b[J" });
         Ok(())
     }
 
@@ -404,8 +416,7 @@ impl<W: Write> Term<W> {
         }
         let mut top = self.top();
         if want < self.height {
-            self.buf.goto(0, top)?;
-            queue!(self.buf.clone(), Clear(CtClear::FromCursorDown))?;
+            self.buf.clear_down(top)?;
             let moved = anchor(&self.buf, self.size, top, want)?;
             self.blank_top += moved - top;
             return self.rebuild(moved, want);
@@ -427,8 +438,7 @@ impl<W: Write> Term<W> {
     }
 
     fn rebuild(&mut self, top: u16, height: u16) -> io::Result<()> {
-        self.buf.goto(0, top)?;
-        queue!(self.buf.clone(), Clear(CtClear::FromCursorDown))?;
+        self.buf.clear_down(top)?;
         self.terminal = build(&self.buf, self.size, top, height)?;
         self.height = height;
         Ok(())
@@ -577,8 +587,7 @@ impl<W: Write> Term<W> {
         let (w, h) = (self.size.width, self.size.height.max(1));
         let top = self.top();
         let mut out = self.buf.clone();
-        self.buf.goto(0, top)?;
-        queue!(out, Clear(CtClear::FromCursorDown))?;
+        self.buf.clear_down(top)?;
         let mut used: u32 = 0;
         let pad = if w > 2 * self.pad + 10 { self.pad } else { 0 };
         for line in lines {
@@ -653,8 +662,7 @@ impl<W: Write> Term<W> {
     pub fn finish(&mut self) -> io::Result<()> {
         let top = self.top();
         let mut w = self.buf.clone();
-        self.buf.goto(0, top)?;
-        w.queue(Clear(CtClear::FromCursorDown))?;
+        self.buf.clear_down(top)?;
         w.queue(crossterm::cursor::Show)?;
         if std::mem::take(&mut self.steady) {
             w.write_all(CURSOR_DEFAULT)?;
