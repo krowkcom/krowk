@@ -4,8 +4,8 @@
 //!
 //! - `init`: first sync setup. Makes this device's key when it has none and
 //!   a new account key, shows the account key's recovery phrase, and keeps
-//!   the key only once the phrase has been typed back — mandatory, so it
-//!   needs a person at the terminal.
+//!   the key only once three of its words, at random positions, have been
+//!   typed back — mandatory, so it needs a person at the terminal.
 //! - `recover`: a fresh machine. The phrase, typed at a prompt that does not
 //!   echo it (or piped from a file, never `echo`, which lands in the shell's
 //!   history), restores the account key and wraps it to this device, and
@@ -39,8 +39,28 @@ use krowk_client::phrase;
 use serde_json::json;
 use std::time::Duration;
 
-/// How many times `init` asks for the phrase back before giving up.
+/// How many times `init` asks for each word back before giving up.
 const TRIES: usize = 3;
+
+/// How many of the phrase's words `init` has typed back.
+const CONFIRM: usize = 3;
+
+/// `CONFIRM` distinct word positions, drawn from the OS's CSPRNG, in
+/// order. A byte is kept only below the largest multiple of the word
+/// count, so every position is equally likely.
+fn confirm_positions() -> Vec<usize> {
+    const LIMIT: u8 = (256 / phrase::WORDS * phrase::WORDS) as u8;
+    let mut at = Vec::with_capacity(CONFIRM);
+    while at.len() < CONFIRM {
+        let [b] = e2e::random::<1>();
+        let n = usize::from(b) % phrase::WORDS;
+        if b < LIMIT && !at.contains(&n) {
+            at.push(n);
+        }
+    }
+    at.sort_unstable();
+    at
+}
 
 /// How often `join` asks whether it has been approved yet. Someone is
 /// walking between two machines; a second is quick enough to feel instant.
@@ -185,7 +205,7 @@ pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
     if !ctx.io.stdin_tty || !ctx.io.err_tty {
         return Err(fail(
             "confirmation_required",
-            "`krowk sync init` shows a recovery phrase and has it typed back, so it needs a person at a terminal — run it in one",
+            "`krowk sync init` shows a recovery phrase and has three of its words typed back, so it needs a person at a terminal — run it in one",
         ));
     }
     let store = keystore(ctx)?;
@@ -209,24 +229,31 @@ pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
             let _ = writeln!(stderr, "\nKey id {} — `krowk sync recover` shows the same id when the phrase is right. Note it with the words.", key.id());
             let _ = writeln!(stderr, "{}", crate::output::paint(colour, crate::output::DIM, "Write it down and keep it offline. krowk never stores it and cannot show it again."));
             let _ = stderr.flush();
-            for left in (0..TRIES).rev() {
-                let typed = krowk_client::Zeroizing::new(
-                    inquire::Password::new("Type the phrase back to confirm:").without_confirmation().prompt().map_err(|_| "nothing was confirmed, so no account key was kept".to_string())?,
-                );
-                match phrase::decode(&typed) {
-                    Ok(k) if k == *key => return Ok(()),
-                    Ok(_) => {
-                        let _ = writeln!(stderr, "That is a valid phrase, but not this one.");
+            // Three words at random positions, not all 24: enough to show
+            // the phrase was written down, in order, without retyping it.
+            let words: Vec<&str> = words.split(' ').collect();
+            for at in confirm_positions() {
+                let mut confirmed = false;
+                for left in (0..TRIES).rev() {
+                    let typed = krowk_client::Zeroizing::new(
+                        inquire::Password::new(&format!("Type word #{}:", at + 1)).without_confirmation().prompt().map_err(|_| "nothing was confirmed, so no account key was kept".to_string())?,
+                    );
+                    if typed.trim().eq_ignore_ascii_case(words[at]) {
+                        confirmed = true;
+                        break;
                     }
-                    Err(why) => {
-                        let _ = writeln!(stderr, "{why}.");
-                    }
+                    let _ = write!(stderr, "That is not word #{}.", at + 1);
+                    let _ = match left {
+                        0 => writeln!(stderr),
+                        1 => writeln!(stderr, " 1 more try."),
+                        n => writeln!(stderr, " {n} more tries."),
+                    };
                 }
-                if left > 0 {
-                    let _ = writeln!(stderr, "{left} more {}.", if left == 1 { "try" } else { "tries" });
+                if !confirmed {
+                    return Err(format!("word #{} was not typed back, so no account key was kept — run `krowk sync init` again for a new one", at + 1));
                 }
             }
-            Err("the phrase was not typed back, so no account key was kept — run `krowk sync init` again for a new one".into())
+            Ok(())
         })
         .map_err(|e| fail("sync_setup_failed", e))?;
     report(ctx, &setup, "init", None)
@@ -284,7 +311,9 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if !unattended && (!ctx.io.stdin_tty || !ctx.io.err_tty) {
         return Err(fail("confirmation_required", OFF_TERMINAL));
     }
-    let expected = match args.first() {
+    // Joined, so an id pasted unquoted in its groups of four is one id.
+    let typed = args.join(" ");
+    let expected = match (!typed.trim().is_empty()).then_some(typed.as_str()) {
         Some(typed) => Some(KeyId::parse(typed).ok_or_else(|| fail("bad_account_key_id", format!("`{typed}` is not an account key id — it is 32 hex characters, as `krowk devices approve` shows it on your other machine")))?),
         None => None,
     };
@@ -344,5 +373,18 @@ mod tests {
     fn names_are_printed_without_control_characters() {
         assert_eq!(printable("laptop\x1b[31m\u{7}\n"), "laptop[31m");
         assert_eq!(printable("  work laptop "), "work laptop");
+    }
+
+    #[test]
+    fn init_confirms_three_distinct_positions_in_order() {
+        let mut seen = [false; phrase::WORDS];
+        for _ in 0..500 {
+            let at = confirm_positions();
+            assert_eq!(at.len(), CONFIRM);
+            assert!(at.windows(2).all(|w| w[0] < w[1]), "{at:?}");
+            assert!(at.iter().all(|&n| n < phrase::WORDS));
+            at.iter().for_each(|&n| seen[n] = true);
+        }
+        assert!(seen.iter().all(|&s| s), "every position comes up");
     }
 }

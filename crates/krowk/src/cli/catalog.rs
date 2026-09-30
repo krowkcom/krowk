@@ -811,8 +811,8 @@ with `claude auth login` or `codex login`).",
         #[cfg(feature = "harness")]
         "sync" => "\
 Sessions are encrypted on this machine before they leave it. `init` shows the
-account key as 24 words once, with its key id; `recover` takes them on a new
-machine and shows the id it restored. Type them at its prompt, or pipe them
+account key as 24 words once, with its key id, and asks for three of them
+back; `recover` takes all 24 on a new machine and shows the id it restored. Type them at its prompt, or pipe them
 from a file (`krowk sync recover < phrase.txt`) — never `echo`, which keeps
 them in your shell history. Or skip the words: `join` shows a code, and
 `krowk devices approve` on a machine that already syncs answers it; read the
@@ -822,7 +822,7 @@ registered there too.",
         #[cfg(feature = "harness")]
         "devices" => "\
 Adding a machine: run `krowk sync join` on it, then `krowk devices approve`
-here and type the code it shows. Type back the account key id `approve`
+here and type the code it shows, with or without its spaces. Type back the account key id `approve`
 shows on the new machine, or pass it to `join`. Comparing both is what keeps
 a registry from slipping its own keys in. Needs a Pro workspace.",
         #[cfg(feature = "harness")]

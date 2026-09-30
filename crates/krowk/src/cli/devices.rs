@@ -59,7 +59,10 @@ pub(super) fn approve(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if !unattended && (!ctx.io.stdin_tty || !ctx.io.err_tty) {
         return Err(fail("confirmation_required", OFF_TERMINAL));
     }
-    let typed = match args.first() {
+    // Joined, so a code pasted unquoted in its groups of four is one code;
+    // parsing drops the spaces and dashes.
+    let joined = args.join(" ");
+    let typed = match (!joined.trim().is_empty()).then_some(joined.as_str()) {
         Some(t) => Some(DeviceId::parse(t).ok_or_else(|| fail("bad_device_code", format!("`{t}` is not a device code — it is the 32 hex characters `krowk sync join` shows on the new device")))?),
         None => None,
     };

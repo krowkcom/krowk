@@ -182,7 +182,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **`krowk sync init` sets up the end-to-end encryption keys sync will
   use, and shows your recovery phrase.** It makes a key for this machine
   and an account key, prints the account key as 24 words, and keeps it
-  only once you type the words back (they are not echoed). Write them
+  only once you type three of them back (they are not echoed). Write them
   down, with the key id shown beside them: krowk never stores the phrase
   and cannot show it again, and it is the only way back to your sessions
   if every device is lost. On another machine, `krowk sync recover` takes
@@ -239,10 +239,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
   still names the same types. The generated JSON Schema is unchanged.
 - Leaving the TUI takes two presses, as in Claude Code, so one stray key no longer ends a session. On an empty prompt, Ctrl-C or Ctrl-D shows "Press Ctrl-C again to exit" (or Ctrl-D) under the prompt, and the same key again within 1.5 seconds quits.
 - The TUI's prompt sits on the same band as your messages in the chat, edge to edge across the terminal with an empty row either side, instead of between two rules. The arrow and text stay where they were. The status line lines up with the arrow, with an empty row under it, and the working line reads "12s · esc to interrupt".
+- `krowk sync init` asks for three words of the recovery phrase back, at
+  random positions ("Type word #7:"), instead of all 24. A wrong word is
+  asked for again, up to three times, and then nothing is kept, as before.
+  `krowk sync recover` still takes the whole phrase.
 - Keys the TUI suggests stand out: in hints, the help menu, the status line, approvals and questions, each key (`esc`, `enter`, `y`, `ctrl-g`, `?`) is white instead of grey like the words around it.
 
 ### Fixed
 
+- `krowk devices approve` takes the code however it is pasted: quoted, in
+  the groups of four `krowk sync join` prints it in, unquoted, or with no
+  spaces. Unquoted, it used only the first group and refused the code as
+  `bad_device_code`. The account key id given to `krowk sync join` is read
+  the same way.
 - **A viewer that moves to the direct path mid-session keeps receiving
   the session.** The direct listener replays from where the viewer was when
   it started looking for the direct path. The viewer had already opened

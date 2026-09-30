@@ -1,7 +1,8 @@
 //! `krowk sync init` and `krowk sync recover`, the built binary on scratch
 //! homes (R-E2E-3, R-E2E-4): first setup at a terminal shows a phrase and
-//! keeps the account key only once it is typed back; a second home given
-//! the phrase holds the identical account key; the phrase is in no file.
+//! keeps the account key only once three of its words are typed back; a
+//! second home given the phrase holds the identical account key; the phrase
+//! is in no file.
 
 #![cfg(all(feature = "harness", unix))]
 
@@ -51,6 +52,22 @@ fn phrase_in(text: &str) -> String {
     words.join(" ")
 }
 
+/// The position the latest `Type word #N:` prompt asks for, once it is
+/// not `after`, with the terminal's text so far.
+fn asked(t: &pty::Pty, after: Option<usize>, wait: Duration) -> (usize, String) {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        let text = t.text();
+        let latest = text.rsplit_once("Type word #").and_then(|(_, rest)| rest.split_once(':')).and_then(|(n, _)| n.parse::<usize>().ok());
+        if let Some(n) = latest.filter(|n| Some(*n) != after) {
+            assert!((1..=24).contains(&n), "{text}");
+            return (n, text);
+        }
+        assert!(std::time::Instant::now() < deadline, "no new word was asked for: {text}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn files_holding(dir: &Path, needle: &str) -> Vec<PathBuf> {
     let mut found = Vec::new();
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -75,6 +92,26 @@ fn r_e2e_4_sync_init_needs_a_terminal() {
     let _ = std::fs::remove_dir_all(&r);
 }
 
+/// Three wrong tries at one word and `init` gives up, keeping nothing.
+#[test]
+fn r_e2e_4_sync_init_keeps_nothing_when_a_word_is_wrong_three_times() {
+    let r = root("wrong");
+    let wait = Duration::from_secs(20);
+    let mut c = command(&r.join("laptop"), &["sync", "init", "--json"]);
+    c.env("TERM", "xterm-256color");
+    let mut t = pty::Pty::spawn(c, 120, 30);
+    let (at, _) = asked(&t, None, wait);
+    for said in [format!("That is not word #{at}. 2 more tries."), format!("That is not word #{at}. 1 more try."), format!("word #{at} was not typed back")] {
+        std::thread::sleep(Duration::from_millis(300));
+        t.write(b"zzzz\r");
+        assert!(t.wait_for(&said, wait).is_some(), "{}", t.text());
+    }
+    let exit = t.wait(wait).expect("krowk sync init finished");
+    assert!(!exit.success(), "{}", t.text());
+    assert!(!r.join("laptop/.krowk/account-key.json").exists());
+    let _ = std::fs::remove_dir_all(&r);
+}
+
 #[test]
 fn r_e2e_4_the_phrase_from_sync_init_restores_the_account_key_on_a_fresh_home() {
     let r = root("recover");
@@ -83,15 +120,25 @@ fn r_e2e_4_the_phrase_from_sync_init_restores_the_account_key_on_a_fresh_home() 
     let mut c = command(&r.join("laptop"), &["sync", "init", "--json"]);
     c.env("TERM", "xterm-256color");
     let mut t = pty::Pty::spawn(c, 120, 30);
-    assert!(t.wait_for("Type the phrase back", wait).is_some(), "{}", t.text());
-    let phrase = phrase_in(&t.text());
-    // A wrong word first: asked again, nothing kept yet.
-    let wrong = phrase.replacen(phrase.split(' ').next().unwrap(), "zzzz", 1);
-    t.write(format!("{wrong}\r").as_bytes());
-    assert!(t.wait_for("is not one a recovery phrase uses", wait).is_some(), "{}", t.text());
+    let phrase = phrase_in(&asked(&t, None, wait).1);
+    let words: Vec<&str> = phrase.split(' ').collect();
+    // Three positions are asked for. A wrong word first: the same position
+    // is asked again, and nothing is kept yet.
+    let (first, _) = asked(&t, None, wait);
+    t.write(b"zzzz\r");
+    assert!(t.wait_for(&format!("That is not word #{first}. 2 more tries."), wait).is_some(), "{}", t.text());
     assert!(!r.join("laptop/.krowk/account-key.json").exists());
-    std::thread::sleep(Duration::from_millis(300));
-    t.write(format!("{phrase}\r").as_bytes());
+    let mut at = first;
+    let mut answered = Vec::new();
+    for _ in 0..3 {
+        std::thread::sleep(Duration::from_millis(300));
+        t.write(format!("{}\r", words[at - 1]).as_bytes());
+        answered.push(at);
+        if answered.len() < 3 {
+            at = asked(&t, Some(at), wait).0;
+        }
+    }
+    assert!(answered.windows(2).all(|w| w[0] < w[1]), "three distinct positions, in order: {answered:?}");
     let exit = t.wait(wait).expect("krowk sync init finished");
     assert!(exit.success(), "{}", t.text());
     let text = t.text();
@@ -100,8 +147,8 @@ fn r_e2e_4_the_phrase_from_sync_init_restores_the_account_key_on_a_fresh_home() 
     let made: Value = serde_json::Deserializer::from_str(&text[json_at..].replace("\r\n", "\n")).into_iter::<Value>().next().unwrap().unwrap();
     let account = made["data"]["account_key"].as_str().unwrap().to_string();
     assert_eq!(made["data"]["device_created"], true, "{made}");
-    // Typed back, it was never echoed: the words appear once, as printed.
-    assert_eq!(text.matches(&phrase.split(' ').take(3).collect::<Vec<_>>().join(" ")).count(), 0, "the typed phrase was echoed");
+    // What was typed back was never echoed.
+    assert!(!text.contains("zzzz"), "a typed word was echoed");
 
     // The fresh home, from the words alone.
     let out = piped(&r.join("desktop"), &["sync", "recover", "--json"], &format!("{phrase}\n"));
@@ -136,6 +183,7 @@ fn r_e2e_4_the_phrase_from_sync_init_restores_the_account_key_on_a_fresh_home() 
     // A phrase with a word changed is refused, and nothing is written.
     let other = r.join("other");
     std::fs::create_dir_all(&other).unwrap();
+    let wrong = phrase.replacen(words[0], "zzzz", 1);
     let out = piped(&other, &["sync", "recover", "--json"], &wrong);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("bad_recovery_phrase"));

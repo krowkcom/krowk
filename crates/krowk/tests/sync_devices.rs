@@ -159,14 +159,19 @@ fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
     let resealed = e2e::hex(&e2e::seal_session_index(&session_key, &id, TITLE.as_bytes()));
     client.put_sync_session(&uuid(&id), &wrapped, Some(&resealed), Some(&lease.token)).unwrap();
 
-    // The desktop asks to join, naming the account key id it was told.
-    let mut join = command(&desktop, api, token, &["sync", "join", &account_id, "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    // The desktop asks to join, naming the account key id it was told —
+    // pasted unquoted in its groups of four, so as eight arguments.
+    let groups: Vec<&str> = account_id.as_bytes().chunks(4).map(|c| std::str::from_utf8(c).unwrap()).collect();
+    let join_args = [&["sync", "join"][..], &groups, &["--json"]].concat();
+    let mut join = command(&desktop, api, token, &join_args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let code = code_shown(&mut join);
 
     // A wrong code approves nothing; the right one wraps to the desktop.
     let wrong = run(&laptop, api, token, &["devices", "approve", &"0".repeat(32), "--json"], "");
     assert!(!wrong.status.success() && String::from_utf8_lossy(&wrong.stderr).contains("no_such_device_code"), "{}", String::from_utf8_lossy(&wrong.stderr));
-    let approved = json(&run(&laptop, api, token, &["devices", "approve", &code, "--json"], ""));
+    // The code pasted unquoted, as `join` prints it: eight arguments.
+    let approve_args = [&["devices", "approve"][..], &code.split(' ').collect::<Vec<_>>(), &["--json"]].concat();
+    let approved = json(&run(&laptop, api, token, &approve_args, ""));
     assert_eq!(approved["data"]["code"], code.replace(' ', ""), "{approved}");
 
     let mut out = String::new();
@@ -239,6 +244,7 @@ fn r_e2e_3_a_join_keeps_nothing_when_the_approved_key_is_not_the_one_named() {
 
     let other = AccountKey::generate().id().to_string();
     let mut join = command(&desktop, &api, TOKEN, &["sync", "join", &other, "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    // The code quoted, groups and all: one argument.
     let code = code_shown(&mut join);
     json(&run(&laptop, &api, TOKEN, &["devices", "approve", &code, "--json"], ""));
     assert!(!join.wait().unwrap().success());
@@ -594,7 +600,9 @@ fn r_relay_1_an_approval_request_cannot_be_doubled_or_approved_by_its_device_key
     json(&run(&laptop, &api, TOKEN, &["sync", "recover", "--json"], &format!("{}\n", *words)));
     let by_id = run(&laptop, &api, TOKEN, &["devices", "approve", &device.public().id().to_string(), "--json"], "");
     assert!(!by_id.status.success() && String::from_utf8_lossy(&by_id.stderr).contains("no_such_device_code"), "{}", String::from_utf8_lossy(&by_id.stderr));
+    // The code with no spaces at all.
     let code = e2e::approval_code(&device.public(), &own.public()).to_string();
+    assert!(code.len() == 32 && !code.contains(' '), "{code}");
     let approved = json(&run(&laptop, &api, TOKEN, &["devices", "approve", &code, "--json"], ""));
     assert_eq!(approved["data"]["device"], device.public().id().to_string(), "{approved}");
     let row = client.list_devices().unwrap().into_iter().find(|d| d.id == device.public().id().to_string()).unwrap();
