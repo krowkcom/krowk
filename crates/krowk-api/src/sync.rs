@@ -144,6 +144,14 @@ pub struct SyncSession {
     pub id: String,
     #[serde(default, deserialize_with = "nullable")]
     pub wrapped_key: String,
+    /// The person who owns it, whose user key its key is wrapped under.
+    /// The registry sets it from the calling key; a client never sends it.
+    #[serde(default, deserialize_with = "nullable")]
+    pub owner_user_id: String,
+    /// Which key wraps its session key: `user` today, `workspace` once
+    /// shared sessions exist (engineering/devices.md → Keys).
+    #[serde(default, deserialize_with = "nullable")]
+    pub seal: String,
     #[serde(default, deserialize_with = "nullable")]
     pub sealed_index: String,
     #[serde(default, deserialize_with = "nullable")]

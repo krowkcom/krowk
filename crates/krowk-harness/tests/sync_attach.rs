@@ -1,7 +1,7 @@
 //! Same session, two devices (Harness P1 ticket 19): a session running in
 //! machine A's host daemon, synced by A's bridge through the stand-in
 //! registry and the reference relay, attached from machine B — another
-//! device, with keys of its own and the same account key — which watches
+//! device, with keys of its own and the same user key — which watches
 //! it, prompts it, answers its approvals, rides out A's network going away,
 //! and queues a prompt while A is gone. Everything runs in this process:
 //! the daemon on a thread, the registry and the relay on theirs, and a
@@ -15,7 +15,8 @@ mod mock;
 #[path = "common/scratch.rs"]
 mod scratch;
 
-use krowk_client::e2e::{self, AccountKey, DeviceKey, SigningKey};
+use krowk_client::e2e::{self, AccountKey, DeviceKey, SessionKey, SigningKey};
+use krowk_client::user_key::{UserKey, UserKeys};
 use krowk_harness::daemon::{self, client::Client, server};
 use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
@@ -57,6 +58,8 @@ struct World {
     registry: krowk_devregistry::Running,
     api: String,
     account: AccountKey,
+    /// The person's user key, which both devices hold.
+    user: UserKey,
     /// Every byte either device sent the relay or got from it.
     seen: Arc<Mutex<Vec<u8>>>,
     /// While set, A's link to the relay is down and nothing gets through.
@@ -121,7 +124,7 @@ impl World {
         let reg_a = format!("http://{}/v1", registry_proxy(registry.addr(), reg_mode.clone()));
         let m = mock::serve(model);
         let mock_url = m.url.clone();
-        World { root, registry, api, account: AccountKey::generate(), seen, cut, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
+        World { root, registry, api, account: AccountKey::generate(), user: UserKey::first(), seen, cut, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
     }
 
     /// A device's own registry client: its calls that act as the device
@@ -135,6 +138,16 @@ impl World {
         let mut c = krowk_api::Client::new(&self.reg_a, "krowk_sk_sync_attach_0000000000000000").signed_by(signer(a));
         c.sleep = |_| std::thread::sleep(Duration::from_millis(50));
         Arc::new(c)
+    }
+
+    /// The host's keystore, which records the sessions it published.
+    fn host_keystore(&self) -> krowk_client::keystore::Keystore {
+        krowk_client::keystore::Keystore::new(&self.root.join("host-keys"))
+    }
+
+    /// The user keys both devices hold: generation 1 alone.
+    fn keys(&self) -> UserKeys {
+        UserKeys::new(self.user.clone(), []).unwrap()
     }
 
     fn client(&self) -> Arc<krowk_api::Client> {
@@ -213,7 +226,9 @@ impl World {
             api: self.a_client(a),
             device: a.key.id(),
             signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
-            account: AccountKey::from_bytes(*self.account.as_bytes()),
+            keys: self.keys(),
+            current_generation: self.user.generation(),
+            keystore: self.host_keystore(),
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),
@@ -234,7 +249,9 @@ impl World {
             api: self.a_client(a),
             device: a.key.id(),
             signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
-            account: AccountKey::from_bytes(*self.account.as_bytes()),
+            keys: self.keys(),
+            current_generation: self.user.generation(),
+            keystore: self.host_keystore(),
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),
@@ -258,7 +275,7 @@ impl World {
             api: self.as_device(b),
             device: b.key.id(),
             signing: SigningKey::from_secret(&*b.signing.secret_bytes()).unwrap(),
-            account: AccountKey::from_bytes(*self.account.as_bytes()),
+            keys: self.keys(),
             session: session.into(),
             known: None,
         }
@@ -267,13 +284,13 @@ impl World {
     /// Waits until the session's sealed index names a checkpoint and a head:
     /// the bridge has taken the session up and written it.
     async fn synced(&self, session: &str) {
-        let (api, account, id) = (self.client(), AccountKey::from_bytes(*self.account.as_bytes()), session.to_string());
+        let (api, id) = (self.client(), session.to_string());
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            let (api, id, account) = (api.clone(), id.clone(), AccountKey::from_bytes(*account.as_bytes()));
+            let (api, id, keys) = (api.clone(), id.clone(), self.keys());
             let ready = tokio::task::spawn_blocking(move || -> Option<bool> {
                 let s = api.show_sync_session(&id).ok()?;
-                let key = e2e::unwrap_session_key(&e2e::unhex(&s.wrapped_key)?, &krowk_harness::daemon::ws::uuid(&id), &account).ok()?;
+                let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys).ok()?;
                 let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index).ok()?;
                 Some(s.lease.is_some() && index.checkpoint.is_some() && index.head.is_some())
             })
@@ -566,6 +583,37 @@ async fn first_turn(w: &World) -> (Arc<Client>, String) {
 /// unblocks A; B is handed at most one batch of updates per display frame;
 /// and the relay's traffic, captured, holds neither B's prompt nor A's
 /// answer.
+/// D8: a session sealed after a rotation, under generation 2, lists and
+/// attaches on a device holding generation 3 (down the chain of wraps),
+/// and on one holding only generation 1 — removed before the rotation —
+/// it is left out of the listing and refused on attach, by name.
+#[tokio::test]
+async fn d8_a_device_holding_only_an_older_user_key_does_not_open_a_newer_session() {
+    let w = World::new("generations");
+    let b = w.device("machine-b");
+    let g1 = w.user.clone();
+    let g2 = g1.next().unwrap();
+    let g3 = g2.next().unwrap();
+    let id = "01a0ec7b-2222-7000-8000-0000000000d8".to_string();
+    let raw = krowk_harness::daemon::ws::uuid(&id);
+    let key = SessionKey::generate();
+    let index = krowk_harness::sync::store::Index { title: "sealed under generation 2".into(), ..Default::default() };
+    let sealed = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).unwrap()));
+    w.as_device(&b).put_sync_session(&id, &e2e::hex(&e2e::wrap_session_key(&key, &raw, &g2)), Some(&sealed), None).unwrap();
+
+    let newest = UserKeys::new(g3.clone(), [g3.wrap_previous(&g2).unwrap(), g2.wrap_previous(&g1).unwrap()]).unwrap();
+    let api = w.client();
+    let (listed, unreadable) = tokio::task::spawn_blocking(move || viewer::list(&api, &newest)).await.unwrap().unwrap();
+    assert_eq!((listed.len(), unreadable), (1, 0));
+    assert_eq!(listed[0].index.title, "sealed under generation 2");
+
+    let api = w.client();
+    let (listed, unreadable) = tokio::task::spawn_blocking(move || viewer::list(&api, &UserKeys::new(g1, []).unwrap())).await.unwrap().unwrap();
+    assert_eq!((listed.len(), unreadable), (0, 1), "the older device lists nothing it cannot open");
+    let refused = viewer::attach(w.viewer(&b, &id)).await.err().expect("generation 1 does not attach a generation-2 session");
+    assert!(refused.contains("generation 2") && refused.contains("generation 1 this device holds"), "{refused}");
+}
+
 #[tokio::test]
 async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let w = World::new("prompt");
@@ -574,8 +622,8 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
     w.synced(&session).await;
 
-    let (api, account) = (w.client(), AccountKey::from_bytes(*w.account.as_bytes()));
-    let (listed, unreadable) = tokio::task::spawn_blocking(move || viewer::list(&api, &account)).await.unwrap().unwrap();
+    let (api, keys) = (w.client(), w.keys());
+    let (listed, unreadable) = tokio::task::spawn_blocking(move || viewer::list(&api, &keys)).await.unwrap().unwrap();
     assert_eq!(unreadable, 0);
     let s = listed.iter().find(|s| s.id == session).expect("B lists A's session");
     assert_eq!(s.index.title, "the title is sealed too");
@@ -716,10 +764,10 @@ async fn r_hand_4_with_a_offline_b_is_read_only_and_its_queued_prompt_runs_when_
 /// The session's events as the registry holds them, read at rest by a
 /// device that has never seen it: what every later attach gets.
 async fn at_rest_ids(w: &World, session: &str) -> Result<Vec<String>, String> {
-    let (api, account, id) = (w.client(), AccountKey::from_bytes(*w.account.as_bytes()), session.to_string());
+    let (api, keys, id) = (w.client(), w.keys(), session.to_string());
     tokio::task::spawn_blocking(move || {
         let s = api.show_sync_session(&id).map_err(|e| e.to_string())?;
-        let key = e2e::unwrap_session_key(&e2e::unhex(&s.wrapped_key).unwrap(), &krowk_harness::daemon::ws::uuid(&id), &account).map_err(|e| e.to_string())?;
+        let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys)?;
         let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index)?;
         let a = krowk_harness::sync::store::attach(&api, &key, &id, index, None)?;
         Ok(a.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect())

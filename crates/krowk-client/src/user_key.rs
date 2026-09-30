@@ -189,6 +189,11 @@ pub struct UserKeys {
     newest: UserKey,
     /// `wraps[g]`: generation g wrapped under g+1, as the registry holds it.
     wraps: std::collections::BTreeMap<u32, Vec<u8>>,
+    /// Each generation's id as the verified device chain commits to it
+    /// (`pinned[g - 1]`), once `verified_by` has been given the chain: every
+    /// generation `open` reaches is then checked against it, not only
+    /// against its wrap's own header.
+    pinned: Option<Vec<UserKeyId>>,
 }
 
 impl UserKeys {
@@ -207,7 +212,7 @@ impl UserKeys {
                 return Err(Error("two wraps name the same user key generation".into()));
             }
         }
-        Ok(UserKeys { newest, wraps: map })
+        Ok(UserKeys { newest, wraps: map, pinned: None })
     }
 
     /// A newer generation, taken up by a device that holds `held`: the
@@ -229,6 +234,30 @@ impl UserKeys {
         &self.newest
     }
 
+    /// The wraps of every older generation, oldest first, each with the
+    /// generation it holds, as `new` takes them back: what the keystore
+    /// stores beside the newest key.
+    pub fn wraps(&self) -> impl Iterator<Item = (u32, &[u8])> {
+        self.wraps.iter().map(|(g, w)| (*g, w.as_slice()))
+    }
+
+    /// These keys, held to the ids the verified device chain commits to for
+    /// every generation: the newest must be the chain's, and each older one
+    /// `open` reaches is refused unless its id is the chain's for it. A
+    /// false older generation injected by a device holding the one above
+    /// it is caught here, where the wrap's header alone would pass it.
+    pub fn verified_by(self, chain: &crate::device_chain::Chain) -> Result<UserKeys, Error> {
+        self.pinned_to((1..=chain.generation()).filter_map(|g| chain.key_id_at(g)).collect())
+    }
+
+    fn pinned_to(mut self, ids: Vec<UserKeyId>) -> Result<UserKeys, Error> {
+        if ids.get(self.newest.generation as usize - 1) != Some(&self.newest.id()) {
+            return Err(Error(format!("user key generation {} is not the one the device list commits to — refused", self.newest.generation)));
+        }
+        self.pinned = Some(ids);
+        Ok(self)
+    }
+
     /// Generation `generation`, opened by walking down from the newest.
     pub fn open(&self, generation: u32) -> Result<UserKey, Error> {
         if generation == 0 || generation > self.newest.generation {
@@ -239,8 +268,21 @@ impl UserKeys {
             let below = key.generation - 1;
             let wrap = self.wraps.get(&below).ok_or_else(|| Error(format!("the wrap of user key generation {below} is missing")))?;
             key = key.unwrap_previous(wrap)?;
+            if let Some(ids) = &self.pinned
+                && ids.get(below as usize - 1) != Some(&key.id())
+            {
+                return Err(Error(format!("user key generation {below} is not the one the device list commits to — refused")));
+            }
         }
         Ok(key)
+    }
+}
+
+impl std::fmt::Debug for UserKeys {
+    /// The newest generation's id and how many wraps sit beneath it; never
+    /// a key.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "UserKeys({:?}, {} older)", self.newest, self.wraps.len())
     }
 }
 
@@ -374,6 +416,23 @@ mod tests {
         let keys = UserKeys::adopt(&g1, &real, 2, g2.id(), &phone, [g2.wrap_previous(&g1).unwrap()]).unwrap();
         assert_eq!(keys.newest(), &g2);
         assert!(UserKeys::adopt(&g2, &real, 2, g2.id(), &phone, []).is_err(), "not newer");
+    }
+
+    /// D8 (m2 of #200's review): held to the chain's ids, an older
+    /// generation whose wrap is genuine under the one above but whose key
+    /// the chain never committed to is refused.
+    #[test]
+    fn d8_older_generations_are_held_to_the_chains_key_ids() {
+        let g1 = UserKey::first();
+        let g2 = g1.next().unwrap();
+        let false1 = UserKey::from_bytes(1, [0x5a; 32]).unwrap();
+        let injected = UserKeys::new(g2.clone(), [g2.wrap_previous(&false1).unwrap()]).unwrap();
+        assert_eq!(injected.open(1).unwrap(), false1, "the header alone passes it");
+        let pinned = injected.pinned_to(vec![g1.id(), g2.id()]).unwrap();
+        assert!(pinned.open(1).unwrap_err().0.contains("commits to"));
+        let honest = UserKeys::new(g2.clone(), [g2.wrap_previous(&g1).unwrap()]).unwrap().pinned_to(vec![g1.id(), g2.id()]).unwrap();
+        assert_eq!(honest.open(1).unwrap(), g1);
+        assert!(UserKeys::new(g2.clone(), []).unwrap().pinned_to(vec![g1.id()]).is_err(), "a newest the chain does not name");
     }
 
     /// Frozen blobs from this format: a later change to the layout, the
