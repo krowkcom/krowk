@@ -1,0 +1,63 @@
+name: Full
+
+# `make check` on every platform CI can run natively. The golden cases are
+# exactly the kind of test a platform difference breaks (temp paths, file
+# modes, what the machine's own tables say), but a pull request is signed off
+# on its author's machine (`make signoff`), and macOS runners are few and
+# queue behind every open pull request. So this runs after the merge, on
+# every push to main, the newest cancelling the one before.
+#
+# A release waits for it too (release.yml): no tag becomes bytes until every
+# platform has passed at that commit.
+#
+# A pull request that touches something platform-shaped asks for it up front
+# with the `full-ci` label, or by hand:
+#   gh workflow run full.yml --ref <branch>
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "*.md"
+      - LICENSE
+      - THIRD-PARTY-NOTICES
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Actions pinned by commit, because release.yml runs this; dist.yml says why.
+
+concurrency:
+  group: full-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `git describe` stamps the version the golden cases mask; a shallow
+          # clone without tags still describes, just less precisely.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+        with:
+          cache: check
+
+      # The ci profile retries a failed test twice: one that then passes is
+      # reported FLAKY instead of failing the job.
+      - name: Lint, unit tests and golden cases
+        run: make check
+        env:
+          NEXTEST_PROFILE: ci

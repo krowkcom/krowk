@@ -111,7 +111,7 @@ impl Home {
             credentials: self.root.join("home/.krowk/credentials.json"),
             trust: gate,
             publisher,
-            permissions: Default::default(),
+            permissions: krowk_harness::permissions::Config { home: Some(self.root.join("home")), ..Default::default() },
             agents: krowk_harness::subagent::AgentsConfig::none(),
         })
     }
@@ -245,6 +245,34 @@ fn r_back_1_a_session_runs_on_one_claude_process_calls_krowks_tool_and_is_denied
     assert_eq!(ctx[0].toolset, "claude-code");
     let info = ctx[0].tools.iter().find(|t| t.name == "mcp__krowk__session_info").unwrap();
     assert_eq!(info.input_schema["type"], "object");
+}
+
+#[test]
+fn r_compat_1_a_slash_skill_claude_code_does_not_have_reaches_it_loaded_ahead_of_the_prompt() {
+    let home = Home::new("slash-skill");
+    let dir = home.signed_in("cfg");
+    // In the shared directory only: Claude Code's own `skills` has no such
+    // skill, and a bare `/implement` would be refused as unknown.
+    let skill = home.root.join("home/.agents/skills/implement");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "---\nname: implement\ndescription: Build a feature end to end\n---\nSTEP ONE: branch first.").unwrap();
+    let host = home.host(vec![("claude", home.instance(&dir, Some("session_info.jsonl")))], trust::allow_all());
+    let lines = rt().block_on(async {
+        let (lines, r) = run(&host, prompt(None, "/implement the login page", "claude/sonnet", PermissionMode::Default)).await;
+        r.unwrap().unwrap();
+        host.shutdown().await;
+        lines
+    });
+
+    let items = completed(&lines);
+    assert!(matches!(&items[0], Item::UserText { text } if text == "/implement the login page"), "the person's words, as they typed them: {items:?}");
+    assert!(matches!(&items[1], Item::UserText { text } if text.starts_with(krowk_harness::compat::skills::INVOKED)), "the skill, logged as krowk's: {items:?}");
+    let fake = home.fake_log();
+    let sent = fake.lines().find(|l| l.starts_with("in ") && l.contains(r#""type":"user""#)).unwrap_or_else(|| panic!("{fake}"));
+    let msg: serde_json::Value = serde_json::from_str(&sent[3..]).unwrap();
+    let text = msg["message"]["content"].as_str().map(String::from).unwrap_or_else(|| msg["message"]["content"][0]["text"].as_str().unwrap_or_default().to_string());
+    assert!(text.starts_with("<skill name=\"implement\">") && text.contains("STEP ONE: branch first."), "the skill comes first, so no leading `/` reaches Claude Code: {text}");
+    assert!(text.ends_with("/implement the login page"), "and the person's words follow it: {text}");
 }
 
 impl Home {
