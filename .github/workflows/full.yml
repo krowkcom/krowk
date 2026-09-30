@@ -7,6 +7,9 @@ name: Full
 # queue behind every open pull request. So this runs after the merge, on
 # every push to main, the newest cancelling the one before.
 #
+# A release waits for it too (release.yml): no tag becomes bytes until every
+# platform has passed at that commit.
+#
 # A pull request that touches something platform-shaped asks for it up front
 # with the `full-ci` label, or by hand:
 #   gh workflow run full.yml --ref <branch>
@@ -20,9 +23,12 @@ on:
   pull_request:
     types: [labeled, synchronize, reopened]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
+
+# Actions pinned by commit, because release.yml runs this; dist.yml says why.
 
 concurrency:
   group: full-${{ github.ref }}
@@ -38,7 +44,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # `git describe` stamps the version the golden cases mask; a shallow
           # clone without tags still describes, just less precisely.
