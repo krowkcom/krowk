@@ -38,7 +38,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   the code, the paired one asks `Add '<name>' (<os>) to your devices? [Y/n]`,
   and the new machine keeps the user key only once the chain it was sent
   adds exactly its keys. A wrong code, or any failure on the new machine, a
-  dropped connection included, ends the pairing and asks for a new code.
+  dropped connection included, ends the pairing and asks for a new code. A
+  machine that was sent the key but never confirmed it is still listed, so
+  `krowk devices remove` can take it off; ^C on `add` ends the pairing.
 - **The stand-in registry holds devices you own.** `krowk-devregistry` serves
   a person's signed device list (verified on every post by krowk-client's own
   verifier), the user key wrapped to each device, keys bound to one device,

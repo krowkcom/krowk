@@ -321,7 +321,7 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(feature = "harness")]
         ["sync", "recover", ..] => sync::recover(ctx),
         #[cfg(feature = "harness")]
-        ["sync", "join", ..] => pairing::join(ctx),
+        ["sync", "join", ..] => pairing::join(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["sync", "register", ..] => sync::register_now(ctx),
         #[cfg(all(feature = "harness", unix))]
@@ -333,7 +333,7 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(feature = "harness")]
         ["devices"] | ["devices", "list", ..] => devices::list(ctx),
         #[cfg(feature = "harness")]
-        ["devices", "add", ..] => pairing::add(ctx),
+        ["devices", "add", ..] => pairing::add(ctx, rest(2)),
         _ if missing(p) => Err(not_in_build(p)),
         _ => Err(fail("unknown_command", format!("`{}` is not a krowk command — run `krowk --help`", clip(p, 2).join(" ")))),
     }

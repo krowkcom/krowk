@@ -9,7 +9,13 @@
 //! wrapped to B, and A's signing key. B trusts it because the pairing
 //! authenticated it, not because the registry served it, and keeps nothing
 //! until the chain verifies from seq 0 and its last entry adds exactly B's
-//! keys, signed by A. A posts the entry and the wrap only after B's ack.
+//! keys, signed by A. A posts the entry and the wrap once B has acked —
+//! and also once the reply has gone out and B never acks: the reply carries
+//! the user key, so a machine that may hold it is put on the list, where
+//! `krowk devices remove` can take it off and rotate the key away from it,
+//! rather than left holding the key where nothing can see it. That departs
+//! from devices.md's "nothing reaches the chain until both sides have
+//! confirmed", deliberately; a reply that never went out posts nothing.
 //!
 //! **After any failure on B, the code is gone.** A step that fails, a
 //! refusal, a timeout, a dropped connection — B ends the pairing, tells the
@@ -18,6 +24,13 @@
 //! is retried on B. A, whose side holds no guess, reads the pairing back
 //! after a step whose answer was lost rather than sending the step again,
 //! since a step sent twice is out of turn and ends the pairing.
+//!
+//! What B cannot stop is the person typing the same code into a second
+//! `krowk sync join`: A's screen still shows it, and a registry that ended
+//! B's first run gets another guess from the second. So B says a code works
+//! once and to get a new one from the other device. The typed line itself
+//! is wiped once parsed; the line editor's own buffer is not, as crypto.md
+//! accepts for the recovery kit.
 //!
 //! Both commands need a person at a terminal: an agent told to run `krowk
 //! devices add` must not hand a stranger's machine every session. Debug
@@ -191,8 +204,13 @@ const ADD_OFF_TERMINAL: &str = "`krowk devices add` hands your key to another ma
 /// A: shows a code, waits for the new machine, checks its confirmation,
 /// asks the person, and only once the new machine has acknowledged posts
 /// its `add` entry and the user key wrapped to it.
-pub(super) fn add(ctx: &mut Ctx) -> Result<(), Error> {
+pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    if !args.is_empty() {
+        return Err(fail("bad_argument", "`krowk devices add` takes no arguments — it shows a code for the new machine to type"));
+    }
     terminal(ctx, ADD_OFF_TERMINAL)?;
+    // ^C from here on ends the pairing rather than leaving it open.
+    let interrupts = Interrupts::catch();
     let store = keystore(ctx)?;
     let setup_first = || fail("no_user_key", "this machine is not on your device list yet — set sync up with `krowk sync init`, or add it from another device with `krowk sync join`");
     let device = store.device().map_err(|e| fail("sync_setup_failed", e))?.ok_or_else(setup_first)?;
@@ -220,17 +238,44 @@ pub(super) fn add(ctx: &mut Ctx) -> Result<(), Error> {
 
     let user = client.verify_key()?.user_id;
     let a = PairA::new(PeerKind::SamePersonDevice, user, device.id()).map_err(|e| fail("pairing_failed", e.0))?;
-    let interrupts = Interrupts::catch();
     let opened = client.open_pairing()?;
     let id = opened.id.clone();
-    // From here on, anything that goes wrong ends the pairing on the
-    // registry too, so the new machine hears it at once.
-    let result = add_steps(ctx, &client, &id, a, (&chain, served_entries, received, served.epoch), &keys, (&device, &signing));
-    if result.is_err() {
+    // Up to the reply, anything that goes wrong ends the pairing on the
+    // registry too, so the new machine hears it at once, and adds nothing.
+    let sealed = match seal_reply(ctx, &client, &id, a, (&chain, served_entries, received, served.epoch), &keys, (&device, &signing)) {
+        Ok(sealed) => sealed,
+        Err(e) => {
+            let _ = client.end_pairing(&id);
+            return Err(e);
+        }
+    };
+    // The reply went out with the user key in it: from here on the entry is
+    // posted whatever B does, so a machine that may hold the key is listed.
+    let acked = wait_for(&client, &id, "joiner_ack", &a_failed).and_then(|ack| sealed.await_ack.receive_ack(&ack).map_err(|_| a_failed(None)));
+    if acked.is_err() {
         let _ = client.end_pairing(&id);
     }
+    let posted = post_add(&client, &sealed.batch);
     drop(interrupts);
-    let (name, os, seq) = result?;
+    let (name, os) = (sealed.name, sealed.os);
+    match (acked, posted) {
+        (Ok(_), Ok(())) => {}
+        (Err(_), Ok(())) => {
+            let _ = store.save_pin(&Pin::new(served.epoch, sealed.next.head(), now(), sealed.next.pending().map(|p| (p.seq, p.since))));
+            return Err(fail(
+                "pairing_unconfirmed",
+                format!("'{name}' was sent your key but never confirmed it. It is on your devices so you can take it off and rotate your key away from it: `krowk devices remove '{name}'`"),
+            ));
+        }
+        (_, Err(e)) => {
+            return Err(fail(
+                "pairing_unconfirmed",
+                format!("'{name}' was sent your key, but it could not be added to your devices ({}) — it may hold your key without being listed. Check `krowk devices list`; rotate your key with the next `krowk devices remove`", e.code()),
+            ));
+        }
+    }
+    store.save_pin(&Pin::new(served.epoch, sealed.next.head(), now(), sealed.next.pending().map(|p| (p.seq, p.since)))).map_err(|e| fail("sync_setup_failed", e))?;
+    let seq = sealed.next.head().seq;
     let summary = format!("Added. '{name}' ({os}) syncs in every workspace you're a member of.");
     if ctx.format == Format::Human {
         let _ = writeln!(ctx.io.stdout, "{summary}");
@@ -283,7 +328,19 @@ fn a_step(client: &Client, id: &str, step: PairingStep, field: &str, message: &[
 /// registry received each, and its epoch.
 type Verified<'a> = (&'a Chain, Vec<SignedEntry>, Vec<u64>, u64);
 
-fn add_steps(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut all, mut received, epoch): Verified<'_>, keys: &UserKeys, (device, signing): (&DeviceKey, &SigningKey)) -> Result<(String, String, u64), Error> {
+/// A's side once the reply is out: what it posts, the chain it leaves,
+/// and the wait for B's ack.
+struct Sealed {
+    batch: krowk_client::device_chain::Batch,
+    next: Chain,
+    await_ack: krowk_client::pairing::AwaitAck,
+    name: String,
+    os: String,
+}
+
+/// From the hello to the reply: B's confirmation checked before the person
+/// is asked anything, then the reply sealed and sent.
+fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut all, mut received, epoch): Verified<'_>, keys: &UserKeys, (device, signing): (&DeviceKey, &SigningKey)) -> Result<Sealed, Error> {
     let _ = writeln!(ctx.io.stderr, "Pair a new device\n  Code: {}          valid 10 minutes, once\nOn the new device run:  krowk sync join\nWaiting…", a.code());
     let _ = ctx.io.stderr.flush();
     let hello = wait_for(client, id, "joiner_message", &a_failed)?;
@@ -298,6 +355,9 @@ fn add_steps(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut all
     let new = confirmed.device().clone();
     let (name, os) = (printable(&new.name), printable(&new.os));
     ask(ctx, &format!("Add '{name}' ({os}) to your devices?"))?;
+    if interrupted() {
+        return Err(a_failed(None));
+    }
     let subject = Subject { kind: Kind::Device, name: new.name.clone(), os: new.os.clone(), device: new.device, signing: new.signing };
     let (next, batch) = chain.batch(keys.newest(), vec![Change::Add(subject)], device.id(), signing, now()).map_err(|e| fail("device_list_refused", e.0))?;
     let wrapped = batch.wraps.iter().find(|(d, _)| *d == new.id()).map(|(_, w)| w.clone()).ok_or_else(|| fail("device_list_refused", "the new device's entry carried no wrap for it"))?;
@@ -316,20 +376,29 @@ fn add_steps(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut all
     let bytes = krowk_client::Zeroizing::new(serde_json::to_vec(&payload).expect("the payload serializes"));
     let (await_ack, reply) = confirmed.approve(&bytes).map_err(|_| a_failed(None))?;
     a_step(client, id, PairingStep::Reply, "sealed_reply", &reply)?;
-    let ack = wait_for(client, id, "joiner_ack", &a_failed)?;
-    let paired = await_ack.receive_ack(&ack).map_err(|_| a_failed(None))?;
-    // Both sides have confirmed: only now does anything reach the chain.
+    Ok(Sealed { batch, next, await_ack, name, os })
+}
+
+/// Posts the new device's entry and wrap, once. When the answer is lost the
+/// list is read back: the post landed if the entry is on it.
+fn post_add(client: &Client, batch: &krowk_client::device_chain::Batch) -> Result<(), Error> {
     let post = ListPost {
         entries: batch.entries.iter().map(|e| (hex(&e.bytes), hex(&e.signatures_bytes()))).collect(),
         links: batch.links.iter().map(|l| hex(l)).collect(),
         wraps: batch.wraps.iter().map(|(d, w)| (d.to_string(), hex(w))).collect(),
         start_over: false,
     };
-    client.append_device_list(&post)?;
-    let store = keystore(ctx)?;
-    store.save_pin(&Pin::new(epoch, next.head(), now(), next.pending().map(|p| (p.seq, p.since)))).map_err(|e| fail("sync_setup_failed", e))?;
-    drop(paired);
-    Ok((name, os, next.head().seq))
+    match client.append_device_list(&post) {
+        Ok(_) => Ok(()),
+        Err(e) if e.status == 0 => {
+            let first = hex(&batch.entries[0].bytes);
+            match client.device_list_all() {
+                Ok(list) if list.entries.iter().any(|x| x.entry == first) => Ok(()),
+                _ => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// The one `[Y/n]` naming the new device. Off a terminal only a debug
@@ -353,7 +422,7 @@ const JOIN_OFF_TERMINAL: &str = "`krowk sync join` takes a pairing code typed by
 fn b_failed(from: &str) -> Error {
     fail(
         "pairing_failed",
-        format!("the pairing failed and this code is used up — on '{from}' run `krowk devices add` again for a new code, then `krowk sync join` here. Nothing was kept"),
+        format!("the pairing failed, and a code works once — get a new one from the other device: on '{from}' run `krowk devices add` again, then `krowk sync join` here. Nothing was kept"),
     )
 }
 
@@ -375,7 +444,10 @@ fn typed_code(ctx: &Ctx) -> Result<PairingCode, Error> {
 /// B: signs in if it has to, finds the person's one open pairing, takes
 /// the code at a prompt, and keeps the keys and the pin only once the
 /// chain A sealed adds exactly this machine.
-pub(super) fn join(ctx: &mut Ctx) -> Result<(), Error> {
+pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    if !args.is_empty() {
+        return Err(fail("bad_argument", "`krowk sync join` takes the code at its prompt, never as an argument — one given here is in your shell history now, so get a new code with `krowk devices add` and type it when asked"));
+    }
     terminal(ctx, JOIN_OFF_TERMINAL)?;
     let mut client = super::agent::new_client(ctx)?;
     if !client.authenticated() {
@@ -383,22 +455,32 @@ pub(super) fn join(ctx: &mut Ctx) -> Result<(), Error> {
         client = keyed_client(ctx, "`krowk sync join`")?;
     }
     let key = client.verify_key()?;
-    let _ = writeln!(ctx.io.stderr, "Signed in to {}", printable(if key.workspace_name.is_empty() { &key.workspace } else { &key.workspace_name }));
+    let who = if !key.email.is_empty() { &key.email } else if key.workspace_name.is_empty() { &key.workspace } else { &key.workspace_name };
+    let _ = writeln!(ctx.io.stderr, "Signed in as {}", printable(who));
     let store = keystore(ctx)?;
     let device = store.device_key().map_err(|e| fail("sync_setup_failed", e))?;
     let (signing, shared) = signer(&store, &device)?;
-    // A user key here is a join that finished only if this machine is on the
-    // list; one left by a pairing A never posted is replaced.
-    if store.user_keys().map_err(|e| fail("sync_setup_failed", e))?.is_some() {
-        if listed(&client, &device.id())? {
+    // Nothing here is forgotten on the registry's word: a user key left by
+    // a pairing A never posted is replaced only once A's own chain says so.
+    match listed(&client, &device.id())? {
+        Listing::Active if store.user_keys().map_err(|e| fail("sync_setup_failed", e))?.is_some() => {
             return Err(fail("already_joined", "this machine is already on your device list — there is nothing to join"));
         }
-        store.forget_user_keys().map_err(|e| fail("sync_setup_failed", e))?;
+        // Its keys are in the list's history, so no list takes them again.
+        Listing::Removed => {
+            return Err(fail(
+                "device_removed",
+                format!("this machine was removed from your devices, and its keys cannot be added again — move {} and {} aside, then run `krowk sync join`", store.device_path().display(), store.signing_path().display()),
+            ));
+        }
+        _ => {}
     }
     let open = client.find_open_pairing().map_err(|e| {
         if e.code() == "no_pairing" { fail("no_pairing", "none of your devices has a pairing open — run `krowk devices add` on one of them first, then `krowk sync join` here") } else { e }
     })?;
     let a_device = DeviceId::parse(&open.initiator_device.id).ok_or_else(|| fail("malformed_response", "the pairing names no device id"))?;
+    // Only the paired device's id is bound by the pairing; its name is the
+    // registry's, shown as a hint.
     let from = printable(&open.initiator_device.name);
     let code = typed_code(ctx)?;
     let _ = writeln!(ctx.io.stderr, "Waiting for approval on '{from}'…");
@@ -408,9 +490,11 @@ pub(super) fn join(ctx: &mut Ctx) -> Result<(), Error> {
     let result = join_steps(&client, &open.id, binding, code, me, &device, &store);
     let (seq, name) = match result {
         Ok(done) => done,
-        Err(()) => {
+        Err(saved) => {
             let _ = client.end_pairing(&open.id);
-            let _ = store.forget_user_keys();
+            if saved {
+                let _ = store.forget_user_keys();
+            }
             return Err(b_failed(&from));
         }
     };
@@ -422,6 +506,7 @@ pub(super) fn join(ctx: &mut Ctx) -> Result<(), Error> {
     let deadline = Instant::now() + POSTED;
     while signed.claim_key_device().is_err() {
         if Instant::now() > deadline {
+            let _ = signed.end_pairing(&open.id);
             let _ = store.forget_user_keys();
             return Err(fail(
                 "pairing_failed",
@@ -438,38 +523,60 @@ pub(super) fn join(ctx: &mut Ctx) -> Result<(), Error> {
     super::sessions::emit_data(ctx, json!({ "device": device.id().to_string(), "name": name, "seq": seq, "joined": true }), summary)
 }
 
-/// Whether `device` is on the person's device list as the registry serves
-/// it: only ever a reason to refuse, so the registry's word is enough.
-fn listed(client: &Client, device: &DeviceId) -> Result<bool, Error> {
-    let list = client.device_list_all()?;
-    Ok(entries(&list)?.iter().filter_map(|e| Entry::decode(&e.bytes).ok()).any(|e| e.action == Action::Add && e.subjects.iter().any(|s| s.id() == *device)))
+#[derive(PartialEq, Eq)]
+enum Listing {
+    Never,
+    Active,
+    Removed,
 }
 
-/// B's side from the hello to the ack. Every failure is `Err(())`: which
-/// check it was is nothing the person or an attacker needs, and the caller
-/// ends the pairing and discards the code whatever it was.
-fn join_steps(client: &Client, id: &str, binding: Binding, code: PairingCode, me: NewDevice, device: &DeviceKey, store: &Keystore) -> Result<(u64, String), ()> {
+/// Where `device` stands on the person's device list as the registry serves
+/// it, replaying its adds and removes: only ever a reason to refuse, so the
+/// registry's word is enough, and it never makes this machine forget.
+fn listed(client: &Client, device: &DeviceId) -> Result<Listing, Error> {
+    let list = client.device_list_all()?;
+    let mut at = Listing::Never;
+    for e in entries(&list)?.iter().filter_map(|e| Entry::decode(&e.bytes).ok()) {
+        if e.subjects.iter().any(|s| s.id() == *device) {
+            at = match e.action {
+                Action::Add => Listing::Active,
+                Action::Remove => Listing::Removed,
+                _ => at,
+            };
+        }
+    }
+    Ok(at)
+}
+
+/// B's side from the hello to the ack. Every failure is `Err(saved)`:
+/// which check it was is nothing the person or an attacker needs, and the
+/// caller ends the pairing and discards the code whatever it was — and
+/// forgets the keys only if this run kept them (`saved`).
+fn join_steps(client: &Client, id: &str, binding: Binding, code: PairingCode, me: NewDevice, device: &DeviceKey, store: &Keystore) -> Result<(u64, String), bool> {
     let a_device = binding.a_device;
-    let (b, hello) = PairB::start(binding, code, me.clone()).map_err(|_| ())?;
-    client.pairing_step(id, PairingStep::Join, &hello).map_err(|_| ())?;
+    let (b, hello) = PairB::start(binding, code, me.clone()).map_err(|_| false)?;
+    client.pairing_step(id, PairingStep::Join, &hello).map_err(|_| false)?;
     let none = |_: Option<Error>| fail("pairing_failed", "");
-    let spake = wait_for(client, id, "initiator_message", &none).map_err(|_| ())?;
-    let (await_reply, confirm) = b.receive_spake(&spake).map_err(|_| ())?;
-    client.pairing_step(id, PairingStep::Confirmation, &confirm).map_err(|_| ())?;
-    let reply = wait_for(client, id, "sealed_reply", &none).map_err(|_| ())?;
-    let received = await_reply.receive_reply(&reply).map_err(|_| ())?;
-    let (key, pin, seq) = check_payload(received.payload(), a_device, &me, device).map_err(|_| ())?;
+    let spake = wait_for(client, id, "initiator_message", &none).map_err(|_| false)?;
+    let (await_reply, confirm) = b.receive_spake(&spake).map_err(|_| false)?;
+    client.pairing_step(id, PairingStep::Confirmation, &confirm).map_err(|_| false)?;
+    let reply = wait_for(client, id, "sealed_reply", &none).map_err(|_| false)?;
+    let received = await_reply.receive_reply(&reply).map_err(|_| false)?;
+    let (key, pin, seq) = check_payload(received.payload(), a_device, &me, device, now()).map_err(|_| false)?;
     // Kept before the ack, so an ack that lands always leaves the keys
-    // here; a failure after this forgets them again.
-    store.save_user_keys(&key).map_err(|_| ())?;
-    store.save_pin(&pin).map_err(|_| ())?;
+    // here; a failure after this forgets them again. A user key an earlier
+    // pairing left goes only now, on A's authenticated word that this
+    // machine is new to the list.
+    store.forget_user_keys().map_err(|_| false)?;
+    store.save_user_keys(&key).map_err(|_| true)?;
+    store.save_pin(&pin).map_err(|_| true)?;
     let (_, ack) = received.acknowledge();
     match client.pairing_step(id, PairingStep::Acknowledgement, &ack) {
         // Lost on the way back, it may have landed: the caller learns which
         // from the list. Nothing is sent again either way.
         Ok(_) => Ok((seq, me.name)),
         Err(e) if e.status == 0 => Ok((seq, me.name)),
-        Err(_) => Err(()),
+        Err(_) => Err(true),
     }
 }
 
@@ -478,7 +585,7 @@ fn join_steps(client: &Client, id: &str, binding: Binding, code: PairingCode, me
 /// reply is where its trust comes from — and its last entry adds exactly
 /// this machine's keys, name and OS, signed by A alone, whose signing key
 /// the payload names; then the user key opens as the id the chain names.
-pub(super) fn check_payload(payload: &[u8], a_device: DeviceId, me: &NewDevice, device: &DeviceKey) -> Result<(UserKeys, Pin, u64), String> {
+pub(super) fn check_payload(payload: &[u8], a_device: DeviceId, me: &NewDevice, device: &DeviceKey, at: u64) -> Result<(UserKeys, Pin, u64), String> {
     let p: Payload = serde_json::from_slice(payload).map_err(|_| "the reply is not a payload krowk reads")?;
     if p.v != 1 {
         return Err("the reply is from a newer krowk".into());
@@ -488,7 +595,6 @@ pub(super) fn check_payload(payload: &[u8], a_device: DeviceId, me: &NewDevice, 
         .iter()
         .map(|(e, s)| SignedEntry::from_parts(e2e::unhex(e).ok_or("not hex")?, &e2e::unhex(s).ok_or("not hex")?).map_err(|e| e.0))
         .collect::<Result<Vec<_>, String>>()?;
-    let at = now();
     if p.received_at.len() != entries.len() {
         return Err("the reply's receipt times do not match its entries".into());
     }

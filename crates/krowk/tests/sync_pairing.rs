@@ -129,7 +129,11 @@ fn rest(rx: &std::sync::mpsc::Receiver<String>) -> String {
 
 /// `sync join` with `typed` as what the person types.
 fn join(home: &Path, api: &str, typed: &str) -> std::process::Output {
-    let mut b = krowk(home, api, DESKTOP, &["sync", "join", "--json"]).spawn().unwrap();
+    join_as(home, api, DESKTOP, typed)
+}
+
+fn join_as(home: &Path, api: &str, token: &str, typed: &str) -> std::process::Output {
+    let mut b = krowk(home, api, token, &["sync", "join", "--json"]).spawn().unwrap();
     b.stdin.take().unwrap().write_all(format!("{typed}\n").as_bytes()).unwrap();
     wait(b, Duration::from_secs(60))
 }
@@ -201,7 +205,7 @@ fn r_e2e_3_a_wrong_code_adds_nothing_and_the_new_device_asks_for_a_new_one() {
     let wrong = if code.starts_with('2') { "3" } else { "2" }.to_string() + &code[1..];
     let b = join(&desktop, &api, &wrong);
     let err = String::from_utf8_lossy(&b.stderr);
-    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("krowk devices add") && err.contains("new code"), "{err}");
+    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("krowk devices add") && err.contains("a code works once"), "{err}");
     let a = wait(a, Duration::from_secs(30));
     let said = rest(&a_err);
     assert!(!a.status.success() && !said.contains("[Y/n]"), "the laptop asked nothing: {said}");
@@ -298,7 +302,7 @@ fn r_e2e_3_a_connection_dropped_after_confirming_asks_for_a_new_code() {
     let code = code_shown(&a_err);
     let b = join(&desktop, &format!("http://{proxy}/v1"), &code);
     let err = String::from_utf8_lossy(&b.stderr);
-    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("on 'laptop' run `krowk devices add` again for a new code"), "{err}");
+    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("a code works once") && err.contains("on 'laptop' run `krowk devices add` again"), "{err}");
     let calls = seen.lock().unwrap().clone();
     assert_eq!(calls.iter().filter(|l| l.contains("/join")).count(), 1, "one start with the code, never a second: {calls:?}");
     assert!(calls.last().unwrap().contains("/confirmation"), "{calls:?}");
@@ -412,4 +416,90 @@ fn post(batch: &krowk_client::device_chain::Batch) -> krowk_api::sync::ListPost 
         wraps: batch.wraps.iter().map(|(d, w)| (d.to_string(), e2e::hex(w))).collect(),
         start_over: false,
     }
+}
+
+/// A machine that got the reply — and with it the user key — but never
+/// acknowledged it is put on the list anyway, so the person can see it and
+/// remove it: a machine that may hold the key is never left unlisted.
+#[test]
+fn a_new_device_that_never_acknowledges_is_listed_so_it_can_be_removed() {
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let r = root("unacked");
+    let laptop = r.join("laptop");
+    set_up(&laptop, &api);
+    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let a_err = lines(&mut a);
+    let code = krowk_client::pairing::PairingCode::parse(&code_shown(&a_err)).unwrap();
+    // B by hand: it runs the pairing to the reply, then ends it unacked.
+    let b = krowk_api::Client::new(&api, DESKTOP);
+    let user = b.verify_key().unwrap().user_id;
+    let open = b.find_open_pairing().unwrap();
+    let (key, signing) = (e2e::DeviceKey::generate(), e2e::SigningKey::generate());
+    let me = krowk_client::pairing::NewDevice { device: key.public(), signing: signing.public(), name: "stranger".into(), os: "Linux".into() };
+    let a_id = e2e::DeviceId::parse(&open.initiator_device.id).unwrap();
+    let binding = krowk_client::pairing::Binding { kind: krowk_client::pairing::PeerKind::SamePersonDevice, user_id: user, a_device: a_id, b_device: key.id() };
+    let (pb, hello) = krowk_client::pairing::PairB::start(binding, code, me).unwrap();
+    b.pairing_step(&open.id, krowk_api::sync::PairingStep::Join, &hello).unwrap();
+    let field = |f: fn(&krowk_api::sync::Pairing) -> &String| loop {
+        let p = b.show_pairing(&open.id).unwrap();
+        if !f(&p).is_empty() {
+            break e2e::unhex(f(&p)).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let (await_reply, confirm) = pb.receive_spake(&field(|p| &p.initiator_message)).unwrap();
+    b.pairing_step(&open.id, krowk_api::sync::PairingStep::Confirmation, &confirm).unwrap();
+    await_reply.receive_reply(&field(|p| &p.sealed_reply)).unwrap();
+    b.end_pairing(&open.id).unwrap();
+
+    let a = wait(a, Duration::from_secs(30));
+    let said = rest(&a_err);
+    assert!(!a.status.success() && said.contains("pairing_unconfirmed") && said.contains("krowk devices remove 'stranger'"), "{said}");
+    let chain = served(&api);
+    assert!(chain.devices().iter().any(|d| d.name == "stranger"), "listed, so it can be removed");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// The code is never an argument: `sync join CODE` is refused, saying the
+/// code is in the shell's history now, and `devices add` takes none.
+#[test]
+fn a_code_given_as_an_argument_is_refused() {
+    let r = root("argv");
+    let out = krowk(&r.join("desktop"), "http://127.0.0.1:9/v1", DESKTOP, &["sync", "join", "K7QF-9M3X"]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains("bad_argument") && err.contains("never as an argument"), "{err}");
+    let out = krowk(&r.join("laptop"), "http://127.0.0.1:9/v1", LAPTOP, &["devices", "add", "desktop"]).output().unwrap();
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("bad_argument"));
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// A machine removed from the list cannot bring its old keys back: `sync
+/// join` says so before any code is typed, rather than after the person
+/// has said yes on the other device.
+#[test]
+fn a_removed_machine_is_told_to_join_with_new_keys() {
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let r = root("removed");
+    let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
+    let key = set_up(&laptop, &api);
+    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let a_err = lines(&mut a);
+    let code = code_shown(&a_err);
+    assert!(join(&desktop, &api, &code).status.success());
+    assert!(wait(a, Duration::from_secs(30)).status.success());
+    let store = keys(&laptop);
+    let (device, signing) = (store.device().unwrap().unwrap(), store.signing_key().unwrap());
+    let chain = served(&api);
+    let gone = chain.devices().iter().find(|d| d.name == "desktop").unwrap();
+    let subject = Subject { kind: Kind::Device, name: gone.name.clone(), os: gone.os.clone(), device: gone.device, signing: gone.signing };
+    let pinned = Chain::verify(&chain_entries(&api), Trust::Pinned { head: chain.head(), verified_at: now(), first_seen: None }, now()).unwrap();
+    let (_, remove) = pinned.batch(&key, vec![krowk_client::device_chain::Change::Remove(subject)], device.id(), &signing, now()).unwrap();
+    krowk_api::Client::new(&api, LAPTOP).signed_by(DeviceSigner::new(device.id(), store.signing_key().unwrap()).shared()).append_device_list(&post(&remove)).unwrap();
+    // Its key went with it; signed in again, it is told to start afresh.
+    let again = join_as(&desktop, &api, "krowk_sk_pairing#desktop-again", "");
+    let err = String::from_utf8_lossy(&again.stderr);
+    assert!(!again.status.success() && err.contains("device_removed"), "{err}");
+    let _ = std::fs::remove_dir_all(&r);
 }
