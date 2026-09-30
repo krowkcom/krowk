@@ -42,13 +42,16 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          awk -v v="$VERSION" '
+          # A pre-release (v0.12.0-rc1) carries its release's notes, so
+          # every rc of one version reads the same CHANGELOG.md section.
+          v="${VERSION%%-*}"
+          awk -v v="$v" '
             $0 ~ "^## \\[" v "\\]" { found = 1; next }
             found && /^## \[/ { exit }
             found { print }
           ' CHANGELOG.md > release-notes.md
           grep -q '[^[:space:]]' release-notes.md \
-            || { echo "::error::CHANGELOG.md has no section for $VERSION" >&2; exit 1; }
+            || { echo "::error::CHANGELOG.md has no section for $v" >&2; exit 1; }
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
