@@ -100,16 +100,7 @@ fn scenario(name: &str) -> String {
 #[test]
 fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a_session() {
     let b = Sandbox::new("instances");
-    for name in ["personal", "work"] {
-        let added = b.json(&["providers", "add", "claude", "--name", name, "--json"], &[]);
-        let dir = b.data().join("accounts").join(format!("claude-{name}"));
-        assert_eq!(added["data"]["instance"], format!("claude:{name}"));
-        assert_eq!(added["data"]["kind"], "claude-code");
-        assert_eq!(added["data"]["definition"]["configDir"], dir.display().to_string());
-        assert_eq!((added["data"]["signed_in"].as_bool(), added["data"]["login"].as_str()), (Some(true), Some("signed in with a Claude max subscription")));
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
-    }
+    add_two_accounts(&b);
     // Claude's own login ran once per account, each in its own directory,
     // after `claude auth status` said there was none.
     let fake = b.fake_log();
@@ -160,6 +151,21 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
     let removed = b.json(&["providers", "remove", "claude:work", "--json"], &[]);
     assert_eq!(removed["data"]["config_dir_kept"], b.data().join("accounts/claude-work").display().to_string());
     assert!(b.data().join("accounts/claude-work/fake-login").exists());
+}
+
+/// Adds the personal and work accounts, each signed in through Claude's own
+/// login into its own private directory.
+fn add_two_accounts(b: &Sandbox) {
+    for name in ["personal", "work"] {
+        let added = b.json(&["providers", "add", "claude", "--name", name, "--json"], &[]);
+        let dir = b.data().join("accounts").join(format!("claude-{name}"));
+        assert_eq!(added["data"]["instance"], format!("claude:{name}"));
+        assert_eq!(added["data"]["kind"], "claude-code");
+        assert_eq!(added["data"]["definition"]["configDir"], dir.display().to_string());
+        assert_eq!((added["data"]["signed_in"].as_bool(), added["data"]["login"].as_str()), (Some(true), Some("signed in with a Claude max subscription")));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    }
 }
 
 #[test]
