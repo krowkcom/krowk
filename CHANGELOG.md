@@ -9,6 +9,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-30
+
 ### Added
 
 - **Releases are signed, come with an SBOM, and are proven reproducible.**
