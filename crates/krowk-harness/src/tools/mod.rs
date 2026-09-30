@@ -21,7 +21,10 @@
 //! bypassPermissions opened more.
 
 mod edit;
+mod exact;
 mod patch;
+#[cfg(all(test, target_os = "linux"))]
+mod sandbox_tests;
 pub(crate) mod search;
 
 use crate::permissions::{Access, Call};
@@ -328,7 +331,7 @@ pub async fn execute(name: &str, input: &Value, env: &ToolEnv<'_>, scope: Scope)
             Err(e) => e,
         },
         BASH => match parse_input::<BashInput>(name, input) {
-            Ok(i) => bash(&i, env.cwd).await,
+            Ok(i) => bash(&i, env.cwd, scope.sandbox.as_deref()).await,
             Err(e) => e,
         },
         // krowk_push's rules keep it in the working directory and away from
@@ -400,6 +403,10 @@ pub struct Scope {
     /// keys, logins, sessions and settings.
     pub secrets: Vec<PathBuf>,
     pub hidden: Hidden,
+    /// The OS sandbox the session runs in (R-PERM-3): `bash` runs inside
+    /// it, and the file tools hold its lines themselves — no rule, grant,
+    /// person or mode opens them.
+    pub sandbox: Option<std::sync::Arc<crate::sandbox::Plan>>,
 }
 
 /// Where one path leads, for the evaluator.
@@ -423,7 +430,7 @@ const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".krowk"];
 impl Scope {
     /// Only the working directory, nothing opened.
     pub fn within(cwd: &Path) -> Scope {
-        Scope { cwd: cwd.to_path_buf(), roots: Vec::new(), read_roots: Vec::new(), outside: false, open: false, protected: Vec::new(), secrets: Vec::new(), hidden: Hidden::default() }
+        Scope { cwd: cwd.to_path_buf(), roots: Vec::new(), read_roots: Vec::new(), outside: false, open: false, protected: Vec::new(), secrets: Vec::new(), hidden: Hidden::default(), sandbox: None }
     }
 
     /// Where `p` (absolute) leads against the tools' reach, for a read or an
@@ -519,8 +526,26 @@ impl Scope {
     /// or why the tool may not touch it. The path is returned as spelled
     /// (joined to the working directory), so messages name what the model
     /// asked for; the check is on where it leads.
+    ///
+    /// Under a sandbox the path is resolved once, and that — where it
+    /// leads — is what is judged and what is returned: the tool then opens
+    /// it following no symlink (`exact`), so one swapped in after the check
+    /// fails the open rather than leading it elsewhere.
     pub fn path(&self, path: &str) -> Result<PathBuf, String> {
         let p = resolve(&self.cwd, path);
+        if let Some(plan) = &self.sandbox {
+            let real = real_path(&p, 0).map_err(|e| format!("{} cannot be resolved: {e}", p.display()))?;
+            if plan.hides(&real) {
+                return Err(format!("{} is hidden by the {} sandbox, which keeps credentials, the home outside the workspace and krowk's home out of reach: nothing opens it while krowk runs sandboxed", p.display(), plan.profile.name()));
+            }
+            return match self.outside {
+                true => Ok(real),
+                false => match self.reach(&real, false) {
+                    Reach::Inside | Reach::Fenced(_) => Ok(real),
+                    Reach::Outside(why) => Err(format!("{why}: the file tools reach only inside the working directory and the directories the settings add, unless a person allows it, an allow rule covers it, or krowk runs with `--permission-mode bypassPermissions`")),
+                },
+            };
+        }
         if self.outside {
             return Ok(p);
         }
@@ -530,10 +555,47 @@ impl Scope {
         }
     }
 
+    /// Whether the sandbox hides `p` from a search walking `root`: judged
+    /// by where the root leads, so a root reached through a symlink skips
+    /// what the sandbox hides as the real one does.
+    pub(crate) fn walk_hides(&self, root: &Path) -> impl Fn(&Path) -> bool + '_ {
+        let real = self.sandbox.as_ref().map(|_| real_path(root, 0).unwrap_or_else(|_| root.to_path_buf()));
+        move |rel: &Path| match (&self.sandbox, &real) {
+            (Some(plan), Some(real)) => {
+                let at = real.join(rel);
+                // A symlink the walk lists is opened through, so it is judged
+                // by where it leads: a link in the workspace to a key in a
+                // hidden `~/.ssh` is skipped. Only links are resolved, so the
+                // walk stays cheap.
+                plan.hides(&at) || (std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) && plan.hides(&real_path(&at, 0).unwrap_or(at)))
+            }
+            _ => false,
+        }
+    }
+
     /// `path`, for a tool that changes the file: also never inside a fenced
     /// or `protected` directory unless the scope is open.
     pub fn edit_path(&self, path: &str) -> Result<PathBuf, String> {
         let p = resolve(&self.cwd, path);
+        if let Some(plan) = &self.sandbox {
+            // The sandbox's lines, which nothing opens: the file tools write
+            // where a sandboxed command could, and nowhere else — judged
+            // and returned as the path leads, once (see `path`).
+            // The fences as the workspace holds them now: a repository or a
+            // configured hooks directory made since the scope was.
+            let plan = &plan.current();
+            if let Some(why) = &plan.refused {
+                return Err(format!("{} was not changed: {why}", p.display()));
+            }
+            let real = real_path(&p, 0).map_err(|e| format!("{} cannot be resolved: {e}", p.display()))?;
+            let why = match self.reach(&real, true) {
+                _ if !plan.profile.writes() => format!("the {} sandbox writes nothing", plan.profile.name()),
+                Reach::Inside if plan.fences(&real) => format!("{} is inside a git directory or a hooks directory a repository names, which the sandbox keeps read-only", p.display()),
+                Reach::Inside => return Ok(real),
+                Reach::Fenced(why) | Reach::Outside(why) => why,
+            };
+            return Err(format!("{why} — krowk runs in the {} sandbox, which no rule, person or mode opens (R-PERM-3)", plan.profile.name()));
+        }
         match self.reach(&p, true) {
             Reach::Inside => Ok(p),
             Reach::Fenced(_) if self.open => Ok(p),
@@ -580,17 +642,25 @@ pub(crate) fn real_path(p: &Path, links: usize) -> Result<PathBuf, String> {
 /// beside it, given the old file's permissions, then renamed over it, so a
 /// crash or a full disk never leaves half a file. A symlink is written
 /// through, as a plain write would be: the link stays a link.
-pub(crate) fn write_atomic(path: &Path, content: &[u8]) -> std::io::Result<()> {
-    let tmp = stage(path, content)?;
-    commit(&tmp, path)
+///
+/// `exact` (under a sandbox): `path` is where the check found it leads, and
+/// is written exactly there — a symlink swapped in since is replaced, never
+/// followed (`exact`).
+pub(crate) fn write_atomic(path: &Path, content: &[u8], exact: bool) -> std::io::Result<()> {
+    let tmp = stage(path, content, exact)?;
+    commit(&tmp, path, exact)
 }
 
 /// The first half of `write_atomic`: the temporary file, written and
 /// flushed, ready to rename. A patch stages every file before it renames any.
-pub(crate) fn stage(path: &Path, content: &[u8]) -> std::io::Result<PathBuf> {
+pub(crate) fn stage(path: &Path, content: &[u8], exact: bool) -> std::io::Result<PathBuf> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
+    if exact {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        return exact::stage(path, content, &format!(".{name}.krowk-{}-{}.tmp", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    }
     let target = target_of(path);
     // A rename would replace a read-only file as readily as any other; the
     // mode says it is not to be written, so it is not.
@@ -618,10 +688,19 @@ pub(crate) fn stage(path: &Path, content: &[u8]) -> std::io::Result<PathBuf> {
 }
 
 /// Renames a staged file over its target.
-pub(crate) fn commit(tmp: &Path, path: &Path) -> std::io::Result<()> {
+pub(crate) fn commit(tmp: &Path, path: &Path, exact: bool) -> std::io::Result<()> {
+    if exact {
+        return exact::commit(tmp, path);
+    }
     std::fs::rename(tmp, target_of(path)).inspect_err(|_| {
         let _ = std::fs::remove_file(tmp);
     })
+}
+
+/// Removes a file a patch deletes: under a sandbox (`exact`), its name in
+/// the directory the check saw, never through a link swapped in.
+pub(crate) fn remove(path: &Path, exact: bool) -> std::io::Result<()> {
+    if exact { exact::remove(path) } else { std::fs::remove_file(path) }
 }
 
 /// The file a write lands in: through a symlink, when the path is one.
@@ -645,7 +724,8 @@ async fn read(i: &ReadInput, scope: &Scope) -> (String, bool) {
     };
     // Both come from the model: clamped, so no value overflows the arithmetic.
     let (start, limit) = (i.offset.unwrap_or(1).clamp(1, usize::MAX / 2), i.limit.unwrap_or(READ_DEFAULT_LINES).clamp(1, usize::MAX / 2));
-    tokio::task::spawn_blocking(move || read_file(&path, start, limit))
+    let exact = scope.sandbox.is_some();
+    tokio::task::spawn_blocking(move || read_file(&path, start, limit, exact))
         .await
         .unwrap_or_else(|e| (format!("read failed: {e}"), true))
 }
@@ -654,7 +734,10 @@ async fn read(i: &ReadInput, scope: &Scope) -> (String, bool) {
 /// or `/dev/stdin` put where a file was expected is refused, not waited on
 /// or read forever. The check is repeated on the open handle, so a path
 /// swapped between the two cannot slip one through.
-fn open_regular(path: &Path) -> Result<(std::fs::File, u64), String> {
+///
+/// `exact` (under a sandbox): `path` is where the check found it leads, and
+/// is opened following no symlink, so one swapped in since fails the open.
+fn open_regular(path: &Path, exact: bool) -> Result<(std::fs::File, u64), String> {
     let not_regular = || format!("{} is not a regular file (a directory, a device or a pipe), which read does not open", path.display());
     match std::fs::metadata(path) {
         Ok(m) if m.is_file() => {}
@@ -662,11 +745,15 @@ fn open_regular(path: &Path) -> Result<(std::fs::File, u64), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{} does not exist", path.display())),
         Err(e) => return Err(format!("{} could not be read: {e}", path.display())),
     }
-    let mut o = std::fs::OpenOptions::new();
-    o.read(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, libc::O_NONBLOCK);
-    let f = o.open(path).map_err(|e| format!("{} could not be read: {e}", path.display()))?;
+    let f = if exact {
+        exact::open_read(path).map_err(|e| format!("{} could not be read: {e}", path.display()))?
+    } else {
+        let mut o = std::fs::OpenOptions::new();
+        o.read(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, libc::O_NONBLOCK);
+        o.open(path).map_err(|e| format!("{} could not be read: {e}", path.display()))?
+    };
     let meta = f.metadata().map_err(|e| format!("{} could not be read: {e}", path.display()))?;
     if !meta.is_file() {
         return Err(not_regular());
@@ -674,9 +761,9 @@ fn open_regular(path: &Path) -> Result<(std::fs::File, u64), String> {
     Ok((f, meta.len()))
 }
 
-fn read_file(path: &Path, start: usize, limit: usize) -> (String, bool) {
+fn read_file(path: &Path, start: usize, limit: usize, exact: bool) -> (String, bool) {
     use std::io::{BufRead, Read};
-    let (file, size) = match open_regular(path) {
+    let (file, size) = match open_regular(path, exact) {
         Ok(f) => f,
         Err(e) => return (e, true),
     };
@@ -809,11 +896,55 @@ impl Drop for GroupKill {
     }
 }
 
-async fn bash(i: &BashInput, cwd: &Path) -> (String, bool) {
+async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
     use tokio::io::AsyncReadExt;
     let timeout = i.timeout_ms.map_or(BASH_DEFAULT_TIMEOUT, Duration::from_millis).min(BASH_MAX_TIMEOUT);
-    let mut cmd = tokio::process::Command::new("bash");
-    cmd.arg("-c").arg(&i.command).current_dir(cwd);
+    // Inside the sandbox when the session has one, or not at all: a plan
+    // this machine cannot enforce refuses the command (R-PERM-3). Laid out
+    // as the workspace is now, so a repository or a hooks directory made
+    // since the session's scope was is fenced too.
+    let current = sandbox.map(crate::sandbox::Plan::current);
+    let sandbox = current.as_ref();
+    if let Some(why) = sandbox.and_then(|p| p.refused.as_ref()) {
+        return (format!("the command was not run: {why}"), true);
+    }
+    let mut cmd = match sandbox.filter(|p| p.kernel).map(|p| crate::sandbox::bash(p, &i.command)) {
+        None => {
+            let mut c = tokio::process::Command::new("bash");
+            c.arg("-c").arg(&i.command);
+            c
+        }
+        Some(Ok((program, args))) => {
+            let mut c = tokio::process::Command::new(program);
+            // bubblewrap's own environment is the allowlist too: its
+            // process inside the namespace is pid 1, whose environ the
+            // command can read.
+            c.args(args).env_clear().envs(crate::sandbox::env());
+            // Nothing krowk inherited reaches the sandbox open: every
+            // descriptor past stdio is closed when bubblewrap starts.
+            // SAFETY: close_range(2) with CLOSE_RANGE_CLOEXEC only marks
+            // descriptors, allocates nothing, and is async-signal-safe;
+            // run after the child's stdio is in place.
+            #[cfg(target_os = "linux")]
+            unsafe {
+                c.pre_exec(|| {
+                    const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
+                    if libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, libc::c_uint::MAX, CLOSE_RANGE_CLOEXEC) != 0 {
+                        // Before Linux 5.11: one by one, up to the limit.
+                        let max = libc::sysconf(libc::_SC_OPEN_MAX).clamp(1024, 1 << 20) as libc::c_int;
+                        for fd in 3..max {
+                            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+                        }
+                    }
+                    Ok(())
+                });
+            }
+            c
+        }
+        Some(Err(fix)) => return (format!("the command was not run: {fix}"), true),
+    };
+    let mut unfenced = sandbox.filter(|p| p.kernel).map(crate::sandbox::Unfenced::before);
+    cmd.current_dir(cwd);
     cmd.stdin(std::process::Stdio::null());
     // One pipe for both streams, as a terminal would have it: the model
     // reads what the command printed in the order it printed it, which two
@@ -908,7 +1039,13 @@ async fn bash(i: &BashInput, cwd: &Path) -> (String, bool) {
             if held_open {
                 tail += " (a process it started in the background still holds its output; krowk stopped reading when the shell exited)";
             }
-            let body = if text.is_empty() { tail.clone() } else { format!("{}\n{tail}", text.trim_end_matches('\n')) };
+            let mut body = if text.is_empty() { tail.clone() } else { format!("{}\n{tail}", text.trim_end_matches('\n')) };
+            let appeared = unfenced.as_mut().map(|u| u.appeared()).unwrap_or_default();
+            if !appeared.is_empty() {
+                let names = appeared.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
+                body += &format!("\nthe sandbox removed {names}, which the command created: git, Claude Code, Codex and krowk run what such a directory names, so none is made from inside the sandbox — ask the person to create it");
+                return (body, true);
+            }
             (body, code != Some(0))
         }
         Err(_) => {
@@ -919,11 +1056,11 @@ async fn bash(i: &BashInput, cwd: &Path) -> (String, bool) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
-    pub(super) fn dir(name: &str) -> PathBuf {
+    pub(crate) fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("krowk-harness-tools-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
@@ -1031,7 +1168,7 @@ mod tests {
         let f = d.join("run.sh");
         std::fs::write(&f, "old").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o750)).unwrap();
-        write_atomic(&f, b"new").unwrap();
+        write_atomic(&f, b"new", false).unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "new");
         assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o750);
         let left: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name()).collect();

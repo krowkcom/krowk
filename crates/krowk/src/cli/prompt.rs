@@ -13,6 +13,7 @@ use krowk_harness::log;
 use krowk_harness::readiness;
 use krowk_harness::evidence::{PublishRequest, Publisher};
 use krowk_harness::permissions;
+use krowk_harness::sandbox::{self, By, Profile, Sandbox};
 use krowk_harness::protocol::{BudgetLimits, Effort, PermissionMode, TurnStatus, Usage};
 use std::collections::HashMap;
 use krowk_harness::subagent::{AgentsConfig, Models};
@@ -71,9 +72,16 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     let runs_in = session_cwd.clone().unwrap_or_else(|| cwd.clone());
     let trusted = flag_trust || store.trusts(&trust::root(&runs_in));
     let model = route(ctx, &registry, asked.as_ref(), session_model.as_ref(), &runs_in, trusted)?;
+    let runs_native = model.as_ref().or(session_model.as_ref()).and_then(|m| registry.get(&m.instance).ok()).is_some_and(|i| i.backend.is_none());
     let vendor = vendor_of(model.clone().or(session_model).as_ref(), &registry);
-    let permissions = permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| flag_trust || store.trusts(root)), false);
+    let mut permissions = permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| flag_trust || store.trusts(root)), false);
     let (permission_mode, notices) = resolve_mode(flag_mode, &permissions, session_cwd.as_deref().unwrap_or(&cwd))?;
+    // A settings file naming any mode chose one, even one krowk reads as
+    // default (Claude Code's `auto`): its notice says krowk asks, and so it does.
+    let settings_chose = !notices.is_empty() || permissions::settings::load(&permissions, session_cwd.as_deref().unwrap_or(&cwd)).is_ok_and(|l| l.default_mode.is_some());
+    let here = Here { enforcer: sandbox::enforcer().map(|_| ()), container: sandbox::in_container() };
+    let (sandbox, permission_mode) = sandbox_and_mode(&ctx.f.sandbox, ctx.f.daemon, flag_mode.is_some() || settings_chose, permission_mode, runs_native, &here)?;
+    permissions.sandbox = sandbox;
     for n in notices {
         let _ = writeln!(ctx.io.stderr, "! {n}");
     }
@@ -175,6 +183,51 @@ pub(super) fn permission_flag(ctx: &Ctx) -> Result<Option<PermissionMode>, Error
     }
 }
 
+/// What this machine offers a sandbox: an enforcer, or the fix that would
+/// give it one; and whether krowk already runs inside a container.
+struct Here {
+    enforcer: Result<(), String>,
+    container: bool,
+}
+
+/// The sandbox a prompt's tools run in and the mode it runs in (R-PERM-3).
+/// `--sandbox <profile>` is that sandbox or nothing: a machine that cannot
+/// enforce it, a backend that runs its own tools, or the daemon, which
+/// holds no sandbox of this process's, refuses the run. Without the flag,
+/// a run whose mode nobody chose (`mode_chosen`: no `--permission-mode`,
+/// no `defaultMode`) accepts edits only where a sandbox holds its tools —
+/// the workspace sandbox where bubblewrap works, or a container with the
+/// file tools held to the workspace profile's fences — and
+/// otherwise keeps asking, which headless refuses.
+fn sandbox_and_mode(flag: &str, daemon: bool, mode_chosen: bool, mode: PermissionMode, runs_native: bool, here: &Here) -> Result<(Option<Sandbox>, PermissionMode), Error> {
+    let asked = match flag {
+        "" => None,
+        "off" => Some(None),
+        s => Some(Some(Profile::parse(s).ok_or_else(|| fail("bad_flag", format!("--sandbox {s} is not a profile — one of {}, or off", Profile::NAMES.join(", "))))?)),
+    };
+    let chosen = |m: PermissionMode| if mode_chosen { mode } else { m };
+    Ok(match asked {
+        Some(None) => (None, mode),
+        Some(Some(p)) => {
+            if daemon {
+                return Err(fail("bad_flag", "--sandbox holds the tools of a turn in this process, and --daemon runs the turn in the host daemon, which has no sandbox yet — drop one of them"));
+            }
+            if !runs_native {
+                return Err(fail("sandbox_unsupported", "the model runs on a backend (Claude Code or Codex), which runs its own tools outside krowk's sandbox — pick a model krowk runs natively with --model, or drop --sandbox"));
+            }
+            here.enforcer.clone().map_err(|fix| fail("sandbox_unavailable", fix))?;
+            (Some(Sandbox { profile: p, by: By::Bubblewrap }), chosen(PermissionMode::AcceptEdits))
+        }
+        None if mode_chosen || daemon || !runs_native => (None, mode),
+        None if here.enforcer.is_ok() => (Some(Sandbox { profile: Profile::Workspace, by: By::Bubblewrap }), PermissionMode::AcceptEdits),
+        // The container holds the commands; the file tools hold the
+        // workspace profile's fences themselves, which is what lets its
+        // edits be accepted.
+        None if here.container => (Some(Sandbox { profile: Profile::Workspace, by: By::Container }), PermissionMode::AcceptEdits),
+        None => (None, mode),
+    })
+}
+
 /// The mode a prompt runs in: the flag, else the most specific
 /// `permissions.defaultMode` the settings name (a repository's only once it
 /// is trusted, and never bypassPermissions or unhinged), else default — with the
@@ -211,6 +264,7 @@ pub(super) fn permissions_config(ctx: &Ctx, config: &serde_json::Value, trusted:
         krowk_dir: super::providers::krowk_dir().ok(),
         trusted: Some(trusted),
         approvals,
+        sandbox: None,
     }
 }
 
@@ -508,4 +562,33 @@ pub(super) fn agents_config(env: &dyn Fn(&str) -> String) -> AgentsConfig {
 /// classifies a registry failure.
 pub(super) fn engine_error(code: &str, message: &str, status: u16) -> Error {
     Error { status, ..fail(code, message) }
+}
+
+#[cfg(test)]
+mod sandbox_tests {
+    use super::*;
+
+    /// R-PERM-3: a headless run nobody chose a mode for accepts edits only
+    /// inside a sandbox or a container; `--sandbox` on a machine without
+    /// bubblewrap refuses with the fix instead of running unsandboxed.
+    #[test]
+    fn r_perm_3_headless_runs_default_to_accept_edits_only_inside_a_sandbox() {
+        let (bwrap, none) = (Here { enforcer: Ok(()), container: false }, Here { enforcer: Err("install bubblewrap".into()), container: false });
+        let d = PermissionMode::Default;
+        let ok = |flag: &str, daemon, chosen, native, here: &Here| sandbox_and_mode(flag, daemon, chosen, d, native, here).map_err(|e| e.fix());
+        let (bw, ct) = (|p| Some(Sandbox { profile: p, by: By::Bubblewrap }), Some(Sandbox { profile: Profile::Workspace, by: By::Container }));
+        assert_eq!(ok("", false, false, true, &bwrap), Ok((bw(Profile::Workspace), PermissionMode::AcceptEdits)));
+        assert_eq!(ok("", false, false, true, &none), Ok((None, d)), "no sandbox: edits are still asked about, so refused");
+        assert_eq!(ok("", false, false, true, &Here { container: true, enforcer: Err("install bubblewrap".into()) }), Ok((ct, PermissionMode::AcceptEdits)), "a container is a sandbox, and the file tools keep its fences");
+        assert_eq!(ok("", false, true, true, &bwrap), Ok((None, d)), "a chosen mode stands");
+        assert_eq!(ok("", false, false, false, &bwrap), Ok((None, d)), "a backend runs its own tools");
+        assert_eq!(ok("", true, false, true, &bwrap), Ok((None, d)), "the daemon has no sandbox yet");
+        assert_eq!(ok("strict", false, true, true, &bwrap), Ok((bw(Profile::Strict), d)));
+        assert_eq!(ok("off", false, false, true, &bwrap), Ok((None, d)));
+        let refused = ok("workspace", false, false, true, &none).unwrap_err();
+        assert!(refused.contains("install bubblewrap"), "{refused}");
+        assert!(ok("workspace", false, false, false, &bwrap).unwrap_err().contains("backend"));
+        assert!(ok("workspace", true, false, true, &bwrap).unwrap_err().contains("--daemon"));
+        assert!(ok("loose", false, false, true, &bwrap).unwrap_err().contains("not a profile"));
+    }
 }

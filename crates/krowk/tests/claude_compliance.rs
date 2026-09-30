@@ -74,6 +74,13 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         if matches!(name.to_str(), Some("target" | ".git" | "node_modules" | "dist" | "bin")) {
             continue;
         }
+        // The sandbox's escape suite (R-PERM-3) plants fake copies of the
+        // vendors' login files in a scratch home to prove the sandbox hides
+        // them; it names the paths to write decoys, never to read the real
+        // files. Exempt by its exact path, so nothing else hides here.
+        if name == "r192b_escapes.rs" && dir.ends_with("crates/krowk-harness/tests") {
+            continue;
+        }
         // The schema of `codex app-server`, pinned byte for byte from Codex
         // (scripts/codex_schema.sh): Codex's own words for its own options,
         // one of them a login store krowk never uses — not krowk's source.

@@ -1290,6 +1290,12 @@ stdout:
       "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds"
     },
     {
+      "name": "sandbox",
+      "type": "string",
+      "default": "",
+      "usage": "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works"
+    },
+    {
       "name": "toolset",
       "type": "string",
       "default": "",
@@ -2655,6 +2661,12 @@ stdout:
       "type": "string",
       "default": "default",
       "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds"
+    },
+    {
+      "name": "sandbox",
+      "type": "string",
+      "default": "",
+      "usage": "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works"
     },
     {
       "name": "toolset",
@@ -4038,6 +4050,12 @@ stdout:
       "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds"
     },
     {
+      "name": "sandbox",
+      "type": "string",
+      "default": "",
+      "usage": "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works"
+    },
+    {
       "name": "toolset",
       "type": "string",
       "default": "",
@@ -5417,6 +5435,12 @@ tty:
       "type": "string",
       "default": "default",
       "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds"
+    },
+    {
+      "name": "sandbox",
+      "type": "string",
+      "default": "",
+      "usage": "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works"
     },
     {
       "name": "toolset",

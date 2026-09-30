@@ -710,6 +710,11 @@ fn prompt_flags() -> Vec<Flag> {
             "default",
         ),
         flag(
+            "sandbox",
+            STRING,
+            "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works",
+        ),
+        flag(
             "toolset",
             STRING,
             "With -p: the tools' preset — claude (str_replace), gpt (apply_patch) or grok (search_replace). The model's family picks one when absent",
