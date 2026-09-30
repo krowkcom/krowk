@@ -1,5 +1,5 @@
 # The ceiling clippy::cognitive_complexity holds each function to; the Makefile
 # denies that lint, which clippy leaves off by default. 25 is clippy's own
-# default, and the lowest the codebase met with ten functions split and the six
-# largest legacy ones allowed, each marked with a TODO where it stands.
+# default, and the lowest the codebase met with seven functions split and nine
+# large legacy ones allowed, each marked with a TODO where it stands.
 cognitive-complexity-threshold = 25
