@@ -1,22 +1,14 @@
 name: CI
 
-# The gate every pull request passes, whatever branch it targets: `make check`
-# on Linux x86, cut into jobs that run side by side, so a push is answered in
-# the time of the slowest piece rather than the sum. The other platforms and
-# the budgets are platforms.yml's and release.yml's, off the review loop.
-#
-# A push that lands on a branch still being checked cancels the check: only
-# the newest commit of a pull request is worth an answer. Documentation alone
-# starts nothing.
+# The checks every pull request gets from GitHub: the ones that take seconds,
+# and want a pinned Codex or today's advisory database a laptop may not have. `make check` itself is run where the
+# author already is, by `make signoff`, which puts a green `signoff` status on
+# the pushed commit (gh-signoff, see the Makefile). full.yml runs it again on
+# every platform after the merge, and the budgets wait for a release.
 on:
   pull_request:
-    paths-ignore: &docs
-      - "*.md"
-      - LICENSE
-      - THIRD-PARTY-NOTICES
   push:
     branches: [main]
-    paths-ignore: *docs
 
 permissions:
   contents: read
@@ -26,59 +18,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Clippy over all three builds, and the agent build's dependency list.
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: ./.github/actions/setup
-        with:
-          cache: lint
-
-      - name: Clippy, every build
-        run: make lint lean-deps
-
-  # The ci profile retries a failed test twice: one that then passes is
-  # reported FLAKY instead of failing the job.
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: ./.github/actions/setup
-        with:
-          cache: test
-
-      - name: Unit and integration tests
-        run: make test
-        env:
-          NEXTEST_PROFILE: ci
-
-  golden:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          # `git describe` stamps the version the golden cases mask; a shallow
-          # clone without tags still describes, just less precisely.
-          fetch-depth: 0
-          persist-credentials: false
-
-      - uses: ./.github/actions/setup
-        with:
-          cache: golden
-
-      - name: Golden cases
-        run: make golden
-
   # R-OSS-3: every crate both builds link, on every target the release ships,
   # held to deny.toml — no RustSec advisory, no licence outside its list,
   # nothing from outside crates.io. On every pull request, because a

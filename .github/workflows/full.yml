@@ -1,15 +1,15 @@
-name: Platforms
+name: Full
 
-# `make check` on the platforms ci.yml leaves out: Linux arm64 and macOS. The
-# golden cases are exactly the kind of test a platform difference breaks
-# (temp paths, file modes, what the machine's own tables say), but macOS
-# runners are few and queue behind every open pull request, so this runs
-# after the merge rather than in the review loop: on every push to main, the
-# newest cancelling the one before.
+# `make check` on every platform CI can run natively. The golden cases are
+# exactly the kind of test a platform difference breaks (temp paths, file
+# modes, what the machine's own tables say), but a pull request is signed off
+# on its author's machine (`make signoff`), and macOS runners are few and
+# queue behind every open pull request. So this runs after the merge, on
+# every push to main, the newest cancelling the one before.
 #
 # A pull request that touches something platform-shaped asks for it up front
 # with the `full-ci` label, or by hand:
-#   gh workflow run platforms.yml --ref <branch>
+#   gh workflow run full.yml --ref <branch>
 on:
   push:
     branches: [main]
@@ -25,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: platforms-${{ github.ref }}
+  group: full-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04-arm, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository

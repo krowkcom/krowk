@@ -2,7 +2,7 @@
 # A checkout and a release should not disagree about what version this is.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 
-.PHONY: build test lint check install dev mock clean dist release-check golden golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps bench
+.PHONY: build test lint check signoff install dev mock clean dist release-check golden golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps bench
 
 build: ## Build target/release/krowk (the full build) and krowk-mcp
 	KROWK_VERSION=$(VERSION) cargo build --release -p krowk --features harness
@@ -22,6 +22,17 @@ lint:
 	cargo clippy --workspace --all-targets --features krowk/harness -- -D warnings
 
 check: lint lean-deps test golden ## Everything CI runs
+
+# gh-signoff (github.com/basecamp/gh-signoff): `make check` on this machine,
+# then a green `signoff` status on the commit, which is what a pull request
+# needs to merge instead of a queue for CI runners. The status names a commit,
+# so the tree has to be clean, and the commit pushed by the time it is posted.
+# The ci profile retries a flaky test the way CI would.
+signoff: ## Run `make check` here and sign off on the commit
+	@gh signoff --help >/dev/null 2>&1 || { echo "gh extension install basecamp/gh-signoff" >&2; exit 1; }
+	@test -z "$$(git status --porcelain)" || { echo "signoff names a commit: commit or stash first" >&2; exit 1; }
+	sha=$$(git rev-parse HEAD) && NEXTEST_PROFILE=ci $(MAKE) check && \
+		{ gh signoff --commit "$$sha" || { echo "push, then: gh signoff --commit $$sha" >&2; exit 1; }; }
 
 # R-PKG-2: the agent build links exactly the crates crates/krowk/lean-deps.txt lists, on every target.
 lean-deps: ## Hold the agent build to its dependency list
