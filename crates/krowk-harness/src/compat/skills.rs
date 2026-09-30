@@ -5,10 +5,11 @@
 //! calls the `skill` tool with the name, and the files beside it (scripts,
 //! references) are the model's to read from there.
 //!
-//! Skills are found in krowk's home (`skills/`), Claude Code's
-//! user directory (`skills/`), and `.claude/skills` in every directory from
-//! the repository's root down to the working directory; a skill of the same
-//! name found later — deeper — replaces the one before. A `SKILL.md` with
+//! Skills are found in krowk's home (`skills/`), `~/.agents/skills`, Claude
+//! Code's user directory (`skills/`), and `.agents/skills` then
+//! `.claude/skills` in every directory from the repository's root down to the
+//! working directory; a skill of the same name found later — deeper, or
+//! Claude's beside the shared one — replaces the one before. A `SKILL.md` with
 //! no description is not listed: the description is what the model chooses
 //! by. A skill's directory is readable by the file tools as the working
 //! directory is, and never writable.
@@ -75,11 +76,15 @@ pub fn discover(cfg: &Config, cwd: &Path) -> Vec<Skill> {
     if let Some(d) = &cfg.krowk_dir {
         read_dir_of(&d.join("skills"), &mut out, None);
     }
+    if let Some(h) = &cfg.home {
+        read_dir_of(&h.join(".agents/skills"), &mut out, None);
+    }
     if let Some(d) = cfg.claude_home() {
         read_dir_of(&d.join("skills"), &mut out, None);
     }
     let root = crate::trust::root(cwd);
     for dir in crate::permissions::settings::chain(&root, cwd) {
+        read_dir_of(&dir.join(".agents/skills"), &mut out, Some(&root));
         read_dir_of(&dir.join(".claude/skills"), &mut out, Some(&root));
     }
     out
@@ -91,12 +96,15 @@ pub const INVOKED: &str = "<skill name=\"";
 
 /// A prompt that asks for a skill — `/name`, then what it is for — as the
 /// model reads it next to the prompt: the skill's instructions, loaded as
-/// the `skill` tool would. None when the prompt names no skill the person
-/// may ask for.
+/// the `skill` tool would, with `$ARGUMENTS` replaced by the words after
+/// the name, as Claude Code does. None when the prompt names no skill the
+/// person may ask for.
 pub fn invoked(list: &[Skill], prompt: &str) -> Option<String> {
-    let name = prompt.strip_prefix('/')?.split_whitespace().next()?;
+    let rest = prompt.strip_prefix('/')?;
+    let name = rest.split_whitespace().next()?;
     list.iter().find(|k| k.name == name && k.user_invocable)?;
     let (body, failed) = load(list, &serde_json::json!({ "name": name }));
+    let body = body.replace("$ARGUMENTS", rest.trim_start()[name.len()..].trim());
     (!failed).then(|| format!("{INVOKED}{name}\">\nThe person asked for this skill with /{name}; follow it for the rest of their message.\n\n{body}\n</skill>"))
 }
 
@@ -151,4 +159,42 @@ pub fn load(list: &[Skill], input: &serde_json::Value) -> (String, bool) {
     let (_, body) = super::instructions::front_matter(&text);
     let body = if body.len() > BODY_CAP { &body[..body.floor_char_boundary(BODY_CAP)] } else { body };
     (format!("{}\n\n(The skill's files are in {}; read them from there.)", body.trim_end(), k.dir.display()), false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn r_compat_1_skills_are_read_from_agents_and_claude_directories_and_slash_loads_one() {
+        let base = std::env::temp_dir().join(format!("krowk-skills-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // Canonical, as the repository root is found: macOS's temporary
+        // directory is a symlink into /private.
+        std::fs::create_dir_all(base.join("repo/.git")).unwrap();
+        let base = base.canonicalize().unwrap();
+        let skill = |dir: &str, name: &str, says: &str| {
+            let d = base.join(dir).join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("SKILL.md"), format!("---\nname: {name}\ndescription: {says}\n---\nBODY {says}")).unwrap();
+        };
+        skill("home/.agents/skills", "implement", "shared by every agent");
+        skill("home/.agents/skills", "review", "shared review");
+        skill("home/.claude/skills", "review", "claude's review");
+        skill("repo/.agents/skills", "deploy", "the repository's");
+        let cfg = Config { home: Some(base.join("home")), ..Config::default() };
+        let found = discover(&cfg, &base.join("repo"));
+        let got: Vec<(&str, &str)> = found.iter().map(|k| (k.name.as_str(), k.description.as_str())).collect();
+        assert_eq!(got, [("implement", "shared by every agent"), ("review", "claude's review"), ("deploy", "the repository's")], "Claude's beside the shared one wins");
+
+        let text = invoked(&found, "/implement the login page").expect("a skill only in .agents is loaded by /name");
+        assert!(text.starts_with(&format!("{INVOKED}implement\">")) && text.contains("BODY shared by every agent"), "{text}");
+        assert_eq!(invoked(&found, "/nope do it"), None, "a name no skill has is left to the prompt");
+
+        std::fs::write(base.join("repo/.agents/skills/deploy/SKILL.md"), "---\nname: deploy\ndescription: ship\n---\nDeploy $ARGUMENTS now.").unwrap();
+        let found = discover(&cfg, &base.join("repo"));
+        assert!(invoked(&found, "/deploy  staging eu ").unwrap().contains("Deploy staging eu now."), "$ARGUMENTS is the words after the name");
+        assert!(invoked(&found, "/deploy").unwrap().contains("Deploy  now."), "and empty without any");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

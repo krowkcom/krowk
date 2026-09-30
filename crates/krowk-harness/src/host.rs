@@ -971,17 +971,25 @@ impl Shared {
         let prompt_item = Item::UserText { text: std::mem::take(&mut plan.text) };
         w.log(LogBody::ItemCompleted { turn_id: turn_id.clone(), item_id: krowk_store::new_id(), item: prompt_item.clone() }).await?;
         let mut history = std::mem::take(&mut plan.past.items);
-        // `/name` for a skill, on krowk's own loop: its instructions come
-        // right after the prompt. A vendor's agent expands its own.
+        // `/name` for a skill, in a session's own turn on any engine: its
+        // instructions come right after the prompt. A vendor's agent cannot
+        // be left to expand its own — it may not have the skill (Claude Code
+        // reads no `.agents/skills`, Codex no `.claude/skills` nor
+        // `~/.agents/skills`) and then refuses the name. A backend is sent only the last item, so it gets
+        // one text, the skill first: a leading `/` is the vendor's command.
         let asked = match &prompt_item {
-            Item::UserText { text } if plan.spawns => compat::skills::invoked(&plan.compat.skills, text),
+            Item::UserText { text } if plan.agent.is_none() => compat::skills::invoked(&plan.compat.skills, text).map(|skill| (skill, text.clone())),
             _ => None,
         };
         history.push(HistoryItem { item: prompt_item, response: None });
-        if let Some(text) = asked {
-            let item = Item::UserText { text };
+        if let Some((skill, prompt)) = asked {
+            let item = Item::UserText { text: skill.clone() };
             w.log(LogBody::ItemCompleted { turn_id: turn_id.clone(), item_id: krowk_store::new_id(), item: item.clone() }).await?;
-            history.push(HistoryItem { item, response: None });
+            if plan.spawns {
+                history.push(HistoryItem { item, response: None });
+            } else if let Some(last) = history.last_mut() {
+                last.item = Item::UserText { text: format!("{skill}\n\n{prompt}") };
+            }
         }
 
         let gate = permissions::Gate::new(
