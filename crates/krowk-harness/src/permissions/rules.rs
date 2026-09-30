@@ -542,6 +542,8 @@ fn ansi_c(chars: &[char], mut i: usize) -> Option<(String, usize)> {
     None
 }
 
+// Legacy: the shell lexer the permission rules rest on, kept whole until it can be split under its own tests. TODO: split into helpers and drop this allow.
+#[allow(clippy::cognitive_complexity)]
 fn lex(cmd: &str, out: &mut Parsed, depth: usize) {
     if depth > MAX_NESTING {
         out.opaque = true;

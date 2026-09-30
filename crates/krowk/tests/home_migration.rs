@@ -178,28 +178,9 @@ fn an_older_layout_moves_its_config_and_keys_deletes_the_old_secrets_and_names_t
     let said = String::from_utf8_lossy(&first.stderr).into_owned();
     let h = b.krowk_home();
     assert_eq!(said.matches("moved krowk's config and keys to").count(), 1, "one line says so: {said}");
-    // What is left is named once, with what to do about it.
     let account = b.old_data().join("claude/claude-work");
-    for want in [
-        "run `krowk sessions rebuild`".to_string(),
-        format!("mkdir -p {h}/accounts && mv {} {h}/accounts/claude-work", account.display(), h = h.display()),
-        "set its configDir".into(),
-        "krowk connect anthropic --method subscription --name work".into(),
-        format!("mv -n {} {}/trusted.json", b.old_config().join("trusted.json").display(), h.display()),
-    ] {
-        assert!(said.contains(&want), "{want} in: {said}");
-    }
-    // The keys are gone from the old directory; what krowk never moves is
-    // still there.
-    for gone in [b.old_config().join("credentials.json"), b.old_config().join("providers"), b.old_config().join("config.json"), b.old_cache(), b.home().join(".krowk.migrating")] {
-        assert!(!gone.exists(), "{} is left behind", gone.display());
-    }
-    for kept in [account.clone(), b.old_data().join("krowk.db"), b.old_data().join("sessions"), b.old_config().join("trusted.json")] {
-        assert!(kept.exists(), "{} was moved", kept.display());
-    }
-    assert_eq!(mode(&h), 0o700);
-    assert_eq!(mode(&h.join("credentials.json")), 0o600);
-    assert_eq!(mode(&h.join("config.json")), 0o644, "config.json keeps its mode");
+    assert_names_what_is_left(&b, &said, &h, &account);
+    assert_moved_and_old_keys_gone(&b, &h, &account);
 
     // One credentials file holds the registry's key, the login and the
     // stored key.
@@ -248,6 +229,33 @@ fn an_older_layout_moves_its_config_and_keys_deletes_the_old_secrets_and_names_t
             assert!(!printed(out).contains(secret), "{secret} printed: {}", printed(out));
         }
     }
+}
+
+/// What is left behind is named once, with what to do about it.
+fn assert_names_what_is_left(b: &Sandbox, said: &str, h: &Path, account: &Path) {
+    for want in [
+        "run `krowk sessions rebuild`".to_string(),
+        format!("mkdir -p {h}/accounts && mv {} {h}/accounts/claude-work", account.display(), h = h.display()),
+        "set its configDir".into(),
+        "krowk connect anthropic --method subscription --name work".into(),
+        format!("mv -n {} {}/trusted.json", b.old_config().join("trusted.json").display(), h.display()),
+    ] {
+        assert!(said.contains(&want), "{want} in: {said}");
+    }
+}
+
+/// The keys are gone from the old directory, what krowk never moves is still
+/// there, and the new home is private.
+fn assert_moved_and_old_keys_gone(b: &Sandbox, h: &Path, account: &Path) {
+    for gone in [b.old_config().join("credentials.json"), b.old_config().join("providers"), b.old_config().join("config.json"), b.old_cache(), b.home().join(".krowk.migrating")] {
+        assert!(!gone.exists(), "{} is left behind", gone.display());
+    }
+    for kept in [account.to_path_buf(), b.old_data().join("krowk.db"), b.old_data().join("sessions"), b.old_config().join("trusted.json")] {
+        assert!(kept.exists(), "{} was moved", kept.display());
+    }
+    assert_eq!(mode(h), 0o700);
+    assert_eq!(mode(&h.join("credentials.json")), 0o600);
+    assert_eq!(mode(&h.join("config.json")), 0o644, "config.json keeps its mode");
 }
 
 #[test]

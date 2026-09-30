@@ -1012,6 +1012,8 @@ impl Proc {
 
     /// Runs one krowk turn: the prompt as a Codex turn, steering passed in
     /// as it arrives, until Codex completes it with nothing left unread.
+    // Legacy: one loop over every Codex notification of a turn. TODO: split into helpers and drop this allow.
+    #[allow(clippy::cognitive_complexity)]
     async fn turn(&mut self, prompt: String, ctx: &mut TurnContext, ask: &Answers, events: &Events, instance: &str) -> Result<TurnEnd, EngineError> {
         let thread = self.thread.clone().expect("opened before a turn");
         let _ = events.send(EngineEvent::Context { system: SYSTEM_NOTE.into(), tools: bridge::definitions() }).await;
