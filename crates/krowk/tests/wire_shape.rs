@@ -142,7 +142,7 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     let client = krowk_api::Client::new(&laptop.api, "krowk_sk_test").signed_by(signer);
     let device = device_id.to_string();
     let id = "0190f3a8-7c1e-7a9b-8c2d-3e4f5a6b7c8d";
-    client.put_sync_session(id, &"00".repeat(74), Some(&"00".repeat(40)), None).unwrap();
+    client.put_sync_session(id, &"00".repeat(74), None, Some(&"00".repeat(40)), None).unwrap();
     let lease = client.acquire_lease(id, &device, 60, "production").unwrap();
     client.renew_lease(id, &device, &lease.token, 60, "production").unwrap();
     assert!(!lease.relay_ticket.is_empty(), "the lease carries its holder's relay ticket");

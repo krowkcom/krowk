@@ -16,7 +16,12 @@ mod mock;
 mod scratch;
 
 use krowk_client::e2e::{self, AccountKey, DeviceKey, SessionKey, SigningKey};
+use krowk_client::device_chain::{Chain, Change, Kind, Subject};
+use krowk_client::session_record;
 use krowk_client::user_key::{UserKey, UserKeys};
+
+/// When the test device list is made, by its devices' clocks.
+const T0: u64 = 1_790_000_000;
 use krowk_harness::daemon::{self, client::Client, server};
 use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
@@ -58,8 +63,11 @@ struct World {
     registry: krowk_devregistry::Running,
     api: String,
     account: AccountKey,
-    /// The person's user key, which both devices hold.
-    user: UserKey,
+    /// The person's device list, with each device the test makes on it,
+    /// and the user key it leaves current, which every device holds.
+    list: Mutex<Option<(Chain, UserKey)>>,
+    /// The first device's signing key, which adds the others.
+    first_signing: Mutex<Option<SigningKey>>,
     /// Every byte either device sent the relay or got from it.
     seen: Arc<Mutex<Vec<u8>>>,
     /// While set, A's link to the relay is down and nothing gets through.
@@ -124,7 +132,7 @@ impl World {
         let reg_a = format!("http://{}/v1", registry_proxy(registry.addr(), reg_mode.clone()));
         let m = mock::serve(model);
         let mock_url = m.url.clone();
-        World { root, registry, api, account: AccountKey::generate(), user: UserKey::first(), seen, cut, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
+        World { root, registry, api, account: AccountKey::generate(), list: Mutex::new(None), first_signing: Mutex::new(None), seen, cut, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
     }
 
     /// A device's own registry client: its calls that act as the device
@@ -140,14 +148,35 @@ impl World {
         Arc::new(c)
     }
 
-    /// The host's keystore, which records the sessions it published.
-    fn host_keystore(&self) -> krowk_client::keystore::Keystore {
-        krowk_client::keystore::Keystore::new(&self.root.join("host-keys"))
+    /// The user keys every device holds: the list's generation 1.
+    fn keys(&self) -> UserKeys {
+        UserKeys::new(self.list.lock().unwrap().as_ref().expect("a device first").1.clone(), []).unwrap()
     }
 
-    /// The user keys both devices hold: generation 1 alone.
-    fn keys(&self) -> UserKeys {
-        UserKeys::new(self.user.clone(), []).unwrap()
+    /// The device list, verified, with every device made so far on it.
+    fn chain(&self) -> Chain {
+        self.list.lock().unwrap().as_ref().expect("a device first").0.clone()
+    }
+
+    /// `d` on the person's device list: the first device starts it, each
+    /// later one is added by the first.
+    fn enlist(&self, d: &Device, name: &str) {
+        let subject = Subject { kind: Kind::Device, name: name.into(), os: "linux".into(), device: d.key.public(), signing: d.signing.public() };
+        let mut list = self.list.lock().unwrap();
+        let next = match list.take() {
+            None => {
+                let (chain, start) = Chain::start(subject, &d.signing, None, None, T0).unwrap();
+                (chain, start.newest)
+            }
+            Some((chain, user)) => {
+                let first = chain.devices()[0].id();
+                let key = self.first_signing.lock().unwrap().as_ref().map(|k| SigningKey::from_secret(&*k.secret_bytes()).unwrap()).unwrap();
+                let (chain, _) = chain.batch(&user, vec![Change::Add(subject)], first, &key, T0 + 1).unwrap();
+                (chain, user)
+            }
+        };
+        self.first_signing.lock().unwrap().get_or_insert_with(|| SigningKey::from_secret(&*d.signing.secret_bytes()).unwrap());
+        *list = Some(next);
     }
 
     fn client(&self) -> Arc<krowk_api::Client> {
@@ -158,6 +187,7 @@ impl World {
     fn device(&self, name: &str) -> Device {
         let d = Device { key: DeviceKey::generate(), signing: SigningKey::generate() };
         self.as_device(&d).register_device(&e2e::hex(&d.key.public().0), &e2e::hex(&d.signing.public().0), name, &self.account.id().to_string()).unwrap();
+        self.enlist(&d, name);
         d
     }
 
@@ -227,8 +257,7 @@ impl World {
             device: a.key.id(),
             signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
             keys: self.keys(),
-            current_generation: self.user.generation(),
-            keystore: self.host_keystore(),
+            chain: self.chain(),
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),
@@ -250,8 +279,7 @@ impl World {
             device: a.key.id(),
             signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
             keys: self.keys(),
-            current_generation: self.user.generation(),
-            keystore: self.host_keystore(),
+            chain: self.chain(),
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),
@@ -276,6 +304,7 @@ impl World {
             device: b.key.id(),
             signing: SigningKey::from_secret(&*b.signing.secret_bytes()).unwrap(),
             keys: self.keys(),
+            chain: self.chain(),
             session: session.into(),
             known: None,
         }
@@ -287,10 +316,10 @@ impl World {
         let (api, id) = (self.client(), session.to_string());
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            let (api, id, keys) = (api.clone(), id.clone(), self.keys());
+            let (api, id, keys, chain) = (api.clone(), id.clone(), self.keys(), self.chain());
             let ready = tokio::task::spawn_blocking(move || -> Option<bool> {
                 let s = api.show_sync_session(&id).ok()?;
-                let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys).ok()?;
+                let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld).ok()?;
                 let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index).ok()?;
                 Some(s.lease.is_some() && index.checkpoint.is_some() && index.head.is_some())
             })
@@ -583,35 +612,43 @@ async fn first_turn(w: &World) -> (Arc<Client>, String) {
 /// unblocks A; B is handed at most one batch of updates per display frame;
 /// and the relay's traffic, captured, holds neither B's prompt nor A's
 /// answer.
-/// D8: a session sealed after a rotation, under generation 2, lists and
-/// attaches on a device holding generation 3 (down the chain of wraps),
-/// and on one holding only generation 1 — removed before the rotation —
-/// it is left out of the listing and refused on attach, by name.
+/// D8b: a session record lists and attaches only when a device on the
+/// verified device list signed it. One the registry holds unsigned, or
+/// signed by a device the person never listed — a registry's own, sealed
+/// under the person's key by a removed device, say — is left out of the
+/// listing and refused on attach, before any key is unwrapped.
 #[tokio::test]
-async fn d8_a_device_holding_only_an_older_user_key_does_not_open_a_newer_session() {
-    let w = World::new("generations");
+async fn d8b_only_a_record_a_listed_device_signed_opens() {
+    let w = World::new("records");
     let b = w.device("machine-b");
-    let g1 = w.user.clone();
-    let g2 = g1.next().unwrap();
-    let g3 = g2.next().unwrap();
-    let id = "01a0ec7b-2222-7000-8000-0000000000d8".to_string();
-    let raw = krowk_harness::daemon::ws::uuid(&id);
-    let key = SessionKey::generate();
-    let index = krowk_harness::sync::store::Index { title: "sealed under generation 2".into(), ..Default::default() };
-    let sealed = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).unwrap()));
-    w.as_device(&b).put_sync_session(&id, &e2e::hex(&e2e::wrap_session_key(&key, &raw, &g2)), Some(&sealed), None).unwrap();
+    let (keys, chain) = (w.keys(), w.chain());
+    let publish = |id: &str, title: &str, signer: &Device, signed: bool| {
+        let raw = krowk_harness::daemon::ws::uuid(id);
+        let key = SessionKey::generate();
+        let index = krowk_harness::sync::store::Index { title: title.into(), ..Default::default() };
+        let sealed = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).unwrap()));
+        let wrapped = e2e::seal_session_key(&key, &raw, &keys, chain.generation()).unwrap();
+        let api = w.as_device(&b);
+        if signed {
+            let sig = session_record::sign(&raw, &wrapped, session_record::SEAL_USER, keys.newest(), &signer.signing).unwrap();
+            api.put_sync_session(id, &e2e::hex(&wrapped), Some((&e2e::hex(&sig), &signer.key.id().to_string())), Some(&sealed), None).unwrap();
+        } else {
+            api.put_sync_session(id, &e2e::hex(&wrapped), None, Some(&sealed), None).unwrap();
+        }
+    };
+    let stranger = Device { key: DeviceKey::generate(), signing: SigningKey::generate() };
+    publish("01a0ec7b-2222-7000-8000-0000000000d1", "signed by b", &b, true);
+    publish("01a0ec7b-2222-7000-8000-0000000000d2", "unsigned", &b, false);
+    publish("01a0ec7b-2222-7000-8000-0000000000d3", "signed by a stranger", &stranger, true);
 
-    let newest = UserKeys::new(g3.clone(), [g3.wrap_previous(&g2).unwrap(), g2.wrap_previous(&g1).unwrap()]).unwrap();
     let api = w.client();
-    let (listed, unreadable) = tokio::task::spawn_blocking(move || viewer::list(&api, &newest)).await.unwrap().unwrap();
-    assert_eq!((listed.len(), unreadable), (1, 0));
-    assert_eq!(listed[0].index.title, "sealed under generation 2");
-
-    let api = w.client();
-    let (listed, unreadable) = tokio::task::spawn_blocking(move || viewer::list(&api, &UserKeys::new(g1, []).unwrap())).await.unwrap().unwrap();
-    assert_eq!((listed.len(), unreadable), (0, 1), "the older device lists nothing it cannot open");
-    let refused = viewer::attach(w.viewer(&b, &id)).await.err().expect("generation 1 does not attach a generation-2 session");
-    assert!(refused.contains("generation 2") && refused.contains("generation 1 this device holds"), "{refused}");
+    let (listed, unreadable) = tokio::task::spawn_blocking(move || viewer::list(&api, &keys, &chain)).await.unwrap().unwrap();
+    assert_eq!(listed.iter().map(|l| l.index.title.as_str()).collect::<Vec<_>>(), ["signed by b"]);
+    assert_eq!(unreadable, 2);
+    let refused = viewer::attach(w.viewer(&b, "01a0ec7b-2222-7000-8000-0000000000d2")).await.err().expect("an unsigned record does not attach");
+    assert!(refused.contains("names no signer"), "{refused}");
+    let refused = viewer::attach(w.viewer(&b, "01a0ec7b-2222-7000-8000-0000000000d3")).await.err().expect("a stranger's record does not attach");
+    assert!(refused.contains("never held"), "{refused}");
 }
 
 #[tokio::test]
@@ -622,8 +659,8 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
     w.synced(&session).await;
 
-    let (api, keys) = (w.client(), w.keys());
-    let (listed, unreadable) = tokio::task::spawn_blocking(move || viewer::list(&api, &keys)).await.unwrap().unwrap();
+    let (api, keys, chain) = (w.client(), w.keys(), w.chain());
+    let (listed, unreadable) = tokio::task::spawn_blocking(move || viewer::list(&api, &keys, &chain)).await.unwrap().unwrap();
     assert_eq!(unreadable, 0);
     let s = listed.iter().find(|s| s.id == session).expect("B lists A's session");
     assert_eq!(s.index.title, "the title is sealed too");
@@ -764,10 +801,10 @@ async fn r_hand_4_with_a_offline_b_is_read_only_and_its_queued_prompt_runs_when_
 /// The session's events as the registry holds them, read at rest by a
 /// device that has never seen it: what every later attach gets.
 async fn at_rest_ids(w: &World, session: &str) -> Result<Vec<String>, String> {
-    let (api, keys, id) = (w.client(), w.keys(), session.to_string());
+    let (api, keys, chain, id) = (w.client(), w.keys(), w.chain(), session.to_string());
     tokio::task::spawn_blocking(move || {
         let s = api.show_sync_session(&id).map_err(|e| e.to_string())?;
-        let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys)?;
+        let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld)?;
         let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index)?;
         let a = krowk_harness::sync::store::attach(&api, &key, &id, index, None)?;
         Ok(a.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect())

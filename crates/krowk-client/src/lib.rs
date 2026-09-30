@@ -15,6 +15,8 @@
 //!   device, each generation wrapping the one before it.
 //! - `recovery`: the 12-word recovery kit and the recovery device it derives.
 //! - `device_chain`: the signed, append-only device list and its verifier.
+//! - `session_record`: a synced session's record, signed by the device
+//!   that published it and checked against the device list.
 //! - `protocol`: the typed commands, events and log lines every client
 //!   speaks, and the daemon's frame-envelope layout (`protocol::frame`).
 //!
@@ -30,6 +32,7 @@ pub mod relay_link;
 pub mod relay_ticket;
 pub mod device_chain;
 pub mod recovery;
+pub mod session_record;
 pub mod user_key;
 
 /// A secret the caller holds for a moment — a typed phrase — wiped on drop.

@@ -21,6 +21,7 @@ use super::sync::{keyed_client, keystore};
 use super::Ctx;
 use krowk_api::{fail, Client, Error};
 use krowk_client::e2e::{DeviceId, SigningKey};
+use krowk_client::device_chain::Chain;
 use krowk_client::user_key::UserKeys;
 use krowk_harness::sync::{host, viewer};
 use serde_json::json;
@@ -30,6 +31,8 @@ struct Keys {
     device: DeviceId,
     signing: SigningKey,
     user: UserKeys,
+    /// The device list as this machine last verified it.
+    chain: Chain,
 }
 
 fn keys(ctx: &Ctx) -> Result<Keys, Error> {
@@ -38,8 +41,19 @@ fn keys(ctx: &Ctx) -> Result<Keys, Error> {
     // Every session key is sealed under the person's user key, so a
     // machine without it has nothing to open or seal with.
     let user = ks.user_keys().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine holds no user key yet — add it to your devices from one that does, or recover with your kit"))?;
+    // Whose signatures a session record is checked against, and the
+    // generation a new session is sealed under: the list as this machine
+    // keeps it, verified again from entry 0. Without it nothing opens or
+    // seals.
+    // TODO(D5): before `host` seals, fetch the list from the registry and
+    // extend it from the kept head (`Keystore::save_device_list`), so a
+    // machine offline through a removal, or fed a stale list, does not seal
+    // under the old generation (#206's review, M2). It needs D5's
+    // `device_list_all` and the stand-in's `/device_list` (#201).
+    let chain = ks.device_list().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine has not verified your device list yet — add it to your devices from one that has, or recover with your kit"))?;
+    let user = user.verified_by(&chain).map_err(|e| fail("keys_unreadable", e.0))?;
     let signing = ks.signing_key().map_err(|e| fail("keys_unreadable", e))?;
-    Ok(Keys { device, signing, user })
+    Ok(Keys { device, signing, user, chain })
 }
 
 /// The registry client for this machine's sync calls, signed by its own
@@ -102,7 +116,7 @@ fn one(args: &[String], what: &str) -> Result<String, Error> {
 pub(super) fn sessions(ctx: &mut Ctx) -> Result<(), Error> {
     let k = keys(ctx)?;
     let api = keyed_client(ctx, "krowk sync sessions")?;
-    let (listed, unreadable) = viewer::list(&api, &k.user).map_err(|e| fail("sync_failed", e))?;
+    let (listed, unreadable) = viewer::list(&api, &k.user, &k.chain).map_err(|e| fail("sync_failed", e))?;
     let rows: Vec<_> = listed.iter().map(|s| json!({"id": s.id, "title": s.index.title, "cwd": s.index.cwd, "updatedMs": s.index.updated_ms, "host": s.holder})).collect();
     if ctx.format == crate::output::Format::Json {
         return ctx.emit(&json!({"sessions": rows, "unreadable": unreadable}).to_string());
@@ -134,11 +148,6 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let spawn = super::host::spawner(ctx)?;
-    // TODO(D5/D6): `current_generation` must be the generation the
-    // verified device chain names, fetched and checked before anything is
-    // sealed (#200's review, M2). Until the sync commands read the chain,
-    // it is the newest this device holds, which refuses nothing.
-    let current_generation = k.user.newest().generation();
     let o = host::Options {
         relay: relay(ctx),
         env,
@@ -146,8 +155,7 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
         device: k.device,
         signing: k.signing,
         keys: k.user,
-        current_generation,
-        keystore: keystore(ctx)?,
+        chain: k.chain,
         session,
         title: String::new(),
         cwd: cwd.display().to_string(),
@@ -163,7 +171,7 @@ pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let k = keys(ctx)?;
     let api = Arc::new(signed(ctx, &k, "krowk sync attach")?);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
-    let o = viewer::Options { relay: relay(ctx), env, api, device: k.device, signing: k.signing, keys: k.user, session: session.clone(), known: None };
+    let o = viewer::Options { relay: relay(ctx), env, api, device: k.device, signing: k.signing, keys: k.user, chain: k.chain, session: session.clone(), known: None };
     krowk_harness::sync::run_attach(o, &mut *ctx.io.stdout).map_err(|e| fail("sync_failed", e))
 }
 
@@ -185,7 +193,7 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
     let k = keys(ctx).ok()?;
     let api = keyed_client(ctx, "krowk --resume").ok()?;
     let s = api.show_sync_session(&id).ok()?;
-    krowk_harness::sync::store::open_session_key(&s, &id, &k.user).ok()?;
+    krowk_harness::sync::store::open_session_key(&s, &id, &k.user, &k.chain, krowk_client::session_record::Signer::EverHeld).ok()?;
     // Said plainly, on stderr: the TUI does not draw a synced session yet,
     // so what follows is stream-json, as `krowk sync attach` prints it.
     let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sync attach`); the TUI does not attach synced sessions yet");

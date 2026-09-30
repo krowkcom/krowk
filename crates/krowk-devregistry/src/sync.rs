@@ -68,6 +68,10 @@ pub struct Approval {
 pub struct Session {
     pub id: String,
     pub wrapped_key: String,
+    /// The publisher's signature over the record and its device id, hex,
+    /// kept as they came and returned; never checked here (D8b).
+    pub record_signature: String,
+    pub signer: String,
     pub sealed_index: String,
     pub fence: u64,
     /// The holder's token, as its digest: the registry keeps no copy either.
@@ -437,6 +441,10 @@ fn lease_pairs(s: &Session, token: Option<&str>) -> Vec<(String, Json)> {
     pairs
 }
 
+fn nullable(s: &str) -> Json {
+    if s.is_empty() { Json::Null } else { Json::str(s) }
+}
+
 /// A session: never the fence or the token, and in a listing not the
 /// sealed index either.
 fn serialize_session(s: &Session, now: Timestamp, listing: bool) -> Json {
@@ -448,7 +456,7 @@ fn serialize_session(s: &Session, now: Timestamp, listing: bool) -> Json {
     // Every session here is private, sealed under its owner's user key, as
     // the registry's `seal` says (engineering/devices.md → Keys). The
     // stand-in has no people, so it names no owner.
-    let mut pairs = vec![("id".to_owned(), Json::str(&s.id)), ("wrapped_key".to_owned(), Json::str(&s.wrapped_key)), ("seal".to_owned(), Json::str("user"))];
+    let mut pairs = vec![("id".to_owned(), Json::str(&s.id)), ("wrapped_key".to_owned(), Json::str(&s.wrapped_key)), ("seal".to_owned(), Json::str("user")), ("record_signature".to_owned(), nullable(&s.record_signature)), ("signer".to_owned(), nullable(&s.signer))];
     if !listing {
         pairs.push(("sealed_index".to_owned(), if s.sealed_index.is_empty() { Json::Null } else { Json::str(&s.sealed_index) }));
     }
@@ -753,6 +761,9 @@ pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         let sealed = f.string("sealed_index");
         let sealed = if sealed.is_empty() { String::new() } else { hex(&blob("sealed_index", &sealed, None, Some(MAX_SEALED_INDEX_BYTES))?) };
         let token = f.string("lease_token");
+        let record_signature = f.string("record_signature");
+        let record_signature = if record_signature.is_empty() { String::new() } else { hex(&blob("record_signature", &record_signature, Some(64), None)?) };
+        let record_signer = f.string("signer");
         let mut s = app.lock();
         let now = s.now();
         burst(&mut s.sync, &caller(req), "session_writes", now)?;
@@ -765,7 +776,7 @@ pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
             if held >= cap {
                 return Err(error(422, "session_limit_reached", &format!("this workspace holds {cap} synced sessions, the most one may"), None));
             }
-            let x = Session { id, wrapped_key: wrapped, sealed_index: sealed, fence: 0, token_digest: String::new(), holder: String::new(), lease_expires_at: None, created_at: now, updated_at: now, last_written_at: now, seq };
+            let x = Session { id, wrapped_key: wrapped, record_signature, signer: record_signer, sealed_index: sealed, fence: 0, token_digest: String::new(), holder: String::new(), lease_expires_at: None, created_at: now, updated_at: now, last_written_at: now, seq };
             let resp = Resp::json(201, &serialize_session(&x, now, false));
             s.sync.sessions.insert(key, x);
             s.sync.seq = seq;
