@@ -115,6 +115,10 @@ pub struct Options {
     pub history_file: Option<PathBuf>,
     /// Lines shown above the first prompt: config warnings and the like.
     pub notices: Vec<String>,
+    /// Sync is set up here and the person's device list has no recovery
+    /// kit: the status line says so until one is made (canon, devices.md →
+    /// Skippable, with a reminder).
+    pub no_recovery_kit: bool,
     pub version: String,
     /// krowk's config.json, which `/connect` writes definitions into; none
     /// (no home directory) and `/connect` says so.
@@ -284,6 +288,7 @@ async fn session(opts: Options) -> Outcome {
     let target = shown.as_ref().and_then(|m| opts.host.registry.get(&m.instance).ok()).and_then(|i| Target::for_url(&i.base_url, &|k| std::env::var(k).unwrap_or_default()));
     app.model = shown;
     app.device = device::name(&|k| std::env::var(k).unwrap_or_default());
+    app.no_recovery_kit = opts.no_recovery_kit;
     app.skills = krowk_harness::compat::skills::discover(&opts.host.permissions, &opts.host.cwd).into_iter().filter(|k| k.user_invocable).map(|k| (k.name, k.description)).collect();
     app.vendor_instances = opts.host.registry.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
     let branch = pr::branch(&opts.host.cwd);

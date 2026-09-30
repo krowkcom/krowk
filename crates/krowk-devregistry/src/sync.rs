@@ -67,6 +67,25 @@ pub struct Session {
     /// stand-in a workspace has one person (`store::person_for`), so owning
     /// is never a second filter on top of the workspace's.
     pub owner: String,
+    /// The owner's chain epoch when it was created or last re-sealed: what
+    /// says a session was sealed under a list since started over.
+    pub sealed_epoch: u64,
+}
+
+/// The owner's current chain epoch; 0 for a person with no chain yet.
+fn epoch_of(people: &HashMap<String, crate::devices::Person>, person: &str) -> u64 {
+    people.get(person).map_or(0, |p| p.epoch)
+}
+
+/// The re-seal after a start-over (the registry's
+/// `SessionsController#resealable?`): the holder may replace a session's
+/// wrapped key and record together when the session was sealed under an
+/// older epoch of the owner's chain, it has a record signer, the new key
+/// and record both differ from the stored ones, and the new record names
+/// the writer. The lease is checked where the write happens. Anything short
+/// of that is the "cannot change" it always was.
+fn resealable(people: &HashMap<String, crate::devices::Person>, x: &Session, wrapped: &str, record: (&str, &str), signer: &str) -> bool {
+    x.sealed_epoch < epoch_of(people, &x.owner) && !x.signer.is_empty() && x.wrapped_key != wrapped && !record.0.is_empty() && record.0 != x.record_signature && record.1 == signer
 }
 
 /// One chunk of a session's log: an upload like an artifact's, under a key
@@ -642,16 +661,31 @@ pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         let holder_revoked = s.sync.sessions.get(&key).is_some_and(|x| revoked(&s.sync, &workspace, &x.holder));
         let cap = if s.sync.max_sessions == 0 { MAX_SESSIONS } else { s.sync.max_sessions };
         let held = s.sync.sessions.keys().filter(|(w, _)| *w == workspace).count();
+        let reseal = s.sync.sessions.get(&key).is_some_and(|x| resealable(&s.sync.people, x, &wrapped, (&record_signature, &record_signer), signer));
+        let current_epoch = s.sync.sessions.get(&key).map_or(0, |x| epoch_of(&s.sync.people, &x.owner));
         let Some(x) = s.sync.sessions.get_mut(&key) else {
             if held >= cap {
                 return Err(error(422, "session_limit_reached", &format!("this workspace holds {cap} synced sessions, the most one may"), None));
             }
-            let x = Session { id, wrapped_key: wrapped, record_signature, signer: record_signer, sealed_index: sealed, fence: 0, token_digest: String::new(), holder: String::new(), lease_expires_at: None, created_at: now, updated_at: now, last_written_at: now, seq, owner: crate::store::person_for(&crate::auth::token(req).unwrap_or_default()) };
+            let owner = crate::store::person_for(&crate::auth::token(req).unwrap_or_default());
+            let sealed_epoch = epoch_of(&s.sync.people, &owner);
+            let x = Session { id, wrapped_key: wrapped, record_signature, signer: record_signer, sealed_index: sealed, fence: 0, token_digest: String::new(), holder: String::new(), lease_expires_at: None, created_at: now, updated_at: now, last_written_at: now, seq, owner, sealed_epoch };
             let resp = Resp::json(201, &serialize_session(&x, now, false));
             s.sync.sessions.insert(key, x);
             s.sync.seq = seq;
             return Ok(resp);
         };
+        if reseal {
+            if token.is_empty() {
+                return Err(parameter_missing("lease_token"));
+            }
+            holder(x, &token, now, signer)?;
+            if holder_revoked {
+                return Err(device_revoked(&x.holder));
+            }
+            (x.wrapped_key, x.record_signature, x.signer, x.sealed_epoch) = (wrapped.clone(), record_signature.clone(), record_signer.clone(), current_epoch);
+            x.updated_at = now;
+        }
         if x.wrapped_key != wrapped {
             return Err(invalid("wrapped_key", "is set when the session is created and cannot change"));
         }
@@ -797,7 +831,7 @@ pub fn viewer_ticket(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         signed_as(&device, signer)?;
         let d = s.sync.devices.get(&(workspace.clone(), device.clone())).ok_or_else(not_found)?;
         if d.signing_key.is_empty() {
-            return Err(error(409, "signing_key_missing", &format!("device {device} has registered no signing key — run krowk sync register on it"), None));
+            return Err(error(409, "signing_key_missing", &format!("device {device} has registered no signing key — set sync up on it again with `krowk sync join`"), None));
         }
         let (t, exp) = relay_ticket(2, env, &id, d, &workspace, 0, now);
         Ok(Resp::json(200, &Json::map([("relay_ticket", Json::str(&t)), ("expires_at", Json::str(rfc3339_nano(exp)))])))
@@ -1095,4 +1129,35 @@ pub fn list_chunks(app: &App, req: &Req, id: &str, site: &str) -> Resp {
         })
         .collect();
     Resp::json(200, &Json::map([("chunks", Json::Arr(page)), ("next", next)]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::devices::Person;
+
+    fn session(sealed_epoch: u64) -> Session {
+        let t = Timestamp::UNIX_EPOCH;
+        Session { id: String::new(), wrapped_key: "old".into(), record_signature: "aa".into(), signer: "me".into(), sealed_index: String::new(), fence: 0, token_digest: String::new(), holder: String::new(), lease_expires_at: None, created_at: t, updated_at: t, last_written_at: t, seq: 0, owner: "p".into(), sealed_epoch }
+    }
+
+    /// The re-seal after a start-over, as the registry has it: a session
+    /// sealed under an older epoch of the owner's chain is replaceable by
+    /// its lease holder, with a new key and a record naming itself — even
+    /// one the same device signed before, since a start-over keeps its key.
+    /// One sealed under the current epoch, with no record signer, or with
+    /// the key or record unchanged, never is.
+    #[test]
+    fn d6_a_session_sealed_under_an_older_epoch_is_resealable_by_its_holder() {
+        let mut people = HashMap::new();
+        people.insert("p".to_string(), Person { epoch: 2, ..Person::default() });
+        assert!(resealable(&people, &session(1), "new", ("bb", "me"), "me"), "the same device's record, from the old list");
+        assert!(!resealable(&people, &session(2), "new", ("bb", "me"), "me"), "sealed under the current epoch");
+        let mut unsigned = session(1);
+        unsigned.signer.clear();
+        assert!(!resealable(&people, &unsigned, "new", ("bb", "me"), "me"), "no record signer");
+        assert!(!resealable(&people, &session(1), "old", ("bb", "me"), "me"), "the key unchanged");
+        assert!(!resealable(&people, &session(1), "new", ("aa", "me"), "me"), "the record unchanged");
+        assert!(!resealable(&people, &session(1), "new", ("bb", "someone-else"), "me"), "the record names another device");
+    }
 }

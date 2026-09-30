@@ -43,14 +43,25 @@ fn keys(ctx: &Ctx) -> Result<Keys, Error> {
     let user = ks.user_keys().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine holds no user key yet — add it to your devices from one that does, or recover with your kit"))?;
     // Whose signatures a session record is checked against, and the
     // generation a new session is sealed under: the list as this machine
-    // keeps it, verified again from entry 0. Without it nothing opens or
+    // keeps it, verified again from entry 0 — brought up to date first by
+    // `current` wherever anything is sealed. Without it nothing opens or
     // seals.
-    // A host takes the registry's list first (`host_session`), so it never
-    // seals under a generation a removal it slept through left behind.
     let chain = ks.device_list().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine has not verified your device list yet — add it to your devices from one that has, or recover with your kit"))?;
     let user = user.verified_by(&chain).map_err(|e| fail("keys_unreadable", e.0))?;
     let signing = ks.signing_key().map_err(|e| fail("keys_unreadable", e))?;
     Ok(Keys { device, signing, user, chain })
+}
+
+/// Before a session is hosted or attached to — and so before anything new
+/// is sealed — the list kept here extended from the registry and verified,
+/// and a newer user key taken up (`chain::before_sealing`), so the keys
+/// `keys` reads next are the ones the list leaves current. A machine with
+/// no list kept, or cut off from the registry, seals nothing: never under
+/// a generation a removed device may hold.
+fn current(ctx: &Ctx) -> Result<(), Error> {
+    let me = super::chain::Me::load(ctx)?;
+    let client = keyed_client(ctx, "sync")?;
+    super::chain::before_sealing(ctx, &client, &me).map(|_| ())
 }
 
 /// The registry client for this machine's sync calls, signed by its own
@@ -140,12 +151,10 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
     if !dir.join(&session).join(krowk_harness::log::EVENTS_FILE).is_file() {
         return Err(fail("no_session", format!("this machine has no session {session} to host — start one here (`krowk`, or `krowk -p \"...\"`), then `krowk sync host <its id>`; `krowk sessions` lists this machine's")));
     }
-    let mut k = keys(ctx)?;
-    let api = signed(ctx, &k, "krowk sync host")?;
-    let ks = keystore(ctx)?;
-    let device = ks.device().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine has no sync keys"))?;
-    (_, k.chain, k.user) = super::pairing::current_list(&ks, &api, &device)?;
-    let api = Arc::new(api);
+    // The list first: a newer key it takes up is the one `keys` reads.
+    current(ctx)?;
+    let k = keys(ctx)?;
+    let api = Arc::new(signed(ctx, &k, "krowk sync host")?);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let spawn = super::host::spawner(ctx)?;
@@ -169,6 +178,7 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
 
 pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let session = one(args, "attach")?;
+    current(ctx)?;
     let k = keys(ctx)?;
     let api = Arc::new(signed(ctx, &k, "krowk sync attach")?);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();

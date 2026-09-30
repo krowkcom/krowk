@@ -1,7 +1,13 @@
 //! The recovery kit and the recovery device it stands for
 //! (engineering/devices.md in Canon → Keys, Recovery).
 //!
-//! The kit is 128 random bits, shown as 12 words (`phrase::encode_kit`).
+//! The kit is 128 random bits, shown as 12 words: BIP39's encoding — the
+//! bits, then the first 4 bits of their SHA-256 as a checksum, cut into 12
+//! groups of 11 bits, each an index into BIP39's English list — and nothing
+//! else of BIP39: no PBKDF2 seed, no passphrase. The checksum catches a word
+//! typed wrong 15 times in 16; the rest are caught when the derived
+//! recovery device is not on the device list. The words are wiped when
+//! dropped, and never written anywhere unless the person asks for a file.
 //! It is not the user key: it derives a device — an X25519 keypair and an
 //! Ed25519 signing key — that sits on the device list with kind `recovery`
 //! and has the user key wrapped to it on every rotation, like any other.
@@ -16,6 +22,7 @@
 //! on the chain.
 
 use crate::e2e::{self, DeviceKey, SigningKey};
+use sha2::Digest as _;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 const INFO: &[u8] = b"krowk/recovery-device/v1";
@@ -34,14 +41,16 @@ impl RecoveryKit {
         RecoveryKit(bytes)
     }
 
-    /// The kit back from its 12 words (`phrase::decode_kit`'s refusals).
+    /// The kit back from its 12 words: any case, any whitespace between
+    /// them. Refused with the word or the count that is wrong, or the
+    /// checksum — never echoing the words.
     pub fn from_words(words: &str) -> Result<RecoveryKit, String> {
-        crate::phrase::decode_kit(words).map(|b| RecoveryKit(*b))
+        from_words(words).map(|b| RecoveryKit(*b))
     }
 
     /// The kit as its 12 words, for the person to write down.
     pub fn words(&self) -> Zeroizing<String> {
-        crate::phrase::encode_kit(&self.0)
+        to_words(&self.0)
     }
 
     /// The recovery device this kit derives.
@@ -74,6 +83,60 @@ impl std::fmt::Debug for RecoveryKit {
 pub struct RecoveryDevice {
     pub key: DeviceKey,
     pub signing: SigningKey,
+}
+
+/// BIP39's English list (bitcoin/bips, bip-0039/english.txt, MIT): 2048
+/// words, sorted, each unique in its first four letters.
+const ENGLISH: &str = include_str!("english.txt");
+
+/// The words in a kit.
+pub const KIT_WORDS: usize = 12;
+
+fn list() -> &'static [&'static str] {
+    static LIST: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    LIST.get_or_init(|| ENGLISH.lines().collect())
+}
+
+/// The kit's 16 bytes, then their SHA-256's first byte (whose top 4 bits
+/// are the checksum), read 11 bits at a time.
+fn to_words(kit: &[u8; 16]) -> Zeroizing<String> {
+    let mut bits = Zeroizing::new(kit.to_vec());
+    bits.push(sha2::Sha256::digest(kit)[0]);
+    let mut out = Zeroizing::new(String::with_capacity(KIT_WORDS * 9));
+    for i in 0..KIT_WORDS {
+        let n = (i * 11..i * 11 + 11).fold(0usize, |n, b| (n << 1) | ((bits[b / 8] >> (7 - b % 8)) & 1) as usize);
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(list()[n]);
+    }
+    out
+}
+
+fn from_words(words: &str) -> Result<Zeroizing<[u8; 16]>, String> {
+    let mut lower = Zeroizing::new(words.to_lowercase());
+    let given: Vec<&str> = lower.split_whitespace().collect();
+    if given.len() != KIT_WORDS {
+        return Err(format!("a recovery kit is {KIT_WORDS} words, and this is {} — enter every word, in order", given.len()));
+    }
+    let mut bits = Zeroizing::new([0u8; 17]);
+    for (i, w) in given.iter().enumerate() {
+        let n = list().binary_search(w).map_err(|_| format!("word {} is not one a recovery kit uses — check its spelling", i + 1))?;
+        for k in 0..11 {
+            if n >> (10 - k) & 1 == 1 {
+                let b = i * 11 + k;
+                bits[b / 8] |= 1 << (7 - b % 8);
+            }
+        }
+    }
+    drop(given);
+    lower.zeroize();
+    let mut kit = Zeroizing::new([0u8; 16]);
+    kit.copy_from_slice(&bits[..16]);
+    if sha2::Sha256::digest(*kit)[0] & 0xf0 != bits[16] & 0xf0 {
+        return Err("the recovery kit does not check out — a word is wrong or two are swapped; check each against where you wrote it down".into());
+    }
+    Ok(kit)
 }
 
 #[cfg(test)]
@@ -117,5 +180,50 @@ mod tests {
             let d = RecoveryKit::from_bytes(bytes).device();
             println!("kat {} {}", e2e::hex(&d.key.public().0), e2e::hex(&d.signing.public().0));
         }
+    }
+
+    #[test]
+    fn the_list_is_bip39_english_exactly() {
+        let hash = sha2::Sha256::digest(ENGLISH.as_bytes());
+        assert_eq!(crate::e2e::hex(&hash), "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda");
+        assert_eq!(list().len(), 2048);
+        assert!(list().windows(2).all(|w| w[0] < w[1]), "sorted, for the binary search");
+    }
+
+    /// BIP39's own vectors for 128-bit entropy (trezor/python-mnemonic's
+    /// vectors.json), so a kit written by another BIP39 tool from the same
+    /// bytes reads the same.
+    #[test]
+    fn d1_the_recovery_kit_is_bip39s_12_word_encoding_of_128_bits() {
+        let cases: [([u8; 16], &str); 4] = [
+            ([0; 16], "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"),
+            ([0x7f; 16], "legal winner thank year wave sausage worth useful legal winner thank yellow"),
+            ([0x80; 16], "letter advice cage absurd amount doctor acoustic avoid letter advice cage above"),
+            ([0xff; 16], "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong"),
+        ];
+        for (bytes, words) in cases {
+            assert_eq!(&*to_words(&bytes), words);
+            assert_eq!(*from_words(words).unwrap(), bytes);
+        }
+        for _ in 0..64 {
+            let kit: [u8; 16] = crate::e2e::random();
+            let words = to_words(&kit);
+            assert_eq!(words.split(' ').count(), KIT_WORDS);
+            assert_eq!(*from_words(&words.to_uppercase()).unwrap(), kit);
+        }
+    }
+
+    /// `about` → `abandon` as the last word of the all-zero kit changes only
+    /// the 4 checksum bits (0011 → 0000), so the checksum refuses it.
+    #[test]
+    fn d1_a_wrong_word_in_the_kit_is_refused() {
+        let right = to_words(&[0; 16]);
+        let swapped = right.replace(" about", " abandon");
+        let e = from_words(&swapped).unwrap_err();
+        assert!(e.contains("recovery kit does not check out"), "{e}");
+        assert!(!e.contains("abandon"));
+        assert!(from_words(right.rsplit_once(' ').unwrap().0).unwrap_err().contains("12 words, and this is 11"));
+        let misspelt = right.replacen("abandon", "abandn", 1);
+        assert_eq!(from_words(&misspelt).unwrap_err(), "word 1 is not one a recovery kit uses — check its spelling");
     }
 }

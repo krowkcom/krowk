@@ -124,7 +124,7 @@ fn take(o: &Options) -> Result<(SessionKey, Writer, Held), String> {
     };
     let lease = o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| e.to_string())?;
     if lease.relay_ticket.is_empty() {
-        return Err("the registry issued no host ticket: register this device's signing key (krowk sync register)".into());
+        return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
     }
     let writer = Writer::take_up(o.api.clone(), key.clone(), id, wrapped, index, lease.fence)?;
     Ok((key, writer, Held { token: lease.token, fence: lease.fence, ticket: lease.relay_ticket }))

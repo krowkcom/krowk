@@ -170,8 +170,19 @@ impl Client {
 
     /// Opens a browser login. Keyless on purpose: the endpoint exists for a
     /// machine with no key, and sending one would meter it as that key's.
-    pub fn start_cli_authorization(&self) -> Result<CliAuthorization, Error> {
-        let (auth, status): (CliAuthorization, u16) = self.call("POST", "/cli/authorizations", None, MAX_ATTEMPTS, None)?;
+    ///
+    /// `fresh` asks the approval page for the person's password (or Google
+    /// sign-in) again, which is what stamps the key it mints as a fresh
+    /// sign-in: the stored key and an open browser session are not enough
+    /// for a destructive device-list change (canon, devices.md). Refused
+    /// when the registry does not say it heard the ask, since a key that is
+    /// not fresh would only be turned away later.
+    pub fn start_cli_authorization(&self, fresh: bool) -> Result<CliAuthorization, Error> {
+        let body = fresh.then(|| json!({ "fresh": true }));
+        let (auth, status): (CliAuthorization, u16) = self.call("POST", "/cli/authorizations", body, MAX_ATTEMPTS, None)?;
+        if fresh && !auth.fresh {
+            return Err(malformed(status, "the registry opened a browser login without the fresh sign-in this needs — check KROWK_API_URL, and update the registry"));
+        }
         if auth.slug.is_empty() || auth.code.is_empty() {
             return Err(malformed(
                 status,
@@ -322,7 +333,7 @@ impl Client {
 
     pub(crate) fn device_signer(&self) -> Result<&dyn RequestSigner, Error> {
         self.signer.as_deref().ok_or_else(|| {
-            fail("device_signature_missing", "this call acts as this machine's device and needs its signing key — set sync up on this machine first (`krowk sync init`, `recover` or `join`), then `krowk sync register`")
+            fail("device_signature_missing", "this call acts as this machine's device and needs its signing key — set sync up on this machine first: `krowk sync init`, `krowk sync join` or `krowk sync recover`")
         })
     }
 
@@ -842,7 +853,7 @@ fn fix_for(code: &str, status: u16) -> String {
         // Registering the same device key again is refused until the owner
         // resets sync, which clears the slate for every device it revoked;
         // `recover` alone keeps the revoked key and cannot help.
-        "device_revoked" => "this device has been revoked for the workspace — once its owner has reset sync in the dashboard's settings, run `krowk sync register` on it; until then, ask them",
+        "device_revoked" => "this device was revoked or removed from your device list — pair it again with `krowk sync join` from a device on the list",
         "lease_held" => "another device holds this session's lease — send it commands through that device, or wait for the lease to lapse",
         "lease_stale" => "this device does not hold the session's lease — another device took it, it lapsed, or the token is not the holder's; acquire it again before writing",
         "method_not_allowed" => {

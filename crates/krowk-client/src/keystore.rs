@@ -232,28 +232,12 @@ impl Keystore {
         e2e::unwrap_account_key(&blob, id, &device).map(Some).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// First sync setup: a device key if there is none, and a new account
-    /// key wrapped to it. `confirm` is shown the key (to show its phrase and
-    /// have it entered again) before anything about the account is written;
-    /// when it refuses, nothing is kept but the device key.
-    pub fn init(&self, confirm: impl FnOnce(&AccountKey) -> Result<(), String>) -> Result<Setup, String> {
-        krowk_api::home::make(&self.home)?;
-        let _lock = krowk_api::creds::lock(&self.account_path())?;
-        if let Some(id) = self.account_id()? {
-            return Err(format!("this home already holds account key {id} — sync is set up here; `krowk sync recover` restores a different one"));
-        }
-        let (device, device_created) = self.device_or_create()?;
-        let account = AccountKey::generate();
-        confirm(&account)?;
-        self.save(&device, &account, "init")?;
-        Ok(Setup { device, device_created, account })
-    }
-
-    /// A fresh machine: the account key from its recovery phrase, wrapped
-    /// to this device (made now if it has no key). A different account key
-    /// already here is replaced only when a phrase put it here too — the
-    /// retry after a word typed wrong — and refused when `init` made it.
-    /// `replaced` names the key a retry replaced.
+    /// The account key, wrapped to this device (made now if it has no
+    /// key). A different account key already here is replaced only when
+    /// `recover` put it here too, and refused when `join` did.
+    /// `replaced` names the key it replaced. What sets the account key up
+    /// for the session sync that still runs on it, until that moves to the
+    /// user key.
     pub fn recover(&self, account: AccountKey) -> Result<(Setup, Option<KeyId>), String> {
         krowk_api::home::make(&self.home)?;
         let _lock = krowk_api::creds::lock(&self.account_path())?;
@@ -283,7 +267,13 @@ impl Keystore {
     /// The generations of the user key this device holds, opened with its
     /// device key; None when it holds none yet.
     pub fn user_keys(&self) -> Result<Option<UserKeys>, String> {
-        let path = self.user_keys_path();
+        self.user_keys_at(&self.user_keys_path())
+    }
+
+    /// The user keys in the file at `path` rather than this home's, opened
+    /// with this device's key: the old ones a start-over keeps aside.
+    pub fn user_keys_at(&self, path: &Path) -> Result<Option<UserKeys>, String> {
+        let path = path.to_path_buf();
         if !path.exists() {
             return Ok(None);
         }
@@ -352,7 +342,13 @@ impl Keystore {
     /// pin: every sync command that opens or seals a session takes its
     /// signers and the current generation from here.
     pub fn device_list(&self) -> Result<Option<Chain>, String> {
-        let path = self.device_list_path();
+        self.device_list_at(&self.device_list_path())
+    }
+
+    /// The device list in the file at `path` rather than this home's,
+    /// verified from entry 0: the old one a start-over keeps aside.
+    pub fn device_list_at(&self, path: &Path) -> Result<Option<Chain>, String> {
+        let path = path.to_path_buf();
         if !path.exists() {
             return Ok(None);
         }

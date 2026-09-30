@@ -51,6 +51,9 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
     people.enlist(&a_keys, "machine-a");
     let (b_home, ks) = home("b");
     people.enlist(&ks, "machine-b");
+    // The registry holds the list too: B brings the list it keeps up to
+    // date from it before it attaches.
+    people.publish(&api_url, TOKEN);
 
     // Machine A wrote the session to the registry, its record signed, and
     // went away.

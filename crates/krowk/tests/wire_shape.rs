@@ -114,9 +114,16 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     *api.lock().unwrap() = format!("http://{proxy}/v1");
     let laptop = Krowk { home: laptop_home, api: api.lock().unwrap().clone() };
 
-    let words = krowk_client::phrase::encode(&krowk_client::e2e::AccountKey::generate());
-    laptop.piped(&["sync", "recover"], &format!("{}\n", *words));
-    laptop.ok(&["devices", "list"], true);
+    // Sync on the account key, as the lease calls still run on it: set up in
+    // the laptop's home and registered, as `sync recover` did from the phrase.
+    let keys = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk"));
+    let (setup, _) = keys.recover(krowk_client::e2e::AccountKey::generate()).unwrap();
+    let signing = keys.signing_key().unwrap();
+    let signing_public = krowk_client::e2e::hex(&signing.public().0);
+    krowk_api::Client::new(&laptop.api, "krowk_sk_test")
+        .signed_by(krowk_client::e2e::DeviceSigner::new(setup.device.id(), signing).shared())
+        .register_device(&krowk_client::e2e::hex(&setup.device.public().0), &signing_public, "laptop", &setup.account.id().to_string())
+        .unwrap();
 
     let store = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk"));
     let device_id = store.device().unwrap().unwrap().id();
@@ -140,11 +147,10 @@ fn sync_wire_shape_matches_the_registrys_routes() {
 
     assert!(failures.lock().unwrap().is_empty(), "{:?}", failures.lock().unwrap());
     let want = [
-        // `recover` with a key registers the device it set up. +signed marks
+        // The laptop's device, registered. +signed marks
         // the calls that act as a device, signed by its key (crypto.md →
         // Signed registry requests), and only they are.
         "POST /v1/devices +signed",
-        "GET /v1/devices",
         // A session is PUT under the id its client minted; its lease is a
         // singular resource: POST acquires, PUT renews or hands over, DELETE
         // lets go.
@@ -193,29 +199,6 @@ impl Krowk {
         }
         let out = cmd.output().unwrap();
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
-    }
-
-    /// `run`, keyed, with `input` on stdin.
-    #[cfg(all(feature = "harness", unix))]
-    fn piped(&self, args: &[&str], input: &str) -> Value {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_krowk"));
-        cmd.args(args)
-            .arg("--json")
-            .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", &self.home)
-            .env("KROWK_API_URL", &self.api)
-            .env("KROWK_NO_UPDATE_CHECK", "1")
-            .env("KROWK_TOKEN", "krowk_sk_test")
-            .current_dir(self.home.parent().unwrap())
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        let mut child = cmd.spawn().unwrap();
-        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
-        let out = child.wait_with_output().unwrap();
-        assert!(out.status.success(), "krowk {} failed:\n{}", args.join(" "), String::from_utf8_lossy(&out.stderr));
-        serde_json::from_slice(&out.stdout).unwrap()
     }
 
     fn ok(&self, args: &[&str], keyed: bool) -> Value {

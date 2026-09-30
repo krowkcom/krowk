@@ -60,6 +60,38 @@ struct Devices {
     devices: Vec<Device>,
 }
 
+/// A device as the registry indexes the person's device list: for showing,
+/// and for a dashboard Revoke the chain has not caught up with
+/// (`revoked_at` set, `removed_seq` not). What a client trusts is the chain
+/// itself (`device_list`), verified against its pin; this is never a list
+/// anything is wrapped to.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ListedDevice {
+    #[serde(default, deserialize_with = "nullable")]
+    pub id: String,
+    /// `device` or `recovery`.
+    #[serde(default, deserialize_with = "nullable")]
+    pub kind: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub name: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub os: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub added_seq: Option<u64>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub removed_seq: Option<u64>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub last_seen_at: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub revoked_at: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ListedDevices {
+    #[serde(default, deserialize_with = "nullable")]
+    devices: Vec<ListedDevice>,
+}
+
 /// One entry of a person's device list, exactly as it was posted, with when
 /// the registry received it (Unix seconds).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -402,6 +434,11 @@ impl Client {
     /// it against the pin.
     pub fn device_list(&self, after: Option<u64>) -> Result<DeviceList, Error> {
         self.get(&after.map_or_else(|| "/device_list".to_string(), |a| format!("/device_list?after={a}")))
+    }
+
+    /// Every device the person's list has named, removed ones too.
+    pub fn listed_devices(&self) -> Result<Vec<ListedDevice>, Error> {
+        Ok(self.get::<ListedDevices>("/devices")?.devices)
     }
 
     /// The whole device list, every page, from seq 0.
