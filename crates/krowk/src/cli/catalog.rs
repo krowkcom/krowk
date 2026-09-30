@@ -494,8 +494,9 @@ fn sync_command() -> Command {
                 subcommands: vec![
                     Command { flags: vec![flag("save", STRING, "Write the new kit to this file (0600) instead of showing it")], ..cmd("new", "krowk sync recovery new [--save FILE]", "Make a new recovery kit") },
                     cmd("check", "krowk sync recovery check", "Test the kit's words against your device list, locally"),
+                    cmd("discard-old", "krowk sync recovery discard-old", "Drop the old keys a start-over kept aside"),
                 ],
-                ..cmd("recovery", "krowk sync recovery new|check", "Your recovery kit: make a new one, or test its words")
+                ..cmd("recovery", "krowk sync recovery new|check|discard-old", "Your recovery kit: make a new one, or test its words")
             },
             Command {
                 flags: vec![flag("name", STRING, "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
@@ -536,7 +537,7 @@ fn relay_command() -> Command {
 fn devices_command() -> Command {
     Command {
         subcommands: vec![
-            cmd("list", "krowk devices list", "The workspace's devices, and the account key this one holds"),
+            cmd("list", "krowk devices list", "The devices on your device list, this one marked"),
             cmd("add", "krowk devices add", "Show a code that adds a new machine to your devices"),
         ],
         ..cmd("devices", "", "The machines that sync this workspace's sessions")

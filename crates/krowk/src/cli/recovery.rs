@@ -124,21 +124,19 @@ fn post_init(ctx: &mut Ctx, client: Client, me: &Me, batch: &Batch, start_over: 
 pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
     need_person(ctx, "`krowk sync init` signs you in again and shows your recovery kit", false)?;
     let home = chain::home(ctx)?;
-    if ctx.f.start_over
-        && let Some(old) = reseal::set_aside(&home)?
-    {
-        return finish_start_over(ctx, old);
-    }
     if !ctx.f.start_over {
         refuse_if_set_up(ctx, "sync is set up on this machine already — `krowk sync status` shows its device list. Only if every device and the kit are lost, or the kit alone: `krowk sync init --start-over`")?;
     }
     let old = if ctx.f.start_over { held_old(ctx)? } else { None };
     let client = fresh_sign_in(ctx, "Setting sync up changes which devices can read your sessions")?;
-    let exists = !client.device_list_all()?.entries.is_empty();
-    if exists && !ctx.f.start_over {
+    let served = chain::decode(&client.device_list_all()?)?;
+    if let Some(aside) = reseal::set_aside(&home)?.filter(|a| ctx.f.start_over && served.first().is_some_and(|e| e.hash() != a.chain.root())) {
+        return finish_start_over(ctx, client, aside, served);
+    }
+    if !served.is_empty() && !ctx.f.start_over {
         return Err(fail("chain_exists", "you already have a device list — add this machine from one of your devices with `krowk sync join`, or back in with the kit's words with `krowk sync recover`. Only if every device and the kit are lost: `krowk sync init --start-over`"));
     }
-    let start_over = ctx.f.start_over && exists;
+    let start_over = ctx.f.start_over && !served.is_empty();
     if start_over {
         confirm_start_over(ctx, old.is_some())?;
     }
@@ -149,80 +147,98 @@ pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
     drop(kit);
     let first = this_subject(ctx, &me.device, &me.signing);
     let (new_chain, batch) = Chain::start(first.clone(), &me.signing, recovery.as_ref().map(|r| (kit_subject(r), &r.signing)), now()).map_err(|e| fail("sync_setup_failed", e.0))?;
+    if old.is_some() {
+        reseal::copy_aside(&home)?;
+    }
     let client = post_init(ctx, client, &me, &batch, start_over).inspect_err(|_| discard_kit(ctx, kept))?;
-    let count = keep_new(ctx, &client, &me, old.filter(|_| start_over), &new_chain, &batch)?;
+    let keys = keep_new(ctx, &new_chain, &batch)?;
+    let count = match old.filter(|_| start_over) {
+        Some(old) => Some(reseal::run(ctx, &client, &me, &old, &keys, &new_chain).map_err(unfinished)?),
+        None => None,
+    };
     let name = first.name.clone();
     let summary = init_summary(&name, start_over, kept, count.as_ref());
-    say(ctx, json!({ "device": me.device.id().to_string(), "name": name, "generation": 1, "recovery_kit": kept, "started_over": start_over, "resealed": count.as_ref().map(|c| c.sealed) }), summary)
+    say(ctx, json!({ "device": me.device.id().to_string(), "name": name, "generation": 1, "recovery_kit": kept, "started_over": start_over, "resealed": count.as_ref().map(|c| c.sealed), "left": count.as_ref().map(|c| c.left) }), summary)
 }
 
-/// After seq 0 is posted, in this order: the old list and keys set aside,
-/// generation 1 kept in their place, the old sessions sealed again under it
-/// when there are old keys to open them, and the new list kept last.
-fn keep_new(ctx: &Ctx, client: &Client, me: &Me, old: Option<Old>, new: &Chain, batch: &Batch) -> Result<Option<reseal::Count>, Error> {
-    let home = chain::home(ctx)?;
-    reseal::move_aside(&home)?;
+/// Generation 1 and the new list, kept in place of the old ones — before
+/// any re-seal, so a device cut short in one still syncs.
+fn keep_new(ctx: &Ctx, new: &Chain, batch: &Batch) -> Result<UserKeys, Error> {
+    let store = super::sync::keystore(ctx)?;
+    store.forget_user_keys().map_err(|e| fail("sync_setup_failed", e))?;
     let keys = chain::save_keys(ctx, UserKeys::new(batch.newest.clone(), Vec::new()).map_err(|e| fail("sync_setup_failed", e.0))?, new)?;
-    match old {
-        Some(old) => reseal_and_keep(ctx, client, me, &old, &keys, new, &batch.entries).map(Some),
-        None => {
-            keep_list(ctx, &batch.entries)?;
-            let _ = std::fs::remove_dir_all(reseal::aside_dir(&home));
-            Ok(None)
-        }
-    }
+    keep_list(ctx, &batch.entries)?;
+    Ok(keys)
 }
 
 fn keep_list(ctx: &Ctx, entries: &[SignedEntry]) -> Result<(), Error> {
     super::sync::keystore(ctx)?.save_device_list(entries).map_err(|e| fail("sync_setup_failed", e)).map(|_| ())
 }
 
-/// The old sessions sealed again, then the new list kept — last, since
-/// every other sync command trusts it — and the aside gone once nothing is
-/// left to seal.
-fn reseal_and_keep(ctx: &Ctx, client: &Client, me: &Me, old: &Old, keys: &UserKeys, new: &Chain, entries: &[SignedEntry]) -> Result<reseal::Count, Error> {
-    let count = reseal::run(ctx, client, me, old, keys, new).map_err(|e| fail(&e.code(), format!("{} — the new list is posted; run `krowk sync init --start-over` again to finish sealing your sessions under it", e.fix())))?;
-    keep_list(ctx, entries)?;
-    if count.left == 0 {
-        let _ = std::fs::remove_dir_all(reseal::aside_dir(&chain::home(ctx)?));
-    }
-    Ok(count)
+/// A re-seal the network or the registry cut short: the device syncs, and
+/// running the start-over again goes on from where this stopped.
+fn unfinished(e: Error) -> Error {
+    fail(&e.code(), format!("{} — the new list is in place and this device syncs; run `krowk sync init --start-over` again to go on sealing your old sessions under it", e.fix()))
 }
 
-/// A start-over whose re-seal did not finish, run again: the new list as
-/// the registry has it, the new keys held here, and the old ones aside.
-fn finish_start_over(ctx: &mut Ctx, old: Old) -> Result<(), Error> {
+/// A start-over run again, the new list already posted: this device on it
+/// with generation 1 (taken up now if a crash came before it was kept), and
+/// what the old keys open sealed again under it.
+fn finish_start_over(ctx: &mut Ctx, client: Client, old: Old, served: Vec<SignedEntry>) -> Result<(), Error> {
     let me = Me::load(ctx)?;
-    let client = super::sync::keyed_client(ctx, "`krowk sync init --start-over`")?;
-    let entries = chain::decode(&client.device_list_all()?)?;
-    let new = Chain::verify(&entries, None).map_err(|e| fail("device_list_refused", format!("{} — nothing was changed", e.0)))?;
-    let keys = chain::held_keys(ctx)?.ok_or_else(chain::not_set_up)?;
-    let keys = keys.verified_by(&new).map_err(|e| fail("user_key_refused", format!("{} — the list the registry serves is not the one this device started", e.0)))?;
+    let new = Chain::verify(&served, None).map_err(|e| fail("device_list_refused", format!("{} — nothing was changed", e.0)))?;
     if !new.devices().iter().any(|d| d.id() == me.device.id()) {
         return Err(fail("device_removed", "this device is not on the list the registry serves — it was not the one that started over"));
     }
-    let count = reseal_and_keep(ctx, &client, &me, &old, &keys, &new, &entries)?;
-    let summary = format!("the start-over is finished: {}", resealed(&count));
-    say(ctx, json!({ "resealed": count.sealed, "already": count.already, "left": count.left }), summary)
+    let store = super::sync::keystore(ctx)?;
+    if store.device_list().map_err(|e| fail("keys_unreadable", e))?.map(|c| c.root()) != Some(new.root()) {
+        store.forget_user_keys().map_err(|e| fail("sync_setup_failed", e))?;
+        keep_list(ctx, &served)?;
+    }
+    let keys = chain::adopt_user_key(ctx, &client, &me, &new)?;
+    let count = reseal::run(ctx, &client, &me, &old, &keys, &new).map_err(unfinished)?;
+    say(ctx, json!({ "resealed": count.sealed, "already": count.already, "left": count.left }), resealed(&count))
 }
 
 fn resealed(c: &reseal::Count) -> String {
     let left = match c.left {
         0 => String::new(),
-        n => format!("; {n} could not be sealed again yet — run `krowk sync init --start-over` again later to finish"),
+        _ => " — run `krowk sync init --start-over` again under that workspace's key to finish, and `krowk sync recovery discard-old` once none is left".to_string(),
     };
-    format!("{} session(s) sealed again under the new list, {} already were{left}", c.sealed, c.already)
+    format!("{} re-sealed, {} left (other workspaces or refused){left}", c.sealed, c.left)
 }
 
 fn init_summary(name: &str, start_over: bool, kept: bool, count: Option<&reseal::Count>) -> String {
     let no_kit = if kept { String::new() } else { format!(". {NO_KIT}") };
-    let sessions = count.map(|c| format!("; {}", resealed(c))).unwrap_or_default();
+    let sessions = count.map(|c| format!("; old sessions: {}", resealed(c))).unwrap_or_default();
     let with_kit = if kept { " and your recovery kit" } else { "" };
     match (start_over, kept) {
-        (true, _) => format!("started over: a new device list with '{name}'{with_kit}{sessions}; pair your other devices again with `krowk sync join`{no_kit}"),
+        (true, _) => format!("started over: a new device list with '{name}'{with_kit}; pair your other devices again with `krowk sync join`{sessions}{no_kit}"),
         (false, true) => format!("sync is set up: '{name}' is your first device, and your recovery kit is on the list"),
         (false, false) => format!("sync is set up: '{name}' is your first device{no_kit}"),
     }
+}
+
+/// `krowk sync recovery discard-old`: drops the old keys a start-over kept
+/// aside, once the person says so — after being told how many sessions in
+/// this workspace only they still open.
+pub(super) fn discard_old(ctx: &mut Ctx) -> Result<(), Error> {
+    need_person(ctx, "`krowk sync recovery discard-old` throws away the keys that open your old sessions", false)?;
+    let home = chain::home(ctx)?;
+    let Some(old) = reseal::set_aside(&home)? else {
+        return say(ctx, json!({ "discarded": false }), "nothing is set aside here — no start-over left old keys behind".into());
+    };
+    let me = Me::load(ctx)?;
+    let client = super::sync::keyed_client(ctx, "`krowk sync recovery discard-old`")?;
+    let v = chain::verified(ctx, &client, &me)?;
+    let keys = chain::held_keys(ctx)?.ok_or_else(chain::not_set_up)?;
+    let left = reseal::still_left(ctx, &client, &me, &old, &keys, &v.chain)?;
+    let _ = writeln!(ctx.io.stderr, "{left} session(s) in this workspace open only with the old keys, and are lost with them; sessions in your other workspaces are not counted here.");
+    if !ask(ctx, "Discard the old keys?")? {
+        return Err(fail("selection_cancelled", "not confirmed, so the old keys are kept"));
+    }
+    std::fs::remove_dir_all(reseal::aside_dir(&home)).map_err(|e| fail("sync_setup_failed", format!("the old keys could not be removed: {e}")))?;
+    say(ctx, json!({ "discarded": true, "left": left }), format!("the old keys are gone; {left} session(s) here could only be opened with them"))
 }
 
 pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {

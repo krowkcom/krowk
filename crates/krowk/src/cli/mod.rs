@@ -335,6 +335,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(feature = "harness")]
         ["sync", "recovery", "check", ..] => recovery::check(ctx),
         #[cfg(feature = "harness")]
+        ["sync", "recovery", "discard-old", ..] => recovery::discard_old(ctx),
+        #[cfg(feature = "harness")]
         ["sync", "join", ..] => pairing::join(ctx, rest(2)),
         #[cfg(all(feature = "harness", unix))]
         ["sync", "sessions", ..] => synced::sessions(ctx),

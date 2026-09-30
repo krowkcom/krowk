@@ -1129,7 +1129,7 @@ stdout:
         },
         {
           "name": "recovery",
-          "usage": "krowk sync recovery new|check",
+          "usage": "krowk sync recovery new|check|discard-old",
           "summary": "Your recovery kit: make a new one, or test its words",
           "subcommands": [
             {
@@ -1149,6 +1149,11 @@ stdout:
               "name": "check",
               "usage": "krowk sync recovery check",
               "summary": "Test the kit's words against your device list, locally"
+            },
+            {
+              "name": "discard-old",
+              "usage": "krowk sync recovery discard-old",
+              "summary": "Drop the old keys a start-over kept aside"
             }
           ]
         },
@@ -1189,7 +1194,7 @@ stdout:
         {
           "name": "list",
           "usage": "krowk devices list",
-          "summary": "The workspace's devices, and the account key this one holds"
+          "summary": "The devices on your device list, this one marked"
         },
         {
           "name": "add",
@@ -2494,7 +2499,7 @@ stdout:
         },
         {
           "name": "recovery",
-          "usage": "krowk sync recovery new|check",
+          "usage": "krowk sync recovery new|check|discard-old",
           "summary": "Your recovery kit: make a new one, or test its words",
           "subcommands": [
             {
@@ -2514,6 +2519,11 @@ stdout:
               "name": "check",
               "usage": "krowk sync recovery check",
               "summary": "Test the kit's words against your device list, locally"
+            },
+            {
+              "name": "discard-old",
+              "usage": "krowk sync recovery discard-old",
+              "summary": "Drop the old keys a start-over kept aside"
             }
           ]
         },
@@ -2554,7 +2564,7 @@ stdout:
         {
           "name": "list",
           "usage": "krowk devices list",
-          "summary": "The workspace's devices, and the account key this one holds"
+          "summary": "The devices on your device list, this one marked"
         },
         {
           "name": "add",
@@ -3873,7 +3883,7 @@ stdout:
         },
         {
           "name": "recovery",
-          "usage": "krowk sync recovery new|check",
+          "usage": "krowk sync recovery new|check|discard-old",
           "summary": "Your recovery kit: make a new one, or test its words",
           "subcommands": [
             {
@@ -3893,6 +3903,11 @@ stdout:
               "name": "check",
               "usage": "krowk sync recovery check",
               "summary": "Test the kit's words against your device list, locally"
+            },
+            {
+              "name": "discard-old",
+              "usage": "krowk sync recovery discard-old",
+              "summary": "Drop the old keys a start-over kept aside"
             }
           ]
         },
@@ -3933,7 +3948,7 @@ stdout:
         {
           "name": "list",
           "usage": "krowk devices list",
-          "summary": "The workspace's devices, and the account key this one holds"
+          "summary": "The devices on your device list, this one marked"
         },
         {
           "name": "add",
@@ -5252,7 +5267,7 @@ tty:
         },
         {
           "name": "recovery",
-          "usage": "krowk sync recovery new|check",
+          "usage": "krowk sync recovery new|check|discard-old",
           "summary": "Your recovery kit: make a new one, or test its words",
           "subcommands": [
             {
@@ -5272,6 +5287,11 @@ tty:
               "name": "check",
               "usage": "krowk sync recovery check",
               "summary": "Test the kit's words against your device list, locally"
+            },
+            {
+              "name": "discard-old",
+              "usage": "krowk sync recovery discard-old",
+              "summary": "Drop the old keys a start-over kept aside"
             }
           ]
         },
@@ -5312,7 +5332,7 @@ tty:
         {
           "name": "list",
           "usage": "krowk devices list",
-          "summary": "The workspace's devices, and the account key this one holds"
+          "summary": "The devices on your device list, this one marked"
         },
         {
           "name": "add",

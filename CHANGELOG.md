@@ -23,8 +23,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   when written down, [s] to skip) or written to `--save FILE`, 0600, and are
   never typed back. `--start-over` makes a new list; every other device on
   the old one stops syncing and asks to be paired again. Run from a device
-  that holds your key, it seals the sessions it can open again under the new
-  list, and running it again finishes any it could not. The 24-word recovery phrase is gone, and so is
+  that holds your key, it keeps the old keys aside and seals the sessions it
+  can open again under the new list; running it again (under another
+  workspace's key, for that workspace's) goes through what is left, and
+  `krowk sync recovery discard-old` drops the old keys when you say so. The 24-word recovery phrase is gone, and so is
   `krowk sync register`: a device is registered by being on the list.
 - **`krowk sync recover`** gets back in on a new machine from the kit's
   words, typed at a prompt that doesn't echo them or piped in. It verifies

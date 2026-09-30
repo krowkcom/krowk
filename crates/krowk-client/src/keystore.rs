@@ -267,7 +267,13 @@ impl Keystore {
     /// The generations of the user key this device holds, opened with its
     /// device key; None when it holds none yet.
     pub fn user_keys(&self) -> Result<Option<UserKeys>, String> {
-        let path = self.user_keys_path();
+        self.user_keys_at(&self.user_keys_path())
+    }
+
+    /// The user keys in the file at `path` rather than this home's, opened
+    /// with this device's key: the old ones a start-over keeps aside.
+    pub fn user_keys_at(&self, path: &Path) -> Result<Option<UserKeys>, String> {
+        let path = path.to_path_buf();
         if !path.exists() {
             return Ok(None);
         }
@@ -336,7 +342,13 @@ impl Keystore {
     /// pin: every sync command that opens or seals a session takes its
     /// signers and the current generation from here.
     pub fn device_list(&self) -> Result<Option<Chain>, String> {
-        let path = self.device_list_path();
+        self.device_list_at(&self.device_list_path())
+    }
+
+    /// The device list in the file at `path` rather than this home's,
+    /// verified from entry 0: the old one a start-over keeps aside.
+    pub fn device_list_at(&self, path: &Path) -> Result<Option<Chain>, String> {
+        let path = path.to_path_buf();
         if !path.exists() {
             return Ok(None);
         }
