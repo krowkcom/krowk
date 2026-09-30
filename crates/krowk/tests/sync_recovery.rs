@@ -188,7 +188,7 @@ fn d6_recover_on_a_new_machine_keeps_or_removes_each_device_and_opens_the_old_se
 
     // The laptop is lost: removed in the review.
     let v = ok(&krowk(&desktop, &api, DESKTOP, &["sync", "recover", "--json"], "n", &format!("{words}\n")));
-    assert_eq!((v["data"]["removed"].clone(), v["data"]["generation"].clone()), (1.into(), 2.into()), "{v}");
+    assert_eq!((v["data"]["removed"].clone(), v["data"]["generation"].clone(), v["data"]["kept"].clone()), (1.into(), 2.into(), serde_json::json!([])), "{v}");
     let chain = keys(&desktop).device_list().unwrap().unwrap();
     let names: Vec<_> = chain.devices().iter().map(|d| d.name.clone()).collect();
     assert!(names.contains(&"desktop".to_string()) && !names.contains(&"laptop".to_string()), "{names:?}");

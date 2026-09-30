@@ -88,7 +88,8 @@ pub(super) fn ask_line(ctx: &mut Ctx, prompt: &str) -> Result<String, Error> {
 /// as an argument, which a shell keeps in its history and every process
 /// list shows. Empty when the person just pressed Enter.
 pub(super) fn ask_words(ctx: &mut Ctx, prompt: &str) -> Result<krowk_client::Zeroizing<String>, Error> {
-    if let Some(a) = test_answer(ctx).filter(|_| ctx.io.stdin_tty) {
+    // Piped words are read from stdin below, and take no stand-in answer.
+    if let Some(a) = ctx.io.stdin_tty.then(|| test_answer(ctx)).flatten() {
         return Ok(krowk_client::Zeroizing::new(a));
     }
     if ctx.io.stdin_tty {
