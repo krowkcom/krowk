@@ -8,7 +8,7 @@
 use krowk_api::client::RequestSigner;
 use krowk_client::e2e::{self, AccountKey, SessionKey};
 use krowk_client::keystore::Keystore;
-use krowk_client::user_key::{UserKey, UserKeys};
+use krowk_client::user_key::UserKey;
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
