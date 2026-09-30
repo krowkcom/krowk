@@ -1,25 +1,68 @@
 name: CI
 
-# The gate every pull request passes, whatever branch it targets.
+# The gate every pull request passes, whatever branch it targets: `make check`
+# on Linux x86, cut into jobs that run side by side, so a push is answered in
+# the time of the slowest piece rather than the sum. The other platforms and
+# the budgets are platforms.yml's and release.yml's, off the review loop.
 #
-# Every platform CI can run natively, because the golden cases are exactly the
-# kind of test a platform difference breaks: temp paths, file modes, what the
-# machine's own tables say.
+# A push that lands on a branch still being checked cancels the check: only
+# the newest commit of a pull request is worth an answer. Documentation alone
+# starts nothing.
 on:
   pull_request:
+    paths-ignore: &docs
+      - "*.md"
+      - LICENSE
+      - THIRD-PARTY-NOTICES
   push:
-    branches: [main, rust-rewrite]
+    branches: [main]
+    paths-ignore: *docs
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  check:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
-    runs-on: ${{ matrix.os }}
+  # Clippy over all three builds, and the agent build's dependency list.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+        with:
+          cache: lint
+
+      - name: Clippy, every build
+        run: make lint lean-deps
+
+  # The ci profile retries a failed test twice: one that then passes is
+  # reported FLAKY instead of failing the job.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+        with:
+          cache: test
+
+      - name: Unit and integration tests
+        run: make test
+        env:
+          NEXTEST_PROFILE: ci
+
+  golden:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -29,52 +72,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # rustup is on every hosted runner; the toolchain is pinned to the
-      # workspace's rust-version rather than whatever the image carries.
-      - name: Set up Rust
-        run: |
-          rustup toolchain install 1.97 --profile minimal --component clippy
-          rustup default 1.97
-
-      # The same shared build cache mise.toml turns on locally, wrapping plain
-      # cargo. It keys on the rustc on PATH, so it comes after the toolchain.
-      # Pushes to main publish to the GitHub Actions cache; pull requests only
-      # restore from it. The version moves with the one in mise.toml.
-      - uses: jdx/mr-boxington-action@v1
+      - uses: ./.github/actions/setup
         with:
-          version: 1.19.0
+          cache: golden
 
-      # `make test` runs on nextest. The version moves with the one in
-      # mise.toml.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest@0.9.146
-
-      # The opencode fixture is built from SQL at case time.
-      - name: Ensure sqlite3
-        if: runner.os == 'Linux'
-        run: command -v sqlite3 || (sudo apt-get update && sudo apt-get install -y sqlite3)
-
-      # The TUI's scrollback and offline checks read the screen through
-      # tmux, and fail rather than skip under CI on Linux.
-      - name: Ensure tmux
-        if: runner.os == 'Linux'
-        run: command -v tmux || (sudo apt-get update && sudo apt-get install -y tmux)
-
-      # The relay's per-address limits are tested from other loopback
-      # addresses, which macOS does not answer for until lo0 is given them.
-      - name: Loopback aliases
-        if: runner.os == 'macOS'
-        run: |
-          sudo ifconfig lo0 alias 127.0.0.2 up
-          sudo ifconfig lo0 alias 127.0.0.9 up
-
-      # The ci profile retries a failed test twice: one that then passes is
-      # reported FLAKY instead of failing the job.
-      - name: Lint, unit tests and golden cases
-        run: make check
-        env:
-          NEXTEST_PROFILE: ci
+      - name: Golden cases
+        run: make golden
 
   # R-OSS-3: every crate both builds link, on every target the release ships,
   # held to deny.toml — no RustSec advisory, no licence outside its list,
@@ -125,28 +128,3 @@ jobs:
 
       - name: The pinned app-server schema is current
         run: make codex-schema
-
-  # R-PERF-7: the performance and size budgets, on one pinned runner class so
-  # every number is read on the same kind of machine — an image named by
-  # version, not -latest, which moves under the numbers. Each check is the
-  # median of repeated runs held against the absolute number in
-  # crates/krowk-bench/budgets.toml, never against an earlier run, and the
-  # idle checks read Linux /proc, so this runner is also the one machine where
-  # nothing may be skipped (--strict). The table lands in the job summary.
-  bench:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Set up Rust
-        run: |
-          rustup toolchain install 1.97 --profile minimal
-          rustup default 1.97
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Performance and size budgets
-        run: make bench BENCH_FLAGS=--strict

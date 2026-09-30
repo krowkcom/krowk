@@ -117,8 +117,13 @@ jobs:
           name: sbom
           path: sbom/
 
+  # R-PERF-7: the budgets are held here rather than on every pull request,
+  # beside the check, and nothing is built for release until both pass.
+  bench:
+    uses: ./.github/workflows/bench.yml
+
   dist:
-    needs: check
+    needs: [check, bench]
     uses: ./.github/workflows/dist.yml
     with:
       version: ${{ needs.check.outputs.version }}
