@@ -665,6 +665,11 @@ impl Chain {
                 if next.seen.contains(&subject.device.0) || next.seen.contains(&subject.signing.0) || subject.device.0 == subject.signing.0 {
                     return Err(refuse(seq, "it adds a key this list has held before"));
                 }
+                // The kit it would replace aside, its name may not be one a
+                // device on the list has, as it may not be at completion.
+                if next.devices.iter().any(|d| d.kind != Kind::Recovery && d.name.to_lowercase() == subject.name.to_lowercase()) {
+                    return Err(refuse(seq, format!("a device on the list is already called {:?}", subject.name)));
+                }
                 let since = match &self.trust {
                     Trust::Pinned { first_seen: Some((s, t)), .. } if *s == seq => *t,
                     Trust::Pinned { .. } => self.now,
@@ -909,6 +914,13 @@ impl Chain {
                 added.push(subject.id());
             }
         }
+        // The chain handed back is pinned at its new head as of `time`: this
+        // device made and verified every entry in it, and whatever it
+        // extends next is judged as a pinned device judges it — backdating,
+        // and the delay from first sight — never by the trust it was built
+        // under, which for a fresh machine would drop the receipt check.
+        chain.trust = Trust::Pinned { head: chain.head, verified_at: time, first_seen: chain.pending.as_ref().map(|p| (p.seq, p.since)) };
+        chain.now = time;
         let rotated = !links.is_empty();
         let wraps = chain.devices.iter().filter(|d| rotated || added.contains(&d.id())).map(|d| Ok((d.id(), current.wrap_to(&d.device)?))).collect::<Result<_, Error>>()?;
         Ok((chain, Batch { entries, newest: current, links, wraps }))
@@ -1459,6 +1471,45 @@ mod tests {
         let mut same_name = Dev::new("x").subject();
         same_name.name = "Recovery Kit".into();
         assert!(c.batch(&g1, vec![Change::Add(same_name)], laptop.id(), &laptop.signing, T + 20).err().unwrap().0.contains("pending"));
+    }
+
+    /// Re-check 2 of #199: the chain `batch` hands back is pinned at its
+    /// new head, so a fresh machine that recovered through it still judges
+    /// what comes next by its own clock — an early completion is refused.
+    #[test]
+    fn d1_a_batch_hands_back_a_chain_pinned_at_its_new_head() {
+        let (laptop, kit, _phone, entries, g1) = three();
+        let fresh = Chain::verify(&entries, Trust::Fresh { received_at: vec![T, T] }, NOW).unwrap();
+        let recovered = Dev::new("recovered");
+        let (c, _) = fresh.batch(&g1, vec![Change::Add(recovered.subject())], kit.id(), &kit.signing, NOW).unwrap();
+        let head = c.head();
+        // A thief's proposal and its completion arrive together a day later.
+        let thief_kit = Dev::recovery(&RecoveryKit::generate());
+        let mut p = c.next_entry(Action::RotateRecovery, thief_kit.subject(), NOW + DAY);
+        p.seq = head.seq + 1;
+        let proposal = p.sign(&[laptop.signs(), thief_kit.signs()]).unwrap();
+        let c1 = c.extend(&proposal).unwrap();
+        assert_eq!(c1.pending().unwrap().since, NOW, "counted from this device's clock, not a receipt");
+        let completion = c1.next_entry(Action::RotateRecovery, thief_kit.subject(), NOW + DAY);
+        let mut completion = completion;
+        rotate(&mut completion);
+        let completion = completion.sign(&[laptop.signs(), thief_kit.signs()]).unwrap();
+        assert!(c1.at(NOW + 2 * DAY).extend(&completion).unwrap_err().0.contains("takes effect only"));
+        // A backdated entry after the new head is refused.
+        let mut old = c.next_entry(Action::Add, Dev::new("old").subject(), NOW - 2 * CLOCK_SKEW);
+        old.seq = head.seq + 1;
+        assert!(c.extend(&old.sign(&[kit.signs()]).unwrap()).unwrap_err().0.contains("backdated"));
+    }
+
+    /// Re-check 2 nit: a proposed kit may not take a listed device's name.
+    #[test]
+    fn d1_a_proposed_kit_may_not_take_a_listed_devices_name() {
+        let (laptop, _kit, _phone, entries, g1) = three();
+        let thief_kit = Dev::recovery(&RecoveryKit::generate());
+        let mut clash = thief_kit.subject();
+        clash.name = "Phone".into();
+        let r = chain(&entries).batch(&g1, vec![Change::RotateRecovery(clash, &thief_kit.signing)], laptop.id(), &laptop.signing, T + 10);
+        assert!(r.err().unwrap().0.contains("already called"));
     }
 
     /// Known answer, frozen: a genesis entry over fixed keys and a fixed
