@@ -12,7 +12,7 @@
 
 use krowk_client::device_chain::{Chain, Kind, SignedEntry, Subject, Trust};
 use krowk_client::e2e::{self, DeviceSigner};
-use krowk_client::keystore::{Keystore, Pin};
+use krowk_client::keystore::Keystore;
 use krowk_client::recovery::RecoveryKit;
 use krowk_client::user_key::{UserKey, UserKeys};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -84,7 +84,7 @@ fn set_up(home: &Path, api: &str) -> UserKey {
     let client = krowk_api::Client::new(api, LAPTOP).signed_by(DeviceSigner::new(device.id(), store.signing_key().unwrap()).shared());
     client.init_device_list(&post).unwrap();
     store.save_user_keys(&UserKeys::new(batch.newest.clone(), []).unwrap()).unwrap();
-    store.save_pin(&Pin::new(1, chain.head(), now(), None)).unwrap();
+    store.save_device_list(&batch.entries, &chain, now()).unwrap();
     batch.newest
 }
 
@@ -177,15 +177,13 @@ fn r_e2e_3_a_device_added_by_its_code_holds_the_user_key_and_a_pin_of_the_chain(
     assert_eq!(*store.user_keys().unwrap().unwrap().newest(), key, "the desktop holds the laptop's user key");
     let chain = served(&api);
     assert_eq!(chain.devices().iter().filter(|d| d.kind == Kind::Device).count(), 2);
-    let pin = store.pin().unwrap().unwrap();
-    assert_eq!((pin.seq, pin.hash.clone()), (chain.head().seq, e2e::hex(&chain.head().hash)), "pinned at the head that adds it");
-    assert!(pin.verified_at.abs_diff(now()) < 120);
+    let pinned = store.device_list(now()).unwrap().unwrap();
+    assert_eq!(pinned.head(), chain.head(), "pinned at the head that adds it");
     let desktop_id = store.device().unwrap().unwrap().id();
     let signer = DeviceSigner::new(desktop_id, store.signing_key().unwrap()).shared();
     let wraps = krowk_api::Client::new(&api, DESKTOP).signed_by(signer).user_key().unwrap();
     assert_eq!(wraps.wraps.len(), 1, "the user key is wrapped to the desktop");
-    let pin_a = keys(&laptop).pin().unwrap().unwrap();
-    assert_eq!(pin_a.seq, 1, "the laptop pinned the entry it posted");
+    assert_eq!(keys(&laptop).device_list(now()).unwrap().unwrap().head().seq, 1, "the laptop pinned the entry it posted");
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -210,7 +208,7 @@ fn r_e2e_3_a_wrong_code_adds_nothing_and_the_new_device_asks_for_a_new_one() {
     let said = rest(&a_err);
     assert!(!a.status.success() && !said.contains("[Y/n]"), "the laptop asked nothing: {said}");
     assert_eq!(served(&api).head().seq, 0, "nothing reached the chain");
-    assert!(keys(&desktop).user_keys().unwrap().is_none() && keys(&desktop).pin().unwrap().is_none());
+    assert!(keys(&desktop).user_keys().unwrap().is_none() && keys(&desktop).device_list(now()).unwrap().is_none());
     let _ = std::fs::remove_dir_all(&r);
 }
 
