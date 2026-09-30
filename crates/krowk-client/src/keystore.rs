@@ -15,9 +15,10 @@
 //!   wrap of each older generation under the next. Every session key is
 //!   sealed under these (engineering/devices.md → Keys). Written only by
 //!   `save_user_keys`, which never goes back a generation.
-//! - `published-sessions.json`: the sessions this device published, each
-//!   with its wrapped key and generation — what a host checks the
-//!   registry's record against before taking a session key back.
+//! - `device-list.json`: the signed device list as this device last
+//!   verified it, entry 0 to its head, which is the pin; read back by
+//!   verifying it again. Whose
+//!   signatures a session record is checked against (`session_record`).
 //!
 //! - `signing.json`: the device's Ed25519 relay signing key
 //!   (`e2e::SigningKey`), made the first time a relay is joined. It proves
@@ -28,6 +29,7 @@
 //! here, so these files and the recovery phrase are the copies that last.
 
 use crate::e2e::{self, AccountKey, DeviceKey, KeyId, SigningKey};
+use crate::device_chain::{Chain, SignedEntry};
 use crate::user_key::{UserKey, UserKeyId, UserKeys};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -37,24 +39,16 @@ pub const DEVICE_FILE: &str = "device.json";
 pub const ACCOUNT_FILE: &str = "account-key.json";
 pub const SIGNING_FILE: &str = "signing.json";
 pub const USER_KEYS_FILE: &str = "user-keys.json";
-pub const PUBLISHED_FILE: &str = "published-sessions.json";
-
-/// A session this device published: its wrapped key, hex, and the user key
-/// generation it was sealed under.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct Published {
-    #[serde(default)]
-    pub wrapped: String,
-    #[serde(default)]
-    pub generation: u32,
-}
+pub const DEVICE_LIST_FILE: &str = "device-list.json";
 
 #[derive(Default, Serialize, Deserialize)]
-struct PublishedFile {
+struct DeviceListFile {
     #[serde(default)]
     version: u8,
+    /// Each entry as signed, from entry 0: its bytes and its signatures,
+    /// hex. The last is the pin.
     #[serde(default)]
-    sessions: std::collections::BTreeMap<String, Published>,
+    entries: Vec<(String, String)>,
 }
 
 #[derive(Default, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
@@ -375,41 +369,45 @@ impl Keystore {
         krowk_api::creds::write(&self.user_keys_path(), &file)
     }
 
-    pub fn published_path(&self) -> PathBuf {
-        self.home.join(PUBLISHED_FILE)
+    pub fn device_list_path(&self) -> PathBuf {
+        self.home.join(DEVICE_LIST_FILE)
     }
 
-    /// The wrapped key this device published for session `id`, if it
-    /// published one: the only session key a host takes back from the
-    /// registry. A record the registry serves for an id this device never
-    /// published could be one a removed device sealed, under a generation
-    /// it still holds, so it is never adopted.
-    pub fn published(&self, id: &str) -> Result<Option<Published>, String> {
-        let path = self.published_path();
+    /// The device list as this device last verified it, verified again
+    /// from entry 0; None when it has kept none. Its head is this device's
+    /// pin: every sync command that opens or seals a session takes its
+    /// signers and the current generation from here.
+    pub fn device_list(&self) -> Result<Option<Chain>, String> {
+        let path = self.device_list_path();
         if !path.exists() {
             return Ok(None);
         }
-        let f: PublishedFile = krowk_api::creds::read(&path)?;
-        if f.version != 1 {
-            return Err(format!("{} is not a record of published sessions krowk reads — move it aside", path.display()));
-        }
-        Ok(f.sessions.get(id).cloned())
+        let entries = self.device_list_entries(&path)?;
+        Chain::verify(&entries, None).map(Some).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// Records that this device published session `id` with `wrapped` (hex,
-    /// `e2e::seal_session_key`'s blob) under `generation`, before the
-    /// registry is told of it. A record already there for `id` is kept
-    /// unless it is replaced by the same.
-    pub fn record_published(&self, id: &str, wrapped: &str, generation: u32) -> Result<(), String> {
+    /// Verifies `entries` against the list kept here — they must reach its
+    /// head and hold it there, so a shorter, forked or other person's list
+    /// is refused — and keeps them, replacing the file by rename. The only
+    /// store of the device list; its head is the pin.
+    pub fn save_device_list(&self, entries: &[SignedEntry]) -> Result<Chain, String> {
         krowk_api::home::make(&self.home)?;
-        let path = self.published_path();
+        let path = self.device_list_path();
         let _lock = krowk_api::creds::lock(&path)?;
-        let mut f: PublishedFile = if path.exists() { krowk_api::creds::read(&path)? } else { PublishedFile { version: 1, ..Default::default() } };
-        if f.version != 1 {
-            return Err(format!("{} is not a record of published sessions krowk reads — move it aside", path.display()));
+        let pin = if path.exists() { Some(Chain::verify(&self.device_list_entries(&path)?, None).map_err(|e| format!("{}: {e}", path.display()))?.head()) } else { None };
+        let chain = Chain::verify(entries, pin).map_err(|e| e.0)?;
+        let file = DeviceListFile { version: 1, entries: entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect() };
+        krowk_api::creds::write(&path, &file)?;
+        Ok(chain)
+    }
+
+    fn device_list_entries(&self, path: &Path) -> Result<Vec<SignedEntry>, String> {
+        let f: DeviceListFile = krowk_api::creds::read(path)?;
+        let bad = || format!("{} does not hold a device list krowk reads — move it aside and add this device to your devices again", path.display());
+        if f.version != 1 || f.entries.is_empty() {
+            return Err(bad());
         }
-        f.sessions.insert(id.to_string(), Published { wrapped: wrapped.to_string(), generation });
-        krowk_api::creds::write(&path, &f)
+        f.entries.iter().map(|(e, s)| e2e::unhex(e).zip(e2e::unhex(s)).and_then(|(e, s)| SignedEntry::from_parts(e, &s).ok())).collect::<Option<Vec<_>>>().ok_or_else(bad)
     }
 
     fn save(&self, device: &DeviceKey, account: &AccountKey, origin: &str) -> Result<(), String> {

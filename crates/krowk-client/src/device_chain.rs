@@ -487,6 +487,11 @@ pub struct Chain {
     /// Every X25519 and Ed25519 key this chain has ever added, so none is
     /// added twice, a removed device included.
     seen: Vec<[u8; 32]>,
+    /// Every device this list has ever held, removed ones included, with
+    /// its signing key: who may have signed a session record (`signer`).
+    held: Vec<(DeviceId, SigningPublic)>,
+    /// Entry 0's hash: which list this is, the same at every head.
+    root: [u8; 32],
 }
 
 impl Chain {
@@ -520,7 +525,7 @@ impl Chain {
     pub fn genesis(entry: &SignedEntry) -> Result<Chain, Error> {
         let e = Entry::decode(&entry.bytes)?;
         check_genesis(&e)?;
-        let mut chain = Chain { head: Head { seq: 0, hash: entry.hash() }, key_ids: vec![e.key_id], devices: Vec::new(), seen: Vec::new() };
+        let mut chain = Chain { head: Head { seq: 0, hash: entry.hash() }, key_ids: vec![e.key_id], devices: Vec::new(), seen: Vec::new(), held: Vec::new(), root: entry.hash() };
         chain.check_signatures(&e, entry)?;
         for s in &e.subjects {
             chain.add(s, 0)?;
@@ -662,8 +667,20 @@ impl Chain {
             return Err(refuse(seq, format!("a device on the list is already called {:?}", s.name)));
         }
         self.seen.extend([s.device.0, s.signing.0]);
+        self.held.push((s.id(), s.signing));
         self.devices.push(Device { kind: s.kind, name: s.name.clone(), os: s.os.clone(), device: s.device, signing: s.signing, added: seq });
         Ok(())
+    }
+
+    /// Entry 0's hash: which list this is, at any head.
+    pub fn root(&self) -> [u8; 32] {
+        self.root
+    }
+
+    /// The signing key of `device` if this list has ever held it, removed
+    /// or not: whose signature a session record may carry.
+    pub fn signer(&self, device: DeviceId) -> Option<SigningPublic> {
+        self.held.iter().find(|(d, _)| *d == device).map(|(_, k)| *k)
     }
 
     /// The head to pin.

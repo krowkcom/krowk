@@ -212,3 +212,43 @@ fn d8_a_save_never_drops_the_older_wraps_held() {
     assert_eq!(held.open(1).unwrap(), g1, "a rotation with a garbled older wrap");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// D8b: the device list a home verified is kept `0600`, entry 0 to its
+/// head, and read back by verifying it again. A save verifies the new list
+/// against the kept head: a shorter one, or another list at the same seq —
+/// another person's — is refused (#206's review, m1).
+#[cfg(unix)]
+#[test]
+fn d8b_the_device_list_is_kept_and_only_ever_extended() {
+    use krowk_client::device_chain::{Chain, Change, Kind, Subject};
+    use std::os::unix::fs::PermissionsExt;
+    let root = scratch("device-list");
+    let store = Keystore::new(&root.join("home"));
+    assert!(store.device_list().unwrap().is_none());
+    let subject = |name: &str, d: &e2e::DeviceKey, s: &e2e::SigningKey| Subject { kind: Kind::Device, name: name.into(), os: "linux".into(), device: d.public(), signing: s.public() };
+    let (laptop, laptop_signing) = (e2e::DeviceKey::generate(), e2e::SigningKey::generate());
+    let (phone, phone_signing) = (e2e::DeviceKey::generate(), e2e::SigningKey::generate());
+    let t = 1_790_000_000;
+    let (first, start) = Chain::start(subject("laptop", &laptop, &laptop_signing), &laptop_signing, None, t).unwrap();
+    assert_eq!(store.save_device_list(&start.entries).unwrap().head(), first.head());
+    assert_eq!(std::fs::metadata(store.device_list_path()).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(store.device_list().unwrap().unwrap().head(), first.head());
+    let (second, add) = first.batch(&start.newest, vec![Change::Add(subject("phone", &phone, &phone_signing))], laptop.id(), &laptop_signing, t + 1).unwrap();
+    let entries = [start.entries.clone(), add.entries].concat();
+    store.save_device_list(&entries).unwrap();
+    let read = store.device_list().unwrap().unwrap();
+    assert_eq!((read.head(), read.devices().len()), (second.head(), 2));
+    assert!(store.save_device_list(&start.entries).is_err(), "a shorter list");
+    // Another person's list, as long: forked at the kept head.
+    let (_, theirs) = Chain::start(subject("other", &phone, &phone_signing), &phone_signing, None, t).unwrap();
+    let (other, more) = Chain::verify(&theirs.entries, None).unwrap().batch(&theirs.newest, vec![Change::Add(subject("laptop", &laptop, &laptop_signing))], phone.id(), &phone_signing, t + 1).unwrap();
+    assert_eq!(other.head().seq, second.head().seq);
+    assert!(store.save_device_list(&[theirs.entries, more.entries].concat()).is_err(), "another list at the same seq");
+    assert_eq!(store.device_list().unwrap().unwrap().head(), second.head(), "the kept list is untouched");
+    // A list edited on disk does not verify.
+    let mut text: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(store.device_list_path()).unwrap()).unwrap();
+    text["entries"][1][1] = e2e::hex(&[0; 80]).into();
+    std::fs::write(store.device_list_path(), text.to_string()).unwrap();
+    assert!(store.device_list().is_err());
+    let _ = std::fs::remove_dir_all(&root);
+}

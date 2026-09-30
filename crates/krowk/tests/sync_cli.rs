@@ -12,7 +12,9 @@ mod mock;
 
 use krowk_client::e2e::{self, AccountKey, SigningKey};
 use krowk_client::keystore::Keystore;
-use krowk_client::user_key::{UserKey, UserKeys};
+#[path = "common/device_list.rs"]
+mod device_list;
+use device_list::People;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -52,8 +54,8 @@ struct World {
     relay: String,
     mock: String,
     account: AccountKey,
-    /// The person's user key, which every machine of theirs holds.
-    user: UserKey,
+    /// The person's device list, which every machine is put on.
+    people: std::sync::Mutex<People>,
     _registry: krowk_devregistry::Running,
     _mock: mock::Mock,
 }
@@ -83,7 +85,7 @@ impl World {
         let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
         std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None }));
         let m = mock::serve(model);
-        World { name: name.into(), root: root.canonicalize().unwrap(), api, relay: relay_url, mock: m.url.clone(), account: AccountKey::generate(), user: UserKey::first(), _registry: registry, _mock: m }
+        World { name: name.into(), root: root.canonicalize().unwrap(), api, relay: relay_url, mock: m.url.clone(), account: AccountKey::generate(), people: Default::default(), _registry: registry, _mock: m }
     }
 
     fn machine(&self, name: &str) -> Machine {
@@ -97,8 +99,8 @@ impl World {
         std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
         let ks = Keystore::new(&home.join(".krowk"));
         ks.recover(AccountKey::from_bytes(*self.account.as_bytes())).unwrap();
-        ks.save_user_keys(&UserKeys::new(self.user.clone(), []).unwrap()).unwrap();
         let (device, signing) = (ks.device().unwrap().unwrap(), ks.signing_key().unwrap());
+        self.people.lock().unwrap().enlist(&ks, name);
         let api = krowk_api::Client::new(&self.api, TOKEN).signed_by(e2e::DeviceSigner::new(device.id(), SigningKey::from_secret(&*signing.secret_bytes()).unwrap()).shared());
         api.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), name, &self.account.id().to_string()).unwrap();
         let env = vec![
