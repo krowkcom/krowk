@@ -124,7 +124,6 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         .signed_by(krowk_client::e2e::DeviceSigner::new(setup.device.id(), signing).shared())
         .register_device(&krowk_client::e2e::hex(&setup.device.public().0), &signing_public, "laptop", &setup.account.id().to_string())
         .unwrap();
-    laptop.ok(&["devices", "list"], true);
 
     let store = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk"));
     let device_id = store.device().unwrap().unwrap().id();
@@ -152,7 +151,6 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         // the calls that act as a device, signed by its key (crypto.md →
         // Signed registry requests), and only they are.
         "POST /v1/devices +signed",
-        "GET /v1/devices",
         // A session is PUT under the id its client minted; its lease is a
         // singular resource: POST acquires, PUT renews or hands over, DELETE
         // lets go.
