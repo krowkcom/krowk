@@ -66,7 +66,7 @@ use crossterm::terminal::{Clear, ClearType as CtClear};
 use crossterm::{queue, QueueableCommand};
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::Cell;
-use ratatui::layout::{Position, Size};
+use ratatui::layout::{Position, Rect, Size};
 use ratatui::text::Line;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::cell::RefCell;
@@ -530,13 +530,19 @@ impl<W: Write> Term<W> {
         let drawn = self.terminal.draw(|f| {
             let area = f.area();
             for (i, row) in rows.iter().enumerate().take(usize::from(area.height)) {
-                f.buffer_mut().set_line(area.x + pad, area.y + spare + i as u16, row, inner);
+                let y = area.y + spare + i as u16;
+                // A row with a background of its own, the prompt's band,
+                // has it across the whole screen, its text where it was.
+                if row.style.bg.is_some() {
+                    f.buffer_mut().set_style(Rect::new(area.x, y, width, 1), row.style);
+                }
+                f.buffer_mut().set_line(area.x + pad, y, row, inner);
             }
             f.set_cursor_position((area.x + pad + caret.0.min(inner.saturating_sub(1)), area.y + (spare + caret.1).min(area.height.saturating_sub(1))));
         });
         self.buf.clone().write_all(AUTOWRAP_ON)?;
         drawn?;
-        self.widths = std::iter::repeat_n(0, usize::from(spare)).chain(rows.iter().map(|r| (r.width() as u16).min(inner) + pad)).take(shown).collect();
+        self.widths = std::iter::repeat_n(0, usize::from(spare)).chain(rows.iter().map(|r| if r.style.bg.is_some() { width } else { (r.width() as u16).min(inner) + pad })).take(shown).collect();
         let top = self.top();
         if let Some(Position { x, y }) = completed_cursor(&mut self.terminal) {
             self.caret_row = y.saturating_sub(top);
@@ -853,6 +859,21 @@ mod tests {
         assert!(t.whole, "all of the new session on screen");
         assert_eq!(t.top(), h - 3, "the region at the bottom");
         assert_eq!(t.blank_top, h - 3 - 2, "the rows above the header blank, none scrolled away");
+    }
+
+    #[test]
+    fn a_row_with_a_background_of_its_own_has_it_across_the_pad() {
+        use ratatui::style::{Color, Style};
+        let mut t = Term::new(Vec::new(), Size { width: 20, height: 10 }, 0, 2).unwrap();
+        t.pad = 2;
+        let start = t.out.len();
+        let band = Style::new().bg(Color::Indexed(236));
+        t.frame(&[], &[Line::from("→ hi").style(band), Line::from("status")], (4, 0)).unwrap();
+        let out = String::from_utf8_lossy(&t.out[start..]).into_owned();
+        let painted = out.split("48;5;236m").skip(1).map(|s| s.split(['\x1b', '\r']).next().unwrap_or("")).collect::<String>();
+        assert_eq!(painted, format!("  → hi{}", " ".repeat(14)), "the band from the first column to the last, the text where the pad puts it: {out:?}");
+        assert!(out.contains("status"), "{out:?}");
+        assert_eq!(t.widths, vec![20, 8], "the band row as wide as the screen");
     }
 
     #[test]

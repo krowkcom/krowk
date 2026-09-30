@@ -11,7 +11,7 @@
 
 use crate::editor::Editor;
 use crate::help;
-use crate::look::{self, SEP};
+use crate::look;
 use crate::pr::State as PrState;
 use crate::settings::{ContentWidth, Item as StatusItem, Settings};
 use crate::syntax::Code;
@@ -311,14 +311,10 @@ fn model_name(model: &str) -> String {
     words.join(" ") + tag
 }
 
-/// Indent of the status line's rows.
-const STATUS_INDENT: usize = 2;
-
-/// A row of the status line. Narrow, the items give way one at a time — the
+/// A row of the status line, under the prompt's arrow. Narrow, the items give way one at a time — the
 /// pull request first, then the branch, the device, the subagents, the tasks
 /// and the cost — then the model is cut short; `? help` stays.
-fn hint_row(mut parts: Vec<Part>, width: usize) -> Line<'static> {
-    let room = width.saturating_sub(STATUS_INDENT);
+fn hint_row(mut parts: Vec<Part>, room: usize) -> Line<'static> {
     let used = |parts: &[Part]| parts.iter().map(|p| look::unmarked(&p.text).width()).sum::<usize>() + parts.len().saturating_sub(1) * BAR_SEP.len();
     while used(&parts) > room {
         // The one to give way next: the lowest rank below the model's.
@@ -339,7 +335,7 @@ fn hint_row(mut parts: Vec<Part>, width: usize) -> Line<'static> {
     while used(&parts) > room && parts.len() > 1 {
         parts.remove(0);
     }
-    let mut spans = vec![Span::raw(" ".repeat(STATUS_INDENT.min(width)))];
+    let mut spans = Vec::new();
     for (i, p) in parts.into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(BAR_SEP, dim()));
@@ -1967,7 +1963,7 @@ impl App {
                 _ => "Working…".to_string(),
             };
             let label_style = if t.want_interrupt { red() } else { look::accent() };
-            let right = format!(" {}{SEP}`esc` to interrupt", look::duration(since));
+            let right = format!(" {} · `esc` to interrupt", look::duration(since));
             // A blank line above, unless there is one already: straight
             // under streaming text, the spinner read as part of it.
             let above_blank = match rows.last() {
@@ -2047,27 +2043,33 @@ impl App {
                 }
             }
         }
-        // The prompt between two rules, scrolled to keep the caret in
-        // view: `→ ` before its first row, open at the sides. The prompt
-        // and the status line take all the room there is; the content
-        // width is for what is above them.
+        // The prompt on the band of what the person said, across the whole
+        // screen (the band is the rows' own style, which the terminal takes
+        // out to the edges) with an empty row of it above and below, and a
+        // plain empty row outside it each side, scrolled to keep the caret
+        // in view: `→ ` before its first row. The prompt and the
+        // status line take all the room there is; the content width is for
+        // what is above them.
         let inner = usize::from(self.room.max(1));
         let (input, (crow, ccol)) = self.editor.layout(inner.saturating_sub(2).max(1) as u16);
         let first = (crow as usize + 1).saturating_sub(MAX_INPUT_ROWS);
-        let edge = look::border();
-        let across = "─".repeat(inner);
-        rows.push(Line::from(Span::styled(across.clone(), edge)));
+        let band = look::said_band();
+        let blank = Line::from(Span::styled(" ".repeat(inner), band)).style(band);
+        rows.push(Line::default());
+        rows.push(blank.clone());
         let top = rows.len() as u16;
         for (i, row) in input.iter().enumerate().skip(first).take(MAX_INPUT_ROWS) {
-            let prefix = if i == 0 { Span::styled(look::ARROW, look::prompt()) } else { Span::raw("  ") };
+            let prefix = if i == 0 { Span::styled(look::ARROW, look::prompt().patch(band)) } else { Span::styled("  ", band) };
             let (text, style) = if i == 0 && self.editor.is_empty() {
-                (clip(if self.overlay == Overlay::Keys { "Type to filter" } else if self.running() { "Steer the running turn" } else { "Plan, search, build anything" }, inner.saturating_sub(2)), dim())
+                (clip(if self.overlay == Overlay::Keys { "Type to filter" } else if self.running() { "Steer the running turn" } else { "Plan, search, build anything" }, inner.saturating_sub(2)), dim().patch(band))
             } else {
-                (row.clone(), Style::new())
+                (row.clone(), band)
             };
-            rows.push(Line::from(vec![prefix, Span::styled(text, style)]));
+            let fill = " ".repeat(inner.saturating_sub(2 + text.width()));
+            rows.push(Line::from(vec![prefix, Span::styled(text, style), Span::styled(fill, band)]).style(band));
         }
-        rows.push(Line::from(Span::styled(across, edge)));
+        rows.push(blank);
+        rows.push(Line::default());
         // A question of `/connect`'s takes the keys, and the caret with them.
         let caret = flow_caret.unwrap_or((ccol + 2, top + (crow as usize - first) as u16));
         // A flash shows with the status bar off too: "Press Ctrl-C again to
@@ -2075,20 +2077,22 @@ impl App {
         if !self.settings.status_bar
             && let Some(f) = &self.flash
         {
-            rows.push(Line::from(vec![Span::raw(" ".repeat(STATUS_INDENT.min(inner)))].into_iter().chain(clip_spans(look::keys(f, dim()), inner.saturating_sub(STATUS_INDENT))).collect::<Vec<_>>()));
+            rows.push(Line::from(clip_spans(look::keys(f, dim()), inner)));
         }
         if self.settings.status_bar {
-            // Right under the prompt's bottom rule, nothing between.
+            // Under the prompt, the empty row between.
             let [first, second] = self.status_parts();
             rows.push(match &self.flash {
                 // What a key just did (Ctrl-Y), in place of the first row
                 // until the next.
-                Some(f) => Line::from(vec![Span::raw(" ".repeat(STATUS_INDENT.min(inner)))].into_iter().chain(clip_spans(look::keys(f, dim()), inner.saturating_sub(STATUS_INDENT))).collect::<Vec<_>>()),
+                Some(f) => Line::from(clip_spans(look::keys(f, dim()), inner)),
                 None => hint_row(first, inner),
             });
             if !second.is_empty() {
                 rows.push(hint_row(second, inner));
             }
+            // And an empty row under it, off the bottom edge.
+            rows.push(Line::default());
         }
         (rows, caret)
     }
@@ -3138,7 +3142,7 @@ mod tests {
     fn a_call_made_again_straight_after_is_counted_not_shown_twice() {
         let mut a = app();
         let run = |a: &mut App, cmd: &str, out: &str| a.commit_tool("bash", &serde_json::json!({"command": cmd}), out, true);
-        let held = |a: &App| text(&a.view(Instant::now()).0).into_iter().take_while(|r| !r.starts_with('─')).collect::<Vec<_>>();
+        let held = |a: &App| text(&a.view(Instant::now()).0).into_iter().take_while(|r| !r.is_empty()).collect::<Vec<_>>();
         run(&mut a, "git status", "locked");
         run(&mut a, "git status", "locked");
         assert!(a.take_pending().is_empty(), "held while it could be made again");
@@ -3412,7 +3416,7 @@ mod tests {
         assert!(all.contains("no network connectivity"), "{all}");
         assert!(a.status_bar().ends_with("offline | ? help\n$0.00"), "offline, just before the help: {}", a.status_bar());
         let (rows, _) = a.view(Instant::now());
-        let bar = &rows[rows.len() - 2];
+        let bar = &rows[rows.len() - 3];
         assert!(bar.spans.iter().any(|s| s.content == "offline" && s.style == yellow()), "in yellow: {bar:?}");
         // Offline shows whatever the items are.
         a.settings.status_items = vec![StatusItem::Cost];
@@ -3500,11 +3504,11 @@ mod tests {
         assert_eq!(a.status_bar(), "$0.00");
         a.settings.status_bar = false;
         let (rows, _) = a.view(Instant::now());
-        assert_eq!(rows.len(), 3, "only the prompt, in its box: {:?}", text(&rows));
+        assert_eq!(rows.len(), 5, "only the prompt, on its band, a row clear each side: {:?}", text(&rows));
         a.overlay = Overlay::Keys;
         let (rows, caret) = a.view(Instant::now());
-        assert_eq!(rows.len(), 1 + HELP_ROWS + 3, "the help menu, a rule and as many entries as it shows, over the prompt box");
-        assert_eq!(caret, (2, 1 + HELP_ROWS as u16 + 1), "after the arrow");
+        assert_eq!(rows.len(), 1 + HELP_ROWS + 5, "the help menu, a rule and as many entries as it shows, over the prompt");
+        assert_eq!(caret, (2, 1 + HELP_ROWS as u16 + 2), "after the arrow");
     }
 
     #[test]
@@ -3513,13 +3517,16 @@ mod tests {
         a.set_width(90);
         let (rows, caret) = a.view(Instant::now());
         let t = text(&rows);
-        assert_eq!(t[0], "─".repeat(90));
-        assert_eq!(t[1], "→ Plan, search, build anything", "no sides to the box");
-        assert_eq!(t[2], "─".repeat(90));
-        assert_eq!(t[3], "  Claude X (anthropic) | ? help", "right under the box, no device known");
-        assert_eq!(t[4], "  $0.00", "the cost under it, no pull request known");
-        assert_eq!(t.len(), 5, "the status line last");
-        assert_eq!(caret, (2, 1));
+        assert!(rows[0].width() == 0 && rows[4].width() == 0 && rows[0].style.bg.is_none() && rows[4].style.bg.is_none(), "a plain empty row over the band and under it");
+        assert_eq!(t[1], "", "an empty row of the band over the prompt");
+        assert_eq!(t[2], "→ Plan, search, build anything", "no sides to the box");
+        assert_eq!(t[3], "", "and under it");
+        assert!(rows[1..4].iter().all(|r| r.width() == 90 && r.style.bg == look::said_band().bg && r.spans.iter().all(|s| s.style.bg == look::said_band().bg)), "on the band of what the person said, across the screen");
+        assert_eq!(t[5], "Claude X (anthropic) | ? help", "under the prompt, no device known");
+        assert_eq!(t[6], "$0.00", "the cost under it, no pull request known");
+        assert_eq!(t[7], "", "an empty row under the status line");
+        assert_eq!(t.len(), 8, "and nothing after it");
+        assert_eq!(caret, (2, 2));
     }
 
     #[test]
@@ -3536,9 +3543,10 @@ mod tests {
         }
         let bar = |a: &App| {
             let mut t = text(&a.view(Instant::now()).0);
+            t.pop();
             t.split_off(t.len() - 2)
         };
-        assert_eq!(bar(&a), ["  Claude Opus 5.5 (anthropic) | elvinas/primevise-arch-1 | [4 tasks] | [3 subagents] | ? help", "  $21.47"]);
+        assert_eq!(bar(&a), ["Claude Opus 5.5 (anthropic) | elvinas/primevise-arch-1 | [4 tasks] | [3 subagents] | ? help", "$21.47"]);
         assert_eq!(a.status_bar(), "Claude Opus 5.5 (anthropic) | elvinas/primevise-arch-1 | [4 tasks] | [3 subagents] | ? help\n$21.47");
         // One of each is said in the singular.
         a.on_line(&log(LogBody::TodosUpdated { turn_id: "t".into(), todos: vec![todo(TodoStatus::Completed), todo(TodoStatus::InProgress)] }));
@@ -3616,20 +3624,20 @@ mod tests {
         let at = |a: &mut App, w: u16| {
             a.set_width(w);
             let rows = text(&a.view(Instant::now()).0);
-            let row = rows[rows.len() - 2].clone();
+            let row = rows[rows.len() - 3].clone();
             assert!(row.width() <= usize::from(w), "{w}: wider than the terminal: {row:?}");
             row
         };
-        assert_eq!(at(&mut a, 100), "  Claude Opus 5.5 (anthropic) | elvinas/primevise-arch-1 | [2 tasks] | [1 subagent] | ? help");
-        assert_eq!(at(&mut a, 80), "  Claude Opus 5.5 (anthropic) | [2 tasks] | [1 subagent] | ? help", "the device first");
-        assert_eq!(at(&mut a, 60), "  Claude Opus 5.5 (anthropic) | [2 tasks] | ? help", "then the subagents");
-        assert_eq!(at(&mut a, 40), "  Claude Opus 5.5 (anthropic) | ? help", "then the tasks");
-        assert_eq!(at(&mut a, 30), "  Claude Opus 5.5 (a… | ? help", "then the model is cut short");
-        assert_eq!(at(&mut a, 12), "  ? help", "the help stays");
+        assert_eq!(at(&mut a, 100), "Claude Opus 5.5 (anthropic) | elvinas/primevise-arch-1 | [2 tasks] | [1 subagent] | ? help");
+        assert_eq!(at(&mut a, 80), "Claude Opus 5.5 (anthropic) | [2 tasks] | [1 subagent] | ? help", "the device first");
+        assert_eq!(at(&mut a, 60), "Claude Opus 5.5 (anthropic) | [2 tasks] | ? help", "then the subagents");
+        assert_eq!(at(&mut a, 40), "Claude Opus 5.5 (anthropic) | ? help", "then the tasks");
+        assert_eq!(at(&mut a, 30), "Claude Opus 5.5 (ant… | ? help", "then the model is cut short");
+        assert_eq!(at(&mut a, 10), "? help", "the help stays");
         a.set_offline("api.anthropic.com:443".into());
-        assert_eq!(at(&mut a, 40), "  Claude Opus 5.5 (a… | offline | ? help", "offline outlasts the rest");
-        assert_eq!(at(&mut a, 20), "  offline | ? help");
-        assert_eq!(at(&mut a, 4), "  ?…");
+        assert_eq!(at(&mut a, 40), "Claude Opus 5.5 (ant… | offline | ? help", "offline outlasts the rest");
+        assert_eq!(at(&mut a, 20), "offline | ? help");
+        assert_eq!(at(&mut a, 4), "? h…");
     }
 
     #[test]
@@ -3970,13 +3978,14 @@ mod tests {
         assert!(lines.len() > 1 && lines.iter().all(|l| l.width() <= 80), "{:?}", text(&lines));
         // Above the prompt, at most 80; the prompt and the status line
         // take the whole width.
-        let above = |rows: &[String]| rows.iter().take_while(|r| !r.starts_with('─')).cloned().collect::<Vec<_>>();
+        let above = |rows: &[String]| rows.iter().take_while(|r| !r.starts_with(look::ARROW)).cloned().collect::<Vec<_>>();
         a.turn = Some(Turn { started: Instant::now(), want_interrupt: false, interrupt_sent: false, tool_running: false, prompt_seen: true });
         a.editor.insert_str(&"word ".repeat(30));
-        let rows = text(&a.view(Instant::now()).0);
+        let lines = a.view(Instant::now()).0;
+        let rows = text(&lines);
         assert!(!above(&rows).is_empty() && above(&rows).iter().all(|r| r.width() <= 80), "the live region too: {rows:?}");
-        let rule = rows.iter().find(|r| r.starts_with('─')).unwrap();
-        assert_eq!(rule.width(), 200, "the prompt's rule spans the terminal");
+        let prompt = lines.iter().find(|l| l.spans.first().is_some_and(|s| s.content == look::ARROW)).unwrap();
+        assert_eq!(prompt.width(), 200, "the prompt's band spans the terminal");
         assert!(rows.iter().any(|r| r.starts_with(look::ARROW) && r.width() > 80), "the prompt wraps at the terminal: {rows:?}");
         a.turn = None;
         a.editor = Editor::new(None);

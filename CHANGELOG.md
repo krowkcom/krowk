@@ -219,6 +219,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   pulls in no engine, tokio or reqwest; `krowk_harness::protocol`
   still names the same types. The generated JSON Schema is unchanged.
 - Leaving the TUI takes two presses, as in Claude Code, so one stray key no longer ends a session. On an empty prompt, Ctrl-C or Ctrl-D shows "Press Ctrl-C again to exit" (or Ctrl-D) under the prompt, and the same key again within 1.5 seconds quits.
+- The TUI's prompt sits on the same band as your messages in the chat, edge to edge across the terminal with an empty row either side, instead of between two rules. The arrow and text stay where they were. The status line lines up with the arrow, with an empty row under it, and the working line reads "12s · esc to interrupt".
 - Keys the TUI suggests stand out: in hints, the help menu, the status line, approvals and questions, each key (`esc`, `enter`, `y`, `ctrl-g`, `?`) is white instead of grey like the words around it.
 
 ### Fixed
