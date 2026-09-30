@@ -58,7 +58,7 @@ fn post(batch: &krowk_client::device_chain::Batch, start_over: bool) -> ListPost
 fn init(server: &Server, laptop: &Dev) -> (Chain, UserKey) {
     let kit = RecoveryKit::generate().device();
     let recovery = Subject { kind: Kind::Recovery, name: "recovery kit".into(), os: String::new(), device: kit.key.public(), signing: kit.signing.public() };
-    let (chain, batch) = Chain::start(laptop.subject(), &laptop.signing, Some((recovery, &kit.signing)), None, now()).unwrap();
+    let (chain, batch) = Chain::start(laptop.subject(), &laptop.signing, Some((recovery, &kit.signing)), now()).unwrap();
     laptop.client(server, LAPTOP).init_device_list(&post(&batch, false)).unwrap();
     (chain, batch.newest)
 }
@@ -92,7 +92,7 @@ fn a_second_init_is_refused_unless_it_starts_over_into_a_new_epoch() {
     let laptop = Dev::new("laptop");
     init(&server, &laptop);
     let other = Dev::new("other");
-    let (_, batch) = Chain::start(other.subject(), &other.signing, None, None, now()).unwrap();
+    let (_, batch) = Chain::start(other.subject(), &other.signing, None, now()).unwrap();
     let refused = other.client(&server, "krowk_sk_owner#other-fresh").init_device_list(&post(&batch, false)).unwrap_err();
     assert_eq!(refused.code(), "chain_exists");
     let stale = other.client(&server, "krowk_sk_owner#other").init_device_list(&post(&batch, true)).unwrap_err();

@@ -1220,7 +1220,7 @@ mod tests {
     #[test]
     fn an_add_with_a_small_order_signing_key_is_refused() {
         let laptop = Dev::new("laptop");
-        let (chain, start) = Chain::start(laptop.subject(), &laptop.signing, None, None, T).unwrap();
+        let (chain, start) = Chain::start(laptop.subject(), &laptop.signing, None, T).unwrap();
         let mut identity = [0u8; 32];
         identity[0] = 1;
         let weak = Subject { kind: Kind::Device, name: "weak".into(), os: "linux".into(), device: DeviceKey::generate().public(), signing: SigningPublic(identity) };
