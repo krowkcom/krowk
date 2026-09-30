@@ -663,6 +663,9 @@ impl Chain {
         if self.seen.contains(&s.device.0) || self.seen.contains(&s.signing.0) || s.device.0 == s.signing.0 {
             return Err(refuse(seq, "it adds a key this list has held before"));
         }
+        if !s.signing.is_strong() {
+            return Err(refuse(seq, "it adds a signing key no one can verify with (not a canonical point of the curve, or of small order)"));
+        }
         if self.devices.iter().any(|d| same_name(&d.name, &s.name)) {
             return Err(refuse(seq, format!("a device on the list is already called {:?}", s.name)));
         }
@@ -1211,6 +1214,19 @@ mod tests {
         let s = entry.sign(&[(entry.subjects[0].id(), &first), (entry.subjects[1].id(), &kit)]).unwrap();
         println!("bytes {}\nhash {}\nsigs {}", e2e::hex(&s.bytes), e2e::hex(&s.hash()), e2e::hex(&s.signatures_bytes()));
     }
+
+    /// A device whose signing key verifies nothing is refused, as the
+    /// registry refuses it: the identity point, of small order.
+    #[test]
+    fn an_add_with_a_small_order_signing_key_is_refused() {
+        let laptop = Dev::new("laptop");
+        let (chain, start) = Chain::start(laptop.subject(), &laptop.signing, None, T).unwrap();
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        let weak = Subject { kind: Kind::Device, name: "weak".into(), os: "linux".into(), device: DeviceKey::generate().public(), signing: SigningPublic(identity) };
+        let Err(err) = chain.batch(&start.newest, vec![Change::Add(weak)], laptop.id(), &laptop.signing, T + 1) else { panic!("a small-order signing key was added") };
+        assert!(err.0.contains("signing key"), "{err:?}");
+    }
 }
 
 /// The review of #199's attacks (C1, C2, M1, m2), kept as regression tests:
@@ -1278,4 +1294,5 @@ mod review_attacks {
         sub.name = "laptop\u{202E}kcabpu".into();
         assert!(Chain::start(sub, &s, None, 1).is_err());
     }
+
 }
