@@ -68,6 +68,10 @@ pub fn show_key(req: &Req) -> Resp {
             // → Adding a device). The registry's KeySerializer has no such
             // field yet; this is the stand-in's guess at it.
             ("user_id", Json::str(person_for(&token))),
+            // Their email, which the new machine names them by; the stand-in
+            // has none, so it makes one of the person's id. Also a guess at a
+            // field KeySerializer lacks.
+            ("email", Json::str(format!("{}@example.test", &person_for(&token)[..8]))),
         ]),
     )
 }
