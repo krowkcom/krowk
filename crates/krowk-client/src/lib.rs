@@ -14,6 +14,7 @@
 //! - `user_key`: the person's user key, by generation, HPKE-wrapped to each
 //!   device, each generation wrapping the one before it.
 //! - `recovery`: the 12-word recovery kit and the recovery device it derives.
+//! - `device_chain`: the signed, append-only device list and its verifier.
 //! - `protocol`: the typed commands, events and log lines every client
 //!   speaks, and the daemon's frame-envelope layout (`protocol::frame`).
 //!
@@ -27,6 +28,7 @@ pub mod phrase;
 pub mod protocol;
 pub mod relay_link;
 pub mod relay_ticket;
+pub mod device_chain;
 pub mod recovery;
 pub mod user_key;
 
