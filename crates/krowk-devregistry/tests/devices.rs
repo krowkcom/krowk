@@ -10,7 +10,7 @@ use common::{Server, request};
 use jiff::SignedDuration;
 use krowk_api::sync::{ListPost, PairingStep};
 use krowk_api::Client;
-use krowk_client::device_chain::{Chain, Change, Kind, SignedEntry, Subject, Trust};
+use krowk_client::device_chain::{Chain, Change, Kind, SignedEntry, Subject};
 use krowk_client::e2e::{self, DeviceKey, DeviceSigner, SigningKey};
 use krowk_client::pairing::{Binding, NewDevice, PairA, PairB, PairingCode, PeerKind};
 use krowk_client::recovery::RecoveryKit;
@@ -58,7 +58,7 @@ fn post(batch: &krowk_client::device_chain::Batch, start_over: bool) -> ListPost
 fn init(server: &Server, laptop: &Dev) -> (Chain, UserKey) {
     let kit = RecoveryKit::generate().device();
     let recovery = Subject { kind: Kind::Recovery, name: "recovery kit".into(), os: String::new(), device: kit.key.public(), signing: kit.signing.public() };
-    let (chain, batch) = Chain::start(laptop.subject(), &laptop.signing, Some((recovery, &kit.signing)), now()).unwrap();
+    let (chain, batch) = Chain::start(laptop.subject(), &laptop.signing, Some((recovery, &kit.signing)), None, now()).unwrap();
     laptop.client(server, LAPTOP).init_device_list(&post(&batch, false)).unwrap();
     (chain, batch.newest)
 }
@@ -80,7 +80,7 @@ fn a_chain_posted_at_init_reads_back_with_its_receipt_time_and_epoch() {
     assert_eq!(list.entries.len(), 1);
     assert!(list.entries[0].received_at.abs_diff(now()) < 60);
     assert_eq!(list.head.unwrap().hash, e2e::hex(&chain.head().hash));
-    let again = Chain::verify(&served(&laptop.client(&server, DESKTOP)), Trust::Fresh { received_at: vec![now()] }, now()).unwrap();
+    let again = Chain::verify(&served(&laptop.client(&server, DESKTOP)), None).unwrap();
     assert_eq!(again.head(), chain.head());
 }
 
@@ -92,7 +92,7 @@ fn a_second_init_is_refused_unless_it_starts_over_into_a_new_epoch() {
     let laptop = Dev::new("laptop");
     init(&server, &laptop);
     let other = Dev::new("other");
-    let (_, batch) = Chain::start(other.subject(), &other.signing, None, now()).unwrap();
+    let (_, batch) = Chain::start(other.subject(), &other.signing, None, None, now()).unwrap();
     let refused = other.client(&server, "krowk_sk_owner#other-fresh").init_device_list(&post(&batch, false)).unwrap_err();
     assert_eq!(refused.code(), "chain_exists");
     let stale = other.client(&server, "krowk_sk_owner#other").init_device_list(&post(&batch, true)).unwrap_err();
@@ -121,7 +121,7 @@ fn an_append_is_held_to_the_head_the_wraps_and_a_fresh_sign_in() {
     let again = laptop.client(&server, LAPTOP).append_device_list(&post(&add, false)).unwrap_err();
     assert_eq!(again.code(), "device_list_stale");
 
-    let chain = Chain::verify(&served(&laptop.client(&server, LAPTOP)), Trust::Pinned { head: chain.head(), verified_at: now(), first_seen: None }, now()).unwrap();
+    let chain = Chain::verify(&served(&laptop.client(&server, LAPTOP)), Some(chain.head())).unwrap();
     let (_, remove) = chain.batch(&key, vec![Change::Remove(desktop.subject())], laptop.key.id(), &laptop.signing, now()).unwrap();
     // A key the laptop signs with that has no sign-in from the last five
     // minutes cannot remove: a thief holds the stored key, not the password.

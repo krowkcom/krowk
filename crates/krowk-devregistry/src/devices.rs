@@ -8,8 +8,8 @@
 //! whole chain held here replayed from seq 0, so an entry lands only if
 //! every client would take it: the stand-in and the clients cannot drift,
 //! because they are the same code. What the registry adds on top — the
-//! entry posted by one of its signers, a clock within an hour, exactly the
-//! wraps a rotation needs, a fresh sign-in for everything but an add — is
+//! entry posted by one of its signers, exactly the wraps a rotation needs,
+//! a fresh sign-in for everything but an add — is
 //! checked here as DeviceList#append! checks it. A post lands whole or not
 //! at all.
 //!
@@ -33,7 +33,7 @@ use crate::json::Value;
 use crate::store::{App, FRESH_SIGN_IN_KEY_MARKER, hex, person_for, rfc3339_nano, sha256_hex};
 use crate::sync::{SyncStore, burst, caller, check_signature, gate, signature_headers, unhex};
 use jiff::{SignedDuration, Timestamp};
-use krowk_client::device_chain::{Action, CLOCK_SKEW, Chain, Entry, Kind, SignedEntry, Trust};
+use krowk_client::device_chain::{Action, Chain, Entry, Kind, SignedEntry};
 
 /// DeviceList::FRESH_SIGN_IN.
 pub const FRESH_SIGN_IN: SignedDuration = SignedDuration::from_mins(5);
@@ -53,10 +53,6 @@ pub struct Stored {
     pub bytes: Vec<u8>,
     pub signatures: Vec<u8>,
     pub received_at: Timestamp,
-    /// A pending recovery rotation's: when it may be completed.
-    pub pending_until: Option<u64>,
-    /// The entry that cancelled or voided this proposal.
-    pub cancelled_by_seq: Option<u64>,
 }
 
 /// A device the chain named, as the registry projects it for its own
@@ -114,29 +110,19 @@ impl Person {
         self.entries.iter().map(|e| SignedEntry::from_parts(e.bytes.clone(), &e.signatures).map_err(|e| refused(&e.0))).collect()
     }
 
-    /// The chain held here, verified from seq 0 as a device pinned at its
-    /// head whose clock reads `now` would verify it, a pending rotation's
-    /// delay counted from when the proposal was received (DeviceList#
-    /// verified).
-    pub fn verified(&self, now: Timestamp) -> Result<Option<Chain>, Resp> {
+    /// The chain held here, verified from seq 0 as a fresh machine would
+    /// verify it (DeviceList#verified).
+    pub fn verified(&self) -> Result<Option<Chain>, Resp> {
         let entries = self.signed()?;
-        let Some(last) = entries.last() else { return Ok(None) };
-        let now = secs(now);
-        let head = krowk_client::device_chain::Head { seq: entries.len() as u64 - 1, hash: last.hash() };
-        let trust = |first_seen| Trust::Pinned { head, verified_at: now, first_seen };
-        let chain = Chain::verify(&entries, trust(None), now).map_err(|e| refused(&e.0))?;
-        let Some(p) = chain.pending() else { return Ok(Some(chain)) };
-        let since = secs(self.entries[p.seq as usize].received_at);
-        Chain::verify(&entries, trust(Some((p.seq, since))), now).map(Some).map_err(|e| refused(&e.0))
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        Chain::verify(&entries, None).map(Some).map_err(|e| refused(&e.0))
     }
 
     pub fn device(&self, id: &str) -> Option<&Listed> {
         self.devices.iter().find(|d| d.id == id)
     }
-}
-
-fn secs(t: Timestamp) -> u64 {
-    t.as_second().max(0) as u64
 }
 
 fn refused(message: &str) -> Resp {
@@ -254,8 +240,6 @@ pub fn show(app: &App, req: &Req) -> Resp {
                     // Unix seconds, as the chain's own times are: what a fresh
                     // machine counts a recovery rotation's delay from.
                     ("received_at", Json::Int(e.received_at.as_second())),
-                    ("pending_until", e.pending_until.map_or(Json::Null, |t| Json::str(rfc3339_nano(Timestamp::from_second(t as i64).unwrap_or_default())))),
-                    ("cancelled_by_seq", e.cancelled_by_seq.map_or(Json::Null, |q| Json::Int(q as i64))),
                 ])
             })
             .collect();
@@ -406,7 +390,7 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
     if person.entries.len() + p.entries.len() > MAX_ENTRIES {
         return Err(error(422, "device_list_full", &format!("your device list has taken as many entries as it may ({MAX_ENTRIES} in all)"), None));
     }
-    let mut chain = if init { None } else { person.verified(now)? };
+    let mut chain = if init { None } else { person.verified()? };
     let base = chain.as_ref().map_or(0, Chain::generation);
     let (mut rotations, mut added) = (Vec::new(), Vec::new());
     let mut written = Vec::new();
@@ -417,13 +401,9 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
             let head = chain.as_ref().map_or(Json::Null, |c| Json::Int(c.head().seq as i64));
             return Err(error(409, "device_list_stale", "this entry does not extend your device list — fetch the list, verify it and try again", Some(Json::map([("seq", head)]))));
         }
-        if e.time.abs_diff(secs(now)) > CLOCK_SKEW {
-            return Err(refused(&format!("entry {} is dated more than an hour from the registry's clock — check this machine's clock", e.seq)));
-        }
-        let pending_before = chain.as_ref().and_then(|c| c.pending().map(|p| p.seq));
         let generation_before = chain.as_ref().map_or(0, Chain::generation);
         let next = match &chain {
-            None => Chain::genesis(entry, Trust::Fresh { received_at: vec![secs(now)] }, secs(now)),
+            None => Chain::genesis(entry),
             Some(c) => c.extend(entry),
         }
         .map_err(|e| refused(&e.0))?;
@@ -459,7 +439,7 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
                 let id = e.subjects[0].id().to_string();
                 remove(&mut person, &id, e.seq, now, &mut revoke);
             }
-            Action::RotateRecovery if rotated => {
+            Action::RotateRecovery => {
                 let old: Vec<String> = person.devices.iter().filter(|d| d.kind == "recovery" && d.removed_seq.is_none()).map(|d| d.id.clone()).collect();
                 for id in old {
                     remove(&mut person, &id, e.seq, now, &mut revoke);
@@ -469,18 +449,8 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
                 person.devices.push(Listed { id: id.clone(), kind: "recovery", name: subject.name.clone(), os: subject.os.clone(), public_key: subject.device.0, signing_key: subject.signing.0, added_seq: e.seq, removed_seq: None, revoked_at: None, created_at: now });
                 added.push(id);
             }
-            Action::RotateRecovery | Action::CancelRecoveryRotation => {}
         }
-        // The proposal an entry resolves: completed, cancelled or voided.
-        if let Some(q) = pending_before
-            && next.pending().is_none()
-            && let Some(p) = person.entries.get_mut(q as usize)
-        {
-            p.pending_until = None;
-            p.cancelled_by_seq = (!rotated || e.action != Action::RotateRecovery).then_some(e.seq);
-        }
-        let pending_until = next.pending().filter(|p| p.seq == e.seq).map(|p| p.effective_at);
-        person.entries.push(Stored { seq: e.seq, bytes: entry.bytes.clone(), signatures: entry.signatures_bytes(), received_at: now, pending_until, cancelled_by_seq: None });
+        person.entries.push(Stored { seq: e.seq, bytes: entry.bytes.clone(), signatures: entry.signatures_bytes(), received_at: now });
         written.push(e.seq);
         chain = Some(next);
     }
