@@ -229,6 +229,12 @@ impl UserKeys {
         &self.newest
     }
 
+    /// The wraps of every older generation, oldest first, as `new` takes
+    /// them back: what the keystore stores beside the newest key.
+    pub fn wraps(&self) -> impl Iterator<Item = &[u8]> {
+        self.wraps.values().map(Vec::as_slice)
+    }
+
     /// Generation `generation`, opened by walking down from the newest.
     pub fn open(&self, generation: u32) -> Result<UserKey, Error> {
         if generation == 0 || generation > self.newest.generation {
@@ -241,6 +247,14 @@ impl UserKeys {
             key = key.unwrap_previous(wrap)?;
         }
         Ok(key)
+    }
+}
+
+impl std::fmt::Debug for UserKeys {
+    /// The newest generation's id and how many wraps sit beneath it; never
+    /// a key.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "UserKeys({:?}, {} older)", self.newest, self.wraps.len())
     }
 }
 

@@ -9,6 +9,13 @@
 //!   `device.json`, and `device.json` is useless without it: a copy of one
 //!   file is not the account key.
 //!
+//! - `user-keys.json`: the generations of the person's user key this
+//!   device holds (`user_key::UserKeys`): the newest wrapped to this
+//!   device's key (`UserKey::wrap_to`), with its generation and id, and the
+//!   wrap of each older generation under the next. Every session key is
+//!   sealed under these (engineering/devices.md → Keys). Written only by
+//!   `save_user_keys`, which never goes back a generation.
+//!
 //! - `signing.json`: the device's Ed25519 relay signing key
 //!   (`e2e::SigningKey`), made the first time a relay is joined. It proves
 //!   which device connects, and opens nothing.
@@ -18,6 +25,7 @@
 //! here, so these files and the recovery phrase are the copies that last.
 
 use crate::e2e::{self, AccountKey, DeviceKey, KeyId, SigningKey};
+use crate::user_key::{UserKey, UserKeyId, UserKeys};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -25,6 +33,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 pub const DEVICE_FILE: &str = "device.json";
 pub const ACCOUNT_FILE: &str = "account-key.json";
 pub const SIGNING_FILE: &str = "signing.json";
+pub const USER_KEYS_FILE: &str = "user-keys.json";
 
 #[derive(Default, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct DeviceFile {
@@ -55,6 +64,29 @@ struct AccountFile {
     /// `e2e::wrap_account_key`'s blob, hex.
     #[serde(default)]
     wrapped: String,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct UserKeysFile {
+    #[serde(default)]
+    version: u8,
+    /// The device the newest generation is wrapped to, hex; checked against
+    /// this device's key when the file is read, as the account file's is.
+    #[serde(default)]
+    device_id: String,
+    /// The newest generation this device holds.
+    #[serde(default)]
+    generation: u32,
+    /// Its id, hex: what the key must open to.
+    #[serde(default)]
+    key_id: String,
+    /// `UserKey::wrap_to`'s blob for this device, hex.
+    #[serde(default)]
+    wrapped: String,
+    /// `UserKey::wrap_previous`'s blob for each older generation, hex,
+    /// oldest first.
+    #[serde(default)]
+    previous: Vec<String>,
 }
 
 /// The files of one krowk home.
@@ -252,6 +284,66 @@ impl Keystore {
         })?;
         self.save(&device, &account, "join")?;
         Ok(Setup { device, device_created, account })
+    }
+
+    pub fn user_keys_path(&self) -> PathBuf {
+        self.home.join(USER_KEYS_FILE)
+    }
+
+    /// The generations of the user key this device holds, opened with its
+    /// device key; None when it holds none yet.
+    pub fn user_keys(&self) -> Result<Option<UserKeys>, String> {
+        let path = self.user_keys_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let f: UserKeysFile = krowk_api::creds::read(&path)?;
+        let bad = || format!("{} does not hold user keys krowk reads — move it aside and add this device again", path.display());
+        if f.version != 1 {
+            return Err(bad());
+        }
+        let device = self.device()?.ok_or_else(|| format!("{} is here but this device's key ({}) is not, so it cannot be opened — add this device again", path.display(), self.device_path().display()))?;
+        if f.device_id != device.id().to_string() {
+            return Err(format!("{} was wrapped for device {}, not this device ({}) — add this device again", path.display(), f.device_id, device.id()));
+        }
+        let id = e2e::unhex(&f.key_id).and_then(|b| <[u8; 16]>::try_from(b).ok()).map(UserKeyId).ok_or_else(bad)?;
+        let blob = e2e::unhex(&f.wrapped).ok_or_else(bad)?;
+        let newest = UserKey::unwrap(&blob, f.generation, id, &device).map_err(|e| format!("{}: {e}", path.display()))?;
+        let previous = f.previous.iter().map(|w| e2e::unhex(w).ok_or_else(bad)).collect::<Result<Vec<_>, _>>()?;
+        UserKeys::new(newest, previous).map(Some).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Keeps `keys` as the user keys this device holds, wrapped to its
+    /// device key (made now if it has none), replacing the file by rename.
+    /// What the device already holds is never lost or swapped: `keys` must
+    /// be the same newest generation, or a newer one that opens back down
+    /// to exactly the one held (`UserKeys::adopt` checks a wrap the
+    /// registry delivered the same way). The caller has checked the newest
+    /// key against the verified device chain.
+    pub fn save_user_keys(&self, keys: &UserKeys) -> Result<(), String> {
+        krowk_api::home::make(&self.home)?;
+        let _lock = krowk_api::creds::lock(&self.account_path())?;
+        let new = keys.newest();
+        if let Some(held) = self.user_keys()? {
+            let held = held.newest();
+            if new.generation() < held.generation() {
+                return Err(format!("this device holds user key generation {}, newer than generation {} — refused, so no generation is lost", held.generation(), new.generation()));
+            }
+            if keys.open(held.generation()).ok().as_ref() != Some(held) {
+                return Err(format!("the user keys do not lead back to generation {} this device holds ({}) — refused", held.generation(), held.id()));
+            }
+        }
+        let (device, _) = self.device_or_create()?;
+        let wrapped = new.wrap_to(&device.public()).map_err(|e| e.0)?;
+        let file = UserKeysFile {
+            version: 1,
+            device_id: device.id().to_string(),
+            generation: new.generation(),
+            key_id: new.id().to_string(),
+            wrapped: e2e::hex(&wrapped),
+            previous: keys.wraps().map(e2e::hex).collect(),
+        };
+        krowk_api::creds::write(&self.user_keys_path(), &file)
     }
 
     fn save(&self, device: &DeviceKey, account: &AccountKey, origin: &str) -> Result<(), String> {
