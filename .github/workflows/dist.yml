@@ -26,13 +26,18 @@ on:
 permissions:
   contents: read
 
+# Every third-party action is pinned by commit, with its version beside it:
+# a tag can be moved, and a moved tag would build the same change into both
+# of the release's reproducible builds, where the byte comparison cannot see
+# it. Moving a pin is a pull request that names the new commit.
+
 jobs:
   targets:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.targets.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: targets
@@ -46,7 +51,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     name: build (${{ matrix.target }})
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -59,19 +64,19 @@ jobs:
       # but Apple's, which builds with the macOS SDK the runner carries.
       - name: Set up zig
         if: ${{ !contains(matrix.target, 'apple') }}
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
 
       - name: Install cargo-zigbuild
         if: ${{ !contains(matrix.target, 'apple') }}
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-zigbuild@0.23.4
 
       # Only for the fast profile: a release builds from nothing, so the bytes
       # that ship never depend on what an earlier run left behind.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: ${{ inputs.fast }}
         with:
           key: ${{ matrix.target }}
@@ -79,9 +84,11 @@ jobs:
       - name: Build
         env:
           KROWK_FAST_BUILD: ${{ inputs.fast && '1' || '' }}
-        run: scripts/dist.sh build ${{ matrix.target }} ${{ inputs.version }}
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ inputs.version }}
+        run: scripts/dist.sh build "$TARGET" "$VERSION"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist-${{ matrix.target }}
           path: dist/
@@ -91,17 +98,19 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: dist-*
           merge-multiple: true
           path: dist
       - name: Checksums and manifests
-        run: scripts/dist.sh assemble ${{ inputs.version }}
-      - uses: actions/upload-artifact@v7
+        env:
+          VERSION: ${{ inputs.version }}
+        run: scripts/dist.sh assemble "$VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
           path: dist/

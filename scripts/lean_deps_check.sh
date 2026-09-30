@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# R-PKG-2: the agent build — `krowk` with no features, the one a container
+# R-PKG-2, R-OSS-7: the agent build — `krowk` with no features, the one a container
 # compiles from source — keeps its dependency promise. The crates it links are
 # listed in crates/krowk/lean-deps.txt, by name; any change to that set, from
 # a new feature leaking into the default build or a dependency growing a new
