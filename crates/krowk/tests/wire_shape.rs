@@ -99,6 +99,7 @@ fn wire_shape_matches_the_registrys_routes() {
 /// calls krowk-api makes for the host (ticket 19 puts them behind a command).
 #[cfg(all(feature = "harness", unix))]
 #[test]
+#[ignore = "the approval mailbox answers 410 sync_reset; D5 replaces `devices approve` and this `sync join` with pairing"]
 fn sync_wire_shape_matches_the_registrys_routes() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));

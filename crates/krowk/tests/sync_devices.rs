@@ -128,6 +128,7 @@ fn uuid(b: &[u8; 16]) -> String {
 }
 
 #[test]
+#[ignore = "the approval mailbox answers 410 sync_reset; D5 replaces `devices approve` and this `sync join` with pairing"]
 fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let (proxy, wire) = recording_proxy(registry.addr());
@@ -239,6 +240,7 @@ fn r_e2e_3_a_device_approved_from_another_opens_the_session_it_made() {
 /// A join that is told a different account key id than the one approved
 /// keeps nothing — what catches a registry wrapping its own key.
 #[test]
+#[ignore = "the approval mailbox answers 410 sync_reset; D5 replaces `devices approve` and this `sync join` with pairing"]
 fn r_e2e_3_a_join_keeps_nothing_when_the_approved_key_is_not_the_one_named() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());
@@ -524,8 +526,6 @@ fn r_relay_1_a_signing_key_is_required_and_set_once() {
 
     let answer = raw_as(registry.addr(), Some(&*signer), "POST", "/v1/devices", &serde_json::json!({"device": {"public_key": public, "name": "laptop", "account_key_id": account}}).to_string());
     assert!(answer.starts_with("HTTP/1.1 400") && answer.contains("signing_key"), "{answer}");
-    let answer = raw(registry.addr(), "POST", "/v1/device_approvals", &serde_json::json!({"device_approval": {"public_key": e2e::hex(&[3; 32]), "name": "desktop"}}).to_string());
-    assert!(answer.starts_with("HTTP/1.1 400") && answer.contains("signing_key"), "{answer}");
 
     let refused = client.register_device(&public, &e2e::hex(&[9; 32]), "laptop", &account).unwrap_err();
     assert_eq!((refused.status, refused.code().to_string()), (409, "signing_key_mismatch".to_string()), "{refused:?}");
@@ -580,6 +580,7 @@ fn r_relay_1_leases_and_viewers_are_issued_tickets_the_relay_can_check() {
 /// the first waits, and would show another code anyway; the approving
 /// machine approves only the request whose code is exactly the one typed.
 #[test]
+#[ignore = "the approval mailbox answers 410 sync_reset; D5 replaces `devices approve` and this `sync join` with pairing"]
 fn r_relay_1_an_approval_request_cannot_be_doubled_or_approved_by_its_device_key_alone() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());

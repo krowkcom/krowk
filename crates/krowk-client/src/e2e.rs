@@ -836,6 +836,14 @@ impl std::fmt::Debug for SigningKey {
 pub struct SigningPublic(pub [u8; 32]);
 
 impl SigningPublic {
+    /// Whether this is an Ed25519 key anything can verify with: a point of
+    /// the curve, in its one canonical encoding, not of small order. The
+    /// registry refuses any other on a device list entry
+    /// (`Sync.refuse_weak_signing_key!`), and so does the verifier.
+    pub fn is_strong(&self) -> bool {
+        ed25519_dalek::VerifyingKey::from_bytes(&self.0).is_ok_and(|k| !k.is_weak() && k.to_edwards().compress().to_bytes() == self.0)
+    }
+
     /// Checks a join's signature, strictly (RFC 8032's checks and no
     /// small-order or non-canonical keys or signatures), so one signature
     /// has one encoding and a key cannot be chosen to verify anything.

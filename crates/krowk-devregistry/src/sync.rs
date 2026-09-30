@@ -1,8 +1,8 @@
-//! Sync: the devices that hold a workspace's account key, the mailbox a new
-//! device is approved through, and sessions with their leases — the shapes
-//! and refusals of the registry's Api::V1::DevicesController,
-//! DeviceApprovalsController, SessionsController and Sessions::
-//! LeasesController.
+//! Sync: the devices that hold a workspace's account key, and sessions with
+//! their leases — the shapes and refusals of the registry's Api::V1::
+//! DevicesController, SessionsController and Sessions::LeasesController. A
+//! person's device list, user key and pairings are `devices.rs` and
+//! `pairings.rs`; the approval mailbox is gone, `410 sync_reset`.
 //!
 //! Every endpoint needs a key and refuses a free workspace (R-SYNC-1); a
 //! token containing `free` is one, as for uploads. The creates meet a burst
@@ -26,10 +26,8 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 const PUBLIC_KEY_BYTES: usize = 32;
-const WRAPPED_ACCOUNT_KEY_BYTES: usize = 82;
 const WRAPPED_SESSION_KEY_BYTES: usize = 74;
 const MAX_SEALED_INDEX_BYTES: usize = 64 << 10;
-const APPROVAL_LIFETIME: SignedDuration = SignedDuration::from_mins(15);
 const DEFAULT_LEASE_TTL: i64 = 60;
 const LEASE_TTL: std::ops::RangeInclusive<i64> = 10..=600;
 
@@ -40,28 +38,11 @@ pub struct Device {
     pub signing_key: String,
     pub name: String,
     pub created_at: Timestamp,
-    /// None for a device an approval created, until it next acts.
+    /// None until it first acts.
     pub last_seen_at: Option<Timestamp>,
     /// Set by the owner's reset; cleared by registering again.
     pub revoked_at: Option<Timestamp>,
-    pub wrapped_account_key: String,
     pub seq: usize,
-}
-
-pub struct Approval {
-    pub slug: String,
-    pub workspace: String,
-    pub id: String,
-    pub public_key: String,
-    pub name: String,
-    /// The signing key the device asked with, hex; carried onto it.
-    pub signing_key: String,
-    pub approved: bool,
-    pub created_at: Timestamp,
-    pub expires_at: Timestamp,
-    pub approved_by: String,
-    pub account_key_id: String,
-    pub wrapped_account_key: String,
 }
 
 #[derive(Clone)]
@@ -82,6 +63,10 @@ pub struct Session {
     pub updated_at: Timestamp,
     pub last_written_at: Timestamp,
     pub seq: usize,
+    /// The person whose user key seals it (`sessions.owner_user_id`). In the
+    /// stand-in a workspace has one person (`store::person_for`), so owning
+    /// is never a second filter on top of the workspace's.
+    pub owner: String,
 }
 
 /// One chunk of a session's log: an upload like an artifact's, under a key
@@ -122,7 +107,18 @@ pub struct SyncStore {
     /// Workspace → the account key id its first device offered.
     pub account_keys: HashMap<String, String>,
     pub devices: HashMap<(String, String), Device>,
-    pub approvals: HashMap<String, Approval>,
+    /// A person's device list, user key and the devices it names, by
+    /// person (`devices.rs`): a person's, not a workspace's.
+    pub people: HashMap<String, crate::devices::Person>,
+    /// Each key, by its token's digest, and the device it speaks for
+    /// (`keys.device_id`).
+    pub bindings: HashMap<String, String>,
+    /// Keys revoked with the device they were bound to, by digest.
+    pub revoked_keys: std::collections::HashSet<String>,
+    /// When a key's browser login last had the person give their
+    /// credential again, by digest.
+    pub stamps: HashMap<String, Timestamp>,
+    pub pairings: HashMap<String, crate::pairings::Pairing>,
     pub sessions: HashMap<(String, String), Session>,
     pub seq: usize,
     /// The signed requests accepted in the last few minutes, by digest,
@@ -168,16 +164,7 @@ pub fn signed(app: &App, req: &mut Req, act: impl FnOnce(&App, &mut Req, &str) -
 }
 
 fn verify_signed(app: &App, req: &Req, workspace: &str, body: &[u8]) -> Result<String, Resp> {
-    let refused = |code: &str, message: &str| error(401, code, message, None);
-    let (Some(device), Some(at), Some(signature)) = (req.header("X-Krowk-Device"), req.header("X-Krowk-Timestamp"), req.header("X-Krowk-Signature")) else {
-        return Err(refused("signature_required", "this call acts as a device and must be signed by its signing key (X-Krowk-Device, X-Krowk-Timestamp, X-Krowk-Signature)"));
-    };
-    let device = device.to_ascii_lowercase();
-    let millis: i64 = at.parse().map_err(|_| refused("signature_invalid", "X-Krowk-Timestamp is not Unix milliseconds"))?;
-    if (Timestamp::now().as_millisecond() - millis).abs() > SIGNATURE_SKEW_MS {
-        return Err(refused("signature_stale", "the request was signed more than 5 minutes from the registry's clock — check this machine's clock"));
-    }
-    let signature = unhex(signature).ok_or_else(|| refused("signature_invalid", "X-Krowk-Signature is not hex"))?;
+    let (device, at, signature) = signature_headers(req)?;
     let mut s = app.lock();
     // The key on record; for a registration of a device with none yet, the
     // one its body registers.
@@ -187,21 +174,49 @@ fn verify_signed(app: &App, req: &Req, workspace: &str, body: &[u8]) -> Result<S
         None if req.path == "/v1/devices" => presented_signing_key(body).unwrap_or_default(),
         None => String::new(),
     };
-    let target = if req.query.is_empty() { req.path.clone() } else { format!("{}?{}", req.path, req.query) };
-    let message = format!("krowk/registry/v1\n{}\n{target}\n{at}\n{}", req.method, hex(&Sha256::digest(body)));
-    if !krowk_client::e2e::verify_registry_request(&unhex(&key).unwrap_or_default(), &signature, message.as_bytes()) {
-        return Err(refused("signature_invalid", &format!("the signature is not device {device}'s over this request")));
-    }
-    let now = Timestamp::now();
-    s.sync.signed.retain(|_, until| *until > now);
-    let digest: [u8; 32] = Sha256::digest(format!("{device}\n{message}")).into();
-    if s.sync.signed.insert(digest, now + SignedDuration::from_millis(2 * SIGNATURE_SKEW_MS)).is_some() {
-        return Err(refused("signature_replayed", "this signed request was already accepted once — sign it again to send it again"));
-    }
+    check_signature(&mut s.sync, req, &device, &at, &signature, &unhex(&key).unwrap_or_default(), body)?;
     if req.path != "/v1/devices" && revoked(&s.sync, workspace, &device) {
         return Err(device_revoked(&device));
     }
     Ok(device)
+}
+
+/// The three signature headers, or the refusal for a request without them.
+/// A client from before devices belonged to a person calls an endpoint that
+/// is gone: 410, with the fix in the message (Api::V1::SyncResetsController).
+pub fn sync_reset() -> Resp {
+    error(410, "sync_reset", "sync was reset when devices moved to your account — update krowk, sign in with `krowk auth login` and run `krowk sync init`", None)
+}
+
+pub fn signature_headers(req: &Req) -> Result<(String, String, String), Resp> {
+    match (req.header("X-Krowk-Device"), req.header("X-Krowk-Timestamp"), req.header("X-Krowk-Signature")) {
+        (Some(d), Some(t), Some(s)) => Ok((d.to_ascii_lowercase(), t.to_owned(), s.to_owned())),
+        _ => Err(error(401, "signature_required", "this call acts as a device and must be signed by its signing key (X-Krowk-Device, X-Krowk-Timestamp, X-Krowk-Signature)", None)),
+    }
+}
+
+/// A signed request's timestamp within five minutes, its signature by `key`
+/// over the request's lines, and not seen before (SignedRequest): what every
+/// signed call checks, whichever list the key came from.
+pub fn check_signature(s: &mut SyncStore, req: &Req, device: &str, at: &str, signature: &str, key: &[u8], body: &[u8]) -> Result<(), Resp> {
+    let refused = |code: &str, message: &str| error(401, code, message, None);
+    let millis: i64 = at.parse().map_err(|_| refused("signature_invalid", "X-Krowk-Timestamp is not Unix milliseconds"))?;
+    if (Timestamp::now().as_millisecond() - millis).abs() > SIGNATURE_SKEW_MS {
+        return Err(refused("signature_stale", "the request was signed more than 5 minutes from the registry's clock — check this machine's clock"));
+    }
+    let signature = unhex(signature).ok_or_else(|| refused("signature_invalid", "X-Krowk-Signature is not hex"))?;
+    let target = if req.query.is_empty() { req.path.clone() } else { format!("{}?{}", req.path, req.query) };
+    let message = format!("krowk/registry/v1\n{}\n{target}\n{at}\n{}", req.method, hex(&Sha256::digest(body)));
+    if !krowk_client::e2e::verify_registry_request(key, &signature, message.as_bytes()) {
+        return Err(refused("signature_invalid", &format!("the signature is not device {device}'s over this request")));
+    }
+    let now = Timestamp::now();
+    s.signed.retain(|_, until| *until > now);
+    let digest: [u8; 32] = Sha256::digest(format!("{device}\n{message}")).into();
+    if s.signed.insert(digest, now + SignedDuration::from_millis(2 * SIGNATURE_SKEW_MS)).is_some() {
+        return Err(refused("signature_replayed", "this signed request was already accepted once — sign it again to send it again"));
+    }
+    Ok(())
 }
 
 /// A registration's `device.signing_key`, which its signature is checked
@@ -231,7 +246,7 @@ fn fingerprint(public_key: &[u8]) -> String {
     hex(&h.finalize()[..16])
 }
 
-fn unhex(s: &str) -> Option<Vec<u8>> {
+pub fn unhex(s: &str) -> Option<Vec<u8>> {
     if s.is_empty() || !s.len().is_multiple_of(2) {
         return None;
     }
@@ -261,7 +276,7 @@ fn id_field(field: &str, value: &str) -> Result<String, Resp> {
 }
 
 /// The paid gate every sync endpoint runs after the key.
-fn gate(req: &Req) -> Result<String, Resp> {
+pub fn gate(req: &Req) -> Result<String, Resp> {
     let workspace = require_key(req)?;
     if free_plan(req) {
         return Err(error(
@@ -276,12 +291,12 @@ fn gate(req: &Req) -> Result<String, Resp> {
 
 /// Who a keyed request's burst is counted against: the key, as the registry
 /// counts it (`by: Current.key.id`), not the workspace.
-fn caller(req: &Req) -> String {
+pub fn caller(req: &Req) -> String {
     crate::store::sha256_hex(req.header("Authorization").unwrap_or_default().as_bytes())
 }
 
 /// The keyed burst ceiling on a create: 429 with Retry-After past it.
-fn burst(s: &mut SyncStore, key: &str, name: &'static str, now: Timestamp) -> Result<(), Resp> {
+pub fn burst(s: &mut SyncStore, key: &str, name: &'static str, now: Timestamp) -> Result<(), Resp> {
     let window = s.bursts.entry((key.to_owned(), name)).or_insert((now, 0));
     if now.duration_since(window.0) >= SignedDuration::from_mins(1) {
         *window = (now, 0);
@@ -309,7 +324,7 @@ fn acting(s: &SyncStore, workspace: &str, device: &str) -> Result<(), Resp> {
 }
 
 /// The body's `resource` object, and a 400 for a missing one.
-fn body(req: &mut Req, resource: &str) -> Result<Value, Resp> {
+pub fn body(req: &mut Req, resource: &str) -> Result<Value, Resp> {
     match decode(req, 1 << 20)? {
         Decoded::Value(v) => match v.get(resource) {
             Some(m) if matches!(m.value, Value::Obj(_)) => Ok(m.value.clone()),
@@ -353,23 +368,6 @@ fn serialize_device(d: &Device) -> Json {
         ("created_at", Json::str(rfc3339_nano(d.created_at))),
         ("last_seen_at", d.last_seen_at.map_or(Json::Null, |t| Json::str(rfc3339_nano(t)))),
         ("revoked_at", d.revoked_at.map_or(Json::Null, |t| Json::str(rfc3339_nano(t)))),
-    ])
-}
-
-fn serialize_approval(a: &Approval) -> Json {
-    let opt = |s: &str| if s.is_empty() { Json::Null } else { Json::str(s) };
-    Json::map([
-        ("slug", Json::str(&a.slug)),
-        ("id", Json::str(&a.id)),
-        ("public_key", Json::str(&a.public_key)),
-        ("signing_key", opt(&a.signing_key)),
-        ("name", Json::str(&a.name)),
-        ("state", Json::str(if a.approved { "approved" } else { "pending" })),
-        ("expires_at", Json::str(rfc3339_nano(a.expires_at))),
-        ("created_at", Json::str(rfc3339_nano(a.created_at))),
-        ("approved_by", opt(&a.approved_by)),
-        ("account_key_id", opt(&a.account_key_id)),
-        ("wrapped_account_key", opt(&a.wrapped_account_key)),
     ])
 }
 
@@ -461,6 +459,9 @@ fn serialize_session(s: &Session, now: Timestamp, listing: bool) -> Json {
         pairs.push(("sealed_index".to_owned(), if s.sealed_index.is_empty() { Json::Null } else { Json::str(&s.sealed_index) }));
     }
     pairs.extend([
+        ("owner_user_id".to_owned(), Json::str(&s.owner)),
+        // `user` until shared sessions are sealed to a workspace key.
+        ("seal".to_owned(), Json::str("user")),
         ("sealed_index_size".to_owned(), Json::Int((s.sealed_index.len() / 2) as i64)),
         ("lease".to_owned(), lease),
         ("created_at".to_owned(), Json::str(rfc3339_nano(s.created_at))),
@@ -487,7 +488,13 @@ pub fn list_devices(app: &App, req: &Req) -> Resp {
     let s = app.lock();
     let mut devices: Vec<&Device> = s.sync.devices.iter().filter(|((w, _), _)| *w == workspace).map(|(_, d)| d).collect();
     devices.sort_by_key(|d| d.seq);
-    Resp::json(200, &Json::map([("devices", Json::Arr(devices.into_iter().map(serialize_device).collect()))]))
+    // Then the person's own, as their device list named them: the listing
+    // the registry answers, beside the workspace's registered devices until
+    // `sync init` moves to the device list.
+    let person = crate::store::person_for(&crate::auth::token(req).unwrap_or_default());
+    let listed = s.sync.people.get(&person).map(|p| p.devices.iter().map(crate::devices::serialize).collect()).unwrap_or_default();
+    let all = devices.into_iter().map(serialize_device).chain::<Vec<Json>>(listed).collect();
+    Resp::json(200, &Json::map([("devices", Json::Arr(all))]))
 }
 
 /// A device that set sync up itself says so, with the account key it holds.
@@ -527,7 +534,6 @@ pub fn register_device(app: &App, req: &mut Req, signer: &str) -> Resp {
             created_at: now,
             last_seen_at: Some(now),
             revoked_at: None,
-            wrapped_account_key: String::new(),
             seq,
         });
         // Only the owner's reset revokes here, and a reset clears the slate:
@@ -541,142 +547,6 @@ pub fn register_device(app: &App, req: &mut Req, signer: &str) -> Resp {
         let resp = Resp::json(if fresh { 201 } else { 200 }, &serialize_device(d));
         if fresh {
             s.sync.seq = seq;
-        }
-        Ok(resp)
-    };
-    run().unwrap_or_else(|r| r)
-}
-
-pub fn list_approvals(app: &App, req: &Req) -> Resp {
-    let workspace = match gate(req) {
-        Ok(w) => w,
-        Err(r) => return r,
-    };
-    let s = app.lock();
-    let now = s.now();
-    let mut pending: Vec<&Approval> = s.sync.approvals.values().filter(|a| a.workspace == workspace && !a.approved && a.expires_at > now).collect();
-    pending.sort_by_key(|a| std::cmp::Reverse(a.created_at));
-    Resp::json(200, &Json::map([("device_approvals", Json::Arr(pending.into_iter().map(serialize_approval).collect()))]))
-}
-
-pub fn request_approval(app: &App, req: &mut Req) -> Resp {
-    let mut run = || -> Result<Resp, Resp> {
-        let workspace = gate(req)?;
-        let v = body(req, "device_approval")?;
-        let mut f = v.fields();
-        let key = blob("public_key", &required(&mut f, "public_key")?, Some(PUBLIC_KEY_BYTES), None)?;
-        let signing = hex(&blob("signing_key", &required(&mut f, "signing_key")?, Some(PUBLIC_KEY_BYTES), None)?);
-        let name = name_field(&mut f)?;
-        let mut s = app.lock();
-        let now = s.now();
-        burst(&mut s.sync, &caller(req), "device_approval_requests", now)?;
-        // One waiting request per device key: a second — the same X25519 key
-        // with another signing key, which any holder of the workspace's key
-        // could post — is refused, so the approver never chooses between
-        // two. The same request again is the one waiting, as the registry
-        // answers it.
-        let id = fingerprint(&key);
-        if let Some(open) = s.sync.approvals.values().find(|a| a.workspace == workspace && a.id == id && !a.approved && a.expires_at > now) {
-            if open.signing_key == signing {
-                return Ok(Resp::json(200, &serialize_approval(open)));
-            }
-            return Err(error(409, "approval_pending", &format!("device {id} already has a request waiting to be approved — approve or let that one lapse first"), None));
-        }
-        let a = Approval {
-            slug: generate_slug("dap"),
-            workspace,
-            id: fingerprint(&key),
-            public_key: hex(&key),
-            name,
-            signing_key: signing,
-            approved: false,
-            created_at: now,
-            expires_at: now + APPROVAL_LIFETIME,
-            approved_by: String::new(),
-            account_key_id: String::new(),
-            wrapped_account_key: String::new(),
-        };
-        let resp = Resp::json(201, &serialize_approval(&a));
-        s.sync.approvals.insert(a.slug.clone(), a);
-        Ok(resp)
-    };
-    run().unwrap_or_else(|r| r)
-}
-
-fn approval_expired(a: &Approval) -> Resp {
-    error(410, "approval_expired", &format!("this device approval expired at {} — ask again from the new device", rfc3339_nano(a.expires_at)), None)
-}
-
-pub fn show_approval(app: &App, req: &Req, slug: &str) -> Resp {
-    let workspace = match gate(req) {
-        Ok(w) => w,
-        Err(r) => return r,
-    };
-    let s = app.lock();
-    let now = s.now();
-    match s.sync.approvals.get(slug).filter(|a| a.workspace == workspace) {
-        None => not_found(),
-        Some(a) if !a.approved && a.expires_at <= now => approval_expired(a),
-        Some(a) => Resp::json(200, &serialize_approval(a)),
-    }
-}
-
-/// The answer: the account key wrapped to the request's public key, from a
-/// device of the workspace. Leaves the new device registered with its wrap.
-pub fn approve(app: &App, req: &mut Req, slug: &str, signer: &str) -> Resp {
-    let mut run = || -> Result<Resp, Resp> {
-        let workspace = gate(req)?;
-        let v = body(req, "approval")?;
-        let mut f = v.fields();
-        let device = id_field("device", &required(&mut f, "device")?)?;
-        let account = id_field("account_key_id", &required(&mut f, "account_key_id")?)?;
-        let wrapped = blob("wrapped_account_key", &required(&mut f, "wrapped_account_key")?, Some(WRAPPED_ACCOUNT_KEY_BYTES), None)?;
-        let mut s = app.lock();
-        let now = s.now();
-        let seq = s.sync.seq + 1;
-        let sync = &mut s.sync;
-        let a = sync.approvals.get(slug).filter(|a| a.workspace == workspace).ok_or_else(not_found)?;
-        if !a.approved && a.expires_at <= now {
-            return Err(approval_expired(a));
-        }
-        if a.approved {
-            return Err(error(409, "already_approved", &format!("{slug} is already approved — the new device has an account key to collect"), None));
-        }
-        acting(sync, &workspace, &device)?;
-        signed_as(&device, signer)?;
-        // The signing key the device asked with rides onto it; one already
-        // set to another is refused, as the registry refuses it.
-        if let Some(d) = sync.devices.get(&(workspace.clone(), a.id.clone()))
-            && !d.signing_key.is_empty()
-            && d.signing_key != a.signing_key
-        {
-            return Err(error(409, "signing_key_mismatch", &format!("device {} already registered another signing key, and a signing key is set once", d.id), None));
-        }
-        adopt_account_key(sync, &workspace, &account)?;
-        let a = sync.approvals.get_mut(slug).unwrap();
-        a.approved = true;
-        a.approved_by = device;
-        a.account_key_id = account;
-        a.wrapped_account_key = hex(&wrapped);
-        let (id, public_key, name, wrapped, signing) = (a.id.clone(), a.public_key.clone(), a.name.clone(), a.wrapped_account_key.clone(), a.signing_key.clone());
-        let resp = Resp::json(200, &serialize_approval(a));
-        let fresh = !sync.devices.contains_key(&(workspace.clone(), id.clone()));
-        let d = sync.devices.entry((workspace, id.clone())).or_insert_with(|| Device {
-            id,
-            public_key,
-            signing_key: String::new(),
-            name: String::new(),
-            created_at: now,
-            last_seen_at: None,
-            revoked_at: None,
-            wrapped_account_key: String::new(),
-            seq,
-        });
-        d.name = name;
-        d.wrapped_account_key = wrapped;
-        d.signing_key = signing;
-        if fresh {
-            sync.seq = seq;
         }
         Ok(resp)
     };
@@ -776,7 +646,7 @@ pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
             if held >= cap {
                 return Err(error(422, "session_limit_reached", &format!("this workspace holds {cap} synced sessions, the most one may"), None));
             }
-            let x = Session { id, wrapped_key: wrapped, record_signature, signer: record_signer, sealed_index: sealed, fence: 0, token_digest: String::new(), holder: String::new(), lease_expires_at: None, created_at: now, updated_at: now, last_written_at: now, seq };
+            let x = Session { id, wrapped_key: wrapped, record_signature, signer: record_signer, sealed_index: sealed, fence: 0, token_digest: String::new(), holder: String::new(), lease_expires_at: None, created_at: now, updated_at: now, last_written_at: now, seq, owner: crate::store::person_for(&crate::auth::token(req).unwrap_or_default()) };
             let resp = Resp::json(201, &serialize_session(&x, now, false));
             s.sync.sessions.insert(key, x);
             s.sync.seq = seq;

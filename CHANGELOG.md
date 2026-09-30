@@ -27,6 +27,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   saw, refusing an older or forked list and any removal of the recovery
   device. Only the current kit can replace the kit, or any device when there
   is none.
+- **The stand-in registry holds devices you own.** `krowk-devregistry` serves
+  a person's signed device list (verified on every post by krowk-client's own
+  verifier), the user key wrapped to each device, keys bound to one device,
+  a fresh sign-in stamp, and the pairing mailbox: one live pairing per
+  person, ten minutes, ended by the first step out of turn. The device
+  approval endpoints answer `410 sync_reset`.
 
 ### Changed
 
