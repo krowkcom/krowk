@@ -56,7 +56,15 @@ pub async fn join(j: Join<'_>) -> Result<(Ws, Value), String> {
     let query = if j.env == "production" { String::new() } else { format!("?env={}", j.env) };
     let mut req = format!("{base}/v1/relay/{}{query}", j.session).into_client_request().map_err(|e| format!("{base} is not a relay URL: {e}"))?;
     req.headers_mut().insert("x-krowk-ticket", j.ticket.parse().map_err(|_| "the relay ticket is not a header value")?);
-    let (mut ws, _) = tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(req)).await.map_err(|_| "the relay did not answer in 10 seconds".to_string())?.map_err(|e| format!("the relay could not be reached: {e}"))?;
+    // `wss://`, the hosted relay, is dialed through the harness's own rustls
+    // configuration; `ws://` (a local relay, a direct path) needs none.
+    let tls = if req.uri().scheme_str() == Some("wss") {
+        let config = tokio::task::spawn_blocking(crate::http::tls_config).await.map_err(|e| e.to_string())?.map_err(|e| format!("no TLS to reach the relay with: {e}"))?;
+        Some(tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(config)))
+    } else {
+        None
+    };
+    let (mut ws, _) = tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async_tls_with_config(req, None, false, tls)).await.map_err(|_| "the relay did not answer in 10 seconds".to_string())?.map_err(|e| format!("the relay could not be reached: {e}"))?;
     let challenge = next_control(&mut ws).await?;
     if challenge["type"] != "challenge" {
         return Err(refusal(&challenge));
@@ -305,6 +313,34 @@ mod tests {
             }
             other => panic!("not a prompt: {other:?}"),
         }
+    }
+
+    /// R-RELAY-1: the hosted relay is reachable only at `wss://`, so a
+    /// `wss://` relay URL is dialed over TLS — the listener's first bytes are
+    /// a TLS ClientHello (record type 0x16), not the build refusing the URL
+    /// before it connects, which left v0.12.0-rc3's host and viewers off the
+    /// production relay without a word.
+    #[test]
+    fn r_relay_1_a_wss_relay_is_dialed_over_tls() {
+        use tokio::io::AsyncReadExt;
+        let rt = super::runtime().unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let relay = format!("wss://{}", listener.local_addr().unwrap());
+            let first = tokio::spawn(async move {
+                let (mut s, _) = listener.accept().await.unwrap();
+                let mut b = [0u8; 3];
+                s.read_exact(&mut b).await.unwrap();
+                b
+            });
+            let signing = krowk_client::e2e::SigningKey::from_secret(&[7; 32]).unwrap();
+            let j = super::Join { relay: &relay, session: "01a0f731-f1c0-7000-92d7-64b247e51781", env: "production", ticket: "00", device: krowk_client::e2e::DeviceId([1; 16]), signing: &signing, role: krowk_client::e2e::RELAY_ROLE_VIEWER, extra: serde_json::json!({}) };
+            let (joined, b) = tokio::join!(super::join(j), tokio::time::timeout(std::time::Duration::from_secs(10), first));
+            let b = b.expect("the wss dial reached the listener").unwrap();
+            assert_eq!(b[..2], [0x16, 0x03], "a TLS handshake record, got {b:?}");
+            let e = joined.map(|_| ()).expect_err("no relay answered");
+            assert!(!e.contains("TLS support not compiled in"), "{e}");
+        });
     }
 
     /// The five commands, each to its `Command`; anything else starting

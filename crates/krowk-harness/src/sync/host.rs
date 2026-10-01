@@ -326,6 +326,10 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let mut ws: Option<super::Ws> = None;
     let mut heard = Instant::now();
     let mut retry = Instant::now();
+    // The last reason the relay could not be joined, said once on stderr
+    // when it first comes or changes, not every second: a host that never
+    // reaches the relay otherwise looks exactly like one nobody watches.
+    let mut unjoined: Option<String> = None;
     // The direct listener, when tailscaled gives this machine an address:
     // a second uplink, sent every batch the relay is, never in its place.
     let listening = match o.direct.as_ref().map(|c| super::direct::listen(c, crate::daemon::ws::uuid(&o.session), o.device)) {
@@ -470,6 +474,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                             if !super::send(&mut w, b.clone()).await { ok = false; break; }
                         }
                         if ok {
+                            unjoined = None;
                             ws = Some(w);
                             heard = Instant::now();
                             present = Some((HashSet::new(), Instant::now()));
@@ -477,7 +482,13 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                             retry = Instant::now() + Duration::from_secs(1);
                         }
                     }
-                    Err(_) => retry = Instant::now() + Duration::from_secs(1),
+                    Err(e) => {
+                        if unjoined.as_deref() != Some(e.as_str()) {
+                            eprintln!("krowk: session {} is not on the relay {}: {e}; trying again every second", o.session, o.relay);
+                            unjoined = Some(e);
+                        }
+                        retry = Instant::now() + Duration::from_secs(1);
+                    }
                 }
             }
             (direct, m) = async {

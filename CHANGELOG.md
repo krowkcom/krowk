@@ -9,6 +9,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sync reaches the hosted relay.** `krowk sync host` and `krowk sync
+  attach` could not dial a `wss://` relay, so with `KROWK_RELAY_URL` set to
+  `wss://relay.krowk.com` the host was never on it: a viewer replayed the
+  history but saw nothing live, and its prompts stayed queued. They now dial
+  it over TLS with the same trust as every other connection krowk makes, and
+  say on stderr why, once, when the relay cannot be joined.
+
 ### Changed
 
 - **Nothing asks you to sign in again in the browser any more.** Starting
