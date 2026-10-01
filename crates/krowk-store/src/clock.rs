@@ -55,6 +55,15 @@ pub fn new_id() -> String {
     format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
 }
 
+/// Whether `id` has the shape `new_id` mints: canonical lowercase,
+/// version 7, the RFC 9562 variant.
+pub fn is_id(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| if matches!(i, 8 | 13 | 18 | 23) { b == b'-' } else { b.is_ascii_hexdigit() && !b.is_ascii_uppercase() })
+        && &id[14..15] == "7"
+        && matches!(id.as_bytes()[19], b'8' | b'9' | b'a' | b'b')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -159,10 +159,7 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
     if !krowk_harness::log::valid_id(&session) {
         return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sessions` lists this machine's")));
     }
-    let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
-    if !dir.join(&session).join(krowk_harness::log::EVENTS_FILE).is_file() {
-        return Err(fail("no_session", format!("this machine has no session {session} to host — start one here (`krowk`, or `krowk -p \"...\"`), then `krowk sync host <its id>`; `krowk sessions` lists this machine's")));
-    }
+    let session = local_log(ctx, &session)?;
     // The list first: a newer key it takes up is the one `keys` reads.
     current(ctx)?;
     let k = keys(ctx)?;
@@ -186,6 +183,32 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
         direct: direct(ctx)?,
     };
     krowk_harness::sync::run_host(o, ctx.io.env, &cwd, super::VERSION, &spawn).map_err(|(code, message)| fail(&code, message))
+}
+
+/// The id of the log this machine keeps for `session`: the id itself, or —
+/// for the id `krowk sessions` listed a session under before its row took
+/// its log's id — the log id krowk.db binds it to.
+fn local_log(ctx: &Ctx, session: &str) -> Result<String, Error> {
+    let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    let has_log = |id: &str| dir.join(id).join(krowk_harness::log::EVENTS_FILE).is_file();
+    if has_log(session) {
+        return Ok(session.to_string());
+    }
+    log_id_for(ctx, session).filter(|id| has_log(id)).ok_or_else(|| {
+        fail("no_session", format!("this machine has no session {session} to host — start one here (`krowk`, or `krowk -p \"...\"`), then `krowk sync host <its id>`; `krowk sessions` lists this machine's"))
+    })
+}
+
+/// The log id of the native session krowk.db stores under `id`: a session
+/// stored before its row took its log's id is listed under the other one.
+/// None for anything else, a store that cannot be read included — never a
+/// new krowk.db made just to look.
+fn log_id_for(ctx: &Ctx, id: &str) -> Option<String> {
+    if !krowk_store::db_path(ctx.io.env).ok()?.is_file() {
+        return None;
+    }
+    let conn = super::sessions::open_store(ctx).ok()?;
+    krowk_store::foreign_session_id(&conn, id, krowk_harness::project::HARNESS).ok().flatten()
 }
 
 pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {

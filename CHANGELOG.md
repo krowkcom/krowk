@@ -11,6 +11,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A krowk session has one id.** `krowk sessions` listed a krowk session
+  under an id of krowk.db's own, which `krowk sync host` refused as no
+  session. A session is now stored under its log's id, the one `sync host`
+  and `--resume` take; `sync host` also takes the id an older store listed
+  it under (`krowk sessions rebuild` relists those under their log's id).
+- **`krowk sync init` warns about a skipped recovery kit once**, where you
+  press [s], rather than again in the line after it.
 - **Sync reaches the hosted relay.** `krowk sync host` and `krowk sync
   attach` could not dial a `wss://` relay, so with `KROWK_RELAY_URL` set to
   `wss://relay.krowk.com` the host was never on it: a viewer replayed the
