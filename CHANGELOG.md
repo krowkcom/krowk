@@ -9,10 +9,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
-### Removed
-
-- **`krowk devices approve` and the 32-hex device code.** Pairing by a short
-  code replaces them; `krowk sync join` takes no argument.
+## [0.12.0] - 2026-10-01
 
 ### Added
 
@@ -78,51 +75,6 @@ the versions are the `v*` tags a release is cut from. Entries land under
   a fresh sign-in stamp, and the pairing mailbox: one live pairing per
   person, ten minutes, ended by the first step out of turn. The device
   approval endpoints answer `410 sync_reset`.
-
-### Changed
-
-- **Sync's device and pairing calls are under `/v1/users/:user_id`.** The
-  device list, its append and start-over (`…/devices`, `…/devices/reset`),
-  a device's wrapped user key (`…/devices/:id/key`) and the person's one
-  pairing (`…/pairing`), for the user the key names. The payloads are the
-  same; the stand-in registry answers the new routes.
-
-- **Synced sessions are sealed under your user key.** `krowk sync host`
-  seals a new session's key under the newest user key generation this machine
-  holds, and records the generation in the wrapped key, which stays 74 bytes.
-  `sync attach`, `sync sessions` and `--resume` open any older generation down
-  the chain of wraps. A machine holding only an older generation, such as one
-  removed before a rotation, can't open a newer session, and is told which
-  generation it would need. The user keys a machine holds live in
-  `user-keys.json` (`0600`, wrapped to its device key, replaced by rename),
-  and a save never drops an older generation's wrap it already holds.
-  Each session's record is signed by the machine that published it. Every
-  machine that opens a session — `sync host`, `attach`, `sessions` and
-  `--resume` — checks that signature against your verified device list
-  (`device-list.json`), so any machine of yours can take a session up again,
-  and a record no device of yours signed opens nowhere. A session published
-  by a machine since removed from your devices still opens to read, but no
-  machine hosts it again: start a new one.
-  Sessions sealed under the account key no longer open: clean break. No
-  command puts a user key or a device list on a machine yet, so these
-  commands say it holds none until adding a device does.
-
-### Fixed
-
-- **`/name` loads the skill on every agent, not only krowk's own.** A skill
-  picked from the TUI's slash menu reached Claude Code or Codex as a bare
-  `/implement`, and a vendor that did not have that skill answered that there
-  was no such skill. krowk now loads the skill's instructions itself and sends
-  them ahead of your words, whichever agent runs the session.
-- **Skills installed with `npx skills` are found.** krowk reads
-  `~/.agents/skills` and `.agents/skills` from the repository's root down to
-  the working directory, beside the `.claude/skills` it already read, so a
-  skill in the shared directory is listed and can be used with `/name`.
-
-## [0.12.0] - 2026-09-30
-
-### Added
-
 - **Releases are signed, come with an SBOM, and are proven reproducible.**
   Each release carries `checksums.txt.sigstore.json`, a keyless Sigstore
   signature over the checksums of every archive, bound to the release
@@ -342,6 +294,31 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **Sync's device and pairing calls are under `/v1/users/:user_id`.** The
+  device list, its append and start-over (`…/devices`, `…/devices/reset`),
+  a device's wrapped user key (`…/devices/:id/key`) and the person's one
+  pairing (`…/pairing`), for the user the key names. The payloads are the
+  same; the stand-in registry answers the new routes.
+
+- **Synced sessions are sealed under your user key.** `krowk sync host`
+  seals a new session's key under the newest user key generation this machine
+  holds, and records the generation in the wrapped key, which stays 74 bytes.
+  `sync attach`, `sync sessions` and `--resume` open any older generation down
+  the chain of wraps. A machine holding only an older generation, such as one
+  removed before a rotation, can't open a newer session, and is told which
+  generation it would need. The user keys a machine holds live in
+  `user-keys.json` (`0600`, wrapped to its device key, replaced by rename),
+  and a save never drops an older generation's wrap it already holds.
+  Each session's record is signed by the machine that published it. Every
+  machine that opens a session — `sync host`, `attach`, `sessions` and
+  `--resume` — checks that signature against your verified device list
+  (`device-list.json`), so any machine of yours can take a session up again,
+  and a record no device of yours signed opens nowhere. A session published
+  by a machine since removed from your devices still opens to read, but no
+  machine hosts it again: start a new one.
+  Sessions sealed under the account key no longer open: clean break. No
+  command puts a user key or a device list on a machine yet, so these
+  commands say it holds none until adding a device does.
 - **The client protocol's types live in `krowk-client`.** The commands,
   events and log lines, and the daemon's 28-byte frame header, are
   declared in the crate the desktop app and the phones will link, which
@@ -351,8 +328,22 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - The TUI's prompt sits on the same band as your messages in the chat, edge to edge across the terminal with an empty row either side, instead of between two rules. The arrow and text stay where they were. The status line lines up with the arrow, with an empty row under it, and the working line reads "12s · esc to interrupt".
 - Keys the TUI suggests stand out: in hints, the help menu, the status line, approvals and questions, each key (`esc`, `enter`, `y`, `ctrl-g`, `?`) is white instead of grey like the words around it.
 
+### Removed
+
+- **`krowk devices approve` and the 32-hex device code.** Pairing by a short
+  code replaces them; `krowk sync join` takes no argument.
+
 ### Fixed
 
+- **`/name` loads the skill on every agent, not only krowk's own.** A skill
+  picked from the TUI's slash menu reached Claude Code or Codex as a bare
+  `/implement`, and a vendor that did not have that skill answered that there
+  was no such skill. krowk now loads the skill's instructions itself and sends
+  them ahead of your words, whichever agent runs the session.
+- **Skills installed with `npx skills` are found.** krowk reads
+  `~/.agents/skills` and `.agents/skills` from the repository's root down to
+  the working directory, beside the `.claude/skills` it already read, so a
+  skill in the shared directory is listed and can be used with `/name`.
 - **A viewer that moves to the direct path mid-session keeps receiving
   the session.** The direct listener replays from where the viewer was when
   it started looking for the direct path. The viewer had already opened
