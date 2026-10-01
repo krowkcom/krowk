@@ -103,7 +103,7 @@ pub(super) fn finish(ctx: &mut Ctx, me: &super::chain::Me, v: &super::chain::Ver
     if !ask(ctx, "Remove?")? {
         return Err(fail("selection_cancelled", "not confirmed, so nothing was removed"));
     }
-    let fresh = fresh_sign_in(ctx, "Removing a device changes which devices can read your sessions")?;
+    let fresh = fresh_sign_in(ctx, "Removing a device changes which devices can read your sessions", krowk_api::LoginAction::RemoveDevice)?;
     // The new key speaks for this device, as the one it replaces did.
     chain::claim(&fresh, me)?;
     let keys = chain::held_keys(ctx)?.ok_or_else(chain::not_set_up)?;

@@ -236,6 +236,28 @@ pub struct CliAuthorization {
     pub fresh: bool,
 }
 
+/// What a browser login is for, sent with it so the approval page can say:
+/// a plain sign-in, or the fresh sign-in a destructive device-list change
+/// needs, by which change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginAction {
+    Login,
+    StartOver,
+    RemoveDevice,
+    ReplaceKit,
+}
+
+impl LoginAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LoginAction::Login => "login",
+            LoginAction::StartOver => "start_over",
+            LoginAction::RemoveDevice => "remove_device",
+            LoginAction::ReplaceKit => "replace_kit",
+        }
+    }
+}
+
 fn is_zero(n: &i64) -> bool {
     *n == 0
 }

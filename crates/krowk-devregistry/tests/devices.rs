@@ -84,8 +84,18 @@ fn a_chain_posted_at_init_reads_back_with_its_receipt_time_and_epoch() {
     assert_eq!(again.head(), chain.head());
 }
 
+/// A first list needs a key with a person behind it, and no fresh sign-in.
+#[test]
+fn a_first_init_needs_no_fresh_sign_in() {
+    let server = Server::new();
+    let laptop = Dev::new("laptop");
+    let (_, batch) = Chain::start(laptop.subject(), &laptop.signing, None, now()).unwrap();
+    laptop.client(&server, "krowk_sk_owner#plain").init_device_list(&post(&batch, false)).unwrap();
+}
+
 /// One chain per person: a second init is `chain_exists`; a start-over is
-/// a new epoch, never a shorter chain; and init needs a fresh sign-in.
+/// a new epoch, never a shorter chain, and needs a fresh sign-in — a first
+/// init does not.
 #[test]
 fn a_second_init_is_refused_unless_it_starts_over_into_a_new_epoch() {
     let server = Server::new();

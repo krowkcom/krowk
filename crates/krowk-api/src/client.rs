@@ -194,9 +194,13 @@ impl Client {
     /// for a destructive device-list change (canon, devices.md). Refused
     /// when the registry does not say it heard the ask, since a key that is
     /// not fresh would only be turned away later.
-    pub fn start_cli_authorization(&self, fresh: bool) -> Result<CliAuthorization, Error> {
-        let body = fresh.then(|| json!({ "fresh": true }));
-        let (auth, status): (CliAuthorization, u16) = self.call("POST", "/cli/authorizations", body, MAX_ATTEMPTS, None)?;
+    ///
+    /// `action` says what the login is for, so the approval page can name
+    /// it. Both go in the query string, which a registry that does not know
+    /// them ignores.
+    pub fn start_cli_authorization(&self, fresh: bool, action: LoginAction) -> Result<CliAuthorization, Error> {
+        let path = format!("/cli/authorizations?action={}{}", action.as_str(), if fresh { "&fresh=true" } else { "" });
+        let (auth, status): (CliAuthorization, u16) = self.call("POST", &path, None, MAX_ATTEMPTS, None)?;
         if fresh && !auth.fresh {
             return Err(malformed(status, "the registry opened a browser login without the fresh sign-in this needs — check KROWK_API_URL, and update the registry"));
         }

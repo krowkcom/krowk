@@ -833,8 +833,8 @@ Sessions are encrypted on this machine before they leave it. `init` sets up
 your device list and shows a recovery kit, 12 words, once: the only way back
 in if every device is lost. `recover` takes them on a new machine — at its
 prompt, or piped from a file (`krowk sync recover < kit.txt`), never `echo`,
-which keeps them in your shell history. `init`, `recovery new` and removing
-a device ask you to sign in again in the browser.",
+which keeps them in your shell history. Starting over, `recovery new` and
+removing a device ask you to sign in again in the browser.",
         #[cfg(feature = "harness")]
         "devices" => "\
 Adding a machine: `krowk devices add` here shows a code, valid 10 minutes and

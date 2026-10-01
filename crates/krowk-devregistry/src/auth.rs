@@ -80,6 +80,13 @@ pub fn show_key(req: &Req) -> Resp {
 /// response means nobody saw the code, so the login charges nothing and lapses.
 pub fn create_cli_authorization(app: &App, req: &Req, site: &str) -> Resp {
     let fresh = matches!(req.query_get("fresh").as_str(), "true" | "1");
+    // What the login is for, for the approval page to name; one the
+    // stand-in does not know reads as a plain login, as an older registry
+    // ignores it.
+    let action = match req.query_get("action").as_str() {
+        a @ ("start_over" | "remove_device" | "replace_kit") => a.to_string(),
+        _ => "login".to_string(),
+    };
     let mut s = app.lock();
     // Swept here, the only moment the set grows, and only past a grace period
     // so a late poll still hears `410 expired` rather than `404`.
@@ -101,6 +108,7 @@ pub fn create_cli_authorization(app: &App, req: &Req, site: &str) -> Resp {
         workspace: String::new(),
         spent: false,
         fresh,
+        action,
     };
     let body = Json::map([
         ("slug", Json::str(&auth.slug)),
@@ -111,6 +119,8 @@ pub fn create_cli_authorization(app: &App, req: &Req, site: &str) -> Resp {
         ("verification_url", Json::str(format!("{site}/_approve/cli/authorizations/new?code={}", auth.code))),
         ("interval", Json::Int(CLI_AUTHORIZATION_INTERVAL)),
         ("expires_at", Json::str(rfc3339(auth.created_at + CLI_AUTHORIZATION_LIFETIME))),
+        ("fresh", Json::Raw(auth.fresh.to_string())),
+        ("action", Json::str(&auth.action)),
     ]);
     s.authorizations.insert(auth.slug.clone(), auth);
     Resp::json(201, &body)
