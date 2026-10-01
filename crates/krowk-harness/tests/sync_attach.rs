@@ -72,6 +72,13 @@ struct World {
     seen: Arc<Mutex<Vec<u8>>>,
     /// While set, A's link to the relay is down and nothing gets through.
     cut: Arc<AtomicBool>,
+    /// What A's proxy does meanwhile: `PASS`, `FREEZE` (nothing forwarded
+    /// either way, every connection kept open: A stopped, as by SIGSTOP), or
+    /// `GHOST` (the relay's refusal said on A's open connection, which is
+    /// then frozen alone).
+    a_mode: Arc<AtomicU8>,
+    /// Connections A has opened to the relay: each a join.
+    a_conns: Arc<AtomicUsize>,
     relay_a: String,
     relay_b: String,
     _mock: mock::Mock,
@@ -93,6 +100,8 @@ const CUT: u8 = 1;
 const FAIL_WRITES: u8 = 2;
 const DROP_ALL: u8 = 2;
 const DROP_BATCHES: u8 = 3;
+const FREEZE: u8 = 4;
+const GHOST: u8 = 5;
 /// A registry proxy's mode: the second relay ticket asked for — a viewer's
 /// race for a direct path, which starts as the relay's welcome comes —
 /// waits until the mode changes, so the race goes on when the test says.
@@ -111,20 +120,22 @@ fn signer(d: &Device) -> Arc<dyn krowk_api::client::RequestSigner> {
 
 impl World {
     fn new(name: &str) -> World {
+        World::with_relay(name, Default::default())
+    }
+
+    /// A world whose reference relay runs under `limits`.
+    fn with_relay(name: &str, limits: krowk_harness::relay::Limits) -> World {
         let root = scratch::root(&format!("sync-{name}"));
         for d in ["home", "run", "repo/.git"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
         let api = format!("{}/v1", registry.url());
-        let relay = TcpListener::bind("127.0.0.1:0").unwrap();
-        let relay_addr = relay.local_addr().unwrap();
-        let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
-        let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
-        std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None }));
+        let relay_addr = relay(limits);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let cut = Arc::new(AtomicBool::new(false));
-        let relay_a = proxy(relay_addr, seen.clone(), cut.clone());
+        let (a_mode, a_conns) = (Arc::new(AtomicU8::new(PASS)), Arc::new(AtomicUsize::new(0)));
+        let relay_a = proxy(relay_addr, seen.clone(), cut.clone(), a_mode.clone(), a_conns.clone());
         let (b_mode, b_batches) = (Arc::new(AtomicU8::new(PASS)), Arc::new(AtomicUsize::new(0)));
         let b_drop = Arc::new(AtomicUsize::new(0));
         let relay_b = viewer_proxy(relay_addr, seen.clone(), b_mode.clone(), b_batches.clone(), b_drop.clone());
@@ -132,7 +143,7 @@ impl World {
         let reg_a = format!("http://{}/v1", registry_proxy(registry.addr(), reg_mode.clone()));
         let m = mock::serve(model);
         let mock_url = m.url.clone();
-        World { root, registry, api, account: AccountKey::generate(), list: Mutex::new(None), first_signing: Mutex::new(None), seen, cut, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
+        World { root, registry, api, account: AccountKey::generate(), list: Mutex::new(None), first_signing: Mutex::new(None), seen, cut, a_mode, a_conns, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
     }
 
     /// A device's own registry client: its calls that act as the device
@@ -345,9 +356,29 @@ impl Drop for World {
     }
 }
 
+/// The relay the devices reach: the reference relay, in this process, or
+/// another at `KROWK_SYNC_RELAY` (`127.0.0.1:8787`, the hosted relay under
+/// `wrangler dev`, trusting the stand-in registry's ticket key), so the
+/// same scenarios hold the Worker to what the bridge and the viewer need.
+fn relay(limits: krowk_harness::relay::Limits) -> SocketAddr {
+    if let Ok(at) = std::env::var("KROWK_SYNC_RELAY") {
+        return at.parse().expect("KROWK_SYNC_RELAY is an address, 127.0.0.1:8787");
+    }
+    let relay = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = relay.local_addr().unwrap();
+    let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
+    let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
+    std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits, state: None, origins: Vec::new(), whois: None, pin: None }));
+    addr
+}
+
 /// A TCP proxy in front of the relay: records both ways, and while `cut`
 /// is set drops every connection and refuses new ones — a network gone.
-fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>) -> SocketAddr {
+/// Under `FREEZE` it forwards nothing and keeps every connection open;
+/// under `GHOST` it tells A on the connection open now, as the relay
+/// would, that its link was let go — and then forwards nothing more on it,
+/// the close never coming, while a new connection passes.
+fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>, mode: Arc<AtomicU8>, conns: Arc<AtomicUsize>) -> SocketAddr {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     std::thread::spawn(move || {
@@ -357,8 +388,11 @@ fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>) -> Soc
                 continue;
             }
             let Ok(up) = TcpStream::connect(to) else { continue };
-            for (mut from, mut into) in [(c.try_clone().unwrap(), up.try_clone().unwrap()), (up, c)] {
-                let (seen, cut) = (seen.clone(), cut.clone());
+            conns.fetch_add(1, Ordering::SeqCst);
+            // This connection alone, once a ghost: what joins after it passes.
+            let ghost = Arc::new(AtomicBool::new(false));
+            for (down, (mut from, mut into)) in [(false, (c.try_clone().unwrap(), up.try_clone().unwrap())), (true, (up, c))] {
+                let (seen, cut, mode, ghost) = (seen.clone(), cut.clone(), mode.clone(), ghost.clone());
                 std::thread::spawn(move || {
                     from.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
                     let mut buf = [0u8; 16384];
@@ -367,6 +401,30 @@ fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>) -> Soc
                             let _ = from.shutdown(std::net::Shutdown::Both);
                             let _ = into.shutdown(std::net::Shutdown::Both);
                             return;
+                        }
+                        match mode.load(Ordering::SeqCst) {
+                            _ if ghost.load(Ordering::SeqCst) => {
+                                std::thread::sleep(Duration::from_millis(20));
+                                continue;
+                            }
+                            FREEZE => {
+                                std::thread::sleep(Duration::from_millis(20));
+                                continue;
+                            }
+                            GHOST if down => {
+                                // The relay's refusal, as a WebSocket server
+                                // frame: binary, unmasked, its length in two
+                                // bytes past 125.
+                                let e = krowk_harness::relay::control(&serde_json::json!({"type": "error", "code": "replaced", "message": "another connection of the lease holder took the channel", "fix": "nothing to do if that was this device reconnecting"}));
+                                let mut f = vec![0x82, 126];
+                                f.extend_from_slice(&(e.len() as u16).to_be_bytes());
+                                f.extend_from_slice(&e);
+                                let _ = into.write_all(&f);
+                                ghost.store(true, Ordering::SeqCst);
+                                mode.store(PASS, Ordering::SeqCst);
+                                continue;
+                            }
+                            _ => {}
                         }
                         match from.read(&mut buf) {
                             Ok(0) => {
@@ -960,6 +1018,97 @@ async fn r_lag_8_a_prompt_sent_again_after_a_lost_ack_runs_once() {
     tokio::time::sleep(Duration::from_secs(3)).await;
     let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join("events.jsonl")).unwrap();
     let n = log.lines().filter(|l| l.contains("run-once-marker-77") && l.contains("userText")).count();
+    assert_eq!(n, 1, "the prompt ran {n} times");
+}
+
+/// R-SYNC-2: a viewer on the host's own device — `krowk sync attach` on
+/// machine A while A hosts — joins and leaves, and the host stays on the
+/// relay: B, watching from another device, is never told the host went,
+/// and a prompt B types afterwards is sent, not queued, and runs on A.
+#[tokio::test]
+async fn r_sync_2_a_viewer_on_the_hosts_own_device_leaving_leaves_the_host_on_the_relay() {
+    let w = World::new("samedev");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut vb = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut vb, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    for _ in 0..2 {
+        let mut own = viewer::attach(w.viewer(&a, &session)).await.unwrap();
+        until(&mut own, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+        drop(own);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    vb.commands.send(w.prompt(Some(&session), "after A's own viewer left")).unwrap();
+    let got = until(&mut vb, Duration::from_secs(20), &mut frames, result_of).await;
+    assert!(got.iter().any(|u| matches!(u, viewer::Update::Sent { queued: false, .. })), "B still sees the host: {got:?}");
+    assert!(!got.iter().any(|u| matches!(u, viewer::Update::Host(false))), "B was told the host went: {got:?}");
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join("events.jsonl")).unwrap();
+    assert!(log.contains("after A's own viewer left"), "B's prompt ran on A");
+}
+
+/// R-SYNC-2, R-OFF-2: the relay lets A's link go — `replaced`, here — and
+/// its close never reaches A, the connection left open and silent, as a
+/// Worker's edge leaves one whose heartbeats it goes on answering. A joins
+/// again at once, well inside the 30 seconds a dead link takes to show, and
+/// a prompt B types then runs.
+#[tokio::test]
+async fn r_off_2_a_host_whose_link_the_relay_let_go_joins_again_at_once() {
+    let w = World::new("ghost");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    let joins = w.a_conns.load(Ordering::SeqCst);
+    w.a_mode.store(GHOST, Ordering::SeqCst);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while w.a_conns.load(Ordering::SeqCst) == joins {
+        assert!(Instant::now() < deadline, "A never joined the relay again");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    v.commands.send(w.prompt(Some(&session), "after the relay let A go")).unwrap();
+    until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join("events.jsonl")).unwrap();
+    assert_eq!(log.lines().filter(|l| l.contains("after the relay let A go") && l.contains("userText")).count(), 1);
+}
+
+/// R-OFF-2, R-LAG-8: A stops — SIGSTOP, a laptop asleep — past the time a
+/// relay keeps a silent link, with a prompt B sent while A still looked
+/// present in flight to it; the relay's copy of it is lost with A's link.
+/// When A runs again it joins again, B — told the host is back — sends
+/// the prompt again, and A runs it, once.
+#[tokio::test]
+async fn r_off_2_a_prompt_sent_to_a_host_that_stopped_runs_once_when_it_is_back() {
+    let limits = krowk_harness::relay::Limits { heartbeat: Duration::from_secs(2), ..Default::default() };
+    let w = World::with_relay("frozen", limits);
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    w.a_mode.store(FREEZE, Ordering::SeqCst);
+    v.commands.send(w.prompt(Some(&session), "sent-while-a-was-stopped")).unwrap();
+    let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Sent { .. })).await;
+    assert!(got.iter().any(|u| matches!(u, viewer::Update::Sent { queued: false, .. })), "B believed the host present: {got:?}");
+    // Past the reference relay's three silent heartbeats; the hosted relay
+    // keeps the link, and the relay's copy is lost with it all the same.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    // A runs again, and finds its link gone with what was in flight on it.
+    w.cut.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    w.a_mode.store(PASS, Ordering::SeqCst);
+    w.cut.store(false, Ordering::SeqCst);
+    until(&mut v, Duration::from_secs(30), &mut frames, result_of).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join("events.jsonl")).unwrap();
+    let n = log.lines().filter(|l| l.contains("sent-while-a-was-stopped") && l.contains("userText")).count();
     assert_eq!(n, 1, "the prompt ran {n} times");
 }
 

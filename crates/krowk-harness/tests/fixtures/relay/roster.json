@@ -650,6 +650,30 @@
       "revoked": false
     },
     {
+      "name": "samedev-host",
+      "id": "c3dfe63a42f49ffd3f7c251be081064e",
+      "seed": "507e4f7b52614f89a3a21d98cf754c7b855882af8e896402239b798817185d0e",
+      "signingKey": "1b95d2a5fcf26bd80a2691a8c391d063eb619199d3985a3ed3e096a29d3b07ae",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "samedev-viewer",
+      "id": "1ea977b15161713dac49c7962c1cc144",
+      "seed": "82e786a22173400a83cc32d43a66fa7d65e8c0cd5e9afa6fdc4ea3bb492fe745",
+      "signingKey": "ca7a6ab9682c249c349549fad9f445a7fdc4d0d0cbc297ef4383441eae09f613",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
+      "name": "samedev-viewer2",
+      "id": "2478ac5ca047711565604462e7827a26",
+      "seed": "02f336b8b81cd9e38ad1ae512167043a9556a6c1893ec82e11bc47b6e4ce8846",
+      "signingKey": "c2e03ffc1dc78c78c9d1169a1bbfefb9e5bfa229c94d72efa5c4da48b4020495",
+      "workspace": "ws_conformance_a",
+      "revoked": false
+    },
+    {
       "name": "outsider",
       "id": "efc5fa16d87af0fe9215049762a334ac",
       "seed": "238e38bd09339bbfe7d2ce99c28792a6f411ea15b4aa219c9f6845c00740036c",
@@ -863,6 +887,13 @@
       "workspace": "ws_conformance_a",
       "holder": "4a07c7e676d378c36b0bcffac34c79ab",
       "fence": 176
+    },
+    {
+      "name": "samedev",
+      "id": "7ae7320d-759e-7e15-a34f-d852fd5a5f73",
+      "workspace": "ws_conformance_a",
+      "holder": "c3dfe63a42f49ffd3f7c251be081064e",
+      "fence": 91
     },
     {
       "name": "xws-b",
