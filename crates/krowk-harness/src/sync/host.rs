@@ -347,6 +347,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let (answers_tx, mut answers) = mpsc::unbounded_channel::<(u64, Answer)>();
     let mut tick = tokio::time::interval(FRAME);
     let mut beat = tokio::time::interval(PING);
+    let mut beaten = Instant::now();
     let mut sweep = tokio::time::interval(Duration::from_secs(1));
     let mut ended = Ok(());
     loop {
@@ -423,8 +424,16 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                 }
             }
             _ = beat.tick() => {
-                if let Some(w) = ws.as_mut() && (heard.elapsed() > DEAD || !super::ping(w).await) { ws = None; }
-                if let Some(w) = dws.as_mut() && (dheard.elapsed() > DEAD || !super::ping(w).await) { dws = None; }
+                // A beat far later than `PING`: this process did not run in
+                // between (stopped, suspended, a laptop asleep) for longer than a
+                // relay keeps a silent link. What it holds may be a link the relay
+                // let go, or one it no longer counts as the host, with a viewer's
+                // command lost on it: joined again, and the viewers, told the
+                // host is present, send again what was never acknowledged.
+                let paused = beaten.elapsed() > DEAD;
+                beaten = Instant::now();
+                if let Some(w) = ws.as_mut() && (paused || heard.elapsed() > DEAD || !super::ping(w).await) { ws = None; }
+                if let Some(w) = dws.as_mut() && (paused || dheard.elapsed() > DEAD || !super::ping(w).await) { dws = None; }
             }
             _ = tokio::time::sleep_until(dretry.into()), if dws.is_none() && listening.is_some() => {
                 // The listener's viewers went with the host's link to it,
@@ -503,6 +512,19 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                     In::Closed if direct => { dws = None; dretry = Instant::now() + Duration::from_secs(1); }
                     In::Closed => { ws = None; retry = Instant::now() + Duration::from_secs(1); }
                     In::Alive => {}
+                    // A refusal comes before the relay closes the link — `replaced`,
+                    // `link_overflow`, `rate_limited` — and the close itself may never
+                    // arrive, while the edge goes on answering this link's heartbeats:
+                    // the link is let go here, and joined again, rather than kept as a
+                    // host connection the relay no longer counts.
+                    In::Control(v) if v["type"] == "error" => {
+                        let why = format!("the relay let this host's link go: {} — {}; joining again", v["code"].as_str().unwrap_or("?"), v["message"].as_str().unwrap_or(""));
+                        if unjoined.as_deref() != Some(why.as_str()) {
+                            eprintln!("krowk: session {}: {why}", o.session);
+                            unjoined = Some(why);
+                        }
+                        if direct { dws = None; dretry = Instant::now() + Duration::from_secs(1); } else { ws = None; retry = Instant::now() + Duration::from_secs(1); }
+                    }
                     In::Control(v) => {
                         if v["type"] == "viewer" && let Some(l) = v["link"].as_u64() {
                             if v["event"] == "left" { link.forget(l); }
