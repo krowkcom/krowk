@@ -200,14 +200,15 @@ fn resealed(c: &reseal::Count) -> String {
     format!("{} re-sealed, {} left (other workspaces or refused){left}", c.sealed, c.left)
 }
 
+/// What init did. A skipped kit is not said again here: the person was told
+/// what skipping risks when they pressed [s], a line above.
 fn init_summary(name: &str, start_over: bool, kept: bool, count: Option<&reseal::Count>) -> String {
-    let no_kit = if kept { String::new() } else { format!(". {NO_KIT}") };
     let sessions = count.map(|c| format!("; old sessions: {}", resealed(c))).unwrap_or_default();
     let with_kit = if kept { " and your recovery kit" } else { "" };
     match (start_over, kept) {
-        (true, _) => format!("started over: a new device list with '{name}'{with_kit}; pair your other devices again with `krowk sync join`{sessions}{no_kit}"),
+        (true, _) => format!("started over: a new device list with '{name}'{with_kit}; pair your other devices again with `krowk sync join`{sessions}"),
         (false, true) => format!("sync is set up: '{name}' is your first device, and your recovery kit is on the list"),
-        (false, false) => format!("sync is set up: '{name}' is your first device{no_kit}"),
+        (false, false) => format!("sync is set up: '{name}' is your first device"),
     }
 }
 
