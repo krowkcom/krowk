@@ -17,6 +17,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   history but saw nothing live, and its prompts stayed queued. They now dial
   it over TLS with the same trust as every other connection krowk makes, and
   say on stderr why, once, when the relay cannot be joined.
+- **`KROWK_RELAY_URL` is no longer needed for krowk.com.** Signed in to the
+  production registry, `krowk sync host` and `krowk sync attach` dial
+  `wss://relay.krowk.com` by default; a stand-in or custom `KROWK_API_URL`
+  keeps the local relay, and `KROWK_RELAY_URL` still overrides both.
 
 ### Changed
 
