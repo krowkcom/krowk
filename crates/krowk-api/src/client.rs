@@ -188,22 +188,12 @@ impl Client {
     /// Opens a browser login. Keyless on purpose: the endpoint exists for a
     /// machine with no key, and sending one would meter it as that key's.
     ///
-    /// `fresh` asks the approval page for the person's password (or Google
-    /// sign-in) again, which is what stamps the key it mints as a fresh
-    /// sign-in: the stored key and an open browser session are not enough
-    /// for a destructive device-list change (canon, devices.md). Refused
-    /// when the registry does not say it heard the ask, since a key that is
-    /// not fresh would only be turned away later.
-    ///
     /// `action` says what the login is for, so the approval page can name
-    /// it. Both go in the query string, which a registry that does not know
-    /// them ignores.
-    pub fn start_cli_authorization(&self, fresh: bool, action: LoginAction) -> Result<CliAuthorization, Error> {
-        let path = format!("/cli/authorizations?action={}{}", action.as_str(), if fresh { "&fresh=true" } else { "" });
+    /// it. It goes in the query string, which a registry that does not know
+    /// it ignores.
+    pub fn start_cli_authorization(&self, action: LoginAction) -> Result<CliAuthorization, Error> {
+        let path = format!("/cli/authorizations?action={}", action.as_str());
         let (auth, status): (CliAuthorization, u16) = self.call("POST", &path, None, MAX_ATTEMPTS, None)?;
-        if fresh && !auth.fresh {
-            return Err(malformed(status, "the registry opened a browser login without the fresh sign-in this needs — check KROWK_API_URL, and update the registry"));
-        }
         if auth.slug.is_empty() || auth.code.is_empty() {
             return Err(malformed(
                 status,

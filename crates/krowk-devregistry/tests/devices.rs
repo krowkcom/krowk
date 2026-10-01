@@ -16,8 +16,8 @@ use krowk_client::pairing::{Binding, NewDevice, PairA, PairB, PairingCode, PeerK
 use krowk_client::recovery::RecoveryKit;
 use krowk_client::user_key::UserKey;
 
-/// Two keys of one person in one workspace, the first freshly signed in.
-const LAPTOP: &str = "krowk_sk_owner#laptop-fresh";
+/// Two keys of one person in one workspace.
+const LAPTOP: &str = "krowk_sk_owner#laptop";
 const DESKTOP: &str = "krowk_sk_owner#desktop";
 
 struct Dev {
@@ -84,18 +84,8 @@ fn a_chain_posted_at_init_reads_back_with_its_receipt_time_and_epoch() {
     assert_eq!(again.head(), chain.head());
 }
 
-/// A first list needs a key with a person behind it, and no fresh sign-in.
-#[test]
-fn a_first_init_needs_no_fresh_sign_in() {
-    let server = Server::new();
-    let laptop = Dev::new("laptop");
-    let (_, batch) = Chain::start(laptop.subject(), &laptop.signing, None, now()).unwrap();
-    laptop.client(&server, "krowk_sk_owner#plain").init_device_list(&post(&batch, false)).unwrap();
-}
-
 /// One chain per person: a second init is `chain_exists`; a start-over is
-/// a new epoch, never a shorter chain, and needs a fresh sign-in — a first
-/// init does not.
+/// a new epoch, never a shorter chain.
 #[test]
 fn a_second_init_is_refused_unless_it_starts_over_into_a_new_epoch() {
     let server = Server::new();
@@ -103,11 +93,9 @@ fn a_second_init_is_refused_unless_it_starts_over_into_a_new_epoch() {
     init(&server, &laptop);
     let other = Dev::new("other");
     let (_, batch) = Chain::start(other.subject(), &other.signing, None, now()).unwrap();
-    let refused = other.client(&server, "krowk_sk_owner#other-fresh").init_device_list(&post(&batch, false)).unwrap_err();
+    let refused = other.client(&server, "krowk_sk_owner#other").init_device_list(&post(&batch, false)).unwrap_err();
     assert_eq!(refused.code(), "chain_exists");
-    let stale = other.client(&server, "krowk_sk_owner#other").init_device_list(&post(&batch, true)).unwrap_err();
-    assert_eq!(stale.code(), "fresh_sign_in_required");
-    other.client(&server, "krowk_sk_owner#other-fresh").init_device_list(&post(&batch, true)).unwrap();
+    other.client(&server, "krowk_sk_owner#other").init_device_list(&post(&batch, true)).unwrap();
     assert_eq!(other.client(&server, DESKTOP).device_list(None).unwrap().epoch, 2);
     // The old laptop's devices are gone with the old epoch.
     let gone = laptop.client(&server, LAPTOP).user_key().unwrap_err();
@@ -115,9 +103,9 @@ fn a_second_init_is_refused_unless_it_starts_over_into_a_new_epoch() {
 }
 
 /// An append must extend the head, carry exactly the wraps it makes, and
-/// be signed by the device posting it; a remove needs a fresh sign-in.
+/// be signed by the device posting it.
 #[test]
-fn an_append_is_held_to_the_head_the_wraps_and_a_fresh_sign_in() {
+fn an_append_is_held_to_the_head_the_wraps_and_its_signer() {
     let server = Server::new();
     let laptop = Dev::new("laptop");
     let (chain, key) = init(&server, &laptop);
@@ -133,10 +121,7 @@ fn an_append_is_held_to_the_head_the_wraps_and_a_fresh_sign_in() {
 
     let chain = Chain::verify(&served(&laptop.client(&server, LAPTOP)), Some(chain.head())).unwrap();
     let (_, remove) = chain.batch(&key, vec![Change::Remove(desktop.subject())], laptop.key.id(), &laptop.signing, now()).unwrap();
-    // A key the laptop signs with that has no sign-in from the last five
-    // minutes cannot remove: a thief holds the stored key, not the password.
-    let plain = laptop.client(&server, "krowk_sk_owner#laptop").append_device_list(&post(&remove, false)).unwrap_err();
-    assert_eq!(plain.code(), "fresh_sign_in_required");
+    laptop.client(&server, LAPTOP).append_device_list(&post(&remove, false)).unwrap();
 }
 
 /// A key speaks for one device: bound at init to the first device, it is

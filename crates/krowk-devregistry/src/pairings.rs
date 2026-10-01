@@ -148,7 +148,7 @@ pub fn open(app: &App, req: &mut Req) -> Resp {
         let body = read_body(req)?;
         let mut s = app.lock();
         let now = s.now();
-        let who = caller_of(&s.sync, req, now)?;
+        let who = caller_of(&s.sync, req)?;
         burst(&mut s.sync, &caller(req), "pairings", now)?;
         key_device(&s.sync, &who)?;
         let device = signed_device(&mut s.sync, req, &who, &body)?;
@@ -201,8 +201,7 @@ pub fn read(app: &App, req: &Req) -> Resp {
     let slug = latest(app, req);
     let is_party = {
         let s = app.lock();
-        let now = s.now();
-        caller_of(&s.sync, req, now).ok().zip(s.sync.pairings.get(&slug)).is_some_and(|(who, p)| party(&s.sync, &who, p))
+        caller_of(&s.sync, req).ok().zip(s.sync.pairings.get(&slug)).is_some_and(|(who, p)| party(&s.sync, &who, p))
     };
     if is_party { show(app, req, &slug) } else { find_open(app, req) }
 }
@@ -215,7 +214,7 @@ fn find_open(app: &App, req: &Req) -> Resp {
     let run = || -> Result<Resp, Resp> {
         let s = app.lock();
         let now = s.now();
-        let who = caller_of(&s.sync, req, now)?;
+        let who = caller_of(&s.sync, req)?;
         let found = s.sync.pairings.values().find(|p| p.person == who.person && p.state == State::Open && p.joiner_message.is_none() && p.expires_at > now);
         found.map(|p| Resp::json(200, &serialize(p))).ok_or_else(|| {
             error(404, "no_pairing", "none of your devices has a pairing open — run `krowk devices add` on one of them first", None)
@@ -252,7 +251,7 @@ fn show(app: &App, req: &Req, slug: &str) -> Resp {
     let run = || -> Result<Resp, Resp> {
         let mut s = app.lock();
         let now = s.now();
-        let who = caller_of(&s.sync, req, now)?;
+        let who = caller_of(&s.sync, req)?;
         let p = find_as_party(&mut s.sync, &who, slug)?;
         if p.gone(now) {
             p.state = State::Dead;
@@ -269,7 +268,7 @@ pub fn destroy(app: &App, req: &Req, slug: &str) -> Resp {
     let run = || -> Result<Resp, Resp> {
         let mut s = app.lock();
         let now = s.now();
-        let who = caller_of(&s.sync, req, now)?;
+        let who = caller_of(&s.sync, req)?;
         let p = find_as_party(&mut s.sync, &who, slug)?;
         if p.gone(now) || p.state == State::Done {
             p.state = State::Dead;
@@ -302,7 +301,7 @@ pub fn step(app: &App, req: &mut Req, slug: &str, side: Side, field: &'static st
         };
         let mut s = app.lock();
         let now = s.now();
-        let who = caller_of(&s.sync, req, now)?;
+        let who = caller_of(&s.sync, req)?;
         if field == "joiner_message" {
             burst(&mut s.sync, &caller(req), "pairing_joins", now)?;
         }

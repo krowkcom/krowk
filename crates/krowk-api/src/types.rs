@@ -231,14 +231,10 @@ pub struct CliAuthorization {
     pub workspace: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
     pub workspace_name: String,
-    /// Whether the approval asks for the person's credential again.
-    #[serde(default, deserialize_with = "nullable", skip_serializing_if = "std::ops::Not::not")]
-    pub fresh: bool,
 }
 
-/// What a browser login is for, sent with it so the approval page can say:
-/// a plain sign-in, or the fresh sign-in a destructive device-list change
-/// needs, by which change.
+/// What a browser login is for, sent with it so the approval page can name
+/// it: a plain sign-in, or the device-list change it is made for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginAction {
     Login,

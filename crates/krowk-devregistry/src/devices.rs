@@ -9,7 +9,7 @@
 //! every client would take it: the stand-in and the clients cannot drift,
 //! because they are the same code. What the registry adds on top — the
 //! entry posted by one of its signers, exactly the wraps a rotation needs,
-//! a fresh sign-in for a start-over and for everything but an add — is
+//! is
 //! checked here as DeviceList#append! checks it. A post lands whole or not
 //! at all.
 //!
@@ -30,13 +30,11 @@ use crate::encode::Json;
 use crate::errors::{error, invalid, parameter_missing};
 use crate::http::{Req, Resp};
 use crate::json::Value;
-use crate::store::{App, FRESH_SIGN_IN_KEY_MARKER, hex, person_for, rfc3339_nano, sha256_hex};
+use crate::store::{App, hex, person_for, rfc3339_nano, sha256_hex};
 use crate::sync::{SyncStore, burst, caller, check_signature, gate, signature_headers, unhex};
-use jiff::{SignedDuration, Timestamp};
+use jiff::Timestamp;
 use krowk_client::device_chain::{Action, Chain, Entry, Kind, SignedEntry};
 
-/// DeviceList::FRESH_SIGN_IN.
-pub const FRESH_SIGN_IN: SignedDuration = SignedDuration::from_mins(5);
 /// DeviceList::WRAP_BYTES: the client fixes the formats, the registry
 /// bounds them.
 const WRAP_BYTES: std::ops::RangeInclusive<usize> = 32..=512;
@@ -129,25 +127,22 @@ fn refused(message: &str) -> Resp {
     error(422, "device_list_invalid", message, None)
 }
 
-/// Who a sync call is: the person, the key's digest, and whether the key
-/// carries a sign-in from the last five minutes.
+/// Who a sync call is: the person and the key's digest.
 pub struct Caller {
     pub person: String,
     pub key: String,
-    pub fresh: bool,
 }
 
 /// The key and the paid gate, then the person behind the key. A key
 /// revoked with its device is refused like any unknown key.
-pub fn caller_of(s: &SyncStore, req: &Req, now: Timestamp) -> Result<Caller, Resp> {
+pub fn caller_of(s: &SyncStore, req: &Req) -> Result<Caller, Resp> {
     gate(req)?;
     let token = token(req).unwrap_or_default();
     let key = sha256_hex(token.as_bytes());
     if s.revoked_keys.contains(&key) {
         return Err(crate::errors::unauthorized());
     }
-    let fresh = token.contains(FRESH_SIGN_IN_KEY_MARKER) || s.stamps.get(&key).is_some_and(|at| now.duration_since(*at) <= FRESH_SIGN_IN);
-    Ok(Caller { person: person_for(&token), key, fresh })
+    Ok(Caller { person: person_for(&token), key })
 }
 
 fn device_revoked(id: &str) -> Resp {
@@ -167,8 +162,11 @@ pub fn signed_device(s: &mut SyncStore, req: &Req, caller: &Caller, body: &[u8])
     if !listed.active() {
         return Err(device_revoked(&device));
     }
+    // The recovery kit posts from whichever machine holds its words, on
+    // that machine's key, as the registry lets it.
     if let Some(bound) = s.bindings.get(&caller.key)
         && *bound != device
+        && listed.kind != "recovery"
     {
         return Err(error(403, "device_mismatch", &format!("this key speaks for device {bound}, not {device}"), None));
     }
@@ -196,7 +194,7 @@ pub fn claim(app: &App, req: &mut Req) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let body = read_body(req)?;
         let mut s = app.lock();
-        let who = caller_of(&s.sync, req, s.now())?;
+        let who = caller_of(&s.sync, req)?;
         let device = signed_device(&mut s.sync, req, &who, &body)?;
         s.sync.bindings.insert(who.key.clone(), device.clone());
         let key_id = format!("key_{}", &who.key[..8]);
@@ -220,7 +218,7 @@ fn read_body(req: &mut Req) -> Result<Vec<u8>, Resp> {
 pub fn show(app: &App, req: &Req) -> Resp {
     let run = || -> Result<Resp, Resp> {
         let s = app.lock();
-        let caller = caller_of(&s.sync, req, s.now())?;
+        let caller = caller_of(&s.sync, req)?;
         let after = match req.query_get("after").as_str() {
             "" => -1,
             a => a.parse::<i64>().map_err(|_| invalid("after", "must be a seq"))?,
@@ -321,7 +319,7 @@ pub fn create(app: &App, req: &mut Req, start_over: bool) -> Resp {
         let body = read_body(req)?;
         let mut s = app.lock();
         let now = s.now();
-        let who = caller_of(&s.sync, req, now)?;
+        let who = caller_of(&s.sync, req)?;
         burst(&mut s.sync, &caller(req), "device_list_inits", now)?;
         let p = Post { start_over, ..post(&body)? };
         let first = p.entries.first().ok_or_else(|| refused("sync init posts the list's first entry, adding the device setting sync up"))?;
@@ -363,7 +361,7 @@ fn append_entries(app: &App, req: &mut Req) -> Resp {
         let body = read_body(req)?;
         let mut s = app.lock();
         let now = s.now();
-        let who = caller_of(&s.sync, req, now)?;
+        let who = caller_of(&s.sync, req)?;
         burst(&mut s.sync, &caller(req), "device_list_entries", now)?;
         let signer = signed_device(&mut s.sync, req, &who, &body)?;
         let p = post(&body)?;
@@ -388,11 +386,6 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
         return Err(refused(&format!("a post carries 1 to {MAX_ENTRIES_PER_POST} entries")));
     }
     let decoded = p.entries.iter().map(|e| Entry::decode(&e.bytes).map_err(|e| refused(&e.0))).collect::<Result<Vec<_>, _>>()?;
-    // A first list, and an add, need only a key with a person behind it;
-    // a start-over and every other change need a fresh sign-in.
-    if ((init && p.start_over) || decoded.iter().any(|e| e.action != Action::Add)) && !caller.fresh {
-        return Err(error(403, "fresh_sign_in_required", "this needs a sign-in in the browser from the last 5 minutes, with your password given again — run `krowk auth login --fresh` and try again", None));
-    }
     let mut person = s.people.get(&caller.person).cloned().unwrap_or_default();
     let mut revoke: Vec<String> = Vec::new();
     if init && !person.entries.is_empty() {
@@ -543,7 +536,7 @@ pub fn user_key(app: &App, req: &mut Req, id: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let body = read_body(req)?;
         let mut s = app.lock();
-        let caller = caller_of(&s.sync, req, s.now())?;
+        let caller = caller_of(&s.sync, req)?;
         let device = signed_device(&mut s.sync, req, &caller, &body)?;
         if !device.eq_ignore_ascii_case(id) {
             return Err(error(403, "device_mismatch", &format!("the request names device {id} but is signed by device {device}"), None));

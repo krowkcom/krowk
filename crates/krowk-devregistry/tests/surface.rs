@@ -146,15 +146,15 @@ fn the_paste_block_is_built_from_the_artifact() {
     assert!(str_of(&p["paste"], "markdown").contains(" · expires "), "{p}");
 }
 
-/// A login says what it is for, and whether it asks for the password
-/// again; one that names nothing, or something unknown, is a plain login.
+/// A login says what it is for; one that names nothing, or something
+/// unknown, is a plain login.
 #[test]
-fn a_browser_login_carries_its_action_and_fresh() {
+fn a_browser_login_carries_its_action() {
     let s = Server::new();
-    let r = request("POST", &s.at("/v1/cli/authorizations?action=remove_device&fresh=true"), "", "", "").json();
-    assert_eq!((str_of(&r, "action"), r["fresh"].clone()), ("remove_device", serde_json::json!(true)), "{r}");
+    let r = request("POST", &s.at("/v1/cli/authorizations?action=remove_device"), "", "", "").json();
+    assert_eq!(str_of(&r, "action"), "remove_device", "{r}");
     let plain = request("POST", &s.at("/v1/cli/authorizations?action=wipe_everything"), "", "", "").json();
-    assert_eq!((str_of(&plain, "action"), plain["fresh"].clone()), ("login", serde_json::json!(false)), "{plain}");
+    assert_eq!(str_of(&plain, "action"), "login", "{plain}");
 }
 
 fn open_login(s: &Server) -> (String, String) {

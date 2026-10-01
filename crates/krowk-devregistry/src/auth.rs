@@ -79,7 +79,6 @@ pub fn show_key(req: &Req) -> Resp {
 /// Opens a browser login and answers both halves. No Idempotency-Key: a lost
 /// response means nobody saw the code, so the login charges nothing and lapses.
 pub fn create_cli_authorization(app: &App, req: &Req, site: &str) -> Resp {
-    let fresh = matches!(req.query_get("fresh").as_str(), "true" | "1");
     // What the login is for, for the approval page to name; one the
     // stand-in does not know reads as a plain login, as an older registry
     // ignores it.
@@ -107,7 +106,6 @@ pub fn create_cli_authorization(app: &App, req: &Req, site: &str) -> Resp {
         key_id: String::new(),
         workspace: String::new(),
         spent: false,
-        fresh,
         action,
     };
     let body = Json::map([
@@ -119,7 +117,6 @@ pub fn create_cli_authorization(app: &App, req: &Req, site: &str) -> Resp {
         ("verification_url", Json::str(format!("{site}/_approve/cli/authorizations/new?code={}", auth.code))),
         ("interval", Json::Int(CLI_AUTHORIZATION_INTERVAL)),
         ("expires_at", Json::str(rfc3339(auth.created_at + CLI_AUTHORIZATION_LIFETIME))),
-        ("fresh", Json::Raw(auth.fresh.to_string())),
         ("action", Json::str(&auth.action)),
     ]);
     s.authorizations.insert(auth.slug.clone(), auth);
@@ -211,7 +208,6 @@ pub fn decide_cli_authorization(app: &App, code: &str, approve: bool) -> Resp {
     if s.authorization_expired(&s.authorizations[&slug]) {
         return error(410, "expired", "This authorization has expired.", None);
     }
-    let now = s.now();
     let store = &mut *s;
     let a = store.authorizations.get_mut(&slug).unwrap();
     if a.state != PENDING {
@@ -222,9 +218,6 @@ pub fn decide_cli_authorization(app: &App, code: &str, approve: bool) -> Resp {
         a.token = format!("krowk_sk_{}", &random_token()[..32]);
         a.key_id = format!("key_{}", &sha256_hex(a.token.as_bytes())[..8]);
         a.workspace = workspace_for(&a.token);
-        if a.fresh {
-            store.sync.stamps.insert(sha256_hex(a.token.as_bytes()), now);
-        }
         APPROVED
     } else {
         a.state = DENIED;

@@ -23,9 +23,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// One person's two machines: two keys, one workspace (`person_for`). The
-/// laptop's has just signed in, as `sync init` needs.
-const LAPTOP: &str = "krowk_sk_pairing#laptop-fresh";
+/// One person's two machines: two keys, one workspace (`person_for`).
+const LAPTOP: &str = "krowk_sk_pairing#laptop";
 const DESKTOP: &str = "krowk_sk_pairing#desktop";
 
 fn root(name: &str) -> PathBuf {

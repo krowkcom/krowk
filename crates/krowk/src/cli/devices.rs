@@ -49,8 +49,8 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
 /// `krowk devices remove NAME` (canon, engineering/devices.md → Removing a
 /// device): the device is taken off the person's list and the user key
 /// rotated away from it, in one post. Before anything is asked of the
-/// person, the prompt names every device the new key goes to; then a fresh
-/// sign-in, then the removal entry signed by this device, generation g+1
+/// person, the prompt names every device the new key goes to; then the
+/// removal entry signed by this device, generation g+1
 /// wrapped to every device left and the kit, and g wrapped under g+1. The
 /// other devices take the new generation at their next sync, verifying it
 /// against their pins.
@@ -92,7 +92,7 @@ fn removals<'a>(target: &'a ChainDevice, revoked: &[&'a ChainDevice], me: Device
 /// rotated to everything else on the list. `krowk sync status` comes here
 /// too, to finish a dashboard Revoke.
 pub(super) fn finish(ctx: &mut Ctx, me: &super::chain::Me, v: &super::chain::Verified, targets: &[&ChainDevice]) -> Result<(), Error> {
-    use super::chain::{self, ask, describe, fresh_sign_in, now, post_of};
+    use super::chain::{self, ask, describe, now, post_of};
     let gone = |d: &ChainDevice| targets.iter().any(|t| t.id() == d.id());
     let names = targets.iter().map(|t| format!("'{}'", printable(&t.name))).collect::<Vec<_>>().join(" and ");
     let kept: Vec<String> = v.chain.devices().iter().filter(|d| !gone(d)).map(|d| describe(d, &v.entries)).collect();
@@ -103,13 +103,11 @@ pub(super) fn finish(ctx: &mut Ctx, me: &super::chain::Me, v: &super::chain::Ver
     if !ask(ctx, "Remove?")? {
         return Err(fail("selection_cancelled", "not confirmed, so nothing was removed"));
     }
-    let fresh = fresh_sign_in(ctx, "Removing a device changes which devices can read your sessions", krowk_api::LoginAction::RemoveDevice)?;
-    // The new key speaks for this device, as the one it replaces did.
-    chain::claim(&fresh, me)?;
+    let client = chain::signed_in(ctx, krowk_api::LoginAction::RemoveDevice)?;
     let keys = chain::held_keys(ctx)?.ok_or_else(chain::not_set_up)?;
     let changes = targets.iter().map(|d| Change::Remove(Subject::of(d))).collect();
     let (next, batch) = v.chain.batch(keys.newest(), changes, me.device.id(), &me.signing, now()).map_err(|e| fail("sync_setup_failed", e.0))?;
-    me.sign(&fresh).append_device_list(&post_of(&batch)).map_err(|e| match e.code().as_str() {
+    me.sign(&client).append_device_list(&post_of(&batch)).map_err(|e| match e.code().as_str() {
         "device_list_stale" => fail("device_list_stale", "your device list changed while this ran — nothing was removed; run `krowk devices remove` again"),
         _ => e,
     })?;
