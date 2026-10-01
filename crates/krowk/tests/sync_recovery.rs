@@ -221,3 +221,17 @@ fn d7_a_removed_device_cannot_open_a_session_sealed_after_its_removal() {
     assert!(!refused.status.success(), "and the desktop is off the list: {}", String::from_utf8_lossy(&refused.stdout));
     let _ = std::fs::remove_dir_all(&r);
 }
+
+/// D6: a kit skipped at [s] is warned about once, where the person decides
+/// — the summary after it does not say it again.
+#[test]
+fn d6_a_skipped_kit_is_warned_about_once() {
+    let (_r, api) = registry();
+    let r = root("skip");
+    let out = krowk(&r.join("laptop"), &api, LAPTOP, &["sync", "init"], "s", "");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(said.matches("no recovery kit").count(), 1, "{said}");
+    assert!(said.contains("sync is set up"), "{said}");
+    let _ = std::fs::remove_dir_all(&r);
+}

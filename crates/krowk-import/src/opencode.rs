@@ -648,6 +648,7 @@ impl<'a> Builder<'a> {
                 model: self.model.clone(),
                 provider: first_non_empty(&self.provider, HARNESS).into(),
                 harness: HARNESS.into(),
+                ..Session::default()
             },
             binding: binding(&self.r.id),
             parent: (!self.parent_id.is_empty() && self.parent_id != self.r.id).then(|| binding(&self.parent_id)),
