@@ -145,10 +145,7 @@ impl ListPost {
     fn body(&self) -> Value {
         let entries: Vec<Value> = self.entries.iter().map(|(e, s)| json!({ "entry": e, "signatures": s })).collect();
         let wraps: Vec<Value> = self.wraps.iter().map(|(d, w)| json!({ "device": d, "wrapped_key": w })).collect();
-        let mut list = json!({ "entries": entries, "links": self.links, "wraps": wraps });
-        if self.start_over {
-            list["start_over"] = json!(true);
-        }
+        let list = json!({ "entries": entries, "links": self.links, "wraps": wraps });
         json!({ "device_list": list })
     }
 }
@@ -433,12 +430,14 @@ impl Client {
     /// the registry's word, and trusted only once krowk-client has verified
     /// it against the pin.
     pub fn device_list(&self, after: Option<u64>) -> Result<DeviceList, Error> {
-        self.get(&after.map_or_else(|| "/device_list".to_string(), |a| format!("/device_list?after={a}")))
+        let devices = format!("{}/devices", self.user_path()?);
+        self.get(&after.map_or_else(|| devices.clone(), |a| format!("{devices}?after={a}")))
     }
 
-    /// Every device the person's list has named, removed ones too.
+    /// Every device the person's list has named, removed ones too, with its
+    /// revocation state: the same read as the list.
     pub fn listed_devices(&self) -> Result<Vec<ListedDevice>, Error> {
-        Ok(self.get::<ListedDevices>("/devices")?.devices)
+        Ok(self.get::<ListedDevices>(&format!("{}/devices", self.user_path()?))?.devices)
     }
 
     /// The whole device list, every page, from seq 0.
@@ -458,8 +457,10 @@ impl Client {
 
     /// `krowk sync init`'s post: seq 0, signed by the first device. Once: an
     /// init that landed and is sent again is refused as `chain_exists`.
+    /// A start-over (`post.start_over`) goes to `…/devices/reset`.
     pub fn init_device_list(&self, post: &ListPost) -> Result<Value, Error> {
-        Ok(self.call_as_device("POST", "/device_list", Some(post.body()), 1, None)?.0)
+        let path = format!("{}/devices{}", self.user_path()?, if post.start_over { "/reset" } else { "" });
+        Ok(self.call_as_device("POST", &path, Some(post.body()), 1, None)?.0)
     }
 
     /// Appends to the device list, signed by the device that signed every
@@ -467,7 +468,7 @@ impl Client {
     /// sent again is refused as `device_list_stale` — read the list to see
     /// whether it did.
     pub fn append_device_list(&self, post: &ListPost) -> Result<Value, Error> {
-        Ok(self.call_as_device("POST", "/device_list/entries", Some(post.body()), 1, None)?.0)
+        Ok(self.call_as_device("POST", &format!("{}/devices", self.user_path()?), Some(post.body()), 1, None)?.0)
     }
 
     /// This machine's key claims the device it speaks for, signed by it: the
@@ -479,38 +480,46 @@ impl Client {
 
     /// The user key's generations, and those wrapped to this device.
     pub fn user_key(&self) -> Result<UserKeyWraps, Error> {
-        Ok(self.call_as_device("GET", "/user_key", None, ATTEMPTS, None)?.0)
+        let path = format!("{}/devices/{}/key", self.user_path()?, slug_path(&self.device_signer()?.device()));
+        Ok(self.call_as_device("GET", &path, None, ATTEMPTS, None)?.0)
     }
 
     /// Opens a pairing from this device. Once: a pairing is one per person,
     /// so an open that landed and is sent again is `pairing_open`.
     pub fn open_pairing(&self) -> Result<Pairing, Error> {
-        Ok(self.call_as_device("POST", "/pairings", Some(json!({ "pairing": {} })), 1, None)?.0)
+        Ok(self.call_as_device("POST", &format!("{}/pairing", self.user_path()?), Some(json!({ "pairing": {} })), 1, None)?.0)
     }
 
     /// The one open pairing of the person this key speaks for, as a new
     /// machine finds it.
     pub fn find_open_pairing(&self) -> Result<Pairing, Error> {
-        self.get("/open_pairing")
+        self.get(&format!("{}/pairing", self.user_path()?))
     }
 
+    /// The person's one pairing, as either side reads it. `id` is the one
+    /// the caller is in, checked against what comes back: a pairing that
+    /// has since been replaced is not this one.
     pub fn show_pairing(&self, id: &str) -> Result<Pairing, Error> {
-        self.get(&format!("/pairings/{}", slug_path(id)))
+        let p: Pairing = self.get(&format!("{}/pairing", self.user_path()?))?;
+        if p.id != id {
+            return Err(crate::fail("pairing_gone", format!("{id} has ended — run `krowk devices add` again for a new code")));
+        }
+        Ok(p)
     }
 
     /// One step, sent once and never retried: a step sent twice is out of
     /// turn, and ends the pairing. A caller whose answer was lost reads the
     /// pairing (`show_pairing`) to see whether the step landed.
-    pub fn pairing_step(&self, id: &str, step: PairingStep, message: &[u8]) -> Result<Pairing, Error> {
+    pub fn pairing_step(&self, step: PairingStep, message: &[u8]) -> Result<Pairing, Error> {
         let (route, field) = step.route();
-        let path = format!("/pairings/{}/{route}", slug_path(id));
+        let path = format!("{}/pairing/{route}", self.user_path()?);
         let body = Some(json!({ "pairing": { field: crate::client::hex(message) } }));
         Ok(if step.signed() { self.call_as_device("PUT", &path, body, 1, None)? } else { self.call("PUT", &path, body, 1, None)? }.0)
     }
 
     /// Ends a pairing for good: a check that failed, a no, a ^C.
-    pub fn end_pairing(&self, id: &str) -> Result<(), Error> {
-        let url = format!("{}/pairings/{}", self.base_url, slug_path(id));
+    pub fn end_pairing(&self) -> Result<(), Error> {
+        let url = format!("{}{}/pairing", self.base_url, self.user_path()?);
         self.request_raw("DELETE", &url, None, 1, None).map(|_| ())
     }
 

@@ -14,8 +14,8 @@
 //! speaks first and there are five messages. Here each is a step, in order,
 //! each written once:
 //!
-//!   1. A opens it, signed                    POST /v1/pairings       → open
-//!   2. B finds it                            GET  /v1/open_pairing
+//!   1. A opens it, signed                    POST /v1/users/:user_id/pairing  → open
+//!   2. B finds it                            GET  /v1/users/:user_id/pairing
 //!   3. B joins with its hello                PUT  …/join             joiner_message
 //!   4. A answers with its SPAKE2 message     PUT  …/answer           initiator_message
 //!   5. B confirms                            PUT  …/confirmation     joiner_confirmation → confirmed
@@ -85,6 +85,9 @@ pub struct Pairing {
     /// The key B joined with, by digest: its later steps are that key's.
     pub joiner_key: Option<String>,
     pub expires_at: Timestamp,
+    /// When it was opened among the registry's records, so the person's
+    /// latest is the one a later open made, whatever the clock says.
+    pub order: usize,
 }
 
 impl Pairing {
@@ -137,7 +140,7 @@ fn blob(body: &[u8], field: &str, max: usize) -> Result<Vec<u8>, Resp> {
     Ok(b)
 }
 
-/// POST /v1/pairings: A's open, signed by a device on the person's list —
+/// POST /v1/users/:user_id/pairing: A's open, signed by a device on the person's list —
 /// not the recovery kit. One live pairing per person, else `409
 /// pairing_open`; one past its window is ended first.
 pub fn open(app: &App, req: &mut Req) -> Resp {
@@ -173,7 +176,9 @@ pub fn open(app: &App, req: &mut Req) -> Resp {
             joiner_ack: None,
             joiner_key: None,
             expires_at: now + LIFETIME,
+            order: s.sync.seq + 1,
         };
+        s.sync.seq += 1;
         let resp = Resp::json(201, &serialize(&p));
         s.sync.pairings.insert(p.slug.clone(), p);
         Ok(resp)
@@ -181,11 +186,32 @@ pub fn open(app: &App, req: &mut Req) -> Resp {
     run().unwrap_or_else(|r| r)
 }
 
-/// GET /v1/open_pairing: B's way in, the one open pairing of the person
+/// The person's one pairing — the latest they opened — by slug; empty when
+/// they have none. Every call under `/v1/users/:user_id/pairing` is about it.
+pub fn latest(app: &App, req: &Req) -> String {
+    let person = crate::store::person_for(&crate::auth::token(req).unwrap_or_default());
+    let s = app.lock();
+    s.sync.pairings.values().filter(|p| p.person == person).max_by_key(|p| p.order).map(|p| p.slug.clone()).unwrap_or_default()
+}
+
+/// GET /v1/users/:user_id/pairing: to either party, their pairing as
+/// `show` reads it; to anyone else of the person, the open one still
+/// waiting for a joiner, as `find_open` finds it.
+pub fn read(app: &App, req: &Req) -> Resp {
+    let slug = latest(app, req);
+    let is_party = {
+        let s = app.lock();
+        let now = s.now();
+        caller_of(&s.sync, req, now).ok().zip(s.sync.pairings.get(&slug)).is_some_and(|(who, p)| party(&s.sync, &who, p))
+    };
+    if is_party { show(app, req, &slug) } else { find_open(app, req) }
+}
+
+/// B's way in, the one open pairing of the person
 /// the new machine signed in as, still waiting for a joiner. The code is
 /// never sent here: it is how the two sides check each other, not how B
 /// finds the pairing. A key alone: B is not a device yet.
-pub fn find_open(app: &App, req: &Req) -> Resp {
+fn find_open(app: &App, req: &Req) -> Resp {
     let run = || -> Result<Resp, Resp> {
         let s = app.lock();
         let now = s.now();
@@ -219,10 +245,10 @@ fn find_as_party<'a>(s: &'a mut crate::sync::SyncStore, who: &Caller, slug: &str
     find(s, who, slug)
 }
 
-/// GET /v1/pairings/:id: either side's poll. A finished pairing reads
+/// Either side's poll. A finished pairing reads
 /// until its window closes, so A's poll sees the ack that finished it; a
 /// failed or lapsed one never does.
-pub fn show(app: &App, req: &Req, slug: &str) -> Resp {
+fn show(app: &App, req: &Req, slug: &str) -> Resp {
     let run = || -> Result<Resp, Resp> {
         let mut s = app.lock();
         let now = s.now();
@@ -237,7 +263,7 @@ pub fn show(app: &App, req: &Req, slug: &str) -> Resp {
     run().unwrap_or_else(|r| r)
 }
 
-/// DELETE /v1/pairings/:id: either side's failure report — a MAC that did
+/// DELETE /v1/users/:user_id/pairing: either side's failure report — a MAC that did
 /// not check, a person who said no, a ^C. Ended at once, and for good.
 pub fn destroy(app: &App, req: &Req, slug: &str) -> Resp {
     let run = || -> Result<Resp, Resp> {

@@ -71,7 +71,7 @@ pub fn show_key(req: &Req) -> Resp {
             // Their email, which the new machine names them by; the stand-in
             // has none, so it makes one of the person's id. Also a guess at a
             // field KeySerializer lacks.
-            ("email", Json::str(format!("{}@example.test", &person_for(&token)[..8]))),
+            ("email", Json::str(format!("{}@example.test", &person_for(&token)[4..12]))),
         ]),
     )
 }

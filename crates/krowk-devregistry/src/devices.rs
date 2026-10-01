@@ -213,8 +213,9 @@ fn read_body(req: &mut Req) -> Result<Vec<u8>, Resp> {
     req.read_body(1 << 20).map_err(|_| error(400, "bad_request", "the body could not be read", None))
 }
 
-/// GET /v1/device_list: the chain from `after` on, exactly as posted, with
-/// when each entry was received, the epoch and the head. Not signed: a
+/// GET /v1/users/:user_id/devices: the chain from `after` on, exactly as
+/// posted, with when each entry was received, the epoch and the head — and
+/// every device it has named, with its revocation state. Not signed: a
 /// machine recovering has no device to sign as yet.
 pub fn show(app: &App, req: &Req) -> Resp {
     let run = || -> Result<Resp, Resp> {
@@ -243,7 +244,8 @@ pub fn show(app: &App, req: &Req) -> Resp {
                 ])
             })
             .collect();
-        Ok(Resp::json(200, &Json::map([("epoch", Json::Int(person.epoch as i64)), ("entries", Json::Arr(entries)), ("head", head), ("next", next)])))
+        let devices = person.devices.iter().map(serialize).collect();
+        Ok(Resp::json(200, &Json::map([("epoch", Json::Int(person.epoch as i64)), ("entries", Json::Arr(entries)), ("head", head), ("next", next), ("devices", Json::Arr(devices))])))
     };
     run().unwrap_or_else(|r| r)
 }
@@ -305,22 +307,23 @@ fn post(body: &[u8]) -> Result<Post, Resp> {
         }
         wraps.push((device, wrap("wrapped_key", w.get("wrapped_key").map(|m| &m.value))?));
     }
-    let start_over = matches!(field("start_over"), Some(Value::Bool(true))) || matches!(field("start_over"), Some(Value::Str(s)) if s == "true");
-    Ok(Post { entries, links, wraps, start_over })
+    Ok(Post { entries, links, wraps, start_over: false })
 }
 
-/// POST /v1/device_list: `krowk sync init`. Signed by the first device the
-/// first entry adds, whose key the registry has only from the entry; always
-/// a fresh sign-in; `409 chain_exists` for a person with a chain, unless it
-/// is a start-over, which makes a new epoch.
-pub fn create(app: &App, req: &mut Req) -> Resp {
+/// POST /v1/users/:user_id/devices for a person with no list yet: `krowk
+/// sync init`; and POST …/devices/reset (`start_over`), which replaces the
+/// person's list with a new epoch. Signed by the first device the first
+/// entry adds, whose key the registry has only from the entry; always a
+/// fresh sign-in; `409 chain_exists` for a person with a chain, unless it
+/// is a start-over.
+pub fn create(app: &App, req: &mut Req, start_over: bool) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let body = read_body(req)?;
         let mut s = app.lock();
         let now = s.now();
         let who = caller_of(&s.sync, req, now)?;
         burst(&mut s.sync, &caller(req), "device_list_inits", now)?;
-        let p = post(&body)?;
+        let p = Post { start_over, ..post(&body)? };
         let first = p.entries.first().ok_or_else(|| refused("sync init posts the list's first entry, adding the device setting sync up"))?;
         let e = Entry::decode(&first.bytes).map_err(|e| refused(&e.0))?;
         let device = e.subjects.iter().find(|s| s.kind == Kind::Device).filter(|_| e.seq == 0).ok_or_else(|| refused("sync init posts the list's first entry, adding the device setting sync up"))?;
@@ -338,9 +341,24 @@ pub fn create(app: &App, req: &mut Req) -> Resp {
     run().unwrap_or_else(|r| r)
 }
 
-/// POST /v1/device_list/entries: an append, signed by the device that
-/// signed every entry of it.
-pub fn append_entries(app: &App, req: &mut Req) -> Resp {
+/// POST /v1/users/:user_id/devices for a person with a list: an append,
+/// signed by the device that signed every entry of it.
+/// POST /v1/users/:user_id/devices: an init for a person with no list yet,
+/// an append for one with a list.
+/// Which, by the post's first entry: seq 0 starts a list (`409
+/// chain_exists` if there is one), any other extends it.
+pub fn post_devices(app: &App, req: &mut Req) -> Resp {
+    let body = match read_body(req) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let starts = post(&body).ok().and_then(|p| p.entries.first().and_then(|e| Entry::decode(&e.bytes).ok())).is_some_and(|e| e.seq == 0);
+    let mut cursor = std::io::Cursor::new(body);
+    let mut inner = Req { method: req.method.clone(), path: req.path.clone(), query: req.query.clone(), headers: req.headers.clone(), host: req.host.clone(), remote: req.remote.clone(), body: &mut cursor };
+    if starts { create(app, &mut inner, false) } else { append_entries(app, &mut inner) }
+}
+
+fn append_entries(app: &App, req: &mut Req) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let body = read_body(req)?;
         let mut s = app.lock();
@@ -516,15 +534,18 @@ fn remove(person: &mut Person, id: &str, seq: u64, now: Timestamp, revoke: &mut 
     revoke.push(id.to_owned());
 }
 
-/// GET /v1/user_key: every generation's id and its wrap of the one before,
-/// and the generations wrapped to the signing device — its own and no
-/// other's.
-pub fn user_key(app: &App, req: &mut Req) -> Resp {
+/// GET /v1/users/:user_id/devices/:id/key: every generation's id and its
+/// wrap of the one before, and the generations wrapped to device `:id` —
+/// which must be the signing device: its own and no other's.
+pub fn user_key(app: &App, req: &mut Req, id: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let body = read_body(req)?;
         let mut s = app.lock();
         let caller = caller_of(&s.sync, req, s.now())?;
         let device = signed_device(&mut s.sync, req, &caller, &body)?;
+        if !device.eq_ignore_ascii_case(id) {
+            return Err(error(403, "device_mismatch", &format!("the request names device {id} but is signed by device {device}"), None));
+        }
         let person = &s.sync.people[&caller.person];
         let generations = person
             .generations

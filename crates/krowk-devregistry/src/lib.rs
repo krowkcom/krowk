@@ -250,7 +250,8 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         (_, ["v1", "runs", slug, "artifacts"]) if get => runs::artifacts(a, req, slug),
         (_, ["v1", "devices"]) if get => sync::list_devices(a, req),
         ("POST", ["v1", "devices"]) => sync::signed(a, req, sync::register_device),
-        (_, ["v1", "device_approvals", ..] | ["v1", "device_list", ..] | ["v1", "user_key"] | ["v1", "open_pairing"] | ["v1", "pairings", ..]) => devices_route(a, req, &m, segs.as_slice()),
+        (_, ["v1", "device_approvals", ..]) => sync::sync_reset(),
+        (_, ["v1", "users", user, rest @ ..]) => users_route(a, req, &m, user, rest),
         (_, ["v1", "sessions"]) if get => sync::list_sessions(a, req),
         (_, ["v1", "sessions", id]) if get => sync::show_session(a, req, id),
         ("PUT" | "PATCH", ["v1", "sessions", id]) => sync::signed(a, req, |a, req, by| sync::put_session(a, req, id, by)),
@@ -270,29 +271,33 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
     }
 }
 
-/// A person's devices: the device list, the user key and the pairing
-/// mailbox — and the approval mailbox, gone (devices.md → Clean break), which
-/// a client from before pairing is told so whatever it asks.
-fn devices_route(a: &App, req: &mut Req, m: &str, segs: &[&str]) -> Resp {
+/// `/v1/users/:user_id/…`: a person's device list, the user key wrapped to
+/// each device, and their one pairing. `:user_id` is the key's own person
+/// (`GET /v1/key`'s `user_id`); any other is not there to be found.
+fn users_route(a: &App, req: &mut Req, m: &str, user: &str, rest: &[&str]) -> Resp {
+    if auth::token(req).is_some_and(|t| store::person_for(&t) != user) {
+        return errors::not_found();
+    }
     let get = m == "GET" || m == "HEAD";
-    match (m, segs) {
-        (_, ["v1", "device_approvals", ..]) => sync::sync_reset(),
-        (_, ["v1", "device_list"]) if get => devices::show(a, req),
-        ("POST", ["v1", "device_list"]) => devices::create(a, req),
-        ("POST", ["v1", "device_list", "entries"]) => devices::append_entries(a, req),
-        (_, ["v1", "user_key"]) if get => devices::user_key(a, req),
-        (_, ["v1", "open_pairing"]) if get => pairings::find_open(a, req),
-        ("POST", ["v1", "pairings"]) => pairings::open(a, req),
-        (_, ["v1", "pairings", id]) if get => pairings::show(a, req, id),
-        ("DELETE", ["v1", "pairings", id]) => pairings::destroy(a, req, id),
-        ("PUT" | "PATCH", ["v1", "pairings", id, step]) => match *step {
-            "join" => pairings::step(a, req, id, pairings::Side::Joiner, "joiner_message"),
-            "answer" => pairings::step(a, req, id, pairings::Side::Initiator, "initiator_message"),
-            "confirmation" => pairings::step(a, req, id, pairings::Side::Joiner, "joiner_confirmation"),
-            "reply" => pairings::step(a, req, id, pairings::Side::Initiator, "sealed_reply"),
-            "acknowledgement" => pairings::step(a, req, id, pairings::Side::Joiner, "joiner_ack"),
-            _ => no_such_endpoint(),
-        },
+    match (m, rest) {
+        (_, ["devices"]) if get => devices::show(a, req),
+        ("POST", ["devices"]) => devices::post_devices(a, req),
+        ("POST", ["devices", "reset"]) => devices::create(a, req, true),
+        (_, ["devices", id, "key"]) if get => devices::user_key(a, req, id),
+        ("POST", ["pairing"]) => pairings::open(a, req),
+        (_, ["pairing"]) if get => pairings::read(a, req),
+        ("DELETE", ["pairing"]) => pairings::destroy(a, req, &pairings::latest(a, req)),
+        ("PUT" | "PATCH", ["pairing", step]) => {
+            let (side, field) = match *step {
+                "join" => (pairings::Side::Joiner, "joiner_message"),
+                "answer" => (pairings::Side::Initiator, "initiator_message"),
+                "confirmation" => (pairings::Side::Joiner, "joiner_confirmation"),
+                "reply" => (pairings::Side::Initiator, "sealed_reply"),
+                "acknowledgement" => (pairings::Side::Joiner, "joiner_ack"),
+                _ => return no_such_endpoint(),
+            };
+            pairings::step(a, req, &pairings::latest(a, req), side, field)
+        }
         _ => no_such_endpoint(),
     }
 }
