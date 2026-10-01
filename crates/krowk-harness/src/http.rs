@@ -119,6 +119,14 @@ pub fn warm() {
     let _ = tls(true);
 }
 
+/// The shared TLS configuration, built now if it is not: what a `wss://`
+/// relay link is dialed with, so the relay is trusted as the provider APIs
+/// are. It may read the platform's roots, so it is called off any thread
+/// that must not wait.
+pub fn tls_config() -> Result<rustls::ClientConfig, String> {
+    tls(true)
+}
+
 /// Whether the shared TLS configuration is built: a turn the host daemon
 /// runs before its start has built it waits for `warm` off the thread
 /// rather than building it on the thread (R-LAG-9).

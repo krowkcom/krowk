@@ -63,9 +63,12 @@ libc = "0.2"
 # of our own on a listening socket. Measured with ruzstd below: see
 # full.size in crates/krowk-bench/budgets.toml.
 # `connect` (ticket 19): the host daemon's bridge and a remote viewer dial
-# the relay as clients. Plain `ws://` only — the client half of the same
-# tungstenite handshake, no TLS connector, so it adds no crate.
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake", "connect"] }
+# the relay as clients. `__rustls-tls` so they can dial `wss://` — the hosted
+# relay is only reachable over TLS — through a connector `sync::join` hands
+# the harness's own rustls configuration (ring, the platform verifier), so
+# the relay is trusted as the provider APIs are. It names no root store, so
+# it adds tokio-rustls, which reqwest links already, and nothing else.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake", "connect", "__rustls-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 # Direct paths over Tailscale (ticket 20) read tailscaled's LocalAPI —
 # `status` and `whois`, HTTP/1.0 on its unix socket — with the std socket

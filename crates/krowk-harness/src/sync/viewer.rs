@@ -190,6 +190,10 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
     let mut ws: Option<super::Ws> = None;
     let mut host = false;
     let mut retry = Instant::now();
+    // Why the relay could not be joined, said once on stderr as it comes or
+    // changes: otherwise a viewer that never reaches the relay only ever
+    // shows its prompts queued.
+    let mut unjoined: Option<String> = None;
     let mut heard = Instant::now();
     // Random per viewer run, so a restarted viewer's ids never read as a
     // repeat of an earlier run's at the host, which dedups by them.
@@ -268,6 +272,7 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                 let j = Join { relay: &o.relay, session: &o.session, env: &o.env, ticket: &ticket, device: o.device, signing: &o.signing, role: e2e::RELAY_ROLE_VIEWER, extra };
                 match super::join(j).await {
                     Ok((mut w, joined)) => {
+                        unjoined = None;
                         (on, moving, leaving) = (None, None, None);
                         let n = joined["link"].as_u64().unwrap_or(0);
                         let mut l = match link.take() { Some(l) => l.reconnect(n), None => ViewerLink::new(&key, raw, n) };
@@ -285,7 +290,13 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                         ws = Some(w);
                         heard = Instant::now();
                     }
-                    Err(_) => retry = Instant::now() + Duration::from_secs(1),
+                    Err(e) => {
+                        if unjoined.as_deref() != Some(e.as_str()) {
+                            eprintln!("krowk: not on the relay {}: {e}; trying again every second", o.relay);
+                            unjoined = Some(e);
+                        }
+                        retry = Instant::now() + Duration::from_secs(1);
+                    }
                 }
             }
             _ = tokio::time::sleep_until(reprobe.into()), if on.is_none() && moving.is_none() && !probing && !candidates.is_empty() && link.as_ref().is_some_and(|l| l.welcomed()) => {
