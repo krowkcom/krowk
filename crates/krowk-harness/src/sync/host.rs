@@ -24,7 +24,10 @@ use super::{Answer, Batch, In, Join, ViewerFrame, Welcome, DEAD, FRAME, PING};
 use crate::daemon::client::Client as Daemon;
 use crate::protocol::{ApprovalDecision, ApprovalRequest, Command, LiveEvent, LogBody, PermissionMode, StreamLine};
 use krowk_api::Client;
-use krowk_client::e2e::{self, AccountKey, DeviceId, SessionKey, SigningKey};
+use krowk_client::e2e::{self, DeviceId, SessionKey, SigningKey};
+use krowk_client::device_chain::Chain;
+use krowk_client::session_record;
+use krowk_client::user_key::UserKeys;
 use krowk_client::protocol::frame::{KIND_ACK, KIND_ROUTED, HEADER};
 use krowk_client::relay_link::{HostLink, Inbound};
 use serde_json::{json, Value};
@@ -61,7 +64,14 @@ pub struct Options {
     pub api: Arc<Client>,
     pub device: DeviceId,
     pub signing: SigningKey,
-    pub account: AccountKey,
+    /// The person's user key, by the generations this device holds: a new
+    /// session's key is sealed under the newest, an existing one opened
+    /// under the generation it names.
+    pub keys: UserKeys,
+    /// The device list as this device verified it: a session record is
+    /// taken up only when a device on it signed it, and a new session is
+    /// sealed only under the generation it names as current.
+    pub chain: Chain,
     pub session: String,
     pub title: String,
     pub cwd: String,
@@ -88,23 +98,33 @@ fn take(o: &Options) -> Result<(SessionKey, Writer, Held), String> {
     let id = &o.session;
     let raw = crate::daemon::ws::uuid(id);
     let (key, wrapped, index) = match o.api.show_sync_session(id) {
+        // Any of the person's devices may take a session up again — the
+        // handoff — but only one whose record a device listed now signed: a
+        // removed device's, planted under a generation it held, is never
+        // written under (`store::open_session_key`).
         Ok(s) => {
-            let key = e2e::unwrap_session_key(&e2e::unhex(&s.wrapped_key).ok_or("the session's wrapped key is not hex")?, &raw, &o.account).map_err(|e| e.to_string())?;
+            let key = store::open_session_key(&s, id, &o.keys, &o.chain, session_record::Signer::Listed)?;
             let index = store::open_index(&key, id, &s.sealed_index)?;
             (key, s.wrapped_key, index)
         }
-        Err(_) => {
+        // Published only when the registry has no session under the id; a
+        // failed write leaves it with none, and the next host publishes
+        // afresh.
+        Err(e) if e.status == 404 => {
             let key = SessionKey::generate();
-            let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &raw, &o.account));
+            let sealed_key = e2e::seal_session_key(&key, &raw, &o.keys, o.chain.generation()).map_err(|e| e.to_string())?;
+            let signature = session_record::sign(&raw, &sealed_key, session_record::SEAL_USER, o.keys.newest(), &o.signing).map_err(|e| e.to_string())?;
+            let wrapped = e2e::hex(&sealed_key);
             let index = Index { title: o.title.clone(), cwd: o.cwd.clone(), ..Index::default() };
             let sealed = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).expect("json")));
-            o.api.put_sync_session(id, &wrapped, Some(&sealed), None).map_err(|e| e.to_string())?;
+            o.api.put_sync_session(id, &wrapped, Some((&e2e::hex(&signature), &o.device.to_string())), Some(&sealed), None).map_err(|e| e.to_string())?;
             (key, wrapped, index)
         }
+        Err(e) => return Err(format!("the registry did not say whether it holds session {id} ({e}) — nothing was published; try again")),
     };
     let lease = o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| e.to_string())?;
     if lease.relay_ticket.is_empty() {
-        return Err("the registry issued no host ticket: register this device's signing key (krowk sync register)".into());
+        return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
     }
     let writer = Writer::take_up(o.api.clone(), key.clone(), id, wrapped, index, lease.fence)?;
     Ok((key, writer, Held { token: lease.token, fence: lease.fence, ticket: lease.relay_ticket }))
@@ -248,6 +268,8 @@ const PAGE: usize = 256;
 
 /// Runs the bridge until `stop`. `daemon` is a client of the daemon that
 /// says it answers approvals.
+// Legacy: the bridge's whole run loop, one select over every source. TODO: split into helpers and drop this allow.
+#[allow(clippy::cognitive_complexity)]
 pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool>, mut on_demand: mpsc::UnboundedReceiver<()>) -> Result<(), String> {
     let o = Arc::new(o);
     let taken = {
@@ -616,5 +638,163 @@ mod tests {
         }
         let Command::Prompt { permission_mode, .. } = under_session_settings(prompt(PermissionMode::Unhinged), PermissionMode::Plan) else { unreachable!() };
         assert_eq!(permission_mode, PermissionMode::Plan, "plan asks more, and stays");
+    }
+
+    use krowk_client::device_chain::{Change, Kind, Subject};
+    use krowk_client::user_key::UserKey;
+
+    const T0: u64 = 1_790_000_000;
+
+    struct Dev {
+        key: e2e::DeviceKey,
+        signing: SigningKey,
+    }
+
+    impl Dev {
+        fn new() -> Dev {
+            Dev { key: e2e::DeviceKey::generate(), signing: SigningKey::generate() }
+        }
+        fn subject(&self, name: &str) -> Subject {
+            Subject { kind: Kind::Device, name: name.into(), os: "linux".into(), device: self.key.public(), signing: self.signing.public() }
+        }
+        fn signing(&self) -> SigningKey {
+            SigningKey::from_secret(&*self.signing.secret_bytes()).unwrap()
+        }
+    }
+
+    /// A laptop and a desktop on one person's list, generation 1.
+    fn list(laptop: &Dev, desktop: &Dev) -> (Chain, UserKey) {
+        let (chain, start) = Chain::start(laptop.subject("laptop"), &laptop.signing, None, T0).unwrap();
+        let (chain, _) = chain.batch(&start.newest, vec![Change::Add(desktop.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 1).unwrap();
+        (chain, start.newest)
+    }
+
+    /// `d` on the stand-in registry at `url`, hosting `session`.
+    fn options(url: &str, d: &Dev, keys: UserKeys, chain: Chain, session: &str) -> Options {
+        let signer = e2e::DeviceSigner::new(d.key.id(), d.signing()).shared();
+        let api = Arc::new(Client::new(url, "krowk_sk_sync_host_take_000000000000").signed_by(signer));
+        api.register_device(&e2e::hex(&d.key.public().0), &e2e::hex(&d.signing.public().0), "host", &"0".repeat(32)).unwrap();
+        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), ttl: LEASE_TTL, keep: KEEP, direct: None }
+    }
+
+    fn registry() -> (krowk_devregistry::Running, String) {
+        let reg = krowk_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
+        let url = format!("{}/v1", reg.url());
+        (reg, url)
+    }
+
+    /// D8b: a session the laptop published is taken up again on the
+    /// desktop — the handoff, with no local record of it there — because a
+    /// device on the list signed its record.
+    #[test]
+    fn d8b_another_listed_device_takes_up_a_session_the_first_published() {
+        let (_reg, url) = registry();
+        let (laptop, desktop) = (Dev::new(), Dev::new());
+        let (chain, user) = list(&laptop, &desktop);
+        let id = "01a0ec7b-3333-7000-8000-0000000000d1";
+        let keys = || UserKeys::new(user.clone(), []).unwrap();
+        let o = options(&url, &laptop, keys(), chain.clone(), id);
+        let (key, _, held) = take(&o).unwrap();
+        let s = o.api.show_sync_session(id).unwrap();
+        assert_eq!(s.signer, laptop.key.id().to_string(), "the record names its publisher");
+        o.api.release_lease(id, &held.token).unwrap();
+        let (again, _, _) = take(&options(&url, &desktop, keys(), chain, id)).unwrap();
+        assert_eq!(key.as_bytes(), again.as_bytes());
+    }
+
+    /// D8b (and M1 of #200's review): a record the registry holds unsigned,
+    /// or signed by a device not on the list, is never taken up — a removed
+    /// device's key planted under a generation it held is the residual the
+    /// per-session key epochs ticket closes.
+    #[test]
+    fn d8b_the_host_never_takes_up_a_record_no_listed_device_signed() {
+        let (_reg, url) = registry();
+        let (laptop, desktop) = (Dev::new(), Dev::new());
+        let (chain, user) = list(&laptop, &desktop);
+        let o = |id: &str| options(&url, &laptop, UserKeys::new(user.clone(), []).unwrap(), chain.clone(), id);
+        let raw = |id: &str| crate::daemon::ws::uuid(id);
+        let planted = |id: &str| e2e::wrap_session_key(&SessionKey::generate(), &raw(id), &user);
+
+        let unsigned = "01a0ec7b-3333-7000-8000-0000000000d2";
+        let host = o(unsigned);
+        host.api.put_sync_session(unsigned, &e2e::hex(&planted(unsigned)), None, None, None).unwrap();
+        assert!(take(&host).err().unwrap().contains("names no signer"));
+
+        let foreign = "01a0ec7b-3333-7000-8000-0000000000d3";
+        let stranger = Dev::new();
+        let w = planted(foreign);
+        let sig = session_record::sign(&raw(foreign), &w, session_record::SEAL_USER, &user, &stranger.signing).unwrap();
+        let host = o(foreign);
+        host.api.put_sync_session(foreign, &e2e::hex(&w), Some((&e2e::hex(&sig), &stranger.key.id().to_string())), None, None).unwrap();
+        assert!(take(&host).err().unwrap().contains("never held"));
+
+        // Signed by a listed device's key, but named as another's.
+        let misnamed = "01a0ec7b-3333-7000-8000-0000000000d4";
+        let w = planted(misnamed);
+        let sig = session_record::sign(&raw(misnamed), &w, session_record::SEAL_USER, &user, &stranger.signing).unwrap();
+        let host = o(misnamed);
+        host.api.put_sync_session(misnamed, &e2e::hex(&w), Some((&e2e::hex(&sig), &desktop.key.id().to_string())), None, None).unwrap();
+        assert!(take(&host).err().unwrap().contains("does not verify"));
+    }
+
+    /// D8b (a minor of #200's review): a publish the registry refused
+    /// leaves nothing behind that stops the next host publishing again —
+    /// there is no record of it but the registry's own.
+    #[test]
+    fn d8b_a_refused_publish_is_published_again() {
+        let config = krowk_devregistry::Config { max_sessions: 1, ..Default::default() };
+        let _reg = krowk_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), config).unwrap();
+        let url = format!("{}/v1", _reg.url());
+        let (laptop, desktop) = (Dev::new(), Dev::new());
+        let (chain, user) = list(&laptop, &desktop);
+        let o = |id: &str| options(&url, &laptop, UserKeys::new(user.clone(), []).unwrap(), chain.clone(), id);
+        take(&o("01a0ec7b-3333-7000-8000-0000000000d5")).unwrap();
+        let second = o("01a0ec7b-3333-7000-8000-0000000000d6");
+        for _ in 0..2 {
+            let refused = take(&second).err().expect("the registry is full");
+            assert!(refused.contains("session_limit_reached"), "each host tries the publish afresh: {refused}");
+            assert_eq!(second.api.show_sync_session(&second.session).unwrap_err().status, 404);
+        }
+    }
+
+    /// D8b (M1 of #206's review, #200's M1 restored): thief T, on the list
+    /// at generation 1, is removed and the key rotates to 2. The registry
+    /// serves, for the id the laptop hosts, T's session key wrapped under
+    /// generation 1 — which the laptop opens down the chain — signed by T.
+    /// The host does not take it up: nothing is sealed under a key T holds.
+    #[test]
+    fn d8b_the_host_never_takes_up_a_removed_devices_planted_record() {
+        let (_reg, url) = registry();
+        let (laptop, thief) = (Dev::new(), Dev::new());
+        let (chain, g1) = list(&laptop, &thief);
+        let (chain, removed) = chain.batch(&g1, vec![Change::Remove(thief.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 2).unwrap();
+        let g2 = removed.newest;
+        let keys = UserKeys::new(g2.clone(), [g2.wrap_previous(&g1).unwrap()]).unwrap();
+        let id = "01a0ec7b-3333-7000-8000-0000000000d7";
+        let raw = crate::daemon::ws::uuid(id);
+        let thiefs = SessionKey::generate();
+        let planted = e2e::wrap_session_key(&thiefs, &raw, &g1);
+        let sig = session_record::sign(&raw, &planted, session_record::SEAL_USER, &g1, &thief.signing).unwrap();
+        let o = options(&url, &laptop, keys, chain, id);
+        o.api.put_sync_session(id, &e2e::hex(&planted), Some((&e2e::hex(&sig), &thief.key.id().to_string())), None, None).unwrap();
+        assert!(e2e::unwrap_session_key(&planted, &raw, &o.keys).is_ok(), "the planted key opens down the chain");
+        let refused = take(&o).err().expect("a removed device's record is not taken up");
+        assert!(refused.contains("no longer on your device list"), "{refused}");
+        assert_eq!(o.api.show_sync_session(id).unwrap().wrapped_key, e2e::hex(&planted), "nothing was written over it");
+    }
+
+    /// D8 (M2 of #200's review): a host behind the generation the list
+    /// names publishes nothing.
+    #[test]
+    fn d8_a_host_behind_the_chains_generation_publishes_nothing() {
+        let (_reg, url) = registry();
+        let (laptop, desktop) = (Dev::new(), Dev::new());
+        let (chain, user) = list(&laptop, &desktop);
+        let (chain, _) = chain.batch(&user, vec![Change::Remove(desktop.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 2).unwrap();
+        let id = "01a0ec7b-4444-7000-8000-0000000000d8";
+        let o = options(&url, &laptop, UserKeys::new(user, []).unwrap(), chain, id);
+        let refused = take(&o).err().expect("generation 1 seals nothing when the list names 2");
+        assert!(refused.contains("names generation 2"), "{refused}");
+        assert!(o.api.show_sync_session(id).is_err(), "nothing reached the registry");
     }
 }

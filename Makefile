@@ -16,10 +16,12 @@ test: ## The unit and integration tests
 
 # Both builds: the agent build (no sessions) is the one a container compiles
 # from source, and a cfg that only one of them sees is a lint only one catches.
+# cognitive_complexity sits in clippy's nursery group, which is off by default,
+# so it is named here; clippy.toml sets the ceiling it holds a function to.
 lint:
-	cargo clippy --workspace --all-targets -- -D warnings
-	cargo clippy --workspace --all-targets --features krowk/sessions -- -D warnings
-	cargo clippy --workspace --all-targets --features krowk/harness -- -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings -D clippy::cognitive_complexity
+	cargo clippy --workspace --all-targets --features krowk/sessions -- -D warnings -D clippy::cognitive_complexity
+	cargo clippy --workspace --all-targets --features krowk/harness -- -D warnings -D clippy::cognitive_complexity
 
 check: lint lean-deps test golden ## Everything CI runs
 

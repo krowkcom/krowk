@@ -198,42 +198,8 @@ fn r_cred_1_a_var_and_a_command_reference_resolve_and_one_that_fails_has_no_fall
     let b = Sandbox::new("refs", &m.url);
     let env = [("ANTHROPIC_API_KEY", DECOY)];
 
-    // `$VAR`: read from that variable, and with it unset nothing is sent.
-    let out = b.krowk(&["connect", "anthropic", "--method", "api-key", "--name", "work", "--key-ref", "$WORK_SECRET", "--base-url", &m.url], &[]);
-    assert!(out.status.success(), "{}", printed(&out));
-    assert_eq!(b.stored()["keys"]["anthropic:work"], json!({"env": "WORK_SECRET"}));
-    let row = b.row("anthropic:work", &[("WORK_SECRET", SENTINEL)]);
-    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored ($WORK_SECRET)")), "{row}");
-    let unset = b.row("anthropic:work", &[("ANTHROPIC_WORK_API_KEY", DECOY)]);
-    assert_eq!((unset["state"].as_str(), unset["var"].as_str()), (Some("key_not_set"), Some("WORK_SECRET")), "{unset}");
-    let refused = b.krowk(&["-p", "hi", "--model", "anthropic:work/claude-sonnet-4-6"], &[("ANTHROPIC_WORK_API_KEY", DECOY)]);
-    assert_eq!(refused.status.code(), Some(3), "{}", printed(&refused));
-    assert!(printed(&refused).contains("$WORK_SECRET, which is not set") && printed(&refused).contains("does not fall back"), "{}", printed(&refused));
-    let sent = b.krowk(&["-p", "hi", "--model", "anthropic:work/claude-sonnet-4-6"], &[("WORK_SECRET", SENTINEL)]);
-    assert!(sent.status.success(), "{}", printed(&sent));
-    assert_eq!(m.seen.lock().unwrap().last().unwrap().header("x-api-key"), Some(SENTINEL));
-
-    // `!command`: run once to connect, then once per krowk process — status
-    // runs it, and a turn in another process runs it again.
-    let out = b.krowk(&["connect", "anthropic", "--method", "api-key", "--key-ref", "!fake-pass show anthropic", "--format", "human"], &[]);
-    assert!(out.status.success(), "{}", printed(&out));
-    assert_eq!(b.pass_runs(), 1, "connecting checks the command");
-    assert!(printed(&out).contains("key stored (!fake-pass …) in krowk's credentials file (0600), used before any variable"), "{}", printed(&out));
-    let again = b.krowk(&["connect", "anthropic", "--method", "api-key", "--format", "human"], &[]);
-    assert!(printed(&again).contains("key was already stored (!fake-pass …)"), "{}", printed(&again));
-    // Naming a variable while a key is stored would change nothing: refused.
-    let named = b.krowk(&["connect", "anthropic", "--method", "api-key", "--api-key-env", "OTHER_KEY"], &[]);
-    assert!(!named.status.success() && printed(&named).contains("`krowk disconnect anthropic` first"), "{}", printed(&named));
-    // A stored $VAR that is unset says so, and offers nothing to try yet.
-    let unset = b.krowk(&["connect", "openai", "--method", "api-key", "--key-ref", "$NOT_SET_HERE", "--format", "human"], &[]);
-    assert!(printed(&unset).contains("$NOT_SET_HERE is not set here") && !printed(&unset).contains("try it"), "{}", printed(&unset));
-    let row = b.row("anthropic", &env);
-    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored (!fake-pass …)")), "{row}");
-    assert_eq!(b.pass_runs(), 2);
-    let turn = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &env);
-    assert!(turn.status.success(), "{}", printed(&turn));
-    assert_eq!(m.seen.lock().unwrap().last().unwrap().header("x-api-key"), Some(SENTINEL));
-    assert_eq!(b.pass_runs(), 3, "once for the turn's process");
+    assert_a_var_reference(&b, &m);
+    assert_a_command_reference(&b, &m, &env);
 
     // Failing: `unknown` with why, the turn refused, nothing of its output
     // shown, and the environment's key never sent in its place.
@@ -262,6 +228,47 @@ fn r_cred_1_a_var_and_a_command_reference_resolve_and_one_that_fails_has_no_fall
     assert_eq!(out.status.code(), Some(3), "{}", printed(&out));
     let left: Vec<_> = std::fs::read_dir(fresh.credentials().parent().unwrap()).unwrap().flatten().map(|e| e.file_name()).filter(|n| n.to_string_lossy().contains("credentials")).collect();
     assert!(left.is_empty(), "a connection that wrote nothing left {left:?}");
+}
+
+/// `$VAR`: read from that variable, and with it unset nothing is sent.
+fn assert_a_var_reference(b: &Sandbox, m: &mock::Mock) {
+    let out = b.krowk(&["connect", "anthropic", "--method", "api-key", "--name", "work", "--key-ref", "$WORK_SECRET", "--base-url", &m.url], &[]);
+    assert!(out.status.success(), "{}", printed(&out));
+    assert_eq!(b.stored()["keys"]["anthropic:work"], json!({"env": "WORK_SECRET"}));
+    let row = b.row("anthropic:work", &[("WORK_SECRET", SENTINEL)]);
+    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored ($WORK_SECRET)")), "{row}");
+    let unset = b.row("anthropic:work", &[("ANTHROPIC_WORK_API_KEY", DECOY)]);
+    assert_eq!((unset["state"].as_str(), unset["var"].as_str()), (Some("key_not_set"), Some("WORK_SECRET")), "{unset}");
+    let refused = b.krowk(&["-p", "hi", "--model", "anthropic:work/claude-sonnet-4-6"], &[("ANTHROPIC_WORK_API_KEY", DECOY)]);
+    assert_eq!(refused.status.code(), Some(3), "{}", printed(&refused));
+    assert!(printed(&refused).contains("$WORK_SECRET, which is not set") && printed(&refused).contains("does not fall back"), "{}", printed(&refused));
+    let sent = b.krowk(&["-p", "hi", "--model", "anthropic:work/claude-sonnet-4-6"], &[("WORK_SECRET", SENTINEL)]);
+    assert!(sent.status.success(), "{}", printed(&sent));
+    assert_eq!(m.seen.lock().unwrap().last().unwrap().header("x-api-key"), Some(SENTINEL));
+}
+
+/// `!command`: run once to connect, then once per krowk process — status
+/// runs it, and a turn in another process runs it again.
+fn assert_a_command_reference(b: &Sandbox, m: &mock::Mock, env: &[(&str, &str)]) {
+    let out = b.krowk(&["connect", "anthropic", "--method", "api-key", "--key-ref", "!fake-pass show anthropic", "--format", "human"], &[]);
+    assert!(out.status.success(), "{}", printed(&out));
+    assert_eq!(b.pass_runs(), 1, "connecting checks the command");
+    assert!(printed(&out).contains("key stored (!fake-pass …) in krowk's credentials file (0600), used before any variable"), "{}", printed(&out));
+    let again = b.krowk(&["connect", "anthropic", "--method", "api-key", "--format", "human"], &[]);
+    assert!(printed(&again).contains("key was already stored (!fake-pass …)"), "{}", printed(&again));
+    // Naming a variable while a key is stored would change nothing: refused.
+    let named = b.krowk(&["connect", "anthropic", "--method", "api-key", "--api-key-env", "OTHER_KEY"], &[]);
+    assert!(!named.status.success() && printed(&named).contains("`krowk disconnect anthropic` first"), "{}", printed(&named));
+    // A stored $VAR that is unset says so, and offers nothing to try yet.
+    let unset = b.krowk(&["connect", "openai", "--method", "api-key", "--key-ref", "$NOT_SET_HERE", "--format", "human"], &[]);
+    assert!(printed(&unset).contains("$NOT_SET_HERE is not set here") && !printed(&unset).contains("try it"), "{}", printed(&unset));
+    let row = b.row("anthropic", env);
+    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored (!fake-pass …)")), "{row}");
+    assert_eq!(b.pass_runs(), 2);
+    let turn = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], env);
+    assert!(turn.status.success(), "{}", printed(&turn));
+    assert_eq!(m.seen.lock().unwrap().last().unwrap().header("x-api-key"), Some(SENTINEL));
+    assert_eq!(b.pass_runs(), 3, "once for the turn's process");
 }
 
 #[test]

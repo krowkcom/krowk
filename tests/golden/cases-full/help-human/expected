@@ -98,15 +98,17 @@ OTHER
   host disable      Stop the service and remove it
   hosts             The tailnet's machines tagged tag:krowk-host, from Tailscale
   relay serve       Carry sealed sessions between their host and viewers
-  sync init         Set up: a device key, an account key, its recovery phrase
-  sync recover      Restore the account key here from its recovery phrase
-  sync join         Add this machine, approved from one that already syncs
-  sync register     Tell the workspace this machine holds its account key
+  sync init         Set up sync: this device, your user key and a recovery kit
+  sync recover      Back in from the recovery kit's 12 words, on a new machine
+  sync status       This device's list, key generation and recovery kit, checked
+  sync recovery     Your recovery kit: make a new one, or test its words
+  sync join         Add this machine by the code `krowk devices add` shows
   sync sessions     The synced sessions this machine can open
   sync host         Run a session here and sync it until interrupted
   sync attach       Follow a synced session; stdin takes prompts and /commands
-  devices list      The workspace's devices, and the account key this one holds
-  devices approve   Approve a new device's `krowk sync join`
+  devices list      The devices on your device list, this one marked
+  devices add       Show a code that adds a new machine to your devices
+  devices remove    Take a device off your list and rotate your key
   config show       The effective configuration, and which layer set each value
   config set        Write one value into the repo config, or the global one
   config unset      Remove one value from the repo config, or the global one

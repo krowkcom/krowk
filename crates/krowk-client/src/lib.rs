@@ -5,10 +5,17 @@
 //! - `e2e`: the constructions — device keypairs, the account key wrapped to
 //!   each device with HPKE, session keys wrapped under the account key, and
 //!   session content sealed under a session key (R-E2E-2, R-E2E-3).
-//! - `phrase`: the account key as 24 words, shown once at first sync setup
-//!   and the only way back to it on a fresh machine (R-E2E-4).
 //! - `keystore`: the device key and the wrapped account key in krowk's
 //!   home, `0600`.
+//! - `pairing`: adding a device by a short code — SPAKE2 with key
+//!   confirmation both ways, as a sans-IO state machine for each side.
+//! - `user_key`: the person's user key, by generation, HPKE-wrapped to each
+//!   device, each generation wrapping the one before it.
+//! - `recovery`: the 12-word recovery kit, its words, and the recovery
+//!   device it derives.
+//! - `device_chain`: the signed, append-only device list and its verifier.
+//! - `session_record`: a synced session's record, signed by the device
+//!   that published it and checked against the device list.
 //! - `protocol`: the typed commands, events and log lines every client
 //!   speaks, and the daemon's frame-envelope layout (`protocol::frame`).
 //!
@@ -17,10 +24,14 @@
 
 pub mod e2e;
 pub mod keystore;
-pub mod phrase;
+pub mod pairing;
 pub mod protocol;
 pub mod relay_link;
 pub mod relay_ticket;
+pub mod device_chain;
+pub mod recovery;
+pub mod session_record;
+pub mod user_key;
 
-/// A secret the caller holds for a moment — a typed phrase — wiped on drop.
+/// A secret the caller holds for a moment — the kit's words — wiped on drop.
 pub use zeroize::Zeroizing;

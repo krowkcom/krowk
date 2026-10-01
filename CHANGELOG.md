@@ -9,6 +9,104 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Removed
+
+- **`krowk devices approve` and the 32-hex device code.** Pairing by a short
+  code replaces them; `krowk sync join` takes no argument.
+
+### Added
+
+- **`krowk sync init` sets up your device list, with a 12-word recovery
+  kit.** It asks you to sign in again in the browser, then makes the list's
+  first entry: this device and the recovery device the kit derives, with your
+  user key wrapped to both. The kit's words are shown once on stderr ([Enter]
+  when written down, [s] to skip) or written to `--save FILE`, 0600, and are
+  never typed back. `--start-over` makes a new list; every other device on
+  the old one stops syncing and asks to be paired again. Run from a device
+  that holds your key, it keeps the old keys aside and seals the sessions it
+  can open again under the new list; running it again (under another
+  workspace's key, for that workspace's) goes through what is left, and
+  `krowk sync recovery discard-old` drops the old keys when you say so. The 24-word recovery phrase is gone, and so is
+  `krowk sync register`: a device is registered by being on the list.
+- **`krowk devices remove NAME`** takes a device off your list and rotates
+  your key away from it. It names every device the new key goes to before it
+  asks, needs a fresh sign-in, and removes any device revoked on the dashboard
+  in the same post, so no new key reaches one. `krowk sync status` offers to
+  finish a dashboard Revoke. Your other devices take the new key at their next
+  sync.
+- **`krowk sync recover`** gets back in on a new machine from the kit's
+  words, typed at a prompt that doesn't echo them or piped in. It verifies
+  the list from its first entry, goes through every device on it with you to
+  keep or remove, and only then wraps your key, to what you kept.
+- **`krowk sync recovery new`** replaces the kit at once, with the old kit's
+  words, or from any device when you have none. **`krowk sync recovery
+  check`** tests the words against the list, locally. **`krowk sync status`**
+  verifies the list against the head this device pinned, and says when there
+  is no kit; so does the TUI's status line.
+
+- **Pairing a device by a short code, in the library.** `krowk_client::pairing`
+  holds both sides of `krowk devices add` as sans-IO state machines: an
+  eight-character code (Crockford base32 less `0` and `1`, shown `XXXX-XXXX`,
+  typed in any case with spaces and dashes ignored), SPAKE2 in asymmetric mode
+  bound to the peer kind, the person and both device ids, and key confirmation
+  both ways before the new device's name is shown or anything is posted. One
+  failed step ends the pairing, and the new device's code is consumed by the
+  attempt, so a hostile registry gets one guess against each side. The SPAKE2 crate is held to magic-wormhole's vectors. Nothing
+  calls it yet.
+- **The client crypto for devices you own**, not yet wired to any command:
+  a user key per person with generations, each wrapping the one before; a
+  12-word recovery kit that derives a recovery device; and a signed,
+  chained device list that every client verifies against the head it last
+  saw, refusing an older or forked list and any removal of the recovery
+  device. Only the current kit can replace the kit, or any device when there
+  is none.
+- **`krowk devices add` and `krowk sync join` pair a machine by a short
+  code.** `add` shows `XXXX-XXXX`, valid ten minutes and once; `join` on the
+  new machine takes it at a prompt, never as an argument. Both machines check
+  the code, the paired one asks `Add '<name>' (<os>) to your devices? [Y/n]`,
+  and the new machine keeps the user key only once the chain it was sent
+  adds exactly its keys. A wrong code, or any failure on the new machine, a
+  dropped connection included, ends the pairing and asks for a new code. A
+  machine that was sent the key but never confirmed it is still listed, so
+  `krowk devices remove` can take it off; ^C on `add` ends the pairing.
+- **`krowk sync host` seals under the device list as the registry has it
+  now,** extended from this machine's pin, and refuses when the registry
+  cannot be asked, rather than sealing under a list a removal left behind.
+- **The stand-in registry holds devices you own.** `krowk-devregistry` serves
+  a person's signed device list (verified on every post by krowk-client's own
+  verifier), the user key wrapped to each device, keys bound to one device,
+  a fresh sign-in stamp, and the pairing mailbox: one live pairing per
+  person, ten minutes, ended by the first step out of turn. The device
+  approval endpoints answer `410 sync_reset`.
+
+### Changed
+
+- **Sync's device and pairing calls are under `/v1/users/:user_id`.** The
+  device list, its append and start-over (`…/devices`, `…/devices/reset`),
+  a device's wrapped user key (`…/devices/:id/key`) and the person's one
+  pairing (`…/pairing`), for the user the key names. The payloads are the
+  same; the stand-in registry answers the new routes.
+
+- **Synced sessions are sealed under your user key.** `krowk sync host`
+  seals a new session's key under the newest user key generation this machine
+  holds, and records the generation in the wrapped key, which stays 74 bytes.
+  `sync attach`, `sync sessions` and `--resume` open any older generation down
+  the chain of wraps. A machine holding only an older generation, such as one
+  removed before a rotation, can't open a newer session, and is told which
+  generation it would need. The user keys a machine holds live in
+  `user-keys.json` (`0600`, wrapped to its device key, replaced by rename),
+  and a save never drops an older generation's wrap it already holds.
+  Each session's record is signed by the machine that published it. Every
+  machine that opens a session — `sync host`, `attach`, `sessions` and
+  `--resume` — checks that signature against your verified device list
+  (`device-list.json`), so any machine of yours can take a session up again,
+  and a record no device of yours signed opens nowhere. A session published
+  by a machine since removed from your devices still opens to read, but no
+  machine hosts it again: start a new one.
+  Sessions sealed under the account key no longer open: clean break. No
+  command puts a user key or a device list on a machine yet, so these
+  commands say it holds none until adding a device does.
+
 ### Fixed
 
 - **`/name` loads the skill on every agent, not only krowk's own.** A skill

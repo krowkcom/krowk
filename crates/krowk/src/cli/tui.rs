@@ -130,6 +130,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         settings,
         history_file,
         notices: notices.into_iter().chain(mode_notices).collect(),
+        no_recovery_kit: no_recovery_kit(ctx),
         version: super::VERSION.into(),
         config: Some(super::providers::config_path()?),
         daemon: daemon(ctx)?,
@@ -220,4 +221,12 @@ fn pick(ctx: &Ctx) -> Result<String, Error> {
     let id = sessions::pick_session(&rows, krowk_store::now_ms())?;
     let d = sessions::load_by_id(ctx, &conn, &id)?;
     Ok(d.session.foreign_session_id)
+}
+
+/// Whether sync is set up here with no recovery kit on the list, as this
+/// device last verified it: read from the list it keeps, never the network, so the
+/// TUI starts as fast without a registry as with one.
+fn no_recovery_kit(ctx: &Ctx) -> bool {
+    let Ok(home) = krowk_api::home::dir(ctx.io.env) else { return false };
+    matches!(krowk_client::keystore::Keystore::new(&home).device_list(), Ok(Some(chain)) if chain.recovery().is_none())
 }

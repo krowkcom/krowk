@@ -115,6 +115,10 @@ pub struct Options {
     pub history_file: Option<PathBuf>,
     /// Lines shown above the first prompt: config warnings and the like.
     pub notices: Vec<String>,
+    /// Sync is set up here and the person's device list has no recovery
+    /// kit: the status line says so until one is made (canon, devices.md →
+    /// Skippable, with a reminder).
+    pub no_recovery_kit: bool,
     pub version: String,
     /// krowk's config.json, which `/connect` writes definitions into; none
     /// (no home directory) and `/connect` says so.
@@ -284,6 +288,7 @@ async fn session(opts: Options) -> Outcome {
     let target = shown.as_ref().and_then(|m| opts.host.registry.get(&m.instance).ok()).and_then(|i| Target::for_url(&i.base_url, &|k| std::env::var(k).unwrap_or_default()));
     app.model = shown;
     app.device = device::name(&|k| std::env::var(k).unwrap_or_default());
+    app.no_recovery_kit = opts.no_recovery_kit;
     app.skills = krowk_harness::compat::skills::discover(&opts.host.permissions, &opts.host.cwd).into_iter().filter(|k| k.user_invocable).map(|k| (k.name, k.description)).collect();
     app.vendor_instances = opts.host.registry.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
     let branch = pr::branch(&opts.host.cwd);
@@ -733,6 +738,8 @@ async fn until(at: Option<Instant>) {
 }
 
 impl<'h> Ui<'h> {
+    // Legacy: the TUI's event loop, one select over every source. TODO: split into helpers and drop this allow.
+    #[allow(clippy::cognitive_complexity)]
     async fn run<W: Write>(&mut self, app: &mut App, term: &mut Term<W>) -> std::io::Result<()> {
         self.keys = Some(EventStream::new());
         let mut frame_at: Option<Instant> = None;
@@ -1531,6 +1538,8 @@ impl<'h> Ui<'h> {
     /// A key no question or overlay took: the prompt's, the menus' and the
     /// commands'. `armed`: the key before this one that asked for a second
     /// to leave krowk.
+    // Legacy: one match over every prompt key. TODO: split into helpers and drop this allow.
+    #[allow(clippy::cognitive_complexity)]
     async fn on_prompt_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool, armed: Option<char>) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         // Shift-enter is alt-enter: a new line wherever alt-enter makes one.

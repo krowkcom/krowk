@@ -208,6 +208,7 @@ pub fn remote_attach(runs: usize) -> Outcome {
         Err(e) => return Outcome::Error(e.to_string()),
     };
     let account = AccountKey::generate();
+    let user = krowk_client::user_key::UserKey::first();
     let device = DeviceKey::generate();
     let signing = e2e::SigningKey::generate();
     let signer = e2e::DeviceSigner::new(device.id(), e2e::SigningKey::from_secret(&*signing.secret_bytes()).expect("a key")).shared();
@@ -217,10 +218,10 @@ pub fn remote_attach(runs: usize) -> Outcome {
         let id = "01a0ec7b-0000-7000-8000-00000000be0c".to_string();
         let raw = krowk_harness::daemon::ws::uuid(&id);
         let key = SessionKey::generate();
-        let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &raw, &account));
+        let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &raw, &user));
         let index = store::Index { title: "bench".into(), ..Default::default() };
         let sealed = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).map_err(|e| e.to_string())?));
-        api.put_sync_session(&id, &wrapped, Some(&sealed), None).map_err(|e| e.to_string())?;
+        api.put_sync_session(&id, &wrapped, None, Some(&sealed), None).map_err(|e| e.to_string())?;
         let lease = api.acquire_lease(&id, &device.id().to_string(), 60, "development").map_err(|e| e.to_string())?;
         let mut w = store::Writer::take_up(api.clone(), key.clone(), &id, wrapped, index, lease.fence)?;
         let text = "The quick brown fox jumps over the lazy dog. ".repeat(40);

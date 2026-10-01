@@ -32,7 +32,7 @@ const CRYPTO: &[&str] = &[
     // Signatures and curves
     "ed25519", "ed25519-dalek", "ecdsa", "p256", "p384", "p521", "k256", "rsa",
     // Protocols and whole libraries
-    "snow", "age", "sodiumoxide", "libsodium-sys", "libsodium-sys-stable", "dryoc", "orion", "openssl", "openssl-sys",
+    "snow", "spake2", "age", "sodiumoxide", "libsodium-sys", "libsodium-sys-stable", "dryoc", "orion", "openssl", "openssl-sys",
     "aws-lc-rs", "aws-lc-sys", "boring", "boring-sys", "libcrux", "libcrux-hkdf", "libcrux-chacha20poly1305", "libcrux-ml-kem",
 ];
 

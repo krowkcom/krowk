@@ -103,18 +103,7 @@ fn scenario(name: &str) -> String {
 #[test]
 fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_session() {
     let b = Sandbox::new("instances");
-    for (name, email) in [("team", "team@example.com"), ("personal", "me@example.com")] {
-        let added = b.json(&["providers", "add", "codex", "--name", name, "--json"], &[("FAKE_CODEX_EMAIL", email)]);
-        let dir = b.data().join("accounts").join(format!("codex-{name}"));
-        assert_eq!(added["data"]["instance"], format!("codex:{name}"));
-        assert_eq!(added["data"]["kind"], "codex-app-server");
-        assert_eq!(added["data"]["definition"]["codexHome"], dir.display().to_string());
-        assert_eq!((added["data"]["signed_in"].as_bool(), added["data"]["login"].as_str()), (Some(true), Some("signed in with ChatGPT")));
-        assert_eq!(added["data"]["shared"], serde_json::json!(["config.toml", "AGENTS.md"]), "the person's Codex configuration, shared");
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
-        assert_eq!(std::fs::read_link(dir.join("config.toml")).unwrap(), b.root.join("home/.codex/config.toml"));
-    }
+    add_two_accounts(&b);
     // Codex's own login ran once per account, each with its own CODEX_HOME,
     // after app-server's `account/read` said there was none.
     let fake = b.fake_log();
@@ -130,23 +119,7 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
     b.json(&["providers", "add", "codex", "--name", "team", "--json"], &[]);
     assert_eq!(b.fake_log().lines().filter(|l| *l == "argv login").count(), 2);
 
-    // Status comes from `account/read`, per instance.
-    let before = b.fake_log().lines().count();
-    let listed = b.json(&["providers", "list", "--json"], &[]);
-    let rows = listed["data"]["instances"].as_array().unwrap();
-    let row = |n: &str| rows.iter().find(|r| r["instance"] == n).unwrap_or_else(|| panic!("{n} not listed: {rows:?}")).clone();
-    for n in ["codex:team", "codex:personal"] {
-        let r = row(n);
-        let home = b.data().join("accounts").join(n.replace(':', "-"));
-        assert_eq!((r["state"].as_str(), r["source"].as_str(), r["wire_api"].as_str()), (Some("ready"), Some(format!("Codex's own login in {} (signed in with ChatGPT)", home.display()).as_str()), Some("codex-app-server")), "{r}");
-        assert_eq!(r["binary"], b.root.join("bin/codex").display().to_string());
-    }
-    assert_eq!(row("codex")["state"], "not_signed_in", "the implicit instance is the person's own Codex, not signed in here");
-    // Asked structured, of app-server's account/read — `codex login status`'s
-    // words are only the fallback.
-    let listing: Vec<String> = b.fake_log().lines().skip(before).map(String::from).collect();
-    assert_eq!(listing.iter().filter(|l| l.starts_with("in ") && l.contains(r#""method":"account/read""#)).count(), 3, "{listing:?}");
-    assert!(!listing.iter().any(|l| l == "argv login status"), "{listing:?}");
+    assert_listed_status(&b);
 
     // A session on each account, with the native openai instance's key in
     // krowk's environment: it never reaches Codex.
@@ -186,6 +159,43 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
     let removed = b.json(&["providers", "remove", "codex:personal", "--json"], &[]);
     assert_eq!(removed["data"]["config_dir_kept"], b.data().join("accounts/codex-personal").display().to_string());
     assert!(b.data().join("accounts/codex-personal/fake-login").exists());
+}
+
+/// Adds the team and personal accounts, each signed in through Codex's own
+/// login with its own CODEX_HOME and the person's configuration shared.
+fn add_two_accounts(b: &Sandbox) {
+    for (name, email) in [("team", "team@example.com"), ("personal", "me@example.com")] {
+        let added = b.json(&["providers", "add", "codex", "--name", name, "--json"], &[("FAKE_CODEX_EMAIL", email)]);
+        let dir = b.data().join("accounts").join(format!("codex-{name}"));
+        assert_eq!(added["data"]["instance"], format!("codex:{name}"));
+        assert_eq!(added["data"]["kind"], "codex-app-server");
+        assert_eq!(added["data"]["definition"]["codexHome"], dir.display().to_string());
+        assert_eq!((added["data"]["signed_in"].as_bool(), added["data"]["login"].as_str()), (Some(true), Some("signed in with ChatGPT")));
+        assert_eq!(added["data"]["shared"], serde_json::json!(["config.toml", "AGENTS.md"]), "the person's Codex configuration, shared");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::read_link(dir.join("config.toml")).unwrap(), b.root.join("home/.codex/config.toml"));
+    }
+}
+
+/// Status comes from `account/read`, per instance.
+fn assert_listed_status(b: &Sandbox) {
+    let before = b.fake_log().lines().count();
+    let listed = b.json(&["providers", "list", "--json"], &[]);
+    let rows = listed["data"]["instances"].as_array().unwrap();
+    let row = |n: &str| rows.iter().find(|r| r["instance"] == n).unwrap_or_else(|| panic!("{n} not listed: {rows:?}")).clone();
+    for n in ["codex:team", "codex:personal"] {
+        let r = row(n);
+        let home = b.data().join("accounts").join(n.replace(':', "-"));
+        assert_eq!((r["state"].as_str(), r["source"].as_str(), r["wire_api"].as_str()), (Some("ready"), Some(format!("Codex's own login in {} (signed in with ChatGPT)", home.display()).as_str()), Some("codex-app-server")), "{r}");
+        assert_eq!(r["binary"], b.root.join("bin/codex").display().to_string());
+    }
+    assert_eq!(row("codex")["state"], "not_signed_in", "the implicit instance is the person's own Codex, not signed in here");
+    // Asked structured, of app-server's account/read — `codex login status`'s
+    // words are only the fallback.
+    let listing: Vec<String> = b.fake_log().lines().skip(before).map(String::from).collect();
+    assert_eq!(listing.iter().filter(|l| l.starts_with("in ") && l.contains(r#""method":"account/read""#)).count(), 3, "{listing:?}");
+    assert!(!listing.iter().any(|l| l == "argv login status"), "{listing:?}");
 }
 
 #[test]
