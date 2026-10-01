@@ -1,7 +1,7 @@
 //! What the commands that change a person's device list share (canon,
 //! engineering/devices.md): reading the list and verifying it against the
-//! one this device keeps, the fresh sign-in a destructive change needs, the prompts
-//! only a person may answer, and turning a batch into the post that
+//! one this device keeps, the key a change is made with, the prompts only
+//! a person may answer, and turning a batch into the post that
 //! carries it. The chain, its verifier and the keys are `krowk_client`'s;
 //! this is the command line around them.
 
@@ -113,46 +113,30 @@ pub(super) fn ask_words(ctx: &mut Ctx, prompt: &str) -> Result<krowk_client::Zer
     Ok(raw)
 }
 
-/// A fresh sign-in: a browser login whose approval asks for the person's
-/// password (or Google sign-in) again, with its key stored and returned.
-/// The stored key and an open browser session are not enough — a thief
-/// holding the laptop may hold both (devices.md → Destructive actions need
-/// a fresh sign-in). `action` names the change on the approval page. Debug
-/// builds' test suite keeps the key it has (KROWK_TEST_FRESH_SIGN_IN=skip);
-/// the stand-in registry takes it as fresh.
-pub(super) fn fresh_sign_in(ctx: &mut Ctx, why: &str, action: LoginAction) -> Result<Client, Error> {
-    if cfg!(debug_assertions) && ctx.env("KROWK_TEST_FRESH_SIGN_IN") == "skip" {
-        return super::sync::keyed_client(ctx, "this");
-    }
-    let _ = writeln!(ctx.io.stderr, "{why} — sign in again in the browser, with your password.");
-    let (token, _) = super::auth::browser_login(ctx, true, action)?;
-    Ok(Client::new(&krowk_api::base_url_for(ctx.f.dev, ctx.io.env), &token))
-}
-
-/// A key with a person behind it, for a change that needs no fresh
-/// sign-in: the stored one, or a browser login when there is none.
-pub(super) fn signed_in(ctx: &mut Ctx) -> Result<Client, Error> {
+/// A key with a person behind it: the stored one, or a browser login for
+/// `action` when there is none.
+pub(super) fn signed_in(ctx: &mut Ctx, action: LoginAction) -> Result<Client, Error> {
     let client = super::agent::new_client(ctx)?;
     if client.authenticated() {
         return Ok(client);
     }
-    login(ctx)
+    login(ctx, action)
 }
 
-fn login(ctx: &mut Ctx) -> Result<Client, Error> {
+fn login(ctx: &mut Ctx, action: LoginAction) -> Result<Client, Error> {
     let _ = writeln!(ctx.io.stderr, "Sync is a person's — sign in in the browser.");
-    let (token, _) = super::auth::browser_login(ctx, false, LoginAction::Login)?;
+    let (token, _) = super::auth::browser_login(ctx, action)?;
     Ok(Client::new(&krowk_api::base_url_for(ctx.f.dev, ctx.io.env), &token))
 }
 
 /// The person's device list as the registry has it, read with a key that
 /// names a person: one that names none — a sign-up's default key, a
 /// service key — is replaced by a browser login first.
-pub(super) fn signed_in_list(ctx: &mut Ctx) -> Result<(Client, Vec<SignedEntry>), Error> {
-    let client = signed_in(ctx)?;
+pub(super) fn signed_in_list(ctx: &mut Ctx, action: LoginAction) -> Result<(Client, Vec<SignedEntry>), Error> {
+    let client = signed_in(ctx, action)?;
     match client.device_list_all() {
         Err(e) if e.code() == "service_key" => {
-            let client = login(ctx)?;
+            let client = login(ctx, action)?;
             let list = decode(&client.device_list_all()?)?;
             Ok((client, list))
         }
@@ -210,7 +194,7 @@ impl Me {
     }
 }
 
-/// Says a key just minted by a fresh sign-in speaks for this device, as
+/// Says a key just minted by a browser login speaks for this device, as
 /// the one it replaces did; every sync call after needs that. Any refusal
 /// is said: a key bound to another device fails every call after.
 pub(super) fn claim(client: &Client, me: &Me) -> Result<(), Error> {

@@ -16,13 +16,9 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-/// One person's keys (`person_for` reads the part before `#`), each
-/// carrying the stand-in's fresh sign-in.
-const LAPTOP: &str = "krowk_sk_kit#laptop-fresh";
-const DESKTOP: &str = "krowk_sk_kit#desktop-fresh";
-/// Another of the laptop's keys, as a fresh sign-in mints one: bound to no
-/// device until the command that signed in claims it.
-const LAPTOP_AGAIN: &str = "krowk_sk_kit#laptop-again-fresh";
+/// One person's keys (`person_for` reads the part before `#`).
+const LAPTOP: &str = "krowk_sk_kit#laptop";
+const DESKTOP: &str = "krowk_sk_kit#desktop";
 /// The account key id the stand-in's session calls register devices under.
 const ACCOUNT: &str = "00112233445566778899aabbccddeeff";
 
@@ -43,7 +39,7 @@ fn registry() -> (krowk_devregistry::Running, String) {
 
 /// krowk with `home` as HOME and nothing else of this machine's, the debug
 /// build's stand-in for the person at the terminal answering `answers` in
-/// turn, the key it has standing for a fresh sign-in, and `input` on stdin.
+/// turn, and `input` on stdin.
 fn krowk(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, input: &str) -> Output {
     let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
     c.args(args)
@@ -55,7 +51,6 @@ fn krowk(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, inpu
         .env("KROWK_TOKEN", token)
         .env("KROWK_DEVICE_NAME", home.file_name().unwrap())
         .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
-        .env("KROWK_TEST_FRESH_SIGN_IN", "skip")
         .env("KROWK_TEST_ANSWERS", answers)
         .current_dir(home)
         .stdin(Stdio::piped())
@@ -153,16 +148,16 @@ fn d6_a_start_over_seals_this_devices_sessions_again_under_the_new_list() {
     let _ = std::fs::remove_dir_all(&r);
 }
 
-/// D6 (M5 of #204's review): with a kit on the list, `recovery new` takes
-/// the old kit's words and replaces it at once — posted as the old kit,
-/// the key claimed after — and the key rotates.
+/// D6: with a kit on the list, `recovery new` takes the old kit's words and
+/// replaces it at once — posted as the old kit, on this machine's own key
+/// — and the key rotates.
 #[test]
 fn d6_recovery_new_with_the_old_kit_replaces_it_at_once() {
     let (_r, api) = registry();
     let r = root("kit-new");
     let laptop = r.join("laptop");
     let old = init(&laptop, &api, LAPTOP, &r.join("kit-1"));
-    let v = ok(&krowk(&laptop, &api, LAPTOP_AGAIN, &["sync", "recovery", "new", "--save", r.join("kit-2").to_str().unwrap(), "--json"], "", &format!("{old}\n")));
+    let v = ok(&krowk(&laptop, &api, LAPTOP, &["sync", "recovery", "new", "--save", r.join("kit-2").to_str().unwrap(), "--json"], "", &format!("{old}\n")));
     assert_eq!(v["data"]["generation"], 2, "{v}");
     let new = std::fs::read_to_string(r.join("kit-2")).unwrap();
     ok(&krowk(&laptop, &api, LAPTOP, &["sync", "recovery", "check", "--json"], "", &new));
@@ -224,19 +219,5 @@ fn d7_a_removed_device_cannot_open_a_session_sealed_after_its_removal() {
     assert!(e2e::unwrap_session_key(&wrapped, &krowk_harness::daemon::ws::uuid(id), &held).is_err(), "the desktop's keys do not open it");
     let refused = krowk(&desktop, &api, DESKTOP, &["sync", "status", "--json"], "", "");
     assert!(!refused.status.success(), "and the desktop is off the list: {}", String::from_utf8_lossy(&refused.stdout));
-    let _ = std::fs::remove_dir_all(&r);
-}
-
-/// A first `sync init` needs a key with a person behind it and no fresh
-/// sign-in; starting over does need one.
-#[test]
-fn a_first_init_needs_no_fresh_sign_in_and_a_start_over_does() {
-    let (_r, api) = registry();
-    let r = root("plain-init");
-    let laptop = r.join("laptop");
-    let plain = "krowk_sk_kit#plain";
-    init(&laptop, &api, plain, &r.join("kit-1"));
-    let out = krowk(&laptop, &api, plain, &["sync", "init", "--start-over", "--save", r.join("kit-2").to_str().unwrap(), "--json"], "y", "");
-    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("fresh_sign_in_required"), "{}", String::from_utf8_lossy(&out.stderr));
     let _ = std::fs::remove_dir_all(&r);
 }

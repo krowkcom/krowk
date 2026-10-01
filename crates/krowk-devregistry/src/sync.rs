@@ -134,9 +134,6 @@ pub struct SyncStore {
     pub bindings: HashMap<String, String>,
     /// Keys revoked with the device they were bound to, by digest.
     pub revoked_keys: std::collections::HashSet<String>,
-    /// When a key's browser login last had the person give their
-    /// credential again, by digest.
-    pub stamps: HashMap<String, Timestamp>,
     pub pairings: HashMap<String, crate::pairings::Pairing>,
     pub sessions: HashMap<(String, String), Session>,
     pub seq: usize,

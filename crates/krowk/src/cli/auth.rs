@@ -122,18 +122,16 @@ fn login_with_token(ctx: &mut Ctx) -> Result<(), Error> {
 /// confirms and can only approve or deny — so the half that travels cannot be
 /// turned into a key by whoever sees it. The key arrives exactly once.
 fn login_in_browser(ctx: &mut Ctx) -> Result<(), Error> {
-    let (_, result) = browser_login(ctx, false, krowk_api::LoginAction::Login)?;
+    let (_, result) = browser_login(ctx, krowk_api::LoginAction::Login)?;
     let rendered = output::stored_key(&result, ctx.format, ctx.f.quiet, ctx.colour);
     ctx.emit(&rendered)
 }
 
-/// A browser login, its key stored as `krowk login` stores one. `fresh`
-/// has the approval page ask for the person's credential again — what a
-/// destructive device-list change needs (canon, devices.md → Destructive
-/// actions need a fresh sign-in), and `action` says what it is for. Returns the key itself beside what was
+/// A browser login, its key stored as `krowk login` stores one, `action`
+/// saying what it is for. Returns the key itself beside what was
 /// stored, so a caller acts with the key just minted even where
 /// KROWK_TOKEN would shadow it.
-pub(super) fn browser_login(ctx: &mut Ctx, fresh: bool, action: krowk_api::LoginAction) -> Result<(String, Login), Error> {
+pub(super) fn browser_login(ctx: &mut Ctx, action: krowk_api::LoginAction) -> Result<(String, Login), Error> {
     if in_ci(ctx) && !ctx.f.no_browser {
         return Err(fail(
             "no_one_to_approve",
@@ -144,7 +142,7 @@ pub(super) fn browser_login(ctx: &mut Ctx, fresh: bool, action: krowk_api::Login
     // Keyless whatever the environment holds: the endpoint exists for a
     // machine with no key.
     let client = Client::new(&krowk_api::base_url_for(ctx.f.dev, ctx.io.env), "");
-    let auth = client.start_cli_authorization(fresh, action).map_err(|mut e| {
+    let auth = client.start_cli_authorization(action).map_err(|mut e| {
         if e.status == 404 {
             e.body.insert(
                 "fix".into(),

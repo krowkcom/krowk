@@ -3,7 +3,7 @@
 //! replaced (canon, engineering/devices.md → Recovery, Replacing the kit,
 //! Starting over).
 //!
-//! - `init` needs a fresh sign-in, then makes seq 0: this device and, unless
+//! - `init` makes seq 0: this device and, unless
 //!   the person skips it, the recovery device the kit derives, each signing
 //!   the entry, with generation 1 of the user key wrapped to both. The kit's
 //!   12 words go to stderr ([Enter] done, [s] skip) or to `--save FILE`,
@@ -24,7 +24,7 @@
 //!   no kit. A lost kit with working devices is a start-over.
 //!   `recovery check` tests the words against the list.
 
-use super::chain::{self, ask, ask_line, ask_words, describe, fresh_sign_in, is_kit, kit_subject, need_person, now, post_of, say, show_kit, this_subject, Me};
+use super::chain::{self, ask, ask_line, ask_words, describe, is_kit, kit_subject, need_person, now, post_of, say, show_kit, this_subject, Me};
 use super::reseal::{self, Old};
 use super::Ctx;
 use krowk_api::{fail, Client, Error, LoginAction};
@@ -106,19 +106,11 @@ fn confirm_start_over(ctx: &mut Ctx, carries: bool) -> Result<(), Error> {
     }
 }
 
-/// Posts seq 0 — once more with a new sign-in if the kit took long enough
-/// for the first to go stale. The client that posted comes back: init binds
-/// its key to this device.
-fn post_init(ctx: &mut Ctx, client: Client, me: &Me, batch: &Batch, start_over: bool) -> Result<Client, Error> {
+/// Posts seq 0. The client that posted comes back: init binds its key to
+/// this device.
+fn post_init(client: Client, me: &Me, batch: &Batch, start_over: bool) -> Result<Client, Error> {
     let post = krowk_api::sync::ListPost { start_over, ..post_of(batch) };
-    match me.sign(&client).init_device_list(&post) {
-        Err(e) if e.code() == "fresh_sign_in_required" => {
-            let again = fresh_sign_in(ctx, "That sign-in is more than five minutes old", LoginAction::StartOver)?;
-            me.sign(&again).init_device_list(&post)?;
-            Ok(again)
-        }
-        other => other.map(|_| client),
-    }
+    me.sign(&client).init_device_list(&post).map(|_| client)
 }
 
 pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
@@ -128,13 +120,8 @@ pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
         refuse_if_set_up(ctx, "sync is set up on this machine already — `krowk sync status` shows its device list. Only if every device and the kit are lost, or the kit alone: `krowk sync init --start-over`")?;
     }
     let old = if ctx.f.start_over { held_old(ctx)? } else { None };
-    // A first list needs only a key with a person behind it; starting over
-    // replaces one, and needs a fresh sign-in.
-    let (client, served) = chain::signed_in_list(ctx)?;
-    let client = match ctx.f.start_over && !served.is_empty() {
-        true => fresh_sign_in(ctx, "Starting over changes which devices can read your sessions", LoginAction::StartOver)?,
-        false => client,
-    };
+    let action = if ctx.f.start_over { LoginAction::StartOver } else { LoginAction::Login };
+    let (client, served) = chain::signed_in_list(ctx, action)?;
     if let Some(aside) = reseal::set_aside(&home)?.filter(|a| ctx.f.start_over && served.first().is_some_and(|e| e.hash() != a.chain.root())) {
         return finish_start_over(ctx, client, aside, served);
     }
@@ -155,7 +142,7 @@ pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
     if old.is_some() {
         reseal::copy_aside(&home)?;
     }
-    let client = post_init(ctx, client, &me, &batch, start_over).inspect_err(|_| discard_kit(ctx, kept))?;
+    let client = post_init(client, &me, &batch, start_over).inspect_err(|_| discard_kit(ctx, kept))?;
     let keys = keep_new(ctx, &new_chain, &batch)?;
     let count = match old.filter(|_| start_over) {
         Some(old) => Some(reseal::run(ctx, &client, &me, &old, &keys, &new_chain).map_err(unfinished)?),
@@ -355,7 +342,7 @@ pub(super) fn recover(ctx: &mut Ctx) -> Result<(), Error> {
     need_person(ctx, "`krowk sync recover` goes through every device on your list with you", piped)?;
     refuse_if_set_up(ctx, "this machine is already set up for sync — `krowk sync recover` is for a new machine; `krowk devices remove` takes a lost device off from here")?;
     let rdev = read_kit(ctx, "Recovery kit (12 words):")?.ok_or_else(|| fail("bad_recovery_kit", "no words were entered, so nothing was done"))?.device();
-    let (client, entries) = chain::signed_in_list(ctx)?;
+    let (client, entries) = chain::signed_in_list(ctx, LoginAction::Login)?;
     if entries.is_empty() {
         return Err(fail("no_device_list", "you have no device list to recover — `krowk sync init` sets sync up"));
     }
@@ -374,12 +361,6 @@ pub(super) fn recover(ctx: &mut Ctx) -> Result<(), Error> {
     let removed = changes.len();
     changes.push(Change::Add(subject.clone()));
     let (new_chain, batch) = chain.batch(&held, changes, rdev.key.id(), &rdev.signing, now()).map_err(|e| fail("sync_setup_failed", e.0))?;
-    // Adding this machine alone needs no fresh sign-in; removing a device does.
-    let client = match removed {
-        0 => client,
-        _ => fresh_sign_in(ctx, "Removing the devices you did not keep changes which devices can read your sessions", LoginAction::RemoveDevice)?,
-    };
-    let kit_client = chain::signed_as(&client, &rdev.key, &rdev.signing);
     kit_client.append_device_list(&post_of(&batch))?;
     // The key speaks for this machine from now on, as init's does.
     chain::claim(&client, &me)?;
@@ -407,7 +388,7 @@ fn old_kit(ctx: &mut Ctx, chain: &Chain) -> Result<Option<RecoveryDevice>, Error
 pub(super) fn new_kit(ctx: &mut Ctx) -> Result<(), Error> {
     need_person(ctx, "`krowk sync recovery new` shows a new recovery kit", false)?;
     let me = Me::load(ctx)?;
-    let client = fresh_sign_in(ctx, "Replacing your recovery kit changes who can get back into your sessions", LoginAction::ReplaceKit)?;
+    let client = chain::signed_in(ctx, LoginAction::ReplaceKit)?;
     let v = chain::verified(ctx, &client, &me)?;
     let keys = chain::held_keys(ctx)?.ok_or_else(chain::not_set_up)?;
     let old = old_kit(ctx, &v.chain)?;
@@ -424,9 +405,6 @@ pub(super) fn new_kit(ctx: &mut Ctx) -> Result<(), Error> {
     };
     let (next, batch) = v.chain.batch(keys.newest(), change, signer.id(), key, now()).map_err(|e| fail("sync_setup_failed", e.0))?;
     chain::signed_as(&client, signer, key).append_device_list(&post_of(&batch)).inspect_err(|_| discard_kit(ctx, true))?;
-    // After the post, as `recover` does: a key bound to this device first
-    // would be refused posting as the kit.
-    chain::claim(&client, &me)?;
     chain::keep(ctx, &v.entries, &next, &batch, &me, chain::older_of(&keys))?;
     let summary = format!("the new recovery kit is in effect; the old one opens nothing sealed from now on (key generation {})", next.generation());
     say(ctx, json!({ "generation": next.generation() }), summary)

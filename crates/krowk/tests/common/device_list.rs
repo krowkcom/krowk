@@ -63,11 +63,11 @@ impl People {
             wraps: self.chain().devices().iter().map(|d| (d.id().to_string(), krowk_client::e2e::hex(&user.wrap_to(&d.device).unwrap()))).collect(),
             start_over: true,
         };
-        // Another key of the same person (`tok#…`), freshly signed in, as
-        // an init needs; the machines' own keys stay unbound.
-        let fresh = format!("{}#people-fresh", token.split('#').next().unwrap());
+        // Another key of the same person (`tok#…`), so the machines' own
+        // keys stay unbound.
+        let other = format!("{}#people", token.split('#').next().unwrap());
         let signer = krowk_client::e2e::DeviceSigner::new(device.id(), first.signing_key().unwrap()).shared();
-        krowk_api::Client::new(api, &fresh).signed_by(signer).init_device_list(&post).unwrap();
+        krowk_api::Client::new(api, &other).signed_by(signer).init_device_list(&post).unwrap();
     }
 
     #[allow(dead_code)] // Not every test that shares this reads it.

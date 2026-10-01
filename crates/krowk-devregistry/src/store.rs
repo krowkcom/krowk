@@ -128,9 +128,6 @@ pub struct Authorization {
     pub workspace: String,
     /// Collected already — an empty token alone could mean never minted.
     pub spent: bool,
-    /// Opened with `fresh=true`: its approval stands for the person giving
-    /// their password again, and stamps the key it mints.
-    pub fresh: bool,
     /// What it is for: `login`, `start_over`, `remove_device` or
     /// `replace_kit`, as the approval page names it.
     pub action: String,
@@ -322,11 +319,6 @@ pub fn person_for(token: &str) -> String {
     format!("usr_{}", &h[..24])
 }
 
-/// A token containing this has presented its credential again just now —
-/// the stand-in's fresh sign-in (devices.md → Destructive actions need a
-/// fresh sign-in), for tests that cannot drive a browser. A browser login
-/// opened with `fresh=true` stamps its key instead, as the registry does.
-pub const FRESH_SIGN_IN_KEY_MARKER: &str = "fresh";
 
 /// Checksums travel as hex in the API and as base64 in S3's header.
 pub fn base64_sum(hex_sum: &str) -> String {
