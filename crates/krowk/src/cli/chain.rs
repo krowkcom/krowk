@@ -8,7 +8,7 @@
 use super::sync::{device_name, keystore, printable};
 use super::Ctx;
 use krowk_api::sync::{ListPost, ListedDevice};
-use krowk_api::{fail, Client, Error};
+use krowk_api::{fail, Client, Error, LoginAction};
 use krowk_client::device_chain::{Batch, Chain, Device, Kind, SignedEntry, Subject};
 use krowk_client::e2e::{self, DeviceKey, SigningKey};
 use krowk_client::recovery::RecoveryDevice;
@@ -117,17 +117,47 @@ pub(super) fn ask_words(ctx: &mut Ctx, prompt: &str) -> Result<krowk_client::Zer
 /// password (or Google sign-in) again, with its key stored and returned.
 /// The stored key and an open browser session are not enough — a thief
 /// holding the laptop may hold both (devices.md → Destructive actions need
-/// a fresh sign-in). It also puts a person behind a key that had none, as
-/// a sign-up's default key has not. Debug builds' test suite keeps the
-/// key it has (KROWK_TEST_FRESH_SIGN_IN=skip); the stand-in registry takes
-/// it as fresh.
-pub(super) fn fresh_sign_in(ctx: &mut Ctx, why: &str) -> Result<Client, Error> {
+/// a fresh sign-in). `action` names the change on the approval page. Debug
+/// builds' test suite keeps the key it has (KROWK_TEST_FRESH_SIGN_IN=skip);
+/// the stand-in registry takes it as fresh.
+pub(super) fn fresh_sign_in(ctx: &mut Ctx, why: &str, action: LoginAction) -> Result<Client, Error> {
     if cfg!(debug_assertions) && ctx.env("KROWK_TEST_FRESH_SIGN_IN") == "skip" {
         return super::sync::keyed_client(ctx, "this");
     }
     let _ = writeln!(ctx.io.stderr, "{why} — sign in again in the browser, with your password.");
-    let (token, _) = super::auth::browser_login(ctx, true)?;
+    let (token, _) = super::auth::browser_login(ctx, true, action)?;
     Ok(Client::new(&krowk_api::base_url_for(ctx.f.dev, ctx.io.env), &token))
+}
+
+/// A key with a person behind it, for a change that needs no fresh
+/// sign-in: the stored one, or a browser login when there is none.
+pub(super) fn signed_in(ctx: &mut Ctx) -> Result<Client, Error> {
+    let client = super::agent::new_client(ctx)?;
+    if client.authenticated() {
+        return Ok(client);
+    }
+    login(ctx)
+}
+
+fn login(ctx: &mut Ctx) -> Result<Client, Error> {
+    let _ = writeln!(ctx.io.stderr, "Sync is a person's — sign in in the browser.");
+    let (token, _) = super::auth::browser_login(ctx, false, LoginAction::Login)?;
+    Ok(Client::new(&krowk_api::base_url_for(ctx.f.dev, ctx.io.env), &token))
+}
+
+/// The person's device list as the registry has it, read with a key that
+/// names a person: one that names none — a sign-up's default key, a
+/// service key — is replaced by a browser login first.
+pub(super) fn signed_in_list(ctx: &mut Ctx) -> Result<(Client, Vec<SignedEntry>), Error> {
+    let client = signed_in(ctx)?;
+    match client.device_list_all() {
+        Err(e) if e.code() == "service_key" => {
+            let client = login(ctx)?;
+            let list = decode(&client.device_list_all()?)?;
+            Ok((client, list))
+        }
+        other => Ok((client, decode(&other?)?)),
+    }
 }
 
 /// This machine as the list names it: its name, without what a list name

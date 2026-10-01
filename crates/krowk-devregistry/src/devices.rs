@@ -9,7 +9,7 @@
 //! every client would take it: the stand-in and the clients cannot drift,
 //! because they are the same code. What the registry adds on top — the
 //! entry posted by one of its signers, exactly the wraps a rotation needs,
-//! a fresh sign-in for everything but an add — is
+//! a fresh sign-in for a start-over and for everything but an add — is
 //! checked here as DeviceList#append! checks it. A post lands whole or not
 //! at all.
 //!
@@ -388,7 +388,9 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
         return Err(refused(&format!("a post carries 1 to {MAX_ENTRIES_PER_POST} entries")));
     }
     let decoded = p.entries.iter().map(|e| Entry::decode(&e.bytes).map_err(|e| refused(&e.0))).collect::<Result<Vec<_>, _>>()?;
-    if (init || decoded.iter().any(|e| e.action != Action::Add)) && !caller.fresh {
+    // A first list, and an add, need only a key with a person behind it;
+    // a start-over and every other change need a fresh sign-in.
+    if ((init && p.start_over) || decoded.iter().any(|e| e.action != Action::Add)) && !caller.fresh {
         return Err(error(403, "fresh_sign_in_required", "this needs a sign-in in the browser from the last 5 minutes, with your password given again — run `krowk auth login --fresh` and try again", None));
     }
     let mut person = s.people.get(&caller.person).cloned().unwrap_or_default();

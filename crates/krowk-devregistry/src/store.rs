@@ -131,6 +131,9 @@ pub struct Authorization {
     /// Opened with `fresh=true`: its approval stands for the person giving
     /// their password again, and stamps the key it mints.
     pub fresh: bool,
+    /// What it is for: `login`, `start_over`, `remove_device` or
+    /// `replace_kit`, as the approval page names it.
+    pub action: String,
 }
 
 pub struct Store {

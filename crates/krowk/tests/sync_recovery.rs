@@ -226,3 +226,17 @@ fn d7_a_removed_device_cannot_open_a_session_sealed_after_its_removal() {
     assert!(!refused.status.success(), "and the desktop is off the list: {}", String::from_utf8_lossy(&refused.stdout));
     let _ = std::fs::remove_dir_all(&r);
 }
+
+/// A first `sync init` needs a key with a person behind it and no fresh
+/// sign-in; starting over does need one.
+#[test]
+fn a_first_init_needs_no_fresh_sign_in_and_a_start_over_does() {
+    let (_r, api) = registry();
+    let r = root("plain-init");
+    let laptop = r.join("laptop");
+    let plain = "krowk_sk_kit#plain";
+    init(&laptop, &api, plain, &r.join("kit-1"));
+    let out = krowk(&laptop, &api, plain, &["sync", "init", "--start-over", "--save", r.join("kit-2").to_str().unwrap(), "--json"], "y", "");
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("fresh_sign_in_required"), "{}", String::from_utf8_lossy(&out.stderr));
+    let _ = std::fs::remove_dir_all(&r);
+}

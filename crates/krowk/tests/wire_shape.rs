@@ -242,7 +242,11 @@ fn start_proxy(registry: SocketAddr, calls: Arc<Mutex<Vec<String>>>, failures: A
 
 /// Approves a browser login the moment it is opened.
 fn approve_logins(registry: SocketAddr, method: &str, path: &str, answer: &[u8]) -> Result<(), String> {
-    if method == "POST" && path == "/v1/cli/authorizations" {
+    if method == "POST" && path.split('?').next() == Some("/v1/cli/authorizations") {
+        // Every login says what it is for, and `krowk login` is a login.
+        if !path.contains("action=login") {
+            return Err(format!("a browser login opened without its action: {path}"));
+        }
         approve(registry, answer)?;
     }
     Ok(())

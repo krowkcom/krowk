@@ -9,6 +9,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Changed
+
+- **A first `krowk sync init` no longer asks you to sign in again.** It needs
+  only a key with a person behind it, and opens a browser login when the key
+  has none. Starting over, `krowk sync recovery new`, `krowk devices remove`
+  and a `krowk sync recover` that removes devices still need a fresh sign-in.
+- **Every browser login says what it is for** (`login`, `start_over`,
+  `remove_device` or `replace_kit`), so the approval page can name it. A
+  registry that does not know the field ignores it.
+
 ## [0.12.0] - 2026-10-01
 
 ### Added
