@@ -157,11 +157,15 @@ fn a_prompt_reads_a_file_streams_its_items_and_a_resume_continues_on_the_cache()
     let row = listed.iter().find(|r| r.harness == "krowk").expect("a krowk session in the listing");
     assert_eq!((row.turn_count, row.foreign_session_id.as_str()), (2, first.session_id.as_str()));
     assert_eq!(row.title, "read README.md and summarise it in one line");
+    // One id everywhere: the row the person lists is the log's session,
+    // which `krowk sync host` and `--resume` name.
+    assert_eq!(row.id, first.session_id, "stored under the log's own id");
     let before = detail(&env, &row.id);
     std::fs::remove_file(krowk_store::db_path(&env).unwrap()).unwrap();
     let rebuilt = project_all(&env);
     let row2 = rebuilt.iter().find(|r| r.harness == "krowk").unwrap();
     assert_eq!(detail(&env, &row2.id), before, "rebuilt from the JSONL alone");
+    assert_eq!(row2.id, first.session_id, "and under the same id");
 }
 
 /// The first turn's stream: start and delta frames, the result last, and the

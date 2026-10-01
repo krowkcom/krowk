@@ -308,3 +308,32 @@ fn sync_host_refuses_when_the_registry_cannot_give_it_the_device_list() {
     assert!(!out.status.success() && err.contains("device list"), "refused, and says why: {err}");
     assert!(a.api.show_sync_session(id).is_err(), "nothing was sealed or made in the registry");
 }
+
+/// A native session stored before its krowk.db row took its log's id is
+/// listed under another id; `sync host` takes that one too, and hosts the
+/// log it binds to rather than refusing it as unknown.
+#[test]
+fn sync_host_takes_the_id_an_older_store_listed_a_session_under() {
+    let w = World::new("store-id");
+    let a = w.machine("a");
+    let log_id = "01a0ec7b-4444-7000-8000-000000000044";
+    let log = a.home.join(".krowk/sessions").join(log_id);
+    std::fs::create_dir_all(&log).unwrap();
+    std::fs::write(log.join(krowk_harness::log::EVENTS_FILE), "").unwrap();
+    let home = a.home.display().to_string();
+    let env = |k: &str| if k == "HOME" { home.clone() } else { String::new() };
+    let conn = krowk_store::open(&env).unwrap();
+    let binding = krowk_store::Binding { provider: "krowk".into(), harness: "krowk".into(), foreign_session_id: log_id.into(), ..Default::default() };
+    let th = krowk_store::Thread { worktree: krowk_store::Worktree { path: a.repo.display().to_string(), ..Default::default() }, binding, ..Default::default() };
+    krowk_store::Writer::new(&conn).ingest(&th).unwrap();
+    let store_id: String = conn.query_row("SELECT id FROM session", [], |r| r.get(0)).unwrap();
+    assert_ne!(store_id, log_id, "a row minted its own id, as before");
+
+    let dead = TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead_api = format!("http://{}/v1", dead.local_addr().unwrap());
+    drop(dead);
+    let out = a.command(&["sync", "host", &store_id]).env("KROWK_API_URL", &dead_api).stdin(Stdio::null()).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("no session"), "the store's id names the log: {err}");
+    assert!(!out.status.success() && err.contains("device list"), "it got as far as the registry: {err}");
+}
