@@ -308,15 +308,15 @@ fn token_base(token: &str) -> &str {
     token.split('#').next().unwrap_or(token)
 }
 
-/// The person a key speaks for, in the shape of the registry's user ids (a
-/// UUID). The stand-in has no accounts, so a key names its person the way
+/// The person a key speaks for, in the shape of the registry's user ids
+/// (`usr_…`). The stand-in has no accounts, so a key names its person the way
 /// it names its workspace: from the token. `tok#laptop` and `tok#desktop`
 /// are two keys of one person in one workspace — two machines, each key
 /// bound to its own device — while every other pair of tokens is two
 /// people.
 pub fn person_for(token: &str) -> String {
     let h = sha256_hex(format!("person\n{}", token_base(token)).as_bytes());
-    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+    format!("usr_{}", &h[..24])
 }
 
 /// A token containing this has presented its credential again just now —

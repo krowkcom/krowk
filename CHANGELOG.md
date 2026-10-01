@@ -81,6 +81,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **Sync's device and pairing calls are under `/v1/users/:user_id`.** The
+  device list, its append and start-over (`…/devices`, `…/devices/reset`),
+  a device's wrapped user key (`…/devices/:id/key`) and the person's one
+  pairing (`…/pairing`), for the user the key names. The payloads are the
+  same; the stand-in registry answers the new routes.
+
 - **Synced sessions are sealed under your user key.** `krowk sync host`
   seals a new session's key under the newest user key generation this machine
   holds, and records the generation in the wrapped key, which stays 74 bytes.

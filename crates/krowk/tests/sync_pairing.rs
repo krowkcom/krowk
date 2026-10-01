@@ -444,7 +444,7 @@ fn a_new_device_that_never_acknowledges_is_listed_so_it_can_be_removed() {
     let a_id = e2e::DeviceId::parse(&open.initiator_device.id).unwrap();
     let binding = krowk_client::pairing::Binding { kind: krowk_client::pairing::PeerKind::SamePersonDevice, user_id: user, a_device: a_id, b_device: key.id() };
     let (pb, hello) = krowk_client::pairing::PairB::start(binding, code, me).unwrap();
-    b.pairing_step(&open.id, krowk_api::sync::PairingStep::Join, &hello).unwrap();
+    b.pairing_step(krowk_api::sync::PairingStep::Join, &hello).unwrap();
     let field = |f: fn(&krowk_api::sync::Pairing) -> &String| loop {
         let p = b.show_pairing(&open.id).unwrap();
         if !f(&p).is_empty() {
@@ -453,9 +453,9 @@ fn a_new_device_that_never_acknowledges_is_listed_so_it_can_be_removed() {
         std::thread::sleep(Duration::from_millis(100));
     };
     let (await_reply, confirm) = pb.receive_spake(&field(|p| &p.initiator_message)).unwrap();
-    b.pairing_step(&open.id, krowk_api::sync::PairingStep::Confirmation, &confirm).unwrap();
+    b.pairing_step(krowk_api::sync::PairingStep::Confirmation, &confirm).unwrap();
     await_reply.receive_reply(&field(|p| &p.sealed_reply)).unwrap();
-    b.end_pairing(&open.id).unwrap();
+    b.end_pairing().unwrap();
 
     let a = wait(a, Duration::from_secs(30));
     let said = rest(&a_err);

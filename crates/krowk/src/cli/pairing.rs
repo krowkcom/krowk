@@ -232,7 +232,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let sealed = match seal_reply(ctx, &client, &id, a, (&chain, served_entries), &keys, (&device, &signing)) {
         Ok(sealed) => sealed,
         Err(e) => {
-            let _ = client.end_pairing(&id);
+            let _ = client.end_pairing();
             return Err(e);
         }
     };
@@ -240,7 +240,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     // posted whatever B does, so a machine that may hold the key is listed.
     let acked = wait_for(&client, &id, "joiner_ack", &a_failed).and_then(|ack| sealed.await_ack.receive_ack(&ack).map_err(|_| a_failed(None)));
     if acked.is_err() {
-        let _ = client.end_pairing(&id);
+        let _ = client.end_pairing();
     }
     let posted = post_add(&client, &sealed.batch);
     drop(interrupts);
@@ -318,7 +318,7 @@ fn a_failed(e: Option<Error>) -> Error {
 /// read back: the step landed if it holds what was sent, and the pairing is
 /// over otherwise — sending it again would be out of turn.
 fn a_step(client: &Client, id: &str, step: PairingStep, field: &str, message: &[u8]) -> Result<(), Error> {
-    match client.pairing_step(id, step, message) {
+    match client.pairing_step(step, message) {
         Ok(_) => Ok(()),
         Err(e) if e.status == 0 => match client.show_pairing(id) {
             Ok(p) if blob(field, &p).as_deref() == Some(message) => Ok(()),
@@ -493,7 +493,7 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let (seq, name) = match result {
         Ok(done) => done,
         Err(saved) => {
-            let _ = client.end_pairing(&open.id);
+            let _ = client.end_pairing();
             if saved {
                 let _ = store.forget_user_keys();
             }
@@ -508,7 +508,7 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let deadline = Instant::now() + POSTED;
     while signed.claim_key_device().is_err() {
         if Instant::now() > deadline {
-            let _ = signed.end_pairing(&open.id);
+            let _ = signed.end_pairing();
             let _ = store.forget_user_keys();
             return Err(fail(
                 "pairing_failed",
@@ -557,11 +557,11 @@ fn listed(client: &Client, device: &DeviceId) -> Result<Listing, Error> {
 fn join_steps(client: &Client, id: &str, binding: Binding, code: PairingCode, me: NewDevice, device: &DeviceKey, store: &Keystore) -> Result<(u64, String), bool> {
     let a_device = binding.a_device;
     let (b, hello) = PairB::start(binding, code, me.clone()).map_err(|_| false)?;
-    client.pairing_step(id, PairingStep::Join, &hello).map_err(|_| false)?;
+    client.pairing_step(PairingStep::Join, &hello).map_err(|_| false)?;
     let none = |_: Option<Error>| fail("pairing_failed", "");
     let spake = wait_for(client, id, "initiator_message", &none).map_err(|_| false)?;
     let (await_reply, confirm) = b.receive_spake(&spake).map_err(|_| false)?;
-    client.pairing_step(id, PairingStep::Confirmation, &confirm).map_err(|_| false)?;
+    client.pairing_step(PairingStep::Confirmation, &confirm).map_err(|_| false)?;
     let reply = wait_for(client, id, "sealed_reply", &none).map_err(|_| false)?;
     let received = await_reply.receive_reply(&reply).map_err(|_| false)?;
     let (key, entries, chain) = check_payload(received.payload(), a_device, &me, device).map_err(|_| false)?;
@@ -574,7 +574,7 @@ fn join_steps(client: &Client, id: &str, binding: Binding, code: PairingCode, me
     store.save_user_keys(&key).map_err(|_| true)?;
     store.save_device_list(&entries).map_err(|_| true)?;
     let (_, ack) = received.acknowledge();
-    match client.pairing_step(id, PairingStep::Acknowledgement, &ack) {
+    match client.pairing_step(PairingStep::Acknowledgement, &ack) {
         // Lost on the way back, it may have landed: the caller learns which
         // from the list. Nothing is sent again either way.
         Ok(_) => Ok((seq, me.name)),

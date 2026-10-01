@@ -109,6 +109,9 @@ pub struct Client {
     /// This machine's device key, for the calls that act as it; none until
     /// the caller has one (`signed_by`).
     signer: Option<Arc<dyn RequestSigner>>,
+    /// The person this key speaks for (`GET /v1/key`'s `user_id`), read
+    /// once, the first time a call under `/users/:user_id` needs it.
+    user: std::sync::OnceLock<String>,
 }
 
 impl Client {
@@ -129,13 +132,27 @@ impl Client {
             .build();
         let resolver = GuardResolver { guard: Arc::new(guard), inner: ureq::unversioned::resolver::DefaultResolver::default() };
         let agent = ureq::Agent::with_parts(config, ureq::unversioned::transport::DefaultConnector::default(), resolver);
-        Client { base_url, token: token.to_string(), agent, sleep: std::thread::sleep, signer: None }
+        Client { base_url, token: token.to_string(), agent, sleep: std::thread::sleep, signer: None, user: std::sync::OnceLock::new() }
     }
 
     /// This client, signing the calls that act as a device with `signer`.
     pub fn signed_by(mut self, signer: Arc<dyn RequestSigner>) -> Client {
         self.signer = Some(signer);
         self
+    }
+
+    /// `/users/:user_id`, the person this key speaks for: every call about
+    /// their devices and pairing is under it, and always their own.
+    pub(crate) fn user_path(&self) -> Result<String, Error> {
+        if let Some(id) = self.user.get() {
+            return Ok(format!("/users/{}", crate::client::slug_path(id)));
+        }
+        let id = self.verify_key()?.user_id;
+        if id.is_empty() {
+            return Err(fail("service_key", "this key names no person, and sync is a person's — sign in with `krowk auth login`"));
+        }
+        let _ = self.user.set(id.clone());
+        Ok(format!("/users/{}", slug_path(&id)))
     }
 
     /// Whether calls carry a key. Runs, and so all run metadata, need one.

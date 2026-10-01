@@ -179,15 +179,16 @@ fn a_pairing_runs_krowk_clients_five_messages_in_order() {
     let me = NewDevice { device: desktop.key.public(), signing: desktop.signing.public(), name: "desktop".into(), os: "linux".into() };
     let binding = Binding { kind: PeerKind::SamePersonDevice, user_id: user.clone(), a_device: laptop.key.id(), b_device: desktop.key.id() };
     let (pair_b, hello) = PairB::start(binding, typed, me).unwrap();
-    b.pairing_step(&found.id, PairingStep::Join, &hello).unwrap();
-    assert_eq!(b.find_open_pairing().unwrap_err().code(), "no_pairing", "joined, it is no longer open to anyone");
+    b.pairing_step(PairingStep::Join, &hello).unwrap();
+    let third_key = Client::new(&server.at("/v1"), "krowk_sk_owner#third");
+    assert_eq!(third_key.find_open_pairing().unwrap_err().code(), "no_pairing", "joined, it is no longer open to anyone else");
 
     let seen = a.show_pairing(&opened.id).unwrap();
     let (await_confirm, spake) = pair_a.receive_hello(&e2e::unhex(&seen.joiner_message).unwrap()).unwrap();
-    a.pairing_step(&opened.id, PairingStep::Answer, &spake).unwrap();
+    a.pairing_step(PairingStep::Answer, &spake).unwrap();
     let seen = b.show_pairing(&found.id).unwrap();
     let (await_reply, confirm) = pair_b.receive_spake(&e2e::unhex(&seen.initiator_message).unwrap()).unwrap();
-    assert_eq!(b.pairing_step(&found.id, PairingStep::Confirmation, &confirm).unwrap().state, "confirmed");
+    assert_eq!(b.pairing_step(PairingStep::Confirmation, &confirm).unwrap().state, "confirmed");
 
     let seen = a.show_pairing(&opened.id).unwrap();
     let confirmed = await_confirm.receive_confirm(&e2e::unhex(&seen.joiner_confirmation).unwrap()).unwrap();
@@ -195,12 +196,12 @@ fn a_pairing_runs_krowk_clients_five_messages_in_order() {
     let subject = Subject { kind: Kind::Device, name: new.name.clone(), os: new.os.clone(), device: new.device, signing: new.signing };
     let (_, add) = chain.batch(&key, vec![Change::Add(subject)], laptop.key.id(), &laptop.signing, now()).unwrap();
     let (await_ack, reply) = confirmed.approve(b"the chain, the wrap and the signing key").unwrap();
-    a.pairing_step(&opened.id, PairingStep::Reply, &reply).unwrap();
+    a.pairing_step(PairingStep::Reply, &reply).unwrap();
 
     let seen = b.show_pairing(&found.id).unwrap();
     let received = await_reply.receive_reply(&e2e::unhex(&seen.sealed_reply).unwrap()).unwrap();
     let (_, ack) = received.acknowledge();
-    assert_eq!(b.pairing_step(&found.id, PairingStep::Acknowledgement, &ack).unwrap().state, "done");
+    assert_eq!(b.pairing_step(PairingStep::Acknowledgement, &ack).unwrap().state, "done");
 
     let seen = a.show_pairing(&opened.id).unwrap();
     await_ack.receive_ack(&e2e::unhex(&seen.joiner_ack).unwrap()).unwrap();
@@ -221,20 +222,20 @@ fn a_pairing_is_one_per_person_and_ends_at_the_first_misstep_or_ten_minutes() {
     let first = a.open_pairing().unwrap();
     assert_eq!(a.open_pairing().unwrap_err().code(), "pairing_open");
 
-    b.pairing_step(&first.id, PairingStep::Join, b"hello").unwrap();
-    let twice = b.pairing_step(&first.id, PairingStep::Join, b"hello").unwrap_err();
+    b.pairing_step(PairingStep::Join, b"hello").unwrap();
+    let twice = b.pairing_step(PairingStep::Join, b"hello").unwrap_err();
     assert_eq!(twice.code(), "pairing_out_of_turn", "a second join is somebody else trying the code");
     assert_eq!(a.show_pairing(&first.id).unwrap_err().code(), "pairing_gone");
-    assert_eq!(a.pairing_step(&first.id, PairingStep::Answer, b"spake").unwrap_err().code(), "pairing_gone");
+    assert_eq!(a.pairing_step(PairingStep::Answer, b"spake").unwrap_err().code(), "pairing_gone");
 
-    let second = a.open_pairing().unwrap();
-    b.pairing_step(&second.id, PairingStep::Join, b"hello").unwrap();
-    let early = b.pairing_step(&second.id, PairingStep::Confirmation, b"early").unwrap_err();
+    a.open_pairing().unwrap();
+    b.pairing_step(PairingStep::Join, b"hello").unwrap();
+    let early = b.pairing_step(PairingStep::Confirmation, b"early").unwrap_err();
     assert_eq!(early.code(), "pairing_out_of_turn", "a confirmation before A's answer");
 
     let third = a.open_pairing().unwrap();
-    b.pairing_step(&third.id, PairingStep::Join, b"hello").unwrap();
-    b.end_pairing(&third.id).unwrap();
+    b.pairing_step(PairingStep::Join, b"hello").unwrap();
+    b.end_pairing().unwrap();
     assert_eq!(b.show_pairing(&third.id).unwrap_err().code(), "pairing_gone");
 
     let fourth = a.open_pairing().unwrap();
@@ -258,16 +259,34 @@ fn a_pairing_step_from_the_wrong_side_ends_it() {
     let a = laptop.client(&server, LAPTOP);
     let opened = a.open_pairing().unwrap();
     let b = Client::new(&server.at("/v1"), DESKTOP);
-    b.pairing_step(&opened.id, PairingStep::Join, b"hello").unwrap();
+    b.pairing_step(PairingStep::Join, b"hello").unwrap();
     // Joined, it is its two parties' alone: another of the person's keys
     // reads it as not existing.
     let other = Client::new(&server.at("/v1"), "krowk_sk_owner#third");
-    assert_eq!(other.pairing_step(&opened.id, PairingStep::Confirmation, b"x").unwrap_err().code(), "not_found");
-    assert_eq!(other.show_pairing(&opened.id).unwrap_err().code(), "not_found");
+    assert_eq!(other.pairing_step(PairingStep::Confirmation, b"x").unwrap_err().code(), "not_found");
+    assert_eq!(other.show_pairing(&opened.id).unwrap_err().code(), "no_pairing", "not theirs to read");
     // The joiner answering for A is out of turn, and ends it.
-    assert_eq!(b.pairing_step(&opened.id, PairingStep::Reply, b"x").unwrap_err().code(), "device_signature_missing");
-    assert_eq!(b.pairing_step(&opened.id, PairingStep::Acknowledgement, b"x").unwrap_err().code(), "pairing_out_of_turn");
+    assert_eq!(b.pairing_step(PairingStep::Reply, b"x").unwrap_err().code(), "device_signature_missing");
+    assert_eq!(b.pairing_step(PairingStep::Acknowledgement, b"x").unwrap_err().code(), "pairing_out_of_turn");
     assert_eq!(a.show_pairing(&opened.id).unwrap_err().code(), "pairing_gone");
+}
+
+/// Everything about a person is under `/v1/users/:user_id`, their own id
+/// from `GET /v1/key`; another person's id is not there to be found.
+#[test]
+fn a_persons_routes_answer_only_their_own_user_id() {
+    let server = Server::new();
+    let laptop = Dev::new("laptop");
+    init(&server, &laptop);
+    let mine = Client::new(&server.at("/v1"), DESKTOP).verify_key().unwrap().user_id;
+    assert!(mine.starts_with("usr_"), "{mine}");
+    let own = request("GET", &server.at(&format!("/v1/users/{mine}/devices")), DESKTOP, "", "");
+    assert_eq!(own.status, 200);
+    assert_eq!(own.json()["devices"].as_array().map(Vec::len), Some(2), "the list carries each device and its state");
+    for path in ["devices", "pairing", "devices/00/key"] {
+        let r = request("GET", &server.at(&format!("/v1/users/usr_someoneelse/{path}")), DESKTOP, "", "");
+        assert_eq!((r.status, r.code()), (404, "not_found".to_owned()), "{path}");
+    }
 }
 
 /// The approval mailbox is gone: whatever an old client asks of it is
