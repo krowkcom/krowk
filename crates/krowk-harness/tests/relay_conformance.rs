@@ -39,7 +39,7 @@ const FIXTURE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/
 /// Every test, its devices and its session: `<test>-host` holds the lease
 /// of session `<test>`, `<test>-viewer` and `<test>-viewer2` watch it, all
 /// in workspace A.
-const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs", "xws", "tickets", "flood", "pool", "hostvt", "equal", "pool2", "pool3"];
+const TESTS: &[&str] = &["auth", "fanout", "plaintext", "resume", "beyond", "behind", "absent", "heartbeat", "window", "order", "replace", "stream", "rate", "lockout", "size", "prejoin", "crowd", "idle", "envs", "xws", "tickets", "flood", "pool", "hostvt", "equal", "pool2", "pool3", "samedev"];
 
 /// How long anything the relay should answer may take, and how long to
 /// wait to be sure nothing comes.
@@ -909,6 +909,43 @@ async fn r_relay_1_a_frame_with_no_host_is_refused_host_absent_and_the_link_stay
             other => panic!("expected the routed frame, got {other:?}"),
         }
     }
+}
+
+/// R-RELAY-1: a viewer of the host's own device — `krowk sync attach` on
+/// the machine that hosts — is a viewer like any other. Its joining and
+/// leaving, closed cleanly or dropped, never takes the channel from the
+/// host: no other viewer is told the host went, the host's connection stays
+/// and carries on, and a viewer joining after finds the host there.
+#[tokio::test]
+async fn r_relay_1_a_viewer_of_the_hosts_own_device_never_displaces_the_host() {
+    let t = "samedev";
+    let (mut h, _) = joined(t, &host(t)).await;
+    let (mut v, _) = joined(t, &viewer(t, "viewer")).await;
+    h.expect("viewer").await;
+    let own = As { role: RELAY_ROLE_VIEWER, fence: None, stream: None, ..host(t) };
+    for clean in [true, false] {
+        let (mut c, j) = joined(t, &own).await;
+        assert_eq!((j["role"].as_str(), j["host"].as_bool()), (Some("viewer"), Some(true)), "{j}");
+        let came = h.expect("viewer").await;
+        assert_eq!((came["event"].as_str(), came["device"].as_str()), (Some("joined"), Some(device_id("samedev-host").to_string().as_str())), "{came}");
+        if clean {
+            c.ws.close(None).await.unwrap();
+        }
+        drop(c);
+        let went = h.expect("viewer").await;
+        assert_eq!((went["event"].as_str(), went["link"].clone()), (Some("left"), j["link"].clone()), "{went}");
+    }
+    h.batch(1).await;
+    loop {
+        match v.recv(ANSWER).await.expect("the host's batch reaches the other viewer") {
+            In::Control(c) if c["type"] == "host" => panic!("the other viewer was told {c}"),
+            In::Control(c) if c["type"] == "viewer" => continue,
+            In::Env(e) if e.kind == KIND_BATCH => break assert_eq!(e.seq, 1),
+            other => panic!("expected batch 1, got {other:?}"),
+        }
+    }
+    let (_v2, j) = joined(t, &viewer(t, "viewer2")).await;
+    assert_eq!(j["host"], true, "{j}");
 }
 
 /// R-RELAY-1: viewers reconnecting in a loop use up their own join
