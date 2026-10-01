@@ -21,6 +21,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   production registry, `krowk sync host` and `krowk sync attach` dial
   `wss://relay.krowk.com` by default; a stand-in or custom `KROWK_API_URL`
   keeps the local relay, and `KROWK_RELAY_URL` still overrides both.
+- **A host the relay let go joins again.** When the relay dropped `krowk
+  sync host`'s link without the close reaching it, or the host was stopped
+  or asleep longer than the relay keeps a silent link, the host stayed off
+  the relay with no error while viewers showed it gone. It now joins again
+  at once, and says why on stderr.
+- **A prompt sent as the host went away runs when it is back.** A viewer
+  that sent a command the host never received, because its link was lost
+  just then, now sends it again when the host returns. The host runs it
+  once.
 
 ### Changed
 

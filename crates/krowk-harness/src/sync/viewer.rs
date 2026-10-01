@@ -370,11 +370,12 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                     In::Closed => { ws = None; retry = Instant::now() + Duration::from_secs(1); }
                     In::Alive => {}
                     In::Control(v) if v["type"] == "host" => {
-                        // Presence is the relay's word, not the host's: while a
-                        // host has welcomed this connection it changes nothing.
-                        // Only a viewer waiting for a host joins again to say
-                        // hello, and nothing it sends again after that welcome
-                        // runs twice (the host dedups by command id).
+                        // Presence is the relay's word, not the host's. A host
+                        // arriving — the first, or one back from a link the relay
+                        // let go, which may have taken a command with it — is
+                        // joined again and said hello to: its welcome sends again
+                        // every command not yet acknowledged, and none runs twice
+                        // (the host dedups by command id).
                         let present = v["present"].as_bool().unwrap_or(false);
                         let welcomed = link.as_ref().is_some_and(|l| l.welcomed());
                         if !present && (on.is_some() || moving.is_some()) {
@@ -383,7 +384,13 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                             ws = None;
                             retry = Instant::now();
                             (reprobe, backoff) = later(backoff);
-                        } else if present && !welcomed { ws = None; retry = Instant::now(); } else if !present { host = false; frame.push(Update::Host(false)); }
+                        } else if present && (!welcomed || (on.is_none() && moving.is_none())) { ws = None; retry = Instant::now(); } else if !present { host = false; frame.push(Update::Host(false)); }
+                    }
+                    // A frame sent as the host went: dropped by the relay, so the
+                    // host is not there, and what was sent waits, unacknowledged,
+                    // for the welcome of the next.
+                    In::Control(v) if v["type"] == "error" && v["code"] == "host_absent" => {
+                        if host { host = false; frame.push(Update::Host(false)); }
                     }
                     In::Control(v) if v["type"] == "resync" => {
                         if v["reason"] == "stream" {
