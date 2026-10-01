@@ -71,9 +71,21 @@ fn signed(ctx: &Ctx, k: &Keys, what: &str) -> Result<Client, Error> {
     Ok(keyed_client(ctx, what)?.signed_by(krowk_client::e2e::DeviceSigner::new(k.device, key).shared()))
 }
 
-fn relay(ctx: &Ctx) -> String {
-    let r = ctx.env("KROWK_RELAY_URL");
-    if r.trim().is_empty() { format!("ws://{}", super::relay::DEFAULT_ADDR) } else { r.trim().to_string() }
+/// The relay hosted beside the production registry.
+const HOSTED_RELAY: &str = "wss://relay.krowk.com";
+
+/// The relay a sync link dials: `KROWK_RELAY_URL` when set, else the hosted
+/// relay for the production registry, else the local stand-in (`krowk relay
+/// serve`) that a stand-in or custom registry is run beside.
+fn relay(ctx: &Ctx, base_url: &str) -> String {
+    relay_for(&ctx.env("KROWK_RELAY_URL"), base_url)
+}
+
+fn relay_for(asked: &str, base_url: &str) -> String {
+    if !asked.trim().is_empty() {
+        return asked.trim().to_string();
+    }
+    if base_url.trim_end_matches('/') == krowk_api::DEFAULT_BASE_URL { HOSTED_RELAY.to_string() } else { format!("ws://{}", super::relay::DEFAULT_ADDR) }
 }
 
 /// Direct paths beside the relay (R-NET-1): on when this machine can check
@@ -159,7 +171,7 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let spawn = super::host::spawner(ctx)?;
     let o = host::Options {
-        relay: relay(ctx),
+        relay: relay(ctx, &api.base_url),
         env,
         api,
         device: k.device,
@@ -182,7 +194,7 @@ pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let k = keys(ctx)?;
     let api = Arc::new(signed(ctx, &k, "krowk sync attach")?);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
-    let o = viewer::Options { relay: relay(ctx), env, api, device: k.device, signing: k.signing, keys: k.user, chain: k.chain, session: session.clone(), known: None };
+    let o = viewer::Options { relay: relay(ctx, &api.base_url), env, api, device: k.device, signing: k.signing, keys: k.user, chain: k.chain, session: session.clone(), known: None };
     krowk_harness::sync::run_attach(o, &mut *ctx.io.stdout).map_err(|e| fail("sync_failed", e))
 }
 
@@ -209,4 +221,21 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
     // so what follows is stream-json, as `krowk sync attach` prints it.
     let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sync attach`); the TUI does not attach synced sessions yet");
     Some(attach(ctx, &[id]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relay_for;
+
+    /// The production registry's devices dial the hosted relay with no
+    /// `KROWK_RELAY_URL`; a stand-in or custom registry keeps the local
+    /// relay, and `KROWK_RELAY_URL` always wins.
+    #[test]
+    fn r_relay_1_the_production_registry_defaults_to_the_hosted_relay() {
+        assert_eq!(relay_for("", "https://api.krowk.com/v1"), "wss://relay.krowk.com");
+        assert_eq!(relay_for(" ", "https://api.krowk.com/v1/"), "wss://relay.krowk.com");
+        assert_eq!(relay_for("", "http://127.0.0.1:3000/v1"), "ws://127.0.0.1:7790");
+        assert_eq!(relay_for("", "https://staging.example.com/v1"), "ws://127.0.0.1:7790");
+        assert_eq!(relay_for("ws://10.0.0.2:7790", "https://api.krowk.com/v1"), "ws://10.0.0.2:7790");
+    }
 }
