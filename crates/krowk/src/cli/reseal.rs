@@ -162,7 +162,9 @@ fn one(api: &Client, env: &str, me: &Me, s: &SyncSession, old: &Old, keys: &User
     // A key epoch more: a device of the old list that the new one does not
     // name holds every key so far, and nothing written from here is under
     // one of them (crypto.md → Key epochs).
-    let key = key.rotated().map_err(|e| fail("sync_failed", e.0))?;
+    // A ring already at the most epochs it may hold is left, as a refused
+    // write is: the rest of the walk goes on.
+    let Ok(key) = key.rotated() else { return Ok(Step::Left) };
     let sealed = e2e::seal_session_keys(&key, &raw, keys, chain.generation()).map_err(|e| fail("sync_failed", e.0))?;
     let signature = session_record::sign(&raw, &sealed, session_record::SEAL_USER, keys.newest(), &me.signing).map_err(|e| fail("sync_failed", e.0))?;
     let device = me.device.id().to_string();
