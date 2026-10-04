@@ -1865,3 +1865,77 @@ fn a_connect_question_asked_while_hidden_waits_to_be_opened() {
     tm.keys(&["/connect", "Enter"]);
     assert!(tm.wait_for("Which account?", Duration::from_secs(5)).is_some(), "{}", tm.screen());
 }
+
+/// A 1×1 PNG.
+const PNG_1X1: &str = "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8cfc0f01f0005000201a7e6d4e90000000049454e44ae426082";
+
+#[test]
+fn a_dropped_screenshot_becomes_image_1_and_reaches_the_model() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("dropimage");
+    let png: Vec<u8> = (0..PNG_1X1.len()).step_by(2).map(|i| u8::from_str_radix(&PNG_1X1[i..i + 2], 16).unwrap()).collect();
+    let shot = b.root.join("Screenshot 2026-10-04 at 10.00.png");
+    std::fs::write(&shot, &png).unwrap();
+    let Some(tm) = Tmux::start("dropimage", 100, 30, &b.root.join("repo"), &b.env(&m.url), &[]) else { return };
+    assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["what is in"]);
+    // What a terminal sends for a file dragged onto it: its path, quoted,
+    // as a bracketed paste.
+    tm.tmux(&["set-buffer", "--", &format!("'{}'", shot.display())]);
+    tm.tmux(&["paste-buffer", "-p", "-t", "t"]);
+    assert!(tm.wait_for("what is in [Image #1]", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    // The file can go: it was read as it was dropped.
+    std::fs::remove_file(&shot).unwrap();
+    tm.keys(&["?", "Enter"]);
+    assert!(tm.wait_for("tokens", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    let seen = m.seen.lock().unwrap();
+    let first = &seen.iter().find(|s| s.body["messages"].is_array()).expect("the model was asked").body["messages"][0]["content"];
+    assert_eq!(first[0]["text"], "what is in [Image #1] ?", "{first}");
+    assert_eq!(first[1]["text"], "[Image #1]");
+    assert_eq!(first[2]["source"]["media_type"], "image/png");
+    let sent: Vec<u8> = {
+        let s = first[2]["source"]["data"].as_str().unwrap();
+        let a = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let bits: Vec<u8> = s.bytes().filter(|c| *c != b'=').map(|c| a.iter().position(|x| *x == c).unwrap() as u8).collect();
+        bits.chunks(4).flat_map(|c| {
+            let n = c.iter().enumerate().fold(0u32, |n, (i, v)| n | (u32::from(*v) << (18 - 6 * i)));
+            (0..c.len() - 1).map(move |i| (n >> (16 - 8 * i)) as u8)
+        }).collect()
+    };
+    assert_eq!(sent, png, "the bytes as they were, a small PNG being sent as it is");
+    // And kept beside the session's log.
+    let kept: Vec<PathBuf> = walk(&b.root.join("home/.krowk/sessions")).into_iter().filter(|p| p.parent().is_some_and(|d| d.ends_with("images"))).collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(std::fs::read(&kept[0]).unwrap(), png);
+}
+
+#[test]
+fn ctrl_v_pastes_the_clipboards_screenshot_and_backspace_takes_it_whole() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("ctrlv");
+    let png = b.root.join("clip.png");
+    std::fs::write(&png, (0..PNG_1X1.len()).step_by(2).map(|i| u8::from_str_radix(&PNG_1X1[i..i + 2], 16).unwrap()).collect::<Vec<u8>>()).unwrap();
+    // A Wayland clipboard holding a screenshot, as `wl-paste` reports it.
+    let fake = b.root.join("bin/wl-paste");
+    std::fs::write(&fake, format!("#!/bin/sh\ncase \"$*\" in\n  --list-types) printf 'image/png\\n' ;;\n  *image/png*) cat '{}' ;;\n  *) exit 1 ;;\nesac\n", png.display())).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut env = b.env(&m.url);
+    env.push(("WAYLAND_DISPLAY".into(), "wayland-test".into()));
+    let Some(tm) = Tmux::start("ctrlv", 100, 30, &b.root.join("repo"), &env, &[]) else { return };
+    assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["C-v"]);
+    assert!(tm.wait_for("→ [Image #1]", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["C-v"]);
+    assert!(tm.wait_for("→ [Image #1] [Image #2]", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    // One backspace takes the space after it, the next the whole of #2.
+    tm.keys(&["BSpace", "BSpace"]);
+    tm.wait_still(|s: &str| s.contains("→ [Image #1]") && !s.contains("[Image #2]"), Duration::from_secs(5)).unwrap_or_else(|| panic!("{}", tm.screen()));
+    tm.keys(&["describe it", "Enter"]);
+    assert!(tm.wait_for("tokens", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    let seen = m.seen.lock().unwrap();
+    let content = &seen.iter().find(|s| s.body["messages"].is_array()).expect("the model was asked").body["messages"][0]["content"];
+    assert_eq!(content[0]["text"], "[Image #1] describe it");
+    let kinds: Vec<&str> = content.as_array().unwrap().iter().map(|c| c["type"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["text", "text", "image"], "only the image still named was sent: {content}");
+}

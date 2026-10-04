@@ -272,7 +272,7 @@ fn synthetic_session(sessions: &Path, cwd: &Path, turns: usize, tokens: usize) -
         let turn_id = format!("turn-{t}");
         let mut append = |body| log.append(body).map(|_| ()).map_err(|e| e.message().to_string());
         append(LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None })?;
-        append(LogBody::ItemCompleted { turn_id: turn_id.clone(), item_id: format!("p-{t}"), item: Item::UserText { text: format!("tell me part {t}") } })?;
+        append(LogBody::ItemCompleted { turn_id: turn_id.clone(), item_id: format!("p-{t}"), item: Item::user(format!("tell me part {t}")) })?;
         append(LogBody::ItemCompleted { turn_id: turn_id.clone(), item_id: format!("a-{t}"), item: Item::AssistantText { text: answer.clone() } })?;
         let usage = Usage { input_tokens: 20, output_tokens: per_turn as i64, ..Usage::default() };
         append(LogBody::ResponseCompleted { turn_id: turn_id.clone(), response_id: None, model: model.model.clone(), usage, stop_reason: Some("end_turn".into()), item_ids: vec![format!("a-{t}")] })?;

@@ -148,8 +148,13 @@ pub struct ProviderBlob {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Item {
-    /// What the person asked.
-    UserText { text: String },
+    /// What the person asked, and the images they attached to it: each one
+    /// named in `text` by its `[Image #N]`.
+    UserText {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageRef>,
+    },
     /// What the model answered, as text.
     AssistantText { text: String },
     /// The model's reasoning: its readable text (often a summary, or empty
@@ -165,6 +170,37 @@ pub enum Item {
     /// What running it produced. A refusal or a failure is a result too,
     /// with `isError`, so the model can read why.
     ToolResult { call_id: String, output: String, is_error: bool },
+}
+
+/// An image as a client sends it with a prompt or a steer: its bytes, which
+/// the engine keeps beside the session's log, and the number its
+/// `[Image #N]` in the text carries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageInput {
+    pub number: u32,
+    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`.
+    pub media_type: String,
+    /// The bytes, base64.
+    pub data: String,
+}
+
+/// An image in the log: its `[Image #N]`, and its file in the session's
+/// `images/` directory, which is where its bytes are read from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageRef {
+    pub number: u32,
+    pub media_type: String,
+    /// The file's name in `images/`, never a path.
+    pub file: String,
+}
+
+impl Item {
+    /// The person's text, with no images.
+    pub fn user(text: impl Into<String>) -> Item {
+        Item::UserText { text: text.into(), images: Vec::new() }
+    }
 }
 
 /// What an item is, before any of it has arrived.
@@ -366,6 +402,9 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
         text: String,
+        /// The images the text names by `[Image #N]`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageInput>,
         /// The model for this turn; the session's last one when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<ModelRef>,
@@ -390,7 +429,12 @@ pub enum Command {
     /// Add input to the running turn without stopping it. The engine takes
     /// it before its next model call, and it is logged there as a
     /// `userText` item.
-    Steer { session_id: String, text: String },
+    Steer {
+        session_id: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageInput>,
+    },
     /// Answer an `approval.requested`.
     Approve { session_id: String, request_id: String, decision: ApprovalDecision },
     /// Continue the session on another model, instance or engine

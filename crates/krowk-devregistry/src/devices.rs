@@ -433,7 +433,7 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
         }
         let generation_before = chain.as_ref().map_or(0, Chain::generation);
         let next = match &chain {
-            None => Chain::genesis(entry),
+            None => Chain::verify(std::slice::from_ref(entry), None),
             Some(c) => c.extend(entry),
         }
         .map_err(|e| refused(&e.0))?;

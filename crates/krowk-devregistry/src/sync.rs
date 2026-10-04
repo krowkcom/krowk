@@ -30,6 +30,9 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 const WRAPPED_SESSION_KEY_BYTES: usize = 74;
+/// A rotated session's wrapped key ring is 32 bytes longer per key epoch
+/// after the first, up to this many epochs.
+const MAX_SESSION_KEY_EPOCHS: usize = 64;
 const MAX_SEALED_INDEX_BYTES: usize = 64 << 10;
 const DEFAULT_LEASE_TTL: i64 = 60;
 const LEASE_TTL: std::ops::RangeInclusive<i64> = 10..=600;
@@ -75,6 +78,31 @@ fn epoch_of(people: &HashMap<String, crate::devices::Person>, person: &str) -> u
 /// of that is the "cannot change" it always was.
 fn resealable(people: &HashMap<String, crate::devices::Person>, x: &Session, wrapped: &str, record: (&str, &str), signer: &str) -> bool {
     x.sealed_epoch < epoch_of(people, &x.owner) && !x.signer.is_empty() && x.wrapped_key != wrapped && !record.0.is_empty() && record.0 != x.record_signature && record.1 == signer
+}
+
+/// A wrapped session key: 74 bytes, or a rotated ring 32 bytes longer per
+/// key epoch after the first.
+fn wrapped_key(value: &str) -> Result<Vec<u8>, Resp> {
+    let raw = blob("wrapped_key", value, None, None)?;
+    let epochs = raw.len().checked_sub(WRAPPED_SESSION_KEY_BYTES - 32).filter(|n| n % 32 == 0).map_or(0, |n| n / 32);
+    if !(1..=MAX_SESSION_KEY_EPOCHS).contains(&epochs) {
+        return Err(invalid("wrapped_key", &format!("must be {WRAPPED_SESSION_KEY_BYTES} bytes, or 32 more for each of up to {} key rotations", MAX_SESSION_KEY_EPOCHS - 1)));
+    }
+    Ok(raw)
+}
+
+/// The user key generation a stored wrapped key names (bytes 2..6).
+fn generation(wrapped_hex: &str) -> u32 {
+    unhex(wrapped_hex).and_then(|b| b.get(2..6).map(|g| u32::from_be_bytes(g.try_into().expect("four bytes")))).unwrap_or(0)
+}
+
+/// A key rotation (the registry's `SessionsController#rotatable?`): the
+/// holder may replace a session's wrapped key and record together when the
+/// new key names a later user key generation and holds exactly one key
+/// more, and the new record differs and names the writer. The lease is
+/// checked where the write happens.
+fn rotatable(x: &Session, wrapped: &str, record: (&str, &str), signer: &str) -> bool {
+    !x.signer.is_empty() && generation(wrapped) > generation(&x.wrapped_key) && wrapped.len() == x.wrapped_key.len() + 64 && !record.0.is_empty() && record.0 != x.record_signature && record.1 == signer
 }
 
 /// One chunk of a session's log: an upload like an artifact's, under a key
@@ -500,15 +528,16 @@ fn mint(s: &mut Session) -> String {
 }
 
 /// Creates the session under its id, or writes its sealed index — the
-/// latter the lease holder's, presenting its token. The wrapped key never
-/// changes; a body naming no `sealed_index` leaves it as it is.
+/// latter the lease holder's, presenting its token. The wrapped key changes
+/// only in a re-seal (`resealable`) or a key rotation (`rotatable`); a body
+/// naming no `sealed_index` leaves it as it is.
 pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let workspace = gate(req)?;
         let id = session_id(id).ok_or_else(not_found)?;
         let v = body(req, "session")?;
         let mut f = v.fields();
-        let wrapped = hex(&blob("wrapped_key", &required(&mut f, "wrapped_key")?, Some(WRAPPED_SESSION_KEY_BYTES), None)?);
+        let wrapped = hex(&wrapped_key(&required(&mut f, "wrapped_key")?)?);
         let named = f.raw("sealed_index").is_some();
         let sealed = f.string("sealed_index");
         let sealed = if sealed.is_empty() { String::new() } else { hex(&blob("sealed_index", &sealed, None, Some(MAX_SEALED_INDEX_BYTES))?) };
@@ -525,6 +554,7 @@ pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         let cap = if s.sync.max_sessions == 0 { MAX_SESSIONS } else { s.sync.max_sessions };
         let held = s.sync.sessions.keys().filter(|(w, _)| *w == workspace).count();
         let reseal = s.sync.sessions.get(&key).is_some_and(|x| resealable(&s.sync.people, x, &wrapped, (&record_signature, &record_signer), signer));
+        let rotate = !reseal && s.sync.sessions.get(&key).is_some_and(|x| rotatable(x, &wrapped, (&record_signature, &record_signer), signer));
         let current_epoch = s.sync.sessions.get(&key).map_or(0, |x| epoch_of(&s.sync.people, &x.owner));
         let Some(x) = s.sync.sessions.get_mut(&key) else {
             if held >= cap {
@@ -547,6 +577,17 @@ pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
                 return Err(crate::devices::revoked(refused));
             }
             (x.wrapped_key, x.record_signature, x.signer, x.sealed_epoch) = (wrapped.clone(), record_signature.clone(), record_signer.clone(), current_epoch);
+            x.updated_at = now;
+        }
+        if rotate {
+            if token.is_empty() {
+                return Err(parameter_missing("lease_token"));
+            }
+            holder(x, &token, now, signer)?;
+            if let Some(refused) = &holder_revoked {
+                return Err(crate::devices::revoked(refused));
+            }
+            (x.wrapped_key, x.record_signature, x.signer) = (wrapped.clone(), record_signature.clone(), record_signer.clone());
             x.updated_at = now;
         }
         if x.wrapped_key != wrapped {

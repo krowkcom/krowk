@@ -22,7 +22,10 @@ between status items, edits as removed and added lines on red and green
 bands, fenced code without its fences on a background band. krowk's
 implementation is its own: no Grok Build source file was copied or adapted,
 so no Apache-2.0 obligations attach to krowk's code. The acknowledgement is
-recorded here because the design is theirs.
+recorded here because the design is theirs. Pasting an image follows the
+same harnesses' convention (Grok Build's, Codex's, Claude Code's): Ctrl-V
+reads the clipboard, the image is an `[Image #N]` placeholder that deletes
+as one unit, and a dropped file is read as it lands; again no code copied.
 
 --------------------------------------------------------------------------------
 Syntax grammars (bat, via two-face) — compiled into the full build

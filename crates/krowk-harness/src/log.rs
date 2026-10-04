@@ -449,7 +449,7 @@ fn head_prompt(path: &Path, cwd: &Path) -> Option<String> {
         _ => return None,
     }
     lines.take(HEAD_LINES).filter_map(|l| serde_json::from_str::<LogEvent>(&l).ok()).find_map(|ev| match ev.body {
-        LogBody::ItemCompleted { item: Item::UserText { text }, .. } if !text.starts_with(crate::todo::REMINDER) => Some(text),
+        LogBody::ItemCompleted { item: Item::UserText { text, .. }, .. } if !text.starts_with(crate::todo::REMINDER) => Some(text),
         _ => None,
     })
 }
@@ -515,7 +515,7 @@ mod tests {
         let (mut log, root) = SessionLog::create(&dir, Path::new("/repo"), "dev").unwrap();
         assert_eq!(root.id, root.session_id, "the root's id is the session's");
         assert!(root.parent_id.is_none());
-        let a = log.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::UserText { text: "hi".into() } }).unwrap();
+        let a = log.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::user("hi") }).unwrap();
         let b = log.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "j".into(), item: Item::AssistantText { text: "yo".into() } }).unwrap();
         assert_eq!((a.parent_id.as_deref(), b.parent_id.as_deref()), (Some(root.id.as_str()), Some(a.id.as_str())));
         // One writer: a second open is refused while the first holds the lock.
@@ -554,7 +554,7 @@ mod tests {
     fn resume_lists_this_directorys_prompted_sessions_newest_first() {
         let dir = std::env::temp_dir().join(format!("krowk-harness-recent-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let said = |text: &str| LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::UserText { text: text.into() } };
+        let said = |text: &str| LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::user(text) };
         let (mut old, _) = SessionLog::create(&dir, Path::new("/repo"), "dev").unwrap();
         old.append(said(&format!("{} the todo list", crate::todo::REMINDER))).unwrap();
         old.append(said("fix the parser")).unwrap();

@@ -130,7 +130,7 @@ impl Home {
 
     fn prompt(&self, text: &str, mode: PermissionMode) -> Command {
         let model = Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap();
-        Command::Prompt { session_id: None, text: text.into(), model: Some(model), permission_mode: mode, toolset: None, effort: None, budget: None }
+        Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, budget: None }
     }
 }
 
@@ -779,7 +779,7 @@ impl Raw {
 
 fn prompt_in(home: &Home, session: Option<&str>, text: &str) -> Command {
     let Command::Prompt { model, permission_mode, .. } = home.prompt(text, PermissionMode::Default) else { unreachable!() };
-    Command::Prompt { session_id: session.map(String::from), text: text.into(), model, permission_mode, toolset: None, effort: None, budget: None }
+    Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model, permission_mode, toolset: None, effort: None, budget: None }
 }
 
 fn seqs_of(frames: &[ServerFrame]) -> Vec<u64> {

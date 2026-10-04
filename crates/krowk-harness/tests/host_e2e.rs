@@ -352,11 +352,11 @@ fn r_proto_1_steer_joins_the_running_turn_before_its_next_model_call() {
     let (lines, result) = rt.block_on(async {
         // No turn is running yet: there is nothing to steer.
         let (tx, _rx) = mpsc::channel(8);
-        let err = host.execute(Command::Steer { session_id: "none".into(), text: "x".into() }, tx).await.unwrap_err();
+        let err = host.execute(Command::Steer { session_id: "none".into(), text: "x".into(), images: Vec::new() }, tx).await.unwrap_err();
         assert_eq!(err.code, "no_running_turn");
 
         let (tx, mut rx) = mpsc::channel(1024);
-        let cmd = Command::Prompt { session_id: None, text: "read README.md and summarise it in one line".into(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "read README.md and summarise it in one line".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
         let mut lines = Vec::new();
@@ -366,7 +366,7 @@ fn r_proto_1_steer_joins_the_running_turn_before_its_next_model_call() {
                 Some(line) = rx.recv() => {
                     if !steered && let StreamLine::Live(LiveEvent::ItemStarted { session_id, .. }) = &line {
                         let (tx, _rx) = mpsc::channel(8);
-                        host.execute(Command::Steer { session_id: session_id.clone(), text: "and say which licence it has".into() }, tx).await.unwrap();
+                        host.execute(Command::Steer { session_id: session_id.clone(), text: "and say which licence it has".into(), images: Vec::new() }, tx).await.unwrap();
                         steered = true;
                     }
                     lines.push(line);
@@ -418,7 +418,7 @@ fn r_proto_1_steering_an_interrupted_turn_never_read_comes_back_on_its_result() 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let result = rt.block_on(async {
         let (tx, mut rx) = mpsc::channel(1024);
-        let cmd = Command::Prompt { session_id: None, text: "wait".into(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "wait".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
         let mut session = None;
@@ -432,7 +432,7 @@ fn r_proto_1_steering_an_interrupted_turn_never_read_comes_back_on_its_result() 
                         // Let the request go out, then steer and interrupt.
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                         let (t, _r) = mpsc::channel(8);
-                        host.execute(Command::Steer { session_id: id.clone(), text: "and the docs".into() }, t).await.unwrap();
+                        host.execute(Command::Steer { session_id: id.clone(), text: "and the docs".into(), images: Vec::new() }, t).await.unwrap();
                         let (t, _r) = mpsc::channel(8);
                         host.execute(Command::Interrupt { session_id: id }, t).await.unwrap();
                     }
@@ -476,7 +476,7 @@ fn r_cred_1_a_stored_keys_command_never_blocks_the_hosts_runtime() {
             }
         });
         let started = std::time::Instant::now();
-        let cmd = krowk_harness::protocol::Command::Prompt { session_id: None, text: "hi".into(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = krowk_harness::protocol::Command::Prompt { session_id: None, text: "hi".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
         let r = host.execute(cmd, tx).await;
         ticker.abort();
         assert!(r.is_ok(), "{:?}", r.err());
@@ -485,4 +485,54 @@ fn r_cred_1_a_stored_keys_command_never_blocks_the_hosts_runtime() {
     assert!(took >= std::time::Duration::from_millis(1400), "the command ran: {took:?}");
     assert!(ticks >= 15, "the runtime kept running while the command did: {ticks} ticks in {took:?}");
     assert_eq!(m.seen.lock().unwrap()[0].header("x-api-key"), Some("sk-from-command"));
+}
+
+#[test]
+fn an_image_sent_with_a_prompt_is_kept_beside_the_log_and_reaches_the_model() {
+    use base64::Engine as _;
+    use krowk_harness::host::Host;
+    use krowk_harness::protocol::{Command, ImageInput};
+    use tokio::sync::mpsc;
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("A red dot.")));
+    let home = Home::new("image", &m.url);
+    let host = Host::new(home.config());
+    let model = Registry::resolve(&InstancesConfig::default(), &home.env()).parse_model("claude-sonnet-4-6").unwrap();
+    let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0";
+    let data = base64::engine::general_purpose::STANDARD.encode(png);
+    let prompt = |images: Vec<ImageInput>| Command::Prompt { session_id: None, text: "what is in [Image #1]?".into(), images, model: Some(model.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let sessions = log::sessions_dir(&home.env()).unwrap();
+    // A file that is not the image it says is refused before any session is made.
+    let (tx, _rx) = mpsc::channel(1024);
+    let bad = ImageInput { number: 1, media_type: "image/jpeg".into(), data: data.clone() };
+    assert_eq!(rt.block_on(host.execute(prompt(vec![bad]), tx)).unwrap_err().code, "bad_image");
+    assert!(log::list(&sessions).unwrap_or_default().is_empty(), "no session for a refused prompt");
+    // Nor for one the catalog says the model cannot read.
+    let blind = Host::new(HostConfig { catalog: Arc::new(|_, _| Some(ModelInfo { images: Some(false), ..ModelInfo::default() })), ..home.config() });
+    let (tx, _rx) = mpsc::channel(1024);
+    let image = ImageInput { number: 1, media_type: "image/png".into(), data: data.clone() };
+    assert_eq!(rt.block_on(blind.execute(prompt(vec![image]), tx)).unwrap_err().code, "model_reads_no_images");
+    assert!(log::list(&sessions).unwrap_or_default().is_empty(), "no session for a refused prompt");
+
+    let (tx, mut rx) = mpsc::channel(1024);
+    let image = ImageInput { number: 1, media_type: "image/png".into(), data: data.clone() };
+    let result = rt.block_on(host.execute(prompt(vec![image]), tx)).unwrap().unwrap();
+    assert_eq!(result.status, TurnStatus::Completed);
+    let mut logged = None;
+    while let Ok(l) = rx.try_recv() {
+        if let StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::UserText { images, .. }, .. }, .. }) = l {
+            logged = Some(images);
+        }
+    }
+    let refs = logged.expect("the prompt is logged");
+    assert_eq!(refs.len(), 1);
+    assert_eq!((refs[0].number, refs[0].media_type.as_str()), (1, "image/png"));
+    let file = sessions.join(&result.session_id).join("images").join(&refs[0].file);
+    assert_eq!(std::fs::read(&file).unwrap(), png, "the bytes, kept as sent");
+    #[cfg(unix)]
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&file).unwrap().permissions()) & 0o777, 0o600);
+    let seen = m.seen.lock().unwrap();
+    let content = &seen[0].body["messages"][0]["content"];
+    assert_eq!(content[1]["text"], "[Image #1]");
+    assert_eq!(content[2]["source"]["data"], data.as_str(), "{content}");
 }

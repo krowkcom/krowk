@@ -147,7 +147,7 @@ fn r_sync_2_a_chunk_with_a_stale_or_missing_lease_token_is_refused() {
     let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap();
     let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60, "production").unwrap();
 
-    let sealed = e2e::ChunkSealer::new(&key, id, 0, e2e::NO_PREVIOUS_CHUNK, held.fence).seal(b"a stale holder's turn", false).unwrap();
+    let sealed = e2e::ChunkSealer::new(&key.clone().into(), id, 0, e2e::NO_PREVIOUS_CHUNK, held.fence).seal(b"a stale holder's turn", false).unwrap();
     for token in [held.token.as_str(), ""] {
         let e = cb.put_chunk(&uuid(&id), 0, &sealed, token).unwrap_err();
         assert_eq!(e.code(), "lease_stale", "{:?}", e.body);
@@ -221,7 +221,7 @@ fn r_sync_2_a_displaced_holders_pending_chunk_is_replaced_not_finalized() {
 
     // A declares chunk 0 by hand and is displaced before finalizing it.
     let held = client.acquire_lease(&session, &a.id().to_string(), 60, "production").unwrap();
-    let stale = e2e::ChunkSealer::new(&key, id, 0, e2e::NO_PREVIOUS_CHUNK, held.fence).seal(b"A's", false).unwrap();
+    let stale = e2e::ChunkSealer::new(&key.clone().into(), id, 0, e2e::NO_PREVIOUS_CHUNK, held.fence).seal(b"A's", false).unwrap();
     let declare = |by: &Machine, token: &str, blob: &[u8], size: usize| {
         let body = serde_json::json!({ "chunk": { "index": 0, "byte_size": size, "checksum": e2e::hex(&sha(blob)), "lease_token": token } });
         raw_as(registry.addr(), &by.token, Some(&*by.signer), "POST", &format!("/v1/sessions/{session}/chunks"), &body.to_string())
@@ -232,10 +232,10 @@ fn r_sync_2_a_displaced_holders_pending_chunk_is_replaced_not_finalized() {
     assert!(fin.starts_with("HTTP/1.1 409") && fin.contains("lease_stale"), "{fin}");
 
     // B's own chunk 0 replaces it and lands.
-    let mine = e2e::ChunkSealer::new(&key, id, 0, e2e::NO_PREVIOUS_CHUNK, moved.fence).seal(b"B's", false).unwrap();
+    let mine = e2e::ChunkSealer::new(&key.clone().into(), id, 0, e2e::NO_PREVIOUS_CHUNK, moved.fence).seal(b"B's", false).unwrap();
     cb.put_chunk(&session, 0, &mine, &moved.token).unwrap();
     let listed = client.list_chunks(&session, None, 50).unwrap();
-    assert_eq!(e2e::ChunkReader::new(&key, id).open(&client.read_chunk(&listed.chunks[0]).unwrap()).unwrap(), b"B's");
+    assert_eq!(e2e::ChunkReader::new(&key.clone().into(), id).open(&client.read_chunk(&listed.chunks[0]).unwrap()).unwrap(), b"B's");
 
     let too_big = declare(&mb, &moved.token, b"x", (64 << 20) + 1);
     assert!(too_big.starts_with("HTTP/1.1 422") && too_big.contains("byte_size"), "{too_big}");
