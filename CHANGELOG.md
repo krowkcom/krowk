@@ -9,6 +9,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-04
+
 ### Added
 
 - **`krowk sync attach` opens the TUI.** On a terminal, a session another
@@ -22,50 +24,6 @@ the versions are the `v*` tags a release is cut from. Entries land under
   viewer allows a call once or for the session, never for the host's
   project. With `--json`, or stdout not a terminal, it prints stream-json as
   before.
-
-### Fixed
-
-- **A krowk session has one id.** `krowk sessions` listed a krowk session
-  under an id of krowk.db's own, which `krowk sync host` refused as no
-  session. A session is now stored under its log's id, the one `sync host`
-  and `--resume` take; `sync host` also takes the id an older store listed
-  it under (`krowk sessions rebuild` relists those under their log's id).
-- **`krowk sync init` warns about a skipped recovery kit once**, where you
-  press [s], rather than again in the line after it.
-- **Sync reaches the hosted relay.** `krowk sync host` and `krowk sync
-  attach` could not dial a `wss://` relay, so with `KROWK_RELAY_URL` set to
-  `wss://relay.krowk.com` the host was never on it: a viewer replayed the
-  history but saw nothing live, and its prompts stayed queued. They now dial
-  it over TLS with the same trust as every other connection krowk makes, and
-  say on stderr why, once, when the relay cannot be joined.
-- **`KROWK_RELAY_URL` is no longer needed for krowk.com.** Signed in to the
-  production registry, `krowk sync host` and `krowk sync attach` dial
-  `wss://relay.krowk.com` by default; a stand-in or custom `KROWK_API_URL`
-  keeps the local relay, and `KROWK_RELAY_URL` still overrides both.
-- **A host the relay let go joins again.** When the relay dropped `krowk
-  sync host`'s link without the close reaching it, or the host was stopped
-  or asleep longer than the relay keeps a silent link, the host stayed off
-  the relay with no error while viewers showed it gone. It now joins again
-  at once, and says why on stderr.
-- **A prompt sent as the host went away runs when it is back.** A viewer
-  that sent a command the host never received, because its link was lost
-  just then, now sends it again when the host returns. The host runs it
-  once.
-
-### Changed
-
-- **`krowk sync attach --json` ends when its stdin does,** once every
-  command sent has been answered. Before, it ran until interrupted.
-
-- **Nothing asks you to sign in again in the browser any more.** Starting
-  over, `krowk sync recovery new`, `krowk devices remove` and `krowk sync
-  recover` use the key you're signed in with; a browser login opens only
-  when there is none, and still says what it is for.
-
-## [0.12.0] - 2026-10-01
-
-### Added
-
 - **`krowk sync init` sets up your device list, with a 12-word recovery
   kit.** It asks you to sign in again in the browser, then makes the list's
   first entry: this device and the recovery device the kit derives, with your
@@ -347,6 +305,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **`krowk sync attach --json` ends when its stdin does,** once every
+  command sent has been answered. Before, it ran until interrupted.
+
+- **Nothing asks you to sign in again in the browser any more.** Starting
+  over, `krowk sync recovery new`, `krowk devices remove` and `krowk sync
+  recover` use the key you're signed in with; a browser login opens only
+  when there is none, and still says what it is for.
 - **Sync's device and pairing calls are under `/v1/users/:user_id`.** The
   device list, its append and start-over (`…/devices`, `…/devices/reset`),
   a device's wrapped user key (`…/devices/:id/key`) and the person's one
@@ -388,6 +353,32 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A krowk session has one id.** `krowk sessions` listed a krowk session
+  under an id of krowk.db's own, which `krowk sync host` refused as no
+  session. A session is now stored under its log's id, the one `sync host`
+  and `--resume` take; `sync host` also takes the id an older store listed
+  it under (`krowk sessions rebuild` relists those under their log's id).
+- **`krowk sync init` warns about a skipped recovery kit once**, where you
+  press [s], rather than again in the line after it.
+- **Sync reaches the hosted relay.** `krowk sync host` and `krowk sync
+  attach` could not dial a `wss://` relay, so with `KROWK_RELAY_URL` set to
+  `wss://relay.krowk.com` the host was never on it: a viewer replayed the
+  history but saw nothing live, and its prompts stayed queued. They now dial
+  it over TLS with the same trust as every other connection krowk makes, and
+  say on stderr why, once, when the relay cannot be joined.
+- **`KROWK_RELAY_URL` is no longer needed for krowk.com.** Signed in to the
+  production registry, `krowk sync host` and `krowk sync attach` dial
+  `wss://relay.krowk.com` by default; a stand-in or custom `KROWK_API_URL`
+  keeps the local relay, and `KROWK_RELAY_URL` still overrides both.
+- **A host the relay let go joins again.** When the relay dropped `krowk
+  sync host`'s link without the close reaching it, or the host was stopped
+  or asleep longer than the relay keeps a silent link, the host stayed off
+  the relay with no error while viewers showed it gone. It now joins again
+  at once, and says why on stderr.
+- **A prompt sent as the host went away runs when it is back.** A viewer
+  that sent a command the host never received, because its link was lost
+  just then, now sends it again when the host returns. The host runs it
+  once.
 - **`/name` loads the skill on every agent, not only krowk's own.** A skill
   picked from the TUI's slash menu reached Claude Code or Codex as a bare
   `/implement`, and a vendor that did not have that skill answered that there
