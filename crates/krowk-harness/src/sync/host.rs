@@ -25,7 +25,7 @@ use crate::daemon::client::Client as Daemon;
 use crate::protocol::{ApprovalDecision, ApprovalRequest, Command, LiveEvent, LogBody, PermissionMode, StreamLine};
 use krowk_api::Client;
 use krowk_client::e2e::{self, DeviceId, SessionKey, SessionKeys, SigningKey};
-use krowk_client::device_chain::Chain;
+use krowk_client::device_chain::{Chain, SignedEntry};
 use krowk_client::session_record;
 use krowk_client::user_key::UserKeys;
 use krowk_client::protocol::frame::{KIND_ACK, KIND_ROUTED, HEADER};
@@ -194,6 +194,89 @@ fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lo
     }
 }
 
+/// How often a running host reads the device list again: the list it
+/// verified when it started is not the list for good, and a device removed
+/// while it runs must not go on reading what it seals.
+const LIST_EVERY: Duration = Duration::from_secs(60);
+
+/// What a running host ends with when the list moved on under it and a
+/// device was removed: `krowk sync host` takes the session up again, under
+/// the new list and the user key it leaves current.
+pub const LIST_MOVED: &str = "a device was removed from your device list while this host ran";
+
+/// The list read again past the head `chain` holds and verified onto it:
+/// `None` when nothing came, or the registry could not be reached (asked
+/// again later), the longer chain when it only added devices, and why the
+/// host must stop otherwise — a removal, this device's own, or entries that
+/// do not verify.
+fn list_news(o: &Options, chain: &Chain) -> Result<Option<Chain>, String> {
+    let session = &o.session;
+    let removed = || format!("this device was removed from your device list; it stopped hosting session {session}");
+    let refused = |e: String| format!("your device list changed in a way this host does not follow ({e}); it stopped hosting session {session} — host it again");
+    let mut next = chain.clone();
+    let mut after = chain.head().seq;
+    loop {
+        let served = match o.api.device_list(Some(after)) {
+            Ok(s) => s,
+            Err(e) if e.code() == "device_revoked" => return Err(removed()),
+            // A removal revokes the device's keys, so this may be one; the
+            // key refused is all that is known, and all that is said.
+            Err(e) if e.status == 401 => return Err(format!("the registry refused this machine's key — it may have been removed from your devices, or signed out; it stopped hosting session {session}")),
+            Err(_) => return Ok(None),
+        };
+        // A list that ends before the head held, or holds another entry
+        // there, is a new one: a start-over.
+        if let Some(h) = &served.head
+            && (h.seq < chain.head().seq || (h.seq == chain.head().seq && e2e::unhex(&h.hash).as_deref() != Some(&chain.head().hash[..])))
+        {
+            return Err(format!("your device list was started over; it stopped hosting session {session}"));
+        }
+        let from = next.head().seq;
+        for e in served.entries.iter().filter(|e| e.seq > from) {
+            let entry = e2e::unhex(&e.entry).zip(e2e::unhex(&e.signatures)).ok_or_else(|| refused("an entry is not hex".into()))?;
+            let signed = SignedEntry::from_parts(entry.0, &entry.1).map_err(|e| refused(e.0))?;
+            next = next.extend(&signed).map_err(|e| refused(e.0))?;
+        }
+        match served.next {
+            Some(n) if n > after && !served.entries.is_empty() => after = n,
+            _ => break,
+        }
+    }
+    if next.head() == chain.head() {
+        return Ok(None);
+    }
+    if !next.devices().iter().any(|d| d.id() == o.device) {
+        return Err(removed());
+    }
+    if next.generation() > chain.generation() {
+        return Err(format!("{LIST_MOVED}; session {session} is hosted again under the new list"));
+    }
+    Ok(Some(next))
+}
+
+/// Reads the device list again every `LIST_EVERY`, on a thread of its own
+/// so a slow read never holds up the lease's renewal, until the bridge
+/// stops or the list says it must (`stale`).
+fn list_loop(o: Arc<Options>, stop: Arc<AtomicBool>, stale: Arc<Mutex<Option<String>>>) {
+    let mut chain = o.chain.clone();
+    let mut next = Instant::now() + LIST_EVERY;
+    while !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(100).min(next.saturating_duration_since(Instant::now())));
+        if Instant::now() < next {
+            continue;
+        }
+        next = Instant::now() + LIST_EVERY;
+        match list_news(&o, &chain) {
+            Ok(Some(longer)) => chain = longer,
+            Ok(None) => {}
+            Err(why) => {
+                *stale.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+                return;
+            }
+        }
+    }
+}
+
 /// What the writer thread is asked to do, in order.
 enum Write {
     Event(Value),
@@ -306,9 +389,15 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let held = Arc::new(Mutex::new(held));
     let halt = Arc::new(AtomicBool::new(false));
     let lost = Arc::new(AtomicBool::new(false));
+    // Set when the device list moved on under the host: why it stops.
+    let stale = Arc::new(Mutex::new(None));
     {
         let (o, held, halt, lost) = (o.clone(), held.clone(), halt.clone(), lost.clone());
         std::thread::spawn(move || renew_loop(o, held, halt, lost));
+    }
+    {
+        let (o, halt, stale) = (o.clone(), halt.clone(), stale.clone());
+        std::thread::spawn(move || list_loop(o, halt, stale));
     }
     let (heads_tx, mut heads) = mpsc::unbounded_channel();
     let mut head = writer.head();
@@ -424,6 +513,10 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
             _ = sweep.tick() => {
                 if lost.load(Ordering::Relaxed) {
                     ended = Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", o.session));
+                    break;
+                }
+                if let Some(why) = stale.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    ended = Err(why);
                     break;
                 }
                 // Each uplink speaks for its own links only: a viewer on the
@@ -746,6 +839,46 @@ mod tests {
         let reg = krowk_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
         let url = format!("{}/v1", reg.url());
         (reg, url)
+    }
+
+    fn post(batch: &krowk_client::device_chain::Batch) -> krowk_api::sync::ListPost {
+        krowk_api::sync::ListPost {
+            entries: batch.entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect(),
+            links: batch.links.iter().map(|l| e2e::hex(l)).collect(),
+            wraps: batch.wraps.iter().map(|(d, w)| (d.to_string(), e2e::hex(w))).collect(),
+            start_over: false,
+        }
+    }
+
+    /// D5 mB: a running host reads the list again. Nothing new, or a device
+    /// added, it goes on; a removal moves the key on, and it stops for
+    /// `krowk sync host` to take the session up again under the new list;
+    /// its own removal stops it for good.
+    #[test]
+    fn d5_a_running_host_learns_of_a_removal_from_the_list() {
+        let (_reg, url) = registry();
+        let (laptop, desktop, phone) = (Dev::new(), Dev::new(), Dev::new());
+        let id = "01a0ec7b-3333-7000-8000-0000000000da";
+        let (chain, start) = Chain::start(laptop.subject("laptop"), &laptop.signing, None, T0).unwrap();
+        let o = options(&url, &laptop, UserKeys::new(start.newest.clone(), []).unwrap(), chain.clone(), id);
+        o.api.init_device_list(&post(&start)).unwrap();
+        assert!(list_news(&o, &chain).unwrap().is_none(), "nothing new");
+
+        let (two, add) = chain.batch(&start.newest, vec![Change::Add(desktop.subject("desktop")), Change::Add(phone.subject("phone"))], laptop.key.id(), &laptop.signing, T0 + 1).unwrap();
+        o.api.append_device_list(&post(&add)).unwrap();
+        assert_eq!(list_news(&o, &chain).unwrap().unwrap().head(), two.head(), "an add: it goes on, with the longer list");
+
+        let (three, removed) = two.batch(&start.newest, vec![Change::Remove(phone.subject("phone"))], laptop.key.id(), &laptop.signing, T0 + 2).unwrap();
+        o.api.append_device_list(&post(&removed)).unwrap();
+        assert!(list_news(&o, &two).unwrap_err().starts_with(LIST_MOVED));
+
+        // The desktop's own key: one person's, bound to its own device.
+        let signer = e2e::DeviceSigner::new(desktop.key.id(), desktop.signing()).shared();
+        let d = Client::new(&url, "krowk_sk_sync_host_take_000000000000#desktop").signed_by(signer);
+        let (_, gone) = three.batch(&removed.newest, vec![Change::Remove(laptop.subject("laptop"))], desktop.key.id(), &desktop.signing, T0 + 3).unwrap();
+        d.append_device_list(&post(&gone)).unwrap();
+        // Its keys revoked with it, the read is refused, and the host says so.
+        assert!(list_news(&o, &three).unwrap_err().contains("refused this machine's key"));
     }
 
     /// D8b: a session the laptop published is taken up again on the

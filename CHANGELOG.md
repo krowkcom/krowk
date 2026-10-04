@@ -84,6 +84,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **`krowk sync host` notices a device removed while it runs.** It used to
+  check your device list only when it started, so a long-running host went
+  on as before after you removed a device. It now reads the list again every
+  minute. If another device was removed, it hosts the session again from
+  the top, under the new list; if this device was removed, or the list was
+  started over, it stops.
 - **The installer says when another krowk would run instead.** If a krowk
   earlier on your `PATH` (an older install, or a build from source) would
   answer before the one just installed, the installer now names it, says
