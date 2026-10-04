@@ -238,7 +238,14 @@ unit = "bytes"
 # and relay on top of main's highlighter, 1,168,968 over 11.00 MiB. Raised
 # 11.00 -> 12.50 MiB by the merge, leaving 403,896 bytes for the rest of
 # Harness P1.
-max = { x86_64-linux = 13_107_200 }
+# Main measured 13,244,296 here before image paste (already over 12.50 MiB
+# on this machine). Images on the protocol and to every provider add
+# 100,704 bytes (no new crate): 13,345,000. The TUI's paste adds the
+# `image` crate for PNG, JPEG, GIF and WebP, to make a screenshot small
+# enough for any provider as it is pasted: 585,184 bytes, 13,930,184
+# (13.28 MiB). BMP and TIFF were left out (237,024 bytes more); a
+# clipboard is asked for PNG. Raised 12.50 -> 13.50 MiB, leaving 225,592.
+max = { x86_64-linux = 14_155_776 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---

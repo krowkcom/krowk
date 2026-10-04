@@ -369,7 +369,7 @@ fn for_this_session(c: &Command, session: &str) -> bool {
 fn under_session_settings(c: Command, mode: PermissionMode) -> Command {
     let mode = if mode == PermissionMode::Plan { PermissionMode::Plan } else { PermissionMode::Default };
     match c {
-        Command::Prompt { session_id, text, .. } => Command::Prompt { session_id, text, model: None, permission_mode: mode, toolset: None, effort: None, budget: None },
+        Command::Prompt { session_id, text, images, .. } => Command::Prompt { session_id, text, images, model: None, permission_mode: mode, toolset: None, effort: None, budget: None },
         other => other,
     }
 }
@@ -813,7 +813,7 @@ mod tests {
     use super::*;
 
     fn prompt(mode: PermissionMode) -> Command {
-        Command::Prompt { session_id: Some("s".into()), text: "t".into(), model: None, permission_mode: mode, toolset: None, effort: None, budget: None }
+        Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: mode, toolset: None, effort: None, budget: None }
     }
 
     /// R-PERM-2: a remote prompt never runs looser than `default`, whatever

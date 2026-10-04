@@ -225,7 +225,7 @@ pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path:
 pub fn typed(session: &str, line: String) -> Result<crate::protocol::Command, String> {
     use crate::protocol::{ApprovalDecision, Command};
     let session_id = session.to_string();
-    let prompt = |text: String| Ok(Command::Prompt { session_id: Some(session.to_string()), text, model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None });
+    let prompt = |text: String| Ok(Command::Prompt { session_id: Some(session.to_string()), text, images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None });
     let trimmed = line.trim();
     if let Some(literal) = trimmed.strip_prefix("//") {
         return prompt(format!("/{literal}"));
@@ -237,7 +237,7 @@ pub fn typed(session: &str, line: String) -> Result<crate::protocol::Command, St
         "allow-session" => ApprovalDecision::AllowSession,
         "deny" => ApprovalDecision::Deny,
         "interrupt" if arg.is_empty() => return Ok(Command::Interrupt { session_id }),
-        "steer" if !arg.is_empty() => return Ok(Command::Steer { session_id, text: arg.to_string() }),
+        "steer" if !arg.is_empty() => return Ok(Command::Steer { session_id, text: arg.to_string(), images: Vec::new() }),
         "interrupt" | "steer" => return Err(format!("`/{word}` is `/interrupt` alone, or `/steer TEXT`")),
         _ => return prompt(line),
     };

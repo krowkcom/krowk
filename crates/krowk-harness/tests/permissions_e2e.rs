@@ -83,7 +83,7 @@ impl Drop for Home {
 fn prompt(text: &str, mode: PermissionMode) -> Command {
     Command::Prompt {
         session_id: None,
-        text: text.into(),
+        text: text.into(), images: Vec::new(),
         model: Some(ModelRef { instance: "anthropic".into(), model: "claude-sonnet-4-6".into() }),
         permission_mode: mode,
         toolset: None,

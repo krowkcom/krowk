@@ -134,7 +134,7 @@ fn rt() -> tokio::runtime::Runtime {
 
 fn prompt(session_id: Option<&str>, text: &str, model: &str, mode: PermissionMode) -> Command {
     let (instance, model) = model.split_once('/').unwrap();
-    Command::Prompt { session_id: session_id.map(String::from), text: text.into(), model: Some(ModelRef { instance: instance.into(), model: model.into() }), permission_mode: mode, toolset: None, effort: None, budget: None }
+    Command::Prompt { session_id: session_id.map(String::from), text: text.into(), images: Vec::new(), model: Some(ModelRef { instance: instance.into(), model: model.into() }), permission_mode: mode, toolset: None, effort: None, budget: None }
 }
 
 type Outcome = Result<Option<RunResult>, krowk_harness::engine::EngineError>;
@@ -300,7 +300,7 @@ fn r_back_5_a_new_host_resumes_the_codex_thread_the_log_names() {
     // A new krowk: a new process, on the thread the log holds.
     rt().block_on(async {
         let host = h.host(vec![("codex:team", h.instance(&home, Some("tool_use.jsonl"), &[]))], trust::allow_all());
-        let (_, r) = run(&host, Command::Prompt { session_id: Some(session.clone()), text: "and now?".into(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }).await;
+        let (_, r) = run(&host, Command::Prompt { session_id: Some(session.clone()), text: "and now?".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }).await;
         let r = r.unwrap().unwrap();
         assert_eq!((r.status, r.result.as_str(), r.model.instance.as_str()), (TurnStatus::Completed, "Still one file.", "codex:team"), "the session's model, on the same instance");
         host.shutdown().await;
@@ -377,13 +377,13 @@ fn r_back_3_steering_reaches_the_running_codex_turn_and_none_is_lost() {
                 _ => return,
             };
             let (tx, _rx) = mpsc::channel(8);
-            host.execute(Command::Steer { session_id: session.into(), text: text.into() }, tx).await.unwrap();
+            host.execute(Command::Steer { session_id: session.into(), text: text.into(), images: Vec::new() }, tx).await.unwrap();
         })
         .await;
         let r = r.unwrap().unwrap();
         assert_eq!((r.status, r.result.as_str()), (TurnStatus::Completed, "And in German: eins, zwei, drei."));
         assert!(r.unread_steers.is_empty(), "a completed turn has read all its steering");
-        let users: Vec<String> = items(&h.events(&r.session_id)).into_iter().filter_map(|i| if let Item::UserText { text } = i { Some(text) } else { None }).collect();
+        let users: Vec<String> = items(&h.events(&r.session_id)).into_iter().filter_map(|i| if let Item::UserText { text, .. } = i { Some(text) } else { None }).collect();
         assert_eq!(users, ["count to three", "count in French", "and in German"], "each steer is logged where it landed, once");
         let log = h.fake_log();
         assert!(lines_of(&log, "steer ").iter().any(|l| l.contains(r#""expectedTurnId":"01a0d8df-e17f-7ed2-b3ff-6bfc42900001""#) && l.contains("count in French")), "{log}");

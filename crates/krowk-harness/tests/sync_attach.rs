@@ -257,7 +257,7 @@ impl World {
 
     fn prompt(&self, session: Option<&str>, text: &str) -> Command {
         let model = Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap();
-        Command::Prompt { session_id: session.map(String::from), text: text.into(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }
+        Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }
     }
 
     /// A's bridge for `session`, running until the handle is stopped.

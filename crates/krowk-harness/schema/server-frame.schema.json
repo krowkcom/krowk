@@ -806,11 +806,17 @@
       "description": "One thing inside a turn, provider-neutral. `reasoning` carries what can\nbe shown, and the provider's own state in `blob`.",
       "oneOf": [
         {
-          "description": "What the person asked.",
+          "description": "What the person asked, and the images they attached to it: each one\nnamed in `text` by its `[Image #N]`.",
           "type": "object",
           "properties": {
             "text": {
               "type": "string"
+            },
+            "images": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ImageRef"
+              }
             },
             "kind": {
               "type": "string",
@@ -914,6 +920,29 @@
             "isError"
           ]
         }
+      ]
+    },
+    "ImageRef": {
+      "description": "An image in the log: its `[Image #N]`, and its file in the session's\n`images/` directory, which is where its bytes are read from.",
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mediaType": {
+          "type": "string"
+        },
+        "file": {
+          "description": "The file's name in `images/`, never a path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "number",
+        "mediaType",
+        "file"
       ]
     },
     "ProviderBlob": {

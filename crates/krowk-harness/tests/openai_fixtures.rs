@@ -18,7 +18,7 @@ use krowk_harness::http::Decode;
 use krowk_harness::native::ModelRequest;
 use krowk_harness::openai::request_body;
 use krowk_harness::openai::stream::Decoder;
-use krowk_harness::protocol::{Effort, Item, LogBody, LogEvent, WireApi};
+use krowk_harness::protocol::{Effort, ImageRef, Item, LogBody, LogEvent, WireApi};
 use krowk_harness::sse::SseParser;
 use krowk_harness::tools;
 use krowk_harness::toolset::{by_name, Toolset};
@@ -97,7 +97,7 @@ fn r_log_3_encrypted_reasoning_round_trips_through_the_log_unmodified() {
             }
         })
         .collect();
-    let mut items = vec![(Item::UserText { text: "reword the README".into() }, None)];
+    let mut items = vec![(Item::user("reword the README"), None)];
     items.extend(read_back.into_iter().map(|i| (i, Some(0))));
     items.push((Item::ToolResult { call_id: "call_01ApplyPatch".into(), output: "patched README.md".into(), is_error: false }, None));
     let req = ModelRequest { model: "gpt-5.4".into(), system: "s".into(), tools: gpt_tools(), history: history(&items), session_id: "sess".into(), reasoning: true, ..ModelRequest::default() };
@@ -142,7 +142,7 @@ fn r_log_3_encrypted_reasoning_round_trips_through_the_log_unmodified() {
 
 #[test]
 fn r_prov_3_every_call_is_stateless_keyed_to_the_session_and_appends_to_one_prefix() {
-    let turn1 = vec![(Item::UserText { text: "reword the README".into() }, None)];
+    let turn1 = vec![(Item::user("reword the README"), None)];
     let req = |items: &[(Item, Option<usize>)]| ModelRequest {
         model: "gpt-5.4".into(),
         system: "You are krowk.".into(),
@@ -151,6 +151,7 @@ fn r_prov_3_every_call_is_stateless_keyed_to_the_session_and_appends_to_one_pref
         session_id: "0199a0b0-0000-7000-8000-000000000001".into(),
         effort: Some(Effort::High),
         reasoning: true,
+        images: Default::default(),
     };
     let first = request_body(&req(&turn1), "openai");
     assert_eq!(first["store"], false, "stateless: the log is the conversation");
@@ -175,7 +176,7 @@ fn r_prov_3_every_call_is_stateless_keyed_to_the_session_and_appends_to_one_pref
     let mut turn2 = turn1.clone();
     turn2.extend(d.items.iter().map(|(_, i)| (i.clone(), Some(0))));
     turn2.push((Item::ToolResult { call_id: "call_01ApplyPatch".into(), output: "ok".into(), is_error: false }, None));
-    turn2.push((Item::UserText { text: "what language is it written in?".into() }, None));
+    turn2.push((Item::user("what language is it written in?"), None));
     let second = request_body(&req(&turn2), "openai");
     let (a, b) = (first["input"].as_array().unwrap(), second["input"].as_array().unwrap());
     assert_eq!(a[..], b[..a.len()], "the prefix never moves");
@@ -191,11 +192,11 @@ fn r_prov_3_every_call_is_stateless_keyed_to_the_session_and_appends_to_one_pref
 #[test]
 fn r_prov_1_a_call_the_turn_stopped_before_answering_is_answered() {
     let items = vec![
-        (Item::UserText { text: "q".into() }, None),
+        (Item::user("q"), None),
         (Item::ToolCall { call_id: "call_a".into(), name: "read".into(), input: json!({"path": "x"}) }, Some(0)),
         (Item::ToolCall { call_id: "call_b".into(), name: "apply_patch".into(), input: json!(PATCH) }, Some(0)),
         (Item::ToolResult { call_id: "call_a".into(), output: "x".into(), is_error: false }, None),
-        (Item::UserText { text: "go on".into() }, None),
+        (Item::user("go on"), None),
     ];
     let body = request_body(&ModelRequest { model: "gpt-5.4".into(), history: history(&items), ..ModelRequest::default() }, "openai");
     let kinds: Vec<(String, String)> = body["input"].as_array().unwrap().iter().map(|i| (i["type"].as_str().unwrap_or_default().to_string(), i["call_id"].as_str().unwrap_or_default().to_string())).collect();
@@ -206,4 +207,22 @@ fn r_prov_1_a_call_the_turn_stopped_before_answering_is_answered() {
     assert_eq!(body["input"][1]["arguments"], Value::String(json!({"path": "x"}).to_string()), "JSON arguments go back as their text");
     // No tools, no reasoning, no session: none of their fields.
     assert!(body.get("tools").is_none() && body.get("prompt_cache_key").is_none());
+}
+
+/// A prompt naming two images: one whose bytes were read, one whose file is gone.
+fn with_images() -> ModelRequest {
+    let r = |n: u32, file: &str| ImageRef { number: n, media_type: "image/png".into(), file: file.into() };
+    let item = Item::UserText { text: "what differs between [Image #1] and [Image #2]?".into(), images: vec![r(1, "1-a.png"), r(2, "2-b.png")] };
+    let mut req = ModelRequest { model: "m".into(), system: "s".into(), history: vec![HistoryItem { item, response: None }], ..ModelRequest::default() };
+    req.images.insert("1-a.png".into(), "iVBORw0K".into());
+    req
+}
+
+#[test]
+fn an_image_is_sent_as_a_data_url_after_its_label() {
+    let body = request_body(&with_images(), "openai");
+    let content = &body["input"][0]["content"];
+    assert_eq!(content[1], json!({ "type": "input_text", "text": "[Image #1]" }));
+    assert_eq!(content[2], json!({ "type": "input_image", "image_url": "data:image/png;base64,iVBORw0K" }));
+    assert_eq!(content[3]["text"], "[Image #2: the file is gone]");
 }
