@@ -26,7 +26,7 @@ use super::Ctx;
 use krowk_api::sync::SyncSession;
 use krowk_api::{fail, Client, Error};
 use krowk_client::device_chain::Chain;
-use krowk_client::e2e::{self, SessionKey};
+use krowk_client::e2e::{self, SessionKeys};
 use krowk_client::keystore::Keystore;
 use krowk_client::session_record::{self, Signer};
 use krowk_client::user_key::UserKeys;
@@ -159,7 +159,7 @@ fn one(api: &Client, env: &str, me: &Me, s: &SyncSession, old: &Old, keys: &User
         return Ok(Step::Left);
     }
     let raw = session_id(&s.id).ok_or_else(|| fail("malformed_response", format!("the registry lists a session under {:?}, which is no session id", s.id)))?;
-    let sealed = e2e::seal_session_key(&key, &raw, keys, chain.generation()).map_err(|e| fail("sync_failed", e.0))?;
+    let sealed = e2e::seal_session_keys(&key, &raw, keys, chain.generation()).map_err(|e| fail("sync_failed", e.0))?;
     let signature = session_record::sign(&raw, &sealed, session_record::SEAL_USER, keys.newest(), &me.signing).map_err(|e| fail("sync_failed", e.0))?;
     let device = me.device.id().to_string();
     let lease = match api.acquire_lease(&s.id, &device, LEASE_TTL, env) {
@@ -178,14 +178,14 @@ fn one(api: &Client, env: &str, me: &Me, s: &SyncSession, old: &Old, keys: &User
 
 /// A session's key, out of its record: signed by a device `chain` has
 /// held, and opened with `keys`.
-fn open(s: &SyncSession, keys: &UserKeys, chain: &Chain) -> Result<SessionKey, String> {
+fn open(s: &SyncSession, keys: &UserKeys, chain: &Chain) -> Result<SessionKeys, String> {
     let raw = session_id(&s.id).ok_or("no session id")?;
     let wrapped = e2e::unhex(&s.wrapped_key).ok_or("the wrapped key is not hex")?;
     let seal = if s.seal.is_empty() { session_record::SEAL_USER } else { s.seal.as_str() };
     let signer = e2e::DeviceId::parse(&s.signer).ok_or("no signer")?;
     let signature = e2e::unhex(&s.record_signature).ok_or("no signature")?;
     session_record::verify(&raw, &wrapped, seal, signer, &signature, chain, Signer::EverHeld).map_err(|e| e.0)?;
-    e2e::unwrap_session_key(&wrapped, &raw, keys).map_err(|e| e.0)
+    e2e::unwrap_session_keys(&wrapped, &raw, keys).map_err(|e| e.0)
 }
 
 /// A session's id, a UUID, as its 16 bytes.

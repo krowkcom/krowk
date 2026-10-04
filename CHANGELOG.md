@@ -74,6 +74,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A removed device can no longer read what a synced session writes after
+  its removal.** A session that was published before you removed a device,
+  and that you host again afterwards, used to go on under the session key
+  that device held. Now the host first moves it to a new key, sealed under
+  your current user key, which the removed device never had. Everything
+  before the rotation still reads on all your devices. A session that was
+  never rotated is stored exactly as before and still opens on older
+  krowk versions. A rotated one needs this version, and a viewer that
+  opened it before the rotation is asked to open it again.
+
 - **Copying from the TUI no longer drags the layout along.** Text in the
   transcript starts at the first column: a mouse selection of your prompt,
   an answer, a list or a code block comes without the two-column margin,

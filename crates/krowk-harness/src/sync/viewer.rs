@@ -17,7 +17,7 @@ use super::direct::Candidate;
 use super::{Answer, Batch, In, Join, Remote, ViewerFrame, Welcome, DEAD, FRAME, PING};
 use crate::protocol::{Command, LiveEvent, StreamLine};
 use krowk_api::Client;
-use krowk_client::e2e::{self, DeviceId, SessionKey, SigningKey};
+use krowk_client::e2e::{self, DeviceId, SessionKeys, SigningKey};
 use krowk_client::device_chain::Chain;
 use krowk_client::session_record::Signer;
 use krowk_client::user_key::UserKeys;
@@ -184,7 +184,7 @@ fn newest(last: &mut Option<String>, id: &str) {
 
 // Legacy: the viewer's whole live loop, one select over every source. TODO: split into helpers and drop this allow.
 #[allow(clippy::cognitive_complexity)]
-async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut commands: mpsc::UnboundedReceiver<Command>, out: mpsc::Sender<Vec<Update>>, handed: Arc<std::sync::Mutex<Vec<Instant>>>) {
+async fn live(o: Arc<Options>, key: SessionKeys, mut at_rest: Attached, mut commands: mpsc::UnboundedReceiver<Command>, out: mpsc::Sender<Vec<Update>>, handed: Arc<std::sync::Mutex<Vec<Instant>>>) {
     let raw = crate::daemon::ws::uuid(&o.session);
     let mut seen: HashSet<String> = at_rest.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect();
     let mut last_id: Option<String> = None;
@@ -288,7 +288,7 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                         unjoined = None;
                         (on, moving, leaving) = (None, None, None);
                         let n = joined["link"].as_u64().unwrap_or(0);
-                        let mut l = match link.take() { Some(l) => l.reconnect(n), None => ViewerLink::new(&key, raw, n) };
+                        let mut l = match link.take() { Some(l) => l.reconnect(n), None => ViewerLink::new(key.current(), raw, n) };
                         host = joined["host"].as_bool().unwrap_or(false);
                         held.clear();
                         catching_up = false;

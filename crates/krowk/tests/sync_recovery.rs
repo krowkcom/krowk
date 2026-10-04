@@ -108,7 +108,7 @@ fn open(home: &Path, api: &str, token: &str, id: &str) -> Result<SessionKey, Str
     let ks = keys(home);
     let (user, chain) = (ks.user_keys().unwrap().unwrap(), ks.device_list().unwrap().unwrap());
     let s = krowk_api::Client::new(api, token).show_sync_session(id).map_err(|e| e.code())?;
-    krowk_harness::sync::store::open_session_key(&s, id, &user, &chain, Signer::EverHeld)
+    krowk_harness::sync::store::open_session_key(&s, id, &user, &chain, Signer::EverHeld).map(|k| k.current().clone())
 }
 
 /// D6 (C1 of #204's review): a start-over from a device that holds the
