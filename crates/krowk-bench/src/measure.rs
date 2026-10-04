@@ -201,7 +201,7 @@ pub fn fresh_dir(work: &Path, name: &str) -> PathBuf {
 /// The session is 40 turns: a checkpoint cut after 30, ten turns of tail.
 #[cfg(unix)]
 pub fn remote_attach(runs: usize) -> Outcome {
-    use krowk_client::e2e::{self, AccountKey, DeviceKey, SessionKey};
+    use krowk_client::e2e::{self, AccountKey, DeviceKey, SessionKey, SessionKeys};
     use krowk_harness::sync::store;
     let reg = match krowk_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").expect("loopback"), Default::default()) {
         Ok(r) => r,
@@ -213,14 +213,14 @@ pub fn remote_attach(runs: usize) -> Outcome {
     let signing = e2e::SigningKey::generate();
     let signer = e2e::DeviceSigner::new(device.id(), e2e::SigningKey::from_secret(&*signing.secret_bytes()).expect("a key")).shared();
     let api = std::sync::Arc::new(krowk_api::Client::new(&format!("{}/v1", reg.url()), "krowk_sk_bench_remote_attach_000000000").signed_by(signer));
-    let setup = || -> Result<(String, SessionKey), String> {
+    let setup = || -> Result<(String, SessionKeys), String> {
         api.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), "bench", &account.id().to_string()).map_err(|e| e.to_string())?;
         let id = "01a0ec7b-0000-7000-8000-00000000be0c".to_string();
         let raw = krowk_harness::daemon::ws::uuid(&id);
-        let key = SessionKey::generate();
-        let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &raw, &user));
+        let key = SessionKeys::from(SessionKey::generate());
+        let wrapped = e2e::hex(&e2e::wrap_session_keys(&key, &raw, &user));
         let index = store::Index { title: "bench".into(), ..Default::default() };
-        let sealed = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).map_err(|e| e.to_string())?));
+        let sealed = e2e::hex(&e2e::seal_session_index(key.current(), &raw, &serde_json::to_vec(&index).map_err(|e| e.to_string())?));
         api.put_sync_session(&id, &wrapped, None, Some(&sealed), None).map_err(|e| e.to_string())?;
         let lease = api.acquire_lease(&id, &device.id().to_string(), 60, "development").map_err(|e| e.to_string())?;
         let mut w = store::Writer::take_up(api.clone(), key.clone(), &id, wrapped, index, lease.fence)?;
