@@ -24,7 +24,7 @@ use super::{Answer, Batch, In, Join, ViewerFrame, Welcome, DEAD, FRAME, PING};
 use crate::daemon::client::Client as Daemon;
 use crate::protocol::{ApprovalDecision, ApprovalRequest, Command, LiveEvent, LogBody, PermissionMode, StreamLine};
 use krowk_api::Client;
-use krowk_client::e2e::{self, DeviceId, SessionKey, SigningKey};
+use krowk_client::e2e::{self, DeviceId, SessionKey, SessionKeys, SigningKey};
 use krowk_client::device_chain::{Chain, SignedEntry};
 use krowk_client::session_record;
 use krowk_client::user_key::UserKeys;
@@ -93,32 +93,32 @@ struct Held {
 }
 
 /// Opens (or creates) the synced session and takes its lease: the session
-/// key, the writer at the log's end, and the lease.
-fn take(o: &Options) -> Result<(SessionKey, Writer, Held), String> {
+/// keys, the writer at the log's end, and the lease.
+fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
     let id = &o.session;
     let raw = crate::daemon::ws::uuid(id);
-    let (key, wrapped, index) = match o.api.show_sync_session(id) {
+    let (keys, wrapped, index) = match o.api.show_sync_session(id) {
         // Any of the person's devices may take a session up again — the
         // handoff — but only one whose record a device listed now signed: a
         // removed device's, planted under a generation it held, is never
         // written under (`store::open_session_key`).
         Ok(s) => {
-            let key = store::open_session_key(&s, id, &o.keys, &o.chain, session_record::Signer::Listed)?;
-            let index = store::open_index(&key, id, &s.sealed_index)?;
-            (key, s.wrapped_key, index)
+            let keys = store::open_session_key(&s, id, &o.keys, &o.chain, session_record::Signer::Listed)?;
+            let index = store::open_index(&keys, id, &s.sealed_index)?;
+            (keys, s.wrapped_key, index)
         }
         // Published only when the registry has no session under the id; a
         // failed write leaves it with none, and the next host publishes
         // afresh.
         Err(e) if e.status == 404 => {
-            let key = SessionKey::generate();
-            let sealed_key = e2e::seal_session_key(&key, &raw, &o.keys, o.chain.generation()).map_err(|e| e.to_string())?;
+            let keys = SessionKeys::from(SessionKey::generate());
+            let sealed_key = e2e::seal_session_keys(&keys, &raw, &o.keys, o.chain.generation()).map_err(|e| e.to_string())?;
             let signature = session_record::sign(&raw, &sealed_key, session_record::SEAL_USER, o.keys.newest(), &o.signing).map_err(|e| e.to_string())?;
             let wrapped = e2e::hex(&sealed_key);
             let index = Index { title: o.title.clone(), cwd: o.cwd.clone(), ..Index::default() };
-            let sealed = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).expect("json")));
+            let sealed = e2e::hex(&e2e::seal_session_index(keys.current(), &raw, &serde_json::to_vec(&index).expect("json")));
             o.api.put_sync_session(id, &wrapped, Some((&e2e::hex(&signature), &o.device.to_string())), Some(&sealed), None).map_err(|e| e.to_string())?;
-            (key, wrapped, index)
+            (keys, wrapped, index)
         }
         Err(e) => return Err(format!("the registry did not say whether it holds session {id} ({e}) — nothing was published; try again")),
     };
@@ -126,8 +126,34 @@ fn take(o: &Options) -> Result<(SessionKey, Writer, Held), String> {
     if lease.relay_ticket.is_empty() {
         return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
     }
-    let writer = Writer::take_up(o.api.clone(), key.clone(), id, wrapped, index, lease.fence)?;
-    Ok((key, writer, Held { token: lease.token, fence: lease.fence, ticket: lease.relay_ticket }))
+    let (keys, wrapped) = rotate_if_behind(o, keys, wrapped, &index, &lease.token)?;
+    let writer = Writer::take_up(o.api.clone(), keys.clone(), id, wrapped, index, lease.fence)?;
+    Ok((keys, writer, Held { token: lease.token, fence: lease.fence, ticket: lease.relay_ticket }))
+}
+
+/// A session sealed under an older user key generation than the device
+/// list's has lived through a device's removal, and that device holds its
+/// key. Before anything more is written, the host adds a key epoch: a new
+/// key, current from here on, with the old ones kept to open what came
+/// before, the ring sealed under the current generation and its record and
+/// index written again with it, in one write under the lease. A rotation
+/// the registry refuses leaves the session unhosted: nothing more is sealed
+/// under a key a removed device holds.
+fn rotate_if_behind(o: &Options, keys: SessionKeys, wrapped: String, index: &Index, token: &str) -> Result<(SessionKeys, String), String> {
+    let generation = e2e::unhex(&wrapped).ok_or("the session's wrapped key is not hex").and_then(|w| e2e::session_key_generation(&w).map_err(|_| "the session's wrapped key is not one krowk reads"))?;
+    if generation >= o.chain.generation() {
+        return Ok((keys, wrapped));
+    }
+    let raw = crate::daemon::ws::uuid(&o.session);
+    let rotated = keys.rotated().map_err(|e| e.to_string())?;
+    let sealed_key = e2e::seal_session_keys(&rotated, &raw, &o.keys, o.chain.generation()).map_err(|e| e.to_string())?;
+    let signature = session_record::sign(&raw, &sealed_key, session_record::SEAL_USER, o.keys.newest(), &o.signing).map_err(|e| e.to_string())?;
+    let wrapped = e2e::hex(&sealed_key);
+    let sealed = e2e::hex(&e2e::seal_session_index(rotated.current(), &raw, &serde_json::to_vec(index).expect("json")));
+    o.api
+        .put_sync_session(&o.session, &wrapped, Some((&e2e::hex(&signature), &o.device.to_string())), Some(&sealed), Some(token))
+        .map_err(|e| format!("session {} is sealed under user key generation {generation}, from before a device was removed, and the registry refused its new key ({e}) — nothing is written under the old one; try again", o.session))?;
+    Ok((rotated, wrapped))
 }
 
 /// Renews the lease every third of its TTL, on a thread of its own (the
@@ -387,7 +413,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let (lines_tx, mut lines) = mpsc::channel(4096);
     daemon.attach(&o.session, None, lines_tx.clone()).await.map_err(|e| e.to_string())?;
     let raw = crate::daemon::ws::uuid(&o.session);
-    let mut link = HostLink::new(&key, raw);
+    let mut link = HostLink::new(key.current(), raw);
     let mut kept: VecDeque<(u64, Vec<u8>)> = VecDeque::new();
     let mut waiting: Vec<StreamLine> = Vec::new();
     let mut approvals: BTreeMap<String, (ApprovalRequest, Instant)> = BTreeMap::new();
@@ -565,7 +591,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                         // batches: every viewer is told `resync`, joins again,
                         // and asks the host for the logged events it lacks.
                         if !link.continues_after(at) || (at > 0 && kept.front().is_some_and(|(s, _)| *s > at + 1)) {
-                            link = HostLink::new(&key, raw);
+                            link = HostLink::new(key.current(), raw);
                             kept.clear();
                             drop(w);
                             retry = Instant::now();
@@ -871,7 +897,7 @@ mod tests {
         assert_eq!(s.signer, laptop.key.id().to_string(), "the record names its publisher");
         o.api.release_lease(id, &held.token).unwrap();
         let (again, _, _) = take(&options(&url, &desktop, keys(), chain, id)).unwrap();
-        assert_eq!(key.as_bytes(), again.as_bytes());
+        assert_eq!(key.current().as_bytes(), again.current().as_bytes());
     }
 
     /// D8b (and M1 of #200's review): a record the registry holds unsigned,
@@ -953,6 +979,48 @@ mod tests {
         let refused = take(&o).err().expect("a removed device's record is not taken up");
         assert!(refused.contains("no longer on your device list"), "{refused}");
         assert_eq!(o.api.show_sync_session(id).unwrap().wrapped_key, e2e::hex(&planted), "nothing was written over it");
+    }
+
+    /// Key epochs (#200's M1 residual): a session published at generation
+    /// 1, when a device since removed held its key, is taken up again at
+    /// generation 2. The host adds a key epoch before it writes: the ring is
+    /// sealed under 2, which the removed device does not hold, and what is
+    /// written from then on is under the new key — while the log still reads
+    /// whole, from chunk 0. Taken up again at 2, it does not rotate twice.
+    #[test]
+    fn epochs_a_session_from_before_a_removal_is_rotated_when_taken_up() {
+        let (_reg, url) = registry();
+        let (laptop, thief) = (Dev::new(), Dev::new());
+        let (chain, g1) = list(&laptop, &thief);
+        let id = "01a0ec7b-3333-7000-8000-0000000000d9";
+        let raw = crate::daemon::ws::uuid(id);
+        let before = options(&url, &laptop, UserKeys::new(g1.clone(), []).unwrap(), chain.clone(), id);
+        let (old, mut w, held) = take(&before).unwrap();
+        w.push(serde_json::json!({"id": "01a0ec7b-0000-7000-8000-000000000001", "type": "item.completed"}));
+        w.flush(&held.token).unwrap();
+        before.api.release_lease(id, &held.token).unwrap();
+        let thiefs = UserKeys::new(g1.clone(), []).unwrap();
+        assert!(e2e::unwrap_session_keys(&e2e::unhex(&before.api.show_sync_session(id).unwrap().wrapped_key).unwrap(), &raw, &thiefs).is_ok(), "the thief holds the key so far");
+
+        let (chain, removed) = chain.batch(&g1, vec![Change::Remove(thief.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 2).unwrap();
+        let g2 = removed.newest;
+        let after = Options { keys: UserKeys::new(g2.clone(), [g2.wrap_previous(&g1).unwrap()]).unwrap(), chain, ..before };
+        let (keys, mut w, held) = take(&after).unwrap();
+        assert_eq!((keys.epoch(), keys.at(0).unwrap().as_bytes()), (1, old.current().as_bytes()), "a key added, the old one kept");
+        w.push(serde_json::json!({"id": "01a0ec7b-0000-7000-8000-000000000002", "type": "item.completed"}));
+        w.flush(&held.token).unwrap();
+        let s = after.api.show_sync_session(id).unwrap();
+        let wrapped = e2e::unhex(&s.wrapped_key).unwrap();
+        assert_eq!((e2e::session_key_generation(&wrapped).unwrap(), s.signer.as_str()), (2, laptop.key.id().to_string().as_str()));
+        assert!(e2e::unwrap_session_keys(&wrapped, &raw, &thiefs).unwrap_err().0.contains("generation 2"), "the removed device opens nothing new");
+        let listed = after.api.list_chunks(id, None, 10).unwrap();
+        assert_eq!(after.api.read_chunk(&listed.chunks[1]).unwrap()[0], e2e::CHUNK_V2, "written under the new key");
+        let index = store::open_index(&keys, id, &s.sealed_index).unwrap();
+        assert_eq!(store::attach(&after.api, &keys, id, index, None).unwrap().events.len(), 2, "the log reads across the rotation");
+        after.api.release_lease(id, &held.token).unwrap();
+
+        let (again, _, _) = take(&after).unwrap();
+        assert_eq!(again.epoch(), 1, "rotated once");
     }
 
     /// D8 (M2 of #200's review): a host behind the generation the list

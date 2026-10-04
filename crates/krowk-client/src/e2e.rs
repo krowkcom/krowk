@@ -57,12 +57,20 @@ const NONCE: usize = 24;
 /// sealed key and its tag.
 pub const WRAPPED_ACCOUNT_KEY: usize = 2 + 32 + KEY + TAG;
 /// A wrapped session key: version, suite, a nonce that begins with the user
-/// key generation, then the sealed key and its tag (`wrap_session_key`).
+/// key generation, then the sealed key and its tag (`wrap_session_key`). A
+/// rotated session's ring is 32 bytes longer per epoch after the first.
 pub const WRAPPED_SESSION_KEY: usize = 2 + NONCE + KEY + TAG;
 /// A wrapped session key's version: 2 since it is sealed under the user
 /// key, which a version-1 blob (under the account key) never was.
 pub const SESSION_KEY_V2: u8 = 2;
 const SESSION_KEY_AAD: &[u8] = b"krowk/session-key/v2";
+/// A rotated session's wrapped key ring: every epoch's key, oldest first,
+/// sealed as one under the user key (`wrap_session_keys`).
+pub const SESSION_KEY_V3: u8 = 3;
+const SESSION_KEYS_AAD: &[u8] = b"krowk/session-keys/v3";
+/// The most key epochs one session's ring holds: a rotation per device
+/// removal the session lives through.
+pub const MAX_SESSION_KEY_EPOCHS: usize = 64;
 
 /// Why something did not decrypt or decode. It names no secret and does not
 /// say which check failed.
@@ -279,6 +287,51 @@ impl std::fmt::Debug for SessionKey {
     }
 }
 
+/// A session's keys, one per key epoch, oldest first: epoch 0 is the key
+/// it was published with, and each rotation adds one. Everything new is
+/// sealed under the newest (`current`); the older ones only open what was
+/// sealed before. A host rotates when it takes up a session sealed under an
+/// older user key generation than the device list's — a device was removed
+/// since, and holds every key up to then.
+#[derive(Clone, Debug)]
+pub struct SessionKeys(Vec<SessionKey>);
+
+impl SessionKeys {
+    /// The newest key: what everything new is sealed under.
+    pub fn current(&self) -> &SessionKey {
+        self.0.last().expect("a session has a key")
+    }
+
+    /// The newest key's epoch.
+    pub fn epoch(&self) -> u32 {
+        u32::try_from(self.0.len() - 1).expect("at most MAX_SESSION_KEY_EPOCHS")
+    }
+
+    /// Epoch `epoch`'s key, if the ring reaches it.
+    pub fn at(&self, epoch: u32) -> Option<&SessionKey> {
+        self.0.get(usize::try_from(epoch).ok()?)
+    }
+
+    /// These keys and a new one, the new one current.
+    pub fn rotated(&self) -> Result<SessionKeys, Error> {
+        if self.0.len() >= MAX_SESSION_KEY_EPOCHS {
+            return Err(err(format!("the session's key has been rotated {} times, the most it may — start a new session", MAX_SESSION_KEY_EPOCHS - 1)));
+        }
+        // Room for the new key first, so the push never moves the old ones
+        // into a buffer that is freed unwiped.
+        let mut ring = Vec::with_capacity(self.0.len() + 1);
+        ring.extend(self.0.iter().cloned());
+        ring.push(SessionKey::generate());
+        Ok(SessionKeys(ring))
+    }
+}
+
+impl From<SessionKey> for SessionKeys {
+    fn from(key: SessionKey) -> SessionKeys {
+        SessionKeys(vec![key])
+    }
+}
+
 /// HPKE's `info`: what the wrapped account key is for — this account key
 /// (by id), this device — so a blob moved to another device, or passed off
 /// as another account's, does not open.
@@ -402,13 +455,20 @@ pub fn open_vintage(blob: &[u8], week: &str, account: &AccountKey) -> Result<Vec
 
 /// The format byte of a sealed chunk.
 pub const CHUNK_V1: u8 = 1;
+/// A chunk sealed under a rotated session key: version 1's header and the
+/// key epoch after it.
+pub const CHUNK_V2: u8 = 2;
 /// A chunk's flag byte: this is the last chunk of the log.
 const CHUNK_FINAL: u8 = 1;
 /// `version | suite | flags | index (8) | fence (8)`, both big-endian, then
-/// the nonce.
+/// the nonce. Version 2 adds the key epoch (4, big-endian) before it.
 const CHUNK_HEAD: usize = 3 + 8 + 8;
-/// What sealing adds to a chunk's plaintext.
-pub const CHUNK_OVERHEAD: usize = CHUNK_HEAD + NONCE + TAG;
+const CHUNK_HEAD_V2: usize = CHUNK_HEAD + 4;
+/// The most sealing adds to a chunk's plaintext.
+pub const CHUNK_OVERHEAD: usize = CHUNK_HEAD_V2 + NONCE + TAG;
+/// What a reader is told when a chunk names a key epoch newer than the
+/// ring it holds.
+pub const ROTATED_SINCE_OPENED: &str = "the session's key was rotated since it was opened";
 /// What chunk 0 binds as the chunk before it.
 pub const NO_PREVIOUS_CHUNK: [u8; 32] = [0; 32];
 
@@ -425,7 +485,8 @@ pub fn chunk_digest(blob: &[u8]) -> [u8; 32] {
 }
 
 fn chunk_aad(head: &[u8], session: &[u8; 16], epoch: &[u8; 16], previous: &[u8; 32]) -> Vec<u8> {
-    [&b"krowk/chunk/v1"[..], head, session, epoch, previous].concat()
+    let label: &[u8] = if head[0] == CHUNK_V2 { b"krowk/chunk/v2" } else { b"krowk/chunk/v1" };
+    [label, head, session, epoch, previous].concat()
 }
 
 /// A session's log at rest, sealed chunk by chunk for R2 (crypto.md →
@@ -438,8 +499,13 @@ fn chunk_aad(head: &[u8], session: &[u8; 16], epoch: &[u8; 16], previous: &[u8; 
 /// last. `version | suite | flags | index | fence | nonce | ciphertext +
 /// tag`, the associated data a label, those first nineteen bytes, the
 /// session id, the epoch and the previous chunk's digest.
+///
+/// Sealed under the ring's current key. Under epoch 0's that is version 1,
+/// as before keys rotated; under a later one, version 2, whose header
+/// names the key epoch after the fence (23 bytes, all of them in the
+/// associated data, labelled `krowk/chunk/v2`).
 pub struct ChunkSealer {
-    key: SessionKey,
+    keys: SessionKeys,
     session: [u8; 16],
     next: u64,
     previous: [u8; 32],
@@ -453,8 +519,8 @@ impl ChunkSealer {
     /// taking up a log another device wrote reads it to the end first
     /// (`ChunkReader::next`, `ChunkReader::previous`), so it chains onto the
     /// log as it is and not as it last saw it.
-    pub fn new(key: &SessionKey, session: [u8; 16], next: u64, previous: [u8; 32], fence: u64) -> ChunkSealer {
-        ChunkSealer { key: key.clone(), session, next, previous, fence, finished: false }
+    pub fn new(keys: &SessionKeys, session: [u8; 16], next: u64, previous: [u8; 32], fence: u64) -> ChunkSealer {
+        ChunkSealer { keys: keys.clone(), session, next, previous, fence, finished: false }
     }
 
     /// The index the next chunk is sealed at.
@@ -467,10 +533,15 @@ impl ChunkSealer {
         if self.finished {
             return Err(err("this log has been ended by its final chunk; nothing is sealed after it"));
         }
-        let head = [&[CHUNK_V1, SUITE_XCHACHA20_POLY1305, if last { CHUNK_FINAL } else { 0 }][..], &self.next.to_be_bytes(), &self.fence.to_be_bytes()].concat();
+        let (key, epoch) = (self.keys.current(), self.keys.epoch());
+        let version = if epoch == 0 { CHUNK_V1 } else { CHUNK_V2 };
+        let mut head = [&[version, SUITE_XCHACHA20_POLY1305, if last { CHUNK_FINAL } else { 0 }][..], &self.next.to_be_bytes(), &self.fence.to_be_bytes()].concat();
+        if version == CHUNK_V2 {
+            head.extend_from_slice(&epoch.to_be_bytes());
+        }
         let nonce: [u8; NONCE] = random();
-        let aad = chunk_aad(&head, &self.session, &chunk_epoch(&self.key), &self.previous);
-        let sealed = cipher(&self.key.0).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).map_err(|_| err("the chunk is too large to seal"))?;
+        let aad = chunk_aad(&head, &self.session, &chunk_epoch(key), &self.previous);
+        let sealed = cipher(&key.0).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).map_err(|_| err("the chunk is too large to seal"))?;
         let blob = [&head[..], &nonce, &sealed].concat();
         self.next = self.next.checked_add(1).ok_or_else(|| err("a session's chunk index ran out"))?;
         self.previous = chunk_digest(&blob);
@@ -487,18 +558,24 @@ impl ChunkSealer {
 /// whether the final one arrived. A log without it may simply still be
 /// being written: a reader cannot tell a live log from one a hostile
 /// registry served only a prefix of (crypto.md → chunks at rest).
+///
+/// Each chunk opens under the key of the epoch it names (a version-1 chunk,
+/// epoch 0), and that epoch is never lower than the last chunk's: once the
+/// log has moved to a rotated key, a chunk under an older one — which a
+/// removed device holds — is refused.
 pub struct ChunkReader {
-    key: SessionKey,
+    keys: SessionKeys,
     session: [u8; 16],
     next: u64,
     previous: [u8; 32],
     fence: u64,
+    epoch: u32,
     finished: bool,
 }
 
 impl ChunkReader {
-    pub fn new(key: &SessionKey, session: [u8; 16]) -> ChunkReader {
-        ChunkReader { key: key.clone(), session, next: 0, previous: NO_PREVIOUS_CHUNK, fence: 0, finished: false }
+    pub fn new(keys: &SessionKeys, session: [u8; 16]) -> ChunkReader {
+        ChunkReader::resume(keys, session, 0, NO_PREVIOUS_CHUNK, 0, 0)
     }
 
     /// Reading from chunk `next` on, the one after the chunk whose digest is
@@ -507,8 +584,11 @@ impl ChunkReader {
     /// where the checkpoint sits and what came before it. The chain holds
     /// from there exactly as from 0. A holder that will write never starts
     /// here: it reads from 0, so what it chains onto is the whole log.
-    pub fn resume(key: &SessionKey, session: [u8; 16], next: u64, previous: [u8; 32], fence: u64) -> ChunkReader {
-        ChunkReader { key: key.clone(), session, next, previous, fence, finished: false }
+    ///
+    /// A reader picking up where another left off passes its `epoch` on, so
+    /// the log is held to it; from a checkpoint, 0.
+    pub fn resume(keys: &SessionKeys, session: [u8; 16], next: u64, previous: [u8; 32], fence: u64, epoch: u32) -> ChunkReader {
+        ChunkReader { keys: keys.clone(), session, next, previous, fence, epoch, finished: false }
     }
 
     pub fn finished(&self) -> bool {
@@ -531,13 +611,21 @@ impl ChunkReader {
         self.previous
     }
 
+    /// The key epoch of the last chunk opened: the next may not be lower.
+    pub fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
     pub fn open(&mut self, blob: &[u8]) -> Result<Vec<u8>, Error> {
         let refused = || err("the chunk does not open here: it was changed, belongs to another session, or does not follow the chunk before it");
-        if blob.len() < CHUNK_OVERHEAD || blob[1] != SUITE_XCHACHA20_POLY1305 || blob[0] != CHUNK_V1 || blob[2] & !CHUNK_FINAL != 0 {
-            return Err(match blob.first() {
-                Some(&v) if v > CHUNK_V1 => err(format!("the chunk is format {v}, newer than this krowk reads — upgrade krowk")),
-                _ => refused(),
-            });
+        let head = match blob.first() {
+            Some(&CHUNK_V1) => CHUNK_HEAD,
+            Some(&CHUNK_V2) => CHUNK_HEAD_V2,
+            Some(&v) if v > CHUNK_V2 => return Err(err(format!("the chunk is format {v}, newer than this krowk reads — upgrade krowk"))),
+            _ => return Err(refused()),
+        };
+        if blob.len() < head + NONCE + TAG || blob[1] != SUITE_XCHACHA20_POLY1305 || blob[2] & !CHUNK_FINAL != 0 {
+            return Err(refused());
         }
         if self.finished {
             return Err(err("a chunk arrived after the log's final chunk, refused"));
@@ -550,13 +638,23 @@ impl ChunkReader {
         if fence < self.fence {
             return Err(err(format!("chunk {index} was written under lease {fence}, before the chunk ahead of it ({}), refused", self.fence)));
         }
-        let nonce: [u8; NONCE] = blob[CHUNK_HEAD..CHUNK_HEAD + NONCE].try_into().expect("24 bytes");
-        let aad = chunk_aad(&blob[..CHUNK_HEAD], &self.session, &chunk_epoch(&self.key), &self.previous);
-        let plain = cipher(&self.key.0).decrypt(&XNonce::from(nonce), Payload { msg: &blob[CHUNK_HEAD + NONCE..], aad: &aad }).map_err(|_| refused())?;
+        let epoch = if head == CHUNK_HEAD_V2 { u32::from_be_bytes(blob[CHUNK_HEAD..CHUNK_HEAD_V2].try_into().expect("four bytes")) } else { 0 };
+        // Epoch 0 is never named by a version-2 chunk: it is version 1's.
+        if head == CHUNK_HEAD_V2 && epoch == 0 {
+            return Err(refused());
+        }
+        if epoch < self.epoch {
+            return Err(err(format!("chunk {index} is sealed under session key epoch {epoch}, older than the chunk ahead of it ({}), refused", self.epoch)));
+        }
+        let key = self.keys.at(epoch).ok_or_else(|| err(format!("chunk {index} is sealed under session key epoch {epoch}, newer than this device has the key for — {ROTATED_SINCE_OPENED}; open it again")))?;
+        let nonce: [u8; NONCE] = blob[head..head + NONCE].try_into().expect("24 bytes");
+        let aad = chunk_aad(&blob[..head], &self.session, &chunk_epoch(key), &self.previous);
+        let plain = cipher(&key.0).decrypt(&XNonce::from(nonce), Payload { msg: &blob[head + NONCE..], aad: &aad }).map_err(|_| refused())?;
         // Only an authentic chunk moves the reader on.
         self.next += 1;
         self.previous = chunk_digest(blob);
         self.fence = fence;
+        self.epoch = epoch;
         self.finished = blob[2] & CHUNK_FINAL != 0;
         Ok(plain)
     }
@@ -582,15 +680,36 @@ fn cipher(key: &[u8; KEY]) -> XChaCha20Poly1305 {
 ///   moved to another session, or relabelled as another generation, does
 ///   not open.
 pub fn wrap_session_key(session_key: &SessionKey, session: &[u8; 16], user: &UserKey) -> Vec<u8> {
-    let mut blob = Vec::with_capacity(WRAPPED_SESSION_KEY);
-    blob.extend_from_slice(&[SESSION_KEY_V2, SUITE_XCHACHA20_POLY1305]);
+    wrap_session_keys(&SessionKeys::from(session_key.clone()), session, user)
+}
+
+/// A session's key ring wrapped under its owner's user key. A ring of one,
+/// a session never rotated, is `wrap_session_key`'s version-2 blob, byte
+/// for byte, so an older krowk still opens it. A longer one is version 3:
+/// the same layout and nonce, the plaintext every epoch's key oldest first
+/// (32 bytes each, so 42 + 32 × epochs bytes), and the associated data
+/// labelled `"krowk/session-keys/v3"`. A version-2 reader refuses it as
+/// newer.
+pub fn wrap_session_keys(keys: &SessionKeys, session: &[u8; 16], user: &UserKey) -> Vec<u8> {
+    let version = if keys.0.len() == 1 { SESSION_KEY_V2 } else { SESSION_KEY_V3 };
+    let mut blob = Vec::with_capacity(wrapped_session_keys_len(keys.0.len()));
+    blob.extend_from_slice(&[version, SUITE_XCHACHA20_POLY1305]);
     blob.extend_from_slice(&user.generation().to_be_bytes());
     blob.extend_from_slice(&random::<{ NONCE - 4 }>());
     let nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
     let aad = session_key_aad(&blob[..2], user, session);
-    let sealed = cipher(user.as_bytes()).encrypt(&XNonce::from(nonce), Payload { msg: &session_key.0, aad: &aad }).expect("sealing 32 bytes cannot fail");
+    let mut plain = zeroize::Zeroizing::new(Vec::with_capacity(KEY * keys.0.len()));
+    for k in &keys.0 {
+        plain.extend_from_slice(&k.0);
+    }
+    let sealed = cipher(user.as_bytes()).encrypt(&XNonce::from(nonce), Payload { msg: &plain, aad: &aad }).expect("sealing a key ring cannot fail");
     blob.extend_from_slice(&sealed);
     blob
+}
+
+/// How long a wrapped ring of `epochs` keys is.
+fn wrapped_session_keys_len(epochs: usize) -> usize {
+    2 + NONCE + KEY * epochs + TAG
 }
 
 /// A new session's key wrapped under the newest generation this device
@@ -599,19 +718,30 @@ pub fn wrap_session_key(session_key: &SessionKey, session: &[u8; 16], user: &Use
 /// device behind a rotation — offline, or fed a stale list — would
 /// otherwise seal under a generation a removed device still holds.
 pub fn seal_session_key(session_key: &SessionKey, session: &[u8; 16], keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, Error> {
+    seal_session_keys(&SessionKeys::from(session_key.clone()), session, keys, current_generation)
+}
+
+/// A session's key ring sealed as `seal_session_key` seals one key.
+pub fn seal_session_keys(ring: &SessionKeys, session: &[u8; 16], keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, Error> {
     let held = keys.newest().generation();
     if held < current_generation {
         return Err(err(format!("this device holds user key generation {held}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk devices`) and try again")));
     }
-    Ok(wrap_session_key(session_key, session, keys.newest()))
+    Ok(wrap_session_keys(ring, session, keys.newest()))
 }
 
 /// The user key generation a wrapped session key names, read before
 /// anything is opened. Refused for a blob that is not one.
 pub fn session_key_generation(blob: &[u8]) -> Result<u32, Error> {
-    if blob.len() != WRAPPED_SESSION_KEY || blob[0] != SESSION_KEY_V2 || blob[1] != SUITE_XCHACHA20_POLY1305 {
+    let epochs = blob.len().checked_sub(2 + NONCE + TAG).filter(|n| n.is_multiple_of(KEY)).map_or(0, |n| n / KEY);
+    let fits = match blob.first() {
+        Some(&SESSION_KEY_V2) => epochs == 1,
+        Some(&SESSION_KEY_V3) => (2..=MAX_SESSION_KEY_EPOCHS).contains(&epochs),
+        _ => false,
+    };
+    if !fits || blob[1] != SUITE_XCHACHA20_POLY1305 {
         return Err(match blob.first() {
-            Some(&v) if v > SESSION_KEY_V2 => newer("session", v),
+            Some(&v) if v > SESSION_KEY_V3 => newer("session", v),
             _ => err("the wrapped session key is not one this krowk reads: it was changed, or was sealed before session keys were sealed under the user key"),
         });
     }
@@ -621,11 +751,17 @@ pub fn session_key_generation(blob: &[u8]) -> Result<u32, Error> {
     }
 }
 
-/// The session key out of a blob `wrap_session_key` made, opened with the
+/// The session key out of a blob `wrap_session_key` made: of a rotated
+/// session's ring, the current key.
+pub fn unwrap_session_key(blob: &[u8], session: &[u8; 16], keys: &UserKeys) -> Result<SessionKey, Error> {
+    unwrap_session_keys(blob, session, keys).map(|ring| ring.current().clone())
+}
+
+/// The key ring out of a blob `wrap_session_keys` made, opened with the
 /// generation it names — the newest, or an older one reached down the
 /// chain of wraps. A generation newer than any this device holds is
 /// refused as such: a removed device holds none made after its removal.
-pub fn unwrap_session_key(blob: &[u8], session: &[u8; 16], keys: &UserKeys) -> Result<SessionKey, Error> {
+pub fn unwrap_session_keys(blob: &[u8], session: &[u8; 16], keys: &UserKeys) -> Result<SessionKeys, Error> {
     let generation = session_key_generation(blob)?;
     let held = keys.newest().generation();
     if generation > held {
@@ -635,14 +771,17 @@ pub fn unwrap_session_key(blob: &[u8], session: &[u8; 16], keys: &UserKeys) -> R
     let refused = || err("the wrapped session key does not open with this user key: it was changed, or belongs to another session or person");
     let nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
     let aad = session_key_aad(&blob[..2], &user, session);
-    let mut plain = cipher(user.as_bytes()).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())?;
-    let out = <[u8; KEY]>::try_from(&plain[..]).map(SessionKey);
-    plain.zeroize();
-    out.map_err(|_| refused())
+    let plain = zeroize::Zeroizing::new(cipher(user.as_bytes()).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())?);
+    let ring: Vec<SessionKey> = plain.chunks_exact(KEY).map(|k| SessionKey(k.try_into().expect("32 bytes"))).collect();
+    if ring.is_empty() || ring.len() * KEY != plain.len() {
+        return Err(refused());
+    }
+    Ok(SessionKeys(ring))
 }
 
 fn session_key_aad(head: &[u8], user: &UserKey, session: &[u8; 16]) -> Vec<u8> {
-    [SESSION_KEY_AAD, head, &user.generation().to_be_bytes(), &user.id().0, session].concat()
+    let label = if head[0] == SESSION_KEY_V3 { SESSION_KEYS_AAD } else { SESSION_KEY_AAD };
+    [label, head, &user.generation().to_be_bytes(), &user.id().0, session].concat()
 }
 
 /// Which way a sealed message travels. Each direction of a session is its
@@ -1120,8 +1259,8 @@ mod tests {
             assert!(unwrap_session_key(&flip(&blob, i), &SESSION, &held[0]).is_err(), "byte {i} changed and it still opened");
         }
         assert!(unwrap_session_key(&blob, b"another-session!", &held[0]).is_err(), "it opened for another session");
-        let later = [&[3u8][..], &blob[1..]].concat();
-        assert!(unwrap_session_key(&later, &SESSION, &held[0]).unwrap_err().0.contains("format 3, newer"));
+        let later = [&[4u8][..], &blob[1..]].concat();
+        assert!(unwrap_session_key(&later, &SESSION, &held[0]).unwrap_err().0.contains("format 4, newer"));
         // A blob sealed under the account key, before the user key, is not
         // read as one: clean break, no fallback.
         let before = [&[1u8][..], &blob[1..]].concat();
@@ -1179,6 +1318,78 @@ mod tests {
         assert!(e.contains("generation 1") && e.contains("names generation 2") && e.contains("catch this device up"), "{e}");
         let blob = seal_session_key(&key, &SESSION, &held[1], 2).unwrap();
         assert_eq!(session_key_generation(&blob).unwrap(), 2);
+    }
+
+    /// Key epochs: a rotated ring is a version-3 blob 32 bytes longer per
+    /// epoch, opens whole under the generation it names, and a changed byte,
+    /// a dropped key or a relabel as version 2 does not open.
+    #[test]
+    fn epochs_a_rotated_ring_wraps_as_version_3_and_opens_whole() {
+        let (users, held) = generations(2);
+        let ring = SessionKeys::from(SessionKey::generate()).rotated().unwrap().rotated().unwrap();
+        assert_eq!(ring.epoch(), 2);
+        let blob = wrap_session_keys(&ring, &SESSION, &users[1]);
+        assert_eq!((blob[0], blob.len()), (SESSION_KEY_V3, WRAPPED_SESSION_KEY + 2 * 32));
+        assert_eq!(session_key_generation(&blob).unwrap(), 2);
+        let opened = unwrap_session_keys(&blob, &SESSION, &held[1]).unwrap();
+        for e in 0..=2 {
+            assert_eq!(opened.at(e).unwrap().as_bytes(), ring.at(e).unwrap().as_bytes());
+        }
+        assert_eq!(unwrap_session_key(&blob, &SESSION, &held[1]).unwrap().as_bytes(), ring.current().as_bytes());
+        for i in 0..blob.len() {
+            assert!(unwrap_session_keys(&flip(&blob, i), &SESSION, &held[1]).is_err(), "byte {i} changed and it still opened");
+        }
+        assert!(unwrap_session_keys(&blob[..blob.len() - 32], &SESSION, &held[1]).is_err(), "a key dropped");
+        assert!(unwrap_session_keys(&[&[SESSION_KEY_V2][..], &blob[1..]].concat(), &SESSION, &held[1]).is_err(), "relabelled as version 2");
+        assert!(unwrap_session_keys(&blob, &SESSION, &held[0]).unwrap_err().0.contains("generation 2"), "a device behind it");
+        // A ring of one is the version-2 blob an older krowk reads.
+        let one = wrap_session_keys(&SessionKey::generate().into(), &SESSION, &users[1]);
+        assert_eq!((one[0], one.len()), (SESSION_KEY_V2, WRAPPED_SESSION_KEY));
+        let mut full = SessionKeys::from(SessionKey::generate());
+        while full.epoch() + 1 < MAX_SESSION_KEY_EPOCHS as u32 {
+            full = full.rotated().unwrap();
+        }
+        assert!(full.rotated().unwrap_err().0.contains("start a new session"));
+        assert!(unwrap_session_keys(&wrap_session_keys(&full, &SESSION, &users[1]), &SESSION, &held[1]).is_ok());
+    }
+
+    /// Key epochs: after a rotation the log goes on under the new key, each
+    /// chunk naming its epoch; a reader with the ring opens across it, one
+    /// with only the old key is told to open the session again, and a chunk
+    /// under the old key after the new one's — what a removed device could
+    /// still seal — does not open.
+    #[test]
+    fn epochs_chunks_name_their_key_and_never_go_back_to_an_older_one() {
+        let old = SessionKeys::from(SessionKey::generate());
+        let new = old.rotated().unwrap();
+        let mut a = ChunkSealer::new(&old, SESSION, 0, NO_PREVIOUS_CHUNK, 1);
+        let zero = a.seal(b"zero", false).unwrap();
+        assert_eq!(zero[0], CHUNK_V1, "unrotated, the format an older krowk reads");
+        let mut b = ChunkSealer::new(&new, SESSION, 1, chunk_digest(&zero), 2);
+        let one = b.seal(b"one", false).unwrap();
+        assert_eq!((one[0], &one[CHUNK_HEAD..CHUNK_HEAD_V2]), (CHUNK_V2, &1u32.to_be_bytes()[..]));
+        let two = b.seal(b"two", true).unwrap();
+
+        let mut reader = ChunkReader::new(&new, SESSION);
+        for (blob, text) in [(&zero, &b"zero"[..]), (&one, b"one"), (&two, b"two")] {
+            assert_eq!(reader.open(blob).unwrap(), text);
+        }
+        let mut stale = ChunkReader::new(&old, SESSION);
+        stale.open(&zero).unwrap();
+        assert!(stale.open(&one).unwrap_err().0.contains("open it again"));
+
+        // Chunk 2 sealed under epoch 0 after chunk 1 under epoch 1.
+        let mut thief = ChunkSealer::new(&old, SESSION, 2, chunk_digest(&one), 2);
+        let mut back = ChunkReader::new(&new, SESSION);
+        back.open(&zero).unwrap();
+        back.open(&one).unwrap();
+        assert!(back.open(&thief.seal(b"planted", false).unwrap()).unwrap_err().0.contains("older than the chunk ahead"));
+        // The epoch is bound: relabelled, the chunk does not open.
+        let mut relabelled = one.clone();
+        relabelled[CHUNK_HEAD_V2 - 1] = 0;
+        let mut r = ChunkReader::new(&new, SESSION);
+        r.open(&zero).unwrap();
+        assert!(r.open(&relabelled).is_err());
     }
 
     /// Frozen: a later change to the layout or the associated data makes
@@ -1328,7 +1539,7 @@ mod tests {
     /// and a replayed, reordered, skipped, moved or changed chunk does not.
     #[test]
     fn r_e2e_1_chunks_open_in_order_and_only_for_their_session() {
-        let key = SessionKey::generate();
+        let key = SessionKeys::from(SessionKey::generate());
         let mut sealer = ChunkSealer::new(&key, SESSION, 0, NO_PREVIOUS_CHUNK, 1);
         let (a, b, c) = (sealer.seal(b"turn one", false).unwrap(), sealer.seal(b"turn two", false).unwrap(), sealer.seal(b"end", true).unwrap());
         assert!(sealer.seal(b"after", false).is_err(), "nothing seals after the final chunk");
@@ -1344,7 +1555,7 @@ mod tests {
         assert!(reader.finished());
 
         assert!(ChunkReader::new(&key, *b"fedcba9876543210").open(&a).is_err(), "moved to another session");
-        assert!(ChunkReader::new(&SessionKey::generate(), SESSION).open(&a).is_err(), "another session's key");
+        assert!(ChunkReader::new(&SessionKey::generate().into(), SESSION).open(&a).is_err(), "another session's key");
         let mut changed = a.clone();
         changed[2] = CHUNK_FINAL;
         assert!(ChunkReader::new(&key, SESSION).open(&changed).is_err(), "the final flag is bound");
@@ -1352,7 +1563,7 @@ mod tests {
         refenced[18] ^= 1;
         assert!(ChunkReader::new(&key, SESSION).open(&refenced).is_err(), "the fence is bound");
         let mut newer = a;
-        newer[0] = CHUNK_V1 + 1;
+        newer[0] = CHUNK_V2 + 1;
         assert!(ChunkReader::new(&key, SESSION).open(&newer).unwrap_err().0.contains("upgrade krowk"));
     }
 
@@ -1361,7 +1572,7 @@ mod tests {
     /// holder's chunk at the same index, or a fork, does not splice in.
     #[test]
     fn r_sync_2_the_log_is_a_chain_across_holders_and_a_splice_does_not_open() {
-        let key = SessionKey::generate();
+        let key = SessionKeys::from(SessionKey::generate());
         let mut a = ChunkSealer::new(&key, SESSION, 0, NO_PREVIOUS_CHUNK, 1);
         let zero = a.seal(b"zero", false).unwrap();
         // A writes chunk 1, then loses the lease before it reaches the log.
