@@ -8,7 +8,9 @@
 //!   prompt at most 80 columns wide, however wide the terminal; a narrower
 //!   one still gets all of its width. `prose-wide` is the same at most 120
 //!   columns, and `full-width` takes the terminal's whole width. The prompt and the status line take the whole width
-//!   either way.
+//!   either way, and so does a code block's band: its rows are left for
+//!   the terminal to wrap, so a mouse selection of a long line of code
+//!   copies it whole.
 //! - `statusBar` — false hides the status line under the prompt. The "no
 //!   network connectivity" notice is not part of it and shows regardless
 //!   (R-OFF-1).

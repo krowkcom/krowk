@@ -1,6 +1,6 @@
-//! Ctrl-Y: the last answer onto the clipboard, as the model wrote it — no
-//! padding, no wrapping — since a copy with the mouse brings the TUI's
-//! left padding and its line breaks with it. Two ways, both tried: OSC 52,
+//! Ctrl-Y: the last answer onto the clipboard, as the model wrote it, its
+//! markdown and all — a mouse selection copies it as shown, bullets and
+//! a code block's language with it. Two ways, both tried: OSC 52,
 //! which the terminal (or a multiplexer passing it on) sets the clipboard
 //! from, and the desktop's own clipboard command when there is one.
 
@@ -44,7 +44,7 @@ pub fn system(text: &str) {
     });
 }
 
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

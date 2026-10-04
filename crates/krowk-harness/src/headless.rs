@@ -135,7 +135,7 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
     // A resumed session's id is known up front; a new one's arrives with
     // its root event.
     let mut session_id: Option<String> = opts.resume.clone();
-    let cmd = Command::Prompt { session_id: opts.resume, text: opts.prompt, model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget };
+    let cmd = Command::Prompt { session_id: opts.resume, text: opts.prompt, images: Vec::new(), model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget };
     let exec = host.execute(cmd, tx);
     tokio::pin!(exec);
     let mut done: Option<Result<Option<RunResult>, EngineError>> = None;

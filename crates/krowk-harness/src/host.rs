@@ -14,7 +14,8 @@ use crate::catalog::ModelInfo;
 use crate::chat::{ChatClient, Credential};
 use crate::budget::Budget;
 use crate::agents;
-use crate::engine::{BoxFuture, Engine, EngineError, EngineEvent, Events, HistoryItem, Idle, Steers, TurnContext, TurnEnd};
+use crate::engine::{BoxFuture, Engine, EngineError, EngineEvent, Events, HistoryItem, Idle, Steer, Steers, TurnContext, TurnEnd};
+use crate::images;
 use crate::subagent::{AgentRun, AgentsConfig, ParentTurn, Spawn, Subagents};
 use crate::evidence::{Evidence, Publisher};
 use crate::instances::{Asked, Auth, Registry, Resolved};
@@ -286,8 +287,9 @@ impl Host {
     pub async fn execute(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
         let shared = &self.shared;
         match cmd {
-            Command::Prompt { session_id, text, model, permission_mode, toolset, effort, budget } => {
-                shared.prompt(session_id.as_deref(), text, model, permission_mode, toolset.as_deref(), effort, budget.unwrap_or_default(), out).await.map(Some)
+            Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, budget } => {
+                let images = images::decode(&images)?;
+                shared.prompt(session_id.as_deref(), (text, images), model, permission_mode, toolset.as_deref(), effort, budget.unwrap_or_default(), out).await.map(Some)
             }
             // A subagent's session is a running turn like any other, so it
             // is interrupted alone, by its own id (R-SUB-2).
@@ -303,16 +305,27 @@ impl Host {
             }
             // Queued for the engine's next step; it comes back in the log as
             // a `userText` item where the turn took it.
-            Command::Steer { session_id, text } => {
+            Command::Steer { session_id, text, images } => {
                 if text.trim().is_empty() {
                     return Err(EngineError::new("empty_prompt", "the steering text is empty"));
                 }
-                let running = shared.running.lock().unwrap_or_else(|e| e.into_inner());
-                match running.get(&session_id) {
-                    Some(r) if r.steers.push(text).is_ok() => Ok(None),
+                let decoded = images::decode(&images)?;
+                let steers = shared.running.lock().unwrap_or_else(|e| e.into_inner()).get(&session_id).map(|r| r.steers.clone());
+                let Some(steers) = steers else {
+                    return Err(EngineError::new("no_running_turn", format!("session {session_id} has no turn running to steer — send it as a prompt instead")));
+                };
+                // Kept before it is queued, so the turn that reads it finds
+                // its files; off the runtime's thread, as the log is.
+                let dir = shared.cfg.sessions_dir.join(&session_id);
+                let images = match decoded.is_empty() {
+                    true => Vec::new(),
+                    false => tokio::task::spawn_blocking(move || images::save(&dir, &decoded)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
+                };
+                match Some(&steers) {
+                    Some(r) if r.push(Steer { text, images }).is_ok() => Ok(None),
                     // The turn has taken its last input and is ending.
                     Some(_) => Err(EngineError::new("turn_ending", format!("the turn in session {session_id} is finishing and reads no more input — send it as the next prompt"))),
-                    None => Err(EngineError::new("no_running_turn", format!("session {session_id} has no turn running to steer — send it as a prompt instead"))),
+                    _ => unreachable!("the turn's queue was found"),
                 }
             }
             // Whichever client answers first decides; the turn that asked
@@ -335,6 +348,8 @@ struct TurnPlan {
     log: SessionLog,
     past: Past,
     text: String,
+    /// The images the prompt carries, checked, kept once its log is open.
+    images: Vec<images::Decoded>,
     model: ModelRef,
     /// The instance's provider: what the turn's calls are priced under.
     provider: String,
@@ -466,7 +481,7 @@ impl Shared {
         let Some((instance, pending)) = waiting else {
             return Err(EngineError::new("nothing_pending", format!("session {session_id} has no turn its backend began by itself waiting — send a prompt instead")));
         };
-        let mut plan = self.settle(Some(session_id), crate::claude::unprompted(&pending.reason), None, PermissionMode::Default, None, None, limits, out, &[], None, Some((&instance, pending.mode))).await?;
+        let mut plan = self.settle(Some(session_id), (crate::claude::unprompted(&pending.reason), Vec::new()), None, PermissionMode::Default, None, None, limits, out, &[], None, Some((&instance, pending.mode))).await?;
         plan.announce = announce;
         self.turn(plan, out.clone()).await.map(|(r, _)| r)
     }
@@ -482,7 +497,7 @@ impl Shared {
     async fn prompt(
         self: &Arc<Self>,
         session_id: Option<&str>,
-        text: String,
+        (text, images): (String, Vec<images::Decoded>),
         model: Option<ModelRef>,
         permission_mode: PermissionMode,
         toolset: Option<&str>,
@@ -502,7 +517,7 @@ impl Shared {
         let mut rolling: Option<Rolling> = None;
         let mut limited: Option<RunResult> = None;
         loop {
-            let r = match self.settle(session.as_deref(), text.clone(), model.clone(), permission_mode, toolset, effort, limits, &out, &tried, rolling.clone(), None).await {
+            let r = match self.settle(session.as_deref(), (text.clone(), images.clone()), model.clone(), permission_mode, toolset, effort, limits, &out, &tried, rolling.clone(), None).await {
                 Ok(plan) => self.turn(plan, out.clone()).await,
                 Err(e) => Err(e),
             };
@@ -716,7 +731,7 @@ impl Shared {
     async fn settle(
         self: &Arc<Self>,
         session_id: Option<&str>,
-        text: String,
+        (text, images): (String, Vec<images::Decoded>),
         model: Option<ModelRef>,
         permission_mode: PermissionMode,
         toolset: Option<&str>,
@@ -777,6 +792,11 @@ impl Shared {
         let (registry, generation) = self.registry_at(&model.instance);
         let instance = registry.get(&model.instance).map_err(|e| staying(EngineError::new("no_instance", e)))?.clone();
         let info = (self.cfg.catalog)(&instance.provider, &model.model);
+        // Refused while there is no session yet; a model the catalog does
+        // not know is sent them, and its provider has the last word.
+        if !images.is_empty() && info.as_ref().and_then(|i| i.images) == Some(false) {
+            return Err(staying(EngineError::new("model_reads_no_images", format!("{model} does not read images — switch to one that does, or remove them"))));
+        }
         let family = info.as_ref().and_then(|i| i.family.clone());
         let (preset, _) = toolset::choose(toolset, registry.toolset.as_deref(), family.as_deref(), &model.model).map_err(|e| EngineError::new("bad_toolset", e))?;
         let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
@@ -849,6 +869,7 @@ impl Shared {
             log,
             past,
             text,
+            images,
             model,
             provider: instance.provider.clone(),
             engine,
@@ -911,6 +932,7 @@ impl Shared {
             log,
             past: Past { cwd: Some(p.cwd.clone()), ..Past::default() },
             text: prompt.into(),
+            images: Vec::new(),
             model,
             provider: instance.provider.clone(),
             engine: Arc::from(engine),
@@ -960,6 +982,7 @@ impl Shared {
         let turn_id = krowk_store::new_id();
         let engine = plan.engine.clone();
         let model = plan.model.clone();
+        let session_dir = plan.log.dir.clone();
         let mut w = Writer {
             log: &mut plan.log,
             out: &out,
@@ -974,7 +997,7 @@ impl Shared {
         w.begin(plan.rolling.as_ref(), &session_id, &model, LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: engine.provider().into(), wire_api: engine.wire_api(), permission_mode: plan.permission_mode, effort: plan.effort }).await?;
         let mut history = std::mem::take(&mut plan.past.items);
         let skills = plan.agent.is_none().then_some(plan.compat.skills.as_slice());
-        w.prompt(std::mem::take(&mut plan.text), &mut history, skills, plan.spawns).await?;
+        w.prompt((std::mem::take(&mut plan.text), std::mem::take(&mut plan.images)), &mut history, skills, plan.spawns).await?;
 
         let gate = permissions::Gate::new(
             plan.policy.clone(),
@@ -1029,6 +1052,7 @@ impl Shared {
             model: model.clone(),
             history,
             cwd: plan.cwd.clone(),
+            session_dir,
             permission_mode: plan.permission_mode,
             preset: plan.preset,
             effort: plan.effort,
@@ -1081,7 +1105,7 @@ impl Shared {
         };
         // Refused from here on, not queued for a turn that is over; what an
         // interrupted or failed turn never took goes back on its result.
-        let unread_steers = steers.close();
+        let unread_steers = steers.close().into_iter().map(|s| s.text).collect();
         self.approvals.forget_session(&session_id);
         if let Some(b) = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&session_id) {
             b.used = Instant::now();
@@ -1558,10 +1582,15 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// Logs the prompt and puts it on `history`, with a skill it names
-    /// from `skills` when there are any to name.
-    async fn prompt(&mut self, text: String, history: &mut Vec<HistoryItem>, skills: Option<&[compat::skills::Skill]>, spawns: bool) -> Result<(), EngineError> {
-        let prompt_item = Item::UserText { text };
+    /// Logs the prompt, its images kept first, and puts it on `history`,
+    /// with a skill it names from `skills` when there are any to name.
+    async fn prompt(&mut self, (text, decoded): (String, Vec<images::Decoded>), history: &mut Vec<HistoryItem>, skills: Option<&[compat::skills::Skill]>, spawns: bool) -> Result<(), EngineError> {
+        let dir = self.log.dir.clone();
+        let images = match decoded.is_empty() {
+            true => Vec::new(),
+            false => tokio::task::spawn_blocking(move || images::save(&dir, &decoded)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
+        };
+        let prompt_item = Item::UserText { text, images };
         self.log(LogBody::ItemCompleted { turn_id: self.turn_id.clone(), item_id: krowk_store::new_id(), item: prompt_item.clone() }).await?;
         // `/name` for a skill, in a session's own turn on any engine: its
         // instructions come right after the prompt. A vendor's agent cannot
@@ -1570,17 +1599,17 @@ impl Writer<'_> {
         // `~/.agents/skills`) and then refuses the name. A backend is sent only the last item, so it gets
         // one text, the skill first: a leading `/` is the vendor's command.
         let asked = match (&prompt_item, skills) {
-            (Item::UserText { text }, Some(skills)) => compat::skills::invoked(skills, text).map(|skill| (skill, text.clone())),
+            (Item::UserText { text, .. }, Some(skills)) => compat::skills::invoked(skills, text).map(|skill| (skill, text.clone())),
             _ => None,
         };
         history.push(HistoryItem { item: prompt_item, response: None });
         if let Some((skill, prompt)) = asked {
-            let item = Item::UserText { text: skill.clone() };
+            let item = Item::user(skill.clone());
             self.log(LogBody::ItemCompleted { turn_id: self.turn_id.clone(), item_id: krowk_store::new_id(), item: item.clone() }).await?;
             if spawns {
                 history.push(HistoryItem { item, response: None });
-            } else if let Some(last) = history.last_mut() {
-                last.item = Item::UserText { text: format!("{skill}\n\n{prompt}") };
+            } else if let Some(HistoryItem { item: Item::UserText { text, .. }, .. }) = history.last_mut() {
+                *text = format!("{skill}\n\n{prompt}");
             }
         }
         Ok(())

@@ -17,7 +17,7 @@ use super::direct::Candidate;
 use super::{Answer, Batch, In, Join, Remote, ViewerFrame, Welcome, DEAD, FRAME, PING};
 use crate::protocol::{Command, LiveEvent, StreamLine};
 use krowk_api::Client;
-use krowk_client::e2e::{self, DeviceId, SessionKey, SigningKey};
+use krowk_client::e2e::{self, DeviceId, SessionKeys, SigningKey};
 use krowk_client::device_chain::Chain;
 use krowk_client::session_record::Signer;
 use krowk_client::user_key::UserKeys;
@@ -182,7 +182,7 @@ fn newest(last: &mut Option<String>, id: &str) {
     }
 }
 
-async fn live(o: Arc<Options>, key: SessionKey, at_rest: Attached, mut commands: mpsc::UnboundedReceiver<Command>, out: mpsc::Sender<Vec<Update>>, handed: Arc<std::sync::Mutex<Vec<Instant>>>) {
+async fn live(o: Arc<Options>, key: SessionKeys, at_rest: Attached, mut commands: mpsc::UnboundedReceiver<Command>, out: mpsc::Sender<Vec<Update>>, handed: Arc<std::sync::Mutex<Vec<Instant>>>) {
     let raw = crate::daemon::ws::uuid(&o.session);
     let seen: HashSet<String> = at_rest.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect();
     let mut last_id: Option<String> = None;
@@ -269,7 +269,7 @@ async fn recv_on(ws: &mut Option<super::Ws>) -> In {
 /// display frame at a time.
 struct Watching {
     o: Arc<Options>,
-    key: SessionKey,
+    key: SessionKeys,
     raw: [u8; 16],
     at_rest: Attached,
     out: mpsc::Sender<Vec<Update>>,
@@ -385,7 +385,7 @@ impl Watching {
         self.unjoined = None;
         (self.on, self.moving, self.leaving) = (None, None, None);
         let n = joined["link"].as_u64().unwrap_or(0);
-        let mut l = match self.link.take() { Some(l) => l.reconnect(n), None => ViewerLink::new(&self.key, self.raw, n) };
+        let mut l = match self.link.take() { Some(l) => l.reconnect(n), None => ViewerLink::new(self.key.current(), self.raw, n) };
         self.host = joined["host"].as_bool().unwrap_or(false);
         self.held.clear();
         self.catching_up = false;
@@ -497,7 +497,7 @@ impl Watching {
             In::Control(v) if v["type"] == "error" && v["code"] == "host_absent" => {
                 if self.host { self.host = false; self.frame.push(Update::Host(false)); }
             }
-            In::Control(v) if v["type"] == "resync" => self.resync(&v).await,
+            In::Control(v) if v["type"] == "resync" => return self.resync(&v).await,
             In::Control(_) => {}
             In::Envelope(b) if b[1] == KIND_BATCH => return self.batch(b).await,
             In::Envelope(_) => {}
@@ -520,8 +520,9 @@ impl Watching {
         } else if present && (!welcomed || (self.on.is_none() && self.moving.is_none())) { self.ws = None; self.retry = Instant::now(); } else if !present { self.host = false; self.frame.push(Update::Host(false)); }
     }
 
-    /// The relay cannot carry the stream on for this viewer.
-    async fn resync(&mut self, v: &serde_json::Value) {
+    /// The relay cannot carry the stream on for this viewer. False when
+    /// the viewer cannot go on.
+    async fn resync(&mut self, v: &serde_json::Value) -> bool {
         if v["reason"] == "stream" {
             // Another stream: a new host, or one that could not carry
             // its count on. Join again and be welcomed onto it.
@@ -535,10 +536,15 @@ impl Watching {
             }
         } else {
             // No host: the chunks, up to what was written.
-            if let Some(Ok((fresh, a))) = self.chunks(None).await {
-                self.caught_up(fresh, a);
+            match self.chunks(None).await {
+                Some(Ok((fresh, a))) => self.caught_up(fresh, a),
+                // The session moved to a key epoch this viewer opened it
+                // before: nothing after it opens here until it is opened again.
+                Some(Err(e)) if e.contains(e2e::ROTATED_SINCE_OPENED) => { self.frame.push(Update::Failed(e)); let _ = self.out.send(std::mem::take(&mut self.frame)).await; return false; }
+                _ => {}
             }
         }
+        true
     }
 
     /// The chunks written since this viewer last read them, up to `want`

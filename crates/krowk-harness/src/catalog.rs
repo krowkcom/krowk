@@ -36,6 +36,8 @@ pub struct ModelInfo {
     pub tool_call: bool,
     /// The wire API it is served on, when it is one krowk speaks.
     pub wire_api: Option<WireApi>,
+    /// Whether it reads images; none when the catalog does not say.
+    pub images: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -60,6 +62,8 @@ struct Model {
     limit: Limit,
     #[serde(default)]
     provider: Option<Served>,
+    #[serde(default)]
+    modalities: Option<Modalities>,
 }
 
 #[derive(Deserialize, Default)]
@@ -133,6 +137,7 @@ pub fn lookup(raw: &[u8], provider: &str, model: &str) -> Option<ModelInfo> {
             efforts,
             tool_call: m.tool_call,
             wire_api: wire_of(served.npm.as_deref().or(p.npm.as_deref()), served.shape.as_deref()),
+            images: m.modalities.map(|md| md.input.iter().any(|i| i == "image")),
         })
     };
     if let Some(info) = top.get(provider).and_then(|p| of(p)) {
@@ -247,7 +252,8 @@ mod tests {
             "gpt-5.4": {"family": "gpt", "reasoning": true, "tool_call": true,
                 "reasoning_options": [{"type": "effort", "values": ["none", "low", "medium", "high", "xhigh"]}],
                 "limit": {"context": 1050000, "output": 128000}, "cost": {"input": 2.5}},
-            "gpt-4.1": {"family": "gpt", "reasoning": false, "tool_call": true, "limit": {"context": 1047576, "output": 32768}}
+            "gpt-4.1": {"family": "gpt", "reasoning": false, "tool_call": true, "limit": {"context": 1047576, "output": 32768}, "modalities": {"input": ["text", "image"], "output": ["text"]}},
+            "gpt-text": {"family": "gpt", "tool_call": true, "modalities": {"input": ["text"], "output": ["text"]}}
         }},
         "xai": {"npm": "@ai-sdk/xai", "models": {
             "grok-4.7": {"family": "grok", "reasoning": true, "tool_call": true,
@@ -283,6 +289,8 @@ mod tests {
         assert_eq!((reseller.family.as_deref(), reseller.wire_api), (Some("gpt-mini"), None), "neon's Responses shape is neon's, not this gateway's");
         assert_eq!(lookup(DOC, "openai", "nope"), None);
         assert_eq!(lookup(b"not json", "openai", "gpt-5.4"), None);
+        let images = |m| lookup(DOC, "openai", m).unwrap().images;
+        assert_eq!((images("gpt-4.1"), images("gpt-text"), images("gpt-5.4")), (Some(true), Some(false), None), "an image input, none, and a catalog that does not say");
         assert_eq!(wire_of(Some("@ai-sdk/google-vertex/anthropic"), None), Some(WireApi::AnthropicMessages));
         assert_eq!(wire_of(Some("@ai-sdk/openai"), Some("completions")), Some(WireApi::ChatCompletions));
     }

@@ -11,6 +11,23 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Paste a screenshot into the prompt.** Ctrl-V (or Alt-V, where the
+  terminal keeps Ctrl-V for itself) puts the clipboard's image in the prompt
+  as `[Image #1]`, and the model sees it with the text. Dragging an image
+  file onto the terminal, or pasting its path, does the same, several at
+  once included. A file is read the moment it's dropped, so a macOS
+  screenshot dragged from its thumbnail still works. `[Image #N]` is one
+  unit to the caret: Backspace takes it whole. Typing goes on while a large
+  screenshot is read, and the image lands where you pasted it. PNG, JPEG,
+  GIF and WebP are taken, scaled down to 2,000 pixels a side and under the
+  providers' size limits as they're pasted, and kept beside the session's
+  log in `~/.krowk/sessions/<id>/images/`. Every provider and backend gets them
+  (Anthropic, OpenAI, xAI and other Chat Completions servers, Claude Code
+  and Codex), and a model the catalog says can't read images is refused
+  with the prompt handed back. The clipboard is read with `wl-paste` or
+  `xclip` on Linux (krowk names the one to install if neither is there),
+  `osascript` on macOS, and PowerShell on Windows and under WSL. Ctrl-V with
+  only text on the clipboard pastes the text.
 - **On Linux, `krowk -p` now makes edits without asking, inside a sandbox.**
   A `-p` run with no `--permission-mode` and no `defaultMode` used to refuse
   every edit; where bubblewrap works it now runs in `acceptEdits`, with its
@@ -72,7 +89,86 @@ the versions are the `v*` tags a release is cut from. Entries land under
   archived, and `unpin` undoes it. It needs `krowk sync` set up on the
   machine.
 
+### Changed
+
+- **Reading your synced sessions is signed by this machine's device key.**
+  `krowk sync sessions`, attaching, `--resume` and the host now sign the
+  calls that list a session, show it and list its chunks, as they already
+  signed every write. Once the registry requires it, a copy of your API key
+  without the device's key reads none of your sessions, not even their
+  sizes and times. Two reads signed in the same millisecond on one machine
+  are told apart by signing the second again.
+
 ### Fixed
+
+- **A synced host no longer hangs on a relay link that stopped working
+  without saying so.** If the relay kept answering heartbeats but acked none
+  of what the host sent, viewers stopped receiving updates while the host
+  kept writing into the void. The host now drops such a link once eight
+  batches have gone unacked for ten seconds, joins the relay again, and
+  resends what was missed.
+- **`krowk devices add` no longer says "nothing was added" when the new
+  device may have your key.** If the answer to the step that sends the key
+  was lost and checking on it failed too, the pairing used to end as if
+  nothing had happened, although the new device might hold your key
+  without being on your list. Now the laptop goes on: it waits for the new
+  device to confirm and adds it, or, if it never confirms, still lists it so
+  `krowk devices remove` can take it off.
+- **`krowk sync host` notices a device removed while it runs.** It used to
+  check your device list only when it started, so a long-running host went
+  on as before after you removed a device. It now reads the list again every
+  minute. If another device was removed, it hosts the session again from
+  the top, under the new list; if this device was removed, or the list was
+  started over, it stops.
+- **The installer says when another krowk would run instead.** If a krowk
+  earlier on your `PATH` (an older install, or a build from source) would
+  answer before the one just installed, the installer now names it, says
+  its version, and how to fix it. Before, `krowk --version` quietly showed the
+  old one.
+- **Pairing refuses a malformed key exchange outright.** If the other side
+  of `krowk devices add` / `krowk sync join` sends a degenerate SPAKE2 point
+  (one of small order, or one spelled non-canonically), the pairing ends at
+  once instead of carrying on. An honest device never sends one; this only
+  closes the door on a misbehaving peer.
+- **Running `krowk sync init --start-over` again says what it did.** While
+  the old keys from a start-over are kept, running it again carries on that
+  start-over (sealing any sessions left under the new list) and never begins
+  a new one. It now says so, and that a new start-over needs
+  `krowk sync recovery discard-old` first.
+- **A new device can't take a name that only looks like one already on your
+  list.** Adding or pairing a device is refused when its name reads like
+  another device's: a Cyrillic `а` for a Latin `a`, full-width letters, or
+  `1` or `I` for `l`. Each name in a removal or recovery review now names
+  exactly one device.
+- **A synced session moves to a new key when you host it again after
+  removing a device.** A session published before you removed a device used
+  to go on under the session key that device held, however often it was
+  hosted again. Now the host first moves it to a new key, sealed under your
+  current user key, which the removed device never had; a start-over does
+  the same for the sessions it brings along. Everything written before
+  still reads on all your devices. A host already running when you remove
+  the device keeps its key until the session is next hosted. A session that
+  was never moved is stored exactly as before and still opens on older
+  krowk versions; one that was needs this version, and a viewer that
+  opened it before the move has to open it again.
+
+- **Copying from the TUI no longer drags the layout along.** Text in the
+  transcript starts at the first column: a mouse selection of your prompt,
+  an answer, a list or a code block comes without the two-column margin,
+  the `▎` bar before your prompts, the padding inside code blocks or the
+  spaces that filled a band to the edge. Code blocks are left for the
+  terminal to wrap, so a long line of code copies as one line, the block's
+  language sits on the row above the code, and tabs in code are four
+  spaces rather than one. Prose still wraps between words, so a selection
+  across a wrapped paragraph has a line break where each row ended:
+  Ctrl-Y now offers the last answer, each code block in it and your last
+  prompt, and copies the one you choose exactly as written, tabs included.
+  In Ghostty, and in herdr, which is built on it, text from the first
+  screen of a session used to copy with a break at every row the terminal
+  had wrapped, because the prompt was kept at the bottom by moving the
+  rows above it; the prompt now sits at the bottom from the start, the
+  conversation filling the screen down to it, and nothing printed is ever
+  moved.
 
 - **Two quick Ctrl-Cs right after a prompt still print the resume line.**
   Leaving that fast could beat the session's start to the TUI, so krowk

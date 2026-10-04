@@ -10,8 +10,13 @@
 //! The history is a file of JSON strings, one per line, so a multi-line
 //! prompt comes back as it was sent. It is appended to as prompts are sent
 //! and read once at start, the newest `HISTORY_KEPT` only.
+//!
+//! A pasted image is `[Image #N]` in the text (`paste`), and one unit to
+//! the caret: it never lands inside one, Backspace and Delete take it
+//! whole, and the arrows and word moves step over it.
 
 use std::io::Write;
+use std::ops::Range;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthChar;
 
@@ -30,6 +35,10 @@ pub struct Editor {
     /// newest entry.
     draft: String,
     file: Option<PathBuf>,
+    /// Where pastes still being read go: a mark per paste, left at the
+    /// caret as it was asked for, moved with the text around it.
+    marks: Vec<(u64, usize)>,
+    next_mark: u64,
 }
 
 impl Editor {
@@ -54,6 +63,83 @@ impl Editor {
         self.text.clear();
         self.cursor = 0;
         self.browsing = None;
+        self.marks.clear();
+    }
+
+    /// Replaces `range` with `with`, every mark moving with the text: one
+    /// in what was removed to where it was, one after it on by the
+    /// difference, and one where text is only inserted staying before it,
+    /// so what is typed after Ctrl-V lands after the paste.
+    fn splice(&mut self, range: Range<usize>, with: &str) {
+        let (start, end) = (range.start, range.end);
+        self.text.replace_range(range, with);
+        for (_, at) in &mut self.marks {
+            if *at < start || (*at == start && start == end) {
+                continue;
+            }
+            *at = if *at >= end { *at - (end - start) + with.len() } else { start };
+        }
+    }
+
+    /// A mark at the caret, for a paste still being read (`place_image`,
+    /// `place_str`).
+    pub fn mark(&mut self) -> u64 {
+        self.next_mark += 1;
+        self.marks.push((self.next_mark, self.cursor));
+        self.next_mark
+    }
+
+    /// Where mark `id` is, letting it go: at the caret when it is gone
+    /// with the prompt it was in (sent, cleared).
+    fn take_mark(&mut self, id: Option<u64>) -> usize {
+        let at = id.and_then(|id| self.marks.iter().position(|(m, _)| *m == id)).map(|i| self.marks.remove(i).1);
+        // Never past the text, inside a character or inside a token.
+        at.filter(|a| self.text.is_char_boundary(*a) && self.inside(*a).is_none()).unwrap_or(self.cursor)
+    }
+
+    /// Inserts `s` at `at`: the caret, if it was there or past it, and
+    /// any mark left there since moving on with it, so pastes land in the
+    /// order they were asked for.
+    fn place(&mut self, at: usize, s: &str) {
+        self.text.insert_str(at, s);
+        for (_, m) in &mut self.marks {
+            if *m >= at {
+                *m += s.len();
+            }
+        }
+        if self.cursor >= at {
+            self.cursor += s.len();
+        }
+    }
+
+    /// `[Image #n]` where mark `id` was left, a space either side of it
+    /// where the text has none.
+    pub fn place_image(&mut self, id: Option<u64>, n: u32) {
+        self.place_images(id, &[n]);
+    }
+
+    /// Several, as one paste of several files brings them: in order, a
+    /// space between each.
+    pub fn place_images(&mut self, id: Option<u64>, numbers: &[u32]) {
+        let at = self.take_mark(id);
+        if numbers.is_empty() {
+            return;
+        }
+        let before = self.text[..at].chars().next_back().is_some_and(|c| !c.is_whitespace());
+        let after = !self.text[at..].starts_with(char::is_whitespace);
+        let tokens: Vec<String> = numbers.iter().map(|n| image_token(*n)).collect();
+        self.place(at, &format!("{}{}{}", if before { " " } else { "" }, tokens.join(" "), if after { " " } else { "" }));
+    }
+
+    /// A paste's text where mark `id` was left, as `insert_str` cleans it.
+    pub fn place_str(&mut self, id: Option<u64>, s: &str) {
+        let at = self.take_mark(id);
+        self.place(at, &clean(s));
+    }
+
+    /// Lets go of mark `id`: its paste brought nothing.
+    pub fn unmark(&mut self, id: u64) {
+        self.marks.retain(|(m, _)| *m != id);
     }
 
     /// Takes the prompt for sending and records it in the history.
@@ -61,6 +147,7 @@ impl Editor {
         let text = std::mem::take(&mut self.text);
         self.cursor = 0;
         self.browsing = None;
+        self.marks.clear();
         if !text.trim().is_empty() && self.history.last() != Some(&text) {
             self.history.push(text.clone());
             if let Some(path) = &self.file {
@@ -74,21 +161,46 @@ impl Editor {
     /// written, with the caret at the end of the whole.
     pub fn restore(&mut self, text: &str) {
         self.browsing = None;
-        self.text = if self.text.is_empty() { text.to_string() } else { format!("{text}\n{}", self.text) };
+        // Above the whole prompt, a paste's mark at its start included.
+        let above = if self.text.is_empty() { text.to_string() } else { format!("{text}\n") };
+        self.text.insert_str(0, &above);
+        for (_, at) in &mut self.marks {
+            *at += above.len();
+        }
         self.cursor = self.text.len();
     }
 
     pub fn insert(&mut self, c: char) {
-        self.text.insert(self.cursor, c);
+        self.splice(self.cursor..self.cursor, c.encode_utf8(&mut [0; 4]));
         self.cursor += c.len_utf8();
+    }
+
+    /// `[Image #n]` at the caret, a space either side of it where the text
+    /// has none, and the caret after it.
+    pub fn insert_image(&mut self, n: u32) {
+        let at = self.mark();
+        self.place_image(Some(at), n);
+    }
+
+    /// The image token the caret is strictly inside, if any.
+    fn inside(&self, at: usize) -> Option<Range<usize>> {
+        image_tokens(&self.text).map(|(r, _)| r).find(|r| r.start < at && at < r.end)
+    }
+
+    /// Moves the caret out of a token it landed in: to its start when
+    /// moving back, its end when moving on.
+    fn snap(&mut self, back: bool) {
+        if let Some(r) = self.inside(self.cursor) {
+            self.cursor = if back { r.start } else { r.end };
+        }
     }
 
     /// A paste, or anything else that arrives as a string. Carriage returns
     /// become newlines, and tabs four spaces, so what is shown is what is
     /// sent.
     pub fn insert_str(&mut self, s: &str) {
-        let clean: String = s.replace("\r\n", "\n").replace('\r', "\n").replace('\t', "    ").chars().filter(|c| *c == '\n' || !c.is_control()).collect();
-        self.text.insert_str(self.cursor, &clean);
+        let clean = clean(s);
+        self.splice(self.cursor..self.cursor, &clean);
         self.cursor += clean.len();
     }
 
@@ -96,24 +208,35 @@ impl Editor {
     /// the cursor is a line continuation, and is replaced by the newline.
     pub fn enter(&mut self) -> bool {
         if self.text[..self.cursor].ends_with('\\') {
-            self.cursor -= 1;
-            self.text.remove(self.cursor);
-            self.insert('\n');
+            self.splice(self.cursor - 1..self.cursor, "\n");
             return false;
         }
         true
     }
 
     pub fn backspace(&mut self) {
+        let at = self.cursor;
+        let token = image_tokens(&self.text).map(|(r, _)| r).find(|r| r.end == at);
+        if let Some(r) = token {
+            self.cursor = r.start;
+            self.splice(r, "");
+            return;
+        }
         if let Some(c) = self.text[..self.cursor].chars().next_back() {
             self.cursor -= c.len_utf8();
-            self.text.remove(self.cursor);
+            self.splice(self.cursor..self.cursor + c.len_utf8(), "");
         }
     }
 
     pub fn delete(&mut self) {
-        if self.cursor < self.text.len() {
-            self.text.remove(self.cursor);
+        let at = self.cursor;
+        let token = image_tokens(&self.text).map(|(r, _)| r).find(|r| r.start == at);
+        if let Some(r) = token {
+            self.splice(r, "");
+            return;
+        }
+        if let Some(c) = self.text[self.cursor..].chars().next() {
+            self.splice(self.cursor..self.cursor + c.len_utf8(), "");
         }
     }
 
@@ -121,12 +244,14 @@ impl Editor {
         if let Some(c) = self.text[..self.cursor].chars().next_back() {
             self.cursor -= c.len_utf8();
         }
+        self.snap(true);
     }
 
     pub fn right(&mut self) {
         if let Some(c) = self.text[self.cursor..].chars().next() {
             self.cursor += c.len_utf8();
         }
+        self.snap(false);
     }
 
     fn line_start(&self) -> usize {
@@ -149,6 +274,7 @@ impl Editor {
         let before = &self.text[..self.cursor];
         let trimmed = before.trim_end_matches(|c: char| !c.is_alphanumeric());
         self.cursor = trimmed.rfind(|c: char| !c.is_alphanumeric()).map_or(0, |i| i + trimmed[i..].chars().next().map_or(1, char::len_utf8));
+        self.snap(true);
     }
 
     pub fn word_right(&mut self) {
@@ -157,26 +283,27 @@ impl Editor {
         let rest = &after[skip..];
         let word = rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len());
         self.cursor += skip + word;
+        self.snap(false);
     }
 
     /// Ctrl-U: everything from the start of the line to the cursor.
     pub fn kill_to_start(&mut self) {
         let start = self.line_start();
-        self.text.replace_range(start..self.cursor, "");
+        self.splice(start..self.cursor, "");
         self.cursor = start;
     }
 
     /// Ctrl-K: everything from the cursor to the end of the line.
     pub fn kill_to_end(&mut self) {
         let end = self.line_end();
-        self.text.replace_range(self.cursor..end, "");
+        self.splice(self.cursor..end, "");
     }
 
     /// Ctrl-W: the word before the cursor.
     pub fn kill_word(&mut self) {
         let end = self.cursor;
         self.word_left();
-        self.text.replace_range(self.cursor..end, "");
+        self.splice(self.cursor..end, "");
     }
 
     /// Up: the line above, or from the first line the previous prompt sent.
@@ -189,6 +316,7 @@ impl Editor {
         let col = self.text[start..self.cursor].chars().count();
         let prev_start = self.text[..start - 1].rfind('\n').map_or(0, |i| i + 1);
         self.cursor = char_offset(&self.text, prev_start, start - 1, col);
+        self.snap(false);
     }
 
     /// Down: the line below, or from the last line the next prompt sent.
@@ -202,6 +330,7 @@ impl Editor {
         let next_start = end + 1;
         let next_end = self.text[next_start..].find('\n').map_or(self.text.len(), |i| next_start + i);
         self.cursor = char_offset(&self.text, next_start, next_end, col);
+        self.snap(false);
     }
 
     fn history_back(&mut self) {
@@ -212,12 +341,18 @@ impl Editor {
         if self.browsing.is_none() {
             self.draft = std::mem::take(&mut self.text);
         }
+        // Another prompt's text: a paste still being read goes to the
+        // caret of whatever is shown when it arrives.
+        self.marks.clear();
         self.browsing = Some(next);
         self.text = self.history[self.history.len() - 1 - next].clone();
         self.cursor = self.text.len();
     }
 
     fn history_forward(&mut self) {
+        if self.browsing.is_some() {
+            self.marks.clear();
+        }
         match self.browsing {
             None => {}
             Some(0) => {
@@ -269,6 +404,28 @@ impl Editor {
         }
         (rows, caret)
     }
+}
+
+/// Text as the prompt takes it: carriage returns as newlines, tabs as four
+/// spaces, no other control characters, so what is shown is what is sent.
+fn clean(s: &str) -> String {
+    s.replace("\r\n", "\n").replace('\r', "\n").replace('\t', "    ").chars().filter(|c| *c == '\n' || !c.is_control()).collect()
+}
+
+/// What a pasted image is in the prompt.
+pub fn image_token(n: u32) -> String {
+    format!("[Image #{n}]")
+}
+
+/// Every `[Image #N]` in `text`, with its byte range, in order.
+pub fn image_tokens(text: &str) -> impl Iterator<Item = (Range<usize>, u32)> + '_ {
+    const OPEN: &str = "[Image #";
+    text.match_indices(OPEN).filter_map(move |(start, _)| {
+        let rest = &text[start + OPEN.len()..];
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let n: u32 = rest[..digits].parse().ok()?;
+        rest[digits..].starts_with(']').then(|| (start..start + OPEN.len() + digits + 1, n))
+    })
 }
 
 /// The byte offset `col` chars into the line `start..end`, or its end.
@@ -372,6 +529,84 @@ mod tests {
         assert_eq!(&e.text()[..e.cursor()], "héllo");
         e.backspace();
         assert_eq!(e.text(), "héll wörld");
+    }
+
+    #[test]
+    fn an_image_is_one_unit_to_the_caret() {
+        let mut e = typed("see");
+        e.insert_image(1);
+        e.insert_str("and");
+        assert_eq!(e.text(), "see [Image #1] and");
+        e.word_left();
+        e.left();
+        e.left();
+        assert_eq!(&e.text()[..e.cursor()], "see ", "left steps over the whole token");
+        e.right();
+        assert_eq!(&e.text()[..e.cursor()], "see [Image #1]", "and right over it again");
+        e.backspace();
+        assert_eq!(e.text(), "see  and", "backspace takes it whole");
+        let mut e = typed("a ");
+        e.insert_image(2);
+        e.home();
+        e.right();
+        e.right();
+        e.delete();
+        assert_eq!(e.text(), "a  ", "delete takes it whole, and leaves the space after it");
+        let mut e = typed("x ");
+        e.insert_image(3);
+        e.kill_word();
+        assert_eq!(e.text(), "x ", "a word kill takes it whole");
+        let mut e = typed("[Image #4] and\nmore text here");
+        e.home();
+        (0..5).for_each(|_| e.right());
+        e.up();
+        assert_eq!(e.cursor(), "[Image #4]".len(), "a line move never lands inside one");
+        assert_eq!(image_tokens("[Image #1][Image #x] [Image #22]").map(|(_, n)| n).collect::<Vec<_>>(), [1, 22]);
+    }
+
+    #[test]
+    fn a_paste_still_being_read_lands_where_it_was_asked_for() {
+        let mut e = typed("compare  please");
+        (0..7).for_each(|_| e.left());
+        let first = e.mark();
+        let second = e.mark();
+        // Typed while both are read: after them, as it was typed after.
+        e.insert_str("and");
+        e.home();
+        e.insert_str(">> ");
+        e.place_image(Some(first), 1);
+        e.place_image(Some(second), 2);
+        assert_eq!(e.text(), ">> compare [Image #1] [Image #2] and please", "in the order asked for, ahead of what was typed since");
+        assert_eq!(&e.text()[..e.cursor()], ">> ", "the caret where it was");
+        let m = e.mark();
+        e.kill_to_end();
+        e.place_str(Some(m), "x\ty");
+        assert_eq!(e.text(), ">> x    y");
+        let m = e.mark();
+        e.take();
+        e.place_image(Some(m), 3);
+        assert_eq!(e.text(), "[Image #3] ", "its prompt sent, at the caret of the next");
+        // Text put back above the prompt moves a mark once, with the rest.
+        let mut e = typed("look at ");
+        let m = e.mark();
+        e.restore("steer");
+        e.place_image(Some(m), 4);
+        assert_eq!(e.text(), "steer\nlook at [Image #4] ");
+        let mut e = typed("draft");
+        e.home();
+        let m = e.mark();
+        e.restore("steer");
+        e.place_image(Some(m), 6);
+        assert_eq!(e.text(), "steer\n[Image #6] draft", "a mark at the start stays before the draft");
+        // And a prompt swapped for another from the history drops it.
+        let mut e = Editor::new(None);
+        e.insert_str("a much longer prompt sent before");
+        e.take();
+        e.up();
+        let m = e.mark();
+        e.down();
+        e.place_image(Some(m), 5);
+        assert_eq!(e.text(), "[Image #5] ");
     }
 
     #[test]

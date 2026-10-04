@@ -152,7 +152,7 @@ pub fn thread(events: &[LogEvent], res: &mut ReadResult) -> Option<Thread> {
                 th.turns.push(Turn { status: "incomplete".into(), ..Turn::default() });
             }
             LogBody::ItemCompleted { item_id, item, .. } => match item {
-                Item::UserText { text } => th.messages.push(message(Role::User, "", "", &ev.id, turn, "", vec![text_part(text)])),
+                Item::UserText { text, .. } => th.messages.push(message(Role::User, "", "", &ev.id, turn, "", vec![text_part(text)])),
                 Item::ToolResult { call_id, output, is_error } => th.messages.push(message(
                     Role::Tool,
                     "",
@@ -238,7 +238,7 @@ fn text_part(text: &str) -> Part {
 
 fn part(item: &Item) -> Part {
     match item {
-        Item::AssistantText { text } | Item::UserText { text } => text_part(text),
+        Item::AssistantText { text } | Item::UserText { text, .. } => text_part(text),
         Item::Reasoning { text, blob } => Part {
             kind: krowk_import::PART_THINKING.into(),
             data: json!({ "thinking": text }).to_string(),
@@ -287,7 +287,7 @@ mod tests {
                 permission_mode: PermissionMode::Default,
                 effort: None,
             },
-            LogBody::ItemCompleted { turn_id: t.into(), item_id: format!("{t}-p"), item: Item::UserText { text: prompt.into() } },
+            LogBody::ItemCompleted { turn_id: t.into(), item_id: format!("{t}-p"), item: Item::user(prompt) },
         ]
     }
 

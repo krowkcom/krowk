@@ -100,7 +100,7 @@ pub fn current(history: &[HistoryItem]) -> Vec<Todo> {
 pub fn reminder(history: &[HistoryItem]) -> Option<String> {
     let last = history.iter().rposition(|h| match &h.item {
         Item::ToolCall { name, .. } => name == TODO_WRITE,
-        Item::UserText { text } => text.starts_with(REMINDER),
+        Item::UserText { text, .. } => text.starts_with(REMINDER),
         _ => false,
     })?;
     let mut calls: Vec<usize> = history[last + 1..].iter().filter_map(|h| h.response).collect();
@@ -186,7 +186,7 @@ mod tests {
         let text = reminder(&h).expect("ten calls without a write");
         assert!(text.starts_with(REMINDER) && text.contains("[~] fix the bug") && text.contains("[ ] test it") && text.contains("2 of its items"), "{text}");
         // Once reminded, the count starts again.
-        h.push(HistoryItem { item: Item::UserText { text }, response: None });
+        h.push(HistoryItem { item: Item::user(text), response: None });
         h.push(answer(STALE_CALLS + 1));
         assert_eq!(reminder(&h), None);
         // A list with nothing open, or no list at all, is never stale.

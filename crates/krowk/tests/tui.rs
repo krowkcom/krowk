@@ -308,7 +308,9 @@ fn the_mode_picker_sets_the_mode_the_next_turn_runs_in() {
     let picker = |t: &pty::Pty, from: usize| {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            if String::from_utf8_lossy(&t.output()[from..]).contains("or /mode <name>") {
+            // A word of its header: the rows the region keeps are redrawn
+            // only where they changed, so its spaces are not sent again.
+            if String::from_utf8_lossy(&t.output()[from..]).contains("choose") {
                 return true;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -600,7 +602,7 @@ fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() 
     t.write(b"wait forever\r");
     assert!(t.wait_for("to interrupt", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     // The prompt at the provider: the host has started the session by
-    // then. Nothing drawn says so — the `▎` band is drawn as the prompt is
+    // then. Nothing drawn says so — the prompt's band is drawn as it is
     // sent — and two Ctrl-Cs sent before, on a loaded machine, left before
     // any session existed. The TUI may not have read the session's start
     // yet, which is the race this pins: it is read on the way out.
@@ -649,14 +651,13 @@ fn r_tui_1_a_10k_token_answer_lands_in_tmux_scrollback_exactly_once() {
     tm.keys(&["write it all out", "Enter"]);
     assert!(tm.wait_for("tokens", Duration::from_secs(60)).is_some(), "the answer never finished:\n{}", tm.screen());
     let history = tm.history();
-    // Two columns of padding in front of every row, never written.
-    assert!(history.lines().filter(|l| !l.trim().is_empty()).all(|l| l.starts_with("  ")), "every row padded:\n{history}");
-    let got: Vec<&str> = history.lines().map(str::trim).filter(|l| l.starts_with("line ")).collect();
+    // From the first column, so a selection copies nothing before it.
+    let got: Vec<&str> = history.lines().filter(|l| l.starts_with("line ")).collect();
     let want: Vec<String> = mock::numbered_lines(850).lines().map(String::from).collect();
     assert_eq!(got.len(), want.len(), "every line once, none twice");
     assert!(got.iter().zip(&want).all(|(g, w)| g == w), "in order, byte for byte");
     // The prompt line is in scrollback once too, and the live region is not.
-    assert_eq!(history.matches("▎ write it all out").count(), 1, "{history}");
+    assert_eq!(history.matches("\nwrite it all out\n").count(), 1, "{history}");
     assert_eq!(history.matches("to interrupt").count(), 0, "a live row leaked into scrollback");
 }
 
@@ -687,8 +688,8 @@ fn r_tui_3_a_phone_width_terminal_wraps_and_still_keeps_every_line_once() {
     tm.keys(&["go", "Enter"]);
     assert!(tm.wait_for("tokens", Duration::from_secs(60)).is_some(), "{}", tm.screen());
     let history = tm.history();
-    assert!(history.lines().all(|l| l.trim_end().chars().count() <= 38), "a row into the right padding:\n{history}");
-    // krowk wrapped the answer inside the padding, so each streamed line is
+    assert!(history.lines().all(|l| l.trim_end().chars().count() <= 40), "a row past the edge:\n{history}");
+    // krowk wrapped the answer, between words, so each streamed line is
     // its first row and the rows after it, up to the next line: joined
     // back, every line exactly as it was streamed, once and in order.
     let mut got: Vec<String> = Vec::new();
@@ -709,9 +710,9 @@ fn r_tui_3_a_phone_width_terminal_wraps_and_still_keeps_every_line_once() {
 
 #[test]
 fn r_tui_3_a_widened_terminal_keeps_the_answer_in_scrollback_once() {
-    // Printed at 40 columns, the answer's lines are wrapped by krowk inside
-    // its padding; widened to 100 they stay as they were printed, each once
-    // (Ctrl-Y copies the answer unwrapped).
+    // Printed at 40 columns, the answer's lines are wrapped by krowk;
+    // widened to 100 they stay as they were printed, each once (Ctrl-Y
+    // copies the answer unwrapped).
     let m = streamed(20, Duration::from_micros(100));
     let b = Sandbox::new("widen");
     let Some(tm) = Tmux::start("widen", 40, 30, &b.root.join("repo"), &b.env(&m.url), &[]) else { return };
@@ -753,8 +754,8 @@ fn r_tui_1_a_menu_opened_and_closed_leaves_no_gap_in_scrollback_and_no_space_und
     tm.keys(&["again", "Enter"]);
     // In history, not on the screen: the second answer is quick to push it
     // up past the top.
-    assert!(tm.wait_in_history("▎ again", Duration::from_secs(10)).is_some(), "{}", tm.history());
-    let history = tm.wait_still(|s| tm.history().split("▎ again").nth(1).is_some_and(|after| after.contains("tokens")) && at_bottom(s), Duration::from_secs(30)).unwrap_or_else(|| panic!("the second turn never finished:\n{}", tm.screen()));
+    assert!(tm.wait_in_history("\nagain\n", Duration::from_secs(10)).is_some(), "{}", tm.history());
+    let history = tm.wait_still(|s| tm.history().split("\nagain\n").nth(1).is_some_and(|after| after.contains("tokens")) && at_bottom(s), Duration::from_secs(30)).unwrap_or_else(|| panic!("the second turn never finished:\n{}", tm.screen()));
     let rows: Vec<&str> = history.lines().collect();
     let logo: Vec<usize> = rows.iter().enumerate().filter(|(_, l)| l.contains('▀')).map(|(i, _)| i).collect();
     assert!(logo.len() > 1 && logo.windows(2).all(|w| w[1] == w[0] + 1), "the logo in one piece:\n{history}");
@@ -762,9 +763,10 @@ fn r_tui_1_a_menu_opened_and_closed_leaves_no_gap_in_scrollback_and_no_space_und
     assert_eq!(lines.len(), 24, "both answers, every line once:\n{history}");
     assert!(lines[..12].windows(2).all(|w| w[1] == w[0] + 1) && lines[12..].windows(2).all(|w| w[1] == w[0] + 1), "each answer without a gap in it:\n{history}");
     // Between the first answer and the second prompt: its token line, set
-    // off by one blank row each side, and nothing else.
-    let between: Vec<&str> = rows[lines[11] + 1..].iter().take_while(|l| !l.contains("▎ again")).map(|l| l.trim()).collect();
-    assert_eq!(between.iter().filter(|l| l.is_empty()).count(), 2, "no blank rows the menus left behind: {between:?}");
+    // off by one blank row each side, and the empty row of the prompt's
+    // band over it, and nothing else.
+    let between: Vec<&str> = rows[lines[11] + 1..].iter().take_while(|l| l.trim_end() != "again").map(|l| l.trim()).collect();
+    assert_eq!(between.iter().filter(|l| l.is_empty()).count(), 3, "no blank rows the menus left behind: {between:?}");
 }
 
 #[test]
@@ -801,7 +803,7 @@ fn r_tui_3_a_resize_mid_stream_never_repeats_a_line_or_leaves_the_live_region_be
     for live in ["to interrupt", "type to steer"] {
         assert!(!history.contains(live), "the old live region was left in scrollback:\n{history}");
     }
-    assert_eq!(history.matches("▎ go").count(), 1, "{history}");
+    assert_eq!(history.matches("\ngo\n").count(), 1, "{history}");
     let bars = tm.screen().matches(" help").count();
     assert_eq!(bars, 1, "one status bar on screen after two resizes:\n{}", tm.screen());
 }
@@ -1862,4 +1864,78 @@ fn a_connect_question_asked_while_hidden_waits_to_be_opened() {
     tm.keys(&["C-u"]);
     tm.keys(&["/connect", "Enter"]);
     assert!(tm.wait_for("Which account?", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+}
+
+/// A 1×1 PNG.
+const PNG_1X1: &str = "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8cfc0f01f0005000201a7e6d4e90000000049454e44ae426082";
+
+#[test]
+fn a_dropped_screenshot_becomes_image_1_and_reaches_the_model() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("dropimage");
+    let png: Vec<u8> = (0..PNG_1X1.len()).step_by(2).map(|i| u8::from_str_radix(&PNG_1X1[i..i + 2], 16).unwrap()).collect();
+    let shot = b.root.join("Screenshot 2026-10-04 at 10.00.png");
+    std::fs::write(&shot, &png).unwrap();
+    let Some(tm) = Tmux::start("dropimage", 100, 30, &b.root.join("repo"), &b.env(&m.url), &[]) else { return };
+    assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["what is in"]);
+    // What a terminal sends for a file dragged onto it: its path, quoted,
+    // as a bracketed paste.
+    tm.tmux(&["set-buffer", "--", &format!("'{}'", shot.display())]);
+    tm.tmux(&["paste-buffer", "-p", "-t", "t"]);
+    assert!(tm.wait_for("what is in [Image #1]", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    // The file can go: it was read as it was dropped.
+    std::fs::remove_file(&shot).unwrap();
+    tm.keys(&["?", "Enter"]);
+    assert!(tm.wait_for("tokens", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    let seen = m.seen.lock().unwrap();
+    let first = &seen.iter().find(|s| s.body["messages"].is_array()).expect("the model was asked").body["messages"][0]["content"];
+    assert_eq!(first[0]["text"], "what is in [Image #1] ?", "{first}");
+    assert_eq!(first[1]["text"], "[Image #1]");
+    assert_eq!(first[2]["source"]["media_type"], "image/png");
+    let sent: Vec<u8> = {
+        let s = first[2]["source"]["data"].as_str().unwrap();
+        let a = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let bits: Vec<u8> = s.bytes().filter(|c| *c != b'=').map(|c| a.iter().position(|x| *x == c).unwrap() as u8).collect();
+        bits.chunks(4).flat_map(|c| {
+            let n = c.iter().enumerate().fold(0u32, |n, (i, v)| n | (u32::from(*v) << (18 - 6 * i)));
+            (0..c.len() - 1).map(move |i| (n >> (16 - 8 * i)) as u8)
+        }).collect()
+    };
+    assert_eq!(sent, png, "the bytes as they were, a small PNG being sent as it is");
+    // And kept beside the session's log.
+    let kept: Vec<PathBuf> = walk(&b.root.join("home/.krowk/sessions")).into_iter().filter(|p| p.parent().is_some_and(|d| d.ends_with("images"))).collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(std::fs::read(&kept[0]).unwrap(), png);
+}
+
+#[test]
+fn ctrl_v_pastes_the_clipboards_screenshot_and_backspace_takes_it_whole() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("ctrlv");
+    let png = b.root.join("clip.png");
+    std::fs::write(&png, (0..PNG_1X1.len()).step_by(2).map(|i| u8::from_str_radix(&PNG_1X1[i..i + 2], 16).unwrap()).collect::<Vec<u8>>()).unwrap();
+    // A Wayland clipboard holding a screenshot, as `wl-paste` reports it.
+    let fake = b.root.join("bin/wl-paste");
+    std::fs::write(&fake, format!("#!/bin/sh\ncase \"$*\" in\n  --list-types) printf 'image/png\\n' ;;\n  *image/png*) cat '{}' ;;\n  *) exit 1 ;;\nesac\n", png.display())).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut env = b.env(&m.url);
+    env.push(("WAYLAND_DISPLAY".into(), "wayland-test".into()));
+    let Some(tm) = Tmux::start("ctrlv", 100, 30, &b.root.join("repo"), &env, &[]) else { return };
+    assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["C-v"]);
+    assert!(tm.wait_for("→ [Image #1]", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["C-v"]);
+    assert!(tm.wait_for("→ [Image #1] [Image #2]", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    // One backspace takes the space after it, the next the whole of #2.
+    tm.keys(&["BSpace", "BSpace"]);
+    tm.wait_still(|s: &str| s.contains("→ [Image #1]") && !s.contains("[Image #2]"), Duration::from_secs(5)).unwrap_or_else(|| panic!("{}", tm.screen()));
+    tm.keys(&["describe it", "Enter"]);
+    assert!(tm.wait_for("tokens", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    let seen = m.seen.lock().unwrap();
+    let content = &seen.iter().find(|s| s.body["messages"].is_array()).expect("the model was asked").body["messages"][0]["content"];
+    assert_eq!(content[0]["text"], "[Image #1] describe it");
+    let kinds: Vec<&str> = content.as_array().unwrap().iter().map(|c| c["type"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["text", "text", "image"], "only the image still named was sent: {content}");
 }

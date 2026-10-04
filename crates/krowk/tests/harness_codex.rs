@@ -336,7 +336,9 @@ fn r_back_3_a_second_ctrl_c_in_the_tui_during_a_codex_turn_leaves_at_once() {
     let mut t = pty::Pty::spawn(cmd, 200, 30);
     assert!(t.wait_for("anything", std::time::Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"work for a long time\r");
-    assert!(t.wait_for("Responding", std::time::Duration::from_secs(10)).is_some(), "the answer streams: {:?}", t.text());
+    // Its start: the region's rows are redrawn only where they changed, so
+    // a letter the row already had there is not sent again.
+    assert!(t.wait_for("Respo", std::time::Duration::from_secs(10)).is_some(), "the answer streams: {:?}", t.text());
     let log = (0..100).find_map(|_| {
         let l = b.fake_log();
         if l.contains("grandchild ") { Some(l) } else { std::thread::sleep(std::time::Duration::from_millis(20)); None }

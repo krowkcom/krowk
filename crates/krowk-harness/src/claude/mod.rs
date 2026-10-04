@@ -496,8 +496,8 @@ impl Engine for ClaudeEngine {
                 gate: ctx.gate.protecting(self.backend().home.iter().cloned()),
                 evidence: ctx.evidence.clone(),
             };
-            let prompt = match ctx.history.last().map(|h| &h.item) {
-                Some(Item::UserText { text }) => text.clone(),
+            let (prompt, images) = match ctx.history.last().map(|h| &h.item) {
+                Some(Item::UserText { text, images }) => (text.clone(), images.clone()),
                 _ => return Err(EngineError::new("empty_prompt", "a backend turn needs the prompt as its last item")),
             };
             // A turn Claude Code began runs where it began, whatever the
@@ -559,7 +559,8 @@ impl Engine for ClaudeEngine {
             if let Some(ev) = handoff {
                 let _ = events.send(ev).await;
             }
-            let outcome = p.turn(Some(&prompt), &mut ctx, &ask, &events, self.backend(), &self.instance.name).await;
+            let content = user_content(&prompt, &images, &ctx.session_dir).await;
+            let outcome = p.turn(Some(&content), &mut ctx, &ask, &events, self.backend(), &self.instance.name).await;
             self.settle(slot, outcome, ask, &events).await
         })
     }
@@ -836,6 +837,31 @@ fn tail(s: &str) -> String {
     s[cut..].to_string()
 }
 
+/// The prompt as Claude Code is sent it: the text, or with images the
+/// Messages API's blocks, which stream-json passes through, each image
+/// after its `[Image #N]`.
+async fn user_content(text: &str, refs: &[crate::protocol::ImageRef], session_dir: &Path) -> Value {
+    if refs.is_empty() {
+        return json!(text);
+    }
+    let (dir, wanted) = (session_dir.to_path_buf(), refs.to_vec());
+    let loaded = tokio::task::spawn_blocking(move || {
+        let mut l = crate::images::Loaded::default();
+        crate::images::load(&dir, &wanted.iter().collect::<Vec<_>>(), true, &mut l);
+        l
+    })
+    .await
+    .unwrap_or_default();
+    let mut blocks = vec![json!({"type": "text", "text": text})];
+    for (r, label, data) in crate::images::sent(refs, &loaded, &mut Default::default()) {
+        blocks.push(json!({"type": "text", "text": label}));
+        if let Some(data) = data {
+            blocks.push(json!({"type": "image", "source": {"type": "base64", "media_type": r.media_type, "data": data}}));
+        }
+    }
+    Value::Array(blocks)
+}
+
 impl Proc {
     async fn spawn(b: &Backend, cwd: &Path, launch: Launch, ask: &Answers, status: Arc<Status>) -> Result<Proc, EngineError> {
         let mut cmd = tokio::process::Command::new(b.path.as_deref().unwrap_or(Path::new(&b.binary)));
@@ -1003,7 +1029,7 @@ impl Proc {
     /// Runs one turn: the prompt in, the stream out, until `result`. With
     /// no prompt, the turn Claude Code began by itself, from what was read
     /// of it between turns.
-    async fn turn(&mut self, prompt: Option<&str>, ctx: &mut TurnContext, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<TurnEnd, EngineError> {
+    async fn turn(&mut self, prompt: Option<&Value>, ctx: &mut TurnContext, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<TurnEnd, EngineError> {
         let mut t = Translator::default();
         t.meter = std::mem::take(&mut *self.status.meter());
         let r = self.read_turn(prompt, &mut t, ctx, ask, events, b, instance).await;
@@ -1012,7 +1038,7 @@ impl Proc {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn read_turn(&mut self, prompt: Option<&str>, t: &mut Translator, ctx: &mut TurnContext, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<TurnEnd, EngineError> {
+    async fn read_turn(&mut self, prompt: Option<&Value>, t: &mut Translator, ctx: &mut TurnContext, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<TurnEnd, EngineError> {
         if let Some(prompt) = prompt {
             self.send(&json!({"type": "user", "message": {"role": "user", "content": prompt}, "parent_tool_use_id": null, "session_id": ""})).await?;
         }
@@ -1378,7 +1404,7 @@ async fn forward(events: &Events, out: Vec<EngineEvent>) {
 async fn note(events: &Events, text: String) {
     let item_id = krowk_store::new_id();
     let _ = events.send(EngineEvent::ItemStarted { item_id: item_id.clone(), kind: ItemKind::UserText }).await;
-    let _ = events.send(EngineEvent::ItemCompleted { item_id, item: Item::UserText { text } }).await;
+    let _ = events.send(EngineEvent::ItemCompleted { item_id, item: Item::user(text) }).await;
 }
 
 /// The turn's context and the Claude session behind it, from `init`.

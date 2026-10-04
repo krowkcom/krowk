@@ -221,27 +221,39 @@ fn r_e2e_3_a_wrong_code_adds_nothing_and_the_new_device_asks_for_a_new_one() {
 /// holds `after`, drops every connection after it: a network gone the
 /// moment that step was sent. What crossed it is kept.
 fn dropping_proxy(registry: SocketAddr, after: &'static str) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
-    proxy(registry, after, true)
+    proxy(registry, after, true, 0)
 }
 
 /// A proxy that carries everything but loses the answer to the one request
 /// whose line holds `which`: the step landed, and its sender never heard.
 fn losing_proxy(registry: SocketAddr, which: &'static str) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
-    proxy(registry, which, false)
+    proxy(registry, which, false, 0)
 }
 
-fn proxy(registry: SocketAddr, after: &'static str, cut_after: bool) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+/// As `losing_proxy`, and then drops the next `then` connections unanswered:
+/// the read-back of what was lost fails too.
+fn losing_then_dropping_proxy(registry: SocketAddr, which: &'static str, then: usize) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    proxy(registry, which, false, then)
+}
+
+fn proxy(registry: SocketAddr, after: &'static str, cut_after: bool, then_drop: usize) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let (log, cut) = (seen.clone(), Arc::new(AtomicBool::new(false)));
+    let dropping = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     std::thread::spawn(move || {
         for mut client in listener.incoming().flatten() {
             if cut.load(Ordering::SeqCst) {
                 drop(client);
                 continue;
             }
-            let (log, cut) = (log.clone(), cut.clone());
+            if dropping.load(Ordering::SeqCst) > 0 {
+                dropping.fetch_sub(1, Ordering::SeqCst);
+                drop(client);
+                continue;
+            }
+            let (log, cut, dropping) = (log.clone(), cut.clone(), dropping.clone());
             std::thread::spawn(move || {
                 // One request a connection: krowk-api sends one and reads the
                 // answer to the end.
@@ -277,6 +289,7 @@ fn proxy(registry: SocketAddr, after: &'static str, cut_after: bool) -> (SocketA
                 let _ = upstream.read_to_end(&mut answer);
                 if line.contains(after) {
                     if !cut_after {
+                        dropping.store(then_drop, Ordering::SeqCst);
                         return;
                     }
                     cut.store(true, Ordering::SeqCst);
@@ -339,6 +352,29 @@ fn r_e2e_3_an_ack_whose_answer_was_lost_still_joins() {
     assert_eq!(seen.lock().unwrap().iter().filter(|l| l.contains("/acknowledgement")).count(), 1, "the ack was not sent again");
     assert_eq!(*keys(&desktop).user_keys().unwrap().unwrap().newest(), key);
     assert_eq!(served(&api).head().seq, 1);
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// D5 mA: the laptop's reply is lost on the way back and so is its
+/// read-back: it may have landed, so the laptop goes on to the ack and the
+/// post rather than saying nothing was added — and it had landed.
+#[test]
+fn d5_a_reply_whose_answer_and_read_back_were_lost_still_adds_the_device() {
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let r = root("lost-reply");
+    let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
+    let key = set_up(&laptop, &api);
+    let (proxy, seen) = losing_then_dropping_proxy(registry.addr(), "/reply", 3);
+    let mut a = krowk(&laptop, &format!("http://{proxy}/v1"), LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let a_err = lines(&mut a);
+    let code = code_shown(&a_err);
+    let b = join(&desktop, &api, &code);
+    assert!(b.status.success(), "{}", String::from_utf8_lossy(&b.stderr));
+    assert!(wait(a, Duration::from_secs(30)).status.success(), "{}", rest(&a_err));
+    assert_eq!(seen.lock().unwrap().iter().filter(|l| l.contains("/reply")).count(), 1, "the reply was not sent again");
+    assert_eq!(*keys(&desktop).user_keys().unwrap().unwrap().newest(), key);
+    assert_eq!(served(&api).head().seq, 1, "the desktop is on the list");
     let _ = std::fs::remove_dir_all(&r);
 }
 

@@ -189,7 +189,10 @@ fn finish_start_over(ctx: &mut Ctx, client: Client, old: Old, served: Vec<Signed
     }
     let keys = chain::adopt_user_key(ctx, &client, &me, &new)?;
     let count = reseal::run(ctx, &client, &me, &old, &keys, &new).map_err(unfinished)?;
-    say(ctx, json!({ "resealed": count.sealed, "already": count.already, "left": count.left }), resealed(&count))
+    // While the old keys are kept, every `--start-over` lands here: said, so
+    // a person who meant to start over again knows nothing new was started.
+    let summary = format!("{}. This went on with the start-over already made; nothing new was started — a new start-over needs `krowk sync recovery discard-old` first", resealed(&count));
+    say(ctx, json!({ "resealed": count.sealed, "already": count.already, "left": count.left, "continued": true }), summary)
 }
 
 fn resealed(c: &reseal::Count) -> String {
@@ -308,14 +311,15 @@ fn read_kit(ctx: &mut Ctx, prompt: &str) -> Result<Option<RecoveryKit>, Error> {
 }
 
 /// This machine as it would join the list: refused before the review when
-/// its key is on the list already, or a device there has its name.
+/// its key is on the list already, or a device there has its name or one
+/// that reads like it (`confusable_names`).
 fn joining(ctx: &Ctx, chain: &Chain, me: &Me) -> Result<Subject, Error> {
     if chain.devices().iter().any(|d| d.id() == me.device.id()) {
         return Err(fail("already_on_list", "this machine's device key is already on your list — run `krowk sync status` here instead"));
     }
     let subject = this_subject(ctx, &me.device, &me.signing);
-    if chain.devices().iter().any(|d| krowk_client::device_chain::same_name(&d.name, &subject.name)) {
-        return Err(fail("device_name_taken", format!("a device on your list is already called '{}' — give this machine another name with --name", subject.name)));
+    if let Some(d) = chain.devices().iter().find(|d| krowk_client::device_chain::confusable_names(&d.name, &subject.name)) {
+        return Err(fail("device_name_taken", format!("'{}' reads like '{}', already on your list — give this machine another name with --name", subject.name, d.name)));
     }
     Ok(subject)
 }

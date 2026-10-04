@@ -72,8 +72,13 @@ ed25519-dalek = { version = "3", default-features = false, features = ["zeroize"
 # through its re-exported rand_core. No audit: tests/pairing.rs holds it to
 # the python-spake2 vectors magic-wormhole interoperates with.
 spake2 = { version = "=0.5.0-pre.0", default-features = false }
+# The Edwards arithmetic spake2 and ed25519-dalek already link, named so
+# pairing can refuse a peer's small-order or non-canonical point itself.
+curve25519-dalek = { version = "5", default-features = false }
 # HKDF-SHA256 and HMAC-SHA256 for pairing's key confirmation, and HKDF for
 # deriving the recovery device from the kit's 128 bits. Both linked already,
 # by hpke.
 hkdf = "0.13"
 hmac = "0.13"
+unicode-security = "0.1.2"
+unicode-normalization = "0.1.25"
