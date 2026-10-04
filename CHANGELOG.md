@@ -74,6 +74,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A new device can't take a name that only looks like one already on your
+  list.** Adding or pairing a device is refused when its name reads like
+  another device's: a Cyrillic `а` for a Latin `a`, full-width letters, or
+  `1` or `I` for `l`. Each name in a removal or recovery review now names
+  exactly one device.
+
 - **Copying from the TUI no longer drags the layout along.** Text in the
   transcript starts at the first column: a mouse selection of your prompt,
   an answer, a list or a code block comes without the two-column margin,

@@ -79,6 +79,11 @@
 //!   not take a name a device on the list already has, compared with ASCII
 //!   `A`–`Z` folded and every other byte exact (`same_name`). No rule of
 //!   the chain's validity reads the runtime's Unicode tables.
+//! - A name that only *reads* like one on the list — a Cyrillic `а` for a
+//!   Latin `a`, `ｌａｐｔｏｐ`, `1` for `l` — is refused where an entry is
+//!   written (`Chain::batch`, `confusable_names`), not where one is
+//!   verified: NFKC and the confusables table are the runtime's Unicode
+//!   tables, which two implementations of the verifier need not share.
 //!
 //! A pinned client refuses a chain shorter than its pin, or whose entry at
 //! the pin's seq has another hash: an older list, or a forked one.
@@ -286,6 +291,19 @@ pub fn refused_in_name(c: char) -> bool {
 /// whether a chain is valid.
 pub fn same_name(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
+}
+
+/// Whether two names read alike to a person: equal once each is NFKC
+/// normalised and reduced to its UTS #39 confusable skeleton, case folded
+/// between two passes so `I` and `l` meet. A writer's check, never a rule of
+/// validity (the module doc says why).
+pub fn confusable_names(a: &str, b: &str) -> bool {
+    fn fold(s: &str) -> String {
+        use unicode_normalization::UnicodeNormalization;
+        let once: String = unicode_security::skeleton(&s.nfkc().collect::<String>()).collect();
+        unicode_security::skeleton(&once.to_lowercase()).collect()
+    }
+    fold(a) == fold(b)
 }
 
 fn check_text(seq: u64, what: &str, s: &str, min: usize, max: usize) -> Result<(), Error> {
@@ -527,8 +545,9 @@ impl Chain {
         }
     }
 
-    /// Verifies seq 0 alone.
-    pub fn genesis(entry: &SignedEntry) -> Result<Chain, Error> {
+    /// Verifies seq 0 alone: `verify`'s first step, and only reached through
+    /// it, so no caller holds a chain that was not verified from its start.
+    fn genesis(entry: &SignedEntry) -> Result<Chain, Error> {
         let e = Entry::decode(&entry.bytes)?;
         check_genesis(&e)?;
         let mut chain = Chain { head: Head { seq: 0, hash: entry.hash() }, key_ids: vec![e.key_id], devices: Vec::new(), seen: Vec::new(), held: Vec::new(), root: entry.hash() };
@@ -802,6 +821,13 @@ struct Building {
 impl Building {
     fn push(&mut self, change: Change<'_>, signer: DeviceId, key: &SigningKey, time: u64) -> Result<(), Error> {
         let (action, subject, own) = change.parts();
+        // An add brings a name; a rotate-recovery's kit takes the name the
+        // kit it replaces had.
+        if action == Action::Add
+            && let Some(d) = self.chain.devices.iter().find(|d| confusable_names(&d.name, &subject.name))
+        {
+            return Err(Error(format!("{:?} reads like {:?}, already on your device list — name this device something that doesn't look like another", subject.name, d.name)));
+        }
         let mut entry = self.chain.next_entry(action, subject.clone(), time);
         let next = if action.rotates() { Some(self.current.next()?) } else { None };
         if let Some(n) = &next {
@@ -1163,6 +1189,31 @@ mod tests {
         let twin = Dev::new("Laptop");
         let e = signed(&entries, Action::Add, twin.subject(), &[&phone], |_| {});
         assert!(chain(&entries).extend(&e).unwrap_err().0.contains("already called"));
+    }
+
+    /// A name that only reads like one on the list — another script's
+    /// letter, a full-width form, `1` or `I` for `l` — is not written; one
+    /// that merely shares letters is. A chain holding such a name, written
+    /// some other way, still verifies: it is the writer's check, not the
+    /// chain's.
+    #[test]
+    fn d1_a_name_that_reads_like_one_on_the_list_is_not_written() {
+        let (laptop, _kit, phone, entries, g1) = three();
+        for alike in ["l\u{430}ptop", "\u{FF4C}\u{FF41}\u{FF50}\u{FF54}\u{FF4F}\u{FF50}", "1aptop", "Iaptop", "PHONE"] {
+            let mut s = Dev::new("x").subject();
+            s.name = alike.into();
+            let e = chain(&entries).batch(&g1, vec![Change::Add(s)], laptop.id(), &laptop.signing, T).err().expect("refused").0;
+            assert!(e.contains("reads like"), "{alike:?}: {e}");
+        }
+        for different in ["laptop 2", "lapdog", "phones"] {
+            let mut s = Dev::new("x").subject();
+            s.name = different.into();
+            assert!(chain(&entries).batch(&g1, vec![Change::Add(s)], laptop.id(), &laptop.signing, T).is_ok(), "{different:?}");
+        }
+        let mut s = Dev::new("x").subject();
+        s.name = "l\u{430}ptop".into();
+        let e = signed(&entries, Action::Add, s, &[&phone], |_| {});
+        assert!(chain(&entries).extend(&e).is_ok(), "verifying does not read the confusables table");
     }
 
     /// Names compare with ASCII folded only, and the refused list is
