@@ -663,12 +663,16 @@ fn fills_last_row(line: &Line<'_>, width: u16) -> bool {
     soft_wrap(line, width).1 == usize::from(width.max(1))
 }
 
+/// The rows `line` takes and the column it ends on, measured a grapheme at
+/// a time as the terminal draws it: an emoji with its variation selector,
+/// or several joined, is one glyph two columns wide.
 fn soft_wrap(line: &Line<'_>, width: u16) -> (u16, usize) {
-    use unicode_width::UnicodeWidthChar;
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
     let width = usize::from(width.max(1));
     let (mut rows, mut col) = (1u16, 0usize);
-    for c in line.spans.iter().flat_map(|s| s.content.chars()) {
-        let cw = c.width().unwrap_or(0);
+    for g in line.spans.iter().flat_map(|s| s.content.graphemes(true)) {
+        let cw = g.width().min(2);
         if cw == 0 {
             continue;
         }
@@ -824,6 +828,33 @@ mod tests {
         assert!(!out[at("plain")..at("→")].contains(' '), "no space before, inside or after a band: {out:?}");
         assert_eq!(out.matches("\x1b[48;5;235m\x1b[K").count(), 2, "the short row and the empty one erased in the band's colour: {out:?}");
         assert!(out[at("0123456789")..].starts_with("0123456789\x1b[0m\r\n"), "a full row is not, which would take its last cell: {out:?}");
+    }
+
+    #[test]
+    fn a_band_row_an_emoji_fills_is_not_erased_into() {
+        use ratatui::style::{Color, Style};
+        // ❤️ is a heart and a variation selector: one glyph, two columns.
+        let mut t = Term::new(Vec::new(), Size { width: 10, height: 10 }, 0, 1).unwrap();
+        let start = t.out.len();
+        t.frame(&[Line::from("abcdefgh\u{2764}\u{fe0f}").style(Style::new().bg(Color::Indexed(235)))], &[Line::from("→")], (2, 0)).unwrap();
+        let out = String::from_utf8_lossy(&t.out[start..]).into_owned();
+        assert!(!out.contains("\x1b[K"), "the row is full, the cursor on its last cell: {out:?}");
+        assert_eq!(t.top(), 1, "one row");
+    }
+
+    #[test]
+    fn a_narrowed_region_counts_its_spare_rows_above_the_prompt() {
+        // From row 10 of 30 the region is twenty rows, seventeen of them
+        // blank above the three it draws.
+        let mut t = Term::new(Vec::new(), Size { width: 100, height: 30 }, 10, 3).unwrap();
+        let bar = Line::from("x".repeat(90));
+        t.frame(&[], &[bar.clone(), Line::from("y".repeat(60)), bar], (50, 1)).unwrap();
+        assert_eq!((t.top(), t.height, t.caret_row), (10, 20, 18));
+        // At 40 columns: 17 blank rows, 3 for the 90-wide one, 1 for the
+        // caret down its own line.
+        assert_eq!(t.reflowed_above_caret(40), 17 + 3 + 1);
+        let out = after_resize(&mut t, &[(40, 28)]);
+        assert!(out.starts_with("\x1b[?2026h\r\x1b[21A\x1b[J"), "{out:?}");
     }
 
     #[test]

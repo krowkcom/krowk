@@ -137,6 +137,8 @@ pub enum Overlay {
     Models,
     /// The permission mode picker (`/mode`).
     Modes,
+    /// What Ctrl-Y can copy (`App::copy_choices`).
+    Copy,
     /// `/settings` (and `/config`): what is saved to config.json.
     Settings,
     /// `/connect` and `/disconnect`, and the first-run card (`App::flow`).
@@ -659,8 +661,13 @@ pub struct App {
     /// unpadded: what Ctrl-Y copies, cleaned as it was shown. One answer,
     /// not the conversation.
     pub answer: String,
-    /// Set by Ctrl-Y; the next frame puts `answer` on the clipboard.
-    pub copy: bool,
+    /// What the person last said, as typed: Ctrl-Y offers it.
+    pub said: String,
+    /// What the next frame puts on the clipboard, and what it is, for the
+    /// flash that says so: set by Ctrl-Y.
+    pub copy: Option<(String, String)>,
+    /// The row of the Ctrl-Y picker chosen.
+    pub copy_at: usize,
     /// The sessions left for another (`/new`, `/sessions`), oldest first.
     pub left: Vec<String>,
     /// Set by `/new`; the next frame clears the screen and its scrollback
@@ -780,7 +787,9 @@ impl App {
             slash_closed: false,
             approvals: Vec::new(),
             answer: String::new(),
-            copy: false,
+            said: String::new(),
+            copy: None,
+            copy_at: 0,
             left: Vec::new(),
             wipe: false,
             flash: None,
@@ -840,14 +849,17 @@ impl App {
         std::mem::take(&mut self.dirty)
     }
 
-    /// The lines owed to scrollback, oldest first. A line wider than the
-    /// terminal is its to wrap (`unhung`).
+    /// The lines owed to scrollback, oldest first, each wrapped to the
+    /// width between words — but a code block's rows, on their band, which
+    /// are the terminal's to wrap, so a copy of a long line of code joins it
+    /// again (`hung`).
     pub fn take_pending(&mut self) -> Vec<Line<'static>> {
         if self.pending.len() > self.held.at {
             self.release();
         }
         self.held.at = 0;
-        std::mem::take(&mut self.pending)
+        let width = usize::from(self.width);
+        std::mem::take(&mut self.pending).into_iter().flat_map(|l| if l.style.bg.is_some() { vec![l] } else { wrap_line(l, width) }).collect()
     }
 
     pub fn running(&self) -> bool {
@@ -947,8 +959,9 @@ impl App {
     /// backticks drawn as keys (`look::keys`).
     fn push_rows(&mut self, first: &str, rest: &str, text: &str, prefix_style: Style, style: Style, marked: bool) {
         // Unprefixed text — the answer itself, most of scrollback — is a
-        // line to each of its own, for the terminal to wrap (`unhung`).
-        // Prefixed items wrap here, under their hanging indent.
+        // line to each of its lines here, wrapped with everything else on
+        // its way out (`take_pending`). Prefixed items wrap here, under
+        // their hanging indent.
         if first.is_empty() && rest.is_empty() {
             for l in clean(text).split('\n') {
                 let line = Line::from(Span::styled(l.to_string(), style));
@@ -972,13 +985,14 @@ impl App {
     }
 
     /// What the person said, on a band across the width, an empty row of
-    /// it above and below: each line of it whole, from the first column,
-    /// for the terminal to wrap, so a selection of it copies as it was
-    /// typed (`unhung`).
+    /// it above and below: from the first column, wrapped between words,
+    /// so a selection of it copies with nothing before it. Ctrl-Y copies it
+    /// as typed.
     fn push_said(&mut self, text: &str) {
-        let text = clean(&text.replace('\t', "    "));
-        for row in std::iter::once("").chain(text.split('\n')).chain([""]) {
-            self.push_line(Line::from(row.to_string()).style(look::said_band()));
+        self.said = text.to_string();
+        let rows = wrap(&clean(&text.replace('\t', "    ")), usize::from(self.width));
+        for row in std::iter::once(String::new()).chain(rows).chain([String::new()]) {
+            self.push_line(Line::from(row).style(look::said_band()));
         }
     }
 
@@ -1026,13 +1040,13 @@ impl App {
     }
 
     /// A page to open, from a sign-in: what it is for, dim, and the URL on a
-    /// row of its own as a link (OSC 8) the terminal wraps, so it stays one
-    /// link and copies whole.
+    /// row of its own as a link (OSC 8) the terminal wraps, from the first
+    /// column, so it stays one link and copies whole.
     pub fn link(&mut self, message: &str, url: &str) {
         self.gap();
         self.push_wrapped("", "", message, dim(), dim());
         let url: String = look::untagged(&crate::card::clean(url)).chars().filter(|c| !c.is_whitespace()).collect();
-        self.pending.push(Line::from(vec![Span::raw("  "), Span::styled(url, look::link())]));
+        self.pending.push(Line::from(vec![Span::styled(url, look::link())]));
         self.last_blank = false;
         self.after_tool = false;
         self.dirty = true;
@@ -1133,9 +1147,8 @@ impl App {
         self.push_wrapped("  ", "  ", &format!("({})", e.code), dim(), dim());
     }
 
-    /// One line of an answer, in light markdown, for the terminal to wrap
-    /// (`unhung`). A table's rows are held until the first line that is
-    /// not one.
+    /// One line of an answer, in light markdown, wrapped under its hanging
+    /// indent. A table's rows are held until the first line that is not one.
     fn push_md(&mut self, text: &str) {
         let text = look::untagged(&clean(&text.replace('\t', "    ")));
         if !self.md.fenced() && table::is_row(&text) {
@@ -1152,7 +1165,9 @@ impl App {
         if opening && self.md.fenced() {
             self.gap();
         }
-        self.push_answer(unhung(md));
+        for line in hung(md, usize::from(self.width)) {
+            self.push_answer(line);
+        }
     }
 
     /// The end of an answer's text: a table it ended on is drawn, a fenced
@@ -2107,6 +2122,7 @@ impl App {
             }
             Overlay::Models => rows.extend(self.models_overlay(width)),
             Overlay::Modes => rows.extend(self.modes_overlay(width)),
+            Overlay::Copy => rows.extend(self.copy_overlay(width)),
             Overlay::Settings => rows.extend(self.settings_overlay(width)),
             Overlay::Sessions => rows.extend(self.sessions_overlay(width)),
             Overlay::Connect => {
@@ -2383,6 +2399,65 @@ impl App {
         }
         out.extend(menu(&rows, self.pick_at, width, MODEL_ROWS));
         out
+    }
+
+    /// What Ctrl-Y can copy, as written: each of the last answer's code
+    /// blocks, the answer whole, and what the person last said — a name,
+    /// what it is, and its text.
+    pub fn copy_choices(&self) -> Vec<(String, String, String)> {
+        let first = |t: &str| t.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim().to_string();
+        let lines = |t: &str| match t.lines().count() {
+            1 => "1 line".to_string(),
+            n => format!("{n} lines"),
+        };
+        let mut out: Vec<(String, String, String)> = look::code_blocks(&self.answer)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, (_, code))| !code.trim().is_empty())
+            .map(|(i, (lang, code))| (format!("{} {}", if lang.is_empty() { "code" } else { &lang }, i + 1), format!("{} · {}", lines(&code), first(&code)), code))
+            .collect();
+        let answer = self.answer.trim_end();
+        if !answer.trim().is_empty() {
+            out.push(("answer".into(), format!("{}, markdown and all", lines(answer)), answer.to_string()));
+        }
+        if !self.said.trim().is_empty() {
+            out.push(("your prompt".into(), first(&self.said), self.said.clone()));
+        }
+        out
+    }
+
+    fn copy_overlay(&self, width: usize) -> Vec<Line<'static>> {
+        let rows: Vec<Choice> = self.copy_choices().into_iter().map(|(name, says, _)| Choice { name, value: Span::raw(""), says: clean(&says), warning: None }).collect();
+        let mut out = vec![picker_title("copy", "`↑` `↓` choose · `enter` copies · `esc` close", width)];
+        out.extend(choices(&rows, self.copy_at, false, width));
+        out
+    }
+
+    /// Ctrl-Y: what there is to copy, straight to the clipboard when it is
+    /// one thing, and otherwise a picker of them, on the first.
+    pub fn open_copy(&mut self) {
+        let mut choices = self.copy_choices();
+        self.dirty = true;
+        match choices.len() {
+            0 => self.flash = Some("nothing to copy yet".into()),
+            1 => {
+                let (name, _, text) = choices.remove(0);
+                self.copy = Some((name, text));
+            }
+            _ => {
+                self.copy_at = 0;
+                self.overlay = Overlay::Copy;
+            }
+        }
+    }
+
+    /// The picker's row `at` to the clipboard, on the next frame.
+    pub fn copy_chosen(&mut self, at: usize) {
+        if let Some((name, _, text)) = self.copy_choices().into_iter().nth(at) {
+            self.copy = Some((name, text));
+            self.overlay = Overlay::None;
+            self.dirty = true;
+        }
     }
 
     fn modes_overlay(&self, width: usize) -> Vec<Line<'static>> {
@@ -2762,15 +2837,24 @@ fn branches<R: Into<Line<'static>>>(rows: Vec<R>) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// One line of an answer as scrollback takes it: whole, from the first
-/// column, for the terminal to wrap. What the terminal wraps it joins
-/// again on a copy, and nothing is put before a row the text did not put
-/// there, so a selection copies as the model wrote it.
-fn unhung(md: look::MdLine) -> Line<'static> {
-    match &md.band {
-        Some(label) => banded(md.body, label),
-        None => md.line(),
+/// An answer's line wrapped to `width`: its `lead` before the first row,
+/// its `hang` before each row after, unless that would take over half of
+/// it. A fenced block's row is not: it is the terminal's to wrap, so a copy
+/// of a long line of code joins it again (`banded`).
+fn hung(md: look::MdLine, width: usize) -> Vec<Line<'static>> {
+    if let Some(label) = &md.band {
+        return vec![banded(md.body, label)];
     }
+    let hang = md.hang.iter().map(Span::width).sum::<usize>();
+    // Nested past half the width, a hang leaves too little to read.
+    if hang * 2 > width {
+        return wrap_line(md.line(), width);
+    }
+    wrap_line(Line::from(md.body), width.saturating_sub(hang).max(1))
+        .into_iter()
+        .enumerate()
+        .map(|(r, row)| Line::from([if r == 0 { md.lead.clone() } else { md.hang.clone() }, row.spans].concat()))
+        .collect()
 }
 
 /// A row of a fenced block on the code band: the code from the first
@@ -3130,13 +3214,33 @@ mod tests {
     }
 
     #[test]
-    fn a_list_item_and_a_quote_are_a_line_each_for_the_terminal_to_wrap() {
+    fn ctrl_y_offers_each_code_block_the_answer_and_the_prompt_as_written() {
+        let mut a = app();
+        a.open_copy();
+        assert_eq!((a.flash.as_deref(), a.overlay), (Some("nothing to copy yet"), Overlay::None));
+        a.echo("fix\tit");
+        a.open_copy();
+        assert_eq!(a.copy.take(), Some(("your prompt".to_string(), "fix\tit".to_string())), "one thing: copied straight away, its tab kept");
+        a.answer = "Run:\n```sh\n\tmake check\n```\nThen:\n```\nls\n```\n".into();
+        let names: Vec<String> = a.copy_choices().into_iter().map(|(n, _, _)| n).collect();
+        assert_eq!(names, ["sh 1", "code 2", "answer", "your prompt"]);
+        a.open_copy();
+        assert_eq!((a.overlay, a.copy_at), (Overlay::Copy, 0));
+        a.copy_chosen(0);
+        assert_eq!(a.copy.take(), Some(("sh 1".to_string(), "\tmake check".to_string())), "the code as written");
+        assert_eq!(a.overlay, Overlay::None);
+        a.copy_chosen(2);
+        assert_eq!(a.copy.take().map(|(_, t)| t), Some(a.answer.trim_end().to_string()), "the answer whole, its fences too");
+    }
+
+    #[test]
+    fn a_list_items_wrapped_rows_line_up_under_its_text() {
         let mut a = app();
         a.set_width(24);
         for l in ["- one two three four five six", "  - seven eight nine ten", "> a quote that goes on and on"] {
             a.push_md(l);
         }
-        assert_eq!(text(&a.take_pending()), ["• one two three four five six", "  ◦ seven eight nine ten", "│ a quote that goes on and on"], "nothing before a row it wraps onto, to be copied");
+        assert_eq!(text(&a.take_pending()), ["• one two three four", "  five six", "  ◦ seven eight nine ten", "│ a quote that goes on", "│ and on"], "a list from the first column");
     }
 
     #[test]
@@ -3260,7 +3364,7 @@ mod tests {
         a.push_md("Done.");
         assert_eq!(
             text(&a.take_pending()),
-            ["◆ Ran 2 commands, read 1 file, searched for 1 pattern", "◆ Run cargo test (failed)", "└─ boom", "◆ Read b.rs (2 lines)", "Done."]
+            ["◆ Ran 2 commands, read 1 file, searched", "for 1 pattern", "◆ Run cargo test (failed)", "└─ boom", "◆ Read b.rs (2 lines)", "Done."]
         );
     }
 
@@ -3768,7 +3872,7 @@ mod tests {
     }
 
     #[test]
-    fn scrollback_is_the_terminals_to_wrap_and_the_last_answer_is_kept_whole() {
+    fn scrollback_is_wrapped_here_keeping_each_pieces_style_and_the_last_answer_is_kept_whole() {
         let line = Line::from(vec![Span::raw("one two "), Span::styled("three four five", bold())]);
         let rows = wrap_line(line, 10);
         assert_eq!(text(&rows), ["one two", "three", "four five"]);
@@ -3777,7 +3881,8 @@ mod tests {
         a.width = 12;
         a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "i".into(), item: ItemKind::AssistantText }));
         a.on_line(&delta("i", "a rather long first line of the answer\nand a second\n"));
-        assert_eq!(text(&a.take_pending()), ["a rather long first line of the answer", "and a second"], "a line each, which a copy joins again");
+        let t = text(&a.take_pending());
+        assert!(t.iter().all(|r| r.chars().count() <= 12), "{t:?}");
         assert_eq!(a.answer, "a rather long first line of the answer\nand a second\n", "Ctrl-Y copies it unwrapped");
         // After a tool call, the answer goes on, a paragraph apart; a new
         // turn starts it again.
@@ -4100,7 +4205,8 @@ mod tests {
     fn prose_lays_out_at_most_80_columns_and_full_width_takes_the_terminal() {
         let mut a = App::new(Editor::new(None), 200, Settings::default(), None, None);
         a.say(&"word ".repeat(40), dim());
-        assert_eq!(a.take_pending().len(), 1, "scrollback's text is the terminal's to wrap, so it copies whole");
+        let lines = a.take_pending();
+        assert!(lines.len() > 1 && lines.iter().all(|l| l.width() <= 80), "{:?}", text(&lines));
         // Above the prompt, at most 80; the prompt and the status line
         // take the whole width.
         let above = |rows: &[String]| rows.iter().take_while(|r| !r.starts_with(look::ARROW)).cloned().collect::<Vec<_>>();

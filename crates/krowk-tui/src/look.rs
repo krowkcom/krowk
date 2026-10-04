@@ -380,6 +380,41 @@ fn fence_line(trimmed: &str) -> Option<(char, usize, &str)> {
     (len >= 3).then(|| (mark, len, trimmed[len..].trim()))
 }
 
+/// The fenced code blocks in `answer`, in order: each one's language and
+/// its code as written, the fence's own indent taken off each line. One
+/// the answer ends inside of is a block to its end, as it is drawn.
+pub fn code_blocks(answer: &str) -> Vec<(String, String)> {
+    let mut blocks = Vec::new();
+    let mut open: Option<(char, usize, usize, String, Vec<&str>)> = None;
+    for line in answer.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        match &mut open {
+            Some((mark, len, at, lang, code)) => {
+                if fence_line(trimmed).is_some_and(|(m, l, rest)| m == *mark && l >= *len && rest.is_empty()) {
+                    blocks.push((std::mem::take(lang), code.join("\n")));
+                    open = None;
+                } else {
+                    let cut = line.len() - line.trim_start_matches(' ').len();
+                    code.push(&line[cut.min(*at)..]);
+                }
+            }
+            None => {
+                if let Some((mark, len, info)) = fence_line(trimmed)
+                    && !(mark == '`' && info.contains('`'))
+                {
+                    let lang = info.split_whitespace().next().unwrap_or_default();
+                    open = Some((mark, len, indent, lang.rsplit(':').next().unwrap_or(lang).to_string(), Vec::new()));
+                }
+            }
+        }
+    }
+    if let Some((_, _, _, lang, code)) = open {
+        blocks.push((lang, code.join("\n")));
+    }
+    blocks
+}
+
 /// An open list item: the column its marker is at in the answer, and the
 /// one its text is shown at.
 #[derive(Debug)]
@@ -394,12 +429,13 @@ const LIST_INDENT: usize = 0;
 /// A bulleted item's marker, by how deep it is nested.
 const BULLETS: [&str; 3] = ["•", "◦", "▪"];
 
-/// One line of an answer: `lead` (a list item's marker, a quote's rule)
-/// and then `body`. Nothing goes before a row it wraps onto: the terminal
-/// wraps it, so it copies as one line.
+/// One line of an answer: `lead` and then `body` on its first row, and
+/// `hang` before each row `body` wraps onto, so a list item's rows line
+/// up under its text and a quote's under its rule.
 pub struct MdLine {
     pub lead: Vec<Span<'static>>,
     pub body: Vec<Span<'static>>,
+    pub hang: Vec<Span<'static>>,
     /// A row of a fenced block, drawn on the code band across the width,
     /// and what is here shown on it, dim (the language, on the row above
     /// the code).
@@ -407,10 +443,10 @@ pub struct MdLine {
 }
 
 impl MdLine {
-    /// `body` after `indent` columns.
+    /// `body` after `indent` columns, its rows hung there too.
     fn indented(indent: usize, body: Vec<Span<'static>>) -> Self {
         let pad = if indent > 0 { vec![Span::raw(" ".repeat(indent))] } else { Vec::new() };
-        MdLine { lead: pad, body, band: None }
+        MdLine { lead: pad.clone(), body, hang: pad, band: None }
     }
 
     /// The line unwrapped.
@@ -440,7 +476,7 @@ pub fn markdown_line(text: &str, md: &mut Markdown) -> Line<'static> {
 pub fn markdown(text: &str, md: &mut Markdown) -> MdLine {
     let text: &str = &untagged(text);
     let trimmed = text.trim_start();
-    let banded = |body, label: &str| MdLine { lead: Vec::new(), body, band: Some(label.to_string()) };
+    let banded = |body, label: &str| MdLine { lead: Vec::new(), body, hang: Vec::new(), band: Some(label.to_string()) };
     if let Some(f) = &mut md.fence {
         if fence_line(trimmed).is_some_and(|(mark, len, rest)| mark == f.mark && len >= f.len && rest.is_empty()) {
             md.fence = None;
@@ -477,7 +513,7 @@ pub fn markdown(text: &str, md: &mut Markdown) -> MdLine {
     match (trimmed.strip_prefix("> "), within) {
         (Some(rest), _) => {
             let rule = [Span::raw(" ".repeat(within.unwrap_or(indent))), Span::styled("│ ", dim())];
-            MdLine { lead: rule.to_vec(), body: inline(rest), band: None }
+            MdLine { lead: rule.to_vec(), body: inline(rest), hang: rule.to_vec(), band: None }
         }
         (None, Some(at)) => MdLine::indented(at, inline(trimmed)),
         // Indented as typed, and wrapped as it was: an unfenced block of
@@ -505,7 +541,7 @@ impl Markdown {
         };
         let text = at + glyph.width() + 1;
         self.items.push(Item { indent, text });
-        MdLine { lead: vec![Span::raw(" ".repeat(at)), Span::styled(format!("{glyph} "), dim())], body: inline(rest), band: None }
+        MdLine { lead: vec![Span::raw(" ".repeat(at)), Span::styled(format!("{glyph} "), dim())], body: inline(rest), hang: vec![Span::raw(" ".repeat(text))], band: None }
     }
 
     /// Where a line that is no item, at `indent`, is shown: under the text
@@ -798,6 +834,24 @@ mod tests {
         assert_eq!(lines("- [ ] todo\n- [x] done\n- [X] also"), ["☐ todo", "☒ done", "☒ also"]);
         let mut f = Markdown::default();
         assert_eq!(markdown("- [x] done", &mut f).lead[1].style, dim(), "a marker is washed, not coloured");
+    }
+
+    #[test]
+    fn an_item_and_a_quote_say_what_their_wrapped_rows_start_with() {
+        let mut f = Markdown::default();
+        let hang = |m: MdLine| m.hang.iter().map(|s| s.content.to_string()).collect::<String>();
+        assert_eq!(hang(markdown("- a", &mut f)), "  ");
+        assert_eq!(hang(markdown("  12. b", &mut f)), "      ", "nested in the item before it");
+        assert_eq!(hang(markdown("> c", &mut f)), "│ ");
+        assert_eq!(hang(markdown("plain", &mut f)), "");
+        assert_eq!(hang(markdown("    \"key\": 1,", &mut f)), "", "an indent typed outside a list does not hang");
+    }
+
+    #[test]
+    fn an_answers_code_blocks_are_found_as_written() {
+        let answer = "Run:\n```rust title\nfn main() {\n\tlet a = 1;\n}\n```\n- in a list:\n  ~~~\n  ls -la\n    two in\n  ~~~\n````md\n```\nnot a close\n````\n```\nleft open";
+        let got = code_blocks(answer);
+        assert_eq!(got, [("rust".into(), "fn main() {\n\tlet a = 1;\n}".into()), (String::new(), "ls -la\n  two in".into()), ("md".into(), "```\nnot a close".into()), (String::new(), "left open".into())]);
     }
 
     #[test]

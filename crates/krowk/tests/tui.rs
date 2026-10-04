@@ -689,18 +689,30 @@ fn r_tui_3_a_phone_width_terminal_wraps_and_still_keeps_every_line_once() {
     assert!(tm.wait_for("tokens", Duration::from_secs(60)).is_some(), "{}", tm.screen());
     let history = tm.history();
     assert!(history.lines().all(|l| l.trim_end().chars().count() <= 40), "a row past the edge:\n{history}");
-    // The terminal wrapped the answer, so a copy joins each streamed line
-    // back: every line exactly as it was streamed, once and in order.
-    let joined = tm.history_joined();
-    let got: Vec<&str> = joined.lines().map(str::trim_end).filter(|l| l.starts_with("line ")).collect();
+    // krowk wrapped the answer, between words, so each streamed line is
+    // its first row and the rows after it, up to the next line: joined
+    // back, every line exactly as it was streamed, once and in order.
+    let mut got: Vec<String> = Vec::new();
+    for row in history.lines().map(str::trim) {
+        if row.starts_with("line ") {
+            got.push(row.to_string());
+        } else if let Some(last) = got.last_mut()
+            && !row.is_empty()
+            && !last.ends_with("again")
+        {
+            last.push(' ');
+            last.push_str(row);
+        }
+    }
     let want: Vec<String> = mock::numbered_lines(200).lines().map(String::from).collect();
-    assert_eq!(got, want, "the answer, wrapped by the terminal, is in scrollback once and in order, each line joined whole");
+    assert_eq!(got, want, "the answer, wrapped by krowk, is in scrollback once and in order");
 }
 
 #[test]
 fn r_tui_3_a_widened_terminal_keeps_the_answer_in_scrollback_once() {
-    // Printed at 40 columns, the answer's lines are wrapped by the
-    // terminal; widened to 100 they are there each once.
+    // Printed at 40 columns, the answer's lines are wrapped by krowk;
+    // widened to 100 they stay as they were printed, each once (Ctrl-Y
+    // copies the answer unwrapped).
     let m = streamed(20, Duration::from_micros(100));
     let b = Sandbox::new("widen");
     let Some(tm) = Tmux::start("widen", 40, 30, &b.root.join("repo"), &b.env(&m.url), &[]) else { return };
@@ -797,8 +809,8 @@ fn r_tui_3_a_resize_mid_stream_never_repeats_a_line_or_leaves_the_live_region_be
 }
 
 /// The prompt, `arrow` its first row, once in history and on its band
-/// once: at least `blank_above` empty rows over it (the last two the plain
-/// one and the band's), the band's empty row and a plain one under it and the
+/// once: `blank_above` empty rows over it (the last two the plain one and
+/// the band's), the band's empty row and a plain one under it and the
 /// status line right after, and the band's colour (236) nowhere else —
 /// a reflowed piece of it left behind would show there, as a rule did.
 fn one_band(tm: &Tmux, arrow: &str, blank_above: usize) {
@@ -823,7 +835,7 @@ fn one_band(tm: &Tmux, arrow: &str, blank_above: usize) {
     assert_eq!(at.len(), 1, "one prompt:\n{styled}");
     let i = at[0];
     let above = plain[..i].iter().rev().take_while(|l| l.trim().is_empty()).count();
-    assert!(above >= blank_above, "the empty rows over the prompt, its band's among them: {above}\n{styled}");
+    assert_eq!(above, blank_above, "the empty rows over the prompt, its band's among them, and no more:\n{styled}");
     assert!(plain.get(i + 1).is_some_and(|l| l.trim().is_empty()) && plain.get(i + 2).is_some_and(|l| l.trim().is_empty()) && plain.get(i + 3).is_some_and(|l| l.contains(" help")), "and under it, the status line straight after:\n{styled}");
     let band: Vec<usize> = styled.lines().enumerate().filter(|(_, l)| l.contains("48;5;236m")).map(|(n, _)| n).collect();
     assert!(band.iter().all(|&n| n == i - 1 || n == i), "the band's colour away from the prompt, {band:?} for {i}:\n{styled}");
@@ -1693,8 +1705,10 @@ fn a_suspended_vendor_login_gives_the_terminal_back_whole_after_a_resize() {
     }
     assert_eq!(history.matches(" help").count(), 1, "one status line:\n{history}");
     assert_eq!(history.matches("→ Plan, search, build anything").count(), 1, "one prompt:\n{history}");
-    // Two empty rows under the notice, as before the band, then its two.
-    one_band(&tm, "→ Plan, search, build anything", 4);
+    // Two empty rows under the notice, as before the band, then its two —
+    // and the region reaching the bottom of the 24 rows, the eight it does
+    // not need blank over the prompt.
+    one_band(&tm, "→ Plan, search, build anything", 12);
     let screen = tm.screen();
     assert!(screen.lines().all(|l| l.chars().count() <= 72), "{screen}");
 }
