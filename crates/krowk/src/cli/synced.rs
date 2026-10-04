@@ -8,10 +8,12 @@
 //! - `host <session>`: this machine's daemon runs the session, and the
 //!   bridge holds its lease and syncs it until interrupted. The session is
 //!   one this machine already has; any other id is refused up front.
-//! - `attach <session>`: follows it from another machine as stream-json on
-//!   stdout; each line typed on stdin is a prompt to it, queued while no
+//! - `attach <session>`: follows it from another machine. On a terminal it
+//!   opens the TUI on it (D11); otherwise, or with `--json`, as stream-json
+//!   on stdout, each line typed on stdin a prompt to it, queued while no
 //!   host is online, or a command: `/approve`, `/allow-session` and `/deny`
-//!   a request, `/interrupt` or `/steer` the turn.
+//!   a request, `/interrupt` or `/steer` the turn. Stdin's end ends it once
+//!   every command sent is answered.
 //!
 //! The relay is `KROWK_RELAY_URL`, else the reference relay on this
 //! machine (`krowk relay serve`), until the hosted relay has a published
@@ -218,7 +220,17 @@ pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let api = Arc::new(signed(ctx, &k, "krowk sync attach")?);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let o = viewer::Options { relay: relay(ctx, &api.base_url), env, api, device: k.device, signing: k.signing, keys: k.user, chain: k.chain, session: session.clone(), known: None };
+    if on_a_terminal(ctx) {
+        return super::tui::run_synced(ctx, o);
+    }
     krowk_harness::sync::run_attach(o, &mut *ctx.io.stdout).map_err(|e| fail("sync_failed", e))
+}
+
+/// Whether the session is drawn in the TUI: a person at both ends of a
+/// terminal that can draw it, and no `--json`. Anything else — a pipe, a
+/// script — gets stream-json, as `krowk sync attach` always printed.
+fn on_a_terminal(ctx: &Ctx) -> bool {
+    ctx.format == crate::output::Format::Human && ctx.io.tty && ctx.io.stdin_tty && ctx.env("TERM") != "dumb"
 }
 
 /// `krowk --resume <id>` for a session this machine does not have but can
@@ -240,9 +252,11 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
     let api = keyed_client(ctx, "krowk --resume").ok()?;
     let s = api.show_sync_session(&id).ok()?;
     krowk_harness::sync::store::open_session_key(&s, &id, &k.user, &k.chain, krowk_client::session_record::Signer::EverHeld).ok()?;
-    // Said plainly, on stderr: the TUI does not draw a synced session yet,
-    // so what follows is stream-json, as `krowk sync attach` prints it.
-    let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sync attach`); the TUI does not attach synced sessions yet");
+    // Said plainly, on stderr, where no TUI draws it: what follows is
+    // stream-json, as `krowk sync attach` prints it.
+    if !on_a_terminal(ctx) {
+        let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sync attach`)");
+    }
     Some(attach(ctx, &[id]))
 }
 

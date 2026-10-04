@@ -62,8 +62,34 @@ enum Rank {
     /// Cut short rather than dropped.
     Model,
     Kit,
+    Sync,
     Offline,
     Help,
+}
+
+/// A synced session's standing, as the status line says it.
+#[derive(Debug, Default)]
+pub struct Synced {
+    /// A host on the session; unknown until the relay says.
+    pub host: Option<bool>,
+    /// `relay`, or `direct over …` and its address.
+    pub path: Option<String>,
+}
+
+impl Synced {
+    /// `host here · relay`, `host away — prompts queued`, or `connecting`
+    /// before the relay has said either.
+    fn said(&self) -> String {
+        let host = match self.host {
+            None => "connecting to the host",
+            Some(true) => "host here",
+            Some(false) => "host away — prompts queued",
+        };
+        match &self.path {
+            Some(p) if self.host == Some(true) => format!("{host} · {p}"),
+            _ => host.to_string(),
+        }
+    }
 }
 
 /// One item of the status line, as drawn.
@@ -541,6 +567,9 @@ pub struct App {
     pub device: Option<String>,
     /// Sync is set up and there is no recovery kit (`Options`).
     pub no_recovery_kit: bool,
+    /// The session runs on another machine, followed through sync: whether
+    /// its host is there and the path it comes by, for the status line.
+    pub sync: Option<Synced>,
     /// Where the agent is at work: the branch and pull request are read
     /// there.
     pub follow: crate::pr::Follow,
@@ -695,6 +724,7 @@ impl App {
             offline: None,
             device: None,
             no_recovery_kit: false,
+            sync: None,
             follow: crate::pr::Follow::default(),
             branch: String::new(),
             pr: None,
@@ -2001,7 +2031,7 @@ impl App {
             // A subagent's request is answered here like the session's own,
             // under the subagent's session, and says whose it is.
             let from = self.subs.iter().find(|s| s.session_id == req.session_id).map(|s| if s.description.is_empty() { "a subagent".to_string() } else { format!("subagent “{}”", s.description) });
-            rows.extend(approval_rows(req, self.approvals.len(), width, self.approval_ready(), from.as_deref()));
+            rows.extend(approval_rows(req, self.approvals.len(), width, self.approval_ready(), from.as_deref(), self.sync.is_none()));
         }
         if let Some(o) = &self.offer {
             for row in wrap(&offer_question(o), width) {
@@ -2177,6 +2207,12 @@ impl App {
         // without one loses every session.
         if self.no_recovery_kit {
             first.push(Part { rank: Rank::Kit, text: "no recovery kit".into(), style: yellow(), url: None });
+        }
+        // Whatever the list says: where a synced session's host is decides
+        // whether a prompt runs now or waits.
+        if let Some(sync) = &self.sync {
+            let style = if sync.host == Some(true) { dim() } else { yellow() };
+            first.push(Part { rank: Rank::Sync, text: sync.said(), style, url: None });
         }
         // Whatever the list says: being offline is news (R-OFF-1).
         if self.offline.is_some() {
@@ -2873,19 +2909,23 @@ pub const TICK: Duration = look::SPIN_FRAME;
 
 /// An approval request, as it is shown over the prompt: what the call would
 /// do, why it is asked, and the keys that answer it — `s` and `p` only when
-/// the call can be remembered.
-fn approval_rows(req: &ApprovalRequest, waiting: usize, width: usize, ready: bool, from: Option<&str>) -> Vec<Line<'static>> {
+/// the call can be remembered, and `p` only for a session of this machine's:
+/// a synced session's project is on its host, whose rules a viewer does not
+/// write.
+fn approval_rows(req: &ApprovalRequest, waiting: usize, width: usize, ready: bool, from: Option<&str>, project: bool) -> Vec<Line<'static>> {
     let more = if waiting > 1 { format!(" (1 of {waiting})") } else { String::new() };
     let summary = shown(&req.summary, MAX_APPROVAL_TEXT);
     let who = from.map(|f| format!("{}: ", shown(f, 80))).unwrap_or_default();
     let mut rows: Vec<Line<'static>> = wrap(&format!("{}{who}allow {summary}?{more}", look::TOOL), width).into_iter().map(|l| Line::from(Span::styled(l, yellow().add_modifier(Modifier::BOLD)))).collect();
     rows.extend(wrap(&format!("  {}", shown(&req.reason, MAX_APPROVAL_TEXT)), width).into_iter().map(|l| Line::from(Span::styled(l, dim()))));
+    let p = if project { " `p`" } else { "" };
     let keys = if !ready {
-        "  cut to fit — `v` prints all of it, then `y` `s` `p` · `n` deny".to_string()
+        format!("  cut to fit — `v` prints all of it, then `y` `s`{p} · `n` deny")
     } else if req.remember.is_empty() {
         "  `y` allow once · `n` deny".to_string()
     } else {
-        format!("  `y` allow once · `s` allow {} for this session · `p` … for this project · `n` deny", shown(&req.remember.join(", "), MAX_APPROVAL_TEXT / 2).replace('`', "'"))
+        let p = if project { " · `p` … for this project" } else { "" };
+        format!("  `y` allow once · `s` allow {} for this session{p} · `n` deny", shown(&req.remember.join(", "), MAX_APPROVAL_TEXT / 2).replace('`', "'"))
     };
     rows.push(Line::from(clip_spans(look::keys(&keys, look::accent()), width)));
     rows

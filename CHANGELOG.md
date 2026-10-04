@@ -9,6 +9,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **`krowk sync attach` opens the TUI.** On a terminal, a session another
+  machine runs is drawn as your own are: its history, then live. Prompts go
+  from the prompt box, approvals are answered in the usual dialog, and Esc
+  interrupts. The status line says whether the host is there (prompts wait
+  for it when it is not) and whether the session comes by the relay or
+  directly. `krowk --resume <id>` of a synced session opens it the same way.
+  The host runs prompts from a viewer in the session's default mode, so
+  `/mode`, `/model`, `/new` and `/sessions` say they are the host's, and a
+  viewer allows a call once or for the session, never for the host's
+  project. With `--json`, or stdout not a terminal, it prints stream-json as
+  before.
+
 ### Fixed
 
 - **A krowk session has one id.** `krowk sessions` listed a krowk session
@@ -39,6 +53,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   once.
 
 ### Changed
+
+- **`krowk sync attach --json` ends when its stdin does,** once every
+  command sent has been answered. Before, it ran until interrupted.
 
 - **Nothing asks you to sign in again in the browser any more.** Starting
   over, `krowk sync recovery new`, `krowk devices remove` and `krowk sync

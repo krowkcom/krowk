@@ -739,6 +739,12 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
         assert!(got.iter().any(|u| matches!(u, viewer::Update::Acked { error: Some(e), .. } if e.contains("nothing else"))), "{got:?}");
     }
 
+    // Nor write a rule into A's project (D11): a viewer allows a call once
+    // or for the session, and A refuses the rest before looking it up.
+    v.commands.send(Command::Approve { session_id: session.clone(), request_id: "any".into(), decision: ApprovalDecision::AllowProject }).unwrap();
+    let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+    assert!(got.iter().any(|u| matches!(u, viewer::Update::Acked { error: Some(e), .. } if e.contains("made on the host"))), "{got:?}");
+
     // B's prompt runs under the session's settings, whatever it asks for.
     let mut unhinged = w.prompt(Some(&session), "asking for more than it may");
     if let Command::Prompt { permission_mode, model, .. } = &mut unhinged {

@@ -248,7 +248,9 @@ pub fn typed(session: &str, line: String) -> Result<crate::protocol::Command, St
 
 /// `krowk sync attach`: follows a synced session, writing each update as
 /// one JSON line to `out`, and sends each line of stdin as a prompt or
-/// the command it names (`typed`).
+/// the command it names (`typed`). Stdin's end ends it, once every command
+/// sent has been answered: what a script piped in is taken before it goes,
+/// and nothing waits on a person who is no longer typing.
 pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<(), String> {
     let session = o.session.clone();
     runtime()?.block_on(async move {
@@ -261,42 +263,96 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                 }
             }
         });
+        let mut owed = Owed::default();
         loop {
             tokio::select! {
-                l = lines.recv() => if let Some(text) = l.filter(|t| !t.trim().is_empty()) {
-                    match typed(&session, text) {
-                        Ok(c) => { let _ = v.commands.send(c); }
-                        Err(e) => eprintln!("krowk: {e}"),
-                    }
-                },
+                // The session first: stdin closed at once (`</dev/null`)
+                // still prints what was read on attaching before it ends.
+                biased;
                 u = v.updates.recv() => {
                     let Some(batch) = u else { return Ok(()) };
                     for u in batch {
-                        let line = match u {
-                            viewer::Update::Line(l) => {
-                                // Said once per request, beside the line a
-                                // script reads: what answers it, typed here.
-                                if let crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)) = &l {
-                                    eprintln!("krowk: {} wants approval — type `/approve {id}`, `/allow-session {id}` or `/deny {id}`", r.tool, id = r.request_id);
-                                }
-                                serde_json::to_string(&l).unwrap_or_default()
-                            }
-                            viewer::Update::Attached { events, .. } | viewer::Update::CaughtUp(events) => events.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n"),
-                            viewer::Update::Host(h) => json!({"type": "sync.host", "present": h}).to_string(),
-                            viewer::Update::Sent { id, queued } => json!({"type": "sync.sent", "id": id, "queued": queued}).to_string(),
-                            viewer::Update::Acked { id, error } => json!({"type": "sync.acked", "id": id, "error": error}).to_string(),
-                            viewer::Update::Path { path, via } => json!({"type": "sync.path", "path": path, "via": via}).to_string(),
-                            viewer::Update::Gap => json!({"type": "sync.gap"}).to_string(),
-                            viewer::Update::Failed(e) => return Err(e),
-                        };
+                        owed.saw(&u);
+                        let line = jsonl(u)?;
                         if !line.is_empty() {
                             let _ = writeln!(out, "{line}");
                         }
                     }
                     let _ = out.flush();
                 }
+                l = lines.recv(), if !owed.eof => match l {
+                    Some(text) if !text.trim().is_empty() => match typed(&session, text) {
+                        Ok(c) => {
+                            owed.handed += 1;
+                            let _ = v.commands.send(c);
+                        }
+                        Err(e) => eprintln!("krowk: {e}"),
+                    },
+                    Some(_) => {}
+                    None => owed.eof = true,
+                },
+            }
+            if owed.done() {
+                return Ok(());
             }
         }
+    })
+}
+
+/// The commands `krowk sync attach` sent and has no answer to yet, and
+/// whether stdin has ended: once it has and none is owed, it is done.
+#[derive(Default)]
+struct Owed {
+    eof: bool,
+    /// Handed to the viewer, not yet shown as sent.
+    handed: usize,
+    /// Sent (or queued) and not yet acknowledged, by id.
+    unacked: std::collections::HashSet<String>,
+}
+
+impl Owed {
+    fn saw(&mut self, u: &viewer::Update) {
+        match u {
+            viewer::Update::Sent { id, .. } => {
+                self.handed = self.handed.saturating_sub(1);
+                self.unacked.insert(id.clone());
+            }
+            viewer::Update::Acked { id, .. } => {
+                self.unacked.remove(id);
+            }
+            _ => {}
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.eof && self.handed == 0 && self.unacked.is_empty()
+    }
+}
+
+/// One update as `krowk sync attach` prints it: a stream line as the
+/// protocol has it, the session's events one a line, or a `sync.*` line of
+/// the viewer's own. A note goes to stderr and prints nothing.
+fn jsonl(u: viewer::Update) -> Result<String, String> {
+    Ok(match u {
+        viewer::Update::Line(l) => {
+            // Said once per request, beside the line a script reads: what
+            // answers it, typed here.
+            if let crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)) = &l {
+                eprintln!("krowk: {} wants approval — type `/approve {id}`, `/allow-session {id}` or `/deny {id}`", r.tool, id = r.request_id);
+            }
+            serde_json::to_string(&l).unwrap_or_default()
+        }
+        viewer::Update::Attached { events, .. } | viewer::Update::CaughtUp(events) => events.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n"),
+        viewer::Update::Host(h) => json!({"type": "sync.host", "present": h}).to_string(),
+        viewer::Update::Sent { id, queued } => json!({"type": "sync.sent", "id": id, "queued": queued}).to_string(),
+        viewer::Update::Acked { id, error } => json!({"type": "sync.acked", "id": id, "error": error}).to_string(),
+        viewer::Update::Path { path, via } => json!({"type": "sync.path", "path": path, "via": via}).to_string(),
+        viewer::Update::Gap => json!({"type": "sync.gap"}).to_string(),
+        viewer::Update::Note(n) => {
+            eprintln!("krowk: {n}");
+            String::new()
+        }
+        viewer::Update::Failed(e) => return Err(e),
     })
 }
 

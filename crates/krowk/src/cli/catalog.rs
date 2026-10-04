@@ -109,8 +109,17 @@ day.";
 
 #[cfg(feature = "harness")]
 const SYNC_ATTACH_ABOUT: &str = "\
-Prints the session as stream-json on stdout. Each line typed on stdin is a
-prompt to it, queued while no host is online, except these:
+On a terminal, opens the TUI on the session: its history, then live. The
+prompt box sends prompts, approvals are answered in the usual dialog, Esc
+interrupts, and the status line says whether the host is there (prompts
+wait for it when it is not) and whether the session comes by the relay or
+directly. The host runs prompts from here in the session's default mode, so
+/mode, /model, /new and /sessions are its to change, not this TUI's.
+
+With --json, or stdout not a terminal, prints the session as stream-json on
+stdout instead, and ends when stdin does, once every command sent is
+answered. Each line typed on stdin is a prompt to it, queued while no host
+is online, except these:
 
   /approve REQUEST_ID        allow the tool call an approval.requested names
   /allow-session REQUEST_ID  allow it, and calls like it for the session
@@ -507,7 +516,7 @@ fn sync_command() -> Command {
             #[cfg(unix)]
             cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
             #[cfg(unix)]
-            cmd("attach", "krowk sync attach SESSION", "Follow a synced session; stdin takes prompts and /commands"),
+            cmd("attach", "krowk sync attach SESSION", "Follow a synced session in the TUI, or as stream-json"),
         ],
         ..cmd("sync", "", "End-to-end encryption keys for syncing sessions")
     }
