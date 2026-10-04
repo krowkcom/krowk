@@ -1997,7 +1997,7 @@ impl<'h> Ui<'h> {
         }
     }
 
-    /// And the Ctrl-Y picker.
+    /// The Ctrl-Y picker takes the arrows and enter while it is open.
     fn copy_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
         let n = app.copy_list_len();
         match k.code {
@@ -2025,7 +2025,7 @@ impl<'h> Ui<'h> {
         Some(false)
     }
 
-    /// So does `/sessions`.
+    /// `/sessions` takes the arrows and enter while it is open.
     fn sessions_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
         match k.code {
             KeyCode::Up => app.resume_at = app.resume_at.saturating_sub(1),
