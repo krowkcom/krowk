@@ -952,8 +952,6 @@ impl Shared {
     /// could not run going back (R-SWITCH-4), a limit's offer, or where
     /// `rollover = "auto"` goes next (R-INST-7, R-INST-8), and a
     /// `switchModel` that came while it ran.
-    // Legacy: a turn's setup, run and aftermath in one body. TODO: split into helpers and drop this allow.
-    #[allow(clippy::cognitive_complexity)]
     async fn turn(self: &Arc<Self>, mut plan: TurnPlan, out: mpsc::Sender<StreamLine>) -> Result<(RunResult, Option<Rolling>), EngineError> {
         let session_id = plan.log.session_id.clone();
         if plan.here.id.is_none() {
@@ -973,37 +971,10 @@ impl Shared {
             parent: plan.parent.clone(),
             handoff: None,
         };
-        // A rollover is on the record only now that its turn has passed
-        // every check, and every client is told: never silent (R-INST-8).
-        if let Some(r) = &plan.rolling {
-            let detail = r.detail();
-            w.log(LogBody::ModelSwitched { turn_id: None, from: Some(r.from.clone()), to: model.clone(), reason: SwitchReason::RateLimited, detail: Some(detail.clone()) }).await?;
-            w.live(LiveEvent::Notice { session_id: session_id.clone(), turn_id: turn_id.clone(), text: format!("{detail} (rollover = \"auto\")") }).await;
-        }
-        w.log(LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: engine.provider().into(), wire_api: engine.wire_api(), permission_mode: plan.permission_mode, effort: plan.effort }).await?;
-        let prompt_item = Item::UserText { text: std::mem::take(&mut plan.text) };
-        w.log(LogBody::ItemCompleted { turn_id: turn_id.clone(), item_id: krowk_store::new_id(), item: prompt_item.clone() }).await?;
+        w.begin(plan.rolling.as_ref(), &session_id, &model, LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: engine.provider().into(), wire_api: engine.wire_api(), permission_mode: plan.permission_mode, effort: plan.effort }).await?;
         let mut history = std::mem::take(&mut plan.past.items);
-        // `/name` for a skill, in a session's own turn on any engine: its
-        // instructions come right after the prompt. A vendor's agent cannot
-        // be left to expand its own — it may not have the skill (Claude Code
-        // reads no `.agents/skills`, Codex no `.claude/skills` nor
-        // `~/.agents/skills`) and then refuses the name. A backend is sent only the last item, so it gets
-        // one text, the skill first: a leading `/` is the vendor's command.
-        let asked = match &prompt_item {
-            Item::UserText { text } if plan.agent.is_none() => compat::skills::invoked(&plan.compat.skills, text).map(|skill| (skill, text.clone())),
-            _ => None,
-        };
-        history.push(HistoryItem { item: prompt_item, response: None });
-        if let Some((skill, prompt)) = asked {
-            let item = Item::UserText { text: skill.clone() };
-            w.log(LogBody::ItemCompleted { turn_id: turn_id.clone(), item_id: krowk_store::new_id(), item: item.clone() }).await?;
-            if plan.spawns {
-                history.push(HistoryItem { item, response: None });
-            } else if let Some(last) = history.last_mut() {
-                last.item = Item::UserText { text: format!("{skill}\n\n{prompt}") };
-            }
-        }
+        let skills = plan.agent.is_none().then_some(plan.compat.skills.as_slice());
+        w.prompt(std::mem::take(&mut plan.text), &mut history, skills, plan.spawns).await?;
 
         let gate = permissions::Gate::new(
             plan.policy.clone(),
@@ -1045,9 +1016,7 @@ impl Shared {
         });
         let subagents = match subagents {
             Some((s, problems)) => {
-                for why in problems {
-                    w.live(LiveEvent::Notice { session_id: session_id.clone(), turn_id: turn_id.clone(), text: format!("an agent definition was skipped — {why}") }).await;
-                }
+                w.skipped(&session_id, problems).await;
                 Some(s)
             }
             None => None,
@@ -1131,20 +1100,8 @@ impl Shared {
         // The turn's cost is its subagents' too, as a backend's own
         // subagents' are part of its turn (R-SUB-4).
         let (children_usd, children_unpriced) = spawned.as_ref().map_or((0.0, false), Subagents::spent);
-        w.log(LogBody::TurnCompleted { turn_id: turn_id.clone(), status, usage: tally.usage, duration_ms, error: error.clone(), reported_cost_usd: tally.reported }).await?;
-        if let Some((to, reason, detail)) = &after {
-            w.log(LogBody::ModelSwitched { turn_id: Some(turn_id.clone()), from: Some(model.clone()), to: to.clone(), reason: *reason, detail: Some(detail.clone()) }).await?;
-        }
-        // Asked for while the turn ran: the person's word is the last. Taken
-        // as the turn lets go of the session, so none comes too late for it.
-        let mut next = next;
-        if let Some(to) = plan.here.finish() {
-            let from = after.as_ref().map(|(m, ..)| m.clone()).unwrap_or_else(|| model.clone());
-            if from != to {
-                w.log(LogBody::ModelSwitched { turn_id: Some(turn_id.clone()), from: Some(from), to, reason: SwitchReason::Requested, detail: None }).await?;
-                next = None;
-            }
-        }
+        let completed = LogBody::TurnCompleted { turn_id: turn_id.clone(), status, usage: tally.usage, duration_ms, error: error.clone(), reported_cost_usd: tally.reported };
+        let next = w.close(completed, &model, after.as_ref(), &mut plan.here, next).await?;
         // Off the daemon's thread, and not waited for: the result goes out
         // as soon as the turn has ended, and the daemon waits for the sync
         // on its way out (`log::synced`).
@@ -1585,6 +1542,74 @@ impl Writer<'_> {
             })
             .await;
         }
+    }
+
+    /// A turn's opening records: a rollover that brought it to `model`,
+    /// then `started`.
+    async fn begin(&mut self, rolling: Option<&Rolling>, session_id: &str, model: &ModelRef, started: LogBody) -> Result<(), EngineError> {
+        // A rollover is on the record only now that its turn has passed
+        // every check, and every client is told: never silent (R-INST-8).
+        if let Some(r) = rolling {
+            let detail = r.detail();
+            self.log(LogBody::ModelSwitched { turn_id: None, from: Some(r.from.clone()), to: model.clone(), reason: SwitchReason::RateLimited, detail: Some(detail.clone()) }).await?;
+            self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text: format!("{detail} (rollover = \"auto\")") }).await;
+        }
+        self.log(started).await?;
+        Ok(())
+    }
+
+    /// Logs the prompt and puts it on `history`, with a skill it names
+    /// from `skills` when there are any to name.
+    async fn prompt(&mut self, text: String, history: &mut Vec<HistoryItem>, skills: Option<&[compat::skills::Skill]>, spawns: bool) -> Result<(), EngineError> {
+        let prompt_item = Item::UserText { text };
+        self.log(LogBody::ItemCompleted { turn_id: self.turn_id.clone(), item_id: krowk_store::new_id(), item: prompt_item.clone() }).await?;
+        // `/name` for a skill, in a session's own turn on any engine: its
+        // instructions come right after the prompt. A vendor's agent cannot
+        // be left to expand its own — it may not have the skill (Claude Code
+        // reads no `.agents/skills`, Codex no `.claude/skills` nor
+        // `~/.agents/skills`) and then refuses the name. A backend is sent only the last item, so it gets
+        // one text, the skill first: a leading `/` is the vendor's command.
+        let asked = match (&prompt_item, skills) {
+            (Item::UserText { text }, Some(skills)) => compat::skills::invoked(skills, text).map(|skill| (skill, text.clone())),
+            _ => None,
+        };
+        history.push(HistoryItem { item: prompt_item, response: None });
+        if let Some((skill, prompt)) = asked {
+            let item = Item::UserText { text: skill.clone() };
+            self.log(LogBody::ItemCompleted { turn_id: self.turn_id.clone(), item_id: krowk_store::new_id(), item: item.clone() }).await?;
+            if spawns {
+                history.push(HistoryItem { item, response: None });
+            } else if let Some(last) = history.last_mut() {
+                last.item = Item::UserText { text: format!("{skill}\n\n{prompt}") };
+            }
+        }
+        Ok(())
+    }
+
+    /// Tells every client about the agent definitions that were skipped.
+    async fn skipped(&self, session_id: &str, problems: Vec<String>) {
+        for why in problems {
+            self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text: format!("an agent definition was skipped — {why}") }).await;
+        }
+    }
+
+    /// A turn's closing records: `completed`, the switch `after` its
+    /// failure, and one asked for while it ran, which wins over `next`.
+    async fn close(&mut self, completed: LogBody, model: &ModelRef, after: Option<&(ModelRef, SwitchReason, String)>, here: &mut Registration, mut next: Option<Rolling>) -> Result<Option<Rolling>, EngineError> {
+        self.log(completed).await?;
+        if let Some((to, reason, detail)) = after {
+            self.log(LogBody::ModelSwitched { turn_id: Some(self.turn_id.clone()), from: Some(model.clone()), to: to.clone(), reason: *reason, detail: Some(detail.clone()) }).await?;
+        }
+        // Asked for while the turn ran: the person's word is the last. Taken
+        // as the turn lets go of the session, so none comes too late for it.
+        if let Some(to) = here.finish() {
+            let from = after.map(|(m, ..)| m.clone()).unwrap_or_else(|| model.clone());
+            if from != to {
+                self.log(LogBody::ModelSwitched { turn_id: Some(self.turn_id.clone()), from: Some(from), to, reason: SwitchReason::Requested, detail: None }).await?;
+                next = None;
+            }
+        }
+        Ok(next)
     }
 
     /// Runs the engine and handles its events as they come. A log that
