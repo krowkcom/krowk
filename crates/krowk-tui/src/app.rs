@@ -1988,42 +1988,58 @@ impl App {
     // ---- the live region -------------------------------------------------------
 
     /// The live region's rows, and where the caret goes among them.
-    // Legacy: lays out every part of the live region in one pass. TODO: split into helpers and drop this allow.
-    #[allow(clippy::cognitive_complexity)]
     pub fn view(&self, now: Instant) -> (Vec<Line<'static>>, (u16, u16)) {
         let width = usize::from(self.width.max(1));
+        let mut rows = self.held_rows(width);
+        // A running call stands where its block will: after a blank line,
+        // unless it stacks under a tool block (`commit_tool`) — so the line
+        // above it does not move when it finishes.
+        let mut stacks = if rows.is_empty() { self.last_blank || self.after_tool } else { true };
+        self.live_rows(&mut rows, &mut stacks, width);
+        self.call_rows(&mut rows, &mut stacks, width);
+        self.sub_rows(&mut rows, &mut stacks, width, now);
+        self.turn_rows(&mut rows, width, now);
+        self.question_rows(&mut rows, width);
+        let flow_caret = self.overlay_rows(&mut rows, width);
+        let caret = self.prompt_rows(&mut rows, flow_caret);
+        self.status_rows(&mut rows);
+        (rows, caret)
+    }
+
+    /// Quiet calls running while a batch is counted stand under its line,
+    /// as its branches, the bullet orange until they are back: the batch
+    /// takes them in without the rows below it moving.
+    fn nests(&self, kind: &str) -> bool {
+        self.held.batch.calls > 1 && Quiet::of(look::tool_kind(kind)).is_some()
+    }
+
+    /// What is held back from scrollback, wrapped, the calls it nests
+    /// under it.
+    fn held_rows(&self, width: usize) -> Vec<Line<'static>> {
         let mut held = self.held.lines();
-        // Quiet calls running while a batch is counted stand under its line,
-        // as its branches, the bullet orange until they are back: the batch
-        // takes them in without the rows below it moving.
-        let nests = |kind: &str| self.held.batch.calls > 1 && Quiet::of(look::tool_kind(kind)).is_some();
         let live_call = self.live.as_ref().and_then(|l| match &l.kind {
             LiveKind::Call(name) => Some(name),
             _ => None,
         });
         let nested: Vec<Span<'static>> = self.calls.iter()
-            .filter(|c| nests(&c.name))
+            .filter(|c| self.nests(&c.name))
             .map(|c| {
                 let (verb, arg) = look::tool_title(&c.name, &c.input);
                 format!("{verb} {arg}")
             })
-            .chain(live_call.filter(|n| nests(n)).cloned())
+            .chain(live_call.filter(|n| self.nests(n)).cloned())
             .map(|t| Span::styled(clip(&t, width.saturating_sub(look::BRANCH.width())), dim()))
             .collect();
         if !nested.is_empty() {
             held[0].spans[0].style = look::running();
             held.extend(branches(nested));
         }
-        let mut rows: Vec<Line<'static>> = held.into_iter().flat_map(|l| wrap_line(l, width)).collect();
-        // A running call stands where its block will: after a blank line,
-        // unless it stacks under a tool block (`commit_tool`) — so the line
-        // above it does not move when it finishes.
-        let mut stacks = if rows.is_empty() { self.last_blank || self.after_tool } else { true };
-        let tool_gap = |rows: &mut Vec<Line<'static>>, stacks: &mut bool| {
-            if !std::mem::replace(stacks, true) {
-                rows.push(Line::default());
-            }
-        };
+        held.into_iter().flat_map(|l| wrap_line(l, width)).collect()
+    }
+
+    /// What streams in now: the answer's tail, the reasoning's, or the
+    /// call being made.
+    fn live_rows(&self, rows: &mut Vec<Line<'static>>, stacks: &mut bool, width: usize) {
         if let Some(live) = &self.live {
             match &live.kind {
                 LiveKind::Text if !live.tail.is_empty() => {
@@ -2035,33 +2051,39 @@ impl App {
                     let wrapped = wrap(&clean(&live.tail), width);
                     let skip = wrapped.len().saturating_sub(MAX_LIVE_ROWS);
                     rows.extend(wrapped.into_iter().skip(skip).map(Line::from));
-                    stacks = false;
+                    *stacks = false;
                 }
                 LiveKind::Text => {}
                 LiveKind::Reasoning => {
                     let tail = clean(live.tail.trim());
                     if !tail.is_empty() {
                         rows.push(Line::from(Span::styled(clip(&format!("  {tail}"), width), dim().add_modifier(Modifier::ITALIC))));
-                        stacks = false;
+                        *stacks = false;
                     }
                 }
-                LiveKind::Call(name) if nests(name) => {}
+                LiveKind::Call(name) if self.nests(name) => {}
                 LiveKind::Call(name) => {
-                    tool_gap(&mut rows, &mut stacks);
+                    tool_gap(rows, stacks);
                     rows.push(Line::from(vec![Span::styled(look::TOOL, look::running()), Span::styled(clip(name, width.saturating_sub(2)), dim())]));
                 }
                 LiveKind::Result => {}
             }
         }
-        // Calls out, their results not back: each as it will be shown — a
-        // subagent's as its own line, below.
-        for c in self.calls.iter().filter(|c| c.name != "subagent" && !nests(&c.name)) {
-            tool_gap(&mut rows, &mut stacks);
+    }
+
+    /// Calls out, their results not back: each as it will be shown — a
+    /// subagent's as its own line, below.
+    fn call_rows(&self, rows: &mut Vec<Line<'static>>, stacks: &mut bool, width: usize) {
+        for c in self.calls.iter().filter(|c| c.name != "subagent" && !self.nests(&c.name)) {
+            tool_gap(rows, stacks);
             let (verb, arg) = look::tool_title(&c.name, &c.input);
             let text = clip(&format!("{verb} {arg}"), width.saturating_sub(2));
             rows.push(Line::from(vec![Span::styled(look::TOOL, look::running()), Span::styled(text, dim())]));
         }
-        // Each subagent, one line: live status, tokens and cost (R-SUB-3).
+    }
+
+    /// Each subagent, one line: live status, tokens and cost (R-SUB-3).
+    fn sub_rows(&self, rows: &mut Vec<Line<'static>>, stacks: &mut bool, width: usize, now: Instant) {
         let frame_at = |since: Duration| look::SPINNER[(since.as_millis() / look::SPIN_FRAME.as_millis()) as usize % look::SPINNER.len()];
         for (i, s) in self.subs.iter().enumerate() {
             let selected = self.overlay == Overlay::Agents && i == self.agent_sel;
@@ -2071,12 +2093,16 @@ impl App {
                 Some(_) => (look::TOOL.to_string(), red()),
             };
             let text_style = if selected { dim().add_modifier(Modifier::REVERSED) } else { dim() };
-            tool_gap(&mut rows, &mut stacks);
+            tool_gap(rows, stacks);
             rows.push(Line::from(vec![Span::styled(glyph, style), Span::styled(clip(&s.line(now), width.saturating_sub(2)), text_style)]));
             if s.expanded && !s.activity.is_empty() {
                 rows.push(Line::from(Span::styled(clip(&format!("{}{}", look::LAST_BRANCH, s.activity), width), dim())));
             }
         }
+    }
+
+    /// The running turn's spinner line, and the steering queued for it.
+    fn turn_rows(&self, rows: &mut Vec<Line<'static>>, width: usize, now: Instant) {
         if let Some(t) = &self.turn {
             let since = now.saturating_duration_since(t.started);
             let frame = look::SPINNER[(since.as_millis() / look::SPIN_FRAME.as_millis()) as usize % look::SPINNER.len()];
@@ -2121,6 +2147,11 @@ impl App {
                 rows.push(Line::from(vec![Span::styled(look::STEER, look::accent()), Span::styled(clip(&format!("steer queued: {first}"), width.saturating_sub(2)), dim())]));
             }
         }
+    }
+
+    /// What waits on the person: no network, an approval, a limit's offer
+    /// or the trust question.
+    fn question_rows(&self, rows: &mut Vec<Line<'static>>, width: usize) {
         if let Some(target) = &self.offline {
             let text = format!("{}no network connectivity — {target} cannot be reached; krowk keeps retrying", look::WARN);
             for row in wrap(&text, width) {
@@ -2143,6 +2174,11 @@ impl App {
                 rows.push(Line::from(look::keys(&row, yellow().add_modifier(Modifier::BOLD))));
             }
         }
+    }
+
+    /// The overlay open, if any; where the caret goes when `/connect`
+    /// asks a question.
+    fn overlay_rows(&self, rows: &mut Vec<Line<'static>>, width: usize) -> Option<(u16, u16)> {
         let mut flow_caret = None;
         match self.overlay {
             Overlay::None if self.slash_open() => rows.extend(self.slash_overlay(width)),
@@ -2180,6 +2216,11 @@ impl App {
                 }
             }
         }
+        flow_caret
+    }
+
+    /// The prompt; where the caret goes.
+    fn prompt_rows(&self, rows: &mut Vec<Line<'static>>, flow_caret: Option<(u16, u16)>) -> (u16, u16) {
         // The prompt on the band of what the person said, across the whole
         // screen (the band is the rows' own style, which the terminal takes
         // out to the edges; the live region is redrawn on a resize, so it can
@@ -2210,7 +2251,12 @@ impl App {
         rows.push(blank);
         rows.push(Line::default());
         // A question of `/connect`'s takes the keys, and the caret with them.
-        let caret = flow_caret.unwrap_or((ccol + 2, top + (crow as usize - first) as u16));
+        flow_caret.unwrap_or((ccol + 2, top + (crow as usize - first) as u16))
+    }
+
+    /// The flash and the status bar, under the prompt.
+    fn status_rows(&self, rows: &mut Vec<Line<'static>>) {
+        let inner = usize::from(self.room.max(1));
         // A flash shows with the status bar off too: "Press Ctrl-C again to
         // exit" unseen would make the key look broken.
         if !self.settings.status_bar
@@ -2233,7 +2279,6 @@ impl App {
             // And an empty row under it, off the bottom edge.
             rows.push(Line::default());
         }
-        (rows, caret)
     }
 
     /// The status line as text, every item it has room for at any width:
@@ -2880,6 +2925,13 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
         }
     }
     rows
+}
+
+/// A blank line before a running call's, unless it stacks.
+fn tool_gap(rows: &mut Vec<Line<'static>>, stacks: &mut bool) {
+    if !std::mem::replace(stacks, true) {
+        rows.push(Line::default());
+    }
 }
 
 /// `rows`, each on a branch as a file tree draws a directory's entries:
