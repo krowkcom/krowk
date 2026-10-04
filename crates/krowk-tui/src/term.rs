@@ -360,10 +360,12 @@ pub struct Term<W: Write> {
     pub pad: u16,
     /// Whether the cursor's blink is held off (`steady`).
     steady: bool,
-    /// `height`, `whole`, `blank_top` and the screen's height as the last
-    /// frame sent left them: what a resize starts from, whatever an earlier
-    /// one queued and never sent (see `FrameBuf::discard`).
-    sent: (u16, bool, u16, u16),
+    /// `height`, `blank_top`, the screen's height and the cursor's row as
+    /// the last frame sent left them: what a resize starts from, whatever an
+    /// earlier one queued and never sent (see `FrameBuf::discard`). Not
+    /// `whole`: what an earlier resize pushed into scrollback is there
+    /// whether its frame was sent or not, so it only ever goes false.
+    sent: (u16, u16, u16, u16),
 }
 
 /// The cursor's blink off (DEC private mode 12), and the cursor the
@@ -386,8 +388,9 @@ impl<W: Write> Term<W> {
         // measures against a screen that has already moved.
         out.write_all(&buf.take())?;
         out.flush()?;
+        let row = buf.row();
         let terminal = build(&buf, size, top, height)?;
-        Ok(Term { terminal, buf, out, size, height, want: height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, whole, blank_top, steady: false, sent: (height, whole, blank_top, size.height) })
+        Ok(Term { terminal, buf, out, size, height, want: height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, whole, blank_top, steady: false, sent: (height, blank_top, size.height, row) })
     }
 
     pub fn width(&self) -> u16 {
@@ -483,9 +486,8 @@ impl<W: Write> Term<W> {
     /// taller than the whole screen.
     pub fn resize(&mut self, size: Size, cursor_row: Option<u16>) -> io::Result<()> {
         self.buf.discard();
-        let old_height;
-        (self.height, self.whole, self.blank_top, old_height) = self.sent;
-        let was = self.buf.row();
+        let (old_height, was);
+        (self.height, self.blank_top, old_height, was) = self.sent;
         self.size = size;
         let narrowed = size.width < self.drawn_width;
         let above = if narrowed && self.reflows { self.reflowed_above_caret(size.width) } else { self.caret_row };
@@ -669,7 +671,7 @@ impl<W: Write> Term<W> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.sent = (self.height, self.whole, self.blank_top, self.size.height);
+        self.sent = (self.height, self.blank_top, self.size.height, self.buf.row());
         let body = self.buf.take();
         if body.is_empty() {
             return Ok(());
@@ -732,6 +734,10 @@ impl<W: Write> Term<W> {
         let top = anchor(&self.buf, size, top, height)?;
         self.rebuild(top, height)?;
         self.drawn_width = size.width;
+        // The cursor is at the region's top until the next frame puts it on
+        // the caret: a resize before then finds the top there.
+        (self.caret_row, self.caret_col) = (0, 0);
+        self.widths.clear();
         // Out now, as at start: a resize before the next frame measures
         // against a screen that has already moved.
         self.flush()
@@ -1077,6 +1083,12 @@ mod tests {
         t.resize(taller, Some(28)).unwrap();
         t.resize(Size { width: 100, height: 50 }, Some(28)).unwrap();
         assert_eq!((t.top(), t.blank_top), (47, 43));
+        // Shorter, then back, before a frame: what the shorter screen pushed
+        // into scrollback is there all the same.
+        let mut t = session(4);
+        t.resize(Size { width: 100, height: 5 }, Some(3)).unwrap();
+        t.resize(Size { width: 100, height: 30 }, Some(3)).unwrap();
+        assert_eq!((t.whole, t.blank_top), (false, 0));
     }
 
     #[test]
