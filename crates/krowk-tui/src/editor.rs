@@ -93,7 +93,8 @@ impl Editor {
     /// with the prompt it was in (sent, cleared).
     fn take_mark(&mut self, id: Option<u64>) -> usize {
         let at = id.and_then(|id| self.marks.iter().position(|(m, _)| *m == id)).map(|i| self.marks.remove(i).1);
-        at.unwrap_or(self.cursor)
+        // Never past the text, inside a character or inside a token.
+        at.filter(|a| self.text.is_char_boundary(*a) && self.inside(*a).is_none()).unwrap_or(self.cursor)
     }
 
     /// Inserts `s` at `at`: the caret, if it was there or past it, and
@@ -165,9 +166,6 @@ impl Editor {
             self.text = text.to_string();
         } else {
             self.splice(0..0, &format!("{text}\n"));
-            for (_, at) in &mut self.marks {
-                *at += text.len() + 1;
-            }
         }
         self.cursor = self.text.len();
     }
@@ -342,14 +340,19 @@ impl Editor {
         }
         if self.browsing.is_none() {
             self.draft = std::mem::take(&mut self.text);
-            self.marks.clear();
         }
+        // Another prompt's text: a paste still being read goes to the
+        // caret of whatever is shown when it arrives.
+        self.marks.clear();
         self.browsing = Some(next);
         self.text = self.history[self.history.len() - 1 - next].clone();
         self.cursor = self.text.len();
     }
 
     fn history_forward(&mut self) {
+        if self.browsing.is_some() {
+            self.marks.clear();
+        }
         match self.browsing {
             None => {}
             Some(0) => {
@@ -583,6 +586,21 @@ mod tests {
         e.take();
         e.place_image(Some(m), 3);
         assert_eq!(e.text(), "[Image #3] ", "its prompt sent, at the caret of the next");
+        // Text put back above the prompt moves a mark once, with the rest.
+        let mut e = typed("look at ");
+        let m = e.mark();
+        e.restore("steer");
+        e.place_image(Some(m), 4);
+        assert_eq!(e.text(), "steer\nlook at [Image #4] ");
+        // And a prompt swapped for another from the history drops it.
+        let mut e = Editor::new(None);
+        e.insert_str("a much longer prompt sent before");
+        e.take();
+        e.up();
+        let m = e.mark();
+        e.down();
+        e.place_image(Some(m), 5);
+        assert_eq!(e.text(), "[Image #5] ");
     }
 
     #[test]

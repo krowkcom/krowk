@@ -254,6 +254,10 @@ fn percent_decoded(s: &str) -> Option<String> {
 
 /// A file whose first bytes are an image's: by its bytes, not its name.
 fn looks_like_image(p: &Path) -> bool {
+    // A regular file only: opening a FIFO or a terminal would wait on it.
+    if !std::fs::metadata(p).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
     let mut head = [0u8; 16];
     let n = std::fs::File::open(p).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
     n > 0 && image::guess_format(&head[..n]).is_ok_and(|f| matches!(f, image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP | image::ImageFormat::Bmp | image::ImageFormat::Tiff))
@@ -442,6 +446,12 @@ mod tests {
         assert_eq!(dropped(&format!("look at '{s}'")), None, "a sentence stays a sentence");
         assert_eq!(dropped(&dir.join("gone.png").display().to_string()), None);
         assert_eq!(dropped(&format!("'{s}")), None, "an open quote");
+        #[cfg(unix)]
+        {
+            let fifo = dir.join("pipe.png");
+            assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+            assert_eq!(dropped(&fifo.display().to_string()), None, "a FIFO is never opened, so nothing waits on a writer");
+        }
         let p = from_files(std::slice::from_ref(&shot), None);
         assert_eq!(p.images.len(), 1);
         let p = from_files(std::slice::from_ref(&notes), Some("x".into()));

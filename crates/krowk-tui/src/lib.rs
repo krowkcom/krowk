@@ -961,7 +961,7 @@ impl<'h> Ui<'h> {
                         Err(e) => e.code == "network_unreachable",
                     };
                     let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
-                    let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images");
+                    let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image");
                     // A `continue` whose turn a prompt already ran is no
                     // news.
                     if let Err(e) = r
@@ -1533,7 +1533,7 @@ impl<'h> Ui<'h> {
                     None if app.overlay == Overlay::Settings => {}
                     // What some terminals send for a clipboard holding only
                     // an image: the clipboard is read for it.
-                    None if s.trim().is_empty() => self.start_paste(app, paste::from_clipboard),
+                    None if s.is_empty() => self.start_paste(app, paste::from_clipboard),
                     // A file dragged onto the terminal: read now, before a
                     // screenshot's temporary file is gone.
                     None => match paste::dropped(&s) {
@@ -2791,7 +2791,14 @@ impl Ui<'_> {
     /// else its text, and what went wrong said.
     fn pasted(&mut self, app: &mut App, mark: Option<u64>, p: paste::Pasted) {
         app.flash = None;
-        if !p.images.is_empty() {
+        let held: std::collections::HashSet<u32> = editor::image_tokens(app.editor.text()).map(|(_, n)| n).filter(|n| app.images.contains_key(n)).collect();
+        let room = krowk_harness::images::MAX_IMAGES.saturating_sub(held.len());
+        if p.images.len() > room {
+            if let Some(m) = mark {
+                app.editor.unmark(m);
+            }
+            app.notice(&format!("nothing pasted — a prompt takes at most {} images", krowk_harness::images::MAX_IMAGES));
+        } else if !p.images.is_empty() {
             app.attach_all(p.images, mark);
         } else if let Some(t) = &p.text {
             app.editor.place_str(mark, t);
