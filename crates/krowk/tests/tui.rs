@@ -1705,10 +1705,8 @@ fn a_suspended_vendor_login_gives_the_terminal_back_whole_after_a_resize() {
     }
     assert_eq!(history.matches(" help").count(), 1, "one status line:\n{history}");
     assert_eq!(history.matches("→ Plan, search, build anything").count(), 1, "one prompt:\n{history}");
-    // Two empty rows under the notice, as before the band, then its two —
-    // and the region reaching the bottom of the 24 rows, the eight it does
-    // not need blank over the prompt.
-    one_band(&tm, "→ Plan, search, build anything", 12);
+    // Two empty rows under the notice, as before the band, then its two.
+    one_band(&tm, "→ Plan, search, build anything", 4);
     let screen = tm.screen();
     assert!(screen.lines().all(|l| l.chars().count() <= 72), "{screen}");
 }

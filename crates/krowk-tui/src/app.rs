@@ -995,15 +995,21 @@ impl App {
         self.dirty = true;
     }
 
-    /// What the person said, on a band across the width, an empty row of
-    /// it above and below: from the first column, wrapped between words,
-    /// so a selection of it copies with nothing before it. Ctrl-Y copies it
-    /// as typed.
+    /// What the person said, each row on a band as wide as its text and a
+    /// column past it, an empty row of it above and below: from the first
+    /// column, wrapped between words, so a selection of it copies with
+    /// nothing before it (Ctrl-Y copies it as typed). Not padded out: a
+    /// terminal that reflows on a narrowing resize wraps a row's band with
+    /// its text, padding and all, and padding past the new width would
+    /// spill onto a row of its own. A row as wide as its text wraps only
+    /// when its text does.
     fn push_said(&mut self, text: &str) {
         self.said = text.to_string();
-        let rows = wrap(&clean(&text.replace('\t', "    ")), usize::from(self.width));
+        let width = usize::from(self.width);
+        let rows = wrap(&clean(&text.replace('\t', "    ")), width);
         for row in std::iter::once(String::new()).chain(rows).chain([String::new()]) {
-            self.push_line(Line::from(row).style(look::said_band()));
+            let fill = " ".repeat(usize::from(row.width() < width));
+            self.push_line(Line::from(Span::styled(row + &fill, look::said_band())));
         }
     }
 
@@ -2176,7 +2182,9 @@ impl App {
         }
         // The prompt on the band of what the person said, across the whole
         // screen (the band is the rows' own style, which the terminal takes
-        // out to the edges) with an empty row of it above and below, and a
+        // out to the edges; the live region is redrawn on a resize, so it can
+        // be, where what is said in scrollback is banded only as wide as its
+        // text, `push_said`) with an empty row of it above and below, and a
         // plain empty row outside it each side, scrolled to keep the caret
         // in view: `→ ` before its first row. The prompt and the
         // status line take all the room there is; the content width is for
@@ -4388,6 +4396,22 @@ mod tests {
         assert_eq!(help::canonical("/clear"), "/new");
         assert!(help::unlisted("/resume"));
         assert_eq!(help::slash("/sessions", &[]).first().map(|s| s.name.as_str()), Some("sessions"));
+    }
+
+    #[test]
+    fn what_the_person_said_is_banded_only_as_wide_as_it_is() {
+        // Padded to the width, a narrowing resize would wrap each row's
+        // band onto a row of its own.
+        let mut a = app();
+        a.set_width(60);
+        a.echo("fix the parser");
+        let rows = a.take_pending();
+        let widths: Vec<usize> = rows.iter().map(|r| r.width()).collect();
+        assert_eq!(widths, [1, 15, 1], "the text and a column past it: {:?}", text(&rows));
+        // Two rows, one short: neither is padded to the other.
+        a.echo(&format!("{}\nok", "word ".repeat(11).trim_end()));
+        let widths: Vec<usize> = a.take_pending().iter().map(|r| r.width()).filter(|w| *w > 0).collect();
+        assert_eq!(widths, [1, 55, 3, 1]);
     }
 
     #[test]

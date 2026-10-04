@@ -325,6 +325,9 @@ pub struct Term<W: Write> {
     out: W,
     size: Size,
     height: u16,
+    /// The rows the last frame needed, of `height`: what a resize or a job
+    /// stop reserves, rather than the spare rows above the prompt.
+    want: u16,
     /// The row the cursor was left on, relative to the viewport's top: the
     /// input caret. After a resize the terminal still knows where the cursor
     /// is, and the viewport's top is found from it.
@@ -366,7 +369,7 @@ impl<W: Write> Term<W> {
         buf.set_row(top);
         let height = to_bottom(size, top, height);
         let terminal = build(&buf, size, top, height)?;
-        Ok(Term { terminal, buf, out, size, height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, steady: false })
+        Ok(Term { terminal, buf, out, size, height, want: height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, steady: false })
     }
 
     pub fn width(&self) -> u16 {
@@ -430,7 +433,7 @@ impl<W: Write> Term<W> {
     pub fn resize(&mut self, size: Size, cursor_row: Option<u16>) -> io::Result<()> {
         self.buf.discard();
         self.size = size;
-        let height = self.height.clamp(1, size.height.max(1));
+        let want = self.want.clamp(1, size.height.max(1));
         let narrowed = size.width < self.drawn_width;
         let above = if narrowed && self.reflows { self.reflowed_above_caret(size.width) } else { self.caret_row };
         // Not asked, the cursor is still on the caret, but its row was
@@ -443,7 +446,11 @@ impl<W: Write> Term<W> {
         // made the way a new line makes them, scrolling what is above into
         // scrollback — moving the top up instead would clear conversation.
         let top = top.min(size.height.saturating_sub(1));
-        self.rebuild(top, to_bottom(size, top, height))
+        // Down to the bottom, the rows it does not need blank above the
+        // prompt — but not when the cursor could not be asked: its row is a
+        // guess, and rows reserved from a wrong one scroll conversation away.
+        let height = if cursor_row.is_some() { to_bottom(size, top, want) } else { want };
+        self.rebuild(top, height)
     }
 
     /// Rows the live region above the caret takes once reflowed to `width`.
@@ -478,6 +485,7 @@ impl<W: Write> Term<W> {
         let before = (self.height, self.caret_row, self.caret_col);
         let width = self.size.width;
         let height = (rows.len() as u16).clamp(1, self.size.height.max(1));
+        self.want = height;
         if lines.is_empty() {
             self.set_height(height)?;
         } else {
@@ -628,7 +636,9 @@ impl<W: Write> Term<W> {
     pub fn resume(&mut self, size: Size, cursor_row: Option<u16>) -> io::Result<()> {
         self.buf.discard();
         self.size = size;
-        let height = self.height.clamp(1, size.height.max(1));
+        // The rows the prompt needs, not the spare ones it kept: those would
+        // scroll the shell's output up.
+        let height = self.want.clamp(1, size.height.max(1));
         // A cursor near the bottom keeps its row: the rebuild scrolls what
         // the shell printed up, rather than clearing it.
         // Unknown, the cursor is taken to be on the last row: the line
@@ -638,7 +648,15 @@ impl<W: Write> Term<W> {
         self.buf.set_row(top);
         self.rebuild(top, to_bottom(size, top, height))?;
         self.drawn_width = size.width;
-        Ok(())
+        // The cursor is where reserving the region left it until the next
+        // frame puts it on the caret: a resize before then finds the top
+        // from there.
+        let top = self.top();
+        (self.caret_row, self.caret_col) = (self.buf.row().saturating_sub(top), 0);
+        self.widths.clear();
+        // Out now, as at start: a resize before the next frame measures
+        // against a screen that has already moved.
+        self.flush()
     }
 
     pub fn into_inner(self) -> W {
@@ -980,6 +998,70 @@ mod tests {
         let out = after_resize(&mut t, &[(70, 26), (40, 26)]);
         assert_eq!(out.matches("\x1b[J").count(), 1, "one clear, not two: {out:?}");
         assert!(out.starts_with("\x1b[?2026h\r\x1b[4A\x1b[J"), "{out:?}");
+    }
+
+    #[test]
+    fn a_taller_screen_keeps_the_prompt_on_the_bottom_row() {
+        // 100x30 to 100x40, the region on rows 27-29 and the caret on 28.
+        let session = |lines: usize| {
+            let mut t = Term::new(Vec::new(), Size { width: 100, height: 30 }, 0, 3).unwrap();
+            t.frame(&prompt(lines), &prompt(3), (0, 1)).unwrap();
+            t
+        };
+        let taller = Size { width: 100, height: 40 };
+        // Partly in scrollback, the rows added under the region (Ghostty):
+        // the region reaches down over them, the prompt at its bottom.
+        let mut t = session(40);
+        t.resize(taller, Some(28)).unwrap();
+        assert_eq!((t.top(), t.height), (27, 13));
+        t.frame(&[], &prompt(3), (0, 1)).unwrap();
+        assert_eq!(t.caret_row, 11, "the spare rows above the prompt");
+        t.frame(&prompt(4), &prompt(3), (0, 0)).unwrap();
+        assert_eq!((t.top(), t.top() + t.height), (31, 40), "lines printed next fill them");
+        // Scrollback pulled back down above it (tmux, kitty): already down.
+        let mut t = session(40);
+        t.resize(taller, Some(38)).unwrap();
+        assert_eq!((t.top(), t.height), (37, 3));
+        // The cursor not answering: its row is a guess, nothing is reserved.
+        let mut t = session(40);
+        t.resize(taller, None).unwrap();
+        assert_eq!((t.top(), t.height), (27, 3));
+        // All of the session on screen: nothing moves, the region reaches
+        // down over the new rows.
+        let mut t = session(4);
+        assert_eq!((t.top(), t.height, t.caret_row), (4, 26, 24));
+        t.resize(taller, Some(28)).unwrap();
+        assert_eq!((t.top(), t.height), (4, 36));
+        // Two resizes before a frame: measured from what the last frame sent.
+        t.resize(Size { width: 100, height: 50 }, Some(28)).unwrap();
+        assert_eq!((t.top(), t.height), (4, 46));
+    }
+
+    #[test]
+    fn a_region_as_tall_as_the_screen_is_cleared_from_the_top_row_on_a_taller_one() {
+        let mut t = Term::new(Vec::new(), Size { width: 100, height: 10 }, 0, 3).unwrap();
+        t.frame(&[], &prompt(10), (0, 9)).unwrap();
+        assert_eq!(t.top(), 0);
+        let start = t.out.len();
+        t.resize(Size { width: 100, height: 20 }, Some(9)).unwrap();
+        t.flush().unwrap();
+        let out = String::from_utf8_lossy(&t.out[start..]).into_owned();
+        assert!(out.contains("\r\x1b[9A\x1b[1C\x1b[J"), "the old region cleared from the top row: {out:?}");
+        assert_eq!((t.top(), t.height), (0, 20));
+    }
+
+    #[test]
+    fn a_job_stop_after_a_taller_screen_takes_only_the_rows_to_the_bottom() {
+        let mut t = Term::new(Vec::new(), Size { width: 100, height: 30 }, 0, 3).unwrap();
+        t.frame(&prompt(40), &prompt(3), (0, 1)).unwrap();
+        t.resize(Size { width: 100, height: 40 }, Some(28)).unwrap();
+        t.frame(&[], &prompt(3), (0, 1)).unwrap();
+        t.resume(Size { width: 100, height: 40 }, Some(30)).unwrap();
+        assert_eq!((t.top(), t.height), (30, 10), "under the shell's output, nothing scrolled away");
+        let mut t = Term::new(Vec::new(), Size { width: 100, height: 30 }, 0, 3).unwrap();
+        t.frame(&prompt(40), &prompt(3), (0, 1)).unwrap();
+        t.resume(Size { width: 100, height: 30 }, Some(29)).unwrap();
+        assert_eq!((t.top(), t.height), (27, 3), "on the last row, the rows the prompt needs and no more scrolled up");
     }
 
     fn prompt(n: usize) -> Vec<Line<'static>> {
