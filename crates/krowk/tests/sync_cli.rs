@@ -305,9 +305,16 @@ fn d11_sync_attach_on_a_terminal_draws_the_session_in_the_tui() {
     c.env("TERM", "xterm-256color");
     let mut t = pty::Pty::spawn(c, 120, 40);
     let wait = |t: &pty::Pty, what: &str| assert!(t.wait_for(what, Duration::from_secs(20)).is_some(), "no {what:?}: {:?}\nA: {:?}", t.text(), host.stderr());
-    // History: A's first answer, from the chunks.
+    // History: A's first answer, from the chunks; then the attach line,
+    // naming A by its name on the device list, and A on the status line.
+    // No splash: the session is picked up, not opened.
     wait(&t, ANSWER);
-    wait(&t, "host here");
+    // The pty's text is raw: the glyph and the words are styled apart, and
+    // the status line is drawn a run of cells at a time.
+    wait(&t, "⇄ \u{1b}[0mAttached to \"");
+    wait(&t, "\" on a (relay)");
+    wait(&t, "●");
+    assert!(!t.text().contains("Directory:"), "no splash mid-session: {:?}", t.text());
     // A prompt round trip.
     t.write(b"tui round trip\r");
     wait(&t, TUI_ANSWER);
@@ -349,7 +356,7 @@ fn d11_resume_of_a_synced_session_on_a_terminal_opens_the_tui() {
     let mut c = b.command(&["--resume", &session]);
     c.env("TERM", "xterm-256color");
     let mut t = pty::Pty::spawn(c, 120, 40);
-    for what in [ANSWER, "through sync", "host here"] {
+    for what in [ANSWER, "Attached to", "●"] {
         assert!(t.wait_for(what, Duration::from_secs(20)).is_some(), "no {what:?}: {:?}\nA: {:?}", t.text(), host.stderr());
     }
     t.write(b"\x04\x04");

@@ -124,6 +124,11 @@ pub struct Viewer {
     pub attach_time: Duration,
     /// When each `Vec` of updates was handed on (R-LAG-7's measure).
     pub handed: Arc<std::sync::Mutex<Vec<Instant>>>,
+    /// The session's title, from its sealed index; empty when it has none.
+    pub title: String,
+    /// The name the verified device list gives the device that signed the
+    /// session record — the one that hosts it — when the list holds it.
+    pub host: Option<String>,
 }
 
 /// Attaches: the sealed index, the checkpoint and the tail (off the
@@ -131,14 +136,16 @@ pub struct Viewer {
 pub async fn attach(o: Options) -> Result<Viewer, String> {
     let started = Instant::now();
     let o = Arc::new(o);
-    let (key, attached) = {
+    let (key, attached, host) = {
         let o = o.clone();
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let s = o.api.show_sync_session(&o.session).map_err(|e| e.to_string())?;
             let key = store::open_session_key(&s, &o.session, &o.keys, &o.chain, Signer::EverHeld)?;
             let index = store::open_index(&key, &o.session, &s.sealed_index)?;
             let a = store::attach(&o.api, &key, &o.session, index, o.known)?;
-            Ok((key, a))
+            // `open_session_key` checked the signer against this list already.
+            let host = e2e::DeviceId::parse(&s.signer).and_then(|id| o.chain.devices().iter().find(|d| d.id() == id).map(|d| d.name.clone()));
+            Ok((key, a, host))
         })
         .await
         .map_err(|e| e.to_string())??
@@ -148,9 +155,10 @@ pub async fn attach(o: Options) -> Result<Viewer, String> {
     let (tx, updates) = mpsc::channel(256);
     let handed = Arc::new(std::sync::Mutex::new(vec![Instant::now()]));
     let first = vec![Update::Attached { events: attached.events.clone(), head: attached.head }];
+    let title = attached.index.title.clone();
     let _ = tx.send(first).await;
     tokio::spawn(live(o, key, attached, rx, tx, handed.clone()));
-    Ok(Viewer { commands, updates, attach_time, handed })
+    Ok(Viewer { commands, updates, attach_time, handed, title, host })
 }
 
 /// The last-applied-batch ack a viewer sends the relay (relay.md → Flow

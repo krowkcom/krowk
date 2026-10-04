@@ -9,6 +9,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Changed
+
+- **A synced session opens on one line, not the splash.** `krowk sync
+  attach` draws the session's history, then `⇄ Attached to "<title>" on
+  <host> (relay)` — or that the host is away and prompts wait — with the
+  host named as the device list names it. The status line says the host in
+  a glyph and its name: `● <host>` there, `○ <host>` away, `◌ <host>`
+  connecting.
+
 ## [0.12.0] - 2026-10-04
 
 ### Added
