@@ -9,6 +9,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-04
+
 ### Changed
 
 - **krowk says what it is: a coding agent harness.** `krowk help`, the
