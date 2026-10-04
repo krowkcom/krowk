@@ -1842,26 +1842,26 @@ impl App {
         let streamed = self.live.as_ref().is_some_and(|l| l.id == item_id);
         match item {
             // krowk's own reminder, not the person's words.
-            Item::UserText { text } if text.starts_with(krowk_harness::todo::REMINDER) => {
+            Item::UserText { text, .. } if text.starts_with(krowk_harness::todo::REMINDER) => {
                 self.finish_live();
                 self.gap();
                 self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled("Reminded the model of its todo list", dim().add_modifier(Modifier::ITALIC))]));
             }
             // A turn Claude Code began by itself: why, as krowk's note.
-            Item::UserText { text } if text.starts_with(krowk_harness::claude::UNPROMPTED) => {
+            Item::UserText { text, .. } if text.starts_with(krowk_harness::claude::UNPROMPTED) => {
                 let note = text[krowk_harness::claude::UNPROMPTED.len()..].trim_end_matches("</unprompted>");
                 self.finish_live();
                 self.gap();
                 self.push_wrapped(look::TOOL, "  ", &flat(note.trim()), dim(), dim().add_modifier(Modifier::ITALIC));
             }
             // A skill the person asked for, loaded next to the prompt.
-            Item::UserText { text } if text.starts_with(krowk_harness::compat::skills::INVOKED) => {
+            Item::UserText { text, .. } if text.starts_with(krowk_harness::compat::skills::INVOKED) => {
                 let name = text[krowk_harness::compat::skills::INVOKED.len()..].split('"').next().unwrap_or_default();
                 self.finish_live();
                 self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(format!("Loaded the {} skill", clean(name)), dim().add_modifier(Modifier::ITALIC))]));
             }
-            Item::UserText { text } if live && self.echoed.as_ref() == Some(text) => self.echoed = None,
-            Item::UserText { text } => {
+            Item::UserText { text, .. } if live && self.echoed.as_ref() == Some(text) => self.echoed = None,
+            Item::UserText { text, .. } => {
                 if let Some(i) = self.steers.iter().position(|s| s == text) {
                     self.steers.remove(i);
                 }
@@ -3371,7 +3371,7 @@ mod tests {
         a.start_turn(Instant::now());
         let call = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolCall { call_id: id.into(), name: "read".into(), input: serde_json::json!({"path": "README.md"}) } }));
         let back = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolResult { call_id: id.into(), output: "x".into(), is_error: false } }));
-        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::UserText { text: "hi".into() } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::user("hi") }));
         assert_eq!(text(&a.take_pending()), ["", "hi", ""]);
         call(&mut a, "1");
         assert_eq!(text(&a.view(Instant::now()).0)[..2], ["", "◆ Read README.md"], "a gap under the prompt while it runs");
@@ -3582,7 +3582,7 @@ mod tests {
         let model = ModelRef { instance: "anthropic".into(), model: "claude-y".into() };
         let evs = [
             ev(LogBody::TurnStarted { turn_id: "t".into(), model: model.clone(), provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }),
-            ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "1".into(), item: Item::UserText { text: "hi".into() } }),
+            ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "1".into(), item: Item::user("hi") }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "2".into(), item: Item::ToolCall { call_id: "c".into(), name: "read".into(), input: serde_json::json!({"path": "README.md"}) } }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "3".into(), item: Item::ToolResult { call_id: "c".into(), output: "# krowk\nmore\n".into(), is_error: false } }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "4".into(), item: Item::AssistantText { text: "It is a CLI.".into() } }),
@@ -4076,7 +4076,7 @@ mod tests {
         let (rows, _) = a.view(Instant::now());
         assert_eq!(&text(&rows)[..3], ["☒ read", "◐ fix", "☐ test"]);
         let reminder = format!("{}The todo list has not been updated…</system-reminder>", krowk_harness::todo::REMINDER);
-        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r".into(), item: Item::UserText { text: reminder } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r".into(), item: Item::user(reminder) }));
         assert_eq!(text(&a.take_pending()), ["◆ Reminded the model of its todo list"], "never shown as the person's words");
     }
 
@@ -4422,8 +4422,8 @@ mod tests {
         a.start_turn(Instant::now());
         let said = |lines: &[Line]| text(lines).iter().filter(|r| r.contains("fix the parser")).count();
         assert_eq!(said(&a.take_pending()), 1, "before the host has logged it");
-        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::UserText { text: "fix the parser".into() } }));
-        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "s".into(), item: Item::UserText { text: "fix the parser".into() } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::user("fix the parser") }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "s".into(), item: Item::user("fix the parser") }));
         assert_eq!(said(&a.take_pending()), 1, "the log's copy is not drawn again; the same words sent again are");
     }
 
@@ -4448,7 +4448,7 @@ mod tests {
         a.start_turn(Instant::now());
         a.steers.push("also check the tests".into());
         a.steers.push("and the docs".into());
-        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "x".into(), item: Item::UserText { text: "also check the tests".into() } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "x".into(), item: Item::user("also check the tests") }));
         assert_eq!(a.end_turn(), ["and the docs"]);
     }
 

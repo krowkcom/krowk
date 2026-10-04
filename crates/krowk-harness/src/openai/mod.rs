@@ -65,7 +65,7 @@ pub fn request_body(req: &ModelRequest, provider: &str) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model));
     body.insert("instructions".into(), json!(req.system));
-    body.insert("input".into(), Value::Array(input(&req.history, provider)));
+    body.insert("input".into(), Value::Array(input(&req.history, provider, &req.images)));
     if !tools.is_empty() {
         body.insert("tools".into(), Value::Array(tools));
         body.insert("tool_choice".into(), json!("auto"));
@@ -93,7 +93,7 @@ pub fn request_body(req: &ModelRequest, provider: &str) -> Value {
 /// The branch as input items, in order. Every call is answered — a call
 /// the turn stopped before answering gets a result saying so — because the
 /// API refuses a call sent back without its output.
-fn input(history: &[HistoryItem], provider: &str) -> Vec<Value> {
+fn input(history: &[HistoryItem], provider: &str, images: &crate::images::Loaded) -> Vec<Value> {
     let custom: HashSet<&str> = history
         .iter()
         .filter_map(|h| match &h.item {
@@ -117,9 +117,16 @@ fn input(history: &[HistoryItem], provider: &str) -> Vec<Value> {
     };
     for h in history {
         match &h.item {
-            Item::UserText { text } => {
+            Item::UserText { text, images: refs } => {
                 close(&mut out, &mut open);
-                out.push(json!({ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": text }] }));
+                let mut content = vec![json!({ "type": "input_text", "text": text })];
+                for (r, label, data) in crate::images::sent(refs, images) {
+                    content.push(json!({ "type": "input_text", "text": label }));
+                    if let Some(data) = data {
+                        content.push(json!({ "type": "input_image", "image_url": format!("data:{};base64,{data}", r.media_type) }));
+                    }
+                }
+                out.push(json!({ "type": "message", "role": "user", "content": content }));
             }
             Item::AssistantText { text } if !text.is_empty() => {
                 out.push(json!({ "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": text }] }));

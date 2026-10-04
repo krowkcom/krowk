@@ -32,6 +32,9 @@ pub struct ModelRequest {
     pub effort: Option<Effort>,
     /// The model reasons: the catalog's word, else its family's.
     pub reasoning: bool,
+    /// The bytes of the images the history carries, by file name
+    /// (`crate::images::load`); one missing is sent as a note instead.
+    pub images: crate::images::Loaded,
 }
 
 /// Whether a reasoning blob replays to this client: its own provider and
@@ -259,7 +262,9 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
                 session_id: ctx.session_id.clone(),
                 effort: effort_for(self.client.wire_api(), ctx.effort, &takes),
                 reasoning: ctx.model_info.as_ref().map_or_else(|| crate::toolset::reasons(&ctx.model.model), |i| i.reasoning),
+                images: crate::images::Loaded::new(),
             };
+            load_images(&ctx.session_dir, &mut req).await;
             let hooks = Hooked::new(&ctx, &events);
             // SessionStart and UserPromptSubmit, before the model sees the
             // prompt: what they print is context the model reads with it,
@@ -270,7 +275,7 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
                 hooks.stopped()?;
             }
             let prompt = match ctx.history.last().map(|h| &h.item) {
-                Some(Item::UserText { text }) => text.clone(),
+                Some(Item::UserText { text, .. }) => text.clone(),
                 _ => String::new(),
             };
             // A subagent's prompt is its parent's model's words, not the
@@ -301,17 +306,22 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
                 // Steering sent since the last step joins the history here,
                 // after the tool results it arrived during: the model reads
                 // it on this call.
-                for text in ctx.steers.take() {
-                    let item = Item::UserText { text };
+                let steered = ctx.steers.take();
+                let more = steered.iter().any(|s| !s.images.is_empty());
+                for steer in steered {
+                    let item = steer.item();
                     let _ = events.send(EngineEvent::ItemCompleted { item_id: krowk_store::new_id(), item: item.clone() }).await;
                     req.history.push(HistoryItem { item, response: None });
+                }
+                if more {
+                    load_images(&ctx.session_dir, &mut req).await;
                 }
                 // R-TODO-3: a list left open too long is put in front of
                 // the model again, where the log shows it was.
                 if offers(&ctx, crate::todo::TODO_WRITE)
                     && let Some(text) = crate::todo::reminder(&req.history)
                 {
-                    let item = Item::UserText { text };
+                    let item = Item::user(text);
                     let _ = events.send(EngineEvent::ItemCompleted { item_id: krowk_store::new_id(), item: item.clone() }).await;
                     req.history.push(HistoryItem { item, response: None });
                 }
@@ -494,9 +504,28 @@ impl<'a> Hooked<'a> {
 
 /// Context a hook added, as the model reads it: a `userText` item in the
 /// log where it landed, framed with the event that produced it.
+/// Reads the images the request's history names and it does not hold yet,
+/// off the runtime's thread.
+async fn load_images(session_dir: &std::path::Path, req: &mut ModelRequest) {
+    let refs: Vec<_> = req.history.iter().filter_map(|h| match &h.item {
+        Item::UserText { images, .. } => Some(images.iter().filter(|r| !req.images.contains_key(&r.file)).cloned()),
+        _ => None,
+    }).flatten().collect();
+    if refs.is_empty() {
+        return;
+    }
+    let (dir, mut loaded) = (session_dir.to_path_buf(), std::mem::take(&mut req.images));
+    req.images = tokio::task::spawn_blocking(move || {
+        crate::images::load(&dir, &refs, &mut loaded);
+        loaded
+    })
+    .await
+    .unwrap_or_default();
+}
+
 async fn add_context(events: &Events, req: &mut ModelRequest, event: &str, context: Vec<String>) {
     for text in context {
-        let item = Item::UserText { text: format!("<hook event=\"{event}\">\n{}\n</hook>", text.trim()) };
+        let item = Item::user(format!("<hook event=\"{event}\">\n{}\n</hook>", text.trim()));
         let _ = events.send(EngineEvent::ItemCompleted { item_id: krowk_store::new_id(), item: item.clone() }).await;
         req.history.push(HistoryItem { item, response: None });
     }

@@ -20,7 +20,7 @@ const DAY_MS: i64 = 86_400_000;
 /// A native session whose every event is `age_days` old, asking `prompt`.
 fn session(sessions: &Path, cwd: &Path, prompt: &str, age_days: i64) -> String {
     let (mut l, root) = SessionLog::create(sessions, cwd, "test").unwrap();
-    l.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::UserText { text: prompt.into() } }).unwrap();
+    l.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::user(prompt) }).unwrap();
     l.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "j".into(), item: Item::AssistantText { text: format!("answering {prompt}") } }).unwrap();
     drop(l);
     let path = sessions.join(&root.session_id).join(log::EVENTS_FILE);

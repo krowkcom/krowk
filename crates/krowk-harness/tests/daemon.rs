@@ -107,7 +107,7 @@ impl Home {
 
     fn prompt(&self, text: &str) -> Command {
         let model = Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap();
-        Command::Prompt { session_id: None, text: text.into(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }
+        Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }
     }
 }
 
@@ -634,7 +634,7 @@ fn r_proto_1_a_new_sessions_stream_is_bound_by_its_command_and_leave_stops_the_r
         // B runs another turn in S while A starts a new session.
         let b = home.client().await;
         let resume = |text: &str| match home.prompt(text) {
-            Command::Prompt { model, permission_mode, .. } => Command::Prompt { session_id: Some(s.clone()), text: text.into(), model, permission_mode, toolset: None, effort: None, budget: None },
+            Command::Prompt { model, permission_mode, .. } => Command::Prompt { session_id: Some(s.clone()), text: text.into(), images: Vec::new(), model, permission_mode, toolset: None, effort: None, budget: None },
             _ => unreachable!(),
         };
         let (btx, _brx) = mpsc::channel(1024);

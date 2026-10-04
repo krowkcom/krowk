@@ -63,7 +63,7 @@ pub fn request_body(req: &ModelRequest, provider: &str) -> Value {
         .collect();
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model));
-    body.insert("messages".into(), Value::Array(messages(&req.system, &req.history, provider)));
+    body.insert("messages".into(), Value::Array(messages(&req.system, &req.history, provider, &req.images)));
     if !tools.is_empty() {
         body.insert("tools".into(), Value::Array(tools));
         body.insert("tool_choice".into(), json!("auto"));
@@ -98,7 +98,7 @@ struct Assistant {
 /// The branch as Chat Completions messages: the system prompt, then one
 /// message per user prompt, per response (its text, tool calls and vendor
 /// reasoning together) and per tool result. Every call is answered.
-fn messages(system: &str, history: &[HistoryItem], provider: &str) -> Vec<Value> {
+fn messages(system: &str, history: &[HistoryItem], provider: &str, images: &crate::images::Loaded) -> Vec<Value> {
     let mut out = vec![json!({ "role": "system", "content": system })];
     let answered: HashSet<&str> = history
         .iter()
@@ -138,10 +138,23 @@ fn messages(system: &str, history: &[HistoryItem], provider: &str) -> Vec<Value>
             }
         }
         match &h.item {
-            Item::UserText { text } => {
+            Item::UserText { text, images: refs } => {
                 flush(&mut out, &mut open, &mut unanswered);
                 close_calls(&mut out, &mut unanswered);
-                out.push(json!({ "role": "user", "content": text }));
+                // Plain text stays a string, as every compatible server
+                // takes; only a prompt with images is sent as parts.
+                if refs.is_empty() {
+                    out.push(json!({ "role": "user", "content": text }));
+                } else {
+                    let mut parts = vec![json!({ "type": "text", "text": text })];
+                    for (r, label, data) in crate::images::sent(refs, images) {
+                        parts.push(json!({ "type": "text", "text": label }));
+                        if let Some(data) = data {
+                            parts.push(json!({ "type": "image_url", "image_url": { "url": format!("data:{};base64,{data}", r.media_type) } }));
+                        }
+                    }
+                    out.push(json!({ "role": "user", "content": parts }));
+                }
             }
             Item::ToolResult { call_id, output, .. } => {
                 flush(&mut out, &mut open, &mut unanswered);

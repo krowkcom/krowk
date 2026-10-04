@@ -43,7 +43,7 @@ use crate::budget::Budget;
 use crate::evidence::Evidence;
 use crate::toolset::Preset;
 use crate::catalog::ModelInfo;
-use crate::protocol::{ApprovalDecision, ApprovalRequest, BackendAgent, Billing, Delta, Effort, ErrorInfo, HandoffKind, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, Todo, ToolDefinition, Usage, WireApi};
+use crate::protocol::{ApprovalDecision, ApprovalRequest, BackendAgent, Billing, Delta, Effort, ErrorInfo, HandoffKind, ImageRef, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, Todo, ToolDefinition, Usage, WireApi};
 use crate::subagent::{AgentRun, Subagents};
 use std::future::Future;
 use std::path::PathBuf;
@@ -136,6 +136,9 @@ pub struct TurnContext {
     pub history: Vec<HistoryItem>,
     /// Where the session runs: tools resolve paths against it.
     pub cwd: PathBuf,
+    /// The session's own directory, beside its log: where the images its
+    /// prompts carry are kept (`crate::images`).
+    pub session_dir: PathBuf,
     pub permission_mode: PermissionMode,
     /// The toolset preset the host chose for this turn's model.
     pub preset: &'static Preset,
@@ -193,8 +196,27 @@ pub struct Steers(Arc<Mutex<SteerQueue>>);
 
 #[derive(Debug, Default)]
 struct SteerQueue {
-    waiting: Vec<String>,
+    waiting: Vec<Steer>,
     closed: bool,
+}
+
+/// One steer: its text, and the images it carries, already kept.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Steer {
+    pub text: String,
+    pub images: Vec<ImageRef>,
+}
+
+impl From<&str> for Steer {
+    fn from(text: &str) -> Steer {
+        Steer { text: text.to_string(), images: Vec::new() }
+    }
+}
+
+impl Steer {
+    pub fn item(self) -> Item {
+        Item::UserText { text: self.text, images: self.images }
+    }
 }
 
 impl Steers {
@@ -202,18 +224,18 @@ impl Steers {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Queues `text`, or hands it back when the turn takes no more.
-    pub fn push(&self, text: String) -> Result<(), String> {
+    /// Queues `steer`, or hands it back when the turn takes no more.
+    pub fn push(&self, steer: Steer) -> Result<(), Steer> {
         let mut q = self.lock();
         if q.closed {
-            return Err(text);
+            return Err(steer);
         }
-        q.waiting.push(text);
+        q.waiting.push(steer);
         Ok(())
     }
 
     /// Everything waiting, oldest first, leaving the queue empty.
-    pub fn take(&self) -> Vec<String> {
+    pub fn take(&self) -> Vec<Steer> {
         std::mem::take(&mut self.lock().waiting)
     }
 
@@ -228,7 +250,7 @@ impl Steers {
     }
 
     /// Closes the queue whatever it holds, and returns what was never taken.
-    pub fn close(&self) -> Vec<String> {
+    pub fn close(&self) -> Vec<Steer> {
         let mut q = self.lock();
         q.closed = true;
         std::mem::take(&mut q.waiting)
@@ -348,16 +370,17 @@ mod tests {
     /// sender, never queued for a turn that has decided to end.
     #[test]
     fn r_proto_1_a_steer_after_the_last_check_is_refused_not_lost() {
+        let texts = |v: Vec<Steer>| v.into_iter().map(|s| s.text).collect::<Vec<_>>();
         let s = Steers::default();
         s.push("first".into()).unwrap();
         assert!(!s.close_if_empty(), "steering waiting: the turn goes on");
-        assert_eq!(s.take(), ["first"]);
+        assert_eq!(texts(s.take()), ["first"]);
         assert!(s.close_if_empty(), "nothing waiting: the turn may end");
-        assert_eq!(s.push("too late".into()), Err("too late".to_string()), "refused, and handed back");
+        assert_eq!(s.push("too late".into()), Err("too late".into()), "refused, and handed back");
         assert!(s.take().is_empty());
         let t = Steers::default();
         t.push("never read".into()).unwrap();
-        assert_eq!(t.close(), ["never read"], "a turn that stops early returns what it never took");
+        assert_eq!(texts(t.close()), ["never read"], "a turn that stops early returns what it never took");
         assert!(t.push("x".into()).is_err());
     }
 }

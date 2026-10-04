@@ -49,7 +49,7 @@ impl AnthropicClient {
 /// its shape: replayed thinking and the cache breakpoints above all.
 pub fn request_body(req: &ModelRequest, instance: &Resolved) -> Value {
     let ephemeral = || json!({ "type": "ephemeral" });
-    let mut messages = messages(&req.history);
+    let mut messages = messages(&req.history, &req.images);
     let user_turns: Vec<usize> = messages.iter().enumerate().filter(|(_, m)| m["role"] == "user").map(|(i, _)| i).collect();
     for &i in user_turns.iter().rev().take(2) {
         if let Some(last) = messages[i]["content"].as_array_mut().and_then(|c| c.last_mut()) {
@@ -81,7 +81,7 @@ pub fn request_body(req: &ModelRequest, instance: &Resolved) -> Value {
 /// The branch as Messages-API messages. Items of one response are one
 /// assistant message; everything a person or a tool produced between them
 /// is one user message, tool results first, as the API requires.
-fn messages(history: &[HistoryItem]) -> Vec<Value> {
+fn messages(history: &[HistoryItem], images: &crate::images::Loaded) -> Vec<Value> {
     let mut out: Vec<(String, Vec<Value>)> = Vec::new();
     let push = |out: &mut Vec<(String, Vec<Value>)>, role: &str, block: Value| match out.last_mut() {
         Some((r, blocks)) if r == role => blocks.push(block),
@@ -89,7 +89,15 @@ fn messages(history: &[HistoryItem]) -> Vec<Value> {
     };
     for h in history {
         match &h.item {
-            Item::UserText { text } => push(&mut out, "user", json!({ "type": "text", "text": text })),
+            Item::UserText { text, images: refs } => {
+                push(&mut out, "user", json!({ "type": "text", "text": text }));
+                for (r, label, data) in crate::images::sent(refs, images) {
+                    push(&mut out, "user", json!({ "type": "text", "text": label }));
+                    if let Some(data) = data {
+                        push(&mut out, "user", json!({ "type": "image", "source": { "type": "base64", "media_type": r.media_type, "data": data } }));
+                    }
+                }
+            }
             Item::ToolResult { call_id, output, is_error } => {
                 let block = json!({ "type": "tool_result", "tool_use_id": call_id, "content": output, "is_error": is_error });
                 // Results lead their message: insert before any text already there.

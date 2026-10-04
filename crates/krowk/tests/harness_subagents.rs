@@ -231,7 +231,7 @@ fn r_sub_1_r_sub_2_r_sub_3_three_subagents_run_in_parallel_each_on_a_line_and_on
     let result = rt.block_on(async {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let cmd = Command::Prompt { session_id: None, text: "look into three things at once".into(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "look into three things at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
         app.start_turn(std::time::Instant::now());
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
@@ -618,7 +618,7 @@ fn run_in_process(b: &Sandbox, cfg: HostConfig, session: Option<String>, text: &
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let r = host.execute(Command::Prompt { session_id: session, text: text.into(), model: Some(model), permission_mode: mode, toolset: None, effort: None, budget: None }, tx).await;
+        let r = host.execute(Command::Prompt { session_id: session, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, budget: None }, tx).await;
         let _ = drain.await;
         r.unwrap().unwrap()
     })
@@ -790,7 +790,7 @@ fn r_sub_2_a_subagents_approval_request_is_answered_under_its_own_session() {
     let r = rt.block_on(async {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let exec = host.execute(Command::Prompt { session_id: None, text: "run it in a subagent".into(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }, tx);
+        let exec = host.execute(Command::Prompt { session_id: None, text: "run it in a subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }, tx);
         tokio::pin!(exec);
         app.start_turn(std::time::Instant::now());
         loop {

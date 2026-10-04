@@ -1432,7 +1432,7 @@ impl<'h> Ui<'h> {
         app.offer = None;
         app.echo(&text);
         let (tx, rx) = mpsc::channel(1024);
-        let cmd = Command::Prompt { session_id: app.session_id.clone(), text, model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
+        let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images: Vec::new(), model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
         self.turn = Some(Box::pin(self.host.execute(cmd, tx)));
         self.rx = Some(rx);
         app.start_turn(std::time::Instant::now());
@@ -1468,7 +1468,7 @@ impl<'h> Ui<'h> {
             t.interrupt_sent = true;
         }
         while let Some(text) = app.unsent_steers.first().cloned() {
-            if !self.command(Command::Steer { session_id: id.clone(), text: text.clone() }).await.is_ok_or_slow() {
+            if !self.command(Command::Steer { session_id: id.clone(), text: text.clone(), images: Vec::new() }).await.is_ok_or_slow() {
                 break;
             }
             app.unsent_steers.remove(0);

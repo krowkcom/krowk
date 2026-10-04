@@ -35,7 +35,8 @@
 //! - `handoff` — carrying a session into a backend that did not run all of
 //!   it: its own thread caught up, another account's transcript copied, or
 //!   a new thread seeded with krowk's summary (R-SWITCH-2, R-INST-4).
-//! - `log` — the append-only JSONL session log and its layout on disk.
+//! - `log` — the append-only JSONL session log and its layout on disk;
+//!   `images` — the images a prompt carries, kept beside it.
 //! - `project` — the log as a `krowk_import::Source`, so krowk.db lists
 //!   native sessions beside imported ones.
 //! - `instances` — the named provider instances in krowk's config;
@@ -70,6 +71,7 @@ pub mod headless;
 pub mod hooks;
 pub mod host;
 pub mod http;
+pub mod images;
 pub mod instances;
 pub mod keys;
 pub mod log;

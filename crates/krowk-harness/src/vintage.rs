@@ -541,7 +541,7 @@ mod tests {
 
     fn idle_session(sessions: &Path, days: i64) -> String {
         let (mut l, root) = log::SessionLog::create(sessions, sessions, "test").unwrap();
-        l.append(crate::protocol::LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: crate::protocol::Item::UserText { text: "hi".into() } }).unwrap();
+        l.append(crate::protocol::LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: crate::protocol::Item::user("hi") }).unwrap();
         drop(l);
         let path = sessions.join(&root.session_id).join(EVENTS_FILE);
         let aged: String = log::read_events(&path)

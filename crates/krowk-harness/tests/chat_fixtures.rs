@@ -14,7 +14,7 @@ use krowk_harness::chat::stream::Decoder;
 use krowk_harness::engine::{EngineEvent, HistoryItem};
 use krowk_harness::http::Decode;
 use krowk_harness::native::ModelRequest;
-use krowk_harness::protocol::{Effort, Item, WireApi};
+use krowk_harness::protocol::{Effort, ImageRef, Item, WireApi};
 use krowk_harness::sse::SseParser;
 use serde_json::json;
 
@@ -77,10 +77,10 @@ fn r_log_3_openrouter_reasoning_details_are_merged_and_replayed_as_they_came() {
     assert_eq!(b.data["reasoning"], "Checking the file.");
 
     let items = vec![
-        (Item::UserText { text: "what language?".into() }, None),
+        (Item::user("what language?"), None),
         (d.items[0].1.clone(), Some(0)),
         (d.items[1].1.clone(), Some(0)),
-        (Item::UserText { text: "thanks".into() }, None),
+        (Item::user("thanks"), None),
     ];
     let req = ModelRequest { model: "anthropic/claude-sonnet-4.6".into(), system: "s".into(), history: history(&items), effort: Some(Effort::Low), ..ModelRequest::default() };
     let body = request_body(&req, "openrouter");
@@ -102,7 +102,7 @@ fn r_log_3_openrouter_reasoning_details_are_merged_and_replayed_as_they_came() {
 #[test]
 fn r_prov_3_the_history_renders_as_one_prefix_and_every_call_is_answered() {
     let (d, _) = decode("chat/xai_tool_call.sse", "xai", 1 << 20);
-    let mut items = vec![(Item::UserText { text: "reword the README".into() }, None)];
+    let mut items = vec![(Item::user("reword the README"), None)];
     items.extend(d.items.iter().map(|(_, i)| (i.clone(), Some(0))));
     let req = |items: &[(Item, Option<usize>)]| ModelRequest { model: "grok-4.7".into(), system: "s".into(), history: history(items), session_id: "sess-1".into(), ..ModelRequest::default() };
     // The turn stopped before running the call: it is answered all the same.
@@ -150,4 +150,24 @@ fn r_prov_1_a_reused_tool_call_index_with_a_new_id_is_a_new_call() {
             &Item::ToolCall { call_id: "call_b".into(), name: "glob".into(), input: json!({"pattern": "*.rs"}) },
         ]
     );
+}
+
+/// A prompt naming two images: one whose bytes were read, one whose file is gone.
+fn with_images() -> ModelRequest {
+    let r = |n: u32, file: &str| ImageRef { number: n, media_type: "image/png".into(), file: file.into() };
+    let item = Item::UserText { text: "what differs between [Image #1] and [Image #2]?".into(), images: vec![r(1, "1-a.png"), r(2, "2-b.png")] };
+    let mut req = ModelRequest { model: "m".into(), system: "s".into(), history: vec![HistoryItem { item, response: None }], ..ModelRequest::default() };
+    req.images.insert("1-a.png".into(), "iVBORw0K".into());
+    req
+}
+
+#[test]
+fn an_image_turns_the_prompt_into_parts_and_plain_text_stays_a_string() {
+    let body = request_body(&with_images(), "xai");
+    let content = &body["messages"][1]["content"];
+    assert_eq!(content[1]["text"], "[Image #1]");
+    assert_eq!(content[2], json!({ "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0K" } }));
+    assert_eq!(content[3]["text"], "[Image #2: the file is gone]");
+    let plain = ModelRequest { history: history(&[(Item::user("hi"), None)]), ..ModelRequest::default() };
+    assert_eq!(request_body(&plain, "xai")["messages"][1]["content"], "hi");
 }

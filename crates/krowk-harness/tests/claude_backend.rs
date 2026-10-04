@@ -139,7 +139,7 @@ fn prompt_within(session_id: Option<&str>, text: &str, model: &str, mode: Permis
     let (instance, model) = model.split_once('/').unwrap();
     Command::Prompt {
         session_id: session_id.map(String::from),
-        text: text.into(),
+        text: text.into(), images: Vec::new(),
         model: Some(ModelRef { instance: instance.into(), model: model.into() }),
         permission_mode: mode,
         toolset: None,
@@ -265,8 +265,8 @@ fn r_compat_1_a_slash_skill_claude_code_does_not_have_reaches_it_loaded_ahead_of
     });
 
     let items = completed(&lines);
-    assert!(matches!(&items[0], Item::UserText { text } if text == "/implement the login page"), "the person's words, as they typed them: {items:?}");
-    assert!(matches!(&items[1], Item::UserText { text } if text.starts_with(krowk_harness::compat::skills::INVOKED)), "the skill, logged as krowk's: {items:?}");
+    assert!(matches!(&items[0], Item::UserText { text, .. } if text == "/implement the login page"), "the person's words, as they typed them: {items:?}");
+    assert!(matches!(&items[1], Item::UserText { text, .. } if text.starts_with(krowk_harness::compat::skills::INVOKED)), "the skill, logged as krowk's: {items:?}");
     let fake = home.fake_log();
     let sent = fake.lines().find(|l| l.starts_with("in ") && l.contains(r#""type":"user""#)).unwrap_or_else(|| panic!("{fake}"));
     let msg: serde_json::Value = serde_json::from_str(&sent[3..]).unwrap();
@@ -791,7 +791,7 @@ fn a_renamed_instance_keeps_its_session_process() {
             ..Default::default()
         };
         host.set_registry_renamed(Registry::resolve(&cfg, &home.env()), "claude:work", "claude:personal");
-        let (lines, r) = run(&host, Command::Prompt { session_id: Some(sid.clone()), text: "again".into(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }).await;
+        let (lines, r) = run(&host, Command::Prompt { session_id: Some(sid.clone()), text: "again".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }).await;
         let r = r.unwrap().unwrap();
         assert_eq!((r.status, r.model.instance.as_str()), (TurnStatus::Completed, "claude:personal"), "{lines:?}");
         let (_, r) = run(&host, prompt(Some(&sid), "old name", "claude:work/sonnet", PermissionMode::Default)).await;
@@ -863,7 +863,7 @@ fn r_sub_3_a_background_agent_is_listed_while_idle_and_the_turn_claude_code_begi
         let (lines, r) = run(&host, continue_turn(&first.session_id)).await;
         let second = r.unwrap().unwrap();
         assert_eq!((second.status, second.result.as_str()), (TurnStatus::Completed, "The agent is done: the repo is small."));
-        assert_eq!(completed(&lines).first(), Some(&Item::UserText { text: krowk_harness::claude::unprompted(&reason) }), "its prompt is krowk's note of why");
+        assert_eq!(completed(&lines).first(), Some(&Item::user(krowk_harness::claude::unprompted(&reason))), "its prompt is krowk's note of why");
         assert_eq!(home.fake_log().matches("in {\"type\":\"user\"").count(), 1, "and nothing was sent for it");
         let events = home.events(&first.session_id);
         let metered: Vec<i64> = events.iter().filter_map(|e| match &e.body {
@@ -900,7 +900,7 @@ fn r_back_5_a_prompt_runs_the_waiting_turn_first_and_ends_at_its_own_result() {
         let texts: Vec<String> = completed(&lines)
             .into_iter()
             .filter_map(|i| match i {
-                Item::UserText { text } => Some(if text.starts_with(krowk_harness::claude::UNPROMPTED) { "<note>".into() } else { text }),
+                Item::UserText { text, .. } => Some(if text.starts_with(krowk_harness::claude::UNPROMPTED) { "<note>".into() } else { text }),
                 Item::AssistantText { text } => Some(text),
                 _ => None,
             })
@@ -928,7 +928,7 @@ fn r_back_5_a_turn_claude_code_begins_as_a_prompt_arrives_is_folded_into_the_pro
         let r = r.unwrap().unwrap();
         assert_eq!((r.status, r.result.as_str()), (TurnStatus::Completed, "Nothing else."), "{:?}", r.error);
         let items = completed(&lines);
-        let note = items.iter().position(|i| matches!(i, Item::UserText { text } if text.starts_with(krowk_harness::claude::UNPROMPTED)));
+        let note = items.iter().position(|i| matches!(i, Item::UserText { text, .. } if text.starts_with(krowk_harness::claude::UNPROMPTED)));
         let agent = items.iter().position(|i| matches!(i, Item::AssistantText { text } if text == "The agent is done: the repo is small."));
         let own = items.iter().position(|i| matches!(i, Item::AssistantText { text } if text == "Nothing else."));
         assert!(agent < note && note < own && agent.is_some(), "Claude Code's turn, the note, the prompt's answer: {items:?}");

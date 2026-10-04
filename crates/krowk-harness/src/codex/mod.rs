@@ -55,7 +55,7 @@ pub mod stream;
 
 use crate::bridge::{self, BridgeEnv};
 use crate::catalog::ModelInfo;
-use crate::engine::{cancelled, BoxFuture, Engine, EngineError, EngineEvent, Events, TurnContext, TurnEnd};
+use crate::engine::{cancelled, BoxFuture, Engine, EngineError, EngineEvent, Events, Steer, TurnContext, TurnEnd};
 use crate::instances::{Backend, Resolved};
 use crate::permissions::{self, Access, Call, Gate, Verdict};
 use crate::protocol::{Billing, Effort, Item, ItemKind, LimitState, LimitStatus, ModelRef, PermissionMode, WireApi};
@@ -503,8 +503,8 @@ impl Engine for CodexEngine {
                         Err(e) => return Err(e),
                     }
                 }
-                let prompt = match ctx.history.last().map(|h| &h.item) {
-                    Some(Item::UserText { text }) => text.clone(),
+                let (prompt, images) = match ctx.history.last().map(|h| &h.item) {
+                    Some(Item::UserText { text, images }) => (text.clone(), images.clone()),
                     _ => return Err(EngineError::new("empty_prompt", "a backend turn needs the prompt as its last item")),
                 };
                 // What the thread did not run goes ahead of the prompt, in
@@ -513,7 +513,7 @@ impl Engine for CodexEngine {
                 if let Some(ev) = handoff {
                     let _ = events.send(ev).await;
                 }
-                p.turn(prompt, &mut ctx, &ask, &events, &self.instance.name).await
+                p.turn(Steer { text: prompt, images }, &mut ctx, &ask, &events, &self.instance.name).await
             }
             .await;
             // A process that died, or a turn that failed partway, is not
@@ -657,7 +657,7 @@ impl Answers {
 /// What a request krowk sent during a turn was.
 enum Pending {
     TurnStart,
-    Steer(String),
+    Steer(Steer),
     Interrupt,
 }
 
@@ -799,14 +799,30 @@ async fn forward(events: &Events, out: Vec<EngineEvent>) {
 
 /// A steer Codex took, as the `userText` item the log shows it as, where it
 /// landed.
-async fn steered(events: &Events, text: String) {
+async fn steered(events: &Events, steer: Steer) {
     let id = krowk_store::new_id();
     let _ = events.send(EngineEvent::ItemStarted { item_id: id.clone(), kind: ItemKind::UserText }).await;
-    let _ = events.send(EngineEvent::ItemCompleted { item_id: id, item: Item::UserText { text } }).await;
+    let _ = events.send(EngineEvent::ItemCompleted { item_id: id, item: steer.item() }).await;
 }
 
-fn text_input(texts: &[String]) -> Value {
-    Value::Array(texts.iter().map(|t| json!({"type": "text", "text": t, "text_elements": []})).collect())
+/// A turn's input: each text, and after it the images it names, as files
+/// Codex reads itself, each labelled with its `[Image #N]`.
+fn text_input(input: &[Steer], session_dir: &Path) -> Value {
+    let text = |t: &str| json!({"type": "text", "text": t, "text_elements": []});
+    let mut out = Vec::new();
+    for s in input {
+        out.push(text(&s.text));
+        for r in &s.images {
+            match crate::images::path(session_dir, r).filter(|p| p.is_file()) {
+                Some(p) => {
+                    out.push(text(&crate::images::label(r, false)));
+                    out.push(json!({"type": "localImage", "path": p}));
+                }
+                None => out.push(text(&crate::images::label(r, true))),
+            }
+        }
+    }
+    Value::Array(out)
 }
 
 impl Proc {
@@ -1014,7 +1030,7 @@ impl Proc {
     /// as it arrives, until Codex completes it with nothing left unread.
     // Legacy: one loop over every Codex notification of a turn. TODO: split into helpers and drop this allow.
     #[allow(clippy::cognitive_complexity)]
-    async fn turn(&mut self, prompt: String, ctx: &mut TurnContext, ask: &Answers, events: &Events, instance: &str) -> Result<TurnEnd, EngineError> {
+    async fn turn(&mut self, prompt: Steer, ctx: &mut TurnContext, ask: &Answers, events: &Events, instance: &str) -> Result<TurnEnd, EngineError> {
         let thread = self.thread.clone().expect("opened before a turn");
         let _ = events.send(EngineEvent::Context { system: SYSTEM_NOTE.into(), tools: bridge::definitions() }).await;
         let _ = events.send(EngineEvent::BackendSession { backend: BACKEND.into(), session_id: thread.clone(), transcript: self.transcript.clone(), billing: self.billing }).await;
@@ -1025,7 +1041,7 @@ impl Proc {
         let mut input = vec![prompt];
         let mut interrupted = false;
         loop {
-            let mut params = json!({"threadId": thread, "input": text_input(&input), "model": ctx.model.model});
+            let mut params = json!({"threadId": thread, "input": text_input(&input, &ctx.session_dir), "model": ctx.model.model});
             if let Some(e) = &effort {
                 params["effort"] = json!(e);
             }
@@ -1036,7 +1052,7 @@ impl Proc {
             let mut deadline: Option<tokio::time::Instant> = None;
             let mut gone = false;
             let mut drain: Option<tokio::time::Instant> = None;
-            let mut refused: Vec<String> = Vec::new();
+            let mut refused: Vec<Steer> = Vec::new();
             let mut completed: Option<Value> = None;
             let mut poll = tokio::time::interval(STEER_POLL);
             poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1094,9 +1110,9 @@ impl Proc {
                     }
                     _ = poll.tick(), if steering => {
                         let turn = codex_turn.clone().expect("steering only once the turn has an id");
-                        for text in ctx.steers.take() {
-                            let id = self.call("turn/steer", json!({"threadId": thread, "expectedTurnId": turn, "input": text_input(std::slice::from_ref(&text))})).await?;
-                            pending.insert(id, Pending::Steer(text));
+                        for steer in ctx.steers.take() {
+                            let id = self.call("turn/steer", json!({"threadId": thread, "expectedTurnId": turn, "input": text_input(std::slice::from_ref(&steer), &ctx.session_dir)})).await?;
+                            pending.insert(id, Pending::Steer(steer));
                         }
                     }
                     msg = next_msg(&mut self.out) => {
@@ -1202,8 +1218,8 @@ impl Proc {
                 }
                 more = ctx.steers.take();
             }
-            for text in &more {
-                steered(events, text.clone()).await;
+            for steer in &more {
+                steered(events, steer.clone()).await;
             }
             input = more;
         }
