@@ -74,6 +74,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **Running `krowk sync init --start-over` again says what it did.** While
+  the old keys from a start-over are kept, running it again carries on that
+  start-over (sealing any sessions left under the new list) and never begins
+  a new one. It now says so, and that a new start-over needs
+  `krowk sync recovery discard-old` first.
+
 - **Copying from the TUI no longer drags the layout along.** Text in the
   transcript starts at the first column: a mouse selection of your prompt,
   an answer, a list or a code block comes without the two-column margin,
