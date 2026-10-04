@@ -17,7 +17,10 @@ use super::direct::Candidate;
 use super::{Answer, Batch, In, Join, Remote, ViewerFrame, Welcome, DEAD, FRAME, PING};
 use crate::protocol::{Command, LiveEvent, StreamLine};
 use krowk_api::Client;
-use krowk_client::e2e::{self, AccountKey, DeviceId, SessionKey, SigningKey};
+use krowk_client::e2e::{self, DeviceId, SessionKey, SigningKey};
+use krowk_client::device_chain::Chain;
+use krowk_client::session_record::Signer;
+use krowk_client::user_key::UserKeys;
 use krowk_client::protocol::frame::{KIND_ACK, KIND_BATCH};
 use krowk_client::relay_link::{Outbound, ViewerLink};
 use serde_json::json;
@@ -35,9 +38,10 @@ pub struct Listed {
 }
 
 /// Every synced session this device can open, most recently written first.
-/// One whose key or index does not open under this account's key is left
+/// One whose record no device on the verified list signed, or whose key or
+/// index does not open under the user keys this device holds — one sealed under a generation newer than it has, say — is left
 /// out and counted.
-pub fn list(api: &Client, account: &AccountKey) -> Result<(Vec<Listed>, usize), String> {
+pub fn list(api: &Client, keys: &UserKeys, chain: &Chain) -> Result<(Vec<Listed>, usize), String> {
     let mut out = Vec::new();
     let mut unreadable = 0;
     let mut before = String::new();
@@ -46,7 +50,7 @@ pub fn list(api: &Client, account: &AccountKey) -> Result<(Vec<Listed>, usize), 
         for s in &page.sessions {
             // A listing leaves the index out; `show` has it.
             let full = api.show_sync_session(&s.id).map_err(|e| e.to_string())?;
-            match open_key(&full.wrapped_key, &s.id, account).and_then(|k| store::open_index(&k, &s.id, &full.sealed_index)) {
+            match store::open_session_key(&full, &s.id, keys, chain, Signer::EverHeld).and_then(|k| store::open_index(&k, &s.id, &full.sealed_index)) {
                 Ok(index) => out.push(Listed { id: s.id.clone(), index, holder: full.lease.map(|l| l.device) }),
                 Err(_) => unreadable += 1,
             }
@@ -56,10 +60,6 @@ pub fn list(api: &Client, account: &AccountKey) -> Result<(Vec<Listed>, usize), 
         }
         before = page.next;
     }
-}
-
-fn open_key(wrapped: &str, id: &str, account: &AccountKey) -> Result<SessionKey, String> {
-    e2e::unwrap_session_key(&e2e::unhex(wrapped).ok_or("the session's key is not hex")?, &crate::daemon::ws::uuid(id), account).map_err(|e| e.to_string())
 }
 
 /// What a viewer hands its screen, one `Vec` a display frame.
@@ -88,6 +88,11 @@ pub enum Update {
     Gap,
     /// Something the viewer cannot go on from.
     Failed(String),
+    /// Something to tell the person beside the session: why the relay
+    /// cannot be joined, said once as it comes or changes. Its own update,
+    /// not a line on stderr, so a screen drawing the session shows it where
+    /// it draws rather than having it written over its frame.
+    Note(String),
 }
 
 pub struct Options {
@@ -100,7 +105,11 @@ pub struct Options {
     pub api: Arc<Client>,
     pub device: DeviceId,
     pub signing: SigningKey,
-    pub account: AccountKey,
+    /// The person's user key, by the generations this device holds.
+    pub keys: UserKeys,
+    /// The device list as this device verified it: whose signatures a
+    /// session record is checked against.
+    pub chain: Chain,
     pub session: String,
     /// The highest head this device has seen of the session before: a log
     /// served shorter is refused.
@@ -115,6 +124,11 @@ pub struct Viewer {
     pub attach_time: Duration,
     /// When each `Vec` of updates was handed on (R-LAG-7's measure).
     pub handed: Arc<std::sync::Mutex<Vec<Instant>>>,
+    /// The session's title, from its sealed index; empty when it has none.
+    pub title: String,
+    /// The name the verified device list gives the device that signed the
+    /// session record — the one that hosts it — when the list holds it.
+    pub host: Option<String>,
 }
 
 /// Attaches: the sealed index, the checkpoint and the tail (off the
@@ -122,14 +136,16 @@ pub struct Viewer {
 pub async fn attach(o: Options) -> Result<Viewer, String> {
     let started = Instant::now();
     let o = Arc::new(o);
-    let (key, attached) = {
+    let (key, attached, host) = {
         let o = o.clone();
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let s = o.api.show_sync_session(&o.session).map_err(|e| e.to_string())?;
-            let key = open_key(&s.wrapped_key, &o.session, &o.account)?;
+            let key = store::open_session_key(&s, &o.session, &o.keys, &o.chain, Signer::EverHeld)?;
             let index = store::open_index(&key, &o.session, &s.sealed_index)?;
             let a = store::attach(&o.api, &key, &o.session, index, o.known)?;
-            Ok((key, a))
+            // `open_session_key` checked the signer against this list already.
+            let host = e2e::DeviceId::parse(&s.signer).and_then(|id| o.chain.devices().iter().find(|d| d.id() == id).map(|d| d.name.clone()));
+            Ok((key, a, host))
         })
         .await
         .map_err(|e| e.to_string())??
@@ -139,9 +155,10 @@ pub async fn attach(o: Options) -> Result<Viewer, String> {
     let (tx, updates) = mpsc::channel(256);
     let handed = Arc::new(std::sync::Mutex::new(vec![Instant::now()]));
     let first = vec![Update::Attached { events: attached.events.clone(), head: attached.head }];
+    let title = attached.index.title.clone();
     let _ = tx.send(first).await;
     tokio::spawn(live(o, key, attached, rx, tx, handed.clone()));
-    Ok(Viewer { commands, updates, attach_time, handed })
+    Ok(Viewer { commands, updates, attach_time, handed, title, host })
 }
 
 /// The last-applied-batch ack a viewer sends the relay (relay.md → Flow
@@ -165,6 +182,8 @@ fn newest(last: &mut Option<String>, id: &str) {
     }
 }
 
+// Legacy: the viewer's whole live loop, one select over every source. TODO: split into helpers and drop this allow.
+#[allow(clippy::cognitive_complexity)]
 async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut commands: mpsc::UnboundedReceiver<Command>, out: mpsc::Sender<Vec<Update>>, handed: Arc<std::sync::Mutex<Vec<Instant>>>) {
     let raw = crate::daemon::ws::uuid(&o.session);
     let mut seen: HashSet<String> = at_rest.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect();
@@ -184,6 +203,10 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
     let mut ws: Option<super::Ws> = None;
     let mut host = false;
     let mut retry = Instant::now();
+    // Why the relay could not be joined, said once (`Update::Note`) as it
+    // comes or changes: otherwise a viewer that never reaches the relay only ever
+    // shows its prompts queued.
+    let mut unjoined: Option<String> = None;
     let mut heard = Instant::now();
     // Random per viewer run, so a restarted viewer's ids never read as a
     // repeat of an earlier run's at the host, which dedups by them.
@@ -262,6 +285,7 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                 let j = Join { relay: &o.relay, session: &o.session, env: &o.env, ticket: &ticket, device: o.device, signing: &o.signing, role: e2e::RELAY_ROLE_VIEWER, extra };
                 match super::join(j).await {
                     Ok((mut w, joined)) => {
+                        unjoined = None;
                         (on, moving, leaving) = (None, None, None);
                         let n = joined["link"].as_u64().unwrap_or(0);
                         let mut l = match link.take() { Some(l) => l.reconnect(n), None => ViewerLink::new(&key, raw, n) };
@@ -279,7 +303,13 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                         ws = Some(w);
                         heard = Instant::now();
                     }
-                    Err(_) => retry = Instant::now() + Duration::from_secs(1),
+                    Err(e) => {
+                        if unjoined.as_deref() != Some(e.as_str()) {
+                            frame.push(Update::Note(format!("not on the relay {}: {e}; trying again every second", o.relay)));
+                            unjoined = Some(e);
+                        }
+                        retry = Instant::now() + Duration::from_secs(1);
+                    }
                 }
             }
             _ = tokio::time::sleep_until(reprobe.into()), if on.is_none() && moving.is_none() && !probing && !candidates.is_empty() && link.as_ref().is_some_and(|l| l.welcomed()) => {
@@ -353,11 +383,12 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                     In::Closed => { ws = None; retry = Instant::now() + Duration::from_secs(1); }
                     In::Alive => {}
                     In::Control(v) if v["type"] == "host" => {
-                        // Presence is the relay's word, not the host's: while a
-                        // host has welcomed this connection it changes nothing.
-                        // Only a viewer waiting for a host joins again to say
-                        // hello, and nothing it sends again after that welcome
-                        // runs twice (the host dedups by command id).
+                        // Presence is the relay's word, not the host's. A host
+                        // arriving — the first, or one back from a link the relay
+                        // let go, which may have taken a command with it — is
+                        // joined again and said hello to: its welcome sends again
+                        // every command not yet acknowledged, and none runs twice
+                        // (the host dedups by command id).
                         let present = v["present"].as_bool().unwrap_or(false);
                         let welcomed = link.as_ref().is_some_and(|l| l.welcomed());
                         if !present && (on.is_some() || moving.is_some()) {
@@ -366,7 +397,13 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                             ws = None;
                             retry = Instant::now();
                             (reprobe, backoff) = later(backoff);
-                        } else if present && !welcomed { ws = None; retry = Instant::now(); } else if !present { host = false; frame.push(Update::Host(false)); }
+                        } else if present && (!welcomed || (on.is_none() && moving.is_none())) { ws = None; retry = Instant::now(); } else if !present { host = false; frame.push(Update::Host(false)); }
+                    }
+                    // A frame sent as the host went: dropped by the relay, so the
+                    // host is not there, and what was sent waits, unacknowledged,
+                    // for the welcome of the next.
+                    In::Control(v) if v["type"] == "error" && v["code"] == "host_absent" => {
+                        if host { host = false; frame.push(Update::Host(false)); }
                     }
                     In::Control(v) if v["type"] == "resync" => {
                         if v["reason"] == "stream" {

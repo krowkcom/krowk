@@ -25,4 +25,7 @@ sha2 = "0.11"
 tiny_http = "0.12"
 
 [dev-dependencies]
+# The calls `krowk devices add` and `krowk sync join` make, so the device
+# tests drive the stand-in the way the CLI does. Test-only.
+krowk-api = { path = "../krowk-api" }
 serde_json = "1"

@@ -62,11 +62,10 @@
 //!   line, never a scroll region: a scroll that starts at the top row puts
 //!   what it scrolls in tmux's history.
 
-use crossterm::terminal::{Clear, ClearType as CtClear};
-use crossterm::{queue, QueueableCommand};
+use crossterm::QueueableCommand;
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::Cell;
-use ratatui::layout::{Position, Size};
+use ratatui::layout::{Position, Rect, Size};
 use ratatui::text::Line;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::cell::RefCell;
@@ -177,6 +176,19 @@ impl FrameBuf {
             write!(b.bytes, "\x1b[{x}C")?;
         }
         b.row = y;
+        Ok(())
+    }
+
+    /// To the start of row `y` and clears from there to the end of the
+    /// screen. From the top-left corner the clear is sent from the second
+    /// column, and the first cleared on its own: a clear to the end of the
+    /// screen from there is a clear of the whole screen to tmux, which
+    /// scrolls what was on it into history first (`scroll-on-clear`) — a
+    /// live region as tall as the screen would be left in scrollback.
+    fn clear_down(&self, y: u16) -> io::Result<()> {
+        self.goto(0, y)?;
+        let mut b = self.0.borrow_mut();
+        b.bytes.extend_from_slice(if y == 0 { b"\x1b[1C\x1b[J\x1b[1K\r" } else { b"\x1b[J" });
         Ok(())
     }
 
@@ -404,8 +416,7 @@ impl<W: Write> Term<W> {
         }
         let mut top = self.top();
         if want < self.height {
-            self.buf.goto(0, top)?;
-            queue!(self.buf.clone(), Clear(CtClear::FromCursorDown))?;
+            self.buf.clear_down(top)?;
             let moved = anchor(&self.buf, self.size, top, want)?;
             self.blank_top += moved - top;
             return self.rebuild(moved, want);
@@ -427,8 +438,7 @@ impl<W: Write> Term<W> {
     }
 
     fn rebuild(&mut self, top: u16, height: u16) -> io::Result<()> {
-        self.buf.goto(0, top)?;
-        queue!(self.buf.clone(), Clear(CtClear::FromCursorDown))?;
+        self.buf.clear_down(top)?;
         self.terminal = build(&self.buf, self.size, top, height)?;
         self.height = height;
         Ok(())
@@ -530,13 +540,19 @@ impl<W: Write> Term<W> {
         let drawn = self.terminal.draw(|f| {
             let area = f.area();
             for (i, row) in rows.iter().enumerate().take(usize::from(area.height)) {
-                f.buffer_mut().set_line(area.x + pad, area.y + spare + i as u16, row, inner);
+                let y = area.y + spare + i as u16;
+                // A row with a background of its own, the prompt's band,
+                // has it across the whole screen, its text where it was.
+                if row.style.bg.is_some() {
+                    f.buffer_mut().set_style(Rect::new(area.x, y, width, 1), row.style);
+                }
+                f.buffer_mut().set_line(area.x + pad, y, row, inner);
             }
             f.set_cursor_position((area.x + pad + caret.0.min(inner.saturating_sub(1)), area.y + (spare + caret.1).min(area.height.saturating_sub(1))));
         });
         self.buf.clone().write_all(AUTOWRAP_ON)?;
         drawn?;
-        self.widths = std::iter::repeat_n(0, usize::from(spare)).chain(rows.iter().map(|r| (r.width() as u16).min(inner) + pad)).take(shown).collect();
+        self.widths = std::iter::repeat_n(0, usize::from(spare)).chain(rows.iter().map(|r| if r.style.bg.is_some() { width } else { (r.width() as u16).min(inner) + pad })).take(shown).collect();
         let top = self.top();
         if let Some(Position { x, y }) = completed_cursor(&mut self.terminal) {
             self.caret_row = y.saturating_sub(top);
@@ -571,8 +587,7 @@ impl<W: Write> Term<W> {
         let (w, h) = (self.size.width, self.size.height.max(1));
         let top = self.top();
         let mut out = self.buf.clone();
-        self.buf.goto(0, top)?;
-        queue!(out, Clear(CtClear::FromCursorDown))?;
+        self.buf.clear_down(top)?;
         let mut used: u32 = 0;
         let pad = if w > 2 * self.pad + 10 { self.pad } else { 0 };
         for line in lines {
@@ -647,8 +662,7 @@ impl<W: Write> Term<W> {
     pub fn finish(&mut self) -> io::Result<()> {
         let top = self.top();
         let mut w = self.buf.clone();
-        self.buf.goto(0, top)?;
-        w.queue(Clear(CtClear::FromCursorDown))?;
+        self.buf.clear_down(top)?;
         w.queue(crossterm::cursor::Show)?;
         if std::mem::take(&mut self.steady) {
             w.write_all(CURSOR_DEFAULT)?;
@@ -853,6 +867,21 @@ mod tests {
         assert!(t.whole, "all of the new session on screen");
         assert_eq!(t.top(), h - 3, "the region at the bottom");
         assert_eq!(t.blank_top, h - 3 - 2, "the rows above the header blank, none scrolled away");
+    }
+
+    #[test]
+    fn a_row_with_a_background_of_its_own_has_it_across_the_pad() {
+        use ratatui::style::{Color, Style};
+        let mut t = Term::new(Vec::new(), Size { width: 20, height: 10 }, 0, 2).unwrap();
+        t.pad = 2;
+        let start = t.out.len();
+        let band = Style::new().bg(Color::Indexed(236));
+        t.frame(&[], &[Line::from("→ hi").style(band), Line::from("status")], (4, 0)).unwrap();
+        let out = String::from_utf8_lossy(&t.out[start..]).into_owned();
+        let painted = out.split("48;5;236m").skip(1).map(|s| s.split(['\x1b', '\r']).next().unwrap_or("")).collect::<String>();
+        assert_eq!(painted, format!("  → hi{}", " ".repeat(14)), "the band from the first column to the last, the text where the pad puts it: {out:?}");
+        assert!(out.contains("status"), "{out:?}");
+        assert_eq!(t.widths, vec![20, 8], "the band row as wide as the screen");
     }
 
     #[test]

@@ -109,8 +109,17 @@ day.";
 
 #[cfg(feature = "harness")]
 const SYNC_ATTACH_ABOUT: &str = "\
-Prints the session as stream-json on stdout. Each line typed on stdin is a
-prompt to it, queued while no host is online, except these:
+On a terminal, opens the TUI on the session: its history, then live. The
+prompt box sends prompts, approvals are answered in the usual dialog, Esc
+interrupts, and the status line says whether the host is there (prompts
+wait for it when it is not) and whether the session comes by the relay or
+directly. The host runs prompts from here in the session's default mode, so
+/mode, /model, /new and /sessions are its to change, not this TUI's.
+
+With --json, or stdout not a terminal, prints the session as stream-json on
+stdout instead, and ends when stdin does, once every command sent is
+answered. Each line typed on stdin is a prompt to it, queued while no host
+is online, except these:
 
   /approve REQUEST_ID        allow the tool call an approval.requested names
   /allow-session REQUEST_ID  allow it, and calls like it for the session
@@ -252,7 +261,9 @@ fn global_flag() -> Flag {
 }
 
 #[cfg(feature = "harness")]
-const SUMMARY: &str = "a coding agent, and permalinks for its output";
+const SUMMARY: &str = "a coding agent harness: one session, any machine, model or agent";
+// The lean build has no agent: publishing is all it does, so that is all it
+// says it is.
 #[cfg(not(feature = "harness"))]
 const SUMMARY: &str = "permalinks for agent output";
 
@@ -500,21 +511,39 @@ fn vintage_commands() -> Vec<Command> {
 fn sync_command() -> Command {
     Command {
         subcommands: vec![
-            cmd("init", "krowk sync init", "Set up: a device key, an account key, its recovery phrase"),
-            cmd("recover", "krowk sync recover", "Restore the account key here from its recovery phrase"),
+            Command {
+                flags: vec![
+                    flag("save", STRING, "Write the recovery kit to this file (0600) instead of showing it"),
+                    flag("start-over", BOOL, "Replace your device list; this device's sessions come along"),
+                    flag("name", STRING, "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"),
+                ],
+                ..cmd("init", "krowk sync init [--save FILE] [--start-over]", "Set up sync: this device, your user key and a recovery kit")
+            },
+            Command {
+                flags: vec![flag("name", STRING, "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
+                ..cmd("recover", "krowk sync recover", "Back in from the recovery kit's 12 words, on a new machine")
+            },
+            cmd("status", "krowk sync status", "This device's list, key generation and recovery kit, checked"),
+            Command {
+                subcommands: vec![
+                    Command { flags: vec![flag("save", STRING, "Write the new kit to this file (0600) instead of showing it")], ..cmd("new", "krowk sync recovery new [--save FILE]", "Make a new recovery kit") },
+                    cmd("check", "krowk sync recovery check", "Test the kit's words against your device list, locally"),
+                    cmd("discard-old", "krowk sync recovery discard-old", "Drop the old keys a start-over kept aside"),
+                ],
+                ..cmd("recovery", "krowk sync recovery new|check|discard-old", "Your recovery kit: make a new one, or test its words")
+            },
             Command {
                 flags: vec![flag("name", STRING, "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
-                ..cmd("join", "krowk sync join [ACCOUNT_KEY_ID]", "Add this machine, approved from one that already syncs")
+                ..cmd("join", "krowk sync join", "Add this machine by the code `krowk devices add` shows")
             },
-            cmd("register", "krowk sync register [--name NAME]", "Tell the workspace this machine holds its account key"),
             #[cfg(unix)]
             cmd("sessions", "krowk sync sessions", "The synced sessions this machine can open"),
             #[cfg(unix)]
             cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
             #[cfg(unix)]
-            cmd("attach", "krowk sync attach SESSION", "Follow a synced session; stdin takes prompts and /commands"),
+            cmd("attach", "krowk sync attach SESSION", "Follow a synced session in the TUI, or as stream-json"),
         ],
-        ..cmd("sync", "", "End-to-end encryption keys for syncing sessions")
+        ..cmd("sync", "", "Sync sessions between your machines, end-to-end encrypted")
     }
 }
 
@@ -542,8 +571,9 @@ fn relay_command() -> Command {
 fn devices_command() -> Command {
     Command {
         subcommands: vec![
-            cmd("list", "krowk devices list", "The workspace's devices, and the account key this one holds"),
-            cmd("approve", "krowk devices approve [CODE]", "Approve a new device's `krowk sync join`"),
+            cmd("list", "krowk devices list", "The devices on your device list, this one marked"),
+            cmd("add", "krowk devices add", "Show a code that adds a new machine to your devices"),
+            cmd("remove", "krowk devices remove NAME", "Take a device off your list and rotate your key"),
         ],
         ..cmd("devices", "", "The machines that sync this workspace's sessions")
     }
@@ -838,21 +868,18 @@ with `claude auth login` or `codex login`).",
         "providers" => "Below `krowk connect`: API keys, logins, Claude Code and Codex accounts.",
         #[cfg(feature = "harness")]
         "sync" => "\
-Sessions are encrypted on this machine before they leave it. `init` shows the
-account key as 24 words once, with its key id; `recover` takes them on a new
-machine and shows the id it restored. Type them at its prompt, or pipe them
-from a file (`krowk sync recover < phrase.txt`) — never `echo`, which keeps
-them in your shell history. Or skip the words: `join` shows a code, and
-`krowk devices approve` on a machine that already syncs answers it; read the
-account key id off that machine, never from an error or a web page. The keys
-are kept in krowk's home, 0600; with a key to a Pro workspace the device is
-registered there too.",
+Sessions are encrypted on this machine before they leave it. `init` sets up
+your device list and shows a recovery kit, 12 words, once: the only way back
+in if every device is lost. `recover` takes them on a new machine — at its
+prompt, or piped from a file (`krowk sync recover < kit.txt`), never `echo`,
+which keeps them in your shell history.",
         #[cfg(feature = "harness")]
         "devices" => "\
-Adding a machine: run `krowk sync join` on it, then `krowk devices approve`
-here and type the code it shows. Type back the account key id `approve`
-shows on the new machine, or pass it to `join`. Comparing both is what keeps
-a registry from slipping its own keys in. Needs a Pro workspace.",
+Adding a machine: `krowk devices add` here shows a code, valid 10 minutes and
+once; run `krowk sync join` on the new machine and type it there. The code is
+checked by both machines, not by the registry, and this one asks you to
+confirm the new machine by name before anything is added. A wrong code ends
+it: run `add` again for a new one. Needs a Pro workspace.",
         #[cfg(feature = "harness")]
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle
@@ -866,9 +893,11 @@ minutes (host.idleMinutes in config.json, or KROWK_HOST_IDLE seconds).
 /// `krowk help` lists each command; `krowk help --all` each with everything
 /// under it. Every command the build has sits under exactly one heading.
 pub const GROUPS: &[(&str, &[&str])] = &[
-    // The harness build's own commands, and the sessions they run.
+    // The harness build's own commands, and the sessions they run. Sync and
+    // devices carry a session from one machine to the next, so they sit here:
+    // a heading of their own would push the overview past one screen.
     #[cfg(feature = "harness")]
-    ("AGENT", &["connect", "disconnect", "status", "sessions"]),
+    ("AGENT", &["connect", "disconnect", "status", "sessions", "sync", "devices"]),
     ("PUBLISH", &["push", "runs", "uploads", "claim"]),
     ("ACCOUNT", &["login", "logout", "whoami", "workspaces", "auth"]),
     (
@@ -882,10 +911,6 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "hosts",
             #[cfg(all(feature = "harness", unix))]
             "relay",
-            #[cfg(feature = "harness")]
-            "sync",
-            #[cfg(feature = "harness")]
-            "devices",
             #[cfg(all(feature = "sessions", not(feature = "harness")))]
             "sessions",
             "config",

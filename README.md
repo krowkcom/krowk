@@ -2,14 +2,14 @@
 
 # Krowk
 
-A coding agent for your terminal, with a permalink for everything it produces.
+A coding agent harness: one session, on any machine, model or agent.
 
 <a href="https://github.com/krowkcom/krowk/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/krowkcom/krowk?color=1a1a19"></a>
 <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-1a1a19"></a>
 
 ---
 
-Krowk is an agent harness built for power users who run coding agents all day. It runs Claude, GPT, Grok or any OpenAI-compatible model, using your existing subscription or an API key. It follows Claude Code's permissions, skills and hooks, keeps track of every agent session on your machine, and publishes screenshots, diffs and logs as links that unfurl in GitHub, Slack, Linear and Basecamp. It assumes you're comfortable in a terminal, with git and with configuration files.
+Krowk is an agent harness built for power users who run coding agents all day. It runs Claude, GPT, Grok or any OpenAI-compatible model, using your existing subscription or an API key, or drives Claude Code and Codex. A session can move to another model or agent mid-conversation, and syncs to your other machines end-to-end encrypted. It follows Claude Code's permissions, skills and hooks, keeps track of every agent session on your machine, and publishes screenshots, diffs and logs as links that unfurl in GitHub, Slack, Linear and Basecamp. It assumes you're comfortable in a terminal, with git and with configuration files.
 
 ```bash
 krowk connect            # sign in with a Claude, ChatGPT or SuperGrok subscription, or an API key
@@ -48,6 +48,18 @@ The full build keeps a local store of your agent sessions, whether they came fro
 | `krowk sessions show <id>` | Read a session back, turn by turn |
 | `krowk sessions import` / `sync` | Import transcripts and reconcile usage |
 | `krowk sessions budget <id> --max-usd 5` | Exit 4 when a session costs more than the limit, for use in a hook |
+
+## Sync
+
+Sessions sync between your machines end-to-end encrypted: neither krowk's servers nor its relay can read them. Run a session on one machine, then follow it and prompt it from another.
+
+| Command | What it does |
+| --- | --- |
+| `krowk sync init` | Set up sync on this machine, with a recovery kit |
+| `krowk devices add` / `krowk sync join` | Show a code on one machine, enter it on the new one |
+| `krowk sync host <session>` | Run a session here and sync it |
+| `krowk sync sessions` | The synced sessions this machine can open |
+| `krowk sync attach <session>` | Follow a synced session in the TUI |
 
 ## Publishing
 

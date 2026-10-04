@@ -1,7 +1,7 @@
 //! Same session, two devices (Harness P1 ticket 19): a session running in
 //! machine A's host daemon, synced by A's bridge through the stand-in
 //! registry and the reference relay, attached from machine B — another
-//! device, with keys of its own and the same account key — which watches
+//! device, with keys of its own and the same user key — which watches
 //! it, prompts it, answers its approvals, rides out A's network going away,
 //! and queues a prompt while A is gone. Everything runs in this process:
 //! the daemon on a thread, the registry and the relay on theirs, and a
@@ -15,7 +15,13 @@ mod mock;
 #[path = "common/scratch.rs"]
 mod scratch;
 
-use krowk_client::e2e::{self, AccountKey, DeviceKey, SigningKey};
+use krowk_client::e2e::{self, AccountKey, DeviceKey, SessionKey, SigningKey};
+use krowk_client::device_chain::{Chain, Change, Kind, Subject};
+use krowk_client::session_record;
+use krowk_client::user_key::{UserKey, UserKeys};
+
+/// When the test device list is made, by its devices' clocks.
+const T0: u64 = 1_790_000_000;
 use krowk_harness::daemon::{self, client::Client, server};
 use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
@@ -57,10 +63,22 @@ struct World {
     registry: krowk_devregistry::Running,
     api: String,
     account: AccountKey,
+    /// The person's device list, with each device the test makes on it,
+    /// and the user key it leaves current, which every device holds.
+    list: Mutex<Option<(Chain, UserKey)>>,
+    /// The first device's signing key, which adds the others.
+    first_signing: Mutex<Option<SigningKey>>,
     /// Every byte either device sent the relay or got from it.
     seen: Arc<Mutex<Vec<u8>>>,
     /// While set, A's link to the relay is down and nothing gets through.
     cut: Arc<AtomicBool>,
+    /// What A's proxy does meanwhile: `PASS`, `FREEZE` (nothing forwarded
+    /// either way, every connection kept open: A stopped, as by SIGSTOP), or
+    /// `GHOST` (the relay's refusal said on A's open connection, which is
+    /// then frozen alone).
+    a_mode: Arc<AtomicU8>,
+    /// Connections A has opened to the relay: each a join.
+    a_conns: Arc<AtomicUsize>,
     relay_a: String,
     relay_b: String,
     _mock: mock::Mock,
@@ -82,6 +100,8 @@ const CUT: u8 = 1;
 const FAIL_WRITES: u8 = 2;
 const DROP_ALL: u8 = 2;
 const DROP_BATCHES: u8 = 3;
+const FREEZE: u8 = 4;
+const GHOST: u8 = 5;
 /// A registry proxy's mode: the second relay ticket asked for — a viewer's
 /// race for a direct path, which starts as the relay's welcome comes —
 /// waits until the mode changes, so the race goes on when the test says.
@@ -100,20 +120,22 @@ fn signer(d: &Device) -> Arc<dyn krowk_api::client::RequestSigner> {
 
 impl World {
     fn new(name: &str) -> World {
+        World::with_relay(name, Default::default())
+    }
+
+    /// A world whose reference relay runs under `limits`.
+    fn with_relay(name: &str, limits: krowk_harness::relay::Limits) -> World {
         let root = scratch::root(&format!("sync-{name}"));
         for d in ["home", "run", "repo/.git"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
         let api = format!("{}/v1", registry.url());
-        let relay = TcpListener::bind("127.0.0.1:0").unwrap();
-        let relay_addr = relay.local_addr().unwrap();
-        let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
-        let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
-        std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None }));
+        let relay_addr = relay(limits);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let cut = Arc::new(AtomicBool::new(false));
-        let relay_a = proxy(relay_addr, seen.clone(), cut.clone());
+        let (a_mode, a_conns) = (Arc::new(AtomicU8::new(PASS)), Arc::new(AtomicUsize::new(0)));
+        let relay_a = proxy(relay_addr, seen.clone(), cut.clone(), a_mode.clone(), a_conns.clone());
         let (b_mode, b_batches) = (Arc::new(AtomicU8::new(PASS)), Arc::new(AtomicUsize::new(0)));
         let b_drop = Arc::new(AtomicUsize::new(0));
         let relay_b = viewer_proxy(relay_addr, seen.clone(), b_mode.clone(), b_batches.clone(), b_drop.clone());
@@ -121,7 +143,7 @@ impl World {
         let reg_a = format!("http://{}/v1", registry_proxy(registry.addr(), reg_mode.clone()));
         let m = mock::serve(model);
         let mock_url = m.url.clone();
-        World { root, registry, api, account: AccountKey::generate(), seen, cut, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
+        World { root, registry, api, account: AccountKey::generate(), list: Mutex::new(None), first_signing: Mutex::new(None), seen, cut, a_mode, a_conns, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
     }
 
     /// A device's own registry client: its calls that act as the device
@@ -137,6 +159,37 @@ impl World {
         Arc::new(c)
     }
 
+    /// The user keys every device holds: the list's generation 1.
+    fn keys(&self) -> UserKeys {
+        UserKeys::new(self.list.lock().unwrap().as_ref().expect("a device first").1.clone(), []).unwrap()
+    }
+
+    /// The device list, verified, with every device made so far on it.
+    fn chain(&self) -> Chain {
+        self.list.lock().unwrap().as_ref().expect("a device first").0.clone()
+    }
+
+    /// `d` on the person's device list: the first device starts it, each
+    /// later one is added by the first.
+    fn enlist(&self, d: &Device, name: &str) {
+        let subject = Subject { kind: Kind::Device, name: name.into(), os: "linux".into(), device: d.key.public(), signing: d.signing.public() };
+        let mut list = self.list.lock().unwrap();
+        let next = match list.take() {
+            None => {
+                let (chain, start) = Chain::start(subject, &d.signing, None, T0).unwrap();
+                (chain, start.newest)
+            }
+            Some((chain, user)) => {
+                let first = chain.devices()[0].id();
+                let key = self.first_signing.lock().unwrap().as_ref().map(|k| SigningKey::from_secret(&*k.secret_bytes()).unwrap()).unwrap();
+                let (chain, _) = chain.batch(&user, vec![Change::Add(subject)], first, &key, T0 + 1).unwrap();
+                (chain, user)
+            }
+        };
+        self.first_signing.lock().unwrap().get_or_insert_with(|| SigningKey::from_secret(&*d.signing.secret_bytes()).unwrap());
+        *list = Some(next);
+    }
+
     fn client(&self) -> Arc<krowk_api::Client> {
         Arc::new(krowk_api::Client::new(&self.api, "krowk_sk_sync_attach_0000000000000000"))
     }
@@ -145,6 +198,7 @@ impl World {
     fn device(&self, name: &str) -> Device {
         let d = Device { key: DeviceKey::generate(), signing: SigningKey::generate() };
         self.as_device(&d).register_device(&e2e::hex(&d.key.public().0), &e2e::hex(&d.signing.public().0), name, &self.account.id().to_string()).unwrap();
+        self.enlist(&d, name);
         d
     }
 
@@ -213,7 +267,8 @@ impl World {
             api: self.a_client(a),
             device: a.key.id(),
             signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
-            account: AccountKey::from_bytes(*self.account.as_bytes()),
+            keys: self.keys(),
+            chain: self.chain(),
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),
@@ -234,7 +289,8 @@ impl World {
             api: self.a_client(a),
             device: a.key.id(),
             signing: SigningKey::from_secret(&*a.signing.secret_bytes()).unwrap(),
-            account: AccountKey::from_bytes(*self.account.as_bytes()),
+            keys: self.keys(),
+            chain: self.chain(),
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),
@@ -258,7 +314,8 @@ impl World {
             api: self.as_device(b),
             device: b.key.id(),
             signing: SigningKey::from_secret(&*b.signing.secret_bytes()).unwrap(),
-            account: AccountKey::from_bytes(*self.account.as_bytes()),
+            keys: self.keys(),
+            chain: self.chain(),
             session: session.into(),
             known: None,
         }
@@ -267,13 +324,13 @@ impl World {
     /// Waits until the session's sealed index names a checkpoint and a head:
     /// the bridge has taken the session up and written it.
     async fn synced(&self, session: &str) {
-        let (api, account, id) = (self.client(), AccountKey::from_bytes(*self.account.as_bytes()), session.to_string());
+        let (api, id) = (self.client(), session.to_string());
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            let (api, id, account) = (api.clone(), id.clone(), AccountKey::from_bytes(*account.as_bytes()));
+            let (api, id, keys, chain) = (api.clone(), id.clone(), self.keys(), self.chain());
             let ready = tokio::task::spawn_blocking(move || -> Option<bool> {
                 let s = api.show_sync_session(&id).ok()?;
-                let key = e2e::unwrap_session_key(&e2e::unhex(&s.wrapped_key)?, &krowk_harness::daemon::ws::uuid(&id), &account).ok()?;
+                let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld).ok()?;
                 let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index).ok()?;
                 Some(s.lease.is_some() && index.checkpoint.is_some() && index.head.is_some())
             })
@@ -299,9 +356,29 @@ impl Drop for World {
     }
 }
 
+/// The relay the devices reach: the reference relay, in this process, or
+/// another at `KROWK_SYNC_RELAY` (`127.0.0.1:8787`, the hosted relay under
+/// `wrangler dev`, trusting the stand-in registry's ticket key), so the
+/// same scenarios hold the Worker to what the bridge and the viewer need.
+fn relay(limits: krowk_harness::relay::Limits) -> SocketAddr {
+    if let Ok(at) = std::env::var("KROWK_SYNC_RELAY") {
+        return at.parse().expect("KROWK_SYNC_RELAY is an address, 127.0.0.1:8787");
+    }
+    let relay = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = relay.local_addr().unwrap();
+    let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
+    let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
+    std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits, state: None, origins: Vec::new(), whois: None, pin: None }));
+    addr
+}
+
 /// A TCP proxy in front of the relay: records both ways, and while `cut`
 /// is set drops every connection and refuses new ones — a network gone.
-fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>) -> SocketAddr {
+/// Under `FREEZE` it forwards nothing and keeps every connection open;
+/// under `GHOST` it tells A on the connection open now, as the relay
+/// would, that its link was let go — and then forwards nothing more on it,
+/// the close never coming, while a new connection passes.
+fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>, mode: Arc<AtomicU8>, conns: Arc<AtomicUsize>) -> SocketAddr {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     std::thread::spawn(move || {
@@ -311,8 +388,11 @@ fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>) -> Soc
                 continue;
             }
             let Ok(up) = TcpStream::connect(to) else { continue };
-            for (mut from, mut into) in [(c.try_clone().unwrap(), up.try_clone().unwrap()), (up, c)] {
-                let (seen, cut) = (seen.clone(), cut.clone());
+            conns.fetch_add(1, Ordering::SeqCst);
+            // This connection alone, once a ghost: what joins after it passes.
+            let ghost = Arc::new(AtomicBool::new(false));
+            for (down, (mut from, mut into)) in [(false, (c.try_clone().unwrap(), up.try_clone().unwrap())), (true, (up, c))] {
+                let (seen, cut, mode, ghost) = (seen.clone(), cut.clone(), mode.clone(), ghost.clone());
                 std::thread::spawn(move || {
                     from.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
                     let mut buf = [0u8; 16384];
@@ -321,6 +401,30 @@ fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>) -> Soc
                             let _ = from.shutdown(std::net::Shutdown::Both);
                             let _ = into.shutdown(std::net::Shutdown::Both);
                             return;
+                        }
+                        match mode.load(Ordering::SeqCst) {
+                            _ if ghost.load(Ordering::SeqCst) => {
+                                std::thread::sleep(Duration::from_millis(20));
+                                continue;
+                            }
+                            FREEZE => {
+                                std::thread::sleep(Duration::from_millis(20));
+                                continue;
+                            }
+                            GHOST if down => {
+                                // The relay's refusal, as a WebSocket server
+                                // frame: binary, unmasked, its length in two
+                                // bytes past 125.
+                                let e = krowk_harness::relay::control(&serde_json::json!({"type": "error", "code": "replaced", "message": "another connection of the lease holder took the channel", "fix": "nothing to do if that was this device reconnecting"}));
+                                let mut f = vec![0x82, 126];
+                                f.extend_from_slice(&(e.len() as u16).to_be_bytes());
+                                f.extend_from_slice(&e);
+                                let _ = into.write_all(&f);
+                                ghost.store(true, Ordering::SeqCst);
+                                mode.store(PASS, Ordering::SeqCst);
+                                continue;
+                            }
+                            _ => {}
                         }
                         match from.read(&mut buf) {
                             Ok(0) => {
@@ -566,6 +670,45 @@ async fn first_turn(w: &World) -> (Arc<Client>, String) {
 /// unblocks A; B is handed at most one batch of updates per display frame;
 /// and the relay's traffic, captured, holds neither B's prompt nor A's
 /// answer.
+/// D8b: a session record lists and attaches only when a device on the
+/// verified device list signed it. One the registry holds unsigned, or
+/// signed by a device the person never listed — a registry's own, sealed
+/// under the person's key by a removed device, say — is left out of the
+/// listing and refused on attach, before any key is unwrapped.
+#[tokio::test]
+async fn d8b_only_a_record_a_listed_device_signed_opens() {
+    let w = World::new("records");
+    let b = w.device("machine-b");
+    let (keys, chain) = (w.keys(), w.chain());
+    let publish = |id: &str, title: &str, signer: &Device, signed: bool| {
+        let raw = krowk_harness::daemon::ws::uuid(id);
+        let key = SessionKey::generate();
+        let index = krowk_harness::sync::store::Index { title: title.into(), ..Default::default() };
+        let sealed = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).unwrap()));
+        let wrapped = e2e::seal_session_key(&key, &raw, &keys, chain.generation()).unwrap();
+        let api = w.as_device(&b);
+        if signed {
+            let sig = session_record::sign(&raw, &wrapped, session_record::SEAL_USER, keys.newest(), &signer.signing).unwrap();
+            api.put_sync_session(id, &e2e::hex(&wrapped), Some((&e2e::hex(&sig), &signer.key.id().to_string())), Some(&sealed), None).unwrap();
+        } else {
+            api.put_sync_session(id, &e2e::hex(&wrapped), None, Some(&sealed), None).unwrap();
+        }
+    };
+    let stranger = Device { key: DeviceKey::generate(), signing: SigningKey::generate() };
+    publish("01a0ec7b-2222-7000-8000-0000000000d1", "signed by b", &b, true);
+    publish("01a0ec7b-2222-7000-8000-0000000000d2", "unsigned", &b, false);
+    publish("01a0ec7b-2222-7000-8000-0000000000d3", "signed by a stranger", &stranger, true);
+
+    let api = w.client();
+    let (listed, unreadable) = tokio::task::spawn_blocking(move || viewer::list(&api, &keys, &chain)).await.unwrap().unwrap();
+    assert_eq!(listed.iter().map(|l| l.index.title.as_str()).collect::<Vec<_>>(), ["signed by b"]);
+    assert_eq!(unreadable, 2);
+    let refused = viewer::attach(w.viewer(&b, "01a0ec7b-2222-7000-8000-0000000000d2")).await.err().expect("an unsigned record does not attach");
+    assert!(refused.contains("names no signer"), "{refused}");
+    let refused = viewer::attach(w.viewer(&b, "01a0ec7b-2222-7000-8000-0000000000d3")).await.err().expect("a stranger's record does not attach");
+    assert!(refused.contains("never held"), "{refused}");
+}
+
 #[tokio::test]
 async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let w = World::new("prompt");
@@ -574,8 +717,8 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
     w.synced(&session).await;
 
-    let (api, account) = (w.client(), AccountKey::from_bytes(*w.account.as_bytes()));
-    let (listed, unreadable) = tokio::task::spawn_blocking(move || viewer::list(&api, &account)).await.unwrap().unwrap();
+    let (api, keys, chain) = (w.client(), w.keys(), w.chain());
+    let (listed, unreadable) = tokio::task::spawn_blocking(move || viewer::list(&api, &keys, &chain)).await.unwrap().unwrap();
     assert_eq!(unreadable, 0);
     let s = listed.iter().find(|s| s.id == session).expect("B lists A's session");
     assert_eq!(s.index.title, "the title is sealed too");
@@ -595,6 +738,12 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
         let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
         assert!(got.iter().any(|u| matches!(u, viewer::Update::Acked { error: Some(e), .. } if e.contains("nothing else"))), "{got:?}");
     }
+
+    // Nor write a rule into A's project (D11): a viewer allows a call once
+    // or for the session, and A refuses the rest before looking it up.
+    v.commands.send(Command::Approve { session_id: session.clone(), request_id: "any".into(), decision: ApprovalDecision::AllowProject }).unwrap();
+    let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+    assert!(got.iter().any(|u| matches!(u, viewer::Update::Acked { error: Some(e), .. } if e.contains("made on the host"))), "{got:?}");
 
     // B's prompt runs under the session's settings, whatever it asks for.
     let mut unhinged = w.prompt(Some(&session), "asking for more than it may");
@@ -716,10 +865,10 @@ async fn r_hand_4_with_a_offline_b_is_read_only_and_its_queued_prompt_runs_when_
 /// The session's events as the registry holds them, read at rest by a
 /// device that has never seen it: what every later attach gets.
 async fn at_rest_ids(w: &World, session: &str) -> Result<Vec<String>, String> {
-    let (api, account, id) = (w.client(), AccountKey::from_bytes(*w.account.as_bytes()), session.to_string());
+    let (api, keys, chain, id) = (w.client(), w.keys(), w.chain(), session.to_string());
     tokio::task::spawn_blocking(move || {
         let s = api.show_sync_session(&id).map_err(|e| e.to_string())?;
-        let key = e2e::unwrap_session_key(&e2e::unhex(&s.wrapped_key).unwrap(), &krowk_harness::daemon::ws::uuid(&id), &account).map_err(|e| e.to_string())?;
+        let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld)?;
         let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index)?;
         let a = krowk_harness::sync::store::attach(&api, &key, &id, index, None)?;
         Ok(a.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect())
@@ -875,6 +1024,97 @@ async fn r_lag_8_a_prompt_sent_again_after_a_lost_ack_runs_once() {
     tokio::time::sleep(Duration::from_secs(3)).await;
     let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join("events.jsonl")).unwrap();
     let n = log.lines().filter(|l| l.contains("run-once-marker-77") && l.contains("userText")).count();
+    assert_eq!(n, 1, "the prompt ran {n} times");
+}
+
+/// R-SYNC-2: a viewer on the host's own device — `krowk sync attach` on
+/// machine A while A hosts — joins and leaves, and the host stays on the
+/// relay: B, watching from another device, is never told the host went,
+/// and a prompt B types afterwards is sent, not queued, and runs on A.
+#[tokio::test]
+async fn r_sync_2_a_viewer_on_the_hosts_own_device_leaving_leaves_the_host_on_the_relay() {
+    let w = World::new("samedev");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut vb = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut vb, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    for _ in 0..2 {
+        let mut own = viewer::attach(w.viewer(&a, &session)).await.unwrap();
+        until(&mut own, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+        drop(own);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    vb.commands.send(w.prompt(Some(&session), "after A's own viewer left")).unwrap();
+    let got = until(&mut vb, Duration::from_secs(20), &mut frames, result_of).await;
+    assert!(got.iter().any(|u| matches!(u, viewer::Update::Sent { queued: false, .. })), "B still sees the host: {got:?}");
+    assert!(!got.iter().any(|u| matches!(u, viewer::Update::Host(false))), "B was told the host went: {got:?}");
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join("events.jsonl")).unwrap();
+    assert!(log.contains("after A's own viewer left"), "B's prompt ran on A");
+}
+
+/// R-SYNC-2, R-OFF-2: the relay lets A's link go — `replaced`, here — and
+/// its close never reaches A, the connection left open and silent, as a
+/// Worker's edge leaves one whose heartbeats it goes on answering. A joins
+/// again at once, well inside the 30 seconds a dead link takes to show, and
+/// a prompt B types then runs.
+#[tokio::test]
+async fn r_off_2_a_host_whose_link_the_relay_let_go_joins_again_at_once() {
+    let w = World::new("ghost");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    let joins = w.a_conns.load(Ordering::SeqCst);
+    w.a_mode.store(GHOST, Ordering::SeqCst);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while w.a_conns.load(Ordering::SeqCst) == joins {
+        assert!(Instant::now() < deadline, "A never joined the relay again");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    v.commands.send(w.prompt(Some(&session), "after the relay let A go")).unwrap();
+    until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join("events.jsonl")).unwrap();
+    assert_eq!(log.lines().filter(|l| l.contains("after the relay let A go") && l.contains("userText")).count(), 1);
+}
+
+/// R-OFF-2, R-LAG-8: A stops — SIGSTOP, a laptop asleep — past the time a
+/// relay keeps a silent link, with a prompt B sent while A still looked
+/// present in flight to it; the relay's copy of it is lost with A's link.
+/// When A runs again it joins again, B — told the host is back — sends
+/// the prompt again, and A runs it, once.
+#[tokio::test]
+async fn r_off_2_a_prompt_sent_to_a_host_that_stopped_runs_once_when_it_is_back() {
+    let limits = krowk_harness::relay::Limits { heartbeat: Duration::from_secs(2), ..Default::default() };
+    let w = World::with_relay("frozen", limits);
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    w.a_mode.store(FREEZE, Ordering::SeqCst);
+    v.commands.send(w.prompt(Some(&session), "sent-while-a-was-stopped")).unwrap();
+    let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Sent { .. })).await;
+    assert!(got.iter().any(|u| matches!(u, viewer::Update::Sent { queued: false, .. })), "B believed the host present: {got:?}");
+    // Past the reference relay's three silent heartbeats; the hosted relay
+    // keeps the link, and the relay's copy is lost with it all the same.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    // A runs again, and finds its link gone with what was in flight on it.
+    w.cut.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    w.a_mode.store(PASS, Ordering::SeqCst);
+    w.cut.store(false, Ordering::SeqCst);
+    until(&mut v, Duration::from_secs(30), &mut frames, result_of).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join("events.jsonl")).unwrap();
+    let n = log.lines().filter(|l| l.contains("sent-while-a-was-stopped") && l.contains("userText")).count();
     assert_eq!(n, 1, "the prompt ran {n} times");
 }
 

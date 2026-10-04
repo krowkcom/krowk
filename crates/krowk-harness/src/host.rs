@@ -952,6 +952,8 @@ impl Shared {
     /// could not run going back (R-SWITCH-4), a limit's offer, or where
     /// `rollover = "auto"` goes next (R-INST-7, R-INST-8), and a
     /// `switchModel` that came while it ran.
+    // Legacy: a turn's setup, run and aftermath in one body. TODO: split into helpers and drop this allow.
+    #[allow(clippy::cognitive_complexity)]
     async fn turn(self: &Arc<Self>, mut plan: TurnPlan, out: mpsc::Sender<StreamLine>) -> Result<(RunResult, Option<Rolling>), EngineError> {
         let session_id = plan.log.session_id.clone();
         if plan.here.id.is_none() {
@@ -982,17 +984,25 @@ impl Shared {
         let prompt_item = Item::UserText { text: std::mem::take(&mut plan.text) };
         w.log(LogBody::ItemCompleted { turn_id: turn_id.clone(), item_id: krowk_store::new_id(), item: prompt_item.clone() }).await?;
         let mut history = std::mem::take(&mut plan.past.items);
-        // `/name` for a skill, on krowk's own loop: its instructions come
-        // right after the prompt. A vendor's agent expands its own.
+        // `/name` for a skill, in a session's own turn on any engine: its
+        // instructions come right after the prompt. A vendor's agent cannot
+        // be left to expand its own — it may not have the skill (Claude Code
+        // reads no `.agents/skills`, Codex no `.claude/skills` nor
+        // `~/.agents/skills`) and then refuses the name. A backend is sent only the last item, so it gets
+        // one text, the skill first: a leading `/` is the vendor's command.
         let asked = match &prompt_item {
-            Item::UserText { text } if plan.spawns => compat::skills::invoked(&plan.compat.skills, text),
+            Item::UserText { text } if plan.agent.is_none() => compat::skills::invoked(&plan.compat.skills, text).map(|skill| (skill, text.clone())),
             _ => None,
         };
         history.push(HistoryItem { item: prompt_item, response: None });
-        if let Some(text) = asked {
-            let item = Item::UserText { text };
+        if let Some((skill, prompt)) = asked {
+            let item = Item::UserText { text: skill.clone() };
             w.log(LogBody::ItemCompleted { turn_id: turn_id.clone(), item_id: krowk_store::new_id(), item: item.clone() }).await?;
-            history.push(HistoryItem { item, response: None });
+            if plan.spawns {
+                history.push(HistoryItem { item, response: None });
+            } else if let Some(last) = history.last_mut() {
+                last.item = Item::UserText { text: format!("{skill}\n\n{prompt}") };
+            }
         }
 
         let gate = permissions::Gate::new(
@@ -1608,31 +1618,35 @@ impl Writer<'_> {
         outcome.expect("the loop ends only after the engine does")
     }
 
+    /// The turn's exact system prompt and tools, recorded beside the log.
+    async fn record_context(&mut self, turn_id: String, system: String, tools: Vec<crate::protocol::ToolDefinition>, model: &ModelRef) -> Result<(), EngineError> {
+        let rec = ContextRecord {
+            turn_id,
+            time_ms: krowk_store::now_ms(),
+            model: model.clone(),
+            provider: self.provider.clone(),
+            wire_api: self.wire,
+            // A backend brings its own tools; the preset is krowk's.
+            toolset: match self.wire {
+                WireApi::ClaudeCode => crate::claude::BACKEND.into(),
+                WireApi::CodexAppServer => crate::codex::BACKEND.into(),
+                _ => self.preset.name.into(),
+            },
+            system_tokens: native::estimate_tokens(&system),
+            tools_tokens: native::tools_tokens(&tools),
+            system,
+            tools,
+            handoff: self.handoff.take(),
+        };
+        // Off the thread like the event appends (see `Writer::log`).
+        self.log.record_context_off(&rec).await.map_err(log_failure)?;
+        Ok(())
+    }
+
     async fn handle(&mut self, ev: EngineEvent, session_id: &str, tally: &mut Tally, texts: &mut HashMap<String, String>, model: &ModelRef, budget: &Budget) -> Result<(), EngineError> {
         let turn_id = self.turn_id.clone();
         match ev {
-            EngineEvent::Context { system, tools } => {
-                let rec = ContextRecord {
-                    turn_id,
-                    time_ms: krowk_store::now_ms(),
-                    model: model.clone(),
-                    provider: self.provider.clone(),
-                    wire_api: self.wire,
-                    // A backend brings its own tools; the preset is krowk's.
-                    toolset: match self.wire {
-                        WireApi::ClaudeCode => crate::claude::BACKEND.into(),
-                        WireApi::CodexAppServer => crate::codex::BACKEND.into(),
-                        _ => self.preset.name.into(),
-                    },
-                    system_tokens: native::estimate_tokens(&system),
-                    tools_tokens: native::tools_tokens(&tools),
-                    system,
-                    tools,
-                    handoff: self.handoff.take(),
-                };
-                // Off the thread like the event appends (see `Writer::log`).
-                self.log.record_context_off(&rec).await.map_err(log_failure)?;
-            }
+            EngineEvent::Context { system, tools } => self.record_context(turn_id, system, tools, model).await?,
             EngineEvent::ItemStarted { item_id, kind } => {
                 self.live(LiveEvent::ItemStarted { session_id: session_id.into(), turn_id, item_id, item: kind }).await;
             }

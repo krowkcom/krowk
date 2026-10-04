@@ -1,0 +1,63 @@
+name: Set up the toolchain
+description: The pinned Rust, the shared build cache, nextest, and what the tests need from the machine
+
+inputs:
+  cache:
+    description: Names this job's build cache, so jobs that build different profiles do not overwrite each other's
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # rustup is on every hosted runner; the toolchain is pinned to the
+    # workspace's rust-version rather than whatever the image carries.
+    - name: Set up Rust
+      shell: bash
+      run: |
+        rustup toolchain install 1.97 --profile minimal --component clippy
+        rustup default 1.97
+
+    # The same shared build cache mise.toml turns on locally, wrapping plain
+    # cargo. It keys on the rustc on PATH, so it comes after the toolchain.
+    # Pushes to main publish to the GitHub Actions cache; pull requests only
+    # restore from it. The version moves with the one in mise.toml.
+    - uses: jdx/mr-boxington-action@9df1d4b18b2147788a7ee7a2c7b84ecf62fd89d3 # v1.5.0
+      with:
+        version: 1.19.0
+        cache-generation: v1-${{ inputs.cache }}
+
+    # `make test` runs on nextest. The version moves with the one in
+    # mise.toml.
+    - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      with:
+        tool: cargo-nextest@0.9.146
+
+    # The opencode fixture is built from SQL at case time, and the TUI's
+    # scrollback and offline checks read the screen through tmux, failing
+    # rather than skipping under CI on Linux.
+    - name: Ensure sqlite3 and tmux
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        command -v sqlite3 && command -v tmux \
+          || (sudo apt-get update && sudo apt-get install -y sqlite3 tmux)
+
+    # R-PERM-3: the OS sandbox's escape tests fail rather than skip under
+    # CI on Linux, so bubblewrap is installed and allowed the unprivileged
+    # user namespaces Ubuntu 24.04's AppArmor withholds by default.
+    - name: Ensure bubblewrap
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        command -v bwrap || (sudo apt-get update && sudo apt-get install -y bubblewrap)
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+        bwrap --ro-bind / / --dev /dev --proc /proc --unshare-net --unshare-pid --new-session -- true
+
+    # The relay's per-address limits are tested from other loopback
+    # addresses, which macOS does not answer for until lo0 is given them.
+    - name: Loopback aliases
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        sudo ifconfig lo0 alias 127.0.0.2 up
+        sudo ifconfig lo0 alias 127.0.0.9 up

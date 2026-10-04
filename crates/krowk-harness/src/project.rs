@@ -8,7 +8,7 @@
 //!
 //! | log                         | krowk.db                                             |
 //! |-----------------------------|------------------------------------------------------|
-//! | `session.started`           | `session` (directory, worktree) and its `session_binding` (provider and harness `krowk`, foreign id = the session id) |
+//! | `session.started`           | `session` (its id = the session id, directory, worktree) and its `session_binding` (provider and harness `krowk`, foreign id = the session id) |
 //! | `turn.started` … `turn.completed` | one `turn`: status, and the token columns summed over the turn's responses |
 //! | `item.completed` userText   | a `user` message, one `text` part                     |
 //! | `response.completed`        | one `assistant` message holding the items it names: `thinking` (the signature in `part.signature`), `text`, `tool_call` parts |
@@ -78,7 +78,7 @@ pub fn stub_thread(session_id: &str, stub: &crate::vintage::Stub) -> Thread {
     let binding = |id: &str, resume: String| Binding { provider: HARNESS.into(), harness: HARNESS.into(), foreign_session_id: id.into(), resume_cmd: resume };
     Thread {
         worktree: krowk_import::worktree_for(&stub.directory),
-        session: Session { directory: stub.directory.clone(), title: stub.title.clone(), model: stub.model.clone(), provider: stub.provider.clone(), harness: HARNESS.into() },
+        session: Session { id: session_id.into(), directory: stub.directory.clone(), title: stub.title.clone(), model: stub.model.clone(), provider: stub.provider.clone(), harness: HARNESS.into() },
         binding: binding(session_id, format!("krowk -p --resume {session_id}")),
         parent: stub.parent_session_id.as_deref().map(|p| binding(p, String::new())),
         turns: stub
@@ -109,7 +109,9 @@ pub fn thread(events: &[LogEvent], res: &mut ReadResult) -> Option<Thread> {
     let session_id = branch[0].session_id.clone();
     let mut th = Thread {
         worktree: krowk_import::worktree_for(cwd),
-        session: Session { directory: cwd.clone(), harness: HARNESS.into(), ..Session::default() },
+        // Stored under the log's own id, so one session has one id
+        // everywhere the person sees it.
+        session: Session { id: session_id.clone(), directory: cwd.clone(), harness: HARNESS.into(), ..Session::default() },
         binding: Binding {
             provider: HARNESS.into(),
             harness: HARNESS.into(),

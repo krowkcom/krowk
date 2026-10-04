@@ -1,9 +1,10 @@
 # @krowk/cli
 
-A coding agent for your terminal, with a permalink for everything it produces.
-It runs Claude, GPT, Grok or any OpenAI-compatible model on your existing
-subscription or an API key, follows Claude Code's permissions, skills and
-hooks, and publishes screenshots, diffs and logs as links that unfurl in
+A coding agent harness: one session, on any machine, model or agent. It runs
+Claude, GPT, Grok or any OpenAI-compatible model on your existing subscription
+or an API key, or drives Claude Code and Codex; syncs sessions between your
+machines end-to-end encrypted; follows Claude Code's permissions, skills and
+hooks; and publishes screenshots, diffs and logs as links that unfurl in
 GitHub, Slack, Linear and Basecamp.
 
 ```bash

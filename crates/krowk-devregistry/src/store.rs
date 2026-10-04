@@ -128,6 +128,9 @@ pub struct Authorization {
     pub workspace: String,
     /// Collected already — an empty token alone could mean never minted.
     pub spent: bool,
+    /// What it is for: `login`, `start_over`, `remove_device` or
+    /// `replace_kit`, as the approval page names it.
+    pub action: String,
 }
 
 pub struct Store {
@@ -294,9 +297,28 @@ pub fn generate_code() -> String {
 
 /// A workspace derived from the token, so two keys never see each other's
 /// artifacts. Hex is a subset of base36, so this is a slug of canon's shape.
+/// A token's `#label` suffix is left out (`person_for`), so one person's two
+/// machines can hold two keys to one workspace.
 pub fn workspace_for(token: &str) -> String {
-    format!("ws_{}", &sha256_hex(token.as_bytes())[..SLUG_RANDOM_LENGTH])
+    format!("ws_{}", &sha256_hex(token_base(token).as_bytes())[..SLUG_RANDOM_LENGTH])
 }
+
+/// A token up to its first `#`: what names its workspace and its person.
+fn token_base(token: &str) -> &str {
+    token.split('#').next().unwrap_or(token)
+}
+
+/// The person a key speaks for, in the shape of the registry's user ids
+/// (`usr_…`). The stand-in has no accounts, so a key names its person the way
+/// it names its workspace: from the token. `tok#laptop` and `tok#desktop`
+/// are two keys of one person in one workspace — two machines, each key
+/// bound to its own device — while every other pair of tokens is two
+/// people.
+pub fn person_for(token: &str) -> String {
+    let h = sha256_hex(format!("person\n{}", token_base(token)).as_bytes());
+    format!("usr_{}", &h[..24])
+}
+
 
 /// Checksums travel as hex in the API and as base64 in S3's header.
 pub fn base64_sum(hex_sum: &str) -> String {

@@ -183,6 +183,15 @@ pub struct Key {
     pub workspace: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
     pub workspace_name: String,
+    /// The person the key speaks for, which a pairing binds (devices.md →
+    /// Adding a device); empty for a service key, which cannot sync. Read,
+    /// never printed: `krowk auth verify` shows what it always has.
+    #[serde(default, deserialize_with = "nullable", skip_serializing)]
+    pub user_id: String,
+    /// The person's email, which `krowk sync join` names them by; read,
+    /// never printed, like `user_id`.
+    #[serde(default, deserialize_with = "nullable", skip_serializing)]
+    pub email: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
     pub expires_at: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
@@ -222,6 +231,27 @@ pub struct CliAuthorization {
     pub workspace: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
     pub workspace_name: String,
+}
+
+/// What a browser login is for, sent with it so the approval page can name
+/// it: a plain sign-in, or the device-list change it is made for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginAction {
+    Login,
+    StartOver,
+    RemoveDevice,
+    ReplaceKit,
+}
+
+impl LoginAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LoginAction::Login => "login",
+            LoginAction::StartOver => "start_over",
+            LoginAction::RemoveDevice => "remove_device",
+            LoginAction::ReplaceKit => "replace_kit",
+        }
+    }
 }
 
 fn is_zero(n: &i64) -> bool {

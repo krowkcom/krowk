@@ -63,6 +63,32 @@ impl Machine {
     }
 }
 
+/// R-VINT-2 and R-VINT-3: the weekly job takes the idle session only, and
+/// waits a week to run again; the bodies leave, and it stays listed, a
+/// rebuild included.
+fn archived_and_listed(m: &Machine, sessions: &Path, old: &str, pinned: &str, fresh: &str) {
+    let (ok, v, out) = m.krowk(&["sessions", "archive", "--weekly"]);
+    assert!(ok, "{out}");
+    let archived: Vec<String> = v["data"]["archived"].as_array().into_iter().flatten().filter_map(|a| a["id"].as_str().map(str::to_owned)).collect();
+    assert_eq!(archived, vec![old.to_owned()], "{out}");
+    assert!(sessions.join(pinned).join(log::EVENTS_FILE).is_file(), "a pinned session is never archived");
+    assert!(sessions.join(fresh).join(log::EVENTS_FILE).is_file(), "a recent one stays");
+    let (ok, v, out) = m.krowk(&["sessions", "archive", "--weekly"]);
+    assert!(ok && v["data"]["due"] == false, "the weekly job waits a week: {out}");
+
+    // R-VINT-3: the bodies left; the index row did not.
+    assert!(!sessions.join(old).join(log::EVENTS_FILE).exists() && !sessions.join(old).join(log::CONTEXT_FILE).exists());
+    assert!(sessions.join(old).join(krowk_harness::vintage::STUB_FILE).is_file());
+    let (ok, v, out) = m.krowk(&["sessions"]);
+    assert!(ok, "{out}");
+    let listed = v["data"]["sessions"].as_array().unwrap().iter().find(|s| s.to_string().contains(old)).cloned().unwrap_or_else(|| panic!("still listed: {out}"));
+    assert!(listed.to_string().contains("secret prompt"), "under its title: {listed}");
+    let (ok, _, out) = m.krowk(&["sessions", "rebuild", "--yes"]);
+    assert!(ok, "{out}");
+    let (_, v, out) = m.krowk(&["sessions"]);
+    assert!(v.to_string().contains(old), "a rebuild keeps it listed from its stub: {out}");
+}
+
 /// The acceptance criteria, in order: a 14-day-old session is archived by
 /// the weekly job, leaves local storage but stays listed, and restores
 /// fully when opened; a pinned session is never archived; the vintage's
@@ -97,27 +123,7 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     let (ok, _, out) = m.krowk(&["sessions", "pin", &pinned]);
     assert!(ok, "{out}");
 
-    // R-VINT-2: the weekly job takes the idle one only.
-    let (ok, v, out) = m.krowk(&["sessions", "archive", "--weekly"]);
-    assert!(ok, "{out}");
-    let archived: Vec<String> = v["data"]["archived"].as_array().into_iter().flatten().filter_map(|a| a["id"].as_str().map(str::to_owned)).collect();
-    assert_eq!(archived, vec![old.clone()], "{out}");
-    assert!(sessions.join(&pinned).join(log::EVENTS_FILE).is_file(), "a pinned session is never archived");
-    assert!(sessions.join(&fresh).join(log::EVENTS_FILE).is_file(), "a recent one stays");
-    let (ok, v, out) = m.krowk(&["sessions", "archive", "--weekly"]);
-    assert!(ok && v["data"]["due"] == false, "the weekly job waits a week: {out}");
-
-    // R-VINT-3: the bodies left; the index row did not.
-    assert!(!sessions.join(&old).join(log::EVENTS_FILE).exists() && !sessions.join(&old).join(log::CONTEXT_FILE).exists());
-    assert!(sessions.join(&old).join(krowk_harness::vintage::STUB_FILE).is_file());
-    let (ok, v, out) = m.krowk(&["sessions"]);
-    assert!(ok, "{out}");
-    let listed = v["data"]["sessions"].as_array().unwrap().iter().find(|s| s.to_string().contains(&old)).cloned().unwrap_or_else(|| panic!("still listed: {out}"));
-    assert!(listed.to_string().contains("secret prompt"), "under its title: {listed}");
-    let (ok, _, out) = m.krowk(&["sessions", "rebuild", "--yes"]);
-    assert!(ok, "{out}");
-    let (_, v, out) = m.krowk(&["sessions"]);
-    assert!(v.to_string().contains(&old), "a rebuild keeps it listed from its stub: {out}");
+    archived_and_listed(&m, &sessions, &old, &pinned, &fresh);
 
     // R-VINT-1: the registry holds the week's vintage, and only ciphertext.
     let stub = krowk_harness::vintage::read_stub(&sessions, &old).unwrap();

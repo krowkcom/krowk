@@ -40,6 +40,12 @@ pub struct Worktree {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Session {
+    /// The id a new session is stored under when its source already minted
+    /// one of krowk's own: a native session's log id, so the session the
+    /// person lists is the one `krowk sync host` and `--resume` name. Empty
+    /// mints one, as for every vendor's transcript. Dedup is still the
+    /// binding's foreign id; this is only which uuidv7 the row carries.
+    pub id: String,
     pub directory: String,
     pub title: String,
     pub model: String,
@@ -355,7 +361,7 @@ fn find_or_create_session(
         .map_err(e("update session"))?;
         return Ok((id, false));
     }
-    let id = clock::new_id();
+    let id = new_session_id(tx, &s.id)?;
     tx.execute(
         "INSERT INTO session (id, worktree_id, directory, title, model, provider, harness, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![id, worktree_id, s.directory, s.title, s.model, s.provider, s.harness, now, now],
@@ -367,6 +373,16 @@ fn find_or_create_session(
     )
     .map_err(e("insert binding"))?;
     Ok((id, true))
+}
+
+/// The source's own id when it is one of ours and no session has it yet;
+/// else a fresh one. A malformed id is never stored as if it were ours.
+fn new_session_id(tx: &Connection, preferred: &str) -> Result<String, StoreError> {
+    if !clock::is_id(preferred) {
+        return Ok(clock::new_id());
+    }
+    let taken: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM session WHERE id = ?)", [preferred], |r| r.get(0)).map_err(e("find session id"))?;
+    Ok(if taken { clock::new_id() } else { preferred.to_string() })
 }
 
 impl Writer<'_> {
@@ -582,5 +598,32 @@ mod tests {
         w.ingest_with_cursor(&thread("Named", &["hello"]), "claude:/x", "42").unwrap();
         assert_eq!(read_import_state(&conn, "claude:/x").unwrap(), "42");
         assert_eq!(read_import_state(&conn, "nope").unwrap(), "");
+    }
+
+    /// A session whose source minted krowk's own id is stored under it, and
+    /// a re-import finds it by its binding as before; a malformed id, or one
+    /// a session already has, is never stored as if it were this one's.
+    #[test]
+    fn a_session_the_source_names_with_one_of_our_ids_is_stored_under_it() {
+        let home = Home::new("own-id");
+        let env = home.env();
+        let conn = crate::open(&env).unwrap();
+        let w = Writer::new(&conn);
+        let log_id = "01a0f731-f1c0-7000-92d7-64b247e51781";
+        let mut th = thread("", &["hi"]);
+        th.session.id = log_id.into();
+        w.ingest(&th).unwrap();
+        w.ingest(&th).unwrap();
+        let ids: Vec<String> = conn.prepare("SELECT id FROM session").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(ids, [log_id], "one session, under the source's id");
+
+        for (foreign, id) in [("s2", "ses_not-ours"), ("s3", log_id)] {
+            let mut other = thread("", &["hi"]);
+            other.binding.foreign_session_id = foreign.into();
+            other.session.id = id.into();
+            w.ingest(&other).unwrap();
+            let stored: String = conn.query_row("SELECT session_id FROM session_binding WHERE foreign_session_id = ?", [foreign], |r| r.get(0)).unwrap();
+            assert!(clock::is_id(&stored) && stored != id, "{foreign}: minted, not {id:?}");
+        }
     }
 }

@@ -2,7 +2,7 @@
   "name": "@krowk/mcp",
   "version": "0.0.0-unpublished",
   "mcpName": "io.github.krowkcom/krowk",
-  "description": "MCP server for publishing from any agent to krowk — permalinks for agent output, over stdio.",
+  "description": "MCP server that publishes agent output — screenshots, logs, diffs — from any agent to krowk permalinks, over stdio.",
   "keywords": [
     "krowk",
     "mcp",

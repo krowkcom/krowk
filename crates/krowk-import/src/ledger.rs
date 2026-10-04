@@ -207,6 +207,7 @@ fn thread(r: &Ref, dir: &str, rows: &[Row]) -> Thread {
             model: first.model.clone(),
             provider: first.provider.clone(),
             harness: LEDGER_HARNESS.into(),
+            ..Session::default()
         },
         binding: Binding { provider: LEDGER_HARNESS.into(), harness: LEDGER_HARNESS.into(), foreign_session_id: r.id.clone(), ..Binding::default() },
         messages: rows

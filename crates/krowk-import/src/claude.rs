@@ -623,6 +623,7 @@ impl Builder {
                 model: self.model.clone(),
                 provider: PROVIDER.into(),
                 harness: HARNESS.into(),
+                ..Session::default()
             },
             binding: Binding {
                 provider: crate::PROVIDER_CLAUDE.into(),

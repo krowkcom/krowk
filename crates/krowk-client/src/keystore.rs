@@ -9,15 +9,27 @@
 //!   `device.json`, and `device.json` is useless without it: a copy of one
 //!   file is not the account key.
 //!
+//! - `user-keys.json`: the generations of the person's user key this
+//!   device holds (`user_key::UserKeys`): the newest wrapped to this
+//!   device's key (`UserKey::wrap_to`), with its generation and id, and the
+//!   wrap of each older generation under the next. Every session key is
+//!   sealed under these (engineering/devices.md → Keys). Written only by
+//!   `save_user_keys`, which never goes back a generation.
+//! - `device-list.json`: the signed device list as this device last
+//!   verified it, entry 0 to its head, which is the pin; read back by
+//!   verifying it again. Whose
+//!   signatures a session record is checked against (`session_record`).
+//!
 //! - `signing.json`: the device's Ed25519 relay signing key
 //!   (`e2e::SigningKey`), made the first time a relay is joined. It proves
 //!   which device connects, and opens nothing.
 //!
-//! The registry holds the account key wrapped to a device only while an
-//! approval carries it to that device (`join`); once collected it lives
-//! here, so these files and the recovery phrase are the copies that last.
+//! These files and the recovery phrase are the copies that last: the
+//! registry holds keys only wrapped to devices.
 
 use crate::e2e::{self, AccountKey, DeviceKey, KeyId, SigningKey};
+use crate::device_chain::{Chain, SignedEntry};
+use crate::user_key::{UserKey, UserKeyId, UserKeys};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -25,6 +37,18 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 pub const DEVICE_FILE: &str = "device.json";
 pub const ACCOUNT_FILE: &str = "account-key.json";
 pub const SIGNING_FILE: &str = "signing.json";
+pub const USER_KEYS_FILE: &str = "user-keys.json";
+pub const DEVICE_LIST_FILE: &str = "device-list.json";
+
+#[derive(Default, Serialize, Deserialize)]
+struct DeviceListFile {
+    #[serde(default)]
+    version: u8,
+    /// Each entry as signed, from entry 0: its bytes and its signatures,
+    /// hex. The last is the pin.
+    #[serde(default)]
+    entries: Vec<(String, String)>,
+}
 
 #[derive(Default, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct DeviceFile {
@@ -55,6 +79,29 @@ struct AccountFile {
     /// `e2e::wrap_account_key`'s blob, hex.
     #[serde(default)]
     wrapped: String,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct UserKeysFile {
+    #[serde(default)]
+    version: u8,
+    /// The device the newest generation is wrapped to, hex; checked against
+    /// this device's key when the file is read, as the account file's is.
+    #[serde(default)]
+    device_id: String,
+    /// The newest generation this device holds.
+    #[serde(default)]
+    generation: u32,
+    /// Its id, hex: what the key must open to.
+    #[serde(default)]
+    key_id: String,
+    /// `UserKey::wrap_to`'s blob for this device, hex.
+    #[serde(default)]
+    wrapped: String,
+    /// `UserKey::wrap_previous`'s blob for each older generation, hex,
+    /// oldest first.
+    #[serde(default)]
+    previous: Vec<String>,
 }
 
 /// The files of one krowk home.
@@ -185,28 +232,12 @@ impl Keystore {
         e2e::unwrap_account_key(&blob, id, &device).map(Some).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// First sync setup: a device key if there is none, and a new account
-    /// key wrapped to it. `confirm` is shown the key (to show its phrase and
-    /// have it entered again) before anything about the account is written;
-    /// when it refuses, nothing is kept but the device key.
-    pub fn init(&self, confirm: impl FnOnce(&AccountKey) -> Result<(), String>) -> Result<Setup, String> {
-        krowk_api::home::make(&self.home)?;
-        let _lock = krowk_api::creds::lock(&self.account_path())?;
-        if let Some(id) = self.account_id()? {
-            return Err(format!("this home already holds account key {id} — sync is set up here; `krowk sync recover` restores a different one"));
-        }
-        let (device, device_created) = self.device_or_create()?;
-        let account = AccountKey::generate();
-        confirm(&account)?;
-        self.save(&device, &account, "init")?;
-        Ok(Setup { device, device_created, account })
-    }
-
-    /// A fresh machine: the account key from its recovery phrase, wrapped
-    /// to this device (made now if it has no key). A different account key
-    /// already here is replaced only when a phrase put it here too — the
-    /// retry after a word typed wrong — and refused when `init` made it.
-    /// `replaced` names the key a retry replaced.
+    /// The account key, wrapped to this device (made now if it has no
+    /// key). A different account key already here is replaced only when
+    /// `recover` put it here too, and refused when `join` did.
+    /// `replaced` names the key it replaced. What sets the account key up
+    /// for the session sync that still runs on it, until that moves to the
+    /// user key.
     pub fn recover(&self, account: AccountKey) -> Result<(Setup, Option<KeyId>), String> {
         krowk_api::home::make(&self.home)?;
         let _lock = krowk_api::creds::lock(&self.account_path())?;
@@ -229,29 +260,140 @@ impl Keystore {
         Ok((Setup { device, device_created, account }, replaced))
     }
 
-    /// A device another one approved: the account key it wrapped to this
-    /// device (`e2e::wrap_account_key`'s blob), opened only as the key whose
-    /// id the person was shown on the approving device. That id is the whole
-    /// of the check against a registry that wrapped a key of its own choosing
-    /// to this device: HPKE's Base mode does not say who sealed a blob, and
-    /// `unwrap_account_key` refuses one that is not for `expected`.
-    ///
-    /// A home that already holds an account key keeps it unless it is the
-    /// same key: joining is for a machine that has none.
-    pub fn join(&self, wrapped: &[u8], expected: KeyId) -> Result<Setup, String> {
+    pub fn user_keys_path(&self) -> PathBuf {
+        self.home.join(USER_KEYS_FILE)
+    }
+
+    /// The generations of the user key this device holds, opened with its
+    /// device key; None when it holds none yet.
+    pub fn user_keys(&self) -> Result<Option<UserKeys>, String> {
+        self.user_keys_at(&self.user_keys_path())
+    }
+
+    /// The user keys in the file at `path` rather than this home's, opened
+    /// with this device's key: the old ones a start-over keeps aside.
+    pub fn user_keys_at(&self, path: &Path) -> Result<Option<UserKeys>, String> {
+        let path = path.to_path_buf();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let f: UserKeysFile = krowk_api::creds::read(&path)?;
+        let bad = || format!("{} does not hold user keys krowk reads — move it aside and add this device again", path.display());
+        if f.version != 1 {
+            return Err(bad());
+        }
+        let device = self.device()?.ok_or_else(|| format!("{} is here but this device's key ({}) is not, so it cannot be opened — add this device again", path.display(), self.device_path().display()))?;
+        if f.device_id != device.id().to_string() {
+            return Err(format!("{} was wrapped for device {}, not this device ({}) — add this device again", path.display(), f.device_id, device.id()));
+        }
+        let id = e2e::unhex(&f.key_id).and_then(|b| <[u8; 16]>::try_from(b).ok()).map(UserKeyId).ok_or_else(bad)?;
+        let blob = e2e::unhex(&f.wrapped).ok_or_else(bad)?;
+        let newest = UserKey::unwrap(&blob, f.generation, id, &device).map_err(|e| format!("{}: {e}", path.display()))?;
+        let previous = f.previous.iter().map(|w| e2e::unhex(w).ok_or_else(bad)).collect::<Result<Vec<_>, _>>()?;
+        UserKeys::new(newest, previous).map(Some).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Keeps `keys` as the user keys this device holds, wrapped to its
+    /// device key (made now if it has none), replacing the file by rename.
+    /// What the device already holds is never lost or swapped: `keys` must
+    /// be the same newest generation, or a newer one that opens back down
+    /// to exactly the one held (`UserKeys::adopt` checks a wrap the
+    /// registry delivered the same way). The wraps of generations below the
+    /// one held are the ones already kept; `keys` adds only the links from
+    /// it up to its newest, and any the store lacked, so a set that omits
+    /// or garbles an older wrap loses nothing. The caller has checked the
+    /// newest key against the verified device chain.
+    pub fn save_user_keys(&self, keys: &UserKeys) -> Result<(), String> {
         krowk_api::home::make(&self.home)?;
         let _lock = krowk_api::creds::lock(&self.account_path())?;
-        if let Some(id) = self.account_id()?
-            && id != expected
-        {
-            return Err(format!("this home already holds account key {id} — joining would replace it; use a fresh krowk home, or move {} aside", self.account_path().display()));
+        let new = keys.newest();
+        let mut wraps: std::collections::BTreeMap<u32, Vec<u8>> = keys.wraps().map(|(g, w)| (g, w.to_vec())).collect();
+        if let Some(held) = self.user_keys()? {
+            let top = held.newest();
+            if new.generation() < top.generation() {
+                return Err(format!("this device holds user key generation {}, newer than generation {} — refused, so no generation is lost", top.generation(), new.generation()));
+            }
+            if keys.open(top.generation()).ok().as_ref() != Some(top) {
+                return Err(format!("the user keys do not lead back to generation {} this device holds ({}) — refused", top.generation(), top.id()));
+            }
+            for (g, w) in held.wraps() {
+                wraps.insert(g, w.to_vec());
+            }
         }
-        let (device, device_created) = self.device_or_create()?;
-        let account = e2e::unwrap_account_key(wrapped, expected, &device).map_err(|e| {
-            format!("the approved key did not open as account key {expected} on this device ({e}) — check the id was typed as the approving device showed it; if it was, do not trust this approval, and ask again")
-        })?;
-        self.save(&device, &account, "join")?;
-        Ok(Setup { device, device_created, account })
+        let (device, _) = self.device_or_create()?;
+        let wrapped = new.wrap_to(&device.public()).map_err(|e| e.0)?;
+        let file = UserKeysFile {
+            version: 1,
+            device_id: device.id().to_string(),
+            generation: new.generation(),
+            key_id: new.id().to_string(),
+            wrapped: e2e::hex(&wrapped),
+            previous: wraps.values().map(|w| e2e::hex(w)).collect(),
+        };
+        krowk_api::creds::write(&self.user_keys_path(), &file)
+    }
+
+    pub fn device_list_path(&self) -> PathBuf {
+        self.home.join(DEVICE_LIST_FILE)
+    }
+
+    /// The device list as this device last verified it, verified again
+    /// from entry 0; None when it has kept none. Its head is this device's
+    /// pin: every sync command that opens or seals a session takes its
+    /// signers and the current generation from here.
+    pub fn device_list(&self) -> Result<Option<Chain>, String> {
+        self.device_list_at(&self.device_list_path())
+    }
+
+    /// The device list in the file at `path` rather than this home's,
+    /// verified from entry 0: the old one a start-over keeps aside.
+    pub fn device_list_at(&self, path: &Path) -> Result<Option<Chain>, String> {
+        let path = path.to_path_buf();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let entries = self.device_list_entries(&path)?;
+        Chain::verify(&entries, None).map(Some).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Verifies `entries` against the list kept here — they must reach its
+    /// head and hold it there, so a shorter, forked or other person's list
+    /// is refused — and keeps them, replacing the file by rename. The only
+    /// store of the device list; its head is the pin.
+    pub fn save_device_list(&self, entries: &[SignedEntry]) -> Result<Chain, String> {
+        krowk_api::home::make(&self.home)?;
+        let path = self.device_list_path();
+        let _lock = krowk_api::creds::lock(&path)?;
+        let pin = if path.exists() { Some(Chain::verify(&self.device_list_entries(&path)?, None).map_err(|e| format!("{}: {e}", path.display()))?.head()) } else { None };
+        let chain = Chain::verify(entries, pin).map_err(|e| e.0)?;
+        let file = DeviceListFile { version: 1, entries: entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect() };
+        krowk_api::creds::write(&path, &file)?;
+        Ok(chain)
+    }
+
+    fn device_list_entries(&self, path: &Path) -> Result<Vec<SignedEntry>, String> {
+        let f: DeviceListFile = krowk_api::creds::read(path)?;
+        let bad = || format!("{} does not hold a device list krowk reads — move it aside and add this device to your devices again", path.display());
+        if f.version != 1 || f.entries.is_empty() {
+            return Err(bad());
+        }
+        f.entries.iter().map(|(e, s)| e2e::unhex(e).zip(e2e::unhex(s)).and_then(|(e, s)| SignedEntry::from_parts(e, &s).ok())).collect::<Option<Vec<_>>>().ok_or_else(bad)
+    }
+
+    /// Forgets the user keys and the device list: a pairing that failed
+    /// after they were kept leaves nothing behind. Only for a machine that is
+    /// not on the list — `save_user_keys` never goes back a generation and
+    /// `save_device_list` never moves the pin back, and this is not a way
+    /// round either for a device that is.
+    pub fn forget_user_keys(&self) -> Result<(), String> {
+        let _lock = krowk_api::creds::lock(&self.account_path())?;
+        for path in [self.user_keys_path(), self.device_list_path()] {
+            match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("could not remove {}: {e}", path.display())),
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn save(&self, device: &DeviceKey, account: &AccountKey, origin: &str) -> Result<(), String> {

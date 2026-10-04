@@ -167,6 +167,19 @@ fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
+/// The foreign id `provider` knows the session `session_id` by, if it has
+/// a binding there: for a native session stored before its row took its
+/// log's id, the log id `krowk sync host` and `--resume` need.
+pub fn foreign_session_id(conn: &Connection, session_id: &str, provider: &str) -> Result<Option<String>, StoreError> {
+    conn.query_row(
+        "SELECT foreign_session_id FROM session_binding WHERE session_id = ? AND provider = ? ORDER BY id LIMIT 1",
+        [session_id, provider],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(|e| other("find foreign session id", e))
+}
+
 /// A caller's reference as one session id: the id itself, a foreign session
 /// id, or an id prefix of at least 8 characters. Several matches are refused
 /// by name, never guessed between.

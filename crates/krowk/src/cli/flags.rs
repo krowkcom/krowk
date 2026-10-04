@@ -77,6 +77,13 @@ pub struct Flags {
     /// `host stop`: even with clients connected.
     #[cfg(feature = "harness")]
     pub force: bool,
+    /// `sync init`, `sync recovery new`: the file the recovery kit is
+    /// written to (0600) instead of the screen.
+    #[cfg(feature = "harness")]
+    pub save: String,
+    /// `sync init`: replace a device list the person already has.
+    #[cfg(feature = "harness")]
+    pub start_over: bool,
     /// `providers add`: the instance's name, its key's variable, its base
     /// URL, and how SuperGrok signs in.
     #[cfg(feature = "harness")]
@@ -274,6 +281,8 @@ impl Flags {
             #[cfg(feature = "harness")]
             "name" => text(&mut self.name),
             #[cfg(feature = "harness")]
+            "save" => text(&mut self.save),
+            #[cfg(feature = "harness")]
             "api-key-env" => text(&mut self.api_key_env),
             #[cfg(feature = "harness")]
             "base-url" => text(&mut self.base_url),
@@ -321,6 +330,8 @@ impl Flags {
                     "daemon" => &mut self.daemon,
                     #[cfg(feature = "harness")]
                     "force" => &mut self.force,
+                    #[cfg(feature = "harness")]
+                    "start-over" => &mut self.start_over,
                     #[cfg(feature = "harness")]
                     "default" => &mut self.default,
                     #[cfg(feature = "harness")]

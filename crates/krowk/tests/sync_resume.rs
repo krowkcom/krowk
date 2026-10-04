@@ -7,14 +7,19 @@
 
 #![cfg(all(feature = "harness", unix))]
 
-use krowk_client::e2e::{self, AccountKey, DeviceKey, SessionKey, SigningKey};
+use krowk_client::e2e::{self, AccountKey, SessionKey, SigningKey};
 use krowk_client::keystore::Keystore;
+use krowk_client::session_record;
 use krowk_harness::sync::store;
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+#[path = "common/device_list.rs"]
+mod device_list;
+use device_list::People;
 
 const TOKEN: &str = "krowk_sk_sync_resume_0000000000000000";
 const MARKER: &str = "the session machine A ran, read on machine B";
@@ -32,29 +37,45 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
     let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
     std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None }));
 
-    // Machine A wrote the session to the registry and went away.
+    // Machines A and B, each a home of its own on the person's device list.
     let account = AccountKey::generate();
-    let (a, a_signing) = (DeviceKey::generate(), SigningKey::generate());
+    let mut people = People::default();
+    let home = |name: &str| {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ks = Keystore::new(&dir.join(".krowk"));
+        ks.recover(AccountKey::from_bytes(*account.as_bytes())).unwrap();
+        (dir, ks)
+    };
+    let (_, a_keys) = home("a");
+    people.enlist(&a_keys, "machine-a");
+    let (b_home, ks) = home("b");
+    people.enlist(&ks, "machine-b");
+    // The registry holds the list too: B brings the list it keeps up to
+    // date from it before it attaches.
+    people.publish(&api_url, TOKEN);
+
+    // Machine A wrote the session to the registry, its record signed, and
+    // went away.
+    let (a, a_signing) = (a_keys.device().unwrap().unwrap(), a_keys.signing_key().unwrap());
     // A's calls act as A, signed by its key.
     let api = Arc::new(krowk_api::Client::new(&api_url, TOKEN).signed_by(e2e::DeviceSigner::new(a.id(), SigningKey::from_secret(&*a_signing.secret_bytes()).unwrap()).shared()));
     api.register_device(&e2e::hex(&a.public().0), &e2e::hex(&a_signing.public().0), "machine-a", &account.id().to_string()).unwrap();
     let id = "01a0ec7b-1111-7000-8000-000000000019".to_string();
     let raw = krowk_harness::daemon::ws::uuid(&id);
     let key = SessionKey::generate();
-    let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &raw, &account));
+    let sealed_key = e2e::wrap_session_key(&key, &raw, people.user());
+    let signature = session_record::sign(&raw, &sealed_key, session_record::SEAL_USER, people.user(), &a_signing).unwrap();
+    let wrapped = e2e::hex(&sealed_key);
     let index = store::Index { title: "resumed from sync".into(), ..Default::default() };
-    api.put_sync_session(&id, &wrapped, Some(&e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).unwrap()))), None).unwrap();
+    api.put_sync_session(&id, &wrapped, Some((&e2e::hex(&signature), &a.id().to_string())), Some(&e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).unwrap()))), None).unwrap();
     let lease = api.acquire_lease(&id, &a.id().to_string(), 60, "development").unwrap();
     let mut w = store::Writer::take_up(api.clone(), key, &id, wrapped, index, lease.fence).unwrap();
     w.push(serde_json::json!({"id": "01a0ec7b-1111-7000-8000-0000000000e1", "type": "item.completed", "item": {"type": "userText", "text": MARKER}}));
     w.checkpoint(None, &lease.token).unwrap();
     api.release_lease(&id, &lease.token).unwrap();
 
-    // Machine B: the same account key, keys of its own, registered.
-    let b_home = root.join("b");
-    std::fs::create_dir_all(&b_home).unwrap();
-    let ks = Keystore::new(&b_home.join(".krowk"));
-    ks.recover(AccountKey::from_bytes(*account.as_bytes())).unwrap();
+    // Machine B: keys of its own, registered.
     let b = ks.device().unwrap().unwrap();
     let b_signing = ks.signing_key().unwrap();
     let b_api = krowk_api::Client::new(&api_url, TOKEN).signed_by(e2e::DeviceSigner::new(b.id(), SigningKey::from_secret(&*b_signing.secret_bytes()).unwrap()).shared());
@@ -70,7 +91,8 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
         .env("KROWK_TOKEN", TOKEN)
         .env("KROWK_RELAY_URL", &relay_url)
         .current_dir(&b_home)
-        .stdin(Stdio::null())
+        // Held open: `sync attach` ends when its stdin does.
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

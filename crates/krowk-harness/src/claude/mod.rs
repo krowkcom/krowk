@@ -1011,7 +1011,8 @@ impl Proc {
         r
     }
 
-    #[allow(clippy::too_many_arguments)]
+    // Legacy: one loop over every Claude Code message of a turn. TODO: split into helpers and drop this allow.
+    #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
     async fn read_turn(&mut self, prompt: Option<&str>, t: &mut Translator, ctx: &mut TurnContext, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<TurnEnd, EngineError> {
         if let Some(prompt) = prompt {
             self.send(&json!({"type": "user", "message": {"role": "user", "content": prompt}, "parent_tool_use_id": null, "session_id": ""})).await?;

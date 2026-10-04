@@ -1,91 +1,23 @@
 name: CI
 
-# The gate every pull request passes, whatever branch it targets.
-#
-# Every platform CI can run natively, because the golden cases are exactly the
-# kind of test a platform difference breaks: temp paths, file modes, what the
-# machine's own tables say.
+# The checks every pull request gets from GitHub: the ones that take seconds,
+# and want a pinned Codex or today's advisory database a laptop may not have. `make check` itself is run where the
+# author already is, by `make signoff`, which puts a green `signoff` status on
+# the pushed commit (gh-signoff, see the Makefile). full.yml runs it again on
+# every platform after the merge, and the budgets wait for a release.
 on:
   pull_request:
   push:
-    branches: [main, rust-rewrite]
+    branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  check:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          # `git describe` stamps the version the golden cases mask; a shallow
-          # clone without tags still describes, just less precisely.
-          fetch-depth: 0
-          persist-credentials: false
-
-      # rustup is on every hosted runner; the toolchain is pinned to the
-      # workspace's rust-version rather than whatever the image carries.
-      - name: Set up Rust
-        run: |
-          rustup toolchain install 1.97 --profile minimal --component clippy
-          rustup default 1.97
-
-      # The same shared build cache mise.toml turns on locally, wrapping plain
-      # cargo. It keys on the rustc on PATH, so it comes after the toolchain.
-      # Pushes to main publish to the GitHub Actions cache; pull requests only
-      # restore from it. The version moves with the one in mise.toml.
-      - uses: jdx/mr-boxington-action@v1
-        with:
-          version: 1.19.0
-
-      # `make test` runs on nextest. The version moves with the one in
-      # mise.toml.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest@0.9.146
-
-      # The opencode fixture is built from SQL at case time.
-      - name: Ensure sqlite3
-        if: runner.os == 'Linux'
-        run: command -v sqlite3 || (sudo apt-get update && sudo apt-get install -y sqlite3)
-
-      # The TUI's scrollback and offline checks read the screen through
-      # tmux, and fail rather than skip under CI on Linux.
-      - name: Ensure tmux
-        if: runner.os == 'Linux'
-        run: command -v tmux || (sudo apt-get update && sudo apt-get install -y tmux)
-
-      # R-PERM-3: the OS sandbox's escape tests fail rather than skip under
-      # CI on Linux, so bubblewrap is installed and allowed the unprivileged
-      # user namespaces Ubuntu 24.04's AppArmor withholds by default.
-      - name: Ensure bubblewrap
-        if: runner.os == 'Linux'
-        run: |
-          command -v bwrap || (sudo apt-get update && sudo apt-get install -y bubblewrap)
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-net --unshare-pid --new-session -- true
-
-      # The relay's per-address limits are tested from other loopback
-      # addresses, which macOS does not answer for until lo0 is given them.
-      - name: Loopback aliases
-        if: runner.os == 'macOS'
-        run: |
-          sudo ifconfig lo0 alias 127.0.0.2 up
-          sudo ifconfig lo0 alias 127.0.0.9 up
-
-      # The ci profile retries a failed test twice: one that then passes is
-      # reported FLAKY instead of failing the job.
-      - name: Lint, unit tests and golden cases
-        run: make check
-        env:
-          NEXTEST_PROFILE: ci
-
   # R-OSS-3: every crate both builds link, on every target the release ships,
   # held to deny.toml — no RustSec advisory, no licence outside its list,
   # nothing from outside crates.io. On every pull request, because a
@@ -135,28 +67,3 @@ jobs:
 
       - name: The pinned app-server schema is current
         run: make codex-schema
-
-  # R-PERF-7: the performance and size budgets, on one pinned runner class so
-  # every number is read on the same kind of machine — an image named by
-  # version, not -latest, which moves under the numbers. Each check is the
-  # median of repeated runs held against the absolute number in
-  # crates/krowk-bench/budgets.toml, never against an earlier run, and the
-  # idle checks read Linux /proc, so this runner is also the one machine where
-  # nothing may be skipped (--strict). The table lands in the job summary.
-  bench:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Set up Rust
-        run: |
-          rustup toolchain install 1.97 --profile minimal
-          rustup default 1.97
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Performance and size budgets
-        run: make bench BENCH_FLAGS=--strict

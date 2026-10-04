@@ -8,8 +8,9 @@
 //!   device's public key with HPKE (RFC 9180) — Base mode,
 //!   DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305, and no
 //!   other suite. The recovery phrase is this key, as words (`phrase`).
-//! - A **session key**: 32 random bytes per session, wrapped under the
-//!   account key with XChaCha20-Poly1305. Session content — batches and
+//! - A **session key**: 32 random bytes per session, wrapped under its
+//!   owner's user key (`user_key`), at the generation current when it was
+//!   sealed, with XChaCha20-Poly1305. Session content — batches and
 //!   frames — is sealed under it by a `Sealer` and opened by an `Opener`: a
 //!   fresh random 24-byte nonce per message, and as associated data the
 //!   frame header with the session, the direction, the receiver's epoch and
@@ -28,6 +29,7 @@ use chacha20poly1305::aead::{Aead as _, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use hpke::{Deserializable, Kem as _, OpModeR, OpModeS, Serializable};
 use sha2::{Digest, Sha256};
+use crate::user_key::{UserKey, UserKeys};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// The HPKE suite, pinned: DHKEM(X25519, HKDF-SHA256).
@@ -45,7 +47,7 @@ pub use crate::protocol::frame::ENC_XCHACHA20_POLY1305;
 pub const BLOB_V1: u8 = 1;
 /// The account key wrapped to a device: HPKE, the suite above.
 pub const SUITE_HPKE_X25519_SHA256_CHACHA20POLY1305: u8 = 1;
-/// A session key wrapped under the account key: XChaCha20-Poly1305.
+/// A key wrapped under another 32-byte key: XChaCha20-Poly1305.
 pub const SUITE_XCHACHA20_POLY1305: u8 = 2;
 
 const KEY: usize = 32;
@@ -54,9 +56,13 @@ const NONCE: usize = 24;
 /// A wrapped account key: version, suite, HPKE's 32-byte `enc`, then the
 /// sealed key and its tag.
 pub const WRAPPED_ACCOUNT_KEY: usize = 2 + 32 + KEY + TAG;
-/// A wrapped session key: version, suite, nonce, then the sealed key and
-/// its tag.
+/// A wrapped session key: version, suite, a nonce that begins with the user
+/// key generation, then the sealed key and its tag (`wrap_session_key`).
 pub const WRAPPED_SESSION_KEY: usize = 2 + NONCE + KEY + TAG;
+/// A wrapped session key's version: 2 since it is sealed under the user
+/// key, which a version-1 blob (under the account key) never was.
+pub const SESSION_KEY_V2: u8 = 2;
+const SESSION_KEY_AAD: &[u8] = b"krowk/session-key/v2";
 
 /// Why something did not decrypt or decode. It names no secret and does not
 /// say which check failed.
@@ -159,16 +165,6 @@ impl DevicePublic {
     pub fn id(&self) -> DeviceId {
         DeviceId(id(b"krowk/device-id/v1", &self.0))
     }
-}
-
-/// The code a person compares when a device is approved: a hash of both
-/// of the new device's public keys, X25519 and Ed25519 signing. It covers
-/// the signing key too, so a request carrying the new device's X25519 key
-/// but another signing key — which anyone holding the workspace's API key
-/// could post — shows another code, and is never approved by mistake for
-/// the real one (`crypto.md` → Adding a device).
-pub fn approval_code(device: &DevicePublic, signing: &SigningPublic) -> DeviceId {
-    DeviceId(id(b"krowk/approval-code/v1", &[&device.0[..], &signing.0[..]].concat()))
 }
 
 /// A device's id: a hash of its public key.
@@ -570,32 +566,83 @@ fn cipher(key: &[u8; KEY]) -> XChaCha20Poly1305 {
     XChaCha20Poly1305::new(&(*key).into())
 }
 
-/// The session key wrapped under the account key: `version | suite | nonce
-/// | sealed key + tag` (74 bytes). The associated data is version, suite and
-/// the session's 16-byte id, so a wrapped key moved to another session does
-/// not open.
-pub fn wrap_session_key(session_key: &SessionKey, session: &[u8; 16], account: &AccountKey) -> Vec<u8> {
-    let head = [BLOB_V1, SUITE_XCHACHA20_POLY1305];
-    let nonce: [u8; NONCE] = random();
-    let aad = [&head[..], session].concat();
-    let sealed = cipher(&account.0).encrypt(&XNonce::from(nonce), Payload { msg: &session_key.0, aad: &aad }).expect("sealing 32 bytes cannot fail");
-    [&head[..], &nonce, &sealed].concat()
+/// The session key wrapped under its owner's user key, at the generation
+/// current when it was sealed (engineering/devices.md → Keys): `version (2)
+/// | suite | generation (4, BE) | nonce (20) | sealed key + tag` — 74
+/// bytes, the size the registry holds a wrapped session key to.
+///
+/// - The **generation is in the clear**, so an opener knows which
+///   generation to walk `UserKeys` down to, and a device that holds only
+///   older ones can say so rather than "does not open".
+/// - The XChaCha20 nonce is the 24 bytes from the generation on: the
+///   generation and 20 random bytes. 160 random bits leave a repeat under
+///   one generation out of reach, and the generation is sealed over twice.
+/// - The associated data is `"krowk/session-key/v2"` ‖ version ‖ suite ‖
+///   generation ‖ the user key's id ‖ the session's 16-byte id. A blob
+///   moved to another session, or relabelled as another generation, does
+///   not open.
+pub fn wrap_session_key(session_key: &SessionKey, session: &[u8; 16], user: &UserKey) -> Vec<u8> {
+    let mut blob = Vec::with_capacity(WRAPPED_SESSION_KEY);
+    blob.extend_from_slice(&[SESSION_KEY_V2, SUITE_XCHACHA20_POLY1305]);
+    blob.extend_from_slice(&user.generation().to_be_bytes());
+    blob.extend_from_slice(&random::<{ NONCE - 4 }>());
+    let nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
+    let aad = session_key_aad(&blob[..2], user, session);
+    let sealed = cipher(user.as_bytes()).encrypt(&XNonce::from(nonce), Payload { msg: &session_key.0, aad: &aad }).expect("sealing 32 bytes cannot fail");
+    blob.extend_from_slice(&sealed);
+    blob
 }
 
-pub fn unwrap_session_key(blob: &[u8], session: &[u8; 16], account: &AccountKey) -> Result<SessionKey, Error> {
-    let refused = || err("the wrapped session key does not open with this account key: it was changed, or belongs to another session or account");
-    if blob.len() != WRAPPED_SESSION_KEY || blob[0] != BLOB_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
+/// A new session's key wrapped under the newest generation this device
+/// holds, refused unless that is the generation the verified device chain
+/// names as current (`current_generation`, from `Chain::generation`). A
+/// device behind a rotation — offline, or fed a stale list — would
+/// otherwise seal under a generation a removed device still holds.
+pub fn seal_session_key(session_key: &SessionKey, session: &[u8; 16], keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, Error> {
+    let held = keys.newest().generation();
+    if held < current_generation {
+        return Err(err(format!("this device holds user key generation {held}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk devices`) and try again")));
+    }
+    Ok(wrap_session_key(session_key, session, keys.newest()))
+}
+
+/// The user key generation a wrapped session key names, read before
+/// anything is opened. Refused for a blob that is not one.
+pub fn session_key_generation(blob: &[u8]) -> Result<u32, Error> {
+    if blob.len() != WRAPPED_SESSION_KEY || blob[0] != SESSION_KEY_V2 || blob[1] != SUITE_XCHACHA20_POLY1305 {
         return Err(match blob.first() {
-            Some(&v) if v > BLOB_V1 => newer("session", v),
-            _ => refused(),
+            Some(&v) if v > SESSION_KEY_V2 => newer("session", v),
+            _ => err("the wrapped session key is not one this krowk reads: it was changed, or was sealed before session keys were sealed under the user key"),
         });
     }
+    match u32::from_be_bytes(blob[2..6].try_into().expect("four bytes")) {
+        0 => Err(err("the wrapped session key names user key generation 0, which does not exist")),
+        g => Ok(g),
+    }
+}
+
+/// The session key out of a blob `wrap_session_key` made, opened with the
+/// generation it names — the newest, or an older one reached down the
+/// chain of wraps. A generation newer than any this device holds is
+/// refused as such: a removed device holds none made after its removal.
+pub fn unwrap_session_key(blob: &[u8], session: &[u8; 16], keys: &UserKeys) -> Result<SessionKey, Error> {
+    let generation = session_key_generation(blob)?;
+    let held = keys.newest().generation();
+    if generation > held {
+        return Err(err(format!("the session key is sealed under user key generation {generation}, newer than generation {held} this device holds — it was removed from your devices, or has not taken up the new key yet")));
+    }
+    let user = keys.open(generation)?;
+    let refused = || err("the wrapped session key does not open with this user key: it was changed, or belongs to another session or person");
     let nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
-    let aad = [&blob[..2], session].concat();
-    let mut plain = cipher(&account.0).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())?;
+    let aad = session_key_aad(&blob[..2], &user, session);
+    let mut plain = cipher(user.as_bytes()).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())?;
     let out = <[u8; KEY]>::try_from(&plain[..]).map(SessionKey);
     plain.zeroize();
     out.map_err(|_| refused())
+}
+
+fn session_key_aad(head: &[u8], user: &UserKey, session: &[u8; 16]) -> Vec<u8> {
+    [SESSION_KEY_AAD, head, &user.generation().to_be_bytes(), &user.id().0, session].concat()
 }
 
 /// Which way a sealed message travels. Each direction of a session is its
@@ -747,7 +794,7 @@ impl SigningKey {
 
     /// The key from its stored 32-byte seed.
     pub fn from_secret(bytes: &[u8]) -> Result<SigningKey, Error> {
-        let seed: [u8; 32] = bytes.try_into().map_err(|_| err("the signing key is not a 32-byte Ed25519 seed"))?;
+        let seed = zeroize::Zeroizing::new(<[u8; 32]>::try_from(bytes).map_err(|_| err("the signing key is not a 32-byte Ed25519 seed"))?);
         Ok(SigningKey(ed25519_dalek::SigningKey::from_bytes(&seed)))
     }
 
@@ -825,6 +872,14 @@ impl std::fmt::Debug for SigningKey {
 pub struct SigningPublic(pub [u8; 32]);
 
 impl SigningPublic {
+    /// Whether this is an Ed25519 key anything can verify with: a point of
+    /// the curve, in its one canonical encoding, not of small order. The
+    /// registry refuses any other on a device list entry
+    /// (`Sync.refuse_weak_signing_key!`), and so does the verifier.
+    pub fn is_strong(&self) -> bool {
+        ed25519_dalek::VerifyingKey::from_bytes(&self.0).is_ok_and(|k| !k.is_weak() && k.to_edwards().compress().to_bytes() == self.0)
+    }
+
     /// Checks a join's signature, strictly (RFC 8032's checks and no
     /// small-order or non-canonical keys or signatures), so one signature
     /// has one encoding and a key cannot be chosen to verify anything.
@@ -891,6 +946,49 @@ pub fn relay_join_message(role: u8, session: &[u8; 16], nonce: &[u8; 32], device
     m.extend_from_slice(&device.0);
     m.extend_from_slice(origin.as_bytes());
     m
+}
+
+// The primitives the user key (`user_key`) and the device chain
+// (`device_chain`) are built on, kept here so the suite and the key types'
+// private halves stay in this one module.
+
+/// HPKE Base-mode seal to a device, in the pinned suite: `(enc, sealed)`.
+pub(crate) fn hpke_seal(plain: &[u8], to: &DevicePublic, info: &[u8], aad: &[u8]) -> Result<([u8; 32], Vec<u8>), Error> {
+    let pk = <Kem as hpke::Kem>::PublicKey::from_bytes(&to.0).map_err(|_| err("the device's public key is not an X25519 key"))?;
+    let (enc, sealed) = hpke::single_shot_seal::<HpkeAead, Kdf, Kem>(&OpModeS::Base, &pk, info, plain, aad).map_err(|_| err("the key could not be wrapped"))?;
+    Ok((enc.to_bytes().into(), sealed))
+}
+
+/// HPKE Base-mode open with this device's private key. None for anything
+/// that does not open; the caller says what it was.
+pub(crate) fn hpke_open(device: &DeviceKey, enc: &[u8], sealed: &[u8], info: &[u8], aad: &[u8]) -> Option<zeroize::Zeroizing<Vec<u8>>> {
+    let enc = <Kem as hpke::Kem>::EncappedKey::from_bytes(enc).ok()?;
+    hpke::single_shot_open::<HpkeAead, Kdf, Kem>(&OpModeR::Base, &device.secret, &enc, info, sealed, aad).ok().map(zeroize::Zeroizing::new)
+}
+
+/// RFC 9180's DeriveKeyPair: the same keypair from the same 32 bytes, for
+/// a device whose key is derived rather than drawn (the recovery device).
+pub(crate) fn derive_device_key(ikm: &[u8; 32]) -> DeviceKey {
+    let (secret, public) = Kem::derive_keypair(ikm);
+    DeviceKey { secret, public }
+}
+
+impl SigningKey {
+    /// An Ed25519 signature over `message`, which the caller has already
+    /// prefixed with its own label.
+    pub(crate) fn sign(&self, message: &[u8]) -> [u8; 64] {
+        use ed25519_dalek::Signer as _;
+        self.0.sign(message).to_bytes()
+    }
+}
+
+impl SigningPublic {
+    /// Checks a signature strictly, as `verify_relay_join` does.
+    pub(crate) fn verify(&self, message: &[u8], signature: &[u8; 64]) -> Result<(), Error> {
+        let bad = || err("the signature does not verify");
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&self.0).map_err(|_| bad())?;
+        key.verify_strict(message, &ed25519_dalek::Signature::from_bytes(signature)).map_err(|_| bad())
+    }
 }
 
 #[cfg(test)]
@@ -999,20 +1097,111 @@ mod tests {
         assert!(!unwrap_account_key(&never, account.id(), &device).unwrap_err().0.contains("upgrade"));
     }
 
-    #[test]
-    fn r_e2e_2_session_keys_wrap_under_the_account_key_and_refuse_tampering() {
-        let account = AccountKey::generate();
-        let key = SessionKey::generate();
-        let blob = wrap_session_key(&key, &SESSION, &account);
-        assert_eq!(blob.len(), WRAPPED_SESSION_KEY);
-        assert_eq!(unwrap_session_key(&blob, &SESSION, &account).unwrap().as_bytes(), key.as_bytes());
-        for i in 0..blob.len() {
-            assert!(unwrap_session_key(&flip(&blob, i), &SESSION, &account).is_err(), "byte {i} changed and it still opened");
+    /// Generations 1 to `n`, and every generation's `UserKeys` as a device
+    /// holding it would have them: the key and the wraps beneath it.
+    fn generations(n: usize) -> (Vec<UserKey>, Vec<UserKeys>) {
+        let mut keys = vec![UserKey::first()];
+        while keys.len() < n {
+            keys.push(keys.last().unwrap().next().unwrap());
         }
-        assert!(unwrap_session_key(&blob, b"another-session!", &account).is_err(), "it opened for another session");
-        let later = [&[2u8][..], &blob[1..]].concat();
-        assert!(unwrap_session_key(&later, &SESSION, &account).unwrap_err().0.contains("format 2, newer"));
-        assert!(unwrap_session_key(&blob, &SESSION, &AccountKey::generate()).is_err(), "another account key opened it");
+        let held = (0..n).map(|top| UserKeys::new(keys[top].clone(), (0..top).map(|g| keys[g + 1].wrap_previous(&keys[g]).unwrap())).unwrap()).collect();
+        (keys, held)
+    }
+
+    #[test]
+    fn r_e2e_2_d8_session_keys_wrap_under_the_user_key_and_refuse_tampering() {
+        let (users, held) = generations(1);
+        let key = SessionKey::generate();
+        let blob = wrap_session_key(&key, &SESSION, &users[0]);
+        assert_eq!(blob.len(), WRAPPED_SESSION_KEY);
+        assert_eq!(blob.len(), 74, "the size the registry holds a wrapped session key to");
+        assert_eq!(unwrap_session_key(&blob, &SESSION, &held[0]).unwrap().as_bytes(), key.as_bytes());
+        for i in 0..blob.len() {
+            assert!(unwrap_session_key(&flip(&blob, i), &SESSION, &held[0]).is_err(), "byte {i} changed and it still opened");
+        }
+        assert!(unwrap_session_key(&blob, b"another-session!", &held[0]).is_err(), "it opened for another session");
+        let later = [&[3u8][..], &blob[1..]].concat();
+        assert!(unwrap_session_key(&later, &SESSION, &held[0]).unwrap_err().0.contains("format 3, newer"));
+        // A blob sealed under the account key, before the user key, is not
+        // read as one: clean break, no fallback.
+        let before = [&[1u8][..], &blob[1..]].concat();
+        assert!(!unwrap_session_key(&before, &SESSION, &held[0]).unwrap_err().0.contains("upgrade"));
+        let (_, stranger) = generations(1);
+        assert!(unwrap_session_key(&blob, &SESSION, &stranger[0]).is_err(), "another person's user key opened it");
+    }
+
+    /// D8: a session sealed under an older generation opens with the newest
+    /// through the chain of wraps, and records the generation it was
+    /// sealed under.
+    #[test]
+    fn d8_a_session_sealed_under_an_older_generation_opens_with_the_newest() {
+        let (users, held) = generations(4);
+        for (g, user) in users.iter().enumerate() {
+            let key = SessionKey::generate();
+            let blob = wrap_session_key(&key, &SESSION, user);
+            assert_eq!(session_key_generation(&blob).unwrap(), user.generation());
+            for newer in &held[g..] {
+                assert_eq!(unwrap_session_key(&blob, &SESSION, newer).unwrap().as_bytes(), key.as_bytes(), "generation {} opened with {}", g + 1, newer.newest().generation());
+            }
+        }
+    }
+
+    /// D8: a device holding only an older generation — one removed before
+    /// the rotation, or not yet caught up — does not open a session sealed
+    /// under a newer one, and is told which it would need.
+    #[test]
+    fn d8_a_device_holding_only_an_older_generation_does_not_open_a_newer_session() {
+        let (users, held) = generations(3);
+        let blob = wrap_session_key(&SessionKey::generate(), &SESSION, &users[2]);
+        for older in &held[..2] {
+            let e = unwrap_session_key(&blob, &SESSION, older).unwrap_err().0;
+            assert!(e.contains("generation 3") && e.contains(&format!("generation {} this device holds", older.newest().generation())), "{e}");
+        }
+        // Relabelled as the older generation it holds, it still does not
+        // open: the generation is sealed over, and it is not the key.
+        let mut relabelled = blob.clone();
+        relabelled[2..6].copy_from_slice(&2u32.to_be_bytes());
+        assert!(unwrap_session_key(&relabelled, &SESSION, &held[1]).is_err());
+        // Nor does a same-generation key that is not the person's.
+        let impostor = UserKeys::new(UserKey::from_bytes(3, [9; 32]).unwrap(), []).unwrap();
+        assert!(unwrap_session_key(&blob, &SESSION, &impostor).is_err());
+        let zero = [&blob[..2], &[0u8; 4][..], &blob[6..]].concat();
+        assert!(session_key_generation(&zero).is_err());
+    }
+
+    /// D8 (M2 of #200's review): a device behind the generation the chain
+    /// names seals nothing.
+    #[test]
+    fn d8_a_device_behind_the_chains_generation_seals_nothing() {
+        let (_, held) = generations(2);
+        let key = SessionKey::generate();
+        let e = seal_session_key(&key, &SESSION, &held[0], 2).unwrap_err().0;
+        assert!(e.contains("generation 1") && e.contains("names generation 2") && e.contains("catch this device up"), "{e}");
+        let blob = seal_session_key(&key, &SESSION, &held[1], 2).unwrap();
+        assert_eq!(session_key_generation(&blob).unwrap(), 2);
+    }
+
+    /// Frozen: a later change to the layout or the associated data makes
+    /// this stop opening, and this fails.
+    #[test]
+    fn d8_a_frozen_wrapped_session_key_still_opens() {
+        let g1 = UserKey::from_bytes(1, [0x31; 32]).unwrap();
+        let g2 = UserKey::from_bytes(2, [0x32; 32]).unwrap();
+        let keys = UserKeys::new(g2.clone(), [g2.wrap_previous(&g1).unwrap()]).unwrap();
+        let blob = unhex(FROZEN_SESSION_KEY).unwrap();
+        assert_eq!(session_key_generation(&blob).unwrap(), 1);
+        assert_eq!(unwrap_session_key(&blob, &SESSION, &keys).unwrap().as_bytes(), &[0x44; 32]);
+    }
+
+    const FROZEN_SESSION_KEY: &str = "02020000000102fac5e5821af44c433077886dd5064cb4127206cbbd97a4f3e2cd340ed8557920e83e03594ff840ad9484f58b2a608ee8d5ab34db729345407613b047695957c6150836";
+
+    /// Prints a fresh blob for the frozen test above: run once with
+    /// `--ignored --nocapture` when the format is meant to change.
+    #[test]
+    #[ignore]
+    fn print_frozen_wrapped_session_key() {
+        let g1 = UserKey::from_bytes(1, [0x31; 32]).unwrap();
+        println!("session_key {}", hex(&wrap_session_key(&SessionKey([0x44; 32]), &SESSION, &g1)));
     }
 
     #[test]

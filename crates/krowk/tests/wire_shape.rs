@@ -92,11 +92,9 @@ fn wire_shape_matches_the_registrys_routes() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// The sync calls (R-SYNC-1, R-E2E-3): a device registered by `krowk sync
-/// recover`, the listing, a new device's `krowk sync join` answered by the
-/// first one's `krowk devices approve` — run by the proxy the moment the
-/// request is opened, so the join polls once — and the session and lease
-/// calls krowk-api makes for the host (ticket 19 puts them behind a command).
+/// The sync calls (R-SYNC-1): a device registered by `krowk sync recover`,
+/// the listing, and the session and lease calls krowk-api makes for the
+/// host (ticket 19 puts them behind a command).
 #[cfg(all(feature = "harness", unix))]
 #[test]
 fn sync_wire_shape_matches_the_registrys_routes() {
@@ -110,31 +108,22 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     std::fs::create_dir_all(dir.join("desktop/home")).unwrap();
     let api = Arc::new(Mutex::new(String::new()));
     let laptop_home = dir.join("laptop/home");
-    let (hook_api, hook_home) = (api.clone(), laptop_home.clone());
-    let hook: Hook = Arc::new(move |_registry, method: &str, path: &str, answer: &[u8]| {
-        if method != "POST" || path != "/v1/device_approvals" {
-            return Ok(());
-        }
-        let request: Value = serde_json::from_slice(&response_body(answer)).map_err(|e| e.to_string())?;
-        let key: [u8; 32] = krowk_client::e2e::unhex(request["public_key"].as_str().unwrap_or_default()).and_then(|b| b.try_into().ok()).ok_or("no public key")?;
-        let signing: [u8; 32] = krowk_client::e2e::unhex(request["signing_key"].as_str().unwrap_or_default()).and_then(|b| b.try_into().ok()).ok_or("no signing key")?;
-        let code = krowk_client::e2e::approval_code(&krowk_client::e2e::DevicePublic(key), &krowk_client::e2e::SigningPublic(signing)).to_string();
-        let laptop = Krowk { home: hook_home.clone(), api: hook_api.lock().unwrap().clone() };
-        match laptop.run(&["devices", "approve", &code], true) {
-            (true, _) => Ok(()),
-            (false, out) => Err(format!("approving the new device failed:\n{out}")),
-        }
-    });
+    // Pairing is sync_pairing.rs, which runs both sides of it.
+    let hook: Hook = Arc::new(|_registry, _method: &str, _path: &str, _answer: &[u8]| Ok(()));
     let proxy = start_proxy(registry.addr(), calls.clone(), failures.clone(), hook);
     *api.lock().unwrap() = format!("http://{proxy}/v1");
     let laptop = Krowk { home: laptop_home, api: api.lock().unwrap().clone() };
-    let desktop = Krowk { home: dir.join("desktop/home"), api: api.lock().unwrap().clone() };
 
-    let words = krowk_client::phrase::encode(&krowk_client::e2e::AccountKey::generate());
-    let recovered = laptop.piped(&["sync", "recover"], &format!("{}\n", *words));
-    let account = recovered["data"]["account_key"].as_str().unwrap().to_string();
-    laptop.ok(&["devices", "list"], true);
-    desktop.ok(&["sync", "join", &account], true);
+    // Sync on the account key, as the lease calls still run on it: set up in
+    // the laptop's home and registered, as `sync recover` did from the phrase.
+    let keys = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk"));
+    let (setup, _) = keys.recover(krowk_client::e2e::AccountKey::generate()).unwrap();
+    let signing = keys.signing_key().unwrap();
+    let signing_public = krowk_client::e2e::hex(&signing.public().0);
+    krowk_api::Client::new(&laptop.api, "krowk_sk_test")
+        .signed_by(krowk_client::e2e::DeviceSigner::new(setup.device.id(), signing).shared())
+        .register_device(&krowk_client::e2e::hex(&setup.device.public().0), &signing_public, "laptop", &setup.account.id().to_string())
+        .unwrap();
 
     let store = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk"));
     let device_id = store.device().unwrap().unwrap().id();
@@ -142,7 +131,7 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     let client = krowk_api::Client::new(&laptop.api, "krowk_sk_test").signed_by(signer);
     let device = device_id.to_string();
     let id = "0190f3a8-7c1e-7a9b-8c2d-3e4f5a6b7c8d";
-    client.put_sync_session(id, &"00".repeat(74), Some(&"00".repeat(40)), None).unwrap();
+    client.put_sync_session(id, &"00".repeat(74), None, Some(&"00".repeat(40)), None).unwrap();
     let lease = client.acquire_lease(id, &device, 60, "production").unwrap();
     client.renew_lease(id, &device, &lease.token, 60, "production").unwrap();
     assert!(!lease.relay_ticket.is_empty(), "the lease carries its holder's relay ticket");
@@ -158,19 +147,10 @@ fn sync_wire_shape_matches_the_registrys_routes() {
 
     assert!(failures.lock().unwrap().is_empty(), "{:?}", failures.lock().unwrap());
     let want = [
-        // `recover` with a key registers the device it set up. +signed marks
+        // The laptop's device, registered. +signed marks
         // the calls that act as a device, signed by its key (crypto.md →
         // Signed registry requests), and only they are.
         "POST /v1/devices +signed",
-        "GET /v1/devices",
-        // `join` opens a request; the proxy answers it as `devices approve`
-        // does — registering itself, listing, answering — before the join
-        // hears back, and the join then polls it once.
-        "POST /v1/device_approvals",
-        "POST /v1/devices +signed",
-        "GET /v1/device_approvals",
-        "PUT /v1/device_approvals/{slug}/approval +signed",
-        "GET /v1/device_approvals/{slug}",
         // A session is PUT under the id its client minted; its lease is a
         // singular resource: POST acquires, PUT renews or hands over, DELETE
         // lets go.
@@ -221,29 +201,6 @@ impl Krowk {
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     }
 
-    /// `run`, keyed, with `input` on stdin.
-    #[cfg(all(feature = "harness", unix))]
-    fn piped(&self, args: &[&str], input: &str) -> Value {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_krowk"));
-        cmd.args(args)
-            .arg("--json")
-            .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", &self.home)
-            .env("KROWK_API_URL", &self.api)
-            .env("KROWK_NO_UPDATE_CHECK", "1")
-            .env("KROWK_TOKEN", "krowk_sk_test")
-            .current_dir(self.home.parent().unwrap())
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        let mut child = cmd.spawn().unwrap();
-        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
-        let out = child.wait_with_output().unwrap();
-        assert!(out.status.success(), "krowk {} failed:\n{}", args.join(" "), String::from_utf8_lossy(&out.stderr));
-        serde_json::from_slice(&out.stdout).unwrap()
-    }
-
     fn ok(&self, args: &[&str], keyed: bool) -> Value {
         let (ok, out) = self.run(args, keyed);
         assert!(ok, "krowk {} failed:\n{out}", args.join(" "));
@@ -285,7 +242,11 @@ fn start_proxy(registry: SocketAddr, calls: Arc<Mutex<Vec<String>>>, failures: A
 
 /// Approves a browser login the moment it is opened.
 fn approve_logins(registry: SocketAddr, method: &str, path: &str, answer: &[u8]) -> Result<(), String> {
-    if method == "POST" && path == "/v1/cli/authorizations" {
+    if method == "POST" && path.split('?').next() == Some("/v1/cli/authorizations") {
+        // Every login says what it is for, and `krowk login` is a login.
+        if !path.contains("action=login") {
+            return Err(format!("a browser login opened without its action: {path}"));
+        }
         approve(registry, answer)?;
     }
     Ok(())

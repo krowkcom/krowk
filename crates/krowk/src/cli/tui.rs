@@ -30,6 +30,18 @@ pub(super) fn wanted(io: &Io, f: &Flags, format: Format, positionals: &[String],
 }
 
 pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
+    run_with(ctx, None)
+}
+
+/// The TUI on a session another machine runs, followed through sync
+/// (`krowk sync attach`, `krowk --resume` of a synced id): drawn as any
+/// session is, its prompts, approvals and interrupts sent to its host.
+#[cfg(unix)]
+pub(super) fn run_synced(ctx: &mut Ctx, o: krowk_tui::synced::Options) -> Result<(), Error> {
+    run_with(ctx, Some(o))
+}
+
+fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(), Error> {
     sessions::check_os()?;
     let flag_mode = prompt::permission_flag(ctx)?;
     let config = prompt::config_json()?;
@@ -37,7 +49,12 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
     registry.check_rollover().map_err(|e| fail("bad_config", e))?;
     let asked = prompt::model_flag(ctx, &registry)?;
     let sessions_dir = log::sessions_dir(ctx.io.env)?;
-    let resume = if ctx.f.resume_pick {
+    // A synced session is not one of this machine's: nothing to resume or
+    // route here, and no log to project — the host runs it as it is.
+    let synced = sync.is_some();
+    let resume = if synced {
+        None
+    } else if ctx.f.resume_pick {
         Some(pick(ctx)?)
     } else {
         match ctx.f.resume.as_str() {
@@ -82,6 +99,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         _ => None,
     };
     let (model, route) = match asked {
+        _ if synced => (None, None),
         Some(instances::Asked::Exact(m)) => (Some(m), None),
         Some(bare) => (None, Some(krowk_tui::Route { asked: Some(bare), current: session_model.clone() })),
         None if session_model.is_some() => (None, None),
@@ -122,7 +140,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         model,
         chosen,
         route,
-        trust: Some(trust_ask),
+        trust: (!synced).then_some(trust_ask),
         permission_mode,
         toolset,
         effort,
@@ -130,16 +148,18 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
         settings,
         history_file,
         notices: notices.into_iter().chain(mode_notices).collect(),
+        no_recovery_kit: no_recovery_kit(ctx),
         version: super::VERSION.into(),
         config: Some(super::providers::config_path()?),
-        daemon: daemon(ctx)?,
-        project: Some(projector.after_turns()),
+        daemon: if synced { None } else { daemon(ctx)? },
+        project: (!synced).then(|| projector.after_turns()),
+        sync,
     });
     // As after `krowk -p`: the log is the session, krowk.db its listing —
     // each session `/sessions` moved away from, and the one shown last.
     // Projected after each turn already, so only a log that has grown
     // since is read again on the way out.
-    for id in outcome.left.iter().chain(&outcome.session_id) {
+    for id in outcome.left.iter().chain(&outcome.session_id).filter(|_| !synced) {
         if let Err(e) = projector.project(ctx.io.env, id) {
             let _ = writeln!(ctx.io.stderr, "! session {id} is saved, but krowk.db was not updated: {} — `krowk sessions sync` retries", e.fix());
         }
@@ -220,4 +240,12 @@ fn pick(ctx: &Ctx) -> Result<String, Error> {
     let id = sessions::pick_session(&rows, krowk_store::now_ms())?;
     let d = sessions::load_by_id(ctx, &conn, &id)?;
     Ok(d.session.foreign_session_id)
+}
+
+/// Whether sync is set up here with no recovery kit on the list, as this
+/// device last verified it: read from the list it keeps, never the network, so the
+/// TUI starts as fast without a registry as with one.
+fn no_recovery_kit(ctx: &Ctx) -> bool {
+    let Ok(home) = krowk_api::home::dir(ctx.io.env) else { return false };
+    matches!(krowk_client::keystore::Keystore::new(&home).device_list(), Ok(Some(chain)) if chain.recovery().is_none())
 }

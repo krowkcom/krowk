@@ -146,6 +146,17 @@ fn the_paste_block_is_built_from_the_artifact() {
     assert!(str_of(&p["paste"], "markdown").contains(" · expires "), "{p}");
 }
 
+/// A login says what it is for; one that names nothing, or something
+/// unknown, is a plain login.
+#[test]
+fn a_browser_login_carries_its_action() {
+    let s = Server::new();
+    let r = request("POST", &s.at("/v1/cli/authorizations?action=remove_device"), "", "", "").json();
+    assert_eq!(str_of(&r, "action"), "remove_device", "{r}");
+    let plain = request("POST", &s.at("/v1/cli/authorizations?action=wipe_everything"), "", "", "").json();
+    assert_eq!(str_of(&plain, "action"), "login", "{plain}");
+}
+
 fn open_login(s: &Server) -> (String, String) {
     let r = request("POST", &s.at("/v1/cli/authorizations"), "", "", "");
     assert_eq!(r.status, 201, "{}", r.text());

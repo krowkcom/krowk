@@ -56,7 +56,15 @@ pub async fn join(j: Join<'_>) -> Result<(Ws, Value), String> {
     let query = if j.env == "production" { String::new() } else { format!("?env={}", j.env) };
     let mut req = format!("{base}/v1/relay/{}{query}", j.session).into_client_request().map_err(|e| format!("{base} is not a relay URL: {e}"))?;
     req.headers_mut().insert("x-krowk-ticket", j.ticket.parse().map_err(|_| "the relay ticket is not a header value")?);
-    let (mut ws, _) = tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(req)).await.map_err(|_| "the relay did not answer in 10 seconds".to_string())?.map_err(|e| format!("the relay could not be reached: {e}"))?;
+    // `wss://`, the hosted relay, is dialed through the harness's own rustls
+    // configuration; `ws://` (a local relay, a direct path) needs none.
+    let tls = if req.uri().scheme_str() == Some("wss") {
+        let config = tokio::task::spawn_blocking(crate::http::tls_config).await.map_err(|e| e.to_string())?.map_err(|e| format!("no TLS to reach the relay with: {e}"))?;
+        Some(tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(config)))
+    } else {
+        None
+    };
+    let (mut ws, _) = tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async_tls_with_config(req, None, false, tls)).await.map_err(|_| "the relay did not answer in 10 seconds".to_string())?.map_err(|e| format!("the relay could not be reached: {e}"))?;
     let challenge = next_control(&mut ws).await?;
     if challenge["type"] != "challenge" {
         return Err(refusal(&challenge));
@@ -240,7 +248,9 @@ pub fn typed(session: &str, line: String) -> Result<crate::protocol::Command, St
 
 /// `krowk sync attach`: follows a synced session, writing each update as
 /// one JSON line to `out`, and sends each line of stdin as a prompt or
-/// the command it names (`typed`).
+/// the command it names (`typed`). Stdin's end ends it, once every command
+/// sent has been answered: what a script piped in is taken before it goes,
+/// and nothing waits on a person who is no longer typing.
 pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<(), String> {
     let session = o.session.clone();
     runtime()?.block_on(async move {
@@ -253,42 +263,96 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                 }
             }
         });
+        let mut owed = Owed::default();
         loop {
             tokio::select! {
-                l = lines.recv() => if let Some(text) = l.filter(|t| !t.trim().is_empty()) {
-                    match typed(&session, text) {
-                        Ok(c) => { let _ = v.commands.send(c); }
-                        Err(e) => eprintln!("krowk: {e}"),
-                    }
-                },
+                // The session first: stdin closed at once (`</dev/null`)
+                // still prints what was read on attaching before it ends.
+                biased;
                 u = v.updates.recv() => {
                     let Some(batch) = u else { return Ok(()) };
                     for u in batch {
-                        let line = match u {
-                            viewer::Update::Line(l) => {
-                                // Said once per request, beside the line a
-                                // script reads: what answers it, typed here.
-                                if let crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)) = &l {
-                                    eprintln!("krowk: {} wants approval — type `/approve {id}`, `/allow-session {id}` or `/deny {id}`", r.tool, id = r.request_id);
-                                }
-                                serde_json::to_string(&l).unwrap_or_default()
-                            }
-                            viewer::Update::Attached { events, .. } | viewer::Update::CaughtUp(events) => events.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n"),
-                            viewer::Update::Host(h) => json!({"type": "sync.host", "present": h}).to_string(),
-                            viewer::Update::Sent { id, queued } => json!({"type": "sync.sent", "id": id, "queued": queued}).to_string(),
-                            viewer::Update::Acked { id, error } => json!({"type": "sync.acked", "id": id, "error": error}).to_string(),
-                            viewer::Update::Path { path, via } => json!({"type": "sync.path", "path": path, "via": via}).to_string(),
-                            viewer::Update::Gap => json!({"type": "sync.gap"}).to_string(),
-                            viewer::Update::Failed(e) => return Err(e),
-                        };
+                        owed.saw(&u);
+                        let line = jsonl(u)?;
                         if !line.is_empty() {
                             let _ = writeln!(out, "{line}");
                         }
                     }
                     let _ = out.flush();
                 }
+                l = lines.recv(), if !owed.eof => match l {
+                    Some(text) if !text.trim().is_empty() => match typed(&session, text) {
+                        Ok(c) => {
+                            owed.handed += 1;
+                            let _ = v.commands.send(c);
+                        }
+                        Err(e) => eprintln!("krowk: {e}"),
+                    },
+                    Some(_) => {}
+                    None => owed.eof = true,
+                },
+            }
+            if owed.done() {
+                return Ok(());
             }
         }
+    })
+}
+
+/// The commands `krowk sync attach` sent and has no answer to yet, and
+/// whether stdin has ended: once it has and none is owed, it is done.
+#[derive(Default)]
+struct Owed {
+    eof: bool,
+    /// Handed to the viewer, not yet shown as sent.
+    handed: usize,
+    /// Sent (or queued) and not yet acknowledged, by id.
+    unacked: std::collections::HashSet<String>,
+}
+
+impl Owed {
+    fn saw(&mut self, u: &viewer::Update) {
+        match u {
+            viewer::Update::Sent { id, .. } => {
+                self.handed = self.handed.saturating_sub(1);
+                self.unacked.insert(id.clone());
+            }
+            viewer::Update::Acked { id, .. } => {
+                self.unacked.remove(id);
+            }
+            _ => {}
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.eof && self.handed == 0 && self.unacked.is_empty()
+    }
+}
+
+/// One update as `krowk sync attach` prints it: a stream line as the
+/// protocol has it, the session's events one a line, or a `sync.*` line of
+/// the viewer's own. A note goes to stderr and prints nothing.
+fn jsonl(u: viewer::Update) -> Result<String, String> {
+    Ok(match u {
+        viewer::Update::Line(l) => {
+            // Said once per request, beside the line a script reads: what
+            // answers it, typed here.
+            if let crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)) = &l {
+                eprintln!("krowk: {} wants approval — type `/approve {id}`, `/allow-session {id}` or `/deny {id}`", r.tool, id = r.request_id);
+            }
+            serde_json::to_string(&l).unwrap_or_default()
+        }
+        viewer::Update::Attached { events, .. } | viewer::Update::CaughtUp(events) => events.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n"),
+        viewer::Update::Host(h) => json!({"type": "sync.host", "present": h}).to_string(),
+        viewer::Update::Sent { id, queued } => json!({"type": "sync.sent", "id": id, "queued": queued}).to_string(),
+        viewer::Update::Acked { id, error } => json!({"type": "sync.acked", "id": id, "error": error}).to_string(),
+        viewer::Update::Path { path, via } => json!({"type": "sync.path", "path": path, "via": via}).to_string(),
+        viewer::Update::Gap => json!({"type": "sync.gap"}).to_string(),
+        viewer::Update::Note(n) => {
+            eprintln!("krowk: {n}");
+            String::new()
+        }
+        viewer::Update::Failed(e) => return Err(e),
     })
 }
 
@@ -305,6 +369,34 @@ mod tests {
             }
             other => panic!("not a prompt: {other:?}"),
         }
+    }
+
+    /// R-RELAY-1: the hosted relay is reachable only at `wss://`, so a
+    /// `wss://` relay URL is dialed over TLS — the listener's first bytes are
+    /// a TLS ClientHello (record type 0x16), not the build refusing the URL
+    /// before it connects, which left v0.12.0-rc3's host and viewers off the
+    /// production relay without a word.
+    #[test]
+    fn r_relay_1_a_wss_relay_is_dialed_over_tls() {
+        use tokio::io::AsyncReadExt;
+        let rt = super::runtime().unwrap();
+        rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let relay = format!("wss://{}", listener.local_addr().unwrap());
+            let first = tokio::spawn(async move {
+                let (mut s, _) = listener.accept().await.unwrap();
+                let mut b = [0u8; 3];
+                s.read_exact(&mut b).await.unwrap();
+                b
+            });
+            let signing = krowk_client::e2e::SigningKey::from_secret(&[7; 32]).unwrap();
+            let j = super::Join { relay: &relay, session: "01a0f731-f1c0-7000-92d7-64b247e51781", env: "production", ticket: "00", device: krowk_client::e2e::DeviceId([1; 16]), signing: &signing, role: krowk_client::e2e::RELAY_ROLE_VIEWER, extra: serde_json::json!({}) };
+            let (joined, b) = tokio::join!(super::join(j), tokio::time::timeout(std::time::Duration::from_secs(10), first));
+            let b = b.expect("the wss dial reached the listener").unwrap();
+            assert_eq!(b[..2], [0x16, 0x03], "a TLS handshake record, got {b:?}");
+            let e = joined.map(|_| ()).expect_err("no relay answered");
+            assert!(!e.contains("TLS support not compiled in"), "{e}");
+        });
     }
 
     /// The five commands, each to its `Command`; anything else starting

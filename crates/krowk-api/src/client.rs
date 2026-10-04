@@ -109,6 +109,9 @@ pub struct Client {
     /// This machine's device key, for the calls that act as it; none until
     /// the caller has one (`signed_by`).
     signer: Option<Arc<dyn RequestSigner>>,
+    /// The person this key speaks for (`GET /v1/key`'s `user_id`), read
+    /// once, the first time a call under `/users/:user_id` needs it.
+    user: std::sync::OnceLock<String>,
 }
 
 impl Client {
@@ -129,13 +132,27 @@ impl Client {
             .build();
         let resolver = GuardResolver { guard: Arc::new(guard), inner: ureq::unversioned::resolver::DefaultResolver::default() };
         let agent = ureq::Agent::with_parts(config, ureq::unversioned::transport::DefaultConnector::default(), resolver);
-        Client { base_url, token: token.to_string(), agent, sleep: std::thread::sleep, signer: None }
+        Client { base_url, token: token.to_string(), agent, sleep: std::thread::sleep, signer: None, user: std::sync::OnceLock::new() }
     }
 
     /// This client, signing the calls that act as a device with `signer`.
     pub fn signed_by(mut self, signer: Arc<dyn RequestSigner>) -> Client {
         self.signer = Some(signer);
         self
+    }
+
+    /// `/users/:user_id`, the person this key speaks for: every call about
+    /// their devices and pairing is under it, and always their own.
+    pub(crate) fn user_path(&self) -> Result<String, Error> {
+        if let Some(id) = self.user.get() {
+            return Ok(format!("/users/{}", crate::client::slug_path(id)));
+        }
+        let id = self.verify_key()?.user_id;
+        if id.is_empty() {
+            return Err(fail("service_key", "this key names no person, and sync is a person's — sign in with `krowk auth login`"));
+        }
+        let _ = self.user.set(id.clone());
+        Ok(format!("/users/{}", slug_path(&id)))
     }
 
     /// Whether calls carry a key. Runs, and so all run metadata, need one.
@@ -170,8 +187,13 @@ impl Client {
 
     /// Opens a browser login. Keyless on purpose: the endpoint exists for a
     /// machine with no key, and sending one would meter it as that key's.
-    pub fn start_cli_authorization(&self) -> Result<CliAuthorization, Error> {
-        let (auth, status): (CliAuthorization, u16) = self.call("POST", "/cli/authorizations", None, MAX_ATTEMPTS, None)?;
+    ///
+    /// `action` says what the login is for, so the approval page can name
+    /// it. It goes in the query string, which a registry that does not know
+    /// it ignores.
+    pub fn start_cli_authorization(&self, action: LoginAction) -> Result<CliAuthorization, Error> {
+        let path = format!("/cli/authorizations?action={}", action.as_str());
+        let (auth, status): (CliAuthorization, u16) = self.call("POST", &path, None, MAX_ATTEMPTS, None)?;
         if auth.slug.is_empty() || auth.code.is_empty() {
             return Err(malformed(
                 status,
@@ -322,7 +344,7 @@ impl Client {
 
     pub(crate) fn device_signer(&self) -> Result<&dyn RequestSigner, Error> {
         self.signer.as_deref().ok_or_else(|| {
-            fail("device_signature_missing", "this call acts as this machine's device and needs its signing key — set sync up on this machine first (`krowk sync init`, `recover` or `join`), then `krowk sync register`")
+            fail("device_signature_missing", "this call acts as this machine's device and needs its signing key — set sync up on this machine first: `krowk sync init`, `krowk sync join` or `krowk sync recover`")
         })
     }
 
@@ -842,7 +864,7 @@ fn fix_for(code: &str, status: u16) -> String {
         // Registering the same device key again is refused until the owner
         // resets sync, which clears the slate for every device it revoked;
         // `recover` alone keeps the revoked key and cannot help.
-        "device_revoked" => "this device has been revoked for the workspace — once its owner has reset sync in the dashboard's settings, run `krowk sync register` on it; until then, ask them",
+        "device_revoked" => "this device was revoked or removed from your device list — pair it again with `krowk sync join` from a device on the list",
         "lease_held" => "another device holds this session's lease — send it commands through that device, or wait for the lease to lapse",
         "lease_stale" => "this device does not hold the session's lease — another device took it, it lapsed, or the token is not the holder's; acquire it again before writing",
         "method_not_allowed" => {
@@ -920,7 +942,7 @@ fn clip(s: &str, n: usize) -> String {
 /// keyless push it is the only thing a retry presents to prove it made the
 /// original call.
 /// SHA-256, hex: the digest a chunk is declared with and read back against.
-fn hex(b: &[u8]) -> String {
+pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 

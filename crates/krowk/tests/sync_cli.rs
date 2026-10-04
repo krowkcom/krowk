@@ -9,9 +9,14 @@
 
 #[path = "../../krowk-harness/tests/common/mock.rs"]
 mod mock;
+#[path = "common/pty.rs"]
+mod pty;
 
 use krowk_client::e2e::{self, AccountKey, SigningKey};
 use krowk_client::keystore::Keystore;
+#[path = "common/device_list.rs"]
+mod device_list;
+use device_list::People;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -21,6 +26,8 @@ use std::time::{Duration, Instant};
 
 const TOKEN: &str = "krowk_sk_sync_cli_000000000000000000000";
 const ANSWER: &str = "the-answer-marker-5c2e";
+/// What the model answers a prompt typed into the TUI on B.
+const TUI_ANSWER: &str = "tui-round-trip-answer-81aa";
 
 /// A model that answers with the marker, except when asked to make a
 /// file, which it does with `bash` — an approval — and a long answer, paced
@@ -30,6 +37,9 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let last = messages.last().cloned().unwrap_or_default();
     let has_result = last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
     let text = last.to_string();
+    if !has_result && text.contains("tui round trip") {
+        return mock::Reply::paced(mock::text_stream(TUI_ANSWER), Duration::from_millis(5));
+    }
     if !has_result && text.contains("a long answer") {
         let words: String = (0..400).map(|i| format!("word{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
@@ -51,6 +61,8 @@ struct World {
     relay: String,
     mock: String,
     account: AccountKey,
+    /// The person's device list, which every machine is put on.
+    people: std::sync::Mutex<People>,
     _registry: krowk_devregistry::Running,
     _mock: mock::Mock,
 }
@@ -80,7 +92,7 @@ impl World {
         let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
         std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None }));
         let m = mock::serve(model);
-        World { name: name.into(), root: root.canonicalize().unwrap(), api, relay: relay_url, mock: m.url.clone(), account: AccountKey::generate(), _registry: registry, _mock: m }
+        World { name: name.into(), root: root.canonicalize().unwrap(), api, relay: relay_url, mock: m.url.clone(), account: AccountKey::generate(), people: Default::default(), _registry: registry, _mock: m }
     }
 
     fn machine(&self, name: &str) -> Machine {
@@ -95,6 +107,12 @@ impl World {
         let ks = Keystore::new(&home.join(".krowk"));
         ks.recover(AccountKey::from_bytes(*self.account.as_bytes())).unwrap();
         let (device, signing) = (ks.device().unwrap().unwrap(), ks.signing_key().unwrap());
+        {
+            let mut people = self.people.lock().unwrap();
+            people.enlist(&ks, name);
+            // A host reads the registry's list before it seals.
+            people.publish(&self.api, TOKEN);
+        }
         let api = krowk_api::Client::new(&self.api, TOKEN).signed_by(e2e::DeviceSigner::new(device.id(), SigningKey::from_secret(&*signing.secret_bytes()).unwrap()).shared());
         api.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), name, &self.account.id().to_string()).unwrap();
         let env = vec![
@@ -256,6 +274,119 @@ fn r_perm_2_sync_attach_approves_denies_and_interrupts_from_stdin() {
     assert!(host.child.try_wait().unwrap().is_none(), "A still hosts: {:?}", host.stderr());
 }
 
+/// A's session made with `krowk -p` and hosted by `krowk sync host`, synced
+/// to the registry: the host's process, and the session's id.
+fn hosted(w: &World, a: &Machine) -> (Running, String) {
+    let made = a.command(&["-p", "hello", "--model", "claude-sonnet-4-6"]).output().unwrap();
+    assert!(made.status.success(), "A makes a session: {}", String::from_utf8_lossy(&made.stderr));
+    let session = a.session();
+    let host = Running::spawn(a.command(&["sync", "host", &session]));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while a.api.show_sync_session(&session).is_err() {
+        assert!(Instant::now() < deadline, "A syncs the session: {:?}", host.stderr());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = w;
+    (host, session)
+}
+
+/// D11: `krowk sync attach` with a terminal opens the TUI on the session —
+/// its history drawn as a resumed session's is, the host's presence on the
+/// status line, a prompt typed in the prompt box answered by A's model, and
+/// an approval answered with the dialog's `y`. Mode switches, which the
+/// host would refuse, are refused here, saying so.
+#[test]
+fn d11_sync_attach_on_a_terminal_draws_the_session_in_the_tui() {
+    let w = World::new("tui");
+    let a = w.machine("a");
+    let b = w.machine("b");
+    let (host, session) = hosted(&w, &a);
+    let mut c = b.command(&["sync", "attach", &session]);
+    c.env("TERM", "xterm-256color");
+    let mut t = pty::Pty::spawn(c, 120, 40);
+    let wait = |t: &pty::Pty, what: &str| assert!(t.wait_for(what, Duration::from_secs(20)).is_some(), "no {what:?}: {:?}\nA: {:?}", t.text(), host.stderr());
+    // History: A's first answer, from the chunks; then the attach line,
+    // naming A by its name on the device list, and A on the status line.
+    // No splash: the session is picked up, not opened.
+    wait(&t, ANSWER);
+    // The pty's text is raw: the glyph and the words are styled apart, and
+    // the status line is drawn a run of cells at a time.
+    // `krowk sync host` seals no title: A is named alone, never the id.
+    wait(&t, "⇄ \u{1b}[0mAttached to a\r");
+    wait(&t, "●");
+    assert!(!t.text().contains("Directory:"), "no splash mid-session: {:?}", t.text());
+    // A prompt round trip.
+    t.write(b"tui round trip\r");
+    wait(&t, TUI_ANSWER);
+    // And its turn ended here, on the host's result: the footer under it,
+    // after the one the history drew.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while t.text().matches("Worked for").count() < 2 {
+        assert!(Instant::now() < deadline, "the turn ends: {:?}", t.text());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // An approval, answered in the dialog. The dialog takes no key until it
+    // has been up a moment (a key typed ahead is no answer).
+    t.write(b"make the allowed file\r");
+    wait(&t, "allow once");
+    assert!(!a.repo.join("allowed.txt").exists(), "A waits on B");
+    std::thread::sleep(Duration::from_millis(600));
+    t.write(b"y");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !a.repo.join("allowed.txt").exists() {
+        assert!(Instant::now() < deadline, "B's y ran the call on A: {:?}", t.text());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!t.text().contains("for this project"), "a viewer is not offered A's project rules");
+    // The host caps remote prompts at its default mode: no switch offered.
+    t.write(b"/mode plan\r");
+    wait(&t, "is the host's to change");
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()), "B leaves: {:?}", t.text());
+}
+
+/// D11: `krowk --resume` of a session only another machine holds opens the
+/// TUI on it through sync, on a terminal, as `krowk sync attach` does.
+#[test]
+fn d11_resume_of_a_synced_session_on_a_terminal_opens_the_tui() {
+    let w = World::new("tuiresume");
+    let a = w.machine("a");
+    let b = w.machine("b");
+    let (host, session) = hosted(&w, &a);
+    let mut c = b.command(&["--resume", &session]);
+    c.env("TERM", "xterm-256color");
+    let mut t = pty::Pty::spawn(c, 120, 40);
+    for what in [ANSWER, "Attached to", "●"] {
+        assert!(t.wait_for(what, Duration::from_secs(20)).is_some(), "no {what:?}: {:?}\nA: {:?}", t.text(), host.stderr());
+    }
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()), "B leaves: {:?}", t.text());
+}
+
+/// D11: `krowk sync attach` printing stream-json ends when its stdin does,
+/// once the command sent before it ended has been answered.
+#[test]
+fn d11_sync_attach_as_jsonl_ends_with_stdin_once_its_commands_are_answered() {
+    let w = World::new("eof");
+    let a = w.machine("a");
+    let b = w.machine("b");
+    let (_host, session) = hosted(&w, &a);
+    let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
+    view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
+    view.type_line("hello again");
+    drop(view.child.stdin.take());
+    view.until("its ack", is("sync.acked"));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(s) = view.child.try_wait().unwrap() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "attach ends with stdin: {:?}", view.seen);
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.success(), "{status:?}: {:?}", view.stderr());
+}
+
 /// Todo 22b: `krowk sync host` for a session this machine has no log of
 /// ends at once with the fix, and writes nothing to the registry — before,
 /// it took the session's lease and then waited, silent, forever.
@@ -272,4 +403,57 @@ fn sync_host_of_a_session_this_machine_does_not_have_fails_fast() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("no session") && err.contains("krowk sync host"), "says why and what to do: {err}");
     assert!(a.api.show_sync_session(id).is_err(), "nothing was made in the registry");
+}
+
+/// #206's review, M2: before it seals anything, a host takes the device
+/// list from the registry and extends its pin with it, so a machine that
+/// slept through a removal never seals under the generation it left
+/// behind. A registry that cannot be asked is a refusal — the kept list is
+/// never used in its place.
+#[test]
+fn sync_host_refuses_when_the_registry_cannot_give_it_the_device_list() {
+    let w = World::new("stale-list");
+    let a = w.machine("a");
+    let id = "01a0ec7b-3333-7000-8000-000000000033";
+    let log = a.home.join(".krowk/sessions").join(id);
+    std::fs::create_dir_all(&log).unwrap();
+    std::fs::write(log.join(krowk_harness::log::EVENTS_FILE), "").unwrap();
+    let dead = TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead_api = format!("http://{}/v1", dead.local_addr().unwrap());
+    drop(dead);
+    let started = Instant::now();
+    let out = a.command(&["sync", "host", id]).env("KROWK_API_URL", &dead_api).stdin(Stdio::null()).output().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(60), "it did not wait: {:?}", started.elapsed());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains("device list"), "refused, and says why: {err}");
+    assert!(a.api.show_sync_session(id).is_err(), "nothing was sealed or made in the registry");
+}
+
+/// A native session stored before its krowk.db row took its log's id is
+/// listed under another id; `sync host` takes that one too, and hosts the
+/// log it binds to rather than refusing it as unknown.
+#[test]
+fn sync_host_takes_the_id_an_older_store_listed_a_session_under() {
+    let w = World::new("store-id");
+    let a = w.machine("a");
+    let log_id = "01a0ec7b-4444-7000-8000-000000000044";
+    let log = a.home.join(".krowk/sessions").join(log_id);
+    std::fs::create_dir_all(&log).unwrap();
+    std::fs::write(log.join(krowk_harness::log::EVENTS_FILE), "").unwrap();
+    let home = a.home.display().to_string();
+    let env = |k: &str| if k == "HOME" { home.clone() } else { String::new() };
+    let conn = krowk_store::open(&env).unwrap();
+    let binding = krowk_store::Binding { provider: "krowk".into(), harness: "krowk".into(), foreign_session_id: log_id.into(), ..Default::default() };
+    let th = krowk_store::Thread { worktree: krowk_store::Worktree { path: a.repo.display().to_string(), ..Default::default() }, binding, ..Default::default() };
+    krowk_store::Writer::new(&conn).ingest(&th).unwrap();
+    let store_id: String = conn.query_row("SELECT id FROM session", [], |r| r.get(0)).unwrap();
+    assert_ne!(store_id, log_id, "a row minted its own id, as before");
+
+    let dead = TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead_api = format!("http://{}/v1", dead.local_addr().unwrap());
+    drop(dead);
+    let out = a.command(&["sync", "host", &store_id]).env("KROWK_API_URL", &dead_api).stdin(Stdio::null()).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("no session"), "the store's id names the log: {err}");
+    assert!(!out.status.success() && err.contains("device list"), "it got as far as the registry: {err}");
 }

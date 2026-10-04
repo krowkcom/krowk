@@ -737,7 +737,8 @@ fn r_tui_1_a_menu_opened_and_closed_leaves_no_gap_in_scrollback_and_no_space_und
     assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     tm.keys(&["go", "Enter"]);
     assert!(tm.wait_for("tokens", Duration::from_secs(30)).is_some(), "{}", tm.screen());
-    let at_bottom = |s: &str| s.lines().count() == 24 && s.lines().nth_back(1).is_some_and(|l| l.contains(" help")) && s.lines().last().is_some_and(|l| l.contains("$0.00"));
+    // The status line and the cost, then the empty row under them.
+    let at_bottom = |s: &str| s.lines().count() == 24 && s.lines().nth_back(2).is_some_and(|l| l.contains(" help")) && s.lines().nth_back(1).is_some_and(|l| l.contains("$0.00")) && s.lines().last().is_some_and(|l| l.trim().is_empty());
     // The slash menu closes as its slash is deleted, the help on Esc.
     for (open, close) in [("/", "BSpace"), ("?", "Escape")] {
         for _ in 0..3 {
@@ -750,8 +751,10 @@ fn r_tui_1_a_menu_opened_and_closed_leaves_no_gap_in_scrollback_and_no_space_und
         }
     }
     tm.keys(&["again", "Enter"]);
-    assert!(tm.wait_for("▎ again", Duration::from_secs(10)).is_some(), "{}", tm.screen());
-    let history = tm.wait_still(|s| s.split("▎ again").nth(1).is_some_and(|after| after.contains("tokens")) && at_bottom(s), Duration::from_secs(30)).unwrap_or_else(|| panic!("the second turn never finished:\n{}", tm.screen()));
+    // In history, not on the screen: the second answer is quick to push it
+    // up past the top.
+    assert!(tm.wait_in_history("▎ again", Duration::from_secs(10)).is_some(), "{}", tm.history());
+    let history = tm.wait_still(|s| tm.history().split("▎ again").nth(1).is_some_and(|after| after.contains("tokens")) && at_bottom(s), Duration::from_secs(30)).unwrap_or_else(|| panic!("the second turn never finished:\n{}", tm.screen()));
     let rows: Vec<&str> = history.lines().collect();
     let logo: Vec<usize> = rows.iter().enumerate().filter(|(_, l)| l.contains('▀')).map(|(i, _)| i).collect();
     assert!(logo.len() > 1 && logo.windows(2).all(|w| w[1] == w[0] + 1), "the logo in one piece:\n{history}");
@@ -776,8 +779,9 @@ fn r_tui_3_a_resize_mid_stream_never_repeats_a_line_or_leaves_the_live_region_be
     tm.tmux(&["resize-window", "-t", "t", "-x", "70", "-y", "20"]);
     assert!(tm.wait_for("tokens", Duration::from_secs(60)).is_some(), "{}", tm.screen());
     tm.tmux(&["resize-window", "-t", "t", "-x", "120", "-y", "40"]);
-    // Redrawn at 120x40: the status bar on the last of forty rows.
-    let redrawn = |s: &str| s.lines().count() == 40 && s.lines().nth_back(1).is_some_and(|l| l.contains(" help")) && s.matches(" help").count() == 1;
+    // Redrawn at 120x40: the status bar over the cost and the empty row
+    // that end the forty rows.
+    let redrawn = |s: &str| s.lines().count() == 40 && s.lines().nth_back(2).is_some_and(|l| l.contains(" help")) && s.matches(" help").count() == 1;
     let history = tm.wait_still(redrawn, Duration::from_secs(10)).unwrap_or_else(|| panic!("never redrawn after the resize:\n{}", tm.screen()));
     // A frame already on its way when the terminal changes size is read at
     // the new size; it moves from the caret, so it still lands where it was
@@ -800,6 +804,39 @@ fn r_tui_3_a_resize_mid_stream_never_repeats_a_line_or_leaves_the_live_region_be
     assert_eq!(history.matches("▎ go").count(), 1, "{history}");
     let bars = tm.screen().matches(" help").count();
     assert_eq!(bars, 1, "one status bar on screen after two resizes:\n{}", tm.screen());
+}
+
+/// The prompt, `arrow` its first row, once in history and on its band
+/// once: `blank_above` empty rows over it (the last two the plain one and
+/// the band's), the band's empty row and a plain one under it and the
+/// status line right after, and the band's colour (236) nowhere else —
+/// a reflowed piece of it left behind would show there, as a rule did.
+fn one_band(tm: &Tmux, arrow: &str, blank_above: usize) {
+    let styled = tm.history_styled();
+    let plain: Vec<String> = styled
+        .lines()
+        .map(|l| {
+            // Without its SGR sequences, the only ones `capture-pane -e` writes.
+            let mut out = String::new();
+            let mut chars = l.chars();
+            while let Some(c) = chars.next() {
+                if c == '\x1b' {
+                    chars.by_ref().find(|&c| c == 'm');
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        })
+        .collect();
+    let at: Vec<usize> = plain.iter().enumerate().filter(|(_, l)| l.trim_start().starts_with(arrow)).map(|(i, _)| i).collect();
+    assert_eq!(at.len(), 1, "one prompt:\n{styled}");
+    let i = at[0];
+    let above = plain[..i].iter().rev().take_while(|l| l.trim().is_empty()).count();
+    assert_eq!(above, blank_above, "the empty rows over the prompt, its band's among them, and no more:\n{styled}");
+    assert!(plain.get(i + 1).is_some_and(|l| l.trim().is_empty()) && plain.get(i + 2).is_some_and(|l| l.trim().is_empty()) && plain.get(i + 3).is_some_and(|l| l.contains(" help")), "and under it, the status line straight after:\n{styled}");
+    let band: Vec<usize> = styled.lines().enumerate().filter(|(_, l)| l.contains("48;5;236m")).map(|(n, _)| n).collect();
+    assert!(band.iter().all(|&n| n == i - 1 || n == i), "the band's colour away from the prompt, {band:?} for {i}:\n{styled}");
 }
 
 /// The live region at its widest — the offline notice, the keys overlay,
@@ -828,16 +865,15 @@ fn narrowing(name: &str, before: &str, steps: &[&str]) {
         assert_eq!(history.matches(row).count(), 1, "{row:?} is in scrollback twice — the old live region was left behind:\n{history}");
     }
     assert_eq!(history.matches("Model:     anthropic/claude-opus-5-5").count(), 1, "the header is still there, once:\n{history}");
-    let rules = history.lines().filter(|l| l.trim().len() > 3 && l.trim().chars().all(|c| c == '─')).count();
-    assert_eq!(rules, 2, "one prompt, its two rules once each:\n{history}");
+    one_band(&tm, "→ quit", 2);
     // At 40 columns the status line is two rows still: the device gave
     // way, the model is cut short, offline and the help stay, and the cost
     // is under them.
     let screen = tm.screen();
     let mut rows = screen.lines().map(str::trim_end).filter(|l| !l.is_empty()).rev();
     let (cost, bar) = (rows.next().unwrap_or_default(), rows.next().unwrap_or_default());
-    assert!(bar.starts_with("    Claude Opus") && bar.ends_with(" | offline | ? help") && bar.chars().count() <= 40 && !bar.contains('$'), "{bar:?}\n{screen}");
-    assert_eq!(cost, "    $0.00", "{screen}");
+    assert!(bar.starts_with("  Claude Opus") && bar.ends_with(" | offline | ? help") && bar.chars().count() <= 40 && !bar.contains('$'), "{bar:?}\n{screen}");
+    assert_eq!(cost, "  $0.00", "{screen}");
     if !before.is_empty() {
         // What was on the terminal is kept: the open scrolls it into
         // scrollback, the way a clear that keeps scrollback does, and the
@@ -1115,10 +1151,10 @@ fn r_tui_1_a_menu_opened_and_closed_on_a_short_session_puts_nothing_in_scrollbac
         tm.keys(&["Escape"]);
         assert!(tm.wait_gone("Send the prompt", Duration::from_secs(5)).is_some(), "the help never closed:\n{}", tm.screen());
     }
-    let history = tm.wait_still(|s| s.lines().nth_back(1).is_some_and(|l| l.contains("? help")), Duration::from_secs(5)).unwrap_or_else(|| panic!("never settled:\n{}", tm.screen()));
+    let history = tm.wait_still(|s| s.lines().nth_back(2).is_some_and(|l| l.contains("? help")), Duration::from_secs(5)).unwrap_or_else(|| panic!("never settled:\n{}", tm.screen()));
     assert_eq!(gap(&history), before, "rows between the shell's output and the logo:\n{history}");
     let screen = tm.screen();
-    assert!(screen.lines().nth_back(1).is_some_and(|l| l.contains(" help")), "the status line on the last rows:\n{screen}");
+    assert!(screen.lines().nth_back(2).is_some_and(|l| l.contains(" help")), "the status line on the last rows:\n{screen}");
 }
 
 /// Whether `needle` is in what the TUI wrote after byte `from`, within
@@ -1666,8 +1702,9 @@ fn a_suspended_vendor_login_gives_the_terminal_back_whole_after_a_resize() {
         assert!(!history.contains(gone), "the old live region was left in scrollback: {gone:?}\n{history}");
     }
     assert_eq!(history.matches(" help").count(), 1, "one status line:\n{history}");
-    let rules = history.lines().filter(|l| l.trim().len() > 3 && l.trim().chars().all(|c| c == '─')).count();
-    assert_eq!(rules, 2, "one prompt box, drawn at the new width:\n{history}");
+    assert_eq!(history.matches("→ Plan, search, build anything").count(), 1, "one prompt:\n{history}");
+    // Two empty rows under the notice, as before the band, then its two.
+    one_band(&tm, "→ Plan, search, build anything", 4);
     let screen = tm.screen();
     assert!(screen.lines().all(|l| l.chars().count() <= 72), "{screen}");
 }

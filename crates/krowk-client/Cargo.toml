@@ -40,7 +40,10 @@ chacha20poly1305 = { version = "0.11", default-features = false, features = ["al
 # Wiping every secret this crate holds when it is dropped. Linked already.
 zeroize = { version = "1", features = ["derive"] }
 # The recovery phrase's checksum and the key and device ids. Linked already.
-sha2 = "0.11"
+# `zeroize` wipes a hasher's state on drop, so HKDF's pseudorandom key (held
+# in an HMAC-SHA-256 state) does not outlive the recovery kit's derivation;
+# it adds no crate, zeroize being linked already.
+sha2 = { version = "0.11", features = ["zeroize"] }
 # The operating system's random numbers, for keys and nonces. Linked already.
 getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -59,3 +62,18 @@ schemars = { version = "1", default-features = false, features = ["derive", "std
 # tables) is off: a signature per connection does not need them, and they
 # cost tens of KiB. `zeroize` wipes the signing key on drop.
 ed25519-dalek = { version = "3", default-features = false, features = ["zeroize"] }
+# SPAKE2 for pairing a device by a short code (engineering/devices.md in
+# Canon, → Adding a device): magic-wormhole's construction on the Ed25519
+# group, asymmetric mode. Pinned to the one prerelease on curve25519-dalek 5,
+# sha2 0.11 and hkdf 0.13, all linked already, so it adds the group's
+# constants and a few KiB of glue against full.size and no second curve;
+# 0.4 would link curve25519-dalek 4 and sha2 0.10 beside ours. Its
+# `getrandom` feature stays off: `pairing` hands it the OS random source
+# through its re-exported rand_core. No audit: tests/pairing.rs holds it to
+# the python-spake2 vectors magic-wormhole interoperates with.
+spake2 = { version = "=0.5.0-pre.0", default-features = false }
+# HKDF-SHA256 and HMAC-SHA256 for pairing's key confirmation, and HKDF for
+# deriving the recovery device from the kit's 128 bits. Both linked already,
+# by hpke.
+hkdf = "0.13"
+hmac = "0.13"

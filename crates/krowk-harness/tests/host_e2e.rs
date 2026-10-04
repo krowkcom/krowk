@@ -119,14 +119,7 @@ fn a_prompt_reads_a_file_streams_its_items_and_a_resume_continues_on_the_cache()
     assert_eq!(first.num_model_calls, 2);
     assert_eq!(first.usage, Usage { input_tokens: 21, output_tokens: 107, cache_read_tokens: 2350, cache_write_tokens: 3760, reasoning_tokens: 0 });
     assert!(first.cost_usd.is_some_and(|c| c > 0.0));
-    let started = lines.iter().filter(|l| matches!(l, StreamLine::Live(LiveEvent::ItemStarted { .. }))).count();
-    let deltas = lines.iter().filter(|l| matches!(l, StreamLine::Live(LiveEvent::ItemDelta { .. }))).count();
-    assert!(started >= 5 && deltas >= 7, "start and delta frames stream: {started} {deltas}");
-    assert!(matches!(lines.last(), Some(StreamLine::Live(LiveEvent::Result(r))) if *r == first), "the stream ends with the result");
-    let result_read = lines.iter().any(|l| {
-        matches!(l, StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::ToolResult { output, is_error: false, .. }, .. }, .. }) if output.contains("Permalinks for agent output."))
-    });
-    assert!(result_read, "the read tool ran against the working directory");
+    assert_first_stream(&lines, &first);
 
     // The second call carried the tool result, and the thinking block with
     // its signature untouched.
@@ -153,9 +146,44 @@ fn a_prompt_reads_a_file_streams_its_items_and_a_resume_continues_on_the_cache()
         assert_eq!(seen[2].body["tools"], seen[0].body["tools"]);
     }
 
-    // R-LOG-1: every line validates against the generated schema, carries a
-    // UUIDv7 id, and hangs from the line before it; only the root has no parent.
     let dir = log::sessions_dir(&home.env()).unwrap().join(&first.session_id);
+    assert_log_chain(&dir, &lines, &first);
+    assert_context_records(&dir, &m);
+
+    // R-LOG-2, R-LOG-5: the log projects into krowk.db, and a rebuild from
+    // the JSONL alone gives the same rows.
+    let env = home.env();
+    let listed = project_all(&env);
+    let row = listed.iter().find(|r| r.harness == "krowk").expect("a krowk session in the listing");
+    assert_eq!((row.turn_count, row.foreign_session_id.as_str()), (2, first.session_id.as_str()));
+    assert_eq!(row.title, "read README.md and summarise it in one line");
+    // One id everywhere: the row the person lists is the log's session,
+    // which `krowk sync host` and `--resume` name.
+    assert_eq!(row.id, first.session_id, "stored under the log's own id");
+    let before = detail(&env, &row.id);
+    std::fs::remove_file(krowk_store::db_path(&env).unwrap()).unwrap();
+    let rebuilt = project_all(&env);
+    let row2 = rebuilt.iter().find(|r| r.harness == "krowk").unwrap();
+    assert_eq!(detail(&env, &row2.id), before, "rebuilt from the JSONL alone");
+    assert_eq!(row2.id, first.session_id, "and under the same id");
+}
+
+/// The first turn's stream: start and delta frames, the result last, and the
+/// read tool's output from the working directory.
+fn assert_first_stream(lines: &[StreamLine], first: &RunResult) {
+    let started = lines.iter().filter(|l| matches!(l, StreamLine::Live(LiveEvent::ItemStarted { .. }))).count();
+    let deltas = lines.iter().filter(|l| matches!(l, StreamLine::Live(LiveEvent::ItemDelta { .. }))).count();
+    assert!(started >= 5 && deltas >= 7, "start and delta frames stream: {started} {deltas}");
+    assert!(matches!(lines.last(), Some(StreamLine::Live(LiveEvent::Result(r))) if r == first), "the stream ends with the result");
+    let result_read = lines.iter().any(|l| {
+        matches!(l, StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::ToolResult { output, is_error: false, .. }, .. }, .. }) if output.contains("Permalinks for agent output."))
+    });
+    assert!(result_read, "the read tool ran against the working directory");
+}
+
+/// R-LOG-1: every log line validates against the generated schema, carries a
+/// UUIDv7 id, and hangs from the line before it; only the root has no parent.
+fn assert_log_chain(dir: &Path, lines: &[StreamLine], first: &RunResult) {
     let raw = std::fs::read_to_string(dir.join(log::EVENTS_FILE)).unwrap();
     let validator = schema("log-event.schema.json");
     let events: Vec<LogEvent> = raw
@@ -175,14 +203,16 @@ fn a_prompt_reads_a_file_streams_its_items_and_a_resume_continues_on_the_cache()
     assert_eq!(turns, 2);
     // Every stream line validates against the stream schema too.
     let stream = schema("stream-line.schema.json");
-    for l in &lines {
+    for l in lines {
         assert!(stream.is_valid(&serde_json::to_value(l).unwrap()), "{l:?}");
     }
+}
 
-    // R-LOG-4: each turn's exact system prompt and tools, beside the log.
+/// R-LOG-4: each turn's exact system prompt and tools, beside the log.
+fn assert_context_records(dir: &Path, m: &mock::Mock) {
     let ctx: Vec<ContextRecord> = std::fs::read_to_string(dir.join(log::CONTEXT_FILE)).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(ctx.len(), 2);
-    assert_eq!(ctx[0].system, seen_system(&m));
+    assert_eq!(ctx[0].system, seen_system(m));
     assert_eq!(ctx[0].tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["read", "write", "str_replace", "bash", "grep", "glob", "todo_write", "publish", "subagent"]);
     assert_eq!(ctx[0].toolset, "claude");
     assert!(ctx[0].system_tokens > 0 && ctx[0].tools_tokens > ctx[0].system_tokens, "{} {}", ctx[0].system_tokens, ctx[0].tools_tokens);
@@ -190,19 +220,6 @@ fn a_prompt_reads_a_file_streams_its_items_and_a_resume_continues_on_the_cache()
     for l in std::fs::read_to_string(dir.join(log::CONTEXT_FILE)).unwrap().lines() {
         assert!(context_schema.is_valid(&serde_json::from_str(l).unwrap()), "{l}");
     }
-
-    // R-LOG-2, R-LOG-5: the log projects into krowk.db, and a rebuild from
-    // the JSONL alone gives the same rows.
-    let env = home.env();
-    let listed = project_all(&env);
-    let row = listed.iter().find(|r| r.harness == "krowk").expect("a krowk session in the listing");
-    assert_eq!((row.turn_count, row.foreign_session_id.as_str()), (2, first.session_id.as_str()));
-    assert_eq!(row.title, "read README.md and summarise it in one line");
-    let before = detail(&env, &row.id);
-    std::fs::remove_file(krowk_store::db_path(&env).unwrap()).unwrap();
-    let rebuilt = project_all(&env);
-    let row2 = rebuilt.iter().find(|r| r.harness == "krowk").unwrap();
-    assert_eq!(detail(&env, &row2.id), before, "rebuilt from the JSONL alone");
 }
 
 /// R-TOOL-2: the recorded tool definitions carry each family's edit tool —

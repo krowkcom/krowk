@@ -599,32 +599,9 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
         Some(Ok(c)) => Some(c),
         None => None,
     };
-    let (call, claude, tool_input) = if let Some(c) = own.clone() {
-        let claude = c.call.tool.clone();
-        (c.call, claude, c.hook_input)
-    } else if name == crate::mcp::SEARCH && !ctx.compat.mcp.is_empty() {
-        (crate::permissions::Call { tool: "McpSearch".into(), access: crate::permissions::Access::Free, subject: None }, "McpSearch".to_string(), input.clone())
-    } else if name == crate::mcp::CALL && !ctx.compat.mcp.is_empty() {
-        // Judged, and seen by hooks, as the MCP tool itself, under Claude
-        // Code's name for it: `Mcp(server:tool)` and `mcp__server__tool`
-        // rules and hooks hold as they would there.
-        match crate::mcp::target(input) {
-            Ok((server, tool)) => {
-                let claude = format!("mcp__{server}__{tool}");
-                (crate::permissions::Call { tool: claude.clone(), access: crate::permissions::Access::Mcp { server, tool }, subject: None }, claude, crate::mcp::arguments(input))
-            }
-            Err(e) => return e,
-        }
-    } else if skill {
-        match crate::compat::skills::call(&ctx.compat.skills, input) {
-            Ok((call, skill_name)) => (call, "Skill".to_string(), json!({ "skill": skill_name })),
-            Err(e) => return e,
-        }
-    } else {
-        match tools::describe(name, input, env) {
-            Ok(c) => (c, crate::permissions::rules::canonical(name), claude_input(name, input)),
-            Err(e) => return e,
-        }
+    let (call, claude, tool_input) = match described(ctx, env, own.clone(), skill, name, input) {
+        Ok(d) => d,
+        Err(e) => return e,
     };
     let pre = hooks.run(hooks::Event::PreToolUse, Some(&claude), json!({"tool_name": claude, "tool_input": tool_input})).await;
     if let Some(why) = pre.block {
@@ -674,6 +651,29 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
         output.push_str(&format!("\n\n(a hook adds: {c})"));
     }
     (output, is_error)
+}
+
+/// The call as permissions and hooks judge it — its rule, its name under
+/// Claude Code's, and the input its hooks see — or why it cannot be made.
+fn described(ctx: &TurnContext, env: &tools::ToolEnv<'_>, own: Option<SessionCall>, skill: bool, name: &str, input: &serde_json::Value) -> Result<(crate::permissions::Call, String, serde_json::Value), (String, bool)> {
+    Ok(if let Some(c) = own {
+        let claude = c.call.tool.clone();
+        (c.call, claude, c.hook_input)
+    } else if name == crate::mcp::SEARCH && !ctx.compat.mcp.is_empty() {
+        (crate::permissions::Call { tool: "McpSearch".into(), access: crate::permissions::Access::Free, subject: None }, "McpSearch".to_string(), input.clone())
+    } else if name == crate::mcp::CALL && !ctx.compat.mcp.is_empty() {
+        // Judged, and seen by hooks, as the MCP tool itself, under Claude
+        // Code's name for it: `Mcp(server:tool)` and `mcp__server__tool`
+        // rules and hooks hold as they would there.
+        let (server, tool) = crate::mcp::target(input)?;
+        let claude = format!("mcp__{server}__{tool}");
+        (crate::permissions::Call { tool: claude.clone(), access: crate::permissions::Access::Mcp { server, tool }, subject: None }, claude, crate::mcp::arguments(input))
+    } else if skill {
+        let (call, skill_name) = crate::compat::skills::call(&ctx.compat.skills, input)?;
+        (call, "Skill".to_string(), json!({ "skill": skill_name }))
+    } else {
+        (tools::describe(name, input, env)?, crate::permissions::rules::canonical(name), claude_input(name, input))
+    })
 }
 
 /// Whether a deny rule covers an MCP tool — `*` for the whole server:

@@ -57,6 +57,120 @@ the versions are the `v*` tags a release is cut from. Entries land under
   are asked about again when its `.mcp.json` changes after you trusted it,
   and no server inherits your provider keys unless its config sets them.
 
+- **Idle sessions move off the machine as weekly vintages.** `krowk sessions
+  archive` takes every native session idle for more than 14 days
+  (`--older-than DAYS`, or `KROWK_ARCHIVE_AFTER_DAYS`) and stores each ISO
+  week's sessions in the registry as one vintage: zstd-compressed JSONL,
+  sealed under the account key, so the registry only ever holds ciphertext.
+  An existing vintage for the week is merged, never overwritten. `--weekly`
+  runs only when a week has passed since the last run, so it can be put on
+  a schedule. An archived session keeps its title, summary, directory,
+  dates, models and cost on the machine, so `krowk sessions` still lists
+  it, and `krowk sessions show` or `krowk -p --resume` fetches its week and
+  restores it into krowk.db first. `krowk sessions restore <id>` does that
+  on its own. `krowk sessions pin <id>` keeps a session from ever being
+  archived, and `unpin` undoes it. It needs `krowk sync` set up on the
+  machine.
+
+### Fixed
+
+- **Two quick Ctrl-Cs right after a prompt still print the resume line.**
+  Leaving that fast could beat the session's start to the TUI, so krowk
+  exited 130 without `krowk --resume <id>` although the host had already
+  started the session. The TUI now reads what the host already sent before it leaves.
+
+## [0.12.1] - 2026-10-04
+
+### Changed
+
+- **krowk says what it is: a coding agent harness.** `krowk help`, the
+  installer and the package descriptions lead with one session on any
+  machine, model or agent; publishing to a permalink is one of the things it
+  does. `sync` and `devices` move up to the `AGENT` heading in `krowk help`.
+  The lean build, which only publishes, still calls itself that.
+- **The installer writes the agent skill for every agent that reads one.**
+  Besides Claude Code's `~/.claude/skills`, it writes `~/.agents/skills`,
+  which krowk and Codex read, when that directory exists, and names every
+  place it wrote on one line. Its next steps lead with `krowk`, `krowk login`
+  and `krowk sync init`, then `krowk push`.
+
+## [0.12.0] - 2026-10-04
+
+### Added
+
+- **`krowk sync attach` opens the TUI.** On a terminal, a session another
+  machine runs is drawn as your own are: its history, then live. Prompts go
+  from the prompt box, approvals are answered in the usual dialog, and Esc
+  interrupts. The status line says whether the host is there (prompts wait
+  for it when it is not) and whether the session comes by the relay or
+  directly. `krowk --resume <id>` of a synced session opens it the same way.
+  The host runs prompts from a viewer in the session's default mode, so
+  `/mode`, `/model`, `/new` and `/sessions` say they are the host's, and a
+  viewer allows a call once or for the session, never for the host's
+  project. With `--json`, or stdout not a terminal, it prints stream-json as
+  before.
+- **`krowk sync init` sets up your device list, with a 12-word recovery
+  kit.** It asks you to sign in again in the browser, then makes the list's
+  first entry: this device and the recovery device the kit derives, with your
+  user key wrapped to both. The kit's words are shown once on stderr ([Enter]
+  when written down, [s] to skip) or written to `--save FILE`, 0600, and are
+  never typed back. `--start-over` makes a new list; every other device on
+  the old one stops syncing and asks to be paired again. Run from a device
+  that holds your key, it keeps the old keys aside and seals the sessions it
+  can open again under the new list; running it again (under another
+  workspace's key, for that workspace's) goes through what is left, and
+  `krowk sync recovery discard-old` drops the old keys when you say so. The 24-word recovery phrase is gone, and so is
+  `krowk sync register`: a device is registered by being on the list.
+- **`krowk devices remove NAME`** takes a device off your list and rotates
+  your key away from it. It names every device the new key goes to before it
+  asks, needs a fresh sign-in, and removes any device revoked on the dashboard
+  in the same post, so no new key reaches one. `krowk sync status` offers to
+  finish a dashboard Revoke. Your other devices take the new key at their next
+  sync.
+- **`krowk sync recover`** gets back in on a new machine from the kit's
+  words, typed at a prompt that doesn't echo them or piped in. It verifies
+  the list from its first entry, goes through every device on it with you to
+  keep or remove, and only then wraps your key, to what you kept.
+- **`krowk sync recovery new`** replaces the kit at once, with the old kit's
+  words, or from any device when you have none. **`krowk sync recovery
+  check`** tests the words against the list, locally. **`krowk sync status`**
+  verifies the list against the head this device pinned, and says when there
+  is no kit; so does the TUI's status line.
+
+- **Pairing a device by a short code, in the library.** `krowk_client::pairing`
+  holds both sides of `krowk devices add` as sans-IO state machines: an
+  eight-character code (Crockford base32 less `0` and `1`, shown `XXXX-XXXX`,
+  typed in any case with spaces and dashes ignored), SPAKE2 in asymmetric mode
+  bound to the peer kind, the person and both device ids, and key confirmation
+  both ways before the new device's name is shown or anything is posted. One
+  failed step ends the pairing, and the new device's code is consumed by the
+  attempt, so a hostile registry gets one guess against each side. The SPAKE2 crate is held to magic-wormhole's vectors. Nothing
+  calls it yet.
+- **The client crypto for devices you own**, not yet wired to any command:
+  a user key per person with generations, each wrapping the one before; a
+  12-word recovery kit that derives a recovery device; and a signed,
+  chained device list that every client verifies against the head it last
+  saw, refusing an older or forked list and any removal of the recovery
+  device. Only the current kit can replace the kit, or any device when there
+  is none.
+- **`krowk devices add` and `krowk sync join` pair a machine by a short
+  code.** `add` shows `XXXX-XXXX`, valid ten minutes and once; `join` on the
+  new machine takes it at a prompt, never as an argument. Both machines check
+  the code, the paired one asks `Add '<name>' (<os>) to your devices? [Y/n]`,
+  and the new machine keeps the user key only once the chain it was sent
+  adds exactly its keys. A wrong code, or any failure on the new machine, a
+  dropped connection included, ends the pairing and asks for a new code. A
+  machine that was sent the key but never confirmed it is still listed, so
+  `krowk devices remove` can take it off; ^C on `add` ends the pairing.
+- **`krowk sync host` seals under the device list as the registry has it
+  now,** extended from this machine's pin, and refuses when the registry
+  cannot be asked, rather than sealing under a list a removal left behind.
+- **The stand-in registry holds devices you own.** `krowk-devregistry` serves
+  a person's signed device list (verified on every post by krowk-client's own
+  verifier), the user key wrapped to each device, keys bound to one device,
+  a fresh sign-in stamp, and the pairing mailbox: one live pairing per
+  person, ten minutes, ended by the first step out of turn. The device
+  approval endpoints answer `410 sync_reset`.
 - **Releases are signed, come with an SBOM, and are proven reproducible.**
   Each release carries `checksums.txt.sigstore.json`, a keyless Sigstore
   signature over the checksums of every archive, bound to the release
@@ -73,21 +187,6 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **`cargo deny` on every pull request and at every tag.** A dependency
   with a RustSec advisory, a licence outside `deny.toml`'s list, or a
   source other than crates.io fails CI and stops a release.
-
-- **Idle sessions move off the machine as weekly vintages.** `krowk sessions
-  archive` takes every native session idle for more than 14 days
-  (`--older-than DAYS`, or `KROWK_ARCHIVE_AFTER_DAYS`) and stores each ISO
-  week's sessions in the registry as one vintage: zstd-compressed JSONL,
-  sealed under the account key, so the registry only ever holds ciphertext.
-  An existing vintage for the week is merged, never overwritten. `--weekly`
-  runs only when a week has passed since the last run, so it can be put on
-  a schedule. An archived session keeps its title, summary, directory,
-  dates, models and cost on the machine, so `krowk sessions` still lists
-  it, and `krowk sessions show` or `krowk -p --resume` fetches its week and
-  restores it into krowk.db first. `krowk sessions restore <id>` does that
-  on its own. `krowk sessions pin <id>` keeps a session from ever being
-  archived, and `unpin` undoes it. It needs `krowk sync` set up on the
-  machine.
 
 - **`krowk sync attach` answers approvals and steers the turn.** Besides
   prompts, a line typed on its stdin can be `/approve REQUEST_ID`,
@@ -291,21 +390,96 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **A synced session opens on one line, not the splash.** `krowk sync
+  attach` draws the session's history, then `⇄ Attached to "<title>" on
+  <host>` (or `Attached to <host>` for an untitled session) — or that the
+  host is away and prompts wait — with the host named as the device list
+  names it. The status line says the host in
+  a glyph and its name: `● <host>` there, `○ <host>` away, `◌ <host>`
+  connecting.
+- **`krowk sync attach --json` ends when its stdin does,** once every
+  command sent has been answered. Before, it ran until interrupted.
+
+- **Nothing asks you to sign in again in the browser any more.** Starting
+  over, `krowk sync recovery new`, `krowk devices remove` and `krowk sync
+  recover` use the key you're signed in with; a browser login opens only
+  when there is none, and still says what it is for.
+- **Sync's device and pairing calls are under `/v1/users/:user_id`.** The
+  device list, its append and start-over (`…/devices`, `…/devices/reset`),
+  a device's wrapped user key (`…/devices/:id/key`) and the person's one
+  pairing (`…/pairing`), for the user the key names. The payloads are the
+  same; the stand-in registry answers the new routes.
+
+- **Synced sessions are sealed under your user key.** `krowk sync host`
+  seals a new session's key under the newest user key generation this machine
+  holds, and records the generation in the wrapped key, which stays 74 bytes.
+  `sync attach`, `sync sessions` and `--resume` open any older generation down
+  the chain of wraps. A machine holding only an older generation, such as one
+  removed before a rotation, can't open a newer session, and is told which
+  generation it would need. The user keys a machine holds live in
+  `user-keys.json` (`0600`, wrapped to its device key, replaced by rename),
+  and a save never drops an older generation's wrap it already holds.
+  Each session's record is signed by the machine that published it. Every
+  machine that opens a session — `sync host`, `attach`, `sessions` and
+  `--resume` — checks that signature against your verified device list
+  (`device-list.json`), so any machine of yours can take a session up again,
+  and a record no device of yours signed opens nowhere. A session published
+  by a machine since removed from your devices still opens to read, but no
+  machine hosts it again: start a new one.
+  Sessions sealed under the account key no longer open: clean break. No
+  command puts a user key or a device list on a machine yet, so these
+  commands say it holds none until adding a device does.
 - **The client protocol's types live in `krowk-client`.** The commands,
   events and log lines, and the daemon's 28-byte frame header, are
   declared in the crate the desktop app and the phones will link, which
   pulls in no engine, tokio or reqwest; `krowk_harness::protocol`
   still names the same types. The generated JSON Schema is unchanged.
 - Leaving the TUI takes two presses, as in Claude Code, so one stray key no longer ends a session. On an empty prompt, Ctrl-C or Ctrl-D shows "Press Ctrl-C again to exit" (or Ctrl-D) under the prompt, and the same key again within 1.5 seconds quits.
+- The TUI's prompt sits on the same band as your messages in the chat, edge to edge across the terminal with an empty row either side, instead of between two rules. The arrow and text stay where they were. The status line lines up with the arrow, with an empty row under it, and the working line reads "12s · esc to interrupt".
 - Keys the TUI suggests stand out: in hints, the help menu, the status line, approvals and questions, each key (`esc`, `enter`, `y`, `ctrl-g`, `?`) is white instead of grey like the words around it.
+
+### Removed
+
+- **`krowk devices approve` and the 32-hex device code.** Pairing by a short
+  code replaces them; `krowk sync join` takes no argument.
 
 ### Fixed
 
-- **Two quick Ctrl-Cs right after a prompt still print the resume line.**
-  Leaving that fast could beat the session's start to the TUI, so krowk
-  exited 130 without `krowk --resume <id>` although the host had already
-  started the session. The TUI now reads what the host already sent before it leaves.
-
+- **A krowk session has one id.** `krowk sessions` listed a krowk session
+  under an id of krowk.db's own, which `krowk sync host` refused as no
+  session. A session is now stored under its log's id, the one `sync host`
+  and `--resume` take; `sync host` also takes the id an older store listed
+  it under (`krowk sessions rebuild` relists those under their log's id).
+- **`krowk sync init` warns about a skipped recovery kit once**, where you
+  press [s], rather than again in the line after it.
+- **Sync reaches the hosted relay.** `krowk sync host` and `krowk sync
+  attach` could not dial a `wss://` relay, so with `KROWK_RELAY_URL` set to
+  `wss://relay.krowk.com` the host was never on it: a viewer replayed the
+  history but saw nothing live, and its prompts stayed queued. They now dial
+  it over TLS with the same trust as every other connection krowk makes, and
+  say on stderr why, once, when the relay cannot be joined.
+- **`KROWK_RELAY_URL` is no longer needed for krowk.com.** Signed in to the
+  production registry, `krowk sync host` and `krowk sync attach` dial
+  `wss://relay.krowk.com` by default; a stand-in or custom `KROWK_API_URL`
+  keeps the local relay, and `KROWK_RELAY_URL` still overrides both.
+- **A host the relay let go joins again.** When the relay dropped `krowk
+  sync host`'s link without the close reaching it, or the host was stopped
+  or asleep longer than the relay keeps a silent link, the host stayed off
+  the relay with no error while viewers showed it gone. It now joins again
+  at once, and says why on stderr.
+- **A prompt sent as the host went away runs when it is back.** A viewer
+  that sent a command the host never received, because its link was lost
+  just then, now sends it again when the host returns. The host runs it
+  once.
+- **`/name` loads the skill on every agent, not only krowk's own.** A skill
+  picked from the TUI's slash menu reached Claude Code or Codex as a bare
+  `/implement`, and a vendor that did not have that skill answered that there
+  was no such skill. krowk now loads the skill's instructions itself and sends
+  them ahead of your words, whichever agent runs the session.
+- **Skills installed with `npx skills` are found.** krowk reads
+  `~/.agents/skills` and `.agents/skills` from the repository's root down to
+  the working directory, beside the `.claude/skills` it already read, so a
+  skill in the shared directory is listed and can be used with `/name`.
 - **A viewer that moves to the direct path mid-session keeps receiving
   the session.** The direct listener replays from where the viewer was when
   it started looking for the direct path. The viewer had already opened
