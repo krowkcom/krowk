@@ -1626,6 +1626,7 @@ name = "krowk-client"
 version = "0.0.0"
 dependencies = [
  "chacha20poly1305",
+ "curve25519-dalek",
  "ed25519-dalek",
  "getrandom 0.4.3",
  "hkdf",

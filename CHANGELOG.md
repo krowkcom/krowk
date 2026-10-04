@@ -74,6 +74,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **Pairing refuses a malformed key exchange outright.** If the other side
+  of `krowk devices add` / `krowk sync join` sends a degenerate SPAKE2 point
+  (one of small order, or one spelled non-canonically), the pairing ends at
+  once instead of carrying on. An honest device never sends one; this only
+  closes the door on a misbehaving peer.
 - **Running `krowk sync init --start-over` again says what it did.** While
   the old keys from a start-over are kept, running it again carries on that
   start-over (sealing any sessions left under the new list) and never begins
