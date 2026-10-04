@@ -212,7 +212,8 @@ pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path:
                 run.await
             }
         };
-        ended.map_err(|e| ("sync_failed".to_string(), e.to_string()))?.map_err(|e| ("sync_failed".to_string(), e))
+        let code = |e: &str| if e.starts_with(host::LIST_MOVED) { "device_list_moved" } else { "sync_failed" }.to_string();
+        ended.map_err(|e| ("sync_failed".to_string(), e.to_string()))?.map_err(|e| (code(&e), e))
     })
 }
 

@@ -83,6 +83,19 @@ fn init(home: &Path, api: &str, token: &str, kit: &Path) -> String {
     words
 }
 
+/// The registry as `home`'s device: signed by its key, as every session
+/// call is.
+fn client_of(home: &Path, api: &str, token: &str) -> krowk_api::Client {
+    let ks = keys(home);
+    let (device, signing) = (ks.device().unwrap().unwrap(), ks.signing_key().unwrap());
+    let signing_public = e2e::hex(&signing.public().0);
+    let client = krowk_api::Client::new(api, token).signed_by(DeviceSigner::new(device.id(), signing).shared());
+    // The stand-in's session calls still check signatures against the
+    // devices registered the account-key way; registering again is a no-op.
+    let _ = client.register_device(&e2e::hex(&device.public().0), &signing_public, "reader", ACCOUNT);
+    client
+}
+
 /// A session `home` publishes as its host would: its key sealed under the
 /// user key it holds, the record signed by it.
 fn publish(home: &Path, api: &str, token: &str, id: &str) -> SessionKey {
@@ -102,13 +115,18 @@ fn publish(home: &Path, api: &str, token: &str, id: &str) -> SessionKey {
     key
 }
 
-/// The session's key as `home` opens it now: the record checked against
-/// the list it keeps, the key opened with the user keys it holds.
-fn open(home: &Path, api: &str, token: &str, id: &str) -> Result<SessionKey, String> {
+/// The key the session was published with, as `home` opens it now (the
+/// record checked against the list it keeps, the ring opened with the user
+/// keys it holds), and how many key epochs it has had since.
+fn open_ring(home: &Path, api: &str, token: &str, id: &str) -> Result<(SessionKey, u32), String> {
     let ks = keys(home);
     let (user, chain) = (ks.user_keys().unwrap().unwrap(), ks.device_list().unwrap().unwrap());
-    let s = krowk_api::Client::new(api, token).show_sync_session(id).map_err(|e| e.code())?;
-    krowk_harness::sync::store::open_session_key(&s, id, &user, &chain, Signer::EverHeld)
+    let s = client_of(home, api, token).show_sync_session(id).map_err(|e| e.code())?;
+    krowk_harness::sync::store::open_session_key(&s, id, &user, &chain, Signer::EverHeld).map(|k| (k.at(0).expect("epoch 0").clone(), k.epoch()))
+}
+
+fn open(home: &Path, api: &str, token: &str, id: &str) -> Result<SessionKey, String> {
+    open_ring(home, api, token, id).map(|(k, _)| k)
 }
 
 /// D6 (C1 of #204's review): a start-over from a device that holds the
@@ -135,12 +153,16 @@ fn d6_a_start_over_seals_this_devices_sessions_again_under_the_new_list() {
     assert_eq!(ks.device().unwrap().unwrap().id(), device, "the device key is kept");
     assert_ne!(ks.device_list().unwrap().unwrap().root(), old_root, "a new list");
     assert_eq!(ks.user_keys().unwrap().unwrap().newest().generation(), 1);
-    assert_eq!(open(&laptop, &api, LAPTOP, id).unwrap().as_bytes(), key.as_bytes(), "the old session opens under the new list");
+    let (first, epoch) = open_ring(&laptop, &api, LAPTOP, id).unwrap();
+    assert_eq!((first.as_bytes(), epoch), (key.as_bytes(), 1), "the old session opens under the new list, a key epoch on");
     assert!(laptop.join(".krowk/before-start-over").is_dir(), "the old keys stay aside");
 
     // Run again, it goes through what is left: nothing.
     let again = ok(&krowk(&laptop, &api, LAPTOP, &["sync", "init", "--start-over", "--json"], "", ""));
-    assert_eq!((again["data"]["resealed"].clone(), again["data"]["left"].clone()), (0.into(), 0.into()), "{again}");
+    assert_eq!((again["data"]["resealed"].clone(), again["data"]["left"].clone(), again["data"]["continued"].clone()), (0.into(), 0.into(), true.into()), "{again}");
+    // D6: said, so a person who meant a new start-over knows to discard first.
+    let said = krowk(&laptop, &api, LAPTOP, &["sync", "init", "--start-over"], "", "");
+    assert!(String::from_utf8_lossy(&said.stdout).contains("a new start-over needs `krowk sync recovery discard-old` first"), "{}", String::from_utf8_lossy(&said.stdout));
     // And the aside goes only when the person says so.
     let dropped = ok(&krowk(&laptop, &api, LAPTOP, &["sync", "recovery", "discard-old", "--json"], "y", ""));
     assert_eq!((dropped["data"]["discarded"].clone(), dropped["data"]["left"].clone()), (true.into(), 0.into()), "{dropped}");
@@ -214,7 +236,7 @@ fn d7_a_removed_device_cannot_open_a_session_sealed_after_its_removal() {
     let id = "01a0ec7b-6666-7000-8000-000000000071";
     let key = publish(&laptop, &api, LAPTOP, id);
     assert_eq!(open(&laptop, &api, LAPTOP, id).unwrap().as_bytes(), key.as_bytes());
-    let s = krowk_api::Client::new(&api, LAPTOP).show_sync_session(id).unwrap();
+    let s = client_of(&laptop, &api, LAPTOP).show_sync_session(id).unwrap();
     let wrapped = e2e::unhex(&s.wrapped_key).unwrap();
     assert!(e2e::unwrap_session_key(&wrapped, &krowk_harness::daemon::ws::uuid(id), &held).is_err(), "the desktop's keys do not open it");
     let refused = krowk(&desktop, &api, DESKTOP, &["sync", "status", "--json"], "", "");

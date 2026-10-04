@@ -67,7 +67,8 @@ fn current(ctx: &Ctx) -> Result<(), Error> {
 }
 
 /// The registry client for this machine's sync calls, signed by its own
-/// key: leases, chunks, the index and relay tickets act as this device.
+/// key: leases, chunks, the index, relay tickets and every session read act
+/// as this device.
 fn signed(ctx: &Ctx, k: &Keys, what: &str) -> Result<Client, Error> {
     let key = SigningKey::from_secret(&*k.signing.secret_bytes()).map_err(|e| fail("keys_unreadable", e.to_string()))?;
     Ok(keyed_client(ctx, what)?.signed_by(krowk_client::e2e::DeviceSigner::new(k.device, key).shared()))
@@ -137,7 +138,7 @@ fn one(args: &[String], what: &str) -> Result<String, Error> {
 
 pub(super) fn sessions(ctx: &mut Ctx) -> Result<(), Error> {
     let k = keys(ctx)?;
-    let api = keyed_client(ctx, "krowk sync sessions")?;
+    let api = signed(ctx, &k, "krowk sync sessions")?;
     let (listed, unreadable) = viewer::list(&api, &k.user, &k.chain).map_err(|e| fail("sync_failed", e))?;
     let rows: Vec<_> = listed.iter().map(|s| json!({"id": s.id, "title": s.index.title, "cwd": s.index.cwd, "updatedMs": s.index.updated_ms, "host": s.holder})).collect();
     if ctx.format == crate::output::Format::Json {
@@ -162,6 +163,21 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
         return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sessions` lists this machine's")));
     }
     let session = local_log(ctx, &session)?;
+    loop {
+        match host_once(ctx, &session) {
+            // A device was removed while it ran: hosted again from the top,
+            // so the new list is verified and its user key taken up.
+            Err(e) if e.code() == "device_list_moved" => {
+                let _ = writeln!(ctx.io.stderr, "{}", e.fix());
+            }
+            other => return other,
+        }
+    }
+}
+
+/// One run of the bridge, from the list's check to the bridge's end.
+fn host_once(ctx: &mut Ctx, session: &str) -> Result<(), Error> {
+    let session = session.to_string();
     // The list first: a newer key it takes up is the one `keys` reads.
     current(ctx)?;
     let k = keys(ctx)?;
@@ -249,7 +265,7 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
         return None;
     }
     let k = keys(ctx).ok()?;
-    let api = keyed_client(ctx, "krowk --resume").ok()?;
+    let api = signed(ctx, &k, "krowk --resume").ok()?;
     let s = api.show_sync_session(&id).ok()?;
     krowk_harness::sync::store::open_session_key(&s, &id, &k.user, &k.chain, krowk_client::session_record::Signer::EverHeld).ok()?;
     // Said plainly, on stderr, where no TUI draws it: what follows is

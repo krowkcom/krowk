@@ -66,8 +66,9 @@ struct World {
     /// The person's device list, with each device the test makes on it,
     /// and the user key it leaves current, which every device holds.
     list: Mutex<Option<(Chain, UserKey)>>,
-    /// The first device's signing key, which adds the others.
+    /// The first device's signing key, which adds the others, and its id.
     first_signing: Mutex<Option<SigningKey>>,
+    first_id: Mutex<Option<e2e::DeviceId>>,
     /// Every byte either device sent the relay or got from it.
     seen: Arc<Mutex<Vec<u8>>>,
     /// While set, A's link to the relay is down and nothing gets through.
@@ -143,7 +144,7 @@ impl World {
         let reg_a = format!("http://{}/v1", registry_proxy(registry.addr(), reg_mode.clone()));
         let m = mock::serve(model);
         let mock_url = m.url.clone();
-        World { root, registry, api, account: AccountKey::generate(), list: Mutex::new(None), first_signing: Mutex::new(None), seen, cut, a_mode, a_conns, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
+        World { root, registry, api, account: AccountKey::generate(), list: Mutex::new(None), first_signing: Mutex::new(None), first_id: Mutex::new(None), seen, cut, a_mode, a_conns, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
     }
 
     /// A device's own registry client: its calls that act as the device
@@ -187,11 +188,15 @@ impl World {
             }
         };
         self.first_signing.lock().unwrap().get_or_insert_with(|| SigningKey::from_secret(&*d.signing.secret_bytes()).unwrap());
+        self.first_id.lock().unwrap().get_or_insert(d.key.id());
         *list = Some(next);
     }
 
+    /// The registry as the first device reads it: session reads are signed.
     fn client(&self) -> Arc<krowk_api::Client> {
-        Arc::new(krowk_api::Client::new(&self.api, "krowk_sk_sync_attach_0000000000000000"))
+        let id = self.first_id.lock().unwrap().expect("a device first");
+        let key = self.first_signing.lock().unwrap().as_ref().map(|k| SigningKey::from_secret(&*k.secret_bytes()).unwrap()).expect("a device first");
+        Arc::new(krowk_api::Client::new(&self.api, "krowk_sk_sync_attach_0000000000000000").signed_by(e2e::DeviceSigner::new(id, key).shared()))
     }
 
     /// A device of the workspace, registered with its signing key.
