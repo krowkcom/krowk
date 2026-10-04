@@ -971,14 +971,19 @@ impl App {
         self.dirty = true;
     }
 
-    /// What the person said, on a band across the width: a thin bar down
-    /// its left edge, the text in the ink, an empty row of it above and below.
+    /// What the person said, on a band as wide as its widest row: a thin bar
+    /// down its left edge, the text in the ink, an empty row of it above and
+    /// below. Not across the width: a terminal that reflows on a narrowing
+    /// resize wraps a row's band with its text, padding and all, and a row
+    /// padded to the old width would spill its band onto a row of its own.
     fn push_said(&mut self, text: &str) {
         let width = usize::from(self.width);
         let room = width.saturating_sub(look::SAID.width()).max(1);
         let rows = wrap(&clean(text), room);
+        // One column of band past the text, as there is one before it.
+        let band = rows.iter().map(|r| r.width() + 1).max().unwrap_or(0).min(room);
         for row in std::iter::once(String::new()).chain(rows).chain([String::new()]) {
-            let fill = " ".repeat(room.saturating_sub(row.width()));
+            let fill = " ".repeat(band.saturating_sub(row.width()));
             self.push_line(Line::from(vec![Span::styled(look::SAID, look::said_bar()), Span::styled(row + &fill, look::said_band())]));
         }
     }
@@ -4244,6 +4249,21 @@ mod tests {
         assert_eq!(help::canonical("/clear"), "/new");
         assert!(help::unlisted("/resume"));
         assert_eq!(help::slash("/sessions", &[]).first().map(|s| s.name.as_str()), Some("sessions"));
+    }
+
+    #[test]
+    fn what_the_person_said_is_banded_only_as_wide_as_it_is() {
+        // Padded to the width, a narrowing resize would wrap each row's
+        // band onto a row of its own.
+        let mut a = app();
+        a.set_width(60);
+        a.echo("fix the parser");
+        let rows = a.take_pending();
+        let widths: Vec<usize> = rows.iter().take(3).map(|r| r.width()).collect();
+        assert_eq!(widths, [17, 17, 17], "the bar, the text and a column past it: {:?}", text(&rows));
+        a.echo(&"word ".repeat(30));
+        let rows = a.take_pending();
+        assert!(rows.iter().take(5).all(|r| r.width() <= 60), "never past the width");
     }
 
     #[test]

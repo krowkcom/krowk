@@ -486,6 +486,13 @@ impl<W: Write> Term<W> {
         // made the way a new line makes them, scrolling what is above into
         // scrollback — moving the top up instead would clear conversation.
         let top = top.min(size.height.saturating_sub(1));
+        // A taller screen adds its rows under the region when the cursor is
+        // not on the last row (Ghostty, VTE), and the caret never is: the
+        // status line is under it. The region reaches down to the bottom
+        // over them, the rows it does not need blank above the prompt, as
+        // `set_height` leaves them — moving it down instead would open a gap
+        // in the conversation above.
+        let height = height.max(size.height.saturating_sub(top));
         self.rebuild(top, height)
     }
 
@@ -994,6 +1001,21 @@ mod tests {
         let out = after_resize(&mut t, &[(70, 26), (40, 26)]);
         assert_eq!(out.matches("\x1b[J").count(), 1, "one clear, not two: {out:?}");
         assert!(out.starts_with("\x1b[?2026h\r\x1b[4A\x1b[J"), "{out:?}");
+    }
+
+    #[test]
+    fn a_taller_screen_keeps_the_prompt_on_the_bottom_row() {
+        // 100x30 to 100x40: the terminal adds ten rows under the status
+        // line, and the cursor stays on the caret, row 28.
+        let mut t = drawn();
+        t.resize(Size { width: 100, height: 40 }, Some(28)).unwrap();
+        assert_eq!((t.top(), t.height), (27, 13), "the region reaches the new bottom");
+        let bar = Line::from("x".repeat(90));
+        t.frame(&[], &[bar.clone(), Line::from("y".repeat(60)), bar], (50, 1)).unwrap();
+        assert_eq!(t.caret_row, 11, "the prompt drawn at its bottom, the spare rows above it");
+        // Lines printed next fill the spare rows; the region stays down.
+        t.frame(&prompt(4), &prompt(3), (0, 0)).unwrap();
+        assert_eq!((t.top(), t.top() + t.height), (31, 40));
     }
 
     fn prompt(n: usize) -> Vec<Line<'static>> {

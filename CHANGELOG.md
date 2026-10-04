@@ -79,6 +79,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   exited 130 without `krowk --resume <id>` although the host had already
   started the session. The TUI now reads what the host already sent before it leaves.
 
+### Fixed
+
+- **Resizing the terminal no longer breaks the TUI.** The prompt stays on the
+  bottom row when the window grows taller. What you said is banded only as
+  wide as its text, so a narrower window no longer wraps the band's padding
+  onto rows of its own.
+
 ## [0.12.1] - 2026-10-04
 
 ### Changed
