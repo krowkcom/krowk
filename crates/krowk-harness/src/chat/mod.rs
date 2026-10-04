@@ -127,6 +127,7 @@ fn messages(system: &str, history: &[HistoryItem], provider: &str, images: &crat
             out.push(json!({ "role": "tool", "tool_call_id": id, "content": "no result was recorded: the turn stopped first" }));
         }
     };
+    let mut shown = std::collections::HashSet::new();
     for h in history {
         let assistant = matches!(h.item, Item::AssistantText { .. } | Item::Reasoning { .. } | Item::ToolCall { .. });
         if assistant {
@@ -147,7 +148,7 @@ fn messages(system: &str, history: &[HistoryItem], provider: &str, images: &crat
                     out.push(json!({ "role": "user", "content": text }));
                 } else {
                     let mut parts = vec![json!({ "type": "text", "text": text })];
-                    for (r, label, data) in crate::images::sent(refs, images) {
+                    for (r, label, data) in crate::images::sent(refs, images, &mut shown) {
                         parts.push(json!({ "type": "text", "text": label }));
                         if let Some(data) = data {
                             parts.push(json!({ "type": "image_url", "image_url": { "url": format!("data:{};base64,{data}", r.media_type) } }));

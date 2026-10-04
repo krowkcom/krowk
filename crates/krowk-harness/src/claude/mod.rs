@@ -853,7 +853,7 @@ async fn user_content(text: &str, refs: &[crate::protocol::ImageRef], session_di
     .await
     .unwrap_or_default();
     let mut blocks = vec![json!({"type": "text", "text": text})];
-    for (r, label, data) in crate::images::sent(refs, &loaded) {
+    for (r, label, data) in crate::images::sent(refs, &loaded, &mut Default::default()) {
         blocks.push(json!({"type": "text", "text": label}));
         if let Some(data) = data {
             blocks.push(json!({"type": "image", "source": {"type": "base64", "media_type": r.media_type, "data": data}}));

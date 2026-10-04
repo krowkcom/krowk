@@ -87,11 +87,12 @@ fn messages(history: &[HistoryItem], images: &crate::images::Loaded) -> Vec<Valu
         Some((r, blocks)) if r == role => blocks.push(block),
         _ => out.push((role.into(), vec![block])),
     };
+    let mut shown = std::collections::HashSet::new();
     for h in history {
         match &h.item {
             Item::UserText { text, images: refs } => {
                 push(&mut out, "user", json!({ "type": "text", "text": text }));
-                for (r, label, data) in crate::images::sent(refs, images) {
+                for (r, label, data) in crate::images::sent(refs, images, &mut shown) {
                     push(&mut out, "user", json!({ "type": "text", "text": label }));
                     if let Some(data) = data {
                         push(&mut out, "user", json!({ "type": "image", "source": { "type": "base64", "media_type": r.media_type, "data": data } }));

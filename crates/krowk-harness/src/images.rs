@@ -128,6 +128,11 @@ pub fn decode(inputs: &[ImageInput]) -> Result<Vec<Decoded>, EngineError> {
     if inputs.len() > MAX_IMAGES {
         return Err(refused(format!("{} images were attached, and a prompt takes at most {MAX_IMAGES}", inputs.len())));
     }
+    // What one model call sends of them all: a prompt always fits whole.
+    let total: usize = inputs.iter().map(|i| i.data.len()).sum();
+    if total > SENT_BYTES {
+        return Err(refused(format!("the images come to {} MB, and a prompt's may come to at most {} MB", total / (1024 * 1024), SENT_BYTES / (1024 * 1024))));
+    }
     let too_big = |n: u32, bytes: usize| refused(format!("[Image #{n}] is {} KB, and an image may be at most {} KB", bytes / 1024, MAX_BYTES / 1024));
     inputs
         .iter()
@@ -272,12 +277,17 @@ pub fn gone(r: &ImageRef) -> String {
 }
 
 /// What a native provider is sent for each image an item carries: the
-/// label, and the base64 when the image is sent.
-pub fn sent<'a>(refs: &'a [ImageRef], loaded: &'a Loaded) -> impl Iterator<Item = (&'a ImageRef, String, Option<&'a str>)> {
-    refs.iter().map(|r| match loaded.get(&r.file) {
-        Some(data) => (r, label(r, None), Some(data)),
-        None => (r, label(r, Some(loaded.held.get(&r.file).copied().unwrap_or(GONE))), None),
-    })
+/// label, and the base64 when the image is sent. `shown` is what the
+/// request has sent so far: an image two items name (steering sent twice)
+/// is sent once, and named after that.
+pub fn sent<'a>(refs: &'a [ImageRef], loaded: &'a Loaded, shown: &mut std::collections::HashSet<&'a str>) -> Vec<(&'a ImageRef, String, Option<&'a str>)> {
+    refs.iter()
+        .map(|r| match loaded.get(&r.file) {
+            Some(_) if !shown.insert(&r.file) => (r, label(r, Some(EARLIER)), None),
+            Some(data) => (r, label(r, None), Some(data)),
+            None => (r, label(r, Some(loaded.held.get(&r.file).copied().unwrap_or(GONE))), None),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -300,6 +310,9 @@ mod tests {
         assert_eq!(decode(&[input(1, "image/png", &big)]).unwrap_err().code, "bad_image");
         let many: Vec<ImageInput> = (0..=MAX_IMAGES as u32).map(|n| input(n, "image/png", PNG)).collect();
         assert_eq!(decode(&many).unwrap_err().code, "bad_image");
+        let heavy = [PNG, &vec![0; MAX_BYTES - PNG.len()]].concat();
+        let six: Vec<ImageInput> = (0..6).map(|n| input(n, "image/png", &heavy)).collect();
+        assert!(decode(&six).unwrap_err().message.contains("at most 20 MB"), "a prompt always fits one call whole");
     }
 
     #[test]
@@ -332,15 +345,15 @@ mod tests {
         let all: Vec<&ImageRef> = refs.iter().collect();
         let mut loaded = Loaded::default();
         load(dir, &all, true, &mut loaded);
-        assert!(sent(&refs, &loaded).all(|(_, label, data)| data.is_some() && !label.contains(':')));
+        assert!(sent(&refs, &loaded, &mut Default::default()).into_iter().all(|(_, label, data)| data.is_some() && !label.contains(':')));
         load(dir, &all, false, &mut loaded);
-        assert!(sent(&refs, &loaded).all(|(_, label, data)| data.is_none() && label.contains("reads no images")), "a model that reads none is sent their names");
+        assert!(sent(&refs, &loaded, &mut Default::default()).into_iter().all(|(_, label, data)| data.is_none() && label.contains("reads no images")), "a model that reads none is sent their names");
         for file in ["../events.jsonl", "/etc/passwd", ".hidden", ""] {
             assert!(path(dir, &ImageRef { number: 1, media_type: "image/png".into(), file: file.into() }).is_none(), "{file}");
         }
         let gone = ImageRef { number: 2, media_type: "image/png".into(), file: "2-x.png".into() };
         load(dir, &[&gone], true, &mut loaded);
-        assert_eq!(sent(std::slice::from_ref(&gone), &loaded).next().unwrap().1, "[Image #2: the file is gone]");
+        assert_eq!(sent(std::slice::from_ref(&gone), &loaded, &mut Default::default()).remove(0).1, "[Image #2: the file is gone]");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -353,10 +366,15 @@ mod tests {
         let refs = save(dir, &decode(&inputs[..MAX_IMAGES]).unwrap()).unwrap().into_iter().chain(save(dir, &decode(&inputs[MAX_IMAGES..]).unwrap()).unwrap()).collect::<Vec<_>>();
         let mut loaded = Loaded::default();
         load(dir, &refs.iter().collect::<Vec<_>>(), true, &mut loaded);
-        let shown: Vec<bool> = sent(&refs, &loaded).map(|(_, _, d)| d.is_some()).collect();
+        let shown: Vec<bool> = sent(&refs, &loaded, &mut Default::default()).into_iter().map(|(_, _, d)| d.is_some()).collect();
         assert_eq!(shown.iter().filter(|s| **s).count(), SENT_IMAGES);
         assert!(!shown[0] && !shown[1] && shown[2], "the oldest two are named, not sent");
-        assert!(sent(&refs[..1], &loaded).next().unwrap().1.contains("shown earlier"));
+        assert!(sent(&refs[..1], &loaded, &mut Default::default()).remove(0).1.contains("shown earlier"));
+        let twice = [refs[5].clone(), refs[5].clone()];
+        let mut shown = Default::default();
+        let first = sent(&twice[..1], &loaded, &mut shown);
+        let second = sent(&twice[1..], &loaded, &mut shown);
+        assert!(first[0].2.is_some() && second[0].2.is_none(), "an image two items name is sent once");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

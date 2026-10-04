@@ -115,12 +115,13 @@ fn input(history: &[HistoryItem], provider: &str, images: &crate::images::Loaded
             out.push(call_output(&call_id, is_custom, "no result was recorded: the turn stopped first"));
         }
     };
+    let mut shown = std::collections::HashSet::new();
     for h in history {
         match &h.item {
             Item::UserText { text, images: refs } => {
                 close(&mut out, &mut open);
                 let mut content = vec![json!({ "type": "input_text", "text": text })];
-                for (r, label, data) in crate::images::sent(refs, images) {
+                for (r, label, data) in crate::images::sent(refs, images, &mut shown) {
                     content.push(json!({ "type": "input_text", "text": label }));
                     if let Some(data) = data {
                         content.push(json!({ "type": "input_image", "image_url": format!("data:{};base64,{data}", r.media_type) }));
