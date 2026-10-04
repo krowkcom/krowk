@@ -74,6 +74,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **The installer says when another krowk would run instead.** If a krowk
+  earlier on your `PATH` (an older install, or a build from source) would
+  answer before the one just installed, the installer now names it, says
+  its version, and how to fix it. Before, `krowk --version` quietly showed the
+  old one.
+
 - **Copying from the TUI no longer drags the layout along.** Text in the
   transcript starts at the first column: a mouse selection of your prompt,
   an answer, a list or a code block comes without the two-column margin,
