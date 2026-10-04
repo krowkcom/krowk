@@ -194,6 +194,24 @@ fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lo
     }
 }
 
+/// How many batches past the relay's last ack make a link that still
+/// answers its heartbeats a dead one: a relay acks at least every 8th batch
+/// a link sends it, viewers or none (relay.md → Flow control), so a tail
+/// of fewer is never waited on.
+const GHOST_UNACKED: usize = 8;
+/// How long the oldest of them must have waited first: well past the 2
+/// seconds a relay may take to hold a batch.
+const GHOST_WAIT: Duration = Duration::from_secs(10);
+
+/// Whether a link is let go at a heartbeat, to be joined again: the beat
+/// came `gap` after the last, so this process did not run in between for
+/// longer than a relay keeps a silent link; nothing has been heard on it
+/// for `heard`; or it is a ghost, `unacked` batches past the relay's last
+/// ack, the oldest `waited` ago.
+fn link_dead(gap: Duration, heard: Duration, unacked: usize, waited: Option<Duration>) -> bool {
+    gap > DEAD || heard > DEAD || (unacked >= GHOST_UNACKED && waited.is_some_and(|w| w > GHOST_WAIT))
+}
+
 /// How often a running host reads the device list again: the list it
 /// verified when it started is not the list for good, and a device removed
 /// while it runs must not go on reading what it seals.
@@ -415,6 +433,8 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let raw = crate::daemon::ws::uuid(&o.session);
     let mut link = HostLink::new(key.current(), raw);
     let mut kept: VecDeque<(u64, Vec<u8>)> = VecDeque::new();
+    // Since when the relay has acked none of what `kept` holds.
+    let mut unacked_since: Option<Instant> = None;
     let mut waiting: Vec<StreamLine> = Vec::new();
     let mut approvals: BTreeMap<String, (ApprovalRequest, Instant)> = BTreeMap::new();
     // Every event logged since the bridge followed the session, in order:
@@ -494,6 +514,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                 let sealed = link.batch(&body, false).map_err(|e| e.to_string())?;
                 kept.push_back((link.last_seq(), sealed.clone()));
                 if kept.len() > o.keep.max(1) { kept.pop_front(); }
+                unacked_since.get_or_insert_with(Instant::now);
                 if let Some(w) = dws.as_mut() && !super::send(w, sealed.clone()).await { dws = None; dretry = Instant::now() + Duration::from_secs(1); }
                 if let Some(w) = ws.as_mut() && !super::send(w, sealed).await { ws = None; }
             }
@@ -549,10 +570,15 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                 // let go, or one it no longer counts as the host, with a viewer's
                 // command lost on it: joined again, and the viewers, told the
                 // host is present, send again what was never acknowledged.
-                let paused = beaten.elapsed() > DEAD;
+                //
+                // And a link that answers its heartbeats while the relay acks
+                // none of what the host sends (`link_dead`): a ghost, which
+                // neither an error nor a close will ever end.
+                let gap = beaten.elapsed();
                 beaten = Instant::now();
-                if let Some(w) = ws.as_mut() && (paused || heard.elapsed() > DEAD || !super::ping(w).await) { ws = None; }
-                if let Some(w) = dws.as_mut() && (paused || dheard.elapsed() > DEAD || !super::ping(w).await) { dws = None; }
+                let waited = unacked_since.map(|t| t.elapsed());
+                if let Some(w) = ws.as_mut() && (link_dead(gap, heard.elapsed(), kept.len(), waited) || !super::ping(w).await) { ws = None; }
+                if let Some(w) = dws.as_mut() && (link_dead(gap, dheard.elapsed(), 0, None) || !super::ping(w).await) { dws = None; }
             }
             _ = tokio::time::sleep_until(dretry.into()), if dws.is_none() && listening.is_some() => {
                 // The listener's viewers went with the host's link to it,
@@ -605,6 +631,11 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                             unjoined = None;
                             ws = Some(w);
                             heard = Instant::now();
+                            // What the relay says it holds is as good as acked:
+                            // what `kept` still counts is only what went out on
+                            // this link, which the relay's ack count starts from.
+                            while kept.front().is_some_and(|(s, _)| *s <= at) { kept.pop_front(); }
+                            unacked_since = (!kept.is_empty()).then(Instant::now);
                             present = Some((HashSet::new(), Instant::now()));
                         } else {
                             retry = Instant::now() + Duration::from_secs(1);
@@ -655,6 +686,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                     In::Envelope(b) if b[1] == KIND_ACK && !direct => {
                         let upto = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
                         while kept.front().is_some_and(|(s, _)| *s <= upto) { kept.pop_front(); }
+                        unacked_since = (!kept.is_empty()).then(Instant::now);
                     }
                     In::Envelope(b) if b[1] == KIND_ROUTED => {
                         let from = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
@@ -796,6 +828,21 @@ mod tests {
         }
         let Command::Prompt { permission_mode, .. } = under_session_settings(prompt(PermissionMode::Unhinged), PermissionMode::Plan) else { unreachable!() };
         assert_eq!(permission_mode, PermissionMode::Plan, "plan asks more, and stays");
+    }
+
+    /// A link is let go at a beat after a pause past `DEAD`, after silence
+    /// past it, or as a ghost: eight batches the relay has not acked, the
+    /// oldest past `GHOST_WAIT`. Fewer, or not waited on as long, is a
+    /// relay still holding them.
+    #[test]
+    fn a_paused_silent_or_ghost_link_is_let_go() {
+        let (s, now) = (Duration::from_secs, Duration::ZERO);
+        assert!(!link_dead(PING, now, 0, None), "a live link");
+        assert!(link_dead(DEAD + s(1), now, 0, None), "a beat after a pause, the laptop asleep");
+        assert!(link_dead(PING, DEAD + s(1), 0, None), "nothing heard");
+        assert!(link_dead(PING, now, GHOST_UNACKED, Some(GHOST_WAIT + s(1))), "a ghost: heartbeats answered, nothing acked");
+        assert!(!link_dead(PING, now, GHOST_UNACKED - 1, Some(s(60))), "fewer unacked");
+        assert!(!link_dead(PING, now, GHOST_UNACKED, Some(s(2))), "not waited on long");
     }
 
     use krowk_client::device_chain::{Change, Kind, Subject};

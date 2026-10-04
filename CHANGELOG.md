@@ -84,6 +84,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A synced host no longer hangs on a relay link that stopped working
+  without saying so.** If the relay kept answering heartbeats but acked none
+  of what the host sent, viewers stopped receiving updates while the host
+  kept writing into the void. The host now drops such a link once eight
+  batches have gone unacked for ten seconds, joins the relay again, and
+  resends what was missed.
 - **`krowk devices add` no longer says "nothing was added" when the new
   device may have your key.** If the answer to the step that sends the key
   was lost and checking on it failed too, the pairing used to end as if
