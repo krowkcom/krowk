@@ -1,24 +1,26 @@
-//! Sync's records and calls (canon, engineering/crypto.md, devices.md): the
-//! devices that hold the account key, a person's device list and user key,
-//! the mailbox a new device is paired through, and sessions with their
-//! leases. Every call needs a key to a paid workspace
+//! Sync's records and calls (canon, engineering/crypto.md, devices.md): a
+//! person's device list and user key, the mailbox a new device is paired
+//! through, and sessions with their leases. Every call needs a key to a paid
+//! workspace
 //! (R-SYNC-1), and nothing here carries plaintext: keys and sealed blobs are
 //! hex, and a session's title and the rest of what a listing shows travel
 //! inside `sealed_index`, sealed by the caller before it gets here.
 //!
-//! None of it takes an Idempotency-Key. A device is unique by its public key,
-//! a session's id is the client's own and in the path, and a device approval
-//! is the browser login's shape — a lost response costs asking again.
+//! None of it takes an Idempotency-Key. A device list entry names its seq,
+//! a session's id is the client's own and in the path, and a pairing step is
+//! sent once — a lost response costs reading again.
 //!
 //! This crate carries bytes and nothing else. What makes adding a device safe
-//! against a hostile registry — comparing the new device's id on both
-//! screens, and the account key's id on the new one — is krowk-client's and
+//! against a hostile registry — pairing under a short code the registry
+//! cannot test guesses against, and verifying the device list against its
+//! pin — is krowk-client's and
 //! the command line's to do with what these calls return.
 //!
-//! Every call that acts as a device — registering or approving one, a lease
-//! call, writing a session or its chunks, asking for a relay ticket — is
-//! signed by this machine's device key (`Client::signed_by`), and refused
-//! before it is sent when the client has none. Reads are the API key's.
+//! Every call that acts as a device — appending to the device list, a lease
+//! call, reading or writing a session or its chunks, asking for a relay
+//! ticket — is signed by this machine's device key (`Client::signed_by`), and
+//! refused before it is sent when the client has none. Reading the device
+//! list is the API key's.
 
 use crate::client::{Client, slug_path};
 use crate::types::Upload;
@@ -30,34 +32,6 @@ const ATTEMPTS: u32 = 3;
 
 fn nullable<'de, D: Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> Result<T, D::Error> {
     Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
-}
-
-/// A device of the workspace. `id` is the fingerprint of its public key;
-/// the registry derived it, so a client that relies on it computes it again.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct Device {
-    #[serde(default, deserialize_with = "nullable")]
-    pub id: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub public_key: String,
-    /// The Ed25519 key a relay checks this device's joins by (relay.md →
-    /// Why a signing key); empty for a device that has not registered one.
-    #[serde(default, deserialize_with = "nullable")]
-    pub signing_key: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub name: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub created_at: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub last_seen_at: String,
-    #[serde(default, deserialize_with = "nullable")]
-    pub revoked_at: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct Devices {
-    #[serde(default, deserialize_with = "nullable")]
-    devices: Vec<Device>,
 }
 
 /// A device as the registry indexes the person's device list: for showing,
@@ -471,20 +445,6 @@ impl Client {
             return Err(crate::fail("checksum_mismatch", format!("the vintage for {} read back does not match its digest — read it again", v.week)));
         }
         Ok(bytes)
-    }
-
-    /// Says this machine holds the account key `account_key_id`. The same
-    /// public key again is the same device, renamed; an account key other
-    /// than the one the workspace's devices hold is `account_key_mismatch`.
-    /// `signing_key` is the device's relay signing public key, which the
-    /// hosted relay verifies its joins against.
-    pub fn register_device(&self, public_key: &str, signing_key: &str, name: &str, account_key_id: &str) -> Result<Device, Error> {
-        let body = json!({ "device": { "public_key": public_key, "signing_key": signing_key, "name": name, "account_key_id": account_key_id } });
-        Ok(self.call_as_device("POST", "/devices", Some(body), ATTEMPTS, None)?.0)
-    }
-
-    pub fn list_devices(&self) -> Result<Vec<Device>, Error> {
-        Ok(self.get::<Devices>("/devices")?.devices)
     }
 
     /// A page of this person's device list from after `after`. Not signed: a
