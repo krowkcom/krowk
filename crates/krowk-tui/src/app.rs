@@ -72,22 +72,41 @@ enum Rank {
 pub struct Synced {
     /// A host on the session; unknown until the relay says.
     pub host: Option<bool>,
-    /// `relay`, or `direct over …` and its address.
+    /// `relay`, `direct over LAN` or `direct over Tailscale`.
     pub path: Option<String>,
+    /// The host's device name, or `the host` where the device list does
+    /// not name it.
+    pub name: String,
+    /// The session's title; empty where it has none.
+    pub title: String,
+    /// The attach line is drawn once, when the relay first says whether
+    /// the host is there.
+    pub announced: bool,
 }
 
 impl Synced {
-    /// `host here · relay`, `host away — prompts queued`, or `connecting`
-    /// before the relay has said either.
-    fn said(&self) -> String {
-        let host = match self.host {
-            None => "connecting to the host",
-            Some(true) => "host here",
-            Some(false) => "host away — prompts queued",
+    /// `● <host>` while it is there, `○ <host>` away (prompts wait), `◌
+    /// <host>` before the relay has said either: the glyph says it, the
+    /// attach line once in words. And the style the glyph takes.
+    fn said(&self) -> (String, Style) {
+        let (glyph, style) = match self.host {
+            None => ("◌", dim()),
+            Some(true) => ("●", look::accent()),
+            Some(false) => ("○", dim()),
         };
-        match &self.path {
-            Some(p) if self.host == Some(true) => format!("{host} · {p}"),
-            _ => host.to_string(),
+        (format!("{glyph} {}", self.name), style)
+    }
+
+    /// The line drawn once on attaching, and its glyph's style: the session
+    /// and its host, or that its host is away. A session with no title is
+    /// named by its host alone, never by its id.
+    fn attached(&self) -> (String, Style) {
+        let name = &self.name;
+        let to = if self.title.is_empty() { name.clone() } else { format!("\"{}\" on {name}", self.title) };
+        match (self.host, self.title.is_empty()) {
+            (Some(false), true) => (format!("Attached to {name} — away; prompts wait"), dim()),
+            (Some(false), false) => (format!("Attached to \"{}\" — {name} is away; prompts wait", self.title), dim()),
+            _ => (format!("Attached to {to}"), look::accent()),
         }
     }
 }
@@ -100,6 +119,9 @@ struct Part {
     style: Style,
     /// Where the item links to, as a hyperlink (OSC 8).
     url: Option<String>,
+    /// The style of the text's first character, a glyph, where it is not
+    /// the text's: a synced host's `●` in the accent, its name in ink.
+    mark: Option<Style>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,8 +394,15 @@ fn hint_row(mut parts: Vec<Part>, room: usize) -> Line<'static> {
             // Every cell carries the link: the live region is drawn a cell
             // at a time (`term::Back`).
             Some(url) => spans.extend(text.chars().map(|c| look::linked(c.to_string(), p.style, url))),
-            // A key it names (`?`) in white.
-            None => spans.extend(clip_spans(look::keys(&p.text, p.style), room)),
+            None => match p.mark {
+                Some(mark) => {
+                    let mut chars = text.chars();
+                    spans.extend(chars.next().map(|c| Span::styled(c.to_string(), mark)));
+                    spans.push(Span::styled(chars.as_str().to_string(), p.style));
+                }
+                // A key it names (`?`) in white.
+                None => spans.extend(clip_spans(look::keys(&p.text, p.style), room)),
+            },
         }
     }
     Line::from(spans)
@@ -958,6 +987,17 @@ impl App {
     pub fn gap_say(&mut self, text: &str) {
         self.gap();
         self.push_wrapped("", "", text, dim(), dim());
+    }
+
+    /// A synced session's attach line, once, under its history: the glyph
+    /// in the accent (dim, the host away), the words in ink.
+    pub fn say_attached(&mut self) {
+        let Some(sync) = self.sync.as_mut().filter(|s| !s.announced && s.host.is_some()) else { return };
+        sync.announced = true;
+        let (text, mark) = sync.attached();
+        self.gap();
+        self.push_wrapped(look::SWITCH, "  ", &text, mark, Style::default());
+        self.gap();
     }
 
     /// A switch of model the client made, a line to itself with a blank
@@ -2145,7 +2185,7 @@ impl App {
     /// the counts only while there is something to count and `offline`
     /// before the help while the API cannot be reached.
     fn status_parts(&self) -> [Vec<Part>; 2] {
-        let part = |rank, text: String| Part { rank, text, style: dim(), url: None };
+        let part = |rank, text: String| Part { rank, text, style: dim(), url: None, mark: None };
         let (mut first, mut second): (Vec<Part>, Vec<Part>) = (Vec::new(), Vec::new());
         for item in &self.settings.status_items {
             let parts = if item.second_row() { &mut second } else { &mut first };
@@ -2162,7 +2202,7 @@ impl App {
                     if let Some(m) = &self.model {
                         let name = model_name(&m.model);
                         match self.instances.get(&m.instance).and_then(InstanceUsage::limit_brief) {
-                            Some(w) => parts.push(Part { rank: Rank::Model, text: format!("{name} ({}, {w})", m.instance), style: yellow(), url: None }),
+                            Some(w) => parts.push(Part { rank: Rank::Model, text: format!("{name} ({}, {w})", m.instance), style: yellow(), url: None, mark: None }),
                             None => parts.push(part(Rank::Model, format!("{name} ({})", m.instance))),
                         }
                     }
@@ -2197,7 +2237,7 @@ impl App {
                             PrState::Closed => red(),
                             PrState::Draft => dim(),
                         };
-                        parts.push(Part { rank: Rank::Pr, text: format!("#{}↗", pr.number), style, url: Some(pr.url.clone()) });
+                        parts.push(Part { rank: Rank::Pr, text: format!("#{}↗", pr.number), style, url: Some(pr.url.clone()), mark: None });
                     }
                 }
                 StatusItem::Help => {}
@@ -2206,17 +2246,17 @@ impl App {
         // Whatever the list says, until there is a kit: losing every device
         // without one loses every session.
         if self.no_recovery_kit {
-            first.push(Part { rank: Rank::Kit, text: "no recovery kit".into(), style: yellow(), url: None });
+            first.push(Part { rank: Rank::Kit, text: "no recovery kit".into(), style: yellow(), url: None, mark: None });
         }
         // Whatever the list says: where a synced session's host is decides
         // whether a prompt runs now or waits.
         if let Some(sync) = &self.sync {
-            let style = if sync.host == Some(true) { dim() } else { yellow() };
-            first.push(Part { rank: Rank::Sync, text: sync.said(), style, url: None });
+            let (text, mark) = sync.said();
+            first.push(Part { rank: Rank::Sync, text, style: Style::default(), url: None, mark: Some(mark) });
         }
         // Whatever the list says: being offline is news (R-OFF-1).
         if self.offline.is_some() {
-            first.push(Part { rank: Rank::Offline, text: "offline".into(), style: yellow(), url: None });
+            first.push(Part { rank: Rank::Offline, text: "offline".into(), style: yellow(), url: None, mark: None });
         }
         if self.settings.status_items.contains(&StatusItem::Help) {
             first.push(part(Rank::Help, "`?` help".into()));
@@ -3456,6 +3496,59 @@ mod tests {
         assert_eq!(path.style, look::path());
         assert_eq!(path.style.fg, None, "the terminal's own ink: {head:?}");
         assert_eq!(head.spans[0].style.fg, None, "a bullet that worked is ink too: {head:?}");
+    }
+
+    /// D11: a synced session's host on the status line — its glyph in the
+    /// accent (dim away or connecting), its name in ink — and the
+    /// attach line drawn once, under the history, when the relay first says.
+    #[test]
+    fn d11_a_synced_sessions_host_is_named_on_the_status_line_and_the_attach_line() {
+        let mut a = app();
+        a.settings.status_items = vec![StatusItem::Help];
+        a.width = 100;
+        a.sync = Some(Synced { name: "elvinas-arch".into(), title: "fix the parser".into(), ..Synced::default() });
+        assert_eq!(a.status_bar(), "◌ elvinas-arch | ? help");
+        a.say_attached();
+        assert!(a.take_pending().is_empty(), "nothing said before the relay says");
+        let s = a.sync.as_mut().unwrap();
+        (s.host, s.path) = (Some(true), Some("direct over LAN".into()));
+        assert_eq!(a.status_bar(), "● elvinas-arch | ? help");
+        let (rows, _) = a.view(Instant::now());
+        let bar = rows.iter().find(|r| r.spans.iter().any(|s| s.content == "●")).expect("the glyph a span of its own");
+        let dot = bar.spans.iter().position(|s| s.content == "●").unwrap();
+        assert_eq!(bar.spans[dot].style, look::accent());
+        assert_eq!(bar.spans[dot + 1].content, " elvinas-arch");
+        assert_eq!(bar.spans[dot + 1].style, Style::default(), "the name in ink");
+        a.say_attached();
+        a.say_attached();
+        a.release();
+        let said = a.take_pending();
+        assert_eq!(text(&said).into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>(), ["⇄ Attached to \"fix the parser\" on elvinas-arch"], "once");
+        let line = said.iter().find(|l| l.width() > 0).unwrap();
+        assert_eq!((line.spans[0].style, line.spans[1].style), (look::accent(), Style::default()));
+        a.sync.as_mut().unwrap().host = Some(false);
+        assert_eq!(a.status_bar(), "○ elvinas-arch | ? help");
+
+        let mut a = app();
+        a.width = 100;
+        a.sync = Some(Synced { name: "the host".into(), title: "t".into(), host: Some(false), ..Synced::default() });
+        a.say_attached();
+        a.release();
+        let said = a.take_pending();
+        let line = said.iter().find(|l| l.width() > 0).unwrap();
+        assert_eq!(text(std::slice::from_ref(line)), ["⇄ Attached to \"t\" — the host is away; prompts wait"]);
+        assert_eq!(line.spans[0].style, dim());
+
+        // No title: the host alone, never the session's id.
+        for (host, said) in [(Some(true), "⇄ Attached to elvinas-arch"), (Some(false), "⇄ Attached to elvinas-arch — away; prompts wait")] {
+            let mut a = app();
+            a.width = 100;
+            a.sync = Some(Synced { name: "elvinas-arch".into(), host, ..Synced::default() });
+            a.say_attached();
+            a.release();
+            assert_eq!(text(&a.take_pending()).into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>(), [said]);
+        }
+        assert_eq!(line.spans[0].style, dim());
     }
 
     #[test]

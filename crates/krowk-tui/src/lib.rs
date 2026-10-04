@@ -68,6 +68,8 @@ pub mod synced {
         pub link: SyncLink,
         pub id: String,
         pub history: Vec<LogEvent>,
+        pub title: String,
+        pub host: Option<String>,
     }
     pub async fn open(o: Options) -> Result<Opened, String> {
         match o {}
@@ -336,8 +338,12 @@ async fn session(opts: Options) -> Outcome {
                 replay(&mut app, &s.id, &s.history, &opts.host.registry);
                 app.session_id = Some(s.id.clone());
                 app.log_dir = None;
-                app.sync = Some(app::Synced::default());
-                app.say(&format!("following session {} through sync — it runs on another machine", s.id), app::dim());
+                // Said once the relay says whether the host is there
+                // (`App::say_attached`), in place of the header: a session
+                // opening here, not one picked up mid-way.
+                let title = app::clean(&s.title);
+                // The name goes on the status line, which draws its text as given.
+                app.sync = Some(app::Synced { name: s.host.as_deref().map(app::clean).unwrap_or_else(|| "the host".into()), title, ..app::Synced::default() });
                 opened = Some(s.link);
             }
             Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(format!("the synced session could not be attached: {e}")) },
@@ -355,7 +361,9 @@ async fn session(opts: Options) -> Outcome {
     app.vendor_instances = opts.host.registry.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
     let branch = pr::branch(&opts.host.cwd);
     let effort = opts.effort.and_then(|e| serde_json::to_value(e).ok()).and_then(|v| v.as_str().map(String::from));
-    app.header(&home_relative(&opts.host.cwd), &branch, effort.as_deref());
+    if app.sync.is_none() {
+        app.header(&home_relative(&opts.host.cwd), &branch, effort.as_deref());
+    }
     app.branch = branch;
     for n in &opts.notices {
         app.note(n);
@@ -1340,7 +1348,10 @@ impl<'h> Ui<'h> {
         };
         let status = app.sync.get_or_insert_with(app::Synced::default);
         match e {
-            synced::Event::Host(h) => status.host = Some(h),
+            synced::Event::Host(h) => {
+                status.host = Some(h);
+                app.say_attached();
+            }
             synced::Event::Path(p) => status.path = Some(p),
             synced::Event::Note(n) => app.notice(&n),
             synced::Event::Turn(rx, done) => {

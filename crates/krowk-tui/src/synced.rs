@@ -29,7 +29,8 @@ pub use krowk_harness::sync::viewer::Options;
 pub enum Event {
     /// A host is on the session, or none is: prompts are queued meanwhile.
     Host(bool),
-    /// The path the session comes by: `relay`, or `direct over …`.
+    /// The path the session comes by: `relay`, `direct over LAN` or
+    /// `direct over Tailscale`.
     Path(String),
     /// Something to tell the person: why the relay cannot be joined, a
     /// command the host refused.
@@ -92,6 +93,10 @@ pub struct Opened {
     pub link: SyncLink,
     pub id: String,
     pub history: Vec<LogEvent>,
+    /// The session's title; empty when it has none.
+    pub title: String,
+    /// The host's device name, when the verified device list holds it.
+    pub host: Option<String>,
 }
 
 /// Attaches to the session: its history read from the chunks, then the
@@ -100,6 +105,7 @@ pub async fn open(o: Options) -> Result<Opened, String> {
     use krowk_harness::sync::viewer::{self, Update};
     let id = o.session.clone();
     let mut v = viewer::attach(o).await?;
+    let (title, host) = (std::mem::take(&mut v.title), v.host.take());
     let mut history = Vec::new();
     // The first frame is the session as stored, sent as the attach answers.
     if let Some(first) = v.updates.recv().await {
@@ -121,7 +127,7 @@ pub async fn open(o: Options) -> Result<Opened, String> {
         }
         pump.gone("the link to the synced session ended");
     });
-    Ok(Opened { link: SyncLink { commands: v.commands, state, watch, events: Mutex::new(Some(events)) }, id, history })
+    Ok(Opened { link: SyncLink { commands: v.commands, state, watch, events: Mutex::new(Some(events)) }, id, history, title, host })
 }
 
 fn lock(m: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
@@ -223,11 +229,10 @@ impl Pump {
                 }
                 let _ = self.events.send(Event::Host(present));
             }
-            Update::Path { path, via } => {
-                let _ = self.events.send(Event::Path(match via {
-                    Some(v) => format!("{path} {v}"),
-                    None => path,
-                }));
+            // The address a direct path is over is the viewer's business,
+            // not the person's.
+            Update::Path { path, .. } => {
+                let _ = self.events.send(Event::Path(path));
             }
             Update::Sent { id, .. } => {
                 let mut s = lock(&self.state);
