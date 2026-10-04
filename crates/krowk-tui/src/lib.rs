@@ -341,7 +341,7 @@ async fn session(opts: Options) -> Outcome {
                 // Said once the relay says whether the host is there
                 // (`App::say_attached`), in place of the header: a session
                 // opening here, not one picked up mid-way.
-                let title = if s.title.is_empty() { s.id.clone() } else { s.title.clone() };
+                let title = app::clean(&s.title);
                 // The name goes on the status line, which draws its text as given.
                 app.sync = Some(app::Synced { name: s.host.as_deref().map(app::clean).unwrap_or_else(|| "the host".into()), title, ..app::Synced::default() });
                 opened = Some(s.link);

@@ -77,7 +77,7 @@ pub struct Synced {
     /// The host's device name, or `the host` where the device list does
     /// not name it.
     pub name: String,
-    /// The session's title, or its id where it has none.
+    /// The session's title; empty where it has none.
     pub title: String,
     /// The attach line is drawn once, when the relay first says whether
     /// the host is there.
@@ -97,13 +97,16 @@ impl Synced {
         (format!("{glyph} {}", self.name), style)
     }
 
-    /// The line drawn once on attaching, and its glyph's style: where the
-    /// session runs and by what path, or that its host is away.
+    /// The line drawn once on attaching, and its glyph's style: the session
+    /// and its host, or that its host is away. A session with no title is
+    /// named by its host alone, never by its id.
     fn attached(&self) -> (String, Style) {
-        let (title, name) = (&self.title, &self.name);
-        match self.host {
-            Some(false) => (format!("Attached to \"{title}\" — {name} is away; prompts wait"), dim()),
-            _ => (format!("Attached to \"{title}\" on {name} ({})", self.path.as_deref().unwrap_or("relay")), look::accent()),
+        let name = &self.name;
+        let to = if self.title.is_empty() { name.clone() } else { format!("\"{}\" on {name}", self.title) };
+        match (self.host, self.title.is_empty()) {
+            (Some(false), true) => (format!("Attached to {name} — away; prompts wait"), dim()),
+            (Some(false), false) => (format!("Attached to \"{}\" — {name} is away; prompts wait", self.title), dim()),
+            _ => (format!("Attached to {to}"), look::accent()),
         }
     }
 }
@@ -3520,7 +3523,7 @@ mod tests {
         a.say_attached();
         a.release();
         let said = a.take_pending();
-        assert_eq!(text(&said).into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>(), ["⇄ Attached to \"fix the parser\" on elvinas-arch (direct over LAN)"], "once");
+        assert_eq!(text(&said).into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>(), ["⇄ Attached to \"fix the parser\" on elvinas-arch"], "once");
         let line = said.iter().find(|l| l.width() > 0).unwrap();
         assert_eq!((line.spans[0].style, line.spans[1].style), (look::accent(), Style::default()));
         a.sync.as_mut().unwrap().host = Some(false);
@@ -3534,6 +3537,17 @@ mod tests {
         let said = a.take_pending();
         let line = said.iter().find(|l| l.width() > 0).unwrap();
         assert_eq!(text(std::slice::from_ref(line)), ["⇄ Attached to \"t\" — the host is away; prompts wait"]);
+        assert_eq!(line.spans[0].style, dim());
+
+        // No title: the host alone, never the session's id.
+        for (host, said) in [(Some(true), "⇄ Attached to elvinas-arch"), (Some(false), "⇄ Attached to elvinas-arch — away; prompts wait")] {
+            let mut a = app();
+            a.width = 100;
+            a.sync = Some(Synced { name: "elvinas-arch".into(), host, ..Synced::default() });
+            a.say_attached();
+            a.release();
+            assert_eq!(text(&a.take_pending()).into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>(), [said]);
+        }
         assert_eq!(line.spans[0].style, dim());
     }
 

@@ -311,8 +311,8 @@ fn d11_sync_attach_on_a_terminal_draws_the_session_in_the_tui() {
     wait(&t, ANSWER);
     // The pty's text is raw: the glyph and the words are styled apart, and
     // the status line is drawn a run of cells at a time.
-    wait(&t, "⇄ \u{1b}[0mAttached to \"");
-    wait(&t, "\" on a (relay)");
+    // `krowk sync host` seals no title: A is named alone, never the id.
+    wait(&t, "⇄ \u{1b}[0mAttached to a\r");
     wait(&t, "●");
     assert!(!t.text().contains("Directory:"), "no splash mid-session: {:?}", t.text());
     // A prompt round trip.
