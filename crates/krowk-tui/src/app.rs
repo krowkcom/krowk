@@ -840,15 +840,14 @@ impl App {
         std::mem::take(&mut self.dirty)
     }
 
-    /// The lines owed to scrollback, oldest first, each wrapped to the
-    /// width.
+    /// The lines owed to scrollback, oldest first. A line wider than the
+    /// terminal is its to wrap (`unhung`).
     pub fn take_pending(&mut self) -> Vec<Line<'static>> {
         if self.pending.len() > self.held.at {
             self.release();
         }
         self.held.at = 0;
-        let width = usize::from(self.width);
-        std::mem::take(&mut self.pending).into_iter().flat_map(|l| wrap_line(l, width)).collect()
+        std::mem::take(&mut self.pending)
     }
 
     pub fn running(&self) -> bool {
@@ -947,15 +946,16 @@ impl App {
     /// `push_wrapped`, and with `marked` the keys the text marks with
     /// backticks drawn as keys (`look::keys`).
     fn push_rows(&mut self, first: &str, rest: &str, text: &str, prefix_style: Style, style: Style, marked: bool) {
-        // Unprefixed text — the answer itself, most of scrollback — stays
-        // one line here and is wrapped with everything else on its way out
-        // (`take_pending`). Prefixed items wrap here, under their hanging
-        // indent.
+        // Unprefixed text — the answer itself, most of scrollback — is a
+        // line to each of its own, for the terminal to wrap (`unhung`).
+        // Prefixed items wrap here, under their hanging indent.
         if first.is_empty() && rest.is_empty() {
-            let line = Line::from(Span::styled(clean(text), style));
-            self.last_blank = line.width() == 0;
-            self.after_tool = false;
-            self.pending.push(line);
+            for l in clean(text).split('\n') {
+                let line = Line::from(Span::styled(l.to_string(), style));
+                self.last_blank = blank(&line);
+                self.after_tool = false;
+                self.pending.push(line);
+            }
             self.dirty = true;
             return;
         }
@@ -964,22 +964,21 @@ impl App {
             let prefix = if i == 0 { first } else { rest };
             let row = if marked { look::keys(&row, style) } else { vec![Span::styled(row, style)] };
             let line = if prefix.is_empty() { Line::from(row) } else { Line::from([vec![Span::styled(prefix.to_string(), prefix_style)], row].concat()) };
-            self.last_blank = line.width() == 0;
+            self.last_blank = blank(&line);
             self.after_tool = false;
             self.pending.push(line);
         }
         self.dirty = true;
     }
 
-    /// What the person said, on a band across the width: a thin bar down
-    /// its left edge, the text in the ink, an empty row of it above and below.
+    /// What the person said, on a band across the width, an empty row of
+    /// it above and below: each line of it whole, from the first column,
+    /// for the terminal to wrap, so a selection of it copies as it was
+    /// typed (`unhung`).
     fn push_said(&mut self, text: &str) {
-        let width = usize::from(self.width);
-        let room = width.saturating_sub(look::SAID.width()).max(1);
-        let rows = wrap(&clean(text), room);
-        for row in std::iter::once(String::new()).chain(rows).chain([String::new()]) {
-            let fill = " ".repeat(room.saturating_sub(row.width()));
-            self.push_line(Line::from(vec![Span::styled(look::SAID, look::said_bar()), Span::styled(row + &fill, look::said_band())]));
+        let text = clean(&text.replace('\t', "    "));
+        for row in std::iter::once("").chain(text.split('\n')).chain([""]) {
+            self.push_line(Line::from(row.to_string()).style(look::said_band()));
         }
     }
 
@@ -1134,10 +1133,11 @@ impl App {
         self.push_wrapped("  ", "  ", &format!("({})", e.code), dim(), dim());
     }
 
-    /// One line of an answer, in light markdown, wrapped under its hanging
-    /// indent. A table's rows are held until the first line that is not one.
+    /// One line of an answer, in light markdown, for the terminal to wrap
+    /// (`unhung`). A table's rows are held until the first line that is
+    /// not one.
     fn push_md(&mut self, text: &str) {
-        let text = look::untagged(&clean(text));
+        let text = look::untagged(&clean(&text.replace('\t', "    ")));
         if !self.md.fenced() && table::is_row(&text) {
             self.table.push(text);
             return;
@@ -1152,9 +1152,7 @@ impl App {
         if opening && self.md.fenced() {
             self.gap();
         }
-        for line in hung(md, usize::from(self.width)) {
-            self.push_answer(line);
-        }
+        self.push_answer(unhung(md));
     }
 
     /// The end of an answer's text: a table it ended on is drawn, a fenced
@@ -1192,7 +1190,7 @@ impl App {
     }
 
     fn push_answer(&mut self, line: Line<'static>) {
-        self.last_blank = line.width() == 0;
+        self.last_blank = blank(&line);
         self.after_tool = false;
         self.pending.push(line);
         self.dirty = true;
@@ -1352,7 +1350,7 @@ impl App {
     }
 
     fn push_line(&mut self, line: Line<'static>) {
-        self.last_blank = line.width() == 0;
+        self.last_blank = blank(&line);
         self.after_tool = false;
         self.pending.push(line);
         self.dirty = true;
@@ -1969,7 +1967,7 @@ impl App {
                 LiveKind::Text if !live.tail.is_empty() => {
                     // The gap its first whole line will take (`on_text`),
                     // so the answer does not start stuck to what is above.
-                    if !live.committed && !rows.last().map_or(self.last_blank, |l| l.width() == 0) {
+                    if !live.committed && !rows.last().map_or(self.last_blank, blank) {
                         rows.push(Line::default());
                     }
                     let wrapped = wrap(&clean(&live.tail), width);
@@ -2043,7 +2041,7 @@ impl App {
             // A blank line above, unless there is one already: straight
             // under streaming text, the spinner read as part of it.
             let above_blank = match rows.last() {
-                Some(l) => l.width() == 0,
+                Some(l) => blank(l),
                 None => self.last_blank,
             };
             if !above_blank {
@@ -2749,10 +2747,6 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
     rows
 }
 
-/// A styled line as rows at most `width` columns wide, broken where `wrap`
-/// breaks its text, each piece keeping its style. krowk wraps what it
-/// prints itself so every row keeps the left padding; a copy of the whole
-/// answer, unwrapped, is Ctrl-Y.
 /// `rows`, each on a branch as a file tree draws a directory's entries:
 /// `├─ ` and, on the last, `└─ `.
 fn branches<R: Into<Line<'static>>>(rows: Vec<R>) -> Vec<Line<'static>> {
@@ -2768,48 +2762,25 @@ fn branches<R: Into<Line<'static>>>(rows: Vec<R>) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// An answer's line wrapped to `width`: its `lead` before the first row,
-/// its `hang` before each row after, unless that would take over half of it.
-fn hung(md: look::MdLine, width: usize) -> Vec<Line<'static>> {
-    if let Some(label) = &md.band {
-        return banded(md.body, label, width);
+/// One line of an answer as scrollback takes it: whole, from the first
+/// column, for the terminal to wrap. What the terminal wraps it joins
+/// again on a copy, and nothing is put before a row the text did not put
+/// there, so a selection copies as the model wrote it.
+fn unhung(md: look::MdLine) -> Line<'static> {
+    match &md.band {
+        Some(label) => banded(md.body, label),
+        None => md.line(),
     }
-    let hang = md.hang.iter().map(Span::width).sum::<usize>();
-    // Nested past half the width, a hang leaves too little to read.
-    if hang * 2 > width {
-        return wrap_line(md.line(), width);
-    }
-    wrap_line(Line::from(md.body), width.saturating_sub(hang).max(1))
-        .into_iter()
-        .enumerate()
-        .map(|(r, row)| Line::from([if r == 0 { md.lead.clone() } else { md.hang.clone() }, row.spans].concat()))
-        .collect()
 }
 
-/// How far code is in from either edge of its band.
-const CODE_PAD: usize = 2;
-
-/// A row of a fenced block on the code band across the width, `CODE_PAD`
-/// in, with `label` washed at the right end of its first row. Code is
-/// broken where the width ends, not at a space, so it keeps its spacing.
-fn banded(body: Vec<Span<'static>>, label: &str, width: usize) -> Vec<Line<'static>> {
+/// A row of a fenced block on the code band: the code from the first
+/// column, the band painted to the right edge behind it (`Line::style`,
+/// which the terminal fills by erasing rather than with spaces), and on
+/// the row above the code `label`, the language, washed.
+fn banded(body: Vec<Span<'static>>, label: &str) -> Line<'static> {
     let band = look::code_band();
-    let room = width.saturating_sub(2 * CODE_PAD).max(1);
-    let pad = Span::styled(" ".repeat(CODE_PAD), band);
-    split_spans(body, room)
-        .into_iter()
-        .enumerate()
-        .map(|(i, row)| {
-            let used: usize = row.iter().map(Span::width).sum();
-            let tag = if i == 0 && !label.is_empty() && used + 1 < room { clip(label, room - used - 1) } else { String::new() };
-            let mut spans = vec![pad.clone()];
-            spans.extend(row.into_iter().map(|s| s.patch_style(band)));
-            spans.push(Span::styled(" ".repeat(room.saturating_sub(used + tag.width())), band));
-            spans.push(Span::styled(tag, band.add_modifier(Modifier::DIM)));
-            spans.push(pad.clone());
-            Line::from(spans)
-        })
-        .collect()
+    let body = if label.is_empty() { body } else { vec![Span::styled(label.to_string(), band.add_modifier(Modifier::DIM))] };
+    Line::from(body).style(band)
 }
 
 /// `spans` cut to `width` columns, with an ellipsis when they were longer.
@@ -2851,6 +2822,9 @@ fn split_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>
     rows
 }
 
+/// A styled line as rows at most `width` columns wide, broken where `wrap`
+/// breaks its text, each piece keeping its style: for the live region and
+/// a table's cells. Scrollback's lines are the terminal's to wrap.
 pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     // What each span shows, and the URL it opens if it is a link.
     let shown: Vec<(&str, Option<String>)> = line.spans.iter().map(|s| look::link_target(s).map_or((s.content.as_ref(), None), |(t, u)| (t, Some(u)))).collect();
@@ -2898,6 +2872,11 @@ pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
             Line::from(spans).style(line.style)
         })
         .collect()
+}
+
+/// An empty row with nothing on it: an empty row of a band is not one.
+fn blank(line: &Line<'_>) -> bool {
+    line.width() == 0 && line.style.bg.is_none()
 }
 
 /// `s` cut to `width` columns, with an ellipsis when it was longer.
@@ -3147,20 +3126,17 @@ mod tests {
         a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "j".into(), item: ItemKind::AssistantText }));
         a.on_line(&delta("j", "Header\n\n"));
         a.on_line(&delta("j", "- item\n"));
-        assert_eq!(text(&a.take_pending()), ["", "Header", "", "  • item"], "a blank line a delta ends on is kept");
+        assert_eq!(text(&a.take_pending()), ["", "Header", "", "• item"], "a blank line a delta ends on is kept");
     }
 
     #[test]
-    fn a_list_items_wrapped_rows_line_up_under_its_text() {
+    fn a_list_item_and_a_quote_are_a_line_each_for_the_terminal_to_wrap() {
         let mut a = app();
         a.set_width(24);
         for l in ["- one two three four five six", "  - seven eight nine ten", "> a quote that goes on and on"] {
             a.push_md(l);
         }
-        assert_eq!(
-            text(&a.take_pending()),
-            ["  • one two three four", "    five six", "    ◦ seven eight nine", "      ten", "│ a quote that goes on", "│ and on"]
-        );
+        assert_eq!(text(&a.take_pending()), ["• one two three four five six", "  ◦ seven eight nine ten", "│ a quote that goes on and on"], "nothing before a row it wraps onto, to be copied");
     }
 
     #[test]
@@ -3171,7 +3147,7 @@ mod tests {
         a.on_line(&delta("i", "Sizes:\n| a | b |\n|---|---|\n| 1 | 2 |\n"));
         assert_eq!(text(&a.take_pending()), ["Sizes:"], "the table is held while it may go on");
         a.on_line(&delta("i", "Done.\n```\n| in | code |\n```\n| x |"));
-        assert_eq!(text(&a.take_pending()), ["", "  a │ b", " ───┼───", "  1 │ 2", "", "Done.", "", "", "  | in | code |", ""], "a fenced block's rows are code, not a table's");
+        assert_eq!(text(&a.take_pending()), ["", "  a │ b", " ───┼───", "  1 │ 2", "", "Done.", "", "", "| in | code |", ""], "a fenced block's rows are code, not a table's");
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: String::new() } }));
         assert_eq!(text(&a.take_pending()), ["| x |"], "a table the answer ends on is drawn with it, as typed when it is none");
         a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "j".into(), item: ItemKind::AssistantText }));
@@ -3218,7 +3194,7 @@ mod tests {
         let call = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolCall { call_id: id.into(), name: "read".into(), input: serde_json::json!({"path": "README.md"}) } }));
         let back = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolResult { call_id: id.into(), output: "x".into(), is_error: false } }));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::UserText { text: "hi".into() } }));
-        assert_eq!(text(&a.take_pending()), ["▎", "▎ hi", "▎"]);
+        assert_eq!(text(&a.take_pending()), ["", "hi", ""]);
         call(&mut a, "1");
         assert_eq!(text(&a.view(Instant::now()).0)[..2], ["", "◆ Read README.md"], "a gap under the prompt while it runs");
         back(&mut a, "1");
@@ -3284,7 +3260,7 @@ mod tests {
         a.push_md("Done.");
         assert_eq!(
             text(&a.take_pending()),
-            ["◆ Ran 2 commands, read 1 file, searched", "for 1 pattern", "◆ Run cargo test (failed)", "└─ boom", "◆ Read b.rs (2 lines)", "Done."]
+            ["◆ Ran 2 commands, read 1 file, searched for 1 pattern", "◆ Run cargo test (failed)", "└─ boom", "◆ Read b.rs (2 lines)", "Done."]
         );
     }
 
@@ -3303,14 +3279,12 @@ mod tests {
         let lines = a.take_pending();
         let rows = text(&lines);
         assert_eq!(rows[..2], ["Run it:", ""], "a gap above the block, the fence not shown");
-        assert!(rows[2].ends_with("rust"), "its language at the right of the row above: {:?}", rows[2]);
-        assert!(rows[3].starts_with("  fn main() { let s = \"x"), "{:?}", rows[3]);
-        assert!(rows[4].starts_with("  xxx"), "a long line breaks where the width ends: {:?}", rows[4]);
-        assert_eq!(rows[5..8], ["", "Then", ""]);
-        assert_eq!(rows[8..], ["", "  left open", ""], "a block the answer ends in is closed");
-        for l in lines.iter().filter(|l| l.width() > 0 && !l.spans[0].content.starts_with(['R', 'T'])) {
-            assert_eq!(l.width(), w, "the band is the width");
-            assert!(l.spans.iter().all(|s| s.style.bg == look::code_band().bg), "{l:?}");
+        assert_eq!(rows[2], "rust", "its language on the row above");
+        assert_eq!(rows[3], format!("fn main() {{ let s = \"{}\"; }}", "x".repeat(w)), "from the first column, whole: the terminal wraps it, and a copy joins it again");
+        assert_eq!(rows[4..7], ["", "Then", ""]);
+        assert_eq!(rows[7..], ["", "left open", ""], "a block the answer ends in is closed");
+        for (i, l) in lines.iter().enumerate().filter(|(i, _)| ![0, 1, 5, 6].contains(i)) {
+            assert_eq!(l.style.bg, look::code_band().bg, "the band is the line's, for the terminal to paint to the edge: {i} {l:?}");
         }
         let main = lines[3].spans.iter().find(|s| s.content == "main").expect("main");
         assert_eq!(main.style.fg, Some(Color::Blue), "highlighted");
@@ -3437,7 +3411,7 @@ mod tests {
             ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 1200, ..Usage::default() }, duration_ms: 1500, error: None, reported_cost_usd: None }),
         ];
         a.replay(&evs.iter().collect::<Vec<_>>());
-        assert_eq!(text(&a.take_pending()), ["▎", "▎ hi", "▎", "", "◆ Read README.md (2 lines)", "", "It is a CLI.", "", "Worked for 1.5s · 1.2k tokens"]);
+        assert_eq!(text(&a.take_pending()), ["", "hi", "", "", "◆ Read README.md (2 lines)", "", "It is a CLI.", "", "Worked for 1.5s · 1.2k tokens"]);
         assert_eq!(a.model, Some(model), "the session's model is the one shown");
     }
 
@@ -3794,7 +3768,7 @@ mod tests {
     }
 
     #[test]
-    fn scrollback_is_wrapped_here_keeping_each_pieces_style_and_the_last_answer_is_kept_whole() {
+    fn scrollback_is_the_terminals_to_wrap_and_the_last_answer_is_kept_whole() {
         let line = Line::from(vec![Span::raw("one two "), Span::styled("three four five", bold())]);
         let rows = wrap_line(line, 10);
         assert_eq!(text(&rows), ["one two", "three", "four five"]);
@@ -3803,8 +3777,7 @@ mod tests {
         a.width = 12;
         a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "i".into(), item: ItemKind::AssistantText }));
         a.on_line(&delta("i", "a rather long first line of the answer\nand a second\n"));
-        let t = text(&a.take_pending());
-        assert!(t.iter().all(|r| r.chars().count() <= 12), "{t:?}");
+        assert_eq!(text(&a.take_pending()), ["a rather long first line of the answer", "and a second"], "a line each, which a copy joins again");
         assert_eq!(a.answer, "a rather long first line of the answer\nand a second\n", "Ctrl-Y copies it unwrapped");
         // After a tool call, the answer goes on, a paragraph apart; a new
         // turn starts it again.
@@ -4127,8 +4100,7 @@ mod tests {
     fn prose_lays_out_at_most_80_columns_and_full_width_takes_the_terminal() {
         let mut a = App::new(Editor::new(None), 200, Settings::default(), None, None);
         a.say(&"word ".repeat(40), dim());
-        let lines = a.take_pending();
-        assert!(lines.len() > 1 && lines.iter().all(|l| l.width() <= 80), "{:?}", text(&lines));
+        assert_eq!(a.take_pending().len(), 1, "scrollback's text is the terminal's to wrap, so it copies whole");
         // Above the prompt, at most 80; the prompt and the status line
         // take the whole width.
         let above = |rows: &[String]| rows.iter().take_while(|r| !r.starts_with(look::ARROW)).cloned().collect::<Vec<_>>();

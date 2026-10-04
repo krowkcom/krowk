@@ -65,6 +65,12 @@ impl Tmux {
         self.tmux(&["capture-pane", "-p", "-t", "t", "-S", "-", "-E", "-"])
     }
 
+    /// The whole history with the rows the terminal wrapped joined, as a
+    /// copy of them has them (`capture-pane -J`).
+    pub fn history_joined(&self) -> String {
+        self.tmux(&["capture-pane", "-p", "-J", "-t", "t", "-S", "-", "-E", "-"])
+    }
+
     /// The whole history with its colours, as `capture-pane -e` has them.
     pub fn history_styled(&self) -> String {
         self.tmux(&["capture-pane", "-p", "-e", "-t", "t", "-S", "-", "-E", "-"])

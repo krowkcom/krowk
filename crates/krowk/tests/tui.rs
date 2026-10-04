@@ -308,7 +308,9 @@ fn the_mode_picker_sets_the_mode_the_next_turn_runs_in() {
     let picker = |t: &pty::Pty, from: usize| {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            if String::from_utf8_lossy(&t.output()[from..]).contains("or /mode <name>") {
+            // A word of its header: the rows the region keeps are redrawn
+            // only where they changed, so its spaces are not sent again.
+            if String::from_utf8_lossy(&t.output()[from..]).contains("choose") {
                 return true;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -600,7 +602,7 @@ fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() 
     t.write(b"wait forever\r");
     assert!(t.wait_for("to interrupt", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     // The prompt at the provider: the host has started the session by
-    // then. Nothing drawn says so — the `▎` band is drawn as the prompt is
+    // then. Nothing drawn says so — the prompt's band is drawn as it is
     // sent — and two Ctrl-Cs sent before, on a loaded machine, left before
     // any session existed. The TUI may not have read the session's start
     // yet, which is the race this pins: it is read on the way out.
@@ -649,14 +651,13 @@ fn r_tui_1_a_10k_token_answer_lands_in_tmux_scrollback_exactly_once() {
     tm.keys(&["write it all out", "Enter"]);
     assert!(tm.wait_for("tokens", Duration::from_secs(60)).is_some(), "the answer never finished:\n{}", tm.screen());
     let history = tm.history();
-    // Two columns of padding in front of every row, never written.
-    assert!(history.lines().filter(|l| !l.trim().is_empty()).all(|l| l.starts_with("  ")), "every row padded:\n{history}");
-    let got: Vec<&str> = history.lines().map(str::trim).filter(|l| l.starts_with("line ")).collect();
+    // From the first column, so a selection copies nothing before it.
+    let got: Vec<&str> = history.lines().filter(|l| l.starts_with("line ")).collect();
     let want: Vec<String> = mock::numbered_lines(850).lines().map(String::from).collect();
     assert_eq!(got.len(), want.len(), "every line once, none twice");
     assert!(got.iter().zip(&want).all(|(g, w)| g == w), "in order, byte for byte");
     // The prompt line is in scrollback once too, and the live region is not.
-    assert_eq!(history.matches("▎ write it all out").count(), 1, "{history}");
+    assert_eq!(history.matches("\nwrite it all out\n").count(), 1, "{history}");
     assert_eq!(history.matches("to interrupt").count(), 0, "a live row leaked into scrollback");
 }
 
@@ -687,31 +688,19 @@ fn r_tui_3_a_phone_width_terminal_wraps_and_still_keeps_every_line_once() {
     tm.keys(&["go", "Enter"]);
     assert!(tm.wait_for("tokens", Duration::from_secs(60)).is_some(), "{}", tm.screen());
     let history = tm.history();
-    assert!(history.lines().all(|l| l.trim_end().chars().count() <= 38), "a row into the right padding:\n{history}");
-    // krowk wrapped the answer inside the padding, so each streamed line is
-    // its first row and the rows after it, up to the next line: joined
-    // back, every line exactly as it was streamed, once and in order.
-    let mut got: Vec<String> = Vec::new();
-    for row in history.lines().map(str::trim) {
-        if row.starts_with("line ") {
-            got.push(row.to_string());
-        } else if let Some(last) = got.last_mut()
-            && !row.is_empty()
-            && !last.ends_with("again")
-        {
-            last.push(' ');
-            last.push_str(row);
-        }
-    }
+    assert!(history.lines().all(|l| l.trim_end().chars().count() <= 40), "a row past the edge:\n{history}");
+    // The terminal wrapped the answer, so a copy joins each streamed line
+    // back: every line exactly as it was streamed, once and in order.
+    let joined = tm.history_joined();
+    let got: Vec<&str> = joined.lines().map(str::trim_end).filter(|l| l.starts_with("line ")).collect();
     let want: Vec<String> = mock::numbered_lines(200).lines().map(String::from).collect();
-    assert_eq!(got, want, "the answer, wrapped by krowk, is in scrollback once and in order");
+    assert_eq!(got, want, "the answer, wrapped by the terminal, is in scrollback once and in order, each line joined whole");
 }
 
 #[test]
 fn r_tui_3_a_widened_terminal_keeps_the_answer_in_scrollback_once() {
-    // Printed at 40 columns, the answer's lines are wrapped by krowk inside
-    // its padding; widened to 100 they stay as they were printed, each once
-    // (Ctrl-Y copies the answer unwrapped).
+    // Printed at 40 columns, the answer's lines are wrapped by the
+    // terminal; widened to 100 they are there each once.
     let m = streamed(20, Duration::from_micros(100));
     let b = Sandbox::new("widen");
     let Some(tm) = Tmux::start("widen", 40, 30, &b.root.join("repo"), &b.env(&m.url), &[]) else { return };
@@ -753,8 +742,8 @@ fn r_tui_1_a_menu_opened_and_closed_leaves_no_gap_in_scrollback_and_no_space_und
     tm.keys(&["again", "Enter"]);
     // In history, not on the screen: the second answer is quick to push it
     // up past the top.
-    assert!(tm.wait_in_history("▎ again", Duration::from_secs(10)).is_some(), "{}", tm.history());
-    let history = tm.wait_still(|s| tm.history().split("▎ again").nth(1).is_some_and(|after| after.contains("tokens")) && at_bottom(s), Duration::from_secs(30)).unwrap_or_else(|| panic!("the second turn never finished:\n{}", tm.screen()));
+    assert!(tm.wait_in_history("\nagain\n", Duration::from_secs(10)).is_some(), "{}", tm.history());
+    let history = tm.wait_still(|s| tm.history().split("\nagain\n").nth(1).is_some_and(|after| after.contains("tokens")) && at_bottom(s), Duration::from_secs(30)).unwrap_or_else(|| panic!("the second turn never finished:\n{}", tm.screen()));
     let rows: Vec<&str> = history.lines().collect();
     let logo: Vec<usize> = rows.iter().enumerate().filter(|(_, l)| l.contains('▀')).map(|(i, _)| i).collect();
     assert!(logo.len() > 1 && logo.windows(2).all(|w| w[1] == w[0] + 1), "the logo in one piece:\n{history}");
@@ -762,9 +751,10 @@ fn r_tui_1_a_menu_opened_and_closed_leaves_no_gap_in_scrollback_and_no_space_und
     assert_eq!(lines.len(), 24, "both answers, every line once:\n{history}");
     assert!(lines[..12].windows(2).all(|w| w[1] == w[0] + 1) && lines[12..].windows(2).all(|w| w[1] == w[0] + 1), "each answer without a gap in it:\n{history}");
     // Between the first answer and the second prompt: its token line, set
-    // off by one blank row each side, and nothing else.
-    let between: Vec<&str> = rows[lines[11] + 1..].iter().take_while(|l| !l.contains("▎ again")).map(|l| l.trim()).collect();
-    assert_eq!(between.iter().filter(|l| l.is_empty()).count(), 2, "no blank rows the menus left behind: {between:?}");
+    // off by one blank row each side, and the empty row of the prompt's
+    // band over it, and nothing else.
+    let between: Vec<&str> = rows[lines[11] + 1..].iter().take_while(|l| l.trim_end() != "again").map(|l| l.trim()).collect();
+    assert_eq!(between.iter().filter(|l| l.is_empty()).count(), 3, "no blank rows the menus left behind: {between:?}");
 }
 
 #[test]
@@ -801,14 +791,14 @@ fn r_tui_3_a_resize_mid_stream_never_repeats_a_line_or_leaves_the_live_region_be
     for live in ["to interrupt", "type to steer"] {
         assert!(!history.contains(live), "the old live region was left in scrollback:\n{history}");
     }
-    assert_eq!(history.matches("▎ go").count(), 1, "{history}");
+    assert_eq!(history.matches("\ngo\n").count(), 1, "{history}");
     let bars = tm.screen().matches(" help").count();
     assert_eq!(bars, 1, "one status bar on screen after two resizes:\n{}", tm.screen());
 }
 
 /// The prompt, `arrow` its first row, once in history and on its band
-/// once: `blank_above` empty rows over it (the last two the plain one and
-/// the band's), the band's empty row and a plain one under it and the
+/// once: at least `blank_above` empty rows over it (the last two the plain
+/// one and the band's), the band's empty row and a plain one under it and the
 /// status line right after, and the band's colour (236) nowhere else —
 /// a reflowed piece of it left behind would show there, as a rule did.
 fn one_band(tm: &Tmux, arrow: &str, blank_above: usize) {
@@ -833,7 +823,7 @@ fn one_band(tm: &Tmux, arrow: &str, blank_above: usize) {
     assert_eq!(at.len(), 1, "one prompt:\n{styled}");
     let i = at[0];
     let above = plain[..i].iter().rev().take_while(|l| l.trim().is_empty()).count();
-    assert_eq!(above, blank_above, "the empty rows over the prompt, its band's among them, and no more:\n{styled}");
+    assert!(above >= blank_above, "the empty rows over the prompt, its band's among them: {above}\n{styled}");
     assert!(plain.get(i + 1).is_some_and(|l| l.trim().is_empty()) && plain.get(i + 2).is_some_and(|l| l.trim().is_empty()) && plain.get(i + 3).is_some_and(|l| l.contains(" help")), "and under it, the status line straight after:\n{styled}");
     let band: Vec<usize> = styled.lines().enumerate().filter(|(_, l)| l.contains("48;5;236m")).map(|(n, _)| n).collect();
     assert!(band.iter().all(|&n| n == i - 1 || n == i), "the band's colour away from the prompt, {band:?} for {i}:\n{styled}");
