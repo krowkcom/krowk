@@ -376,7 +376,7 @@ fn r_relay_1_leases_and_viewers_are_issued_tickets_the_relay_can_check() {
 fn signed_calls_refuse_the_api_key_alone_a_replay_a_stale_signature_and_a_revoked_device() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());
-    let ma = machine(&api, &mut People::default(), &root("signed"), "laptop");
+    let (ma, mb) = two_machines(&api, "signed");
     let (a, client, signer) = (&ma.device, &ma.client, &ma.signer);
     let id: [u8; 16] = e2e::random();
     client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None, None).unwrap();
@@ -410,4 +410,8 @@ fn signed_calls_refuse_the_api_key_alone_a_replay_a_stale_signature_and_a_revoke
     // the key it holds revoked with it.
     revoke(registry.addr(), &ma.token, &a.id().to_string());
     assert_eq!(client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap_err().code(), "unauthorized");
+    // Signed by it on another of the person's keys, it is the device that
+    // is refused.
+    let as_revoked = krowk_api::Client::new(&api, &mb.token).signed_by(signer.clone());
+    assert_eq!(as_revoked.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap_err().code(), "device_revoked");
 }

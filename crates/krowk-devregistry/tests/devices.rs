@@ -299,6 +299,46 @@ fn the_account_key_designs_endpoints_answer_sync_reset() {
     }
     let r = request("GET", &server.at("/v1/devices"), "krowk_sk_old", "", "");
     assert_eq!((r.status, r.code()), (404, "no_such_endpoint".to_owned()));
+    let r = request("POST", &server.at("/v1/devices"), "", "application/json", register);
+    assert_eq!((r.status, r.code()), (401, "unauthorized".to_owned()), "for a key, as every API call is");
+}
+
+/// A lease whose holder the list then removed is not stuck: another device
+/// asking for it is told it is held until it lapses, and takes it after —
+/// only the device asking is checked, as SyncSession#acquire_lease! has it.
+/// And a device that removes itself takes its own key with it.
+#[test]
+fn a_removed_holders_lease_lapses_to_the_next_device() {
+    let server = Server::new();
+    let laptop = Dev::new("laptop");
+    let (chain, key) = init(&server, &laptop);
+    let desktop = Dev::new("desktop");
+    let (chain, add) = chain.batch(&key, vec![Change::Add(desktop.subject())], laptop.key.id(), &laptop.signing, now()).unwrap();
+    laptop.client(&server, LAPTOP).append_device_list(&post(&add, false)).unwrap();
+    desktop.client(&server, DESKTOP).claim_key_device().unwrap();
+    let id = "0190f3a8-7c1e-7a9b-8c2d-3e4f5a6b7c8e";
+    let (on_laptop, on_desktop) = (laptop.client(&server, LAPTOP), desktop.client(&server, DESKTOP));
+    on_desktop.put_sync_session(id, &"00".repeat(74), None, None, None).unwrap();
+    on_desktop.acquire_lease(id, &desktop.key.id().to_string(), 10, "production").unwrap();
+
+    let (chain, remove) = chain.batch(&key, vec![Change::Remove(desktop.subject())], laptop.key.id(), &laptop.signing, now()).unwrap();
+    on_laptop.append_device_list(&post(&remove, false)).unwrap();
+    assert_eq!(on_laptop.acquire_lease(id, &laptop.key.id().to_string(), 60, "production").unwrap_err().code(), "lease_held");
+    server.advance(SignedDuration::from_secs(11));
+    let taken = on_laptop.acquire_lease(id, &laptop.key.id().to_string(), 60, "production").unwrap();
+    on_laptop.release_lease(id, &taken.token).unwrap();
+
+    // A device that removes itself takes its own key with it.
+    let tablet = Dev::new("tablet");
+    let key = remove.newest;
+    let (chain, add) = chain.batch(&key, vec![Change::Add(tablet.subject())], laptop.key.id(), &laptop.signing, now()).unwrap();
+    on_laptop.append_device_list(&post(&add, false)).unwrap();
+    let on_tablet = tablet.client(&server, "krowk_sk_owner#tablet");
+    on_tablet.claim_key_device().unwrap();
+    on_tablet.list_sync_sessions("", 50).unwrap();
+    let (_, gone) = chain.batch(&key, vec![Change::Remove(tablet.subject())], tablet.key.id(), &tablet.signing, now()).unwrap();
+    on_tablet.append_device_list(&post(&gone, false)).unwrap();
+    assert_eq!(on_tablet.list_sync_sessions("", 50).unwrap_err().code(), "unauthorized");
 }
 
 /// Every sync endpoint needs the key's own device on the list and active

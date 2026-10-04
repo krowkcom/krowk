@@ -303,13 +303,10 @@ fn person(req: &Req) -> String {
 }
 
 /// A device a call names, as the registry finds it
-/// (`sync_user.devices.named!`, then Device#refuse_if_revoked!): one the
-/// person's list has named, else no such device, and neither removed nor
-/// revoked.
+/// (`sync_user.devices.named!`): one the person's list has named, removed
+/// or not, else no such device.
 fn named<'a>(s: &'a SyncStore, person: &str, device: &str) -> Result<&'a crate::devices::Listed, Resp> {
-    let d = s.people.get(person).and_then(|p| p.device(device)).ok_or_else(not_found)?;
-    crate::devices::refuse_if_revoked(d)?;
-    Ok(d)
+    s.people.get(person).and_then(|p| p.device(device)).ok_or_else(not_found)
 }
 
 /// The body's `resource` object, and a 400 for a missing one.
@@ -485,6 +482,16 @@ fn holder(s: &Session, token: &str, now: Timestamp, signer: &str) -> Result<(), 
     if leased(s, now) && !s.token_digest.is_empty() && presented == s.token_digest && s.holder == signer { Ok(()) } else { Err(lease_stale(s, now)) }
 }
 
+/// A lease call of the holder's is signed by the holder, whatever token it
+/// presents (Api::Sync#refuse_unless_signed_by_holder!).
+fn signed_by_holder(x: &Session, signer: &str) -> Result<(), Resp> {
+    if x.holder.is_empty() || x.holder == signer {
+        Ok(())
+    } else {
+        Err(error(409, "lease_stale", &format!("device {signer} does not hold this session's lease — only its holder writes"), None))
+    }
+}
+
 /// A new lease token, and its digest to keep.
 fn mint(s: &mut Session) -> String {
     let token = crate::store::random_token()[..32].to_owned();
@@ -584,7 +591,8 @@ fn ttl(f: &Fields) -> Result<SignedDuration, Resp> {
 /// the body's `lease`.
 type LeaseCall<'a> = (std::sync::MutexGuard<'a, crate::store::Store>, (String, String), String, Value);
 
-/// The session and the device a lease call names, both the workspace's.
+/// The session a lease call is for, the workspace's, and the device it
+/// names, which each call looks up in its own turn.
 fn lease_call<'a>(app: &'a App, req: &mut Req, id: &str, needs_device: bool) -> Result<LeaseCall<'a>, Resp> {
     let workspace = gate(req)?;
     let id = session_id(id).ok_or_else(not_found)?;
@@ -596,19 +604,15 @@ fn lease_call<'a>(app: &'a App, req: &mut Req, id: &str, needs_device: bool) -> 
     if !s.sync.sessions.contains_key(&key) {
         return Err(not_found());
     }
-    if needs_device {
-        named(&s.sync, &person(req), &device)?;
-    }
-    // A revoked holder is refused whatever token it presents.
-    if let Some(refused) = s.sync.sessions.get(&key).and_then(|x| revoked_holder(&s.sync, x)) {
-        return Err(crate::devices::revoked(&refused));
-    }
     Ok((s, key, device, v))
 }
 
 pub fn acquire_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let (mut s, key, device, v) = lease_call(app, req, id, true)?;
+        // Only the device asking is checked: a lease whose holder was since
+        // removed is `lease_held` until it lapses, and free after.
+        named(&s.sync, &person(req), &device)?;
         signed_as(&device, signer)?;
         let ttl = ttl(&v.fields())?;
         let env = env_field(&v.fields())?;
@@ -640,13 +644,21 @@ pub fn acquire_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
 pub fn renew_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let (mut s, key, device, v) = lease_call(app, req, id, true)?;
+        signed_by_holder(&s.sync.sessions[&key], signer)?;
         let mut f = v.fields();
         let token = required(&mut f, "token")?;
+        // The device it is kept by or handed to, which may not be a removed
+        // or revoked one.
+        crate::devices::refuse_if_revoked(named(&s.sync, &person(req), &device)?)?;
         let ttl = ttl(&f)?;
         let env = env_field(&f)?;
         let now = s.now();
+        let refused = revoked_holder(&s.sync, &s.sync.sessions[&key]);
         let x = s.sync.sessions.get_mut(&key).unwrap();
         holder(x, &token, now, signer)?;
+        if let Some(refused) = &refused {
+            return Err(crate::devices::revoked(refused));
+        }
         let minted = if x.holder != device {
             x.fence += 1;
             x.holder = device.clone();
@@ -665,8 +677,8 @@ pub fn renew_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     run().unwrap_or_else(|r| r)
 }
 
-/// A viewer's relay ticket, for a device of the workspace that is not
-/// revoked and has a signing key.
+/// A viewer's relay ticket, for a device on the person's list asking for
+/// itself.
 pub fn viewer_ticket(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     let run = || -> Result<Resp, Resp> {
         let workspace = gate(req)?;
@@ -696,10 +708,15 @@ pub fn viewer_ticket(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
 pub fn release_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let (mut s, key, _, v) = lease_call(app, req, id, false)?;
+        signed_by_holder(&s.sync.sessions[&key], signer)?;
         let token = required(&mut v.fields(), "token")?;
         let now = s.now();
+        let refused = revoked_holder(&s.sync, &s.sync.sessions[&key]);
         let x = s.sync.sessions.get_mut(&key).unwrap();
         holder(x, &token, now, signer)?;
+        if let Some(refused) = &refused {
+            return Err(crate::devices::revoked(refused));
+        }
         x.holder.clear();
         x.token_digest.clear();
         x.lease_expires_at = None;
@@ -717,7 +734,8 @@ fn touch(s: &mut SyncStore, person: &str, device: &str, now: Timestamp) {
 }
 
 /// The session's lease holder, when it is a device its owner's list
-/// removed, or the dashboard revoked.
+/// removed, or the dashboard revoked: refused once its token is checked
+/// (SyncSession#refuse_unless_holder!), never on an acquire.
 fn revoked_holder(s: &SyncStore, x: &Session) -> Option<crate::devices::Listed> {
     s.people.get(&x.owner).and_then(|p| p.device(&x.holder)).filter(|d| !d.active()).cloned()
 }

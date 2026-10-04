@@ -249,10 +249,9 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         ("PUT" | "PATCH", ["v1", "runs", slug, "completion"]) => runs::finish(a, req, slug),
         (_, ["v1", "runs", slug, "artifacts"]) if get => runs::artifacts(a, req, slug),
         // The account-key design's calls, gone as the registry has them:
-        // registering a device with the workspace, and the approval mailbox.
-        // Its device listing has no route left at all.
-        ("POST", ["v1", "devices"]) => sync::sync_reset(),
-        (_, ["v1", "device_approvals", ..]) => sync::sync_reset(),
+        // registering a device with the workspace, and the approval mailbox,
+        // for any key. Its device listing has no route left at all.
+        ("POST", ["v1", "devices"]) | (_, ["v1", "device_approvals", ..]) => auth::require_key(req).map_or_else(|r| r, |_| sync::sync_reset()),
         (_, ["v1", "users", user, rest @ ..]) => users_route(a, req, &m, user, rest),
         // Session reads are signed, as the registry has them: the key alone
         // reads nothing.
