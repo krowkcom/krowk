@@ -342,6 +342,11 @@ impl Client {
         self.request_url(method, &format!("{}{path}", self.base_url), body, attempts, idempotency, Some(self.device_signer()?))
     }
 
+    /// A read that acts as this machine's device, signed by its key.
+    pub(crate) fn get_as_device<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
+        Ok(self.call_as_device("GET", path, None, MAX_ATTEMPTS, None)?.0)
+    }
+
     pub(crate) fn device_signer(&self) -> Result<&dyn RequestSigner, Error> {
         self.signer.as_deref().ok_or_else(|| {
             fail("device_signature_missing", "this call acts as this machine's device and needs its signing key — set sync up on this machine first: `krowk sync init`, `krowk sync join` or `krowk sync recover`")
@@ -392,6 +397,16 @@ impl Client {
         for attempt in 1..=attempts {
             match self.once(method, url, payload.as_deref(), idempotency.as_deref(), signer) {
                 Ok(success) => return Ok(success),
+                // A signature is deterministic, so a read of the same shape
+                // signed in the same millisecond as another — two processes on
+                // this machine, both reading a session — is the other's
+                // signature, which the registry refuses as a replay. A read
+                // changes nothing, so it is signed again a moment later; a
+                // write never is.
+                Err(e) if method == "GET" && signer.is_some() && e.code() == "signature_replayed" && attempt < attempts => {
+                    (self.sleep)(std::time::Duration::from_millis(2));
+                    last = Some(e);
+                }
                 Err(e) => {
                     if !e.retryable() || attempt == attempts {
                         return Err(e);

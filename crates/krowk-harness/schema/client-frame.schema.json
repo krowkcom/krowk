@@ -226,6 +226,13 @@
             "text": {
               "type": "string"
             },
+            "images": {
+              "description": "The images the text names by `[Image #N]`.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ImageInput"
+              }
+            },
             "model": {
               "description": "The model for this turn; the session's last one when absent.",
               "anyOf": [
@@ -306,6 +313,12 @@
             },
             "text": {
               "type": "string"
+            },
+            "images": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ImageInput"
+              }
             },
             "type": {
               "type": "string",
@@ -414,6 +427,30 @@
             "sessionId"
           ]
         }
+      ]
+    },
+    "ImageInput": {
+      "description": "An image as a client sends it with a prompt or a steer: its bytes, which\nthe engine keeps beside the session's log, and the number its\n`[Image #N]` in the text carries.",
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mediaType": {
+          "description": "`image/png`, `image/jpeg`, `image/gif` or `image/webp`.",
+          "type": "string"
+        },
+        "data": {
+          "description": "The bytes, base64.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "number",
+        "mediaType",
+        "data"
       ]
     },
     "ModelRef": {

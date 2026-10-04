@@ -16,7 +16,7 @@ use krowk_harness::anthropic::{request_body, AnthropicClient};
 use krowk_harness::engine::{EngineEvent, HistoryItem};
 use krowk_harness::instances::{InstancesConfig, Registry, Resolved};
 use krowk_harness::native::{ModelClient, ModelRequest};
-use krowk_harness::protocol::{Item, LogBody, LogEvent, ToolDefinition};
+use krowk_harness::protocol::{ImageRef, Item, LogBody, LogEvent, ToolDefinition};
 use serde_json::json;
 
 /// The signature the tool-use fixture streams, as its two deltas decode.
@@ -93,7 +93,7 @@ fn r_log_3_a_thinking_signature_round_trips_through_the_log_byte_identical() {
             other => panic!("{other:?}"),
         })
         .collect();
-    let mut history = vec![HistoryItem { item: Item::UserText { text: "read README.md and summarise it in one line".into() }, response: None }];
+    let mut history = vec![HistoryItem { item: Item::user("read README.md and summarise it in one line"), response: None }];
     history.extend(read_back.into_iter().map(|item| HistoryItem { item, response: Some(0) }));
     history.push(HistoryItem { item: Item::ToolResult { call_id: "toolu_01ReadReadme".into(), output: "# krowk".into(), is_error: false }, response: None });
     let req = ModelRequest { model: "claude-sonnet-4-6".into(), system: "s".into(), tools: vec![], history, ..ModelRequest::default() };
@@ -137,10 +137,10 @@ fn r_log_3_redacted_thinking_is_kept_opaque_and_replayed_as_it_came() {
     let data = blob.data["data"].as_str().unwrap().to_string();
     assert_eq!(d.items[1].1, Item::AssistantText { text: "Done.".into() });
     let history = vec![
-        HistoryItem { item: Item::UserText { text: "q".into() }, response: None },
+        HistoryItem { item: Item::user("q"), response: None },
         HistoryItem { item: d.items[0].1.clone(), response: Some(0) },
         HistoryItem { item: d.items[1].1.clone(), response: Some(0) },
-        HistoryItem { item: Item::UserText { text: "again".into() }, response: None },
+        HistoryItem { item: Item::user("again"), response: None },
     ];
     let body = request_body(&ModelRequest { model: "m".into(), system: "s".into(), tools: vec![], history, ..ModelRequest::default() }, &instance());
     assert_eq!(body["messages"][1]["content"][0], json!({ "type": "redacted_thinking", "data": data }));
@@ -149,7 +149,7 @@ fn r_log_3_redacted_thinking_is_kept_opaque_and_replayed_as_it_came() {
 #[test]
 fn r_prov_3_cache_breakpoints_sit_on_the_stable_prefix_and_the_growing_tail() {
     let tools = vec![ToolDefinition { name: "read".into(), description: "d".into(), input_schema: json!({ "type": "object" }), grammar: None }];
-    let turn = |text: &str| HistoryItem { item: Item::UserText { text: text.into() }, response: None };
+    let turn = |text: &str| HistoryItem { item: Item::user(text), response: None };
     let said = |text: &str, r: usize| HistoryItem { item: Item::AssistantText { text: text.into() }, response: Some(r) };
     let history = vec![turn("one"), said("a", 0), turn("two"), said("b", 1), turn("three")];
     let body = request_body(&ModelRequest { model: "m".into(), system: "sys".into(), tools, history, ..ModelRequest::default() }, &instance());
@@ -171,9 +171,9 @@ fn r_prov_3_cache_breakpoints_sit_on_the_stable_prefix_and_the_growing_tail() {
 #[test]
 fn an_interrupted_tool_call_is_answered_before_it_is_sent_back() {
     let history = vec![
-        HistoryItem { item: Item::UserText { text: "q".into() }, response: None },
+        HistoryItem { item: Item::user("q"), response: None },
         HistoryItem { item: Item::ToolCall { call_id: "toolu_x".into(), name: "read".into(), input: json!({}) }, response: Some(0) },
-        HistoryItem { item: Item::UserText { text: "next".into() }, response: None },
+        HistoryItem { item: Item::user("next"), response: None },
     ];
     let body = request_body(&ModelRequest { model: "m".into(), system: "s".into(), tools: vec![], history, ..ModelRequest::default() }, &instance());
     let next = &body["messages"][2]["content"];
@@ -229,4 +229,26 @@ fn r_prov_2_effort_none_is_thinking_off_and_any_other_rung_is_the_apis_effort() 
     assert_eq!((high["thinking"]["type"].as_str(), high["output_config"]["effort"].as_str()), (Some("adaptive"), Some("high")));
     let default = request_body(&req(None), &instance());
     assert!(default.get("thinking").is_some() && default.get("output_config").is_none());
+}
+
+/// A prompt naming two images: one whose bytes were read, one whose file is gone.
+fn with_images() -> ModelRequest {
+    let r = |n: u32, file: &str| ImageRef { number: n, media_type: "image/png".into(), file: file.into() };
+    let item = Item::UserText { text: "what differs between [Image #1] and [Image #2]?".into(), images: vec![r(1, "1-a.png"), r(2, "2-b.png")] };
+    let mut req = ModelRequest { model: "m".into(), system: "s".into(), history: vec![HistoryItem { item, response: None }], ..ModelRequest::default() };
+    req.images.insert("1-a.png".into(), "iVBORw0K".into());
+    req
+}
+
+#[test]
+fn an_image_is_sent_after_its_label_and_a_gone_one_is_named() {
+    let body = request_body(&with_images(), &instance());
+    let content = &body["messages"][0]["content"];
+    assert_eq!(content[1]["text"], "[Image #1]");
+    assert_eq!(content[2]["type"], "image");
+    assert_eq!(content[2]["source"]["type"], "base64");
+    assert_eq!(content[2]["source"]["media_type"], "image/png");
+    assert_eq!(content[2]["source"]["data"], "iVBORw0K");
+    assert_eq!(content[3]["text"], "[Image #2: the file is gone]");
+    assert_eq!(content.as_array().unwrap().len(), 4);
 }

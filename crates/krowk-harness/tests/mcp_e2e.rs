@@ -101,7 +101,7 @@ impl Drop for Home {
 fn prompt(mode: PermissionMode) -> Command {
     Command::Prompt {
         session_id: None,
-        text: "echo hi through MCP".into(),
+        text: "echo hi through MCP".into(), images: Vec::new(),
         model: Some(ModelRef {
             instance: "anthropic".into(),
             model: "claude-sonnet-4-6".into(),

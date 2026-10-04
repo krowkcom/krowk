@@ -41,6 +41,7 @@ pub mod editor;
 pub mod help;
 pub mod look;
 pub mod net;
+pub mod paste;
 pub mod settings;
 pub mod syntax;
 #[cfg(unix)]
@@ -283,6 +284,8 @@ type ProbeFuture = Pin<Box<dyn Future<Output = bool>>>;
 type RouteFuture<'a> = Pin<Box<dyn Future<Output = Result<ModelRef, EngineError>> + 'a>>;
 type ChecksFuture = Pin<Box<dyn Future<Output = Vec<krowk_harness::readiness::Report>>>>;
 type PrFuture = Pin<Box<dyn Future<Output = (String, Option<pr::Pr>)>>>;
+type PasteFuture = Pin<Box<dyn Future<Output = paste::Pasted>>>;
+type PasteJob = Box<dyn FnOnce() -> paste::Pasted + Send>;
 
 async fn session(opts: Options) -> Outcome {
     let mut stdout = std::io::stdout();
@@ -438,6 +441,8 @@ async fn session(opts: Options) -> Outcome {
         suspended: false,
         checks: None,
         pr: None,
+        pasting: None,
+        pastes: Default::default(),
         looked_in: None,
         first_run: false,
         first_run_pending: false,
@@ -521,6 +526,11 @@ struct Ui<'h> {
     checks: Option<ChecksFuture>,
     /// The branch checked out and its pull request, being read.
     pr: Option<PrFuture>,
+    /// A paste being read and made ready, off the runtime's thread (the
+    /// clipboard, or the files dropped), and the editor's mark for where it
+    /// goes; the ones asked for after it, waiting their turn.
+    pasting: Option<(Option<u64>, PasteFuture)>,
+    pastes: std::collections::VecDeque<(u64, PasteJob)>,
     /// Where the agent was at work when that was last read.
     looked_in: Option<PathBuf>,
     /// The flow running is the first-run card's.
@@ -894,16 +904,7 @@ impl<'h> Ui<'h> {
         let mut quitting = false;
         let mut hangups = Signals::hangups();
         let mut interrupts = Signals::interrupts();
-        self.draw(app, term)?;
-        frames.last.replace(Instant::now());
-        // A model known at start needs nothing routed; whether anything
-        // here can run it at all is asked now, behind the first frame.
-        // A synced session runs on its host's models: nothing here to ask
-        // about, and no first-run card over it on a machine with none.
-        if self.routing.is_none() && self.host.synced().is_none() {
-            self.startup_sweep(app);
-        }
-        self.look_for_pr(app);
+        self.first_frame(app, term, &mut frames)?;
         loop {
             let due = self.due(app, &reach);
             let wake = [frames.at, due.tick, due.stall, due.retry, reach.probe_at, due.quit].into_iter().flatten().min();
@@ -942,6 +943,7 @@ impl<'h> Ui<'h> {
                 }
                 r = finish(&mut self.model_route) => self.on_model_route(app, r).await,
                 m = recv_auth(&mut self.auth) => self.on_auth(app, term, m)?,
+                p = finish_paste(&mut self.pasting) => self.on_pasted(app, p),
                 (branch, found) = finish(&mut self.pr) => self.on_pr(app, branch, found),
                 reports = finish(&mut self.checks) => {
                     self.checks = None;
@@ -959,6 +961,21 @@ impl<'h> Ui<'h> {
             }
             self.paint(app, term, &mut frames)?;
         }
+    }
+
+    /// The first frame, and what is asked behind it.
+    fn first_frame<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, frames: &mut Frames) -> std::io::Result<()> {
+        self.draw(app, term)?;
+        frames.last.replace(Instant::now());
+        // A model known at start needs nothing routed; whether anything
+        // here can run it at all is asked now, behind the first frame.
+        // A synced session runs on its host's models: nothing here to ask
+        // about, and no first-run card over it on a machine with none.
+        if self.routing.is_none() && self.host.synced().is_none() {
+            self.startup_sweep(app);
+        }
+        self.look_for_pr(app);
+        Ok(())
     }
 
     /// After whatever woke the loop: a frame for what changed, drawn when
@@ -1049,6 +1066,7 @@ impl<'h> Ui<'h> {
             Err(e) => e.code == "network_unreachable",
         };
         let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
+        let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image");
         // A `continue` whose turn a prompt already ran is no
         // news.
         if let Err(e) = r
@@ -1076,6 +1094,12 @@ impl<'h> Ui<'h> {
                 app.notice("the steering this turn never read is back in the prompt");
             }
         }
+        // A prompt refused for its images goes back, images and
+        // all, to switch the model or drop them.
+        if refused_images {
+            app.editor.restore(&self.last_prompt);
+        }
+        self.forget_images(app);
         self.go_on(app);
         false
     }
@@ -1512,7 +1536,8 @@ impl<'h> Ui<'h> {
         app.offer = None;
         app.echo(&text);
         let (tx, rx) = mpsc::channel(1024);
-        let cmd = Command::Prompt { session_id: app.session_id.clone(), text, model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
+        let images = app.images_for(&text);
+        let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
         self.turn = Some(Box::pin(self.host.execute(cmd, tx)));
         self.rx = Some(rx);
         app.start_turn(std::time::Instant::now());
@@ -1548,7 +1573,8 @@ impl<'h> Ui<'h> {
             t.interrupt_sent = true;
         }
         while let Some(text) = app.unsent_steers.first().cloned() {
-            if !self.command(Command::Steer { session_id: id.clone(), text: text.clone() }).await.is_ok_or_slow() {
+            let images = app.images_for(&text);
+            if !self.command(Command::Steer { session_id: id.clone(), text: text.clone(), images }).await.is_ok_or_slow() {
                 break;
             }
             app.unsent_steers.remove(0);
@@ -1587,7 +1613,15 @@ impl<'h> Ui<'h> {
                     }
                     // Settings takes no text: a paste is dropped.
                     None if app.overlay == Overlay::Settings => {}
-                    None => app.editor.insert_str(&s),
+                    // What some terminals send for a clipboard holding only
+                    // an image: the clipboard is read for it.
+                    None if s.is_empty() => self.start_paste(app, paste::from_clipboard),
+                    // A file dragged onto the terminal: read now, before a
+                    // screenshot's temporary file is gone.
+                    None => match paste::dropped(&s) {
+                        Some(paths) => self.start_paste(app, move || paste::from_files(&paths, Some(s))),
+                        None => app.editor.insert_str(&s),
+                    },
                 }
                 app.touch();
             }
@@ -1988,6 +2022,7 @@ impl<'h> Ui<'h> {
             help::Action::Agents => app.overlay = Overlay::Agents,
             help::Action::Details => app.overlay = Overlay::Details,
             help::Action::Copy => copy(app),
+            help::Action::PasteImage => self.start_paste(app, paste::from_clipboard),
             help::Action::Interrupt => {
                 if app.running() {
                     self.interrupt(app).await;
@@ -2114,6 +2149,7 @@ impl<'h> Ui<'h> {
                 }
             }
             KeyCode::Char('y') if ctrl => copy(app),
+            KeyCode::Char('v') if ctrl || alt => self.start_paste(app, paste::from_clipboard),
             KeyCode::Char('o') if ctrl => app.overlay = if app.overlay == Overlay::Details { Overlay::None } else { Overlay::Details },
             KeyCode::Char('t') if ctrl => app.overlay = if app.overlay == Overlay::Todos { Overlay::None } else { Overlay::Todos },
             KeyCode::Char('g') if ctrl => app.overlay = if app.overlay == Overlay::Agents { Overlay::None } else { Overlay::Agents },
@@ -2854,6 +2890,83 @@ fn edit_key(e: &mut Editor, k: KeyEvent, ctrl: bool, alt: bool) {
         KeyCode::Tab => e.insert_str("    "),
         KeyCode::Char(c) if !ctrl => e.insert(c),
         _ => {}
+    }
+}
+
+impl Ui<'_> {
+    /// Reads a paste off the runtime's thread, the keys waiting on none of
+    /// it: what is typed meanwhile goes on after where it will land (the
+    /// editor's mark), and a paste asked for meanwhile waits its turn.
+    fn start_paste(&mut self, app: &mut App, read: impl FnOnce() -> paste::Pasted + Send + 'static) {
+        let mark = app.editor.mark();
+        self.pastes.push_back((mark, Box::new(read)));
+        self.next_paste(app);
+    }
+
+    fn next_paste(&mut self, app: &mut App) {
+        if self.pasting.is_some() {
+            return;
+        }
+        let Some((mark, read)) = self.pastes.pop_front() else { return };
+        app.flash = Some("pasting…".into());
+        self.pasting = Some((Some(mark), Box::pin(async move { tokio::task::spawn_blocking(read).await.unwrap_or_default() })));
+    }
+
+    /// A paste read, and the next one asked for begun.
+    fn on_pasted(&mut self, app: &mut App, p: paste::Pasted) {
+        let mark = self.pasting.take().and_then(|(m, _)| m);
+        self.pasted(app, mark, p);
+        self.next_paste(app);
+    }
+
+    /// A paste read: its images into the prompt where it was asked for,
+    /// else its text, and what went wrong said.
+    fn pasted(&mut self, app: &mut App, mark: Option<u64>, p: paste::Pasted) {
+        app.flash = None;
+        let held: std::collections::HashSet<u32> = editor::image_tokens(app.editor.text()).map(|(_, n)| n).filter(|n| app.images.contains_key(n)).collect();
+        // What the host takes of one prompt: as many, and as much base64.
+        let b64 = |len: usize| len.div_ceil(3) * 4;
+        let bytes: usize = held.iter().filter_map(|n| app.images.get(n)).chain(&p.images).map(|i| b64(i.bytes.len())).sum();
+        let too_many = held.len() + p.images.len() > krowk_harness::images::MAX_IMAGES;
+        if too_many || bytes > krowk_harness::images::SENT_BYTES {
+            if let Some(m) = mark {
+                app.editor.unmark(m);
+            }
+            let why = if too_many { format!("at most {} images", krowk_harness::images::MAX_IMAGES) } else { format!("at most {} MB of images", krowk_harness::images::SENT_BYTES / (1024 * 1024)) };
+            app.notice(&format!("nothing pasted — a prompt takes {why}"));
+        } else if !p.images.is_empty() {
+            app.attach_all(p.images, mark);
+        } else if let Some(t) = &p.text {
+            app.editor.place_str(mark, t);
+        } else if let Some(m) = mark {
+            app.editor.unmark(m);
+        }
+        match p.problem {
+            Some(why) if p.text.is_some() => app.flash = Some(format!("pasted as text — {why}")),
+            Some(why) => app.notice(&format!("nothing pasted — {why}")),
+            None => {}
+        }
+        self.forget_images(app);
+        app.touch();
+    }
+
+    /// Lets go of the pasted images nothing can still send: kept are the
+    /// held prompt's, and the last prompt's while its turn runs or a
+    /// limit's offer would send it again — a refused prompt comes back to
+    /// the editor, images and all.
+    fn forget_images(&self, app: &mut App) {
+        let mut also: Vec<&str> = self.held.as_deref().into_iter().collect();
+        if self.turn.is_some() || app.offer.is_some() {
+            also.push(&self.last_prompt);
+        }
+        app.forget_images(&also);
+    }
+}
+
+async fn finish_paste(f: &mut Option<(Option<u64>, PasteFuture)>) -> paste::Pasted {
+    match f {
+        Some((_, f)) => f.await,
+        None => std::future::pending().await,
     }
 }
 

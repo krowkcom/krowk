@@ -422,13 +422,14 @@ impl Client {
     }
 
     /// A page of a session's ready chunks from after `after`, with the URL
-    /// each is read from.
+    /// each is read from. Signed, as every session read is: the key alone,
+    /// without this machine's signing key, reads nothing.
     pub fn list_chunks(&self, session: &str, after: Option<u64>, limit: i64) -> Result<ChunkPage, Error> {
         let mut path = format!("/sessions/{}/chunks?limit={limit}", slug_path(session));
         if let Some(a) = after {
             path.push_str(&format!("&after={a}"));
         }
-        self.get(&path)
+        self.get_as_device(&path)
     }
 
     /// A listed chunk's sealed bytes, checked against the digest the
@@ -585,11 +586,11 @@ impl Client {
     }
 
     pub fn list_sync_sessions(&self, before: &str, limit: i64) -> Result<SyncSessionPage, Error> {
-        self.get(&crate::client::paged("/sessions", before, limit))
+        self.get_as_device(&crate::client::paged("/sessions", before, limit))
     }
 
     pub fn show_sync_session(&self, id: &str) -> Result<SyncSession, Error> {
-        self.get(&format!("/sessions/{}", slug_path(id)))
+        self.get_as_device(&format!("/sessions/{}", slug_path(id)))
     }
 
     /// Creates the session under its own id, or writes its sealed index.

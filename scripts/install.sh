@@ -549,6 +549,22 @@ verify_install() {
   error "$detail"
 }
 
+# warn_shadowed says so when another krowk answers first on PATH: the person
+# would go on running the old one and take it for the new (seen on a Mac,
+# where ~/.local/bin got the release and an older source build earlier on
+# PATH still answered). Only when BIN_DIR is on PATH already: otherwise the
+# profile line setup_path wrote puts it first, and nothing shadows it.
+warn_shadowed() {
+  local platform="$1" suffix="" first other
+  [[ "$platform" == windows_* ]] && suffix=".exe"
+  path_contains_dir "$BIN_DIR" || return 0
+  first=$(command -v "krowk${suffix}" 2>/dev/null) || return 0
+  [[ "$first" -ef "${BIN_DIR}/krowk${suffix}" ]] && return 0
+  other=$("$first" --version 2>/dev/null) || other="a version that would not say"
+  step "Another krowk comes first on your PATH: ${first} (${other})"
+  note "Typing krowk runs that one, not the one just installed. Remove it, or put ${BIN_DIR} before $(dirname "$first") on PATH"
+}
+
 # skills_dirs lists, one per line, where the agents on this machine look for
 # skills: Claude Code's directory (CLAUDE_CONFIG_DIR wins, since a user who moved
 # their config has said where it lives) and ~/.agents/skills, the shared one krowk
@@ -950,6 +966,7 @@ main() {
   download_binaries "$version" "$platform" "$tmp_dir"
   setup_path
   verify_install "$platform"
+  warn_shadowed "$platform"
   install_skill "$version"
   next_steps
 }
