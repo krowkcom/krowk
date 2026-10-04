@@ -876,7 +876,7 @@ next_steps() {
   echo ""
   echo "  Next:"
   if [[ "$HAS_AGENT" == yes ]]; then
-    echo "    $(bold "krowk")                         Open krowk's agent in this terminal — on any model, or Claude Code and Codex"
+    echo "    $(bold "krowk")                         Open krowk's agent: any model, Claude Code or Codex"
     echo "    $(bold "krowk login")                   Sign in to your krowk account"
     echo "    $(bold "krowk sync init")               Sync sessions across your machines, end-to-end encrypted"
     echo "    $(bold "krowk push screenshot.png")     Publish a file to a link — no key needed, lasts a day"
