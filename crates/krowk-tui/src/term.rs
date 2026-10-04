@@ -734,9 +734,11 @@ impl<W: Write> Term<W> {
         let top = anchor(&self.buf, size, top, height)?;
         self.rebuild(top, height)?;
         self.drawn_width = size.width;
-        // The cursor is at the region's top until the next frame puts it on
-        // the caret: a resize before then finds the top there.
-        (self.caret_row, self.caret_col) = (0, 0);
+        // The cursor is where reserving the region left it until the next
+        // frame puts it on the caret: a resize before then finds the top
+        // from there.
+        let top = self.top();
+        (self.caret_row, self.caret_col) = (self.buf.row().saturating_sub(top), 0);
         self.widths.clear();
         // Out now, as at start: a resize before the next frame measures
         // against a screen that has already moved.
