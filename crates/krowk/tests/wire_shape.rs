@@ -160,14 +160,15 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         // A viewer's relay ticket (relay.md → Tickets); a host's comes
         // with the lease.
         "GET /v1/sessions/{id}/relay_ticket +signed",
-        "GET /v1/sessions",
-        "GET /v1/sessions/{id}",
+        "GET /v1/sessions +signed",
+        "GET /v1/sessions/{id} +signed",
         // A chunk of the session's log: declared under an Idempotency-Key,
         // its bytes put to storage (not pinned, as for an artifact), then
-        // finalized; read back through the listing and storage.
+        // finalized; read back through the listing and storage. Session
+        // reads are signed too: the key alone reads nothing.
         "POST /v1/sessions/{id}/chunks +key +signed",
         "PUT /v1/sessions/{id}/chunks/0/finalization +signed",
-        "GET /v1/sessions/{id}/chunks",
+        "GET /v1/sessions/{id}/chunks +signed",
         "DELETE /v1/sessions/{id}/lease +signed",
     ];
     let got = calls.lock().unwrap().clone();

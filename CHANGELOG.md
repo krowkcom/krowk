@@ -72,6 +72,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   archived, and `unpin` undoes it. It needs `krowk sync` set up on the
   machine.
 
+### Changed
+
+- **Reading your synced sessions is signed by this machine's device key.**
+  `krowk sync sessions`, attaching, `--resume` and the host now sign the
+  calls that list a session, show it and list its chunks, as they already
+  signed every write. Once the registry requires it, a copy of your API key
+  without the device's key reads none of your sessions, not even their
+  sizes and times. Two reads signed in the same millisecond on one machine
+  are told apart by signing the second again.
+
 ### Fixed
 
 - **`krowk sync host` notices a device removed while it runs.** It used to
@@ -80,6 +90,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
   minute. If another device was removed, it hosts the session again from
   the top, under the new list; if this device was removed, or the list was
   started over, it stops.
+- **The installer says when another krowk would run instead.** If a krowk
+  earlier on your `PATH` (an older install, or a build from source) would
+  answer before the one just installed, the installer now names it, says
+  its version, and how to fix it. Before, `krowk --version` quietly showed the
+  old one.
+- **Pairing refuses a malformed key exchange outright.** If the other side
+  of `krowk devices add` / `krowk sync join` sends a degenerate SPAKE2 point
+  (one of small order, or one spelled non-canonically), the pairing ends at
+  once instead of carrying on. An honest device never sends one; this only
+  closes the door on a misbehaving peer.
+- **Running `krowk sync init --start-over` again says what it did.** While
+  the old keys from a start-over are kept, running it again carries on that
+  start-over (sealing any sessions left under the new list) and never begins
+  a new one. It now says so, and that a new start-over needs
+  `krowk sync recovery discard-old` first.
 - **A new device can't take a name that only looks like one already on your
   list.** Adding or pairing a device is refused when its name reads like
   another device's: a Cyrillic `а` for a Latin `a`, full-width letters, or

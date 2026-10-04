@@ -67,7 +67,8 @@ fn current(ctx: &Ctx) -> Result<(), Error> {
 }
 
 /// The registry client for this machine's sync calls, signed by its own
-/// key: leases, chunks, the index and relay tickets act as this device.
+/// key: leases, chunks, the index, relay tickets and every session read act
+/// as this device.
 fn signed(ctx: &Ctx, k: &Keys, what: &str) -> Result<Client, Error> {
     let key = SigningKey::from_secret(&*k.signing.secret_bytes()).map_err(|e| fail("keys_unreadable", e.to_string()))?;
     Ok(keyed_client(ctx, what)?.signed_by(krowk_client::e2e::DeviceSigner::new(k.device, key).shared()))
@@ -137,7 +138,7 @@ fn one(args: &[String], what: &str) -> Result<String, Error> {
 
 pub(super) fn sessions(ctx: &mut Ctx) -> Result<(), Error> {
     let k = keys(ctx)?;
-    let api = keyed_client(ctx, "krowk sync sessions")?;
+    let api = signed(ctx, &k, "krowk sync sessions")?;
     let (listed, unreadable) = viewer::list(&api, &k.user, &k.chain).map_err(|e| fail("sync_failed", e))?;
     let rows: Vec<_> = listed.iter().map(|s| json!({"id": s.id, "title": s.index.title, "cwd": s.index.cwd, "updatedMs": s.index.updated_ms, "host": s.holder})).collect();
     if ctx.format == crate::output::Format::Json {
@@ -264,7 +265,7 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
         return None;
     }
     let k = keys(ctx).ok()?;
-    let api = keyed_client(ctx, "krowk --resume").ok()?;
+    let api = signed(ctx, &k, "krowk --resume").ok()?;
     let s = api.show_sync_session(&id).ok()?;
     krowk_harness::sync::store::open_session_key(&s, &id, &k.user, &k.chain, krowk_client::session_record::Signer::EverHeld).ok()?;
     // Said plainly, on stderr, where no TUI draws it: what follows is
