@@ -834,7 +834,9 @@ impl<'h> Ui<'h> {
         last_frame.replace(Instant::now());
         // A model known at start needs nothing routed; whether anything
         // here can run it at all is asked now, behind the first frame.
-        if self.routing.is_none() {
+        // A synced session runs on its host's models: nothing here to ask
+        // about, and no first-run card over it on a machine with none.
+        if self.routing.is_none() && self.host.synced().is_none() {
             self.startup_sweep(app);
         }
         self.look_for_pr(app);

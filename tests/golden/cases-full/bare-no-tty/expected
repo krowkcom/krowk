@@ -1183,7 +1183,7 @@ stdout:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session in the TUI, or as stream-json with --json"
+          "summary": "Follow a synced session in the TUI, or as stream-json"
         }
       ]
     },
@@ -2558,7 +2558,7 @@ stdout:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session in the TUI, or as stream-json with --json"
+          "summary": "Follow a synced session in the TUI, or as stream-json"
         }
       ]
     },
@@ -3947,7 +3947,7 @@ stdout:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session in the TUI, or as stream-json with --json"
+          "summary": "Follow a synced session in the TUI, or as stream-json"
         }
       ]
     },
@@ -5336,7 +5336,7 @@ tty:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session in the TUI, or as stream-json with --json"
+          "summary": "Follow a synced session in the TUI, or as stream-json"
         }
       ]
     },

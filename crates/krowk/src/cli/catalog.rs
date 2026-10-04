@@ -516,7 +516,7 @@ fn sync_command() -> Command {
             #[cfg(unix)]
             cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
             #[cfg(unix)]
-            cmd("attach", "krowk sync attach SESSION", "Follow a synced session in the TUI, or as stream-json with --json"),
+            cmd("attach", "krowk sync attach SESSION", "Follow a synced session in the TUI, or as stream-json"),
         ],
         ..cmd("sync", "", "End-to-end encryption keys for syncing sessions")
     }
