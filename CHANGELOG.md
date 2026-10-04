@@ -81,10 +81,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
-- **Resizing the terminal no longer breaks the TUI.** The prompt stays on the
-  bottom row when the window grows taller. What you said is banded only as
-  wide as its text, so a narrower window no longer wraps the band's padding
-  onto rows of its own.
+- **The prompt stays on the bottom row when the window grows taller**, in
+  Ghostty and other terminals that add the new rows at the bottom.
+- **What you said survives a narrower window.** Each row is banded only as
+  wide as its text, so the band no longer wraps onto rows of its own; a row
+  wider than the new window still wraps, as any text does.
 
 ## [0.12.1] - 2026-10-04
 
