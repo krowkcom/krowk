@@ -369,13 +369,23 @@ pub fn open_session_key(s: &krowk_api::sync::SyncSession, id: &str, keys: &UserK
     e2e::unwrap_session_keys(&wrapped, &raw, keys).map_err(|e| e.to_string())
 }
 
-/// Opens a session's sealed index, which is sealed under the current key.
+/// Opens a session's sealed index: under the current key, or an older
+/// one's when a rotation's key landed and its index write did not — the
+/// holder's next index write seals it under the current one.
 pub fn open_index(key: &SessionKeys, id: &str, sealed_hex: &str) -> Result<Index, String> {
     if sealed_hex.is_empty() {
         return Ok(Index::default());
     }
     let blob = e2e::unhex(sealed_hex).ok_or("the session's index is not hex")?;
-    let plain = e2e::open_session_index(&blob, &crate::daemon::ws::uuid(id), key.current()).map_err(|e| e.to_string())?;
+    let session = crate::daemon::ws::uuid(id);
+    let mut opened = e2e::open_session_index(&blob, &session, key.current());
+    for epoch in (0..key.epoch()).rev() {
+        if opened.is_ok() {
+            break;
+        }
+        opened = e2e::open_session_index(&blob, &session, key.at(epoch).expect("within the ring"));
+    }
+    let plain = opened.map_err(|e| e.to_string())?;
     serde_json::from_slice(&plain).map_err(|e| format!("the session's index is not one this krowk reads: {e}"))
 }
 

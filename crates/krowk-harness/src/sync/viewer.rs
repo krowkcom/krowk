@@ -421,10 +421,16 @@ async fn live(o: Arc<Options>, key: SessionKeys, mut at_rest: Attached, mut comm
                             // No host: the chunks, up to what was written.
                             let (api, key2, id) = (o.api.clone(), key.clone(), o.session.clone());
                             let mut a = at_rest.clone();
-                            if let Ok(Ok((fresh, a))) = tokio::task::spawn_blocking(move || store::catch_up(&api, &key2, &id, &mut a, None).map(|f| (f, a))).await {
-                                let fresh = fresh_only(fresh, &mut seen, &mut last_id);
-                                at_rest = a;
-                                if !fresh.is_empty() { frame.push(Update::CaughtUp(fresh)); }
+                            match tokio::task::spawn_blocking(move || store::catch_up(&api, &key2, &id, &mut a, None).map(|f| (f, a))).await {
+                                Ok(Ok((fresh, a))) => {
+                                    let fresh = fresh_only(fresh, &mut seen, &mut last_id);
+                                    at_rest = a;
+                                    if !fresh.is_empty() { frame.push(Update::CaughtUp(fresh)); }
+                                }
+                                // The session moved to a key epoch this viewer opened it
+                                // before: nothing after it opens here until it is opened again.
+                                Ok(Err(e)) if e.contains(e2e::ROTATED_SINCE_OPENED) => { frame.push(Update::Failed(e)); let _ = out.send(std::mem::take(&mut frame)).await; return; }
+                                _ => {}
                             }
                         }
                     }

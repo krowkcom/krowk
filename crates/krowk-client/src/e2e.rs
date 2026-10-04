@@ -317,7 +317,10 @@ impl SessionKeys {
         if self.0.len() >= MAX_SESSION_KEY_EPOCHS {
             return Err(err(format!("the session's key has been rotated {} times, the most it may — start a new session", MAX_SESSION_KEY_EPOCHS - 1)));
         }
-        let mut ring = self.0.clone();
+        // Room for the new key first, so the push never moves the old ones
+        // into a buffer that is freed unwiped.
+        let mut ring = Vec::with_capacity(self.0.len() + 1);
+        ring.extend(self.0.iter().cloned());
         ring.push(SessionKey::generate());
         Ok(SessionKeys(ring))
     }
@@ -463,6 +466,9 @@ const CHUNK_HEAD: usize = 3 + 8 + 8;
 const CHUNK_HEAD_V2: usize = CHUNK_HEAD + 4;
 /// The most sealing adds to a chunk's plaintext.
 pub const CHUNK_OVERHEAD: usize = CHUNK_HEAD_V2 + NONCE + TAG;
+/// What a reader is told when a chunk names a key epoch newer than the
+/// ring it holds.
+pub const ROTATED_SINCE_OPENED: &str = "the session's key was rotated since it was opened";
 /// What chunk 0 binds as the chunk before it.
 pub const NO_PREVIOUS_CHUNK: [u8; 32] = [0; 32];
 
@@ -640,7 +646,7 @@ impl ChunkReader {
         if epoch < self.epoch {
             return Err(err(format!("chunk {index} is sealed under session key epoch {epoch}, older than the chunk ahead of it ({}), refused", self.epoch)));
         }
-        let key = self.keys.at(epoch).ok_or_else(|| err(format!("chunk {index} is sealed under session key epoch {epoch}, newer than this device has the key for — the session's key was rotated since it was opened; open it again")))?;
+        let key = self.keys.at(epoch).ok_or_else(|| err(format!("chunk {index} is sealed under session key epoch {epoch}, newer than this device has the key for — {ROTATED_SINCE_OPENED}; open it again")))?;
         let nonce: [u8; NONCE] = blob[head..head + NONCE].try_into().expect("24 bytes");
         let aad = chunk_aad(&blob[..head], &self.session, &chunk_epoch(key), &self.previous);
         let plain = cipher(&key.0).decrypt(&XNonce::from(nonce), Payload { msg: &blob[head + NONCE..], aad: &aad }).map_err(|_| refused())?;
@@ -692,7 +698,10 @@ pub fn wrap_session_keys(keys: &SessionKeys, session: &[u8; 16], user: &UserKey)
     blob.extend_from_slice(&random::<{ NONCE - 4 }>());
     let nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
     let aad = session_key_aad(&blob[..2], user, session);
-    let plain = zeroize::Zeroizing::new(keys.0.iter().flat_map(|k| k.0).collect::<Vec<u8>>());
+    let mut plain = zeroize::Zeroizing::new(Vec::with_capacity(KEY * keys.0.len()));
+    for k in &keys.0 {
+        plain.extend_from_slice(&k.0);
+    }
     let sealed = cipher(user.as_bytes()).encrypt(&XNonce::from(nonce), Payload { msg: &plain, aad: &aad }).expect("sealing a key ring cannot fail");
     blob.extend_from_slice(&sealed);
     blob
