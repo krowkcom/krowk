@@ -79,8 +79,6 @@ the versions are the `v*` tags a release is cut from. Entries land under
   exited 130 without `krowk --resume <id>` although the host had already
   started the session. The TUI now reads what the host already sent before it leaves.
 
-### Fixed
-
 - **The prompt stays on the bottom row when the window grows taller**, in
   Ghostty and other terminals that add the new rows at the bottom.
 - **What you said survives a narrower window.** Each row is banded only as
