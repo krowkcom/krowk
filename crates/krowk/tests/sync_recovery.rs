@@ -83,6 +83,19 @@ fn init(home: &Path, api: &str, token: &str, kit: &Path) -> String {
     words
 }
 
+/// The registry as `home`'s device: signed by its key, as every session
+/// call is.
+fn client_of(home: &Path, api: &str, token: &str) -> krowk_api::Client {
+    let ks = keys(home);
+    let (device, signing) = (ks.device().unwrap().unwrap(), ks.signing_key().unwrap());
+    let signing_public = e2e::hex(&signing.public().0);
+    let client = krowk_api::Client::new(api, token).signed_by(DeviceSigner::new(device.id(), signing).shared());
+    // The stand-in's session calls still check signatures against the
+    // devices registered the account-key way; registering again is a no-op.
+    let _ = client.register_device(&e2e::hex(&device.public().0), &signing_public, "reader", ACCOUNT);
+    client
+}
+
 /// A session `home` publishes as its host would: its key sealed under the
 /// user key it holds, the record signed by it.
 fn publish(home: &Path, api: &str, token: &str, id: &str) -> SessionKey {
@@ -108,7 +121,7 @@ fn publish(home: &Path, api: &str, token: &str, id: &str) -> SessionKey {
 fn open_ring(home: &Path, api: &str, token: &str, id: &str) -> Result<(SessionKey, u32), String> {
     let ks = keys(home);
     let (user, chain) = (ks.user_keys().unwrap().unwrap(), ks.device_list().unwrap().unwrap());
-    let s = krowk_api::Client::new(api, token).show_sync_session(id).map_err(|e| e.code())?;
+    let s = client_of(home, api, token).show_sync_session(id).map_err(|e| e.code())?;
     krowk_harness::sync::store::open_session_key(&s, id, &user, &chain, Signer::EverHeld).map(|k| (k.at(0).expect("epoch 0").clone(), k.epoch()))
 }
 
@@ -223,7 +236,7 @@ fn d7_a_removed_device_cannot_open_a_session_sealed_after_its_removal() {
     let id = "01a0ec7b-6666-7000-8000-000000000071";
     let key = publish(&laptop, &api, LAPTOP, id);
     assert_eq!(open(&laptop, &api, LAPTOP, id).unwrap().as_bytes(), key.as_bytes());
-    let s = krowk_api::Client::new(&api, LAPTOP).show_sync_session(id).unwrap();
+    let s = client_of(&laptop, &api, LAPTOP).show_sync_session(id).unwrap();
     let wrapped = e2e::unhex(&s.wrapped_key).unwrap();
     assert!(e2e::unwrap_session_key(&wrapped, &krowk_harness::daemon::ws::uuid(id), &held).is_err(), "the desktop's keys do not open it");
     let refused = krowk(&desktop, &api, DESKTOP, &["sync", "status", "--json"], "", "");

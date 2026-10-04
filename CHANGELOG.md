@@ -72,6 +72,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   archived, and `unpin` undoes it. It needs `krowk sync` set up on the
   machine.
 
+### Changed
+
+- **Reading your synced sessions is signed by this machine's device key.**
+  `krowk sync sessions`, attaching, `--resume` and the host now sign the
+  calls that list a session, show it and list its chunks, as they already
+  signed every write. Once the registry requires it, a copy of your API key
+  without the device's key reads none of your sessions, not even their
+  sizes and times. Two reads signed in the same millisecond on one machine
+  are told apart by signing the second again.
+
 ### Fixed
 
 - **The installer says when another krowk would run instead.** If a krowk
