@@ -328,6 +328,22 @@ fn a_step(client: &Client, id: &str, step: PairingStep, field: &str, message: &[
     }
 }
 
+/// The reply, sent once. It carries the user key, so when its answer is
+/// lost and the read-back fails too, nobody can say it did not land: it is
+/// taken as sent, and A goes on to the ack and the post, which list a
+/// machine that may hold the key. Only a refusal, or a read-back that shows
+/// it did not land, ends the pairing with nothing added.
+fn send_reply(client: &Client, id: &str, reply: &[u8]) -> Result<(), Error> {
+    match client.pairing_step(PairingStep::Reply, reply) {
+        Ok(_) => Ok(()),
+        Err(e) if e.status == 0 => match client.show_pairing(id) {
+            Ok(p) if blob("sealed_reply", &p).as_deref() != Some(reply) => Err(a_failed(Some(e))),
+            _ => Ok(()),
+        },
+        Err(e) => Err(a_failed(Some(e))),
+    }
+}
+
 /// The list A verified: the chain, and its entries as served.
 type Verified<'a> = (&'a Chain, Vec<SignedEntry>);
 
@@ -377,7 +393,7 @@ fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut al
     };
     let bytes = krowk_client::Zeroizing::new(serde_json::to_vec(&payload).expect("the payload serializes"));
     let (await_ack, reply) = confirmed.approve(&bytes).map_err(|_| a_failed(None))?;
-    a_step(client, id, PairingStep::Reply, "sealed_reply", &reply)?;
+    send_reply(client, id, &reply)?;
     Ok(Sealed { batch, entries: all, next, await_ack, name, os })
 }
 

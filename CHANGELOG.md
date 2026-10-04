@@ -74,6 +74,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **`krowk devices add` no longer says "nothing was added" when the new
+  device may have your key.** If the answer to the step that sends the key
+  was lost and checking on it failed too, the pairing used to end as if
+  nothing had happened, although the new device might hold your key
+  without being on your list. Now the laptop goes on: it waits for the new
+  device to confirm and adds it, or, if it never confirms, still lists it so
+  `krowk devices remove` can take it off.
+
 - **Copying from the TUI no longer drags the layout along.** Text in the
   transcript starts at the first column: a mouse selection of your prompt,
   an answer, a list or a code block comes without the two-column margin,
