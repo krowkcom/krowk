@@ -74,6 +74,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **The installer says when another krowk would run instead.** If a krowk
+  earlier on your `PATH` (an older install, or a build from source) would
+  answer before the one just installed, the installer now names it, says
+  its version, and how to fix it. Before, `krowk --version` quietly showed the
+  old one.
 - **Pairing refuses a malformed key exchange outright.** If the other side
   of `krowk devices add` / `krowk sync join` sends a degenerate SPAKE2 point
   (one of small order, or one spelled non-canonically), the pairing ends at

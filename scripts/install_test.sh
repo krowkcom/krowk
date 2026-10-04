@@ -628,4 +628,18 @@ fi
 pass "a version that is not one is refused"
 
 echo
+echo "Another krowk earlier on PATH"
+old="$WORK/shadow/old" new="$WORK/shadow/new"
+mkdir -p "$old" "$new"
+printf '#!/bin/sh\necho 0.0.1\n' >"$old/krowk"
+printf '#!/bin/sh\necho 9.9.9\n' >"$new/krowk"
+chmod +x "$old/krowk" "$new/krowk"
+said=$(BIN_DIR="$new" PATH="$old:$new:$PATH" warn_shadowed linux_amd64)
+[[ "$said" == *"Another krowk comes first on your PATH: $old/krowk (0.0.1)"* && "$said" == *"put $new before $old"* ]] \
+  || fail "a krowk earlier on PATH was not named: $said"
+[[ -z "$(BIN_DIR="$new" PATH="$new:$old:$PATH" warn_shadowed linux_amd64)" ]] || fail "the installed krowk, first on PATH, was taken for another"
+[[ -z "$(BIN_DIR="$new" PATH="$old:$PATH" warn_shadowed linux_amd64)" ]] || fail "warned while BIN_DIR is not on PATH, which the profile line puts first"
+pass "a krowk that shadows the one installed is named, with the fix"
+
+echo
 echo "All checks passed."
