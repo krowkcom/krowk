@@ -36,6 +36,7 @@ pub(super) fn run(ctx: &mut Ctx) -> Result<(), Error> {
 /// The TUI on a session another machine runs, followed through sync
 /// (`krowk sync attach`, `krowk --resume` of a synced id): drawn as any
 /// session is, its prompts, approvals and interrupts sent to its host.
+#[cfg(unix)]
 pub(super) fn run_synced(ctx: &mut Ctx, o: krowk_tui::synced::Options) -> Result<(), Error> {
     run_with(ctx, Some(o))
 }
