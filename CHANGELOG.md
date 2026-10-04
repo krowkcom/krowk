@@ -74,6 +74,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **Pairing refuses a malformed key exchange outright.** If the other side
+  of `krowk devices add` / `krowk sync join` sends a degenerate SPAKE2 point
+  (one of small order, or one spelled non-canonically), the pairing ends at
+  once instead of carrying on. An honest device never sends one; this only
+  closes the door on a misbehaving peer.
+
 - **Copying from the TUI no longer drags the layout along.** Text in the
   transcript starts at the first column: a mouse selection of your prompt,
   an answer, a list or a code block comes without the two-column margin,
