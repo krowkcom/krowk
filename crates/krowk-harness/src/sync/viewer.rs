@@ -88,6 +88,11 @@ pub enum Update {
     Gap,
     /// Something the viewer cannot go on from.
     Failed(String),
+    /// Something to tell the person beside the session: why the relay
+    /// cannot be joined, said once as it comes or changes. Its own update,
+    /// not a line on stderr, so a screen drawing the session shows it where
+    /// it draws rather than having it written over its frame.
+    Note(String),
 }
 
 pub struct Options {
@@ -190,8 +195,8 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
     let mut ws: Option<super::Ws> = None;
     let mut host = false;
     let mut retry = Instant::now();
-    // Why the relay could not be joined, said once on stderr as it comes or
-    // changes: otherwise a viewer that never reaches the relay only ever
+    // Why the relay could not be joined, said once (`Update::Note`) as it
+    // comes or changes: otherwise a viewer that never reaches the relay only ever
     // shows its prompts queued.
     let mut unjoined: Option<String> = None;
     let mut heard = Instant::now();
@@ -292,7 +297,7 @@ async fn live(o: Arc<Options>, key: SessionKey, mut at_rest: Attached, mut comma
                     }
                     Err(e) => {
                         if unjoined.as_deref() != Some(e.as_str()) {
-                            eprintln!("krowk: not on the relay {}: {e}; trying again every second", o.relay);
+                            frame.push(Update::Note(format!("not on the relay {}: {e}; trying again every second", o.relay)));
                             unjoined = Some(e);
                         }
                         retry = Instant::now() + Duration::from_secs(1);

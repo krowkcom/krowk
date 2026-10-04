@@ -16,6 +16,7 @@ use krowk_harness::engine::EngineError;
 use krowk_harness::host::Host;
 use krowk_harness::instances::{Asked, Registry};
 use krowk_harness::protocol::{Command, ModelRef, RunResult, StreamLine};
+pub use crate::synced::SyncLink;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
@@ -49,12 +50,14 @@ impl Remote {
 pub enum Link {
     Local(Host),
     Remote { host: Host, client: Remote },
+    /// A session another machine runs, followed through sync (D11).
+    Synced { host: Host, client: SyncLink },
 }
 
 impl Link {
     fn host(&self) -> &Host {
         match self {
-            Link::Local(h) | Link::Remote { host: h, .. } => h,
+            Link::Local(h) | Link::Remote { host: h, .. } | Link::Synced { host: h, .. } => h,
         }
     }
 
@@ -62,7 +65,15 @@ impl Link {
     pub fn remote(&self) -> Option<&Remote> {
         match self {
             Link::Remote { client, .. } => Some(client),
-            Link::Local(_) => None,
+            Link::Local(_) | Link::Synced { .. } => None,
+        }
+    }
+
+    /// The sync viewer's link, when the session runs on another machine.
+    pub fn synced(&self) -> Option<&SyncLink> {
+        match self {
+            Link::Synced { client, .. } => Some(client),
+            Link::Local(_) | Link::Remote { .. } => None,
         }
     }
 
@@ -94,6 +105,7 @@ impl Link {
         match self {
             Link::Local(h) => h.execute(cmd, out).await,
             Link::Remote { client, .. } => client.execute(cmd, out).await,
+            Link::Synced { client, .. } => client.execute(cmd, out).await,
         }
     }
 
@@ -114,6 +126,7 @@ impl Link {
         match self {
             Link::Local(h) => h.watch(),
             Link::Remote { client, .. } => client.watch(),
+            Link::Synced { client, .. } => client.watch(),
         }
     }
 

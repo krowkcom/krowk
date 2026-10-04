@@ -91,7 +91,8 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
         .env("KROWK_TOKEN", TOKEN)
         .env("KROWK_RELAY_URL", &relay_url)
         .current_dir(&b_home)
-        .stdin(Stdio::null())
+        // Held open: `sync attach` ends when its stdin does.
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

@@ -9,6 +9,8 @@
 
 #[path = "../../krowk-harness/tests/common/mock.rs"]
 mod mock;
+#[path = "common/pty.rs"]
+mod pty;
 
 use krowk_client::e2e::{self, AccountKey, SigningKey};
 use krowk_client::keystore::Keystore;
@@ -24,6 +26,8 @@ use std::time::{Duration, Instant};
 
 const TOKEN: &str = "krowk_sk_sync_cli_000000000000000000000";
 const ANSWER: &str = "the-answer-marker-5c2e";
+/// What the model answers a prompt typed into the TUI on B.
+const TUI_ANSWER: &str = "tui-round-trip-answer-81aa";
 
 /// A model that answers with the marker, except when asked to make a
 /// file, which it does with `bash` — an approval — and a long answer, paced
@@ -33,6 +37,9 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let last = messages.last().cloned().unwrap_or_default();
     let has_result = last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
     let text = last.to_string();
+    if !has_result && text.contains("tui round trip") {
+        return mock::Reply::paced(mock::text_stream(TUI_ANSWER), Duration::from_millis(5));
+    }
     if !has_result && text.contains("a long answer") {
         let words: String = (0..400).map(|i| format!("word{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
@@ -265,6 +272,112 @@ fn r_perm_2_sync_attach_approves_denies_and_interrupts_from_stdin() {
     let said = view.stderr();
     assert!(said.iter().any(|l| l.contains("wants approval") && l.contains("/approve")), "stderr names the command that answers: {said:?}");
     assert!(host.child.try_wait().unwrap().is_none(), "A still hosts: {:?}", host.stderr());
+}
+
+/// A's session made with `krowk -p` and hosted by `krowk sync host`, synced
+/// to the registry: the host's process, and the session's id.
+fn hosted(w: &World, a: &Machine) -> (Running, String) {
+    let made = a.command(&["-p", "hello", "--model", "claude-sonnet-4-6"]).output().unwrap();
+    assert!(made.status.success(), "A makes a session: {}", String::from_utf8_lossy(&made.stderr));
+    let session = a.session();
+    let host = Running::spawn(a.command(&["sync", "host", &session]));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while a.api.show_sync_session(&session).is_err() {
+        assert!(Instant::now() < deadline, "A syncs the session: {:?}", host.stderr());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = w;
+    (host, session)
+}
+
+/// D11: `krowk sync attach` with a terminal opens the TUI on the session —
+/// its history drawn as a resumed session's is, the host's presence on the
+/// status line, a prompt typed in the prompt box answered by A's model, and
+/// an approval answered with the dialog's `y`. Mode switches, which the
+/// host would refuse, are refused here, saying so.
+#[test]
+fn d11_sync_attach_on_a_terminal_draws_the_session_in_the_tui() {
+    let w = World::new("tui");
+    let a = w.machine("a");
+    let b = w.machine("b");
+    let (host, session) = hosted(&w, &a);
+    let mut c = b.command(&["sync", "attach", &session]);
+    c.env("TERM", "xterm-256color");
+    let mut t = pty::Pty::spawn(c, 120, 40);
+    let wait = |t: &pty::Pty, what: &str| assert!(t.wait_for(what, Duration::from_secs(20)).is_some(), "no {what:?}: {:?}\nA: {:?}", t.text(), host.stderr());
+    // History: A's first answer, from the chunks.
+    wait(&t, ANSWER);
+    wait(&t, "host here");
+    // A prompt round trip.
+    t.write(b"tui round trip\r");
+    wait(&t, TUI_ANSWER);
+    // And its turn ended here, on the host's result: the footer under it,
+    // after the one the history drew.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while t.text().matches("Worked for").count() < 2 {
+        assert!(Instant::now() < deadline, "the turn ends: {:?}", t.text());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // An approval, answered in the dialog. The dialog takes no key until it
+    // has been up a moment (a key typed ahead is no answer).
+    t.write(b"make the allowed file\r");
+    wait(&t, "allow once");
+    assert!(!a.repo.join("allowed.txt").exists(), "A waits on B");
+    std::thread::sleep(Duration::from_millis(600));
+    t.write(b"y");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !a.repo.join("allowed.txt").exists() {
+        assert!(Instant::now() < deadline, "B's y ran the call on A: {:?}", t.text());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!t.text().contains("for this project"), "a viewer is not offered A's project rules");
+    // The host caps remote prompts at its default mode: no switch offered.
+    t.write(b"/mode plan\r");
+    wait(&t, "is the host's to change");
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()), "B leaves: {:?}", t.text());
+}
+
+/// D11: `krowk --resume` of a session only another machine holds opens the
+/// TUI on it through sync, on a terminal, as `krowk sync attach` does.
+#[test]
+fn d11_resume_of_a_synced_session_on_a_terminal_opens_the_tui() {
+    let w = World::new("tuiresume");
+    let a = w.machine("a");
+    let b = w.machine("b");
+    let (host, session) = hosted(&w, &a);
+    let mut c = b.command(&["--resume", &session]);
+    c.env("TERM", "xterm-256color");
+    let mut t = pty::Pty::spawn(c, 120, 40);
+    for what in [ANSWER, "through sync", "host here"] {
+        assert!(t.wait_for(what, Duration::from_secs(20)).is_some(), "no {what:?}: {:?}\nA: {:?}", t.text(), host.stderr());
+    }
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()), "B leaves: {:?}", t.text());
+}
+
+/// D11: `krowk sync attach` printing stream-json ends when its stdin does,
+/// once the command sent before it ended has been answered.
+#[test]
+fn d11_sync_attach_as_jsonl_ends_with_stdin_once_its_commands_are_answered() {
+    let w = World::new("eof");
+    let a = w.machine("a");
+    let b = w.machine("b");
+    let (_host, session) = hosted(&w, &a);
+    let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
+    view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
+    view.type_line("hello again");
+    drop(view.child.stdin.take());
+    view.until("its ack", is("sync.acked"));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(s) = view.child.try_wait().unwrap() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "attach ends with stdin: {:?}", view.seen);
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.success(), "{status:?}: {:?}", view.stderr());
 }
 
 /// Todo 22b: `krowk sync host` for a session this machine has no log of

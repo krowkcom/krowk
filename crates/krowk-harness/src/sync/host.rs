@@ -566,6 +566,12 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                                 Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &o.session) => {
                                     let _ = answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, and nothing else", o.session)) }));
                                 }
+                                // A rule for the whole project is written into the
+                                // host's repository settings: made at the host, not
+                                // from a viewer, which allows once or for the session.
+                                Ok(ViewerFrame::Command(r)) if matches!(r.command, Command::Approve { decision: ApprovalDecision::AllowProject, .. }) => {
+                                    let _ = answers_tx.send((from, Answer::Ack { id: r.id, error: Some("a viewer allows a call once or for the session; a rule for the project is made on the host".into()) }));
+                                }
                                 Ok(ViewerFrame::Command(r)) => {
                                     running.insert(r.id.clone(), from);
                                     let command = under_session_settings(r.command, mode);

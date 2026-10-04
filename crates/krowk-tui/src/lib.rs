@@ -18,6 +18,8 @@
 //!   through an overlay, and the first-run card.
 //! - `link` — where the sessions run: the host daemon over its socket, by
 //!   default, or a host in this process.
+//! - `synced` — a session another machine runs, followed through sync:
+//!   the third place a session runs, behind the same `link`.
 //!
 //! The loop is event-driven end to end (R-PERF-2): it sleeps in one
 //! `select!` until a key, a frame of the stream, the turn's end or a
@@ -41,8 +43,47 @@ pub mod look;
 pub mod net;
 pub mod settings;
 pub mod syntax;
+#[cfg(unix)]
+pub mod synced;
 mod table;
 pub mod term;
+
+/// No sync where there is no daemon or relay (unix-only for now): the
+/// types the TUI names, with nothing to build them.
+#[cfg(not(unix))]
+pub mod synced {
+    use krowk_harness::engine::EngineError;
+    use krowk_harness::protocol::{Command, LogEvent, RunResult, StreamLine};
+    use tokio::sync::{broadcast, mpsc, oneshot};
+
+    pub enum Options {}
+    pub enum SyncLink {}
+    pub enum Event {
+        Host(bool),
+        Path(String),
+        Note(String),
+        Turn(mpsc::Receiver<StreamLine>, oneshot::Receiver<Result<Option<RunResult>, EngineError>>),
+    }
+    pub struct Opened {
+        pub link: SyncLink,
+        pub id: String,
+        pub history: Vec<LogEvent>,
+    }
+    pub async fn open(o: Options) -> Result<Opened, String> {
+        match o {}
+    }
+    impl SyncLink {
+        pub async fn execute(&self, _: Command, _: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
+            match *self {}
+        }
+        pub fn watch(&self) -> broadcast::Receiver<StreamLine> {
+            match *self {}
+        }
+        pub fn events(&self) -> Option<mpsc::UnboundedReceiver<Event>> {
+            match *self {}
+        }
+    }
+}
 
 use app::{App, Mark, Overlay};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -130,6 +171,11 @@ pub struct Options {
     /// a thread of its own after each turn, while the person reads the
     /// answer, so leaving has little or nothing left to write.
     pub project: Option<Project>,
+    /// A session another machine runs, to follow through sync (`krowk sync
+    /// attach`, `krowk --resume` of a synced id): its history is drawn
+    /// first, and prompts, approvals and interrupts go to its host.
+    /// `resume`, `daemon` and `route` are left unset with it.
+    pub sync: Option<synced::Options>,
 }
 
 /// How to reach the host daemon (`krowk_harness::daemon::ensure`).
@@ -281,6 +327,22 @@ async fn session(opts: Options) -> Outcome {
             Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(e) },
         }
     }
+    // A synced session: its history as the chunks hold it, replayed as a
+    // resumed session's log is, before the first frame.
+    let mut opened = None;
+    if let Some(o) = opts.sync {
+        match synced::open(o).await {
+            Ok(s) => {
+                replay(&mut app, &s.id, &s.history, &opts.host.registry);
+                app.session_id = Some(s.id.clone());
+                app.log_dir = None;
+                app.sync = Some(app::Synced::default());
+                app.say(&format!("following session {} through sync — it runs on another machine", s.id), app::dim());
+                opened = Some(s.link);
+            }
+            Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(format!("the synced session could not be attached: {e}")) },
+        }
+    }
     // The model shown before the first turn names one: the one given
     // (`--model`, or the configured default that names its instance), else
     // the session's last. One still to be routed is shown once it is.
@@ -321,12 +383,13 @@ async fn session(opts: Options) -> Outcome {
     // reached leaves them here, and says so.
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut live: Vec<String> = Vec::new();
-    let host = match opts.daemon {
-        None => link::Link::Local(local),
+    let host = match (opened, opts.daemon) {
+        (Some(client), _) => link::Link::Synced { host: local, client },
+        (None, None) => link::Link::Local(local),
         #[cfg(not(unix))]
-        Some(_) => link::Link::Local(local),
+        (None, Some(_)) => link::Link::Local(local),
         #[cfg(unix)]
-        Some(d) => match krowk_harness::daemon::remote::Remote::connect(d.env, started_in.clone(), d.version.clone(), true, d.spawn).await {
+        (None, Some(d)) => match krowk_harness::daemon::remote::Remote::connect(d.env, started_in.clone(), d.version.clone(), true, d.spawn).await {
             Ok(client) => {
                 if client.krowk_version() != d.version {
                     app.note(&format!("the host daemon (pid {}) runs krowk {}, and this is {} — `krowk host stop` once its sessions are done", client.pid(), client.krowk_version(), d.version));
@@ -372,6 +435,7 @@ async fn session(opts: Options) -> Outcome {
         first_run_pending: false,
         host: &host,
         watch: host.watch(),
+        sync_events: host.synced().and_then(|s| s.events()),
         live: live.clone(),
         model: opts.model,
         chosen: opts.chosen,
@@ -457,6 +521,9 @@ struct Ui<'h> {
     /// What the host says between turns: a backend's agents, and a turn it
     /// began by itself, which the TUI runs (`continue`).
     watch: broadcast::Receiver<StreamLine>,
+    /// A synced session's news besides its lines: a host there or not, the
+    /// path, a turn begun elsewhere.
+    sync_events: Option<mpsc::UnboundedReceiver<synced::Event>>,
     model: Option<ModelRef>,
     /// The model the person named (`--model`, a `/model` switch): with the
     /// session's own, what a bare `/model` id stays beside. A routed
@@ -703,6 +770,15 @@ async fn recv(rx: &mut Option<mpsc::Receiver<StreamLine>>) -> StreamLine {
     }
 }
 
+/// The next of a synced session's events, or never; none once its link is
+/// gone.
+async fn recv_sync(rx: &mut Option<mpsc::UnboundedReceiver<synced::Event>>) -> Option<synced::Event> {
+    match rx {
+        Some(r) => r.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// The next of a sign-in's messages, or never; none once its thread is gone.
 async fn recv_auth(rx: &mut Option<mpsc::UnboundedReceiver<connect::Msg>>) -> Option<connect::Msg> {
     match rx {
@@ -783,7 +859,7 @@ impl<'h> Ui<'h> {
                     // A turn in the daemon is the daemon's: the terminal
                     // going takes nothing with it, and it runs on for
                     // `krowk --resume` to follow (R-HOST-1).
-                    if self.host.remote().is_some() {
+                    if self.host.remote().is_some() || self.host.synced().is_some() {
                         return Ok(());
                     }
                     if !app.running() || quitting {
@@ -820,6 +896,7 @@ impl<'h> Ui<'h> {
                     app.on_line(&line);
                     self.go_on(app);
                 }
+                e = recv_sync(&mut self.sync_events) => self.on_sync(app, e),
                 r = finish(&mut self.turn) => {
                     self.turn = None;
                     if let Some(n) = self.host.take_note() {
@@ -1251,6 +1328,46 @@ impl<'h> Ui<'h> {
         });
     }
 
+    /// A synced session's news: the status line's host and path, a note,
+    /// or a turn begun elsewhere, followed as the TUI's own — so Esc
+    /// interrupts it, as `reattach` does a daemon's.
+    fn on_sync(&mut self, app: &mut App, e: Option<synced::Event>) {
+        let Some(e) = e else {
+            self.sync_events = None;
+            return;
+        };
+        let status = app.sync.get_or_insert_with(app::Synced::default);
+        match e {
+            synced::Event::Host(h) => status.host = Some(h),
+            synced::Event::Path(p) => status.path = Some(p),
+            synced::Event::Note(n) => app.notice(&n),
+            synced::Event::Turn(rx, done) => {
+                if self.turn.is_some() {
+                    return;
+                }
+                self.turn = Some(Box::pin(async move { done.await.unwrap_or(Ok(None)) }));
+                self.rx = Some(rx);
+                app.start_turn(std::time::Instant::now());
+                if let Some(t) = &mut app.turn {
+                    t.prompt_seen = true;
+                }
+            }
+        }
+        app.touch();
+    }
+
+    /// What a viewer of a synced session cannot do: the host runs it on its
+    /// own model and settings, and remote prompts no further than its
+    /// default mode (plan, if the session is in plan). Said, and true, when
+    /// this is one.
+    fn synced_refuses(&self, app: &mut App, what: &str) -> bool {
+        if self.host.synced().is_none() {
+            return false;
+        }
+        app.notice(&format!("{what} is the host's to change: this session runs on another machine, and prompts from here run in its default mode (plan, if it is in plan)"));
+        true
+    }
+
     /// Follows `id`'s turn running in the daemon as though this TUI had
     /// sent it: what its log has after what was replayed, the turn so far,
     /// then live, to its result.
@@ -1464,7 +1581,7 @@ impl<'h> Ui<'h> {
             let decision = match k.code {
                 KeyCode::Char('y') if ready => Some(ApprovalDecision::Allow),
                 KeyCode::Char('s') if ready && !req.remember.is_empty() => Some(ApprovalDecision::AllowSession),
-                KeyCode::Char('p') if ready && !req.remember.is_empty() => Some(ApprovalDecision::AllowProject),
+                KeyCode::Char('p') if ready && !req.remember.is_empty() && self.host.synced().is_none() => Some(ApprovalDecision::AllowProject),
                 KeyCode::Char('n') | KeyCode::Esc => Some(ApprovalDecision::Deny),
                 _ => None,
             };
@@ -1527,6 +1644,11 @@ impl<'h> Ui<'h> {
         if armed != Some(key) {
             self.quit_armed = Some((key, Instant::now()));
             app.flash = Some(format!("Press `Ctrl-{}` again to exit", key.to_ascii_uppercase()));
+        } else if app.running() && self.host.synced().is_some() {
+            // The turn is the host's: leaving the viewer leaves it running.
+            self.turn = None;
+            self.rx = None;
+            app.quit = true;
         } else if app.running() {
             *quitting = true;
             self.interrupt(app).await;
@@ -1700,6 +1822,7 @@ impl<'h> Ui<'h> {
                     if let Some(entry) = found.get(app.help_at) {
                         match entry.action {
                             help::Action::Tell => {}
+                            help::Action::Model | help::Action::Mode | help::Action::New | help::Action::Sessions if self.synced_refuses(app, entry.title) => {}
                             help::Action::Model => self.open_models(app),
                             help::Action::Mode => app.open_mode_picker(),
                             help::Action::Settings => self.open_settings(app),
@@ -2380,6 +2503,9 @@ impl<'h> Ui<'h> {
             }
             "/model" => {
                 app.editor.clear();
+                if self.synced_refuses(app, "/model") {
+                    return false;
+                }
                 self.open_models(app);
                 return false;
             }
@@ -2390,11 +2516,17 @@ impl<'h> Ui<'h> {
             }
             "/new" => {
                 app.editor.clear();
+                if self.synced_refuses(app, "/new") {
+                    return false;
+                }
                 self.new_session(app);
                 return false;
             }
             "/sessions" => {
                 app.editor.clear();
+                if self.synced_refuses(app, "/sessions") {
+                    return false;
+                }
                 self.open_resume(app);
                 return false;
             }
@@ -2405,17 +2537,26 @@ impl<'h> Ui<'h> {
             }
             t if t.starts_with("/sessions ") => {
                 app.editor.clear();
+                if self.synced_refuses(app, "/sessions") {
+                    return false;
+                }
                 let id = t["/sessions ".len()..].trim().to_string();
                 self.resume(app, &id);
                 return false;
             }
             "/mode" => {
                 app.editor.clear();
+                if self.synced_refuses(app, "/mode") {
+                    return false;
+                }
                 app.open_mode_picker();
                 return false;
             }
             t if t.starts_with("/mode ") => {
                 app.editor.clear();
+                if self.synced_refuses(app, "/mode") {
+                    return false;
+                }
                 let name = t.split_once(' ').unwrap_or_default().1.trim();
                 match PermissionMode::parse(name) {
                     Some(m) => self.set_mode(app, m),
@@ -2438,6 +2579,9 @@ impl<'h> Ui<'h> {
             }
             t if t.starts_with("/model ") => {
                 app.editor.clear();
+                if self.synced_refuses(app, "/model") {
+                    return false;
+                }
                 // A bare id stays on the session's instance when that can
                 // run it, else goes to the one instance ready here that
                 // can; with several, the refusal lists them. The session's
