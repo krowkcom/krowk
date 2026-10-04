@@ -162,6 +162,22 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
         return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sessions` lists this machine's")));
     }
     let session = local_log(ctx, &session)?;
+    loop {
+        match host_once(ctx, &session) {
+            // A device was removed while it ran: hosted again from the top,
+            // so the new list is verified, its key taken up, and the session
+            // moved to a key the removed device never held.
+            Err(e) if e.code() == "device_list_moved" => {
+                let _ = writeln!(ctx.io.stderr, "{}", e.body.get("fix").and_then(|v| v.as_str()).unwrap_or("your device list changed; hosting again"));
+            }
+            other => return other,
+        }
+    }
+}
+
+/// One run of the bridge, from the list's check to the bridge's end.
+fn host_once(ctx: &mut Ctx, session: &str) -> Result<(), Error> {
+    let session = session.to_string();
     // The list first: a newer key it takes up is the one `keys` reads.
     current(ctx)?;
     let k = keys(ctx)?;
