@@ -365,7 +365,7 @@ fn d5_a_reply_whose_answer_and_read_back_were_lost_still_adds_the_device() {
     let r = root("lost-reply");
     let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
     let key = set_up(&laptop, &api);
-    let (proxy, seen) = losing_then_dropping_proxy(registry.addr(), "/reply", 1);
+    let (proxy, seen) = losing_then_dropping_proxy(registry.addr(), "/reply", 3);
     let mut a = krowk(&laptop, &format!("http://{proxy}/v1"), LAPTOP, &["devices", "add"]).spawn().unwrap();
     let a_err = lines(&mut a);
     let code = code_shown(&a_err);

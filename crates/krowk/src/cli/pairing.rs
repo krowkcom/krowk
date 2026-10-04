@@ -177,11 +177,20 @@ fn interrupted() -> bool {
 }
 
 /// Reads the pairing until `field` has arrived. A pairing that ended, or
-/// the window closing, is the failure `failed` names.
-fn wait_for(client: &Client, id: &str, field: &str, failed: &dyn Fn(Option<Error>) -> Error) -> Result<Vec<u8>, Error> {
+/// the window closing, is the failure `failed` names. On A, whose side
+/// holds no guess, a read the network lost is only a read, asked again
+/// until the window closes (`patient`); B ends at any failure.
+fn wait_for(client: &Client, id: &str, field: &str, patient: bool, failed: &dyn Fn(Option<Error>) -> Error) -> Result<Vec<u8>, Error> {
     let deadline = Instant::now() + WAIT;
     loop {
-        let p = client.show_pairing(id).map_err(|e| failed(Some(e)))?;
+        let p = match client.show_pairing(id) {
+            Ok(p) => p,
+            Err(e) if patient && e.status == 0 && Instant::now() <= deadline && !interrupted() => {
+                std::thread::sleep(POLL);
+                continue;
+            }
+            Err(e) => return Err(failed(Some(e))),
+        };
         if let Some(b) = blob(field, &p) {
             return Ok(b);
         }
@@ -238,7 +247,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     };
     // The reply went out with the user key in it: from here on the entry is
     // posted whatever B does, so a machine that may hold the key is listed.
-    let acked = wait_for(&client, &id, "joiner_ack", &a_failed).and_then(|ack| sealed.await_ack.receive_ack(&ack).map_err(|_| a_failed(None)));
+    let acked = wait_for(&client, &id, "joiner_ack", true, &a_failed).and_then(|ack| sealed.await_ack.receive_ack(&ack).map_err(|_| a_failed(None)));
     if acked.is_err() {
         let _ = client.end_pairing();
     }
@@ -336,7 +345,9 @@ fn a_step(client: &Client, id: &str, step: PairingStep, field: &str, message: &[
 fn send_reply(client: &Client, id: &str, reply: &[u8]) -> Result<(), Error> {
     match client.pairing_step(PairingStep::Reply, reply) {
         Ok(_) => Ok(()),
-        Err(e) if e.status == 0 => match client.show_pairing(id) {
+        // Lost on the way back, or a gateway's answer, which may come after
+        // the registry stored it: either way it may have landed.
+        Err(e) if matches!(e.status, 0 | 502..=504) => match client.show_pairing(id) {
             Ok(p) if blob("sealed_reply", &p).as_deref() != Some(reply) => Err(a_failed(Some(e))),
             _ => Ok(()),
         },
@@ -364,10 +375,10 @@ struct Sealed {
 fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut all): Verified<'_>, keys: &UserKeys, (device, signing): (&DeviceKey, &SigningKey)) -> Result<Sealed, Error> {
     let _ = writeln!(ctx.io.stderr, "Pair a new device\n  Code: {}          valid 10 minutes, once\nOn the new device run:  krowk sync join\nWaiting…", a.code());
     let _ = ctx.io.stderr.flush();
-    let hello = wait_for(client, id, "joiner_message", &a_failed)?;
+    let hello = wait_for(client, id, "joiner_message", true, &a_failed)?;
     let (await_confirm, spake) = a.receive_hello(&hello).map_err(|_| a_failed(None))?;
     a_step(client, id, PairingStep::Answer, "initiator_message", &spake)?;
-    let confirmation = wait_for(client, id, "joiner_confirmation", &a_failed)?;
+    let confirmation = wait_for(client, id, "joiner_confirmation", true, &a_failed)?;
     // A wrong code fails here: the pairing ends, and the person is asked
     // nothing.
     let confirmed = await_confirm.receive_confirm(&confirmation).map_err(|_| {
@@ -575,10 +586,10 @@ fn join_steps(client: &Client, id: &str, binding: Binding, code: PairingCode, me
     let (b, hello) = PairB::start(binding, code, me.clone()).map_err(|_| false)?;
     client.pairing_step(PairingStep::Join, &hello).map_err(|_| false)?;
     let none = |_: Option<Error>| fail("pairing_failed", "");
-    let spake = wait_for(client, id, "initiator_message", &none).map_err(|_| false)?;
+    let spake = wait_for(client, id, "initiator_message", false, &none).map_err(|_| false)?;
     let (await_reply, confirm) = b.receive_spake(&spake).map_err(|_| false)?;
     client.pairing_step(PairingStep::Confirmation, &confirm).map_err(|_| false)?;
-    let reply = wait_for(client, id, "sealed_reply", &none).map_err(|_| false)?;
+    let reply = wait_for(client, id, "sealed_reply", false, &none).map_err(|_| false)?;
     let received = await_reply.receive_reply(&reply).map_err(|_| false)?;
     let (key, entries, chain) = check_payload(received.payload(), a_device, &me, device).map_err(|_| false)?;
     let seq = chain.head().seq;
