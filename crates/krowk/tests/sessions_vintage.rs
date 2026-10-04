@@ -5,7 +5,7 @@
 
 #![cfg(all(feature = "harness", unix))]
 
-use krowk_client::e2e::{self, AccountKey, SigningKey};
+use krowk_client::e2e::{self, AccountKey};
 use krowk_client::keystore::Keystore;
 use krowk_harness::log::{self, SessionLog};
 use krowk_harness::protocol::{Item, LogBody, LogEvent};
@@ -13,6 +13,9 @@ use serde_json::Value;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[path = "common/device_list.rs"]
+mod device_list;
 
 const TOKEN: &str = "krowk_sk_vintage_000000000000000000000";
 const DAY_MS: i64 = 86_400_000;
@@ -101,14 +104,12 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
     let m = Machine { home: root.clone(), api_url: format!("{}/v1", registry.url()) };
 
-    // This machine has joined sync: an account key, its own device, registered.
+    // This machine has joined sync: an account key, its own device, on the
+    // person's device list with the key it runs on.
     let account = AccountKey::generate();
     let ks = Keystore::new(&root.join(".krowk"));
     ks.recover(AccountKey::from_bytes(*account.as_bytes())).unwrap();
-    let device = ks.device().unwrap().unwrap();
-    let signing = ks.signing_key().unwrap();
-    let api = krowk_api::Client::new(&m.api_url, TOKEN).signed_by(e2e::DeviceSigner::new(device.id(), SigningKey::from_secret(&*signing.secret_bytes()).unwrap()).shared());
-    api.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), "this machine", &account.id().to_string()).unwrap();
+    let api = device_list::start(&m.api_url, TOKEN, &ks, "this machine");
 
     let sessions = root.join(".krowk").join("sessions");
     let old = session(&sessions, &root, "the idle session's secret prompt", 20);

@@ -284,14 +284,67 @@ fn a_persons_routes_answer_only_their_own_user_id() {
     }
 }
 
-/// The approval mailbox is gone: whatever an old client asks of it is
-/// `410 sync_reset`, with the fix in the message.
+/// What the account-key design called is gone, as the registry has it:
+/// registering a device with the workspace and whatever an old client asks
+/// of the approval mailbox are `410 sync_reset`, with the fix in the
+/// message, and the workspace's device listing has no route at all.
 #[test]
-fn the_retired_approval_endpoints_answer_sync_reset() {
+fn the_account_key_designs_endpoints_answer_sync_reset() {
     let server = Server::new();
-    for (method, path) in [("GET", "/v1/device_approvals"), ("POST", "/v1/device_approvals"), ("GET", "/v1/device_approvals/dap_x"), ("PUT", "/v1/device_approvals/dap_x/approval")] {
-        let r = request(method, &server.at(path), "krowk_sk_old", "application/json", "{}");
+    let register = r#"{"device": {"public_key": "00", "signing_key": "00", "name": "laptop", "account_key_id": "00"}}"#;
+    for (method, path, body) in [("POST", "/v1/devices", register), ("GET", "/v1/device_approvals", "{}"), ("POST", "/v1/device_approvals", "{}"), ("GET", "/v1/device_approvals/dap_x", "{}"), ("PUT", "/v1/device_approvals/dap_x/approval", "{}")] {
+        let r = request(method, &server.at(path), "krowk_sk_old", "application/json", body);
         assert_eq!((r.status, r.code()), (410, "sync_reset".to_owned()), "{method} {path}");
         assert!(r.text().contains("krowk sync init"));
     }
+    let r = request("GET", &server.at("/v1/devices"), "krowk_sk_old", "", "");
+    assert_eq!((r.status, r.code()), (404, "no_such_endpoint".to_owned()));
+}
+
+/// Every sync endpoint needs the key's own device on the list and active
+/// (Api::Sync#refuse_key_without_an_active_device), the unsigned calls
+/// too: a key that speaks for no device is refused, and so is a removed
+/// device's, revoked with it — its reads as well as its writes — while the
+/// devices still on the list go on.
+#[test]
+fn every_sync_endpoint_refuses_a_key_without_an_active_device() {
+    let server = Server::new();
+    let laptop = Dev::new("laptop");
+    let (chain, key) = init(&server, &laptop);
+    let desktop = Dev::new("desktop");
+    let (chain, add) = chain.batch(&key, vec![Change::Add(desktop.subject())], laptop.key.id(), &laptop.signing, now()).unwrap();
+    laptop.client(&server, LAPTOP).append_device_list(&post(&add, false)).unwrap();
+    desktop.client(&server, DESKTOP).claim_key_device().unwrap();
+    let id = "0190f3a8-7c1e-7a9b-8c2d-3e4f5a6b7c8d";
+    desktop.client(&server, DESKTOP).put_sync_session(id, &"00".repeat(74), None, None, None).unwrap();
+    desktop.client(&server, DESKTOP).show_sync_session(id).unwrap();
+
+    let session = format!("/v1/sessions/{id}");
+    let calls = [
+        ("GET", "/v1/sessions".to_owned()),
+        ("GET", session.clone()),
+        ("PUT", session.clone()),
+        ("GET", format!("{session}/chunks")),
+        ("POST", format!("{session}/lease")),
+        ("GET", format!("{session}/relay_ticket?device={}", desktop.key.id())),
+        ("GET", "/v1/vintages".to_owned()),
+        ("POST", "/v1/vintages".to_owned()),
+    ];
+    for (method, path) in &calls {
+        let r = request(method, &server.at(path), "krowk_sk_owner#unclaimed", "application/json", "{}");
+        assert_eq!((r.status, r.code()), (403, "key_has_no_device".to_owned()), "{method} {path}");
+    }
+
+    let (_, remove) = chain.batch(&key, vec![Change::Remove(desktop.subject())], laptop.key.id(), &laptop.signing, now()).unwrap();
+    laptop.client(&server, LAPTOP).append_device_list(&post(&remove, false)).unwrap();
+    for (method, path) in &calls {
+        let r = request(method, &server.at(path), DESKTOP, "application/json", "{}");
+        assert_eq!((r.status, r.code()), (401, "unauthorized".to_owned()), "{method} {path}");
+    }
+    assert_eq!(desktop.client(&server, DESKTOP).show_sync_session(id).unwrap_err().code(), "unauthorized", "signed, too");
+    // Signed as the removed device on a key still on the list, it is the
+    // device that is refused.
+    let as_removed = desktop.client(&server, "krowk_sk_owner#laptop");
+    assert_eq!(as_removed.show_sync_session(id).unwrap_err().code(), "device_revoked");
+    laptop.client(&server, LAPTOP).show_sync_session(id).unwrap();
 }

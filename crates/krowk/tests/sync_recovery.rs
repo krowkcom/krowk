@@ -19,8 +19,6 @@ use std::process::{Command, Output, Stdio};
 /// One person's keys (`person_for` reads the part before `#`).
 const LAPTOP: &str = "krowk_sk_kit#laptop";
 const DESKTOP: &str = "krowk_sk_kit#desktop";
-/// The account key id the stand-in's session calls register devices under.
-const ACCOUNT: &str = "00112233445566778899aabbccddeeff";
 
 fn root(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("krowk-recovery-{name}-{}", std::process::id()));
@@ -83,17 +81,13 @@ fn init(home: &Path, api: &str, token: &str, kit: &Path) -> String {
     words
 }
 
-/// The registry as `home`'s device: signed by its key, as every session
+/// The registry as `home`'s device: on `token`, the key `sync init` or
+/// `sync recover` bound to it there, signed by its key, as every session
 /// call is.
 fn client_of(home: &Path, api: &str, token: &str) -> krowk_api::Client {
     let ks = keys(home);
     let (device, signing) = (ks.device().unwrap().unwrap(), ks.signing_key().unwrap());
-    let signing_public = e2e::hex(&signing.public().0);
-    let client = krowk_api::Client::new(api, token).signed_by(DeviceSigner::new(device.id(), signing).shared());
-    // The stand-in's session calls still check signatures against the
-    // devices registered the account-key way; registering again is a no-op.
-    let _ = client.register_device(&e2e::hex(&device.public().0), &signing_public, "reader", ACCOUNT);
-    client
+    krowk_api::Client::new(api, token).signed_by(DeviceSigner::new(device.id(), signing).shared())
 }
 
 /// A session `home` publishes as its host would: its key sealed under the
@@ -106,11 +100,7 @@ fn publish(home: &Path, api: &str, token: &str, id: &str) -> SessionKey {
     let key = SessionKey::generate();
     let sealed = e2e::seal_session_key(&key, &raw, &user, user.newest().generation()).unwrap();
     let signature = session_record::sign(&raw, &sealed, session_record::SEAL_USER, user.newest(), &signing).unwrap();
-    let signing_public = e2e::hex(&signing.public().0);
     let client = krowk_api::Client::new(api, token).signed_by(DeviceSigner::new(device.id(), signing).shared());
-    // The stand-in's session calls still check signatures against the
-    // devices registered the account-key way.
-    client.register_device(&e2e::hex(&device.public().0), &signing_public, "laptop", ACCOUNT).unwrap();
     client.put_sync_session(id, &e2e::hex(&sealed), Some((&e2e::hex(&signature), &device.id().to_string())), None, None).unwrap();
     key
 }

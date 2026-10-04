@@ -12,7 +12,7 @@ mod mock;
 #[path = "common/pty.rs"]
 mod pty;
 
-use krowk_client::e2e::{self, AccountKey, SigningKey};
+use krowk_client::e2e::{self, AccountKey};
 use krowk_client::keystore::Keystore;
 #[path = "common/device_list.rs"]
 mod device_list;
@@ -67,9 +67,9 @@ struct World {
     _mock: mock::Mock,
 }
 
-/// One machine: a home with its own device keys and the shared account
-/// key, registered, a repository to work in, and a runtime directory of its
-/// own for its daemon — short, as a socket path must be.
+/// One machine: a home with its own device keys, on the person's device
+/// list with a key of its own, a repository to work in, and a runtime
+/// directory of its own for its daemon — short, as a socket path must be.
 struct Machine {
     home: PathBuf,
     repo: PathBuf,
@@ -106,15 +106,13 @@ impl World {
         std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
         let ks = Keystore::new(&home.join(".krowk"));
         ks.recover(AccountKey::from_bytes(*self.account.as_bytes())).unwrap();
-        let (device, signing) = (ks.device().unwrap().unwrap(), ks.signing_key().unwrap());
-        {
+        let api = {
             let mut people = self.people.lock().unwrap();
             people.enlist(&ks, name);
             // A host reads the registry's list before it seals.
             people.publish(&self.api, TOKEN);
-        }
-        let api = krowk_api::Client::new(&self.api, TOKEN).signed_by(e2e::DeviceSigner::new(device.id(), SigningKey::from_secret(&*signing.secret_bytes()).unwrap()).shared());
-        api.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), name, &self.account.id().to_string()).unwrap();
+            people.client(&self.api, TOKEN, people.len() - 1)
+        };
         let env = vec![
             ("PATH".into(), "/usr/bin:/bin".into()),
             ("HOME".into(), home.display().to_string()),
@@ -122,7 +120,7 @@ impl World {
             ("KROWK_NO_UPDATE_CHECK".into(), "1".into()),
             ("KROWK_HOST_IDLE".into(), "5".into()),
             ("KROWK_API_URL".into(), self.api.clone()),
-            ("KROWK_TOKEN".into(), TOKEN.into()),
+            ("KROWK_TOKEN".into(), device_list::key(TOKEN, name)),
             ("KROWK_RELAY_URL".into(), self.relay.clone()),
             ("ANTHROPIC_API_KEY".into(), "sk-test".into()),
             ("ANTHROPIC_BASE_URL".into(), self.mock.clone()),
@@ -402,7 +400,7 @@ fn sync_host_of_a_session_this_machine_does_not_have_fails_fast() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("no session") && err.contains("krowk sync host"), "says why and what to do: {err}");
-    assert!(a.api.show_sync_session(id).is_err(), "nothing was made in the registry");
+    assert_eq!(a.api.show_sync_session(id).unwrap_err().status, 404, "nothing was made in the registry");
 }
 
 /// #206's review, M2: before it seals anything, a host takes the device
@@ -426,7 +424,7 @@ fn sync_host_refuses_when_the_registry_cannot_give_it_the_device_list() {
     assert!(started.elapsed() < Duration::from_secs(60), "it did not wait: {:?}", started.elapsed());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && err.contains("device list"), "refused, and says why: {err}");
-    assert!(a.api.show_sync_session(id).is_err(), "nothing was sealed or made in the registry");
+    assert_eq!(a.api.show_sync_session(id).unwrap_err().status, 404, "nothing was sealed or made in the registry");
 }
 
 /// A native session stored before its krowk.db row took its log's id is

@@ -9,12 +9,15 @@ use krowk_api::client::RequestSigner;
 use krowk_client::e2e::{self, AccountKey, SessionKey};
 use krowk_client::keystore::Keystore;
 use krowk_client::user_key::UserKey;
-use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+
+#[path = "common/device_list.rs"]
+mod device_list;
+use device_list::People;
 
 const TOKEN: &str = "krowk_sk_sync_devices";
 
@@ -42,18 +45,13 @@ fn attended(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
     c
 }
 
-/// Sync on the account key, as the lease and relay tests still exercise
-/// it: an account key in `home`, and the device registered with the
-/// workspace — what `krowk sync recover` did from the 24-word phrase before
-/// the recovery kit replaced it.
-fn set_up(home: &Path, api: &str, token: &str) -> Value {
+/// Sync set up in `home`: an account key and the device's own keys, and
+/// the device alone on the person's device list in the registry, `token`
+/// bound to it — as `krowk sync init` leaves a machine.
+fn set_up(home: &Path, api: &str, token: &str) -> krowk_api::Client {
     let keys = Keystore::new(&home.join(".krowk"));
-    let (setup, _) = keys.recover(AccountKey::generate()).unwrap();
-    let signing = keys.signing_key().unwrap();
-    let public = e2e::hex(&signing.public().0);
-    let client = krowk_api::Client::new(api, token).signed_by(e2e::DeviceSigner::new(setup.device.id(), signing).shared());
-    let registered = client.register_device(&e2e::hex(&setup.device.public().0), &public, "laptop", &setup.account.id().to_string());
-    serde_json::json!({ "data": { "registered": registered.is_ok(), "account_key": setup.account.id().to_string() } })
+    keys.recover(AccountKey::generate()).unwrap();
+    device_list::start(api, token, &keys, "laptop")
 }
 
 fn uuid(b: &[u8; 16]) -> String {
@@ -81,8 +79,8 @@ fn r_sync_1_a_free_workspace_is_refused_with_a_fix() {
 fn r_sync_2_a_stale_lease_holders_write_is_refused() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());
-    let account = AccountKey::generate();
-    let ((a, client, _), (b, cb, _)) = (machine(&api, &account), machine(&api, &account));
+    let (ma, mb) = two_machines(&api, "stale-holder");
+    let ((a, client), (b, cb)) = ((&ma.device, &ma.client), (&mb.device, &mb.client));
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
     let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first()));
@@ -141,8 +139,8 @@ fn r_e2e_3_add_and_join_refuse_without_a_person_at_a_terminal() {
 fn r_sync_2_a_chunk_with_a_stale_or_missing_lease_token_is_refused() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());
-    let account = AccountKey::generate();
-    let ((a, client, _), (b, cb, _)) = (machine(&api, &account), machine(&api, &account));
+    let (ma, mb) = two_machines(&api, "stale-chunk");
+    let ((a, client), (b, cb)) = ((&ma.device, &ma.client), (&mb.device, &mb.client));
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
     client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first())), None, None, None).unwrap();
@@ -168,19 +166,16 @@ fn r_sync_2_a_chunk_with_a_stale_or_missing_lease_token_is_refused() {
 }
 
 /// The stand-in holds the registry's limits: the session cap, the burst
-/// ceiling on creates, and revocation by the owner's reset.
+/// ceiling on creates, and revocation by the dashboard's Revoke.
 #[test]
 fn the_stand_in_models_the_session_cap_the_burst_ceiling_and_revocation() {
     let config = krowk_devregistry::Config { max_sessions: 1, ..Default::default() };
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), config).unwrap();
-    let account = AccountKey::generate();
-    let (device, signing) = (e2e::DeviceKey::generate(), e2e::SigningKey::generate());
-    let signing_public = e2e::hex(&signing.public().0);
-    let mut client = krowk_api::Client::new(&format!("{}/v1", registry.url()), TOKEN).signed_by(e2e::DeviceSigner::new(device.id(), signing).shared());
+    let api = format!("{}/v1", registry.url());
+    let (ma, mb) = two_machines(&api, "limits");
+    let (device, mut client) = (&ma.device, ma.client);
     // A 429 is retried after its Retry-After; the minute is not waited out here.
     client.sleep = |_| {};
-    let public = e2e::hex(&device.public().0);
-    client.register_device(&public, &signing_public, "laptop", &account.id().to_string()).unwrap();
     let wrapped = |id: &[u8; 16]| e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), id, &UserKey::first()));
 
     let first: [u8; 16] = e2e::random();
@@ -188,22 +183,26 @@ fn the_stand_in_models_the_session_cap_the_burst_ceiling_and_revocation() {
     let second: [u8; 16] = e2e::random();
     assert_eq!(client.put_sync_session(&uuid(&second), &wrapped(&second), None, None, None).unwrap_err().code(), "session_limit_reached");
 
-    // The owner's reset revokes the device: it cannot act until it registers again.
-    let mut conn = TcpStream::connect(registry.addr()).unwrap();
-    write!(conn, "POST /_reset/sync HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
-    let mut answer = String::new();
-    conn.read_to_string(&mut answer).unwrap();
-    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
-    assert_eq!(client.acquire_lease(&uuid(&first), &device.id().to_string(), 60, "production").unwrap_err().code(), "device_revoked");
-    // The reset cleared the pin too, so registering again may pin another key.
-    let fresh = AccountKey::generate().id().to_string();
-    client.register_device(&public, &signing_public, "laptop", &fresh).unwrap();
-    client.acquire_lease(&uuid(&first), &device.id().to_string(), 60, "production").unwrap();
-
-    // 120 creates a minute, then 429 (two spent above).
-    // Each named apart, so no two are the same signed request a moment apart.
-    let refused = (0..125).find_map(|i| client.register_device(&public, &signing_public, &format!("laptop {i}"), &fresh).err()).expect("the ceiling was met");
+    // 120 creates a minute, then 429 (two spent above). Each a session of
+    // its own, so no two are the same signed request a moment apart.
+    let refused = (0..125)
+        .find_map(|_| {
+            let id: [u8; 16] = e2e::random();
+            client.put_sync_session(&uuid(&id), &wrapped(&id), None, None, None).err().filter(|e| e.code() != "session_limit_reached")
+        })
+        .expect("the ceiling was met");
     assert_eq!(refused.code(), "too_many_requests");
+
+    // The dashboard's Revoke: the device is refused, and its key with it,
+    // reads as well as writes.
+    revoke(registry.addr(), &ma.token, &device.id().to_string());
+    assert_eq!(client.acquire_lease(&uuid(&first), &device.id().to_string(), 60, "production").unwrap_err().code(), "unauthorized");
+    assert_eq!(client.show_sync_session(&uuid(&first)).unwrap_err().code(), "unauthorized");
+    // Another of the person's keys, signed by the revoked device, is
+    // refused for the device.
+    let other = krowk_api::Client::new(&api, &mb.token).signed_by(ma.signer.clone());
+    assert_eq!(other.show_sync_session(&uuid(&first)).unwrap_err().code(), "device_revoked");
+    mb.client.show_sync_session(&uuid(&first)).unwrap();
 }
 
 /// R-SYNC-2, as the stand-in holds it: a pending chunk a displaced holder
@@ -213,8 +212,8 @@ fn the_stand_in_models_the_session_cap_the_burst_ceiling_and_revocation() {
 fn r_sync_2_a_displaced_holders_pending_chunk_is_replaced_not_finalized() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());
-    let account = AccountKey::generate();
-    let ((a, client, sa), (b, cb, sb)) = (machine(&api, &account), machine(&api, &account));
+    let (ma, mb) = two_machines(&api, "displaced");
+    let ((a, client), (b, cb)) = ((&ma.device, &ma.client), (&mb.device, &mb.client));
     let id: [u8; 16] = e2e::random();
     let key = SessionKey::generate();
     let session = uuid(&id);
@@ -223,13 +222,13 @@ fn r_sync_2_a_displaced_holders_pending_chunk_is_replaced_not_finalized() {
     // A declares chunk 0 by hand and is displaced before finalizing it.
     let held = client.acquire_lease(&session, &a.id().to_string(), 60, "production").unwrap();
     let stale = e2e::ChunkSealer::new(&key, id, 0, e2e::NO_PREVIOUS_CHUNK, held.fence).seal(b"A's", false).unwrap();
-    let declare = |by: &dyn RequestSigner, token: &str, blob: &[u8], size: usize| {
+    let declare = |by: &Machine, token: &str, blob: &[u8], size: usize| {
         let body = serde_json::json!({ "chunk": { "index": 0, "byte_size": size, "checksum": e2e::hex(&sha(blob)), "lease_token": token } });
-        raw_as(registry.addr(), Some(by), "POST", &format!("/v1/sessions/{session}/chunks"), &body.to_string())
+        raw_as(registry.addr(), &by.token, Some(&*by.signer), "POST", &format!("/v1/sessions/{session}/chunks"), &body.to_string())
     };
-    assert!(declare(&*sa, &held.token, &stale, stale.len()).starts_with("HTTP/1.1 201"));
+    assert!(declare(&ma, &held.token, &stale, stale.len()).starts_with("HTTP/1.1 201"));
     let moved = client.renew_lease(&session, &b.id().to_string(), &held.token, 60, "production").unwrap();
-    let fin = raw_as(registry.addr(), Some(&*sb), "PUT", &format!("/v1/sessions/{session}/chunks/0/finalization"), &serde_json::json!({ "chunk": { "lease_token": moved.token } }).to_string());
+    let fin = raw_as(registry.addr(), &mb.token, Some(&*mb.signer), "PUT", &format!("/v1/sessions/{session}/chunks/0/finalization"), &serde_json::json!({ "chunk": { "lease_token": moved.token } }).to_string());
     assert!(fin.starts_with("HTTP/1.1 409") && fin.contains("lease_stale"), "{fin}");
 
     // B's own chunk 0 replaces it and lands.
@@ -238,7 +237,7 @@ fn r_sync_2_a_displaced_holders_pending_chunk_is_replaced_not_finalized() {
     let listed = client.list_chunks(&session, None, 50).unwrap();
     assert_eq!(e2e::ChunkReader::new(&key, id).open(&client.read_chunk(&listed.chunks[0]).unwrap()).unwrap(), b"B's");
 
-    let too_big = declare(&*sb, &moved.token, b"x", (64 << 20) + 1);
+    let too_big = declare(&mb, &moved.token, b"x", (64 << 20) + 1);
     assert!(too_big.starts_with("HTTP/1.1 422") && too_big.contains("byte_size"), "{too_big}");
 }
 
@@ -246,63 +245,91 @@ fn sha(b: &[u8]) -> [u8; 32] {
     e2e::chunk_digest(b)
 }
 
-/// A device of the workspace and a client acting as it: registered through
-/// a client signed by its own key (crypto.md → Signed registry requests),
-/// as `krowk sync init` registers one, and its signer for raw calls.
-fn machine(api: &str, account: &AccountKey) -> (e2e::DeviceKey, krowk_api::Client, Arc<dyn RequestSigner>) {
-    let (device, signing) = (e2e::DeviceKey::generate(), e2e::SigningKey::generate());
-    let signing_public = e2e::hex(&signing.public().0);
+/// One of the person's machines: its device, the key it holds, a client
+/// acting as it and its signer for raw calls.
+struct Machine {
+    device: e2e::DeviceKey,
+    /// Its signing key's public half, which its list entry carries.
+    signing: [u8; 32],
+    token: String,
+    client: krowk_api::Client,
+    signer: Arc<dyn RequestSigner>,
+}
+
+/// A machine of the person's, a home of its own under `root`: its device on
+/// the person's device list, and a key of its own that speaks for it, as
+/// `krowk sync init` or `sync join` leaves one. Its client is signed by the
+/// device's own key (crypto.md → Signed registry requests).
+fn machine(api: &str, people: &mut People, root: &Path, name: &str) -> Machine {
+    let keys = Keystore::new(&root.join(name).join(".krowk"));
+    let (device, signing) = (keys.device_key().unwrap(), keys.signing_key().unwrap());
+    people.enlist(&keys, name);
+    people.publish(api, TOKEN);
+    let client = people.client(api, TOKEN, people.len() - 1);
+    let public = signing.public().0;
     let signer = e2e::DeviceSigner::new(device.id(), signing).shared();
-    let client = krowk_api::Client::new(api, TOKEN).signed_by(signer.clone());
-    client.register_device(&e2e::hex(&device.public().0), &signing_public, "machine", &account.id().to_string()).unwrap();
-    (device, client, signer)
+    Machine { device, signing: public, token: device_list::key(TOKEN, name), client, signer }
 }
 
-/// One request to the stand-in, keyed, and its whole answer.
-fn raw(addr: std::net::SocketAddr, method: &str, path: &str, body: &str) -> String {
-    raw_as(addr, None, method, path, body)
+/// The laptop and the desktop, in that order: the laptop's device starts
+/// the list, and adds the desktop's.
+fn two_machines(api: &str, name: &str) -> (Machine, Machine) {
+    let (mut people, r) = (People::default(), root(name));
+    (machine(api, &mut people, &r, "laptop"), machine(api, &mut people, &r, "desktop"))
 }
 
-/// As `raw`, signed by `signer` when there is one, as krowk-api signs.
-fn raw_as(addr: std::net::SocketAddr, signer: Option<&dyn RequestSigner>, method: &str, path: &str, body: &str) -> String {
+/// One request to the stand-in on `token`, signed by `signer` when there is
+/// one, as krowk-api signs, and its whole answer.
+fn raw_as(addr: std::net::SocketAddr, token: &str, signer: Option<&dyn RequestSigner>, method: &str, path: &str, body: &str) -> String {
     let signed = signer.map_or(String::new(), |s| {
         let at = jiff::Timestamp::now().as_millisecond().to_string();
         let signature = e2e::hex(&s.sign(&krowk_api::client::signing_input(method, path, &at, body.as_bytes())));
         format!("X-Krowk-Device: {}\r\nX-Krowk-Timestamp: {at}\r\nX-Krowk-Signature: {signature}\r\n", s.device())
     });
     let mut conn = TcpStream::connect(addr).unwrap();
-    write!(conn, "{method} {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\n{signed}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+    write!(conn, "{method} {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\n{signed}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     let mut answer = String::new();
     conn.read_to_string(&mut answer).unwrap();
     answer
 }
 
-/// R-RELAY-1: a device's signing key is required and set once — a
-/// register without one, or naming another, is refused — so no other key
-/// of the workspace can swap in a key it holds and stand in the device's
-/// relay channels.
+/// The dashboard's Revoke of `device`, by the person `token` is a key of.
+fn revoke(addr: std::net::SocketAddr, token: &str, device: &str) {
+    let answer = raw_as(addr, token, None, "POST", &format!("/_settings/devices/{device}/revocation"), "");
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+}
+
+/// R-RELAY-1: a device's signing key is the one its list entry carries,
+/// and the relay tickets the registry issues name it. Registering one the
+/// account key's way — which any key of the workspace could call, naming
+/// any key — is gone, so no other key can swap in a key it holds and stand
+/// in the device's relay channels.
 #[test]
-fn r_relay_1_a_signing_key_is_required_and_set_once() {
+fn r_relay_1_a_signing_key_is_the_lists_and_cannot_be_swapped() {
+    use krowk_client::relay_ticket;
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());
     let r = root("signing");
     let laptop = r.join("laptop");
-    let set_up = set_up(&laptop, &api, TOKEN);
-    assert_eq!(set_up["data"]["registered"], true, "{set_up}");
-    let keys = Keystore::new(&laptop.join(".krowk"));
-    let public = e2e::hex(&keys.device().unwrap().unwrap().public().0);
-    let account = keys.account_id().unwrap().unwrap().to_string();
-    let signer = e2e::DeviceSigner::new(keys.device().unwrap().unwrap().id(), keys.signing_key().unwrap()).shared();
-    let client = krowk_api::Client::new(&api, TOKEN).signed_by(signer.clone());
-    let held = client.list_devices().unwrap().remove(0).signing_key;
-    assert_eq!(held, e2e::hex(&keys.signing_key().unwrap().public().0));
+    let client = set_up(&laptop, &api, TOKEN);
+    let ks = Keystore::new(&laptop.join(".krowk"));
+    let device = ks.device().unwrap().unwrap();
+    let held = ks.signing_key().unwrap().public().0;
+    let account = ks.account_id().unwrap().unwrap().to_string();
+    let signer = e2e::DeviceSigner::new(device.id(), ks.signing_key().unwrap()).shared();
+    let id: [u8; 16] = e2e::random();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None, None).unwrap();
+    let keys = vec![(krowk_devregistry::TICKET_KID, krowk_devregistry::ticket_public_key())];
+    let ticketed = || {
+        let t = client.relay_ticket(&uuid(&id), &device.id().to_string(), "production").unwrap();
+        relay_ticket::verify(&t.relay_ticket, &keys, relay_ticket::now()).unwrap().signing_key
+    };
+    assert_eq!(ticketed(), held);
 
-    let answer = raw_as(registry.addr(), Some(&*signer), "POST", "/v1/devices", &serde_json::json!({"device": {"public_key": public, "name": "laptop", "account_key_id": account}}).to_string());
-    assert!(answer.starts_with("HTTP/1.1 400") && answer.contains("signing_key"), "{answer}");
-
-    let refused = client.register_device(&public, &e2e::hex(&[9; 32]), "laptop", &account).unwrap_err();
-    assert_eq!((refused.status, refused.code().to_string()), (409, "signing_key_mismatch".to_string()), "{refused:?}");
-    assert_eq!(client.list_devices().unwrap()[0].signing_key, held);
+    let swap = serde_json::json!({"device": {"public_key": e2e::hex(&device.public().0), "signing_key": e2e::hex(&[9; 32]), "name": "laptop", "account_key_id": account}});
+    let answer = raw_as(registry.addr(), TOKEN, Some(&*signer), "POST", "/v1/devices", &swap.to_string());
+    assert!(answer.starts_with("HTTP/1.1 410") && answer.contains("sync_reset"), "{answer}");
+    assert_eq!(ticketed(), held, "the tickets still name the list's key");
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -317,21 +344,14 @@ fn r_relay_1_leases_and_viewers_are_issued_tickets_the_relay_can_check() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());
     let keys = vec![(krowk_devregistry::TICKET_KID, krowk_devregistry::ticket_public_key())];
-    let account = AccountKey::generate();
-    let (a, b) = (e2e::DeviceKey::generate(), e2e::DeviceKey::generate());
-    let (sa, sb) = (e2e::SigningKey::generate(), e2e::SigningKey::generate());
-    let (pa, pb) = (sa.public(), sb.public());
-    let client = krowk_api::Client::new(&api, TOKEN).signed_by(e2e::DeviceSigner::new(a.id(), e2e::SigningKey::from_secret(&*sa.secret_bytes()).unwrap()).shared());
-    let cb = krowk_api::Client::new(&api, TOKEN).signed_by(e2e::DeviceSigner::new(b.id(), e2e::SigningKey::from_secret(&*sb.secret_bytes()).unwrap()).shared());
-    for (d, s, c) in [(&a, &pa, &client), (&b, &pb, &cb)] {
-        c.register_device(&e2e::hex(&d.public().0), &e2e::hex(&s.0), "machine", &account.id().to_string()).unwrap();
-    }
+    let (ma, mb) = two_machines(&api, "tickets");
+    let ((a, client), (b, cb)) = ((&ma.device, &ma.client), (&mb.device, &mb.client));
     let id: [u8; 16] = e2e::random();
     client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None, None).unwrap();
 
     let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "development").unwrap();
     let t = relay_ticket::verify(&held.relay_ticket, &keys, relay_ticket::now()).unwrap();
-    assert_eq!((t.role, t.env, t.fence, t.device, t.signing_key, t.session), (e2e::RELAY_ROLE_HOST, relay_ticket::ENV_DEVELOPMENT, held.fence, a.id().0, sa.public().0, id));
+    assert_eq!((t.role, t.env, t.fence, t.device, t.signing_key, t.session), (e2e::RELAY_ROLE_HOST, relay_ticket::ENV_DEVELOPMENT, held.fence, a.id().0, ma.signing, id));
     let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60, "production").unwrap();
     let t = relay_ticket::verify(&moved.relay_ticket, &keys, relay_ticket::now()).unwrap();
     assert_eq!((t.device, t.fence, t.env), (b.id().0, held.fence + 1, relay_ticket::ENV_PRODUCTION), "the new holder's, at the new fence");
@@ -341,7 +361,7 @@ fn r_relay_1_leases_and_viewers_are_issued_tickets_the_relay_can_check() {
     // workspace, signing as itself, is refused one in its name.
     assert_eq!(cb.relay_ticket(&uuid(&id), &a.id().to_string(), "production").unwrap_err().code(), "device_mismatch");
     let t = relay_ticket::verify(&watch.relay_ticket, &keys, relay_ticket::now()).unwrap();
-    assert_eq!((t.role, t.fence, t.signing_key), (e2e::RELAY_ROLE_VIEWER, 0, sa.public().0));
+    assert_eq!((t.role, t.fence, t.signing_key), (e2e::RELAY_ROLE_VIEWER, 0, ma.signing));
     assert_eq!(client.relay_ticket(&uuid(&id), &a.id().to_string(), "staging").unwrap_err().code(), "invalid");
     let other: [u8; 16] = e2e::random();
     assert_eq!(client.relay_ticket(&uuid(&other), &a.id().to_string(), "production").unwrap_err().status, 404);
@@ -356,27 +376,27 @@ fn r_relay_1_leases_and_viewers_are_issued_tickets_the_relay_can_check() {
 fn signed_calls_refuse_the_api_key_alone_a_replay_a_stale_signature_and_a_revoked_device() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());
-    let account = AccountKey::generate();
-    let (a, client, signer) = machine(&api, &account);
+    let ma = machine(&api, &mut People::default(), &root("signed"), "laptop");
+    let (a, client, signer) = (&ma.device, &ma.client, &ma.signer);
     let id: [u8; 16] = e2e::random();
     client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None, None).unwrap();
 
-    let unsigned = krowk_api::Client::new(&api, TOKEN);
+    let unsigned = krowk_api::Client::new(&api, &ma.token);
     assert_eq!(unsigned.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap_err().code(), "device_signature_missing");
     let lease = format!("/v1/sessions/{}/lease", uuid(&id));
     let body = serde_json::json!({ "lease": { "device": a.id().to_string() } }).to_string();
-    assert!(raw(registry.addr(), "POST", &lease, &body).contains("signature_required"));
+    assert!(raw_as(registry.addr(), &ma.token, None, "POST", &lease, &body).contains("signature_required"));
     let stranger = e2e::DeviceSigner::new(a.id(), e2e::SigningKey::generate());
-    assert!(raw_as(registry.addr(), Some(&stranger), "POST", &lease, &body).contains("signature_invalid"));
+    assert!(raw_as(registry.addr(), &ma.token, Some(&stranger), "POST", &lease, &body).contains("signature_invalid"));
     let ticket = format!("/v1/sessions/{}/relay_ticket?device={}", uuid(&id), a.id());
-    assert!(raw_as(registry.addr(), Some(&stranger), "GET", &ticket, "").contains("signature_invalid"));
+    assert!(raw_as(registry.addr(), &ma.token, Some(&stranger), "GET", &ticket, "").contains("signature_invalid"));
 
     // The same signed request twice: the second is a replay.
     let at = jiff::Timestamp::now().as_millisecond().to_string();
     let send = |at: &str| {
         let signature = e2e::hex(&signer.sign(&krowk_api::client::signing_input("GET", &ticket, at, b"")));
         let mut conn = TcpStream::connect(registry.addr()).unwrap();
-        write!(conn, "GET {ticket} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\nX-Krowk-Device: {}\r\nX-Krowk-Timestamp: {at}\r\nX-Krowk-Signature: {signature}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", a.id()).unwrap();
+        write!(conn, "GET {ticket} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\nX-Krowk-Device: {}\r\nX-Krowk-Timestamp: {at}\r\nX-Krowk-Signature: {signature}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", ma.token, a.id()).unwrap();
         let mut answer = String::new();
         conn.read_to_string(&mut answer).unwrap();
         answer
@@ -386,7 +406,8 @@ fn signed_calls_refuse_the_api_key_alone_a_replay_a_stale_signature_and_a_revoke
     let stale = (jiff::Timestamp::now().as_millisecond() - 6 * 60 * 1000).to_string();
     assert!(send(&stale).contains("signature_stale"));
 
-    // Revoked by the owner's reset: its own signed calls are refused.
-    assert!(raw(registry.addr(), "POST", "/_reset/sync", "").starts_with("HTTP/1.1 200"));
-    assert_eq!(client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap_err().code(), "device_revoked");
+    // Revoked by the dashboard's Revoke: its own signed calls are refused,
+    // the key it holds revoked with it.
+    revoke(registry.addr(), &ma.token, &a.id().to_string());
+    assert_eq!(client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap_err().code(), "unauthorized");
 }

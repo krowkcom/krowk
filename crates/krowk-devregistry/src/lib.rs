@@ -248,8 +248,10 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         (_, ["v1", "runs", slug]) if get => runs::show(a, req, slug),
         ("PUT" | "PATCH", ["v1", "runs", slug, "completion"]) => runs::finish(a, req, slug),
         (_, ["v1", "runs", slug, "artifacts"]) if get => runs::artifacts(a, req, slug),
-        (_, ["v1", "devices"]) if get => sync::list_devices(a, req),
-        ("POST", ["v1", "devices"]) => sync::signed(a, req, sync::register_device),
+        // The account-key design's calls, gone as the registry has them:
+        // registering a device with the workspace, and the approval mailbox.
+        // Its device listing has no route left at all.
+        ("POST", ["v1", "devices"]) => sync::sync_reset(),
         (_, ["v1", "device_approvals", ..]) => sync::sync_reset(),
         (_, ["v1", "users", user, rest @ ..]) => users_route(a, req, &m, user, rest),
         // Session reads are signed, as the registry has them: the key alone
@@ -273,7 +275,7 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         }
         (_, ["v1", "vintages"]) if get => sync::list_vintages(a, req, &site(req, &a.site)),
         ("PUT" | "PATCH", ["v1", "vintages", slug, "finalization"]) => sync::signed(a, req, |a, req, by| sync::finalize_vintage(a, req, slug, by)),
-        ("POST", ["_reset", "sync"]) => sync::reset(a, req),
+        ("POST", ["_settings", "devices", id, "revocation"]) => sync::revoke(a, req, id),
         (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
         _ => no_such_endpoint(),
     }

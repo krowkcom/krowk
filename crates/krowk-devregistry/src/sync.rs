@@ -1,15 +1,19 @@
-//! Sync: the devices that hold a workspace's account key, and sessions with
-//! their leases — the shapes and refusals of the registry's Api::V1::
-//! DevicesController, SessionsController and Sessions::LeasesController. A
-//! person's device list, user key and pairings are `devices.rs` and
-//! `pairings.rs`; the approval mailbox is gone, `410 sync_reset`.
+//! Sync: sessions with their leases, chunks and vintages — the shapes and
+//! refusals of the registry's Api::V1::SessionsController and
+//! Sessions::LeasesController. A person's device list, user key and pairings
+//! are `devices.rs` and `pairings.rs`, and every device a call names or is
+//! signed by is one that list names. What the account-key design called —
+//! registering a device with the workspace (`POST /v1/devices`), and the
+//! approval mailbox — is gone, `410 sync_reset`.
 //!
 //! Every endpoint needs a key and refuses a free workspace (R-SYNC-1); a
-//! token containing `free` is one, as for uploads. The creates meet a burst
-//! ceiling of 120 a minute per workspace, a workspace holds at most so many
-//! sessions (`Config::max_sessions`), and a device revoked by the owner's
-//! reset (`POST /_reset/sync`, the dashboard's stand-in) is refused until it
-//! registers again — as the registry does. A session's log is chunks, kept
+//! token containing `free` is one, as for uploads. Every one also needs the
+//! device the key speaks for on the person's list and active, so a device
+//! removed from the list, or revoked by the dashboard's Revoke (`POST
+//! /_settings/devices/:id/revocation`, its stand-in), is refused its reads
+//! as well as its writes. The creates meet a burst ceiling of 120 a minute
+//! per key, and a workspace holds at most so many sessions
+//! (`Config::max_sessions`). A session's log is chunks, kept
 //! apart from the artifacts so no artifact listing, card or lookup can see
 //! one, and stored under `/_storage` like any artifact's bytes. Keys and sealed blobs are
 //! hex of the sizes canon's crypto.md fixes, and anything else a body carries
@@ -25,25 +29,10 @@ use jiff::{SignedDuration, Timestamp};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-const PUBLIC_KEY_BYTES: usize = 32;
 const WRAPPED_SESSION_KEY_BYTES: usize = 74;
 const MAX_SEALED_INDEX_BYTES: usize = 64 << 10;
 const DEFAULT_LEASE_TTL: i64 = 60;
 const LEASE_TTL: std::ops::RangeInclusive<i64> = 10..=600;
-
-pub struct Device {
-    pub id: String,
-    pub public_key: String,
-    /// The relay signing public key, hex; empty until the device sends one.
-    pub signing_key: String,
-    pub name: String,
-    pub created_at: Timestamp,
-    /// None until it first acts.
-    pub last_seen_at: Option<Timestamp>,
-    /// Set by the owner's reset; cleared by registering again.
-    pub revoked_at: Option<Timestamp>,
-    pub seq: usize,
-}
 
 #[derive(Clone)]
 pub struct Session {
@@ -134,9 +123,6 @@ pub struct SyncStore {
     pub bursts: HashMap<(String, &'static str), (Timestamp, usize)>,
     /// 0 is MAX_SESSIONS.
     pub max_sessions: usize,
-    /// Workspace → the account key id its first device offered.
-    pub account_keys: HashMap<String, String>,
-    pub devices: HashMap<(String, String), Device>,
     /// A person's device list, user key and the devices it names, by
     /// person (`devices.rs`): a person's, not a workspace's.
     pub people: HashMap<String, crate::devices::Person>,
@@ -160,22 +146,21 @@ const SIGNATURE_SKEW_MS: i64 = 5 * 60 * 1000;
 /// A call that acts as a device (canon, engineering/crypto.md → Signed
 /// registry requests), checked as the registry checks it, and then `act`
 /// with the device that signed it: after the key and the paid gate, the
-/// three headers, the timestamp within five minutes, the signature by the
-/// device's key on record over the request's lines, and not seen before.
-/// A registration may come from a device with no key on record yet, and is
-/// checked against the signing key in its body instead.
+/// key's own device on the person's list and active
+/// (Api::Sync#refuse_key_without_an_active_device), then the three headers,
+/// the timestamp within five minutes, the signature by that list's key for
+/// the device named, and not seen before.
 pub fn signed(app: &App, req: &mut Req, act: impl FnOnce(&App, &mut Req, &str) -> Resp) -> Resp {
-    let workspace = match gate(req) {
-        Ok(w) => w,
-        Err(r) => return r,
-    };
-    let bytes = match req.read_body(4 << 20) {
+    let bytes = match active(app, req).and_then(|_| req.read_body(4 << 20).map_err(|_| error(400, "bad_request", "the body could not be read", None))) {
         Ok(b) => b,
-        Err(_) => return error(400, "bad_request", "the body could not be read", None),
-    };
-    let signer = match verify_signed(app, req, &workspace, &bytes) {
-        Ok(d) => d,
         Err(r) => return r,
+    };
+    let signer = {
+        let mut s = app.lock();
+        match crate::devices::caller_of(&s.sync, req).and_then(|who| crate::devices::signed_device(&mut s.sync, req, &who, &bytes)) {
+            Ok(d) => d,
+            Err(r) => return r,
+        }
     };
     let mut body = std::io::Cursor::new(bytes);
     let mut inner = Req {
@@ -190,22 +175,14 @@ pub fn signed(app: &App, req: &mut Req, act: impl FnOnce(&App, &mut Req, &str) -
     act(app, &mut inner, &signer)
 }
 
-fn verify_signed(app: &App, req: &Req, workspace: &str, body: &[u8]) -> Result<String, Resp> {
-    let (device, at, signature) = signature_headers(req)?;
-    let mut s = app.lock();
-    // The key on record; for a registration of a device with none yet, the
-    // one its body registers.
-    // A row on record with no key is not claimable by registering one.
-    let key = match s.sync.devices.get(&(workspace.to_owned(), device.clone())) {
-        Some(d) => d.signing_key.clone(),
-        None if req.path == "/v1/devices" => presented_signing_key(body).unwrap_or_default(),
-        None => String::new(),
-    };
-    check_signature(&mut s.sync, req, &device, &at, &signature, &unhex(&key).unwrap_or_default(), body)?;
-    if req.path != "/v1/devices" && revoked(&s.sync, workspace, &device) {
-        return Err(device_revoked(&device));
-    }
-    Ok(device)
+/// What every sync call here checks before anything else, signed or not:
+/// the key, the paid gate, and the device the key speaks for on the
+/// person's list and active. The calls a machine makes before it is a
+/// device are `devices.rs` and `pairings.rs`, which skip the last.
+pub fn active(app: &App, req: &Req) -> Result<String, Resp> {
+    let s = app.lock();
+    let who = crate::devices::caller_of(&s.sync, req)?;
+    crate::devices::key_device(&s.sync, &who)
 }
 
 /// The three signature headers, or the refusal for a request without them.
@@ -246,14 +223,6 @@ pub fn check_signature(s: &mut SyncStore, req: &Req, device: &str, at: &str, sig
     Ok(())
 }
 
-/// A registration's `device.signing_key`, which its signature is checked
-/// against when the device has none on record.
-fn presented_signing_key(body: &[u8]) -> Option<String> {
-    let v = crate::json::parse(body)?;
-    let key = v.fields().nested("device").string("signing_key");
-    (!key.is_empty()).then(|| key.to_ascii_lowercase())
-}
-
 /// A call naming `device` and signed by another is refused: naming a
 /// device is not a way to act as it.
 fn signed_as(device: &str, signer: &str) -> Result<(), Resp> {
@@ -262,15 +231,6 @@ fn signed_as(device: &str, signer: &str) -> Result<(), Resp> {
     } else {
         Err(error(403, "device_mismatch", &format!("the request names device {device} but is signed by device {signer}"), None))
     }
-}
-
-/// crypto.md's device id: the first 16 bytes of
-/// `SHA-256("krowk/device-id/v1" ‖ public key)`, hex.
-fn fingerprint(public_key: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(b"krowk/device-id/v1");
-    h.update(public_key);
-    hex(&h.finalize()[..16])
 }
 
 pub fn unhex(s: &str) -> Option<Vec<u8>> {
@@ -337,17 +297,19 @@ pub fn burst(s: &mut SyncStore, key: &str, name: &'static str, now: Timestamp) -
     Ok(())
 }
 
-fn device_revoked(id: &str) -> Resp {
-    error(403, "device_revoked", &format!("device {id} has been revoked and can no longer act for this workspace"), None)
+/// The person a call's key speaks for, whose devices it names.
+fn person(req: &Req) -> String {
+    crate::store::person_for(&crate::auth::token(req).unwrap_or_default())
 }
 
-/// The device a call acts as: the workspace's, and not revoked.
-fn acting(s: &SyncStore, workspace: &str, device: &str) -> Result<(), Resp> {
-    match s.devices.get(&(workspace.to_owned(), device.to_owned())) {
-        None => Err(not_found()),
-        Some(d) if d.revoked_at.is_some() => Err(device_revoked(device)),
-        Some(_) => Ok(()),
-    }
+/// A device a call names, as the registry finds it
+/// (`sync_user.devices.named!`, then Device#refuse_if_revoked!): one the
+/// person's list has named, else no such device, and neither removed nor
+/// revoked.
+fn named<'a>(s: &'a SyncStore, person: &str, device: &str) -> Result<&'a crate::devices::Listed, Resp> {
+    let d = s.people.get(person).and_then(|p| p.device(device)).ok_or_else(not_found)?;
+    crate::devices::refuse_if_revoked(d)?;
+    Ok(d)
 }
 
 /// The body's `resource` object, and a 400 for a missing one.
@@ -364,38 +326,6 @@ pub fn body(req: &mut Req, resource: &str) -> Result<Value, Resp> {
 fn required(f: &mut Fields, name: &str) -> Result<String, Resp> {
     let v = f.string(name);
     if v.is_empty() { Err(parameter_missing(name)) } else { Ok(v) }
-}
-
-fn account_key_mismatch(expected: &str) -> Resp {
-    error(
-        409,
-        "account_key_mismatch",
-        &format!("This workspace's devices hold account key {expected}, not the one offered. If this came from a recovery phrase, a word is wrong: recover again with the right phrase."),
-        Some(Json::map([("account_key_id", Json::str(expected))])),
-    )
-}
-
-fn adopt_account_key(s: &mut SyncStore, workspace: &str, id: &str) -> Result<(), Resp> {
-    match s.account_keys.get(workspace) {
-        Some(held) if held != id => Err(account_key_mismatch(held)),
-        Some(_) => Ok(()),
-        None => {
-            s.account_keys.insert(workspace.to_owned(), id.to_owned());
-            Ok(())
-        }
-    }
-}
-
-fn serialize_device(d: &Device) -> Json {
-    Json::map([
-        ("id", Json::str(&d.id)),
-        ("public_key", Json::str(&d.public_key)),
-        ("signing_key", if d.signing_key.is_empty() { Json::Null } else { Json::str(&d.signing_key) }),
-        ("name", Json::str(&d.name)),
-        ("created_at", Json::str(rfc3339_nano(d.created_at))),
-        ("last_seen_at", d.last_seen_at.map_or(Json::Null, |t| Json::str(rfc3339_nano(t)))),
-        ("revoked_at", d.revoked_at.map_or(Json::Null, |t| Json::str(rfc3339_nano(t)))),
-    ])
 }
 
 fn leased(s: &Session, now: Timestamp) -> bool {
@@ -415,7 +345,7 @@ pub fn ticket_public_key() -> [u8; 32] {
 
 /// A relay ticket, in the registry's layout (relay.md → Tickets), with its
 /// expiry.
-fn relay_ticket(role: u8, env: u8, session: &str, device: &Device, workspace: &str, fence: u64, now: Timestamp) -> (String, Timestamp) {
+fn relay_ticket(role: u8, env: u8, session: &str, device: &crate::devices::Listed, workspace: &str, fence: u64, now: Timestamp) -> (String, Timestamp) {
     let iat = now.as_second() as u64;
     let t = krowk_client::relay_ticket::Ticket {
         kid: TICKET_KID,
@@ -423,7 +353,7 @@ fn relay_ticket(role: u8, env: u8, session: &str, device: &Device, workspace: &s
         env,
         session: unhex(&session.replace('-', "")).and_then(|b| b.try_into().ok()).unwrap_or_default(),
         device: unhex(&device.id).and_then(|b| b.try_into().ok()).unwrap_or_default(),
-        signing_key: unhex(&device.signing_key).and_then(|b| b.try_into().ok()).unwrap_or_default(),
+        signing_key: device.signing_key,
         fence,
         iat,
         exp: iat + TICKET_TTL as u64,
@@ -496,88 +426,6 @@ fn serialize_session(s: &Session, now: Timestamp, listing: bool) -> Json {
         ("last_written_at".to_owned(), Json::str(rfc3339_nano(s.last_written_at))),
     ]);
     Json::map_of(pairs)
-}
-
-/// A name printed on other devices' terminals: no control characters.
-fn name_field(f: &mut Fields) -> Result<String, Resp> {
-    let name = required(f, "name")?;
-    if name.chars().any(char::is_control) {
-        return Err(invalid("name", "cannot hold control characters"));
-    }
-    Ok(name)
-}
-
-pub fn list_devices(app: &App, req: &Req) -> Resp {
-    let workspace = match gate(req) {
-        Ok(w) => w,
-        Err(r) => return r,
-    };
-    let s = app.lock();
-    let mut devices: Vec<&Device> = s.sync.devices.iter().filter(|((w, _), _)| *w == workspace).map(|(_, d)| d).collect();
-    devices.sort_by_key(|d| d.seq);
-    // Then the person's own, as their device list named them: the listing
-    // the registry answers, beside the workspace's registered devices until
-    // `sync init` moves to the device list.
-    let person = crate::store::person_for(&crate::auth::token(req).unwrap_or_default());
-    let listed = s.sync.people.get(&person).map(|p| p.devices.iter().map(crate::devices::serialize).collect()).unwrap_or_default();
-    let all = devices.into_iter().map(serialize_device).chain::<Vec<Json>>(listed).collect();
-    Resp::json(200, &Json::map([("devices", Json::Arr(all))]))
-}
-
-/// A device that set sync up itself says so, with the account key it holds.
-/// The same public key again is the same device, renamed.
-pub fn register_device(app: &App, req: &mut Req, signer: &str) -> Resp {
-    let mut run = || -> Result<Resp, Resp> {
-        let workspace = gate(req)?;
-        let v = body(req, "device")?;
-        let mut f = v.fields();
-        let public_key = required(&mut f, "public_key")?;
-        let key = blob("public_key", &public_key, Some(PUBLIC_KEY_BYTES), None)?;
-        // Required, as the registry has it, and set once: another is
-        // refused, since any key of the workspace can register and the
-        // relay admits joins signed by it.
-        let signing = Some(hex(&blob("signing_key", &required(&mut f, "signing_key")?, Some(PUBLIC_KEY_BYTES), None)?));
-        let name = name_field(&mut f)?;
-        let account = id_field("account_key_id", &required(&mut f, "account_key_id")?)?;
-        let mut s = app.lock();
-        let now = s.now();
-        burst(&mut s.sync, &caller(req), "device_registrations", now)?;
-        adopt_account_key(&mut s.sync, &workspace, &account)?;
-        let id = fingerprint(&key);
-        signed_as(&id, signer)?;
-        if let (Some(new), Some(held)) = (&signing, s.sync.devices.get(&(workspace.clone(), id.clone())))
-            && !held.signing_key.is_empty()
-            && held.signing_key != *new
-        {
-            return Err(error(409, "signing_key_mismatch", &format!("device {id} already registered another signing key, and a signing key is set once"), None));
-        }
-        let seq = s.sync.seq + 1;
-        let fresh = !s.sync.devices.contains_key(&(workspace.clone(), id.clone()));
-        let d = s.sync.devices.entry((workspace, id.clone())).or_insert_with(|| Device {
-            id,
-            public_key: hex(&key),
-            signing_key: String::new(),
-            name: String::new(),
-            created_at: now,
-            last_seen_at: Some(now),
-            revoked_at: None,
-            seq,
-        });
-        // Only the owner's reset revokes here, and a reset clears the slate:
-        // registering again is the way back (Device#registrable?).
-        d.name = name;
-        if let Some(signing) = signing {
-            d.signing_key = signing;
-        }
-        d.last_seen_at = Some(now);
-        d.revoked_at = None;
-        let resp = Resp::json(if fresh { 201 } else { 200 }, &serialize_device(d));
-        if fresh {
-            s.sync.seq = seq;
-        }
-        Ok(resp)
-    };
-    run().unwrap_or_else(|r| r)
 }
 
 /// A session id as the registry routes it: a UUID, else no such session.
@@ -666,7 +514,7 @@ pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         burst(&mut s.sync, &caller(req), "session_writes", now)?;
         let seq = s.sync.seq + 1;
         let key = (workspace.clone(), id.clone());
-        let holder_revoked = s.sync.sessions.get(&key).is_some_and(|x| revoked(&s.sync, &workspace, &x.holder));
+        let holder_revoked = s.sync.sessions.get(&key).and_then(|x| revoked_holder(&s.sync, x));
         let cap = if s.sync.max_sessions == 0 { MAX_SESSIONS } else { s.sync.max_sessions };
         let held = s.sync.sessions.keys().filter(|(w, _)| *w == workspace).count();
         let reseal = s.sync.sessions.get(&key).is_some_and(|x| resealable(&s.sync.people, x, &wrapped, (&record_signature, &record_signer), signer));
@@ -688,8 +536,8 @@ pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
                 return Err(parameter_missing("lease_token"));
             }
             holder(x, &token, now, signer)?;
-            if holder_revoked {
-                return Err(device_revoked(&x.holder));
+            if let Some(refused) = &holder_revoked {
+                return Err(crate::devices::revoked(refused));
             }
             (x.wrapped_key, x.record_signature, x.signer, x.sealed_epoch) = (wrapped.clone(), record_signature.clone(), record_signer.clone(), current_epoch);
             x.updated_at = now;
@@ -702,8 +550,8 @@ pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
                 return Err(parameter_missing("lease_token"));
             }
             holder(x, &token, now, signer)?;
-            if holder_revoked {
-                return Err(device_revoked(&x.holder));
+            if let Some(refused) = &holder_revoked {
+                return Err(crate::devices::revoked(refused));
             }
             x.sealed_index = sealed;
             x.last_written_at = now;
@@ -749,11 +597,11 @@ fn lease_call<'a>(app: &'a App, req: &mut Req, id: &str, needs_device: bool) -> 
         return Err(not_found());
     }
     if needs_device {
-        acting(&s.sync, &workspace, &device)?;
+        named(&s.sync, &person(req), &device)?;
     }
     // A revoked holder is refused whatever token it presents.
-    if let Some(x) = s.sync.sessions.get(&key).filter(|x| revoked(&s.sync, &workspace, &x.holder)) {
-        return Err(device_revoked(&x.holder));
+    if let Some(refused) = s.sync.sessions.get(&key).and_then(|x| revoked_holder(&s.sync, x)) {
+        return Err(crate::devices::revoked(&refused));
     }
     Ok((s, key, device, v))
 }
@@ -781,9 +629,9 @@ pub fn acquire_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         x.updated_at = now;
         let token = mint(x);
         let x = x.clone();
-        let ticket = s.sync.devices.get(&(key.0.clone(), device.clone())).filter(|d| !d.signing_key.is_empty()).map(|d| relay_ticket(1, env, &key.1, d, &key.0, x.fence, now));
+        let ticket = s.sync.people.get(&x.owner).and_then(|p| p.device(&device)).map(|d| relay_ticket(1, env, &key.1, d, &key.0, x.fence, now));
         let resp = Resp::json(201, &serialize_lease_with(&x, Some(&token), ticket));
-        touch(&mut s.sync, &key.0, &device, now);
+        touch(&mut s.sync, &x.owner, &device, now);
         Ok(resp)
     };
     run().unwrap_or_else(|r| r)
@@ -809,9 +657,9 @@ pub fn renew_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         x.lease_expires_at = Some(now + ttl);
         x.updated_at = now;
         let x = x.clone();
-        let ticket = s.sync.devices.get(&(key.0.clone(), device.clone())).filter(|d| !d.signing_key.is_empty()).map(|d| relay_ticket(1, env, &key.1, d, &key.0, x.fence, now));
+        let ticket = s.sync.people.get(&x.owner).and_then(|p| p.device(&device)).map(|d| relay_ticket(1, env, &key.1, d, &key.0, x.fence, now));
         let resp = Resp::json(200, &serialize_lease_with(&x, minted.as_deref(), ticket));
-        touch(&mut s.sync, &key.0, &device, now);
+        touch(&mut s.sync, &x.owner, &device, now);
         Ok(resp)
     };
     run().unwrap_or_else(|r| r)
@@ -835,12 +683,10 @@ pub fn viewer_ticket(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         if !s.sync.sessions.contains_key(&(workspace.clone(), id.clone())) {
             return Err(not_found());
         }
-        acting(&s.sync, &workspace, &device)?;
+        // Every device a list names has a signing key: the entry adding it
+        // carries one, so there is no `signing_key_missing` to answer.
+        let d = named(&s.sync, &person(req), &device)?;
         signed_as(&device, signer)?;
-        let d = s.sync.devices.get(&(workspace.clone(), device.clone())).ok_or_else(not_found)?;
-        if d.signing_key.is_empty() {
-            return Err(error(409, "signing_key_missing", &format!("device {device} has registered no signing key — set sync up on it again with `krowk sync join`"), None));
-        }
         let (t, exp) = relay_ticket(2, env, &id, d, &workspace, 0, now);
         Ok(Resp::json(200, &Json::map([("relay_ticket", Json::str(&t)), ("expires_at", Json::str(rfc3339_nano(exp)))])))
     };
@@ -864,35 +710,38 @@ pub fn release_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
 }
 
 /// A lease call is the holder being seen, as the registry records it.
-fn touch(s: &mut SyncStore, workspace: &str, device: &str, now: Timestamp) {
-    if let Some(d) = s.devices.get_mut(&(workspace.to_owned(), device.to_owned())) {
+fn touch(s: &mut SyncStore, person: &str, device: &str, now: Timestamp) {
+    if let Some(d) = s.people.get_mut(person).and_then(|p| p.devices.iter_mut().find(|d| d.id == device)) {
         d.last_seen_at = Some(now);
     }
 }
 
-fn revoked(s: &SyncStore, workspace: &str, device: &str) -> bool {
-    !device.is_empty() && s.devices.get(&(workspace.to_owned(), device.to_owned())).is_some_and(|d| d.revoked_at.is_some())
+/// The session's lease holder, when it is a device its owner's list
+/// removed, or the dashboard revoked.
+fn revoked_holder(s: &SyncStore, x: &Session) -> Option<crate::devices::Listed> {
+    s.people.get(&x.owner).and_then(|p| p.device(&x.holder)).filter(|d| !d.active()).cloned()
 }
 
-/// The dashboard's owner reset of sync, stood in for: every device revoked,
-/// the account key id cleared. Keyed by the bearer, the way `/_approve`
-/// stands in for a signed-in person.
-pub fn reset(app: &App, req: &Req) -> Resp {
-    let workspace = match require_key(req) {
-        Ok(w) => w,
-        Err(r) => return r,
-    };
+/// The dashboard's Revoke, stood in for (Device#revoke!): the person's
+/// device `id` refused from now on, and every key bound to it revoked with
+/// it. The chain still lists it until one of their devices removes it.
+/// Keyed by the bearer, the way `/_approve` stands in for a signed-in
+/// person; a device of anyone else's, or the recovery kit, is a 404.
+pub fn revoke(app: &App, req: &Req, id: &str) -> Resp {
+    if let Err(r) = require_key(req) {
+        return r;
+    }
+    let person = person(req);
     let mut s = app.lock();
     let now = s.now();
-    let mut revoked = 0;
-    for ((w, _), d) in s.sync.devices.iter_mut() {
-        if *w == workspace && d.revoked_at.is_none() {
-            d.revoked_at = Some(now);
-            revoked += 1;
-        }
-    }
-    s.sync.account_keys.remove(&workspace);
-    Resp::json(200, &Json::map([("revoked", Json::Int(revoked))]))
+    let Some(d) = s.sync.people.get_mut(&person).and_then(|p| p.devices.iter_mut().find(|d| d.id.eq_ignore_ascii_case(id) && d.kind == "device" && d.removed_seq.is_none())) else {
+        return not_found();
+    };
+    d.revoked_at = d.revoked_at.or(Some(now));
+    let device = d.id.clone();
+    let keys: Vec<String> = s.sync.bindings.iter().filter(|(_, bound)| **bound == device).map(|(key, _)| key.clone()).collect();
+    s.sync.revoked_keys.extend(keys);
+    Resp::json(200, &Json::map([("device", Json::str(device))]))
 }
 
 fn serialize_chunk(c: &Chunk) -> Vec<(String, Json)> {
@@ -950,8 +799,8 @@ pub fn declare_chunk(app: &App, req: &mut Req, id: &str, site: &str, signer: &st
             return Err(lease_token_missing());
         }
         holder(x, &token, now, signer)?;
-        if revoked(&s.sync, &workspace, &x.holder) {
-            return Err(device_revoked(&x.holder));
+        if let Some(refused) = revoked_holder(&s.sync, x) {
+            return Err(crate::devices::revoked(&refused));
         }
         burst(&mut s.sync, &caller(req), "chunk_declares", now)?;
         let hash = crate::store::sha256_hex(format!("{id}\n{index}\n{byte_size}\n{checksum}").as_bytes());
@@ -1084,8 +933,8 @@ pub fn finalize_chunk(app: &App, req: &mut Req, id: &str, index: &str, signer: &
             return Err(lease_token_missing());
         }
         holder(x, &token, now, signer)?;
-        if revoked(&s.sync, &workspace, &x.holder) {
-            return Err(device_revoked(&x.holder));
+        if let Some(refused) = revoked_holder(&s.sync, x) {
+            return Err(crate::devices::revoked(&refused));
         }
         let fence = x.fence;
         let c = s.sync.chunks.get_mut(&(workspace.clone(), id.clone(), index)).ok_or_else(not_found)?;
@@ -1192,7 +1041,7 @@ pub fn declare_vintage(app: &App, req: &mut Req, site: &str, signer: &str) -> Re
         let replaces = f.string("replaces");
         let mut s = app.lock();
         let now = s.now();
-        acting(&s.sync, &workspace, signer)?;
+        named(&s.sync, &person(req), signer)?;
         burst(&mut s.sync, &caller(req), "vintage_declares", now)?;
         let hash = crate::store::sha256_hex(format!("{week}\n{byte_size}\n{checksum}\n{replaces}").as_bytes());
         if let Some(attempt) = &attempt
@@ -1251,7 +1100,7 @@ pub fn finalize_vintage(app: &App, req: &mut Req, slug: &str, signer: &str) -> R
     let run = || -> Result<Resp, Resp> {
         let workspace = gate(req)?;
         let mut s = app.lock();
-        acting(&s.sync, &workspace, signer)?;
+        named(&s.sync, &person(req), signer)?;
         let (week, c) = s.sync.vintages.get(&(workspace.clone(), slug.to_owned())).ok_or_else(not_found)?;
         let week = week.clone();
         if c.ready {
@@ -1282,7 +1131,7 @@ pub fn finalize_vintage(app: &App, req: &mut Req, slug: &str, signer: &str) -> R
 /// The workspace's ready vintages, the week's alone when `week` is given,
 /// each with the URL its bytes are read from.
 pub fn list_vintages(app: &App, req: &Req, site: &str) -> Resp {
-    let workspace = match gate(req) {
+    let workspace = match active(app, req).and_then(|_| gate(req)) {
         Ok(w) => w,
         Err(r) => return r,
     };

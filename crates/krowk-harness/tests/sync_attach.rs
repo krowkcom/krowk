@@ -15,13 +15,15 @@ mod mock;
 #[path = "common/scratch.rs"]
 mod scratch;
 
-use krowk_client::e2e::{self, AccountKey, DeviceKey, SessionKey, SigningKey};
-use krowk_client::device_chain::{Chain, Change, Kind, Subject};
+use krowk_client::e2e::{self, DeviceKey, SessionKey, SigningKey};
+use krowk_client::device_chain::{Batch, Chain, Change, Kind, Subject};
 use krowk_client::session_record;
 use krowk_client::user_key::{UserKey, UserKeys};
 
 /// When the test device list is made, by its devices' clocks.
 const T0: u64 = 1_790_000_000;
+/// The person's key, which each device holds one of (`tok#name`).
+const TOKEN: &str = "krowk_sk_sync_attach_0000000000000000";
 use krowk_harness::daemon::{self, client::Client, server};
 use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
@@ -62,13 +64,11 @@ struct World {
     root: PathBuf,
     registry: krowk_devregistry::Running,
     api: String,
-    account: AccountKey,
     /// The person's device list, with each device the test makes on it,
     /// and the user key it leaves current, which every device holds.
     list: Mutex<Option<(Chain, UserKey)>>,
-    /// The first device's signing key, which adds the others, and its id.
-    first_signing: Mutex<Option<SigningKey>>,
-    first_id: Mutex<Option<e2e::DeviceId>>,
+    /// The first device, which adds the others.
+    first: Mutex<Option<Device>>,
     /// Every byte either device sent the relay or got from it.
     seen: Arc<Mutex<Vec<u8>>>,
     /// While set, A's link to the relay is down and nothing gets through.
@@ -113,10 +113,32 @@ const HOLD_TICKETS: u8 = 3;
 struct Device {
     key: DeviceKey,
     signing: SigningKey,
+    /// The key it holds, which speaks for it.
+    token: String,
+}
+
+impl Device {
+    fn new(name: &str) -> Device {
+        Device { key: DeviceKey::generate(), signing: SigningKey::generate(), token: format!("{TOKEN}#{name}") }
+    }
+
+    fn copy(&self) -> Device {
+        Device { key: DeviceKey::from_secret(&*self.key.secret_bytes()).unwrap(), signing: SigningKey::from_secret(&*self.signing.secret_bytes()).unwrap(), token: self.token.clone() }
+    }
 }
 
 fn signer(d: &Device) -> Arc<dyn krowk_api::client::RequestSigner> {
     e2e::DeviceSigner::new(d.key.id(), SigningKey::from_secret(&*d.signing.secret_bytes()).unwrap()).shared()
+}
+
+/// A device list post of `b`, as the chain made it.
+fn post(b: &Batch) -> krowk_api::sync::ListPost {
+    krowk_api::sync::ListPost {
+        entries: b.entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect(),
+        links: b.links.iter().map(|l| e2e::hex(l)).collect(),
+        wraps: b.wraps.iter().map(|(d, w)| (d.to_string(), e2e::hex(w))).collect(),
+        start_over: false,
+    }
 }
 
 impl World {
@@ -144,18 +166,18 @@ impl World {
         let reg_a = format!("http://{}/v1", registry_proxy(registry.addr(), reg_mode.clone()));
         let m = mock::serve(model);
         let mock_url = m.url.clone();
-        World { root, registry, api, account: AccountKey::generate(), list: Mutex::new(None), first_signing: Mutex::new(None), first_id: Mutex::new(None), seen, cut, a_mode, a_conns, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
+        World { root, registry, api, list: Mutex::new(None), first: Mutex::new(None), seen, cut, a_mode, a_conns, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, b_mode, b_batches, b_drop }
     }
 
-    /// A device's own registry client: its calls that act as the device
-    /// signed by its key, as the registry requires.
+    /// A device's own registry client: on its own key, its calls that act
+    /// as the device signed by its key, as the registry requires.
     fn as_device(&self, d: &Device) -> Arc<krowk_api::Client> {
-        Arc::new(krowk_api::Client::new(&self.api, "krowk_sk_sync_attach_0000000000000000").signed_by(signer(d)))
+        Arc::new(krowk_api::Client::new(&self.api, &d.token).signed_by(signer(d)))
     }
 
     /// A's registry client, through A's own proxy, signed by A.
     fn a_client(&self, a: &Device) -> Arc<krowk_api::Client> {
-        let mut c = krowk_api::Client::new(&self.reg_a, "krowk_sk_sync_attach_0000000000000000").signed_by(signer(a));
+        let mut c = krowk_api::Client::new(&self.reg_a, &a.token).signed_by(signer(a));
         c.sleep = |_| std::thread::sleep(Duration::from_millis(50));
         Arc::new(c)
     }
@@ -170,39 +192,38 @@ impl World {
         self.list.lock().unwrap().as_ref().expect("a device first").0.clone()
     }
 
-    /// `d` on the person's device list: the first device starts it, each
-    /// later one is added by the first.
+    /// `d` on the person's device list, here and in the registry: the first
+    /// device starts it, which binds its key to it, and each later one is
+    /// added by the first and then claims its own key, as `sync join` does.
     fn enlist(&self, d: &Device, name: &str) {
         let subject = Subject { kind: Kind::Device, name: name.into(), os: "linux".into(), device: d.key.public(), signing: d.signing.public() };
         let mut list = self.list.lock().unwrap();
-        let next = match list.take() {
-            None => {
-                let (chain, start) = Chain::start(subject, &d.signing, None, T0).unwrap();
-                (chain, start.newest)
-            }
-            Some((chain, user)) => {
-                let first = chain.devices()[0].id();
-                let key = self.first_signing.lock().unwrap().as_ref().map(|k| SigningKey::from_secret(&*k.secret_bytes()).unwrap()).unwrap();
-                let (chain, _) = chain.batch(&user, vec![Change::Add(subject)], first, &key, T0 + 1).unwrap();
+        let mut first = self.first.lock().unwrap();
+        let next = match (list.take(), first.as_ref()) {
+            (Some((chain, user)), Some(f)) => {
+                let (chain, batch) = chain.batch(&user, vec![Change::Add(subject)], f.key.id(), &f.signing, T0 + 1).unwrap();
+                self.as_device(f).append_device_list(&post(&batch)).unwrap();
+                self.as_device(d).claim_key_device().unwrap();
                 (chain, user)
             }
+            _ => {
+                let (chain, start) = Chain::start(subject, &d.signing, None, T0).unwrap();
+                self.as_device(d).init_device_list(&post(&start)).unwrap();
+                *first = Some(d.copy());
+                (chain, start.newest)
+            }
         };
-        self.first_signing.lock().unwrap().get_or_insert_with(|| SigningKey::from_secret(&*d.signing.secret_bytes()).unwrap());
-        self.first_id.lock().unwrap().get_or_insert(d.key.id());
         *list = Some(next);
     }
 
     /// The registry as the first device reads it: session reads are signed.
     fn client(&self) -> Arc<krowk_api::Client> {
-        let id = self.first_id.lock().unwrap().expect("a device first");
-        let key = self.first_signing.lock().unwrap().as_ref().map(|k| SigningKey::from_secret(&*k.secret_bytes()).unwrap()).expect("a device first");
-        Arc::new(krowk_api::Client::new(&self.api, "krowk_sk_sync_attach_0000000000000000").signed_by(e2e::DeviceSigner::new(id, key).shared()))
+        self.as_device(self.first.lock().unwrap().as_ref().expect("a device first"))
     }
 
-    /// A device of the workspace, registered with its signing key.
+    /// A device of the person's, on their list with a key of its own.
     fn device(&self, name: &str) -> Device {
-        let d = Device { key: DeviceKey::generate(), signing: SigningKey::generate() };
-        self.as_device(&d).register_device(&e2e::hex(&d.key.public().0), &e2e::hex(&d.signing.public().0), name, &self.account.id().to_string()).unwrap();
+        let d = Device::new(name);
         self.enlist(&d, name);
         d
     }
@@ -699,7 +720,7 @@ async fn d8b_only_a_record_a_listed_device_signed_opens() {
             api.put_sync_session(id, &e2e::hex(&wrapped), None, Some(&sealed), None).unwrap();
         }
     };
-    let stranger = Device { key: DeviceKey::generate(), signing: SigningKey::generate() };
+    let stranger = Device::new("stranger");
     publish("01a0ec7b-2222-7000-8000-0000000000d1", "signed by b", &b, true);
     publish("01a0ec7b-2222-7000-8000-0000000000d2", "unsigned", &b, false);
     publish("01a0ec7b-2222-7000-8000-0000000000d3", "signed by a stranger", &stranger, true);
@@ -1364,7 +1385,7 @@ async fn r_net_2_moving_to_the_direct_path_mid_session_stalls_nothing_and_shows_
     let _release = Release(hold.clone());
     let reg_b = format!("http://{}/v1", registry_proxy(w.registry.addr(), hold.clone()));
     let mut o = w.viewer(&b, &session);
-    o.api = Arc::new(krowk_api::Client::new(&reg_b, "krowk_sk_sync_attach_0000000000000000").signed_by(signer(&b)));
+    o.api = Arc::new(krowk_api::Client::new(&reg_b, &b.token).signed_by(signer(&b)));
     let mut v = viewer::attach(o).await.unwrap();
     let mut frames = Vec::new();
     v.commands.send(w.prompt(Some(&session), "a long answer, queued")).unwrap();
