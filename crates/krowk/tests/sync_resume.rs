@@ -70,7 +70,7 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
     let index = store::Index { title: "resumed from sync".into(), ..Default::default() };
     api.put_sync_session(&id, &wrapped, Some((&e2e::hex(&signature), &a.id().to_string())), Some(&e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).unwrap()))), None).unwrap();
     let lease = api.acquire_lease(&id, &a.id().to_string(), 60, "development").unwrap();
-    let mut w = store::Writer::take_up(api.clone(), key, &id, wrapped, index, lease.fence).unwrap();
+    let mut w = store::Writer::take_up(api.clone(), key.into(), &id, wrapped, index, lease.fence).unwrap();
     w.push(serde_json::json!({"id": "01a0ec7b-1111-7000-8000-0000000000e1", "type": "item.completed", "item": {"type": "userText", "text": MARKER}}));
     w.checkpoint(None, &lease.token).unwrap();
     api.release_lease(&id, &lease.token).unwrap();

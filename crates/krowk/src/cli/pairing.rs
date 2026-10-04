@@ -386,6 +386,11 @@ fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut al
     })?;
     let new = confirmed.device().clone();
     let (name, os) = (printable(&new.name), printable(&new.os));
+    // Before the person is asked: a name that reads like a listed device's
+    // is the new machine's to change, and the pairing ends here.
+    if let Some(d) = chain.devices().iter().find(|d| krowk_client::device_chain::confusable_names(&d.name, &new.name)) {
+        return Err(fail("device_name_taken", format!("the new device calls itself '{name}', which reads like '{}' already on your devices — nothing was added. On the new device run `krowk sync join --name <another name>`, and here `krowk devices add` again", printable(&d.name))));
+    }
     ask(ctx, &format!("Add '{name}' ({os}) to your devices?"))?;
     if interrupted() {
         return Err(a_failed(None));

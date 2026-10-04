@@ -260,6 +260,34 @@ fn d2_a_tampered_spake_message_fails() {
     }
 }
 
+/// n1 of #198's review: a peer's SPAKE2 point of small order, or spelled
+/// non-canonically, is refused on either side before any key is derived.
+#[test]
+fn d2_a_small_order_or_non_canonical_spake_point_is_refused() {
+    let s = sides();
+    let bad = [
+        // The identity, a point of order 2 and one of order 4.
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "0000000000000000000000000000000000000000000000000000000000000080",
+        // The identity again, its y written as p + 1: not canonical.
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    ];
+    let point = |hex: &str| (0..64).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+    for p in bad {
+        let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
+        let (_, hello) = PairB::start(binding(&s), typed(&a), s.b.clone()).unwrap();
+        let forged = [&hello[..hello.len() - 32], &point(p)].concat();
+        assert!(a.receive_hello(&forged).is_err(), "A took {p}");
+
+        let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
+        let (b, hello) = PairB::start(binding(&s), typed(&a), s.b.clone()).unwrap();
+        let (_, spake) = a.receive_hello(&hello).unwrap();
+        let forged = [&spake[..spake.len() - 32], &point(p)].concat();
+        assert!(b.receive_spake(&forged).is_err(), "B took {p}");
+    }
+}
+
 #[test]
 fn d2_a_tampered_confirmation_fails() {
     let s = sides();
