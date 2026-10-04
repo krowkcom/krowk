@@ -363,6 +363,36 @@ pub struct ChunkPage {
     pub next: Option<u64>,
 }
 
+/// One ISO week of archived sessions, as the registry holds it: a durable
+/// artifact of the `vintage` kind, sealed on the client (`e2e::seal_vintage`).
+/// `upload` from a declare, `url` from a listing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Vintage {
+    #[serde(default, deserialize_with = "nullable")]
+    pub slug: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub week: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub state: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub byte_size: u64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub checksum: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub upload: Option<Upload>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct VintagePage {
+    #[serde(default, deserialize_with = "nullable")]
+    pub vintages: Vec<Vintage>,
+}
+
+/// The most a vintage read back may be: the registry's own cap on one.
+pub const MAX_VINTAGE_BYTES: u64 = 256 << 20;
+
 /// The most a chunk read back may be: a chunk is a slice of a log, and a
 /// registry listing a larger one is not handed the memory for it.
 pub const MAX_CHUNK_BYTES: u64 = 64 << 20;
@@ -407,6 +437,37 @@ impl Client {
         let bytes = self.get_blob(&chunk.url, MAX_CHUNK_BYTES)?;
         if crate::client::sha256_hex(&bytes) != chunk.checksum {
             return Err(crate::fail("checksum_mismatch", format!("chunk {} read back does not match its digest — read it again", chunk.index)));
+        }
+        Ok(bytes)
+    }
+
+    /// Stores a week's vintage: declared, put straight to storage and
+    /// finalized. `replaces` names the week's vintage this one was merged
+    /// from, and the registry refuses the write as `vintage_conflict` when
+    /// that is no longer the week's — another machine replaced it first —
+    /// so a vintage is never replaced by one that did not read it.
+    pub fn put_vintage(&self, week: &str, sealed: &[u8], replaces: Option<&str>) -> Result<Vintage, Error> {
+        let checksum = crate::client::sha256_hex(sealed);
+        let body = json!({ "vintage": { "week": week, "byte_size": sealed.len(), "checksum": checksum, "replaces": replaces } });
+        let key = crate::client::idempotency_key()?;
+        let declared: Vintage = self.call_as_device("POST", "/vintages", Some(body), ATTEMPTS, Some(key))?.0;
+        let upload = declared.upload.as_ref().filter(|u| !u.url.is_empty()).ok_or_else(|| crate::fail("no_upload_url", "the registry declared the vintage but did not say where to put its bytes"))?;
+        self.put_blob(upload, sealed)?;
+        Ok(self.call_as_device("PUT", &format!("/vintages/{}/finalization", slug_path(&declared.slug)), Some(json!({})), ATTEMPTS, None)?.0)
+    }
+
+    /// The week's ready vintage, if it has one.
+    pub fn week_vintage(&self, week: &str) -> Result<Option<Vintage>, Error> {
+        let page: VintagePage = self.get(&format!("/vintages?week={}", slug_path(week)))?;
+        Ok(page.vintages.into_iter().find(|v| v.week == week))
+    }
+
+    /// A listed vintage's sealed bytes, checked against the digest the
+    /// registry recorded before anything opens them.
+    pub fn read_vintage(&self, v: &Vintage) -> Result<Vec<u8>, Error> {
+        let bytes = self.get_blob(&v.url, MAX_VINTAGE_BYTES)?;
+        if crate::client::sha256_hex(&bytes) != v.checksum {
+            return Err(crate::fail("checksum_mismatch", format!("the vintage for {} read back does not match its digest — read it again", v.week)));
         }
         Ok(bytes)
     }

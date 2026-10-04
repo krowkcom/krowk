@@ -33,7 +33,24 @@ threads-required = "num-test-threads"
 
 # CI: a test that fails and then passes is reported FLAKY and the job goes on,
 # instead of the whole job being run again. One that fails three times fails.
+# Only the tests named below are retried, each a flake seen on a loaded runner
+# and not yet pinned down: any other test fails the first time, so a new flake
+# is found the day it appears, not hidden by a retry. A test leaves this list
+# when its cause is fixed.
 [profile.ci]
-retries = { backoff = "fixed", count = 2, delay = "1s" }
 fail-fast = false
 failure-output = "immediate-final"
+
+[[profile.ci.overrides]]
+filter = """
+    (binary(tui) & (
+        test(=r_tui_1_a_menu_opened_and_closed_on_a_short_session_puts_nothing_in_scrollback)
+        | test(=r_tui_3_a_resize_mid_stream_never_repeats_a_line_or_leaves_the_live_region_behind)
+        | test(=r_off_1_a_cut_network_shows_the_notice_within_two_seconds_and_nothing_hangs)
+        | test(=resume_continues_an_earlier_session_from_the_slash_menu)
+        | test(=new_after_a_resume_at_start_keeps_to_the_directory)))
+    | (binary(harness_subagents) & (test(/^r_sub_1_r_sub_2_r_sub_3/) | test(/^r_sub_6/)))
+    | (binary(sync_attach) & test(/^r_sync_2_a_bridge_whose_lease_another_device_took_stops/))
+    | (binary(daemon_ws) & test(/^r_lag_4_r_lag_10_/))
+"""
+retries = { backoff = "fixed", count = 2, delay = "1s" }

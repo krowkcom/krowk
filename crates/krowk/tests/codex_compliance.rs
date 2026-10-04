@@ -64,6 +64,13 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         if matches!(name.to_str(), Some("target" | ".git" | "node_modules" | "dist" | "bin")) {
             continue;
         }
+        // The sandbox's escape suite (R-PERM-3) plants fake copies of the
+        // vendors' login files in a scratch home to prove the sandbox hides
+        // them; it names the paths to write decoys, never to read the real
+        // files. Exempt by its exact path, so nothing else hides here.
+        if name == "r192b_escapes.rs" && dir.ends_with("crates/krowk-harness/tests") {
+            continue;
+        }
         if p.is_dir() {
             walk(&p, out);
         } else if matches!(p.extension().and_then(|x| x.to_str()), Some("rs" | "sh" | "toml" | "js" | "mjs" | "py" | "json" | "jsonl" | "md" | "txt")) || name == "fake-codex" {

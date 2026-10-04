@@ -9,6 +9,76 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **On Linux, `krowk -p` now makes edits without asking, inside a sandbox.**
+  A `-p` run with no `--permission-mode` and no `defaultMode` used to refuse
+  every edit; where bubblewrap works it now runs in `acceptEdits`, with its
+  commands inside the `workspace` sandbox below, and inside a container in
+  `acceptEdits` with the file tools held to the same fences. Pass
+  `--permission-mode default` to keep the old behaviour. `--sandbox
+  workspace|read-only|strict|off` puts the `bash` tool inside bubblewrap.
+  The sandbox allows rather than lists what it hides: your home is replaced
+  by an empty one, and only the workspace and the Rust toolchain's homes
+  come back, so nothing else in it — `~/.ssh`, `.git-credentials`, `.netrc`,
+  agents' logins, `~/Documents` — is in reach, and programs installed under
+  the home (mise's shims, `~/.local/bin`) are not on the sandbox's `PATH`. `workspace` writes
+  the working directory and its added directories and keeps the network;
+  `read-only` writes nothing and has no network, not even DNS; `strict`
+  writes the workspace and has no network. Every `.git` in
+  the workspace, nested repositories and gitdir files included, and every
+  hooks directory a repository's `core.hooksPath` names there — found by
+  searching the workspace once a turn and re-checking only what changed —
+  stays
+  read-only, as do `.claude`, `.codex` and `.krowk`; a `.git` a command
+  creates is removed after the call. The file tools hold the same lines
+  under every permission mode, and open exactly the path they checked, so a
+  symlink swapped in meanwhile fails the call. A sandboxed command gets
+  only `PATH`, `TERM`, the locale, `USER`, a private `HOME` and `TMPDIR` —
+  no provider key, token or agent socket — no inherited file descriptor, and
+  a session of its own. `RUSTUP_HOME` and `CARGO_HOME` are bound read-only
+  with cargo's `credentials.toml` hidden, so `cargo build` of what is
+  already fetched works and fetching a new dependency does not. `PreToolUse`
+  hooks are your own and run outside the sandbox. A sandbox that cannot be
+  enforced refuses the run with a fix instead of running unsandboxed:
+  bubblewrap missing or blocked, a workspace too large to search for
+  repositories, a Claude Code or Codex backend, `--daemon`, macOS (Seatbelt
+  is not built yet) and Windows.
+
+- **krowk's own agent uses your MCP servers.** It reads the `mcpServers`
+  you set up for Claude Code (`~/.claude.json`, its `settings.json`), those
+  in `~/.krowk/config.json`, and a repository's `.mcp.json` once you trust
+  the repository, since a `.mcp.json` names programs to run. Stdio and
+  streamable-HTTP servers work. The model gets two tools, `mcp_search` and
+  `mcp_call`, instead of every server's tools, so fifty MCP tools cost each
+  turn about 140 tokens. No server starts until the model searches.
+  `Mcp(server:tool)` permission rules allow, ask about or deny each call,
+  and search leaves out tools a deny rule covers. A repository's servers
+  are asked about again when its `.mcp.json` changes after you trusted it,
+  and no server inherits your provider keys unless its config sets them.
+
+- **Idle sessions move off the machine as weekly vintages.** `krowk sessions
+  archive` takes every native session idle for more than 14 days
+  (`--older-than DAYS`, or `KROWK_ARCHIVE_AFTER_DAYS`) and stores each ISO
+  week's sessions in the registry as one vintage: zstd-compressed JSONL,
+  sealed under the account key, so the registry only ever holds ciphertext.
+  An existing vintage for the week is merged, never overwritten. `--weekly`
+  runs only when a week has passed since the last run, so it can be put on
+  a schedule. An archived session keeps its title, summary, directory,
+  dates, models and cost on the machine, so `krowk sessions` still lists
+  it, and `krowk sessions show` or `krowk -p --resume` fetches its week and
+  restores it into krowk.db first. `krowk sessions restore <id>` does that
+  on its own. `krowk sessions pin <id>` keeps a session from ever being
+  archived, and `unpin` undoes it. It needs `krowk sync` set up on the
+  machine.
+
+### Fixed
+
+- **Two quick Ctrl-Cs right after a prompt still print the resume line.**
+  Leaving that fast could beat the session's start to the TUI, so krowk
+  exited 130 without `krowk --resume <id>` although the host had already
+  started the session. The TUI now reads what the host already sent before it leaves.
+
 ## [0.12.1] - 2026-10-04
 
 ### Changed

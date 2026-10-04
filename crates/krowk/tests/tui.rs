@@ -280,9 +280,11 @@ fn r_inst_7_the_tui_offers_the_next_instance_and_y_continues_there() {
     assert!(t.wait_for("switch model", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     assert!(t.wait_for("codex/gpt-5.5", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     assert!(!t.text().contains("anthropic:nokey/"), "an instance with no key is not listed: {:?}", t.text());
-    // Esc on its own, not the start of an Alt-/ chord.
+    // Esc on its own, not the start of an Alt-/ chord: the picker gone
+    // from the screen before the next key, so the two are never read as
+    // one however late the TUI gets to them.
     t.write(b"\x1b");
-    std::thread::sleep(Duration::from_millis(300));
+    assert!(shows(&t, "switch model", false, Duration::from_secs(10)), "the picker never closed: {:?}", t.text());
     t.write(b"/model anthropic:nokey/claude-sonnet-4-6\r");
     assert!(t.wait_for("NO_SUCH_KEY", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     assert!(t.wait_for("stays", Duration::from_secs(5)).is_some(), "{:?}", t.text());
@@ -520,16 +522,42 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// A provider that takes the request and never answers: a turn that waits.
-fn silent_provider() -> String {
+/// The flag is set once a request carrying `prompt` has arrived — the
+/// host has started the session and the turn by then. Other requests (the
+/// TUI's connectivity probe) do not set it.
+fn silent_provider(prompt: &'static str) -> (String, Arc<AtomicBool>) {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", l.local_addr().unwrap());
+    let asked = Arc::new(AtomicBool::new(false));
+    let flag = asked.clone();
     std::thread::spawn(move || {
-        let mut held = Vec::new();
-        for c in l.incoming().flatten() {
-            held.push(c);
+        for mut c in l.incoming().flatten() {
+            let flag = flag.clone();
+            // Read, and held open unanswered until krowk lets go of it.
+            std::thread::spawn(move || {
+                let (mut got, mut buf) = (Vec::new(), [0u8; 8192]);
+                while let Ok(n @ 1..) = c.read(&mut buf) {
+                    got.extend_from_slice(&buf[..n]);
+                    if String::from_utf8_lossy(&got).contains(prompt) {
+                        flag.store(true, Ordering::SeqCst);
+                    }
+                }
+            });
         }
     });
-    url
+    (url, asked)
+}
+
+/// Waits for `flag` to be set.
+fn until(flag: &AtomicBool, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if flag.load(Ordering::SeqCst) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
 }
 
 fn krowk_sessions(b: &Sandbox, url: &str) -> usize {
@@ -563,7 +591,7 @@ fn sigterm_and_sighup_restore_the_terminal_and_record_the_session() {
 
 #[test]
 fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() {
-    let url = silent_provider();
+    let (url, asked) = silent_provider("wait forever");
     let b = Sandbox::new("ctrlc2");
     let mut t = pty::Pty::spawn(b.command(&url, &[]), 80, 24);
     // With no model asked, the TUI routes one once it is up: the key's
@@ -571,11 +599,12 @@ fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() 
     assert!(t.wait_for("Claude Opus 5.5 (anthropic) |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"wait forever\r");
     assert!(t.wait_for("to interrupt", Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    // The prompt drawn back as the log's `▎` band: the turn has started,
-    // so the TUI knows the session it is to record. The working line
-    // alone comes before that, and two Ctrl-Cs sent then, on a loaded
-    // machine, left before any session existed.
-    assert!(t.wait_for("▎ ", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    // The prompt at the provider: the host has started the session by
+    // then. Nothing drawn says so — the `▎` band is drawn as the prompt is
+    // sent — and two Ctrl-Cs sent before, on a loaded machine, left before
+    // any session existed. The TUI may not have read the session's start
+    // yet, which is the race this pins: it is read on the way out.
+    assert!(until(&asked, Duration::from_secs(10)), "the prompt never reached the provider: {:?}", t.text());
     t.write(b"\x03\x03");
     let st = t.wait(Duration::from_secs(10)).expect("krowk exits on the second Ctrl-C");
     assert_eq!(st.code(), Some(130), "{st}");
@@ -587,7 +616,7 @@ fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() 
 
 #[test]
 fn steering_an_interrupted_turn_never_read_goes_back_into_the_prompt_not_sent() {
-    let url = silent_provider();
+    let (url, _) = silent_provider("wait forever");
     let b = Sandbox::new("steerback");
     let mut t = pty::Pty::spawn(b.command(&url, &[]), 80, 24);
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some());
@@ -1078,8 +1107,9 @@ fn slash_offers_commands_and_skills_and_a_skill_reaches_the_model() {
     tm.wait_still(|s: &str| s.lines().any(|l| l.trim_start().starts_with("› /model")), Duration::from_secs(5)).unwrap_or_else(|| panic!("{}", tm.screen()));
     tm.keys(&["Enter"]);
     assert!(tm.wait_for("switch model —", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    // Closed before the next key, so Esc and `/` are never read as Alt-/.
     tm.keys(&["Escape"]);
-    std::thread::sleep(Duration::from_millis(300));
+    assert!(tm.wait_gone("switch model —", Duration::from_secs(5)).is_some(), "{}", tm.screen());
     // A skill: enter leaves `/greet ` for what it is for, then sends it,
     // and the skill's instructions go to the model next to the prompt.
     tm.keys(&["/gre"]);
@@ -1426,6 +1456,23 @@ fn says(t: &pty::Pty, from: usize, needle: &str, timeout: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+/// Whether the screen the TUI has drawn shows `needle` (`want`) or no
+/// longer does (`!want`), within `timeout`: for what goes away, which the
+/// bytes alone cannot say.
+fn shows(t: &pty::Pty, needle: &str, want: bool, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let (cols, rows) = t.size;
+        if screen(&t.output(), cols, rows).iter().any(|r| r.contains(needle)) == want {
+            return true;
+        }
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// What macOS CI's terminal got in the first-run test, up to `/connect`'s
 /// picker drawn over the slash menu with no frame between them: the words
 /// read "Conn c  which provider?", as the two cells the menu already showed

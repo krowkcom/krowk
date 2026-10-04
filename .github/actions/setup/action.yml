@@ -42,6 +42,17 @@ runs:
         command -v sqlite3 && command -v tmux \
           || (sudo apt-get update && sudo apt-get install -y sqlite3 tmux)
 
+    # R-PERM-3: the OS sandbox's escape tests fail rather than skip under
+    # CI on Linux, so bubblewrap is installed and allowed the unprivileged
+    # user namespaces Ubuntu 24.04's AppArmor withholds by default.
+    - name: Ensure bubblewrap
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        command -v bwrap || (sudo apt-get update && sudo apt-get install -y bubblewrap)
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+        bwrap --ro-bind / / --dev /dev --proc /proc --unshare-net --unshare-pid --new-session -- true
+
     # The relay's per-address limits are tested from other loopback
     # addresses, which macOS does not answer for until lo0 is given them.
     - name: Loopback aliases

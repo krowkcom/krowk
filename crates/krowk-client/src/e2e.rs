@@ -354,6 +354,52 @@ pub fn open_session_index(blob: &[u8], session: &[u8; 16], key: &SessionKey) -> 
     cipher(&key.0).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())
 }
 
+/// The format byte of a sealed vintage.
+pub const VINTAGE_V1: u8 = 1;
+
+/// A vintage — one ISO week of archived sessions — sealed for the registry
+/// to keep: `version | suite | key nonce | vintage key sealed + tag | nonce
+/// | ciphertext + tag`. Each vintage has a fresh random key, wrapped under
+/// the account key inside the blob itself, so any device holding the
+/// account key opens it and the registry holds nothing beside the bytes.
+///
+/// Both layers bind a label of their own, the version, the suite and the
+/// week (`2026-W38`) as associated data: a vintage served for another week,
+/// or a wrapped session key presented as a vintage's, does not open. A
+/// registry can still serve an older vintage for the same week; what that
+/// costs is a session the reader then does not find in it, which is
+/// refused by name, never a session read wrong.
+pub fn seal_vintage(account: &AccountKey, week: &str, plaintext: &[u8]) -> Vec<u8> {
+    let head = [VINTAGE_V1, SUITE_XCHACHA20_POLY1305];
+    let key: zeroize::Zeroizing<[u8; KEY]> = zeroize::Zeroizing::new(random());
+    let key_nonce: [u8; NONCE] = random();
+    let key_aad = [&b"krowk/vintage-key/v1"[..], &head, week.as_bytes()].concat();
+    let wrapped = cipher(&account.0).encrypt(&XNonce::from(key_nonce), Payload { msg: &key[..], aad: &key_aad }).expect("sealing 32 bytes cannot fail");
+    let nonce: [u8; NONCE] = random();
+    let aad = [&b"krowk/vintage/v1"[..], &head, week.as_bytes()].concat();
+    let sealed = cipher(&key).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).expect("a vintage is far below XChaCha's limit");
+    [&head[..], &key_nonce, &wrapped, &nonce, &sealed].concat()
+}
+
+pub fn open_vintage(blob: &[u8], week: &str, account: &AccountKey) -> Result<Vec<u8>, Error> {
+    let refused = || err(format!("the vintage for {week} does not open with this account key: it was changed, or belongs to another week or account"));
+    let body = 2 + NONCE + KEY + TAG;
+    if blob.len() < body + NONCE + TAG || blob[0] != VINTAGE_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
+        return Err(match blob.first() {
+            Some(&v) if v > VINTAGE_V1 => err(format!("the vintage is format {v}, newer than this krowk reads — upgrade krowk")),
+            _ => refused(),
+        });
+    }
+    let key_nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
+    let key_aad = [&b"krowk/vintage-key/v1"[..], &blob[..2], week.as_bytes()].concat();
+    let key = zeroize::Zeroizing::new(cipher(&account.0).decrypt(&XNonce::from(key_nonce), Payload { msg: &blob[2 + NONCE..body], aad: &key_aad }).map_err(|_| refused())?);
+    let key: [u8; KEY] = key[..].try_into().map_err(|_| refused())?;
+    let key = zeroize::Zeroizing::new(key);
+    let nonce: [u8; NONCE] = blob[body..body + NONCE].try_into().expect("24 bytes");
+    let aad = [&b"krowk/vintage/v1"[..], &blob[..2], week.as_bytes()].concat();
+    cipher(&key).decrypt(&XNonce::from(nonce), Payload { msg: &blob[body + NONCE..], aad: &aad }).map_err(|_| refused())
+}
+
 /// The format byte of a sealed chunk.
 pub const CHUNK_V1: u8 = 1;
 /// A chunk's flag byte: this is the last chunk of the log.
@@ -1346,5 +1392,24 @@ mod tests {
         late.open(&c.seal(b"five", false).unwrap()).unwrap();
         let mut d = ChunkSealer::new(&key, SESSION, 1, late.previous(), 4);
         assert!(late.open(&d.seal(b"four", false).unwrap()).unwrap_err().0.contains("before the chunk ahead of it"));
+    }
+
+    /// A vintage opens with the account key for its own week only, and
+    /// holds no byte of what it seals in the clear.
+    #[test]
+    fn r_vint_1_a_vintage_is_ciphertext_and_opens_only_for_its_week_and_account() {
+        let account = AccountKey::generate();
+        let plain = b"{\"id\":\"a session\",\"events\":\"the secret prompt\"}";
+        let blob = seal_vintage(&account, "2026-W38", plain);
+        assert!(!blob.windows(10).any(|w| w == &b"secret pro"[..]), "no plaintext in the sealed bytes");
+        assert_eq!(open_vintage(&blob, "2026-W38", &account).unwrap(), plain);
+        assert!(open_vintage(&blob, "2026-W39", &account).is_err(), "served for another week");
+        assert!(open_vintage(&blob, "2026-W38", &AccountKey::generate()).is_err(), "another account");
+        let mut changed = blob.clone();
+        *changed.last_mut().unwrap() ^= 1;
+        assert!(open_vintage(&changed, "2026-W38", &account).is_err(), "a changed byte");
+        let mut newer = blob;
+        newer[0] = 9;
+        assert!(open_vintage(&newer, "2026-W38", &account).unwrap_err().0.contains("upgrade krowk"));
     }
 }

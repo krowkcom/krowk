@@ -28,6 +28,8 @@
 //!   the one evaluator every call is judged by, native or a backend's.
 //! - `compat` — the instructions (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules`)
 //!   and skills a native turn reads; `hooks` — Claude-format command hooks.
+//! - `mcp` — the person's and a trusted repository's MCP servers, their
+//!   tools deferred behind `mcp_search` and `mcp_call` (R-TOOL-3).
 //! - `toolset` — the preset registry: which edit tool a model is offered.
 //! - `host` — executes commands, writes the log, prices the turn.
 //! - `handoff` — carrying a session into a backend that did not run all of
@@ -71,6 +73,7 @@ pub mod http;
 pub mod instances;
 pub mod keys;
 pub mod log;
+pub mod mcp;
 pub mod native;
 pub mod oauth;
 pub mod openai;
@@ -82,6 +85,7 @@ pub use krowk_client::protocol;
 pub mod readiness;
 #[cfg(unix)]
 pub mod relay;
+pub mod sandbox;
 pub mod schema;
 pub mod subagent;
 #[cfg(unix)]
@@ -91,3 +95,7 @@ pub mod todo;
 pub mod tools;
 pub mod toolset;
 pub mod trust;
+// The archive compresses with ruzstd, which links on unix only, where
+// `krowk sessions` runs.
+#[cfg(unix)]
+pub mod vintage;

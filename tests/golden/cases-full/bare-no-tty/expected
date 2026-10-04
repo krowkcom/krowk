@@ -740,6 +740,61 @@ stdout:
               "usage": "Skip the models.dev price refresh"
             }
           ]
+        },
+        {
+          "name": "archive",
+          "usage": "krowk sessions archive [--older-than DAYS] [--weekly]",
+          "summary": "Move idle sessions into encrypted weekly vintages",
+          "flags": [
+            {
+              "name": "older-than",
+              "type": "string",
+              "default": "",
+              "usage": "Idle cut-off in days (default 14, or KROWK_ARCHIVE_AFTER_DAYS)"
+            },
+            {
+              "name": "weekly",
+              "type": "bool",
+              "default": "false",
+              "usage": "Run only a week after the last run: the weekly job"
+            }
+          ]
+        },
+        {
+          "name": "restore",
+          "usage": "krowk sessions restore <id>",
+          "summary": "Bring an archived session back from its vintage",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "pin",
+          "usage": "krowk sessions pin <id>",
+          "summary": "Never archive this session",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "unpin",
+          "usage": "krowk sessions unpin <id>",
+          "summary": "Let a pinned session be archived again",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
         }
       ]
     },
@@ -1296,6 +1351,12 @@ stdout:
       "type": "string",
       "default": "default",
       "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds"
+    },
+    {
+      "name": "sandbox",
+      "type": "string",
+      "default": "",
+      "usage": "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works"
     },
     {
       "name": "toolset",
@@ -2115,6 +2176,61 @@ stdout:
               "usage": "Skip the models.dev price refresh"
             }
           ]
+        },
+        {
+          "name": "archive",
+          "usage": "krowk sessions archive [--older-than DAYS] [--weekly]",
+          "summary": "Move idle sessions into encrypted weekly vintages",
+          "flags": [
+            {
+              "name": "older-than",
+              "type": "string",
+              "default": "",
+              "usage": "Idle cut-off in days (default 14, or KROWK_ARCHIVE_AFTER_DAYS)"
+            },
+            {
+              "name": "weekly",
+              "type": "bool",
+              "default": "false",
+              "usage": "Run only a week after the last run: the weekly job"
+            }
+          ]
+        },
+        {
+          "name": "restore",
+          "usage": "krowk sessions restore <id>",
+          "summary": "Bring an archived session back from its vintage",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "pin",
+          "usage": "krowk sessions pin <id>",
+          "summary": "Never archive this session",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "unpin",
+          "usage": "krowk sessions unpin <id>",
+          "summary": "Let a pinned session be archived again",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
         }
       ]
     },
@@ -2671,6 +2787,12 @@ stdout:
       "type": "string",
       "default": "default",
       "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds"
+    },
+    {
+      "name": "sandbox",
+      "type": "string",
+      "default": "",
+      "usage": "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works"
     },
     {
       "name": "toolset",
@@ -3504,6 +3626,61 @@ stdout:
               "usage": "Skip the models.dev price refresh"
             }
           ]
+        },
+        {
+          "name": "archive",
+          "usage": "krowk sessions archive [--older-than DAYS] [--weekly]",
+          "summary": "Move idle sessions into encrypted weekly vintages",
+          "flags": [
+            {
+              "name": "older-than",
+              "type": "string",
+              "default": "",
+              "usage": "Idle cut-off in days (default 14, or KROWK_ARCHIVE_AFTER_DAYS)"
+            },
+            {
+              "name": "weekly",
+              "type": "bool",
+              "default": "false",
+              "usage": "Run only a week after the last run: the weekly job"
+            }
+          ]
+        },
+        {
+          "name": "restore",
+          "usage": "krowk sessions restore <id>",
+          "summary": "Bring an archived session back from its vintage",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "pin",
+          "usage": "krowk sessions pin <id>",
+          "summary": "Never archive this session",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "unpin",
+          "usage": "krowk sessions unpin <id>",
+          "summary": "Let a pinned session be archived again",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
         }
       ]
     },
@@ -4060,6 +4237,12 @@ stdout:
       "type": "string",
       "default": "default",
       "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds"
+    },
+    {
+      "name": "sandbox",
+      "type": "string",
+      "default": "",
+      "usage": "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works"
     },
     {
       "name": "toolset",
@@ -4893,6 +5076,61 @@ tty:
               "usage": "Skip the models.dev price refresh"
             }
           ]
+        },
+        {
+          "name": "archive",
+          "usage": "krowk sessions archive [--older-than DAYS] [--weekly]",
+          "summary": "Move idle sessions into encrypted weekly vintages",
+          "flags": [
+            {
+              "name": "older-than",
+              "type": "string",
+              "default": "",
+              "usage": "Idle cut-off in days (default 14, or KROWK_ARCHIVE_AFTER_DAYS)"
+            },
+            {
+              "name": "weekly",
+              "type": "bool",
+              "default": "false",
+              "usage": "Run only a week after the last run: the weekly job"
+            }
+          ]
+        },
+        {
+          "name": "restore",
+          "usage": "krowk sessions restore <id>",
+          "summary": "Bring an archived session back from its vintage",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "pin",
+          "usage": "krowk sessions pin <id>",
+          "summary": "Never archive this session",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "unpin",
+          "usage": "krowk sessions unpin <id>",
+          "summary": "Let a pinned session be archived again",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session id, an unambiguous id prefix of at least 8 chars",
+              "required": true
+            }
+          ]
         }
       ]
     },
@@ -5449,6 +5687,12 @@ tty:
       "type": "string",
       "default": "default",
       "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds"
+    },
+    {
+      "name": "sandbox",
+      "type": "string",
+      "default": "",
+      "usage": "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works"
     },
     {
       "name": "toolset",

@@ -73,6 +73,9 @@ pub struct Config {
     /// host without one — `krowk -p` — never waits on a person: what would
     /// be asked is refused, with the reason.
     pub approvals: bool,
+    /// The OS sandbox every native turn's tools run in (R-PERM-3); none
+    /// runs them unsandboxed.
+    pub sandbox: Option<crate::sandbox::Sandbox>,
 }
 
 impl std::fmt::Debug for Config {
@@ -342,7 +345,9 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
 /// trust question's reason, for a native session.
 pub fn widens(cfg: &Config, cwd: &Path) -> bool {
     let cfg = Config { trusted: None, user: None, claude_dir: None, krowk_dir: None, ..cfg.clone() };
-    load(&cfg, cwd).map(|l| l.widens).unwrap_or(false)
+    // A `.mcp.json` names commands the native loop would start: trust
+    // turns them on, so it is asked about too (R-TOOL-3).
+    load(&cfg, cwd).map(|l| l.widens).unwrap_or(false) || crate::mcp::project_has_servers(&crate::trust::root(cwd))
 }
 
 /// The grants remembered for the project at `root`.

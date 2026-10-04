@@ -513,6 +513,32 @@ pub(crate) fn part_text(data: &str) -> String {
     serde_json::from_str::<serde_json::Value>(data).ok().and_then(|v| v.get("text")?.as_str().map(String::from)).unwrap_or_default()
 }
 
+/// The title a thread with no title of its own is listed under: its first
+/// prompt, whitespace folded, cut at 80 characters.
+pub fn title_for(msgs: &[Message]) -> String {
+    title_fallback(msgs)
+}
+
+/// Drops a session's bodies — its messages, their parts and its events —
+/// and keeps the session row, its bindings and its turns: what listing,
+/// search and cost read. An archived session's bodies live in its vintage
+/// (R-VINT-3), and a restore drops the archive's stand-ins the same way
+/// before the log's own messages go back in. The import cursor goes too,
+/// so the next import reads the session afresh.
+pub fn drop_bodies(conn: &Connection, provider: &str, foreign_session_id: &str) -> Result<(), StoreError> {
+    let tx = conn.unchecked_transaction().map_err(e("begin"))?;
+    let id: Option<String> = tx
+        .query_row("SELECT session_id FROM session_binding WHERE provider = ? AND foreign_session_id = ?", params![provider, foreign_session_id], |r| r.get(0))
+        .optional()
+        .map_err(e("find binding"))?;
+    if let Some(id) = id {
+        tx.execute("DELETE FROM message WHERE session_id = ?", [&id]).map_err(e("drop messages"))?;
+        tx.execute("DELETE FROM session_event WHERE session_id = ?", [&id]).map_err(e("drop events"))?;
+    }
+    tx.execute("DELETE FROM import_state WHERE source = ?", [format!("{provider}:{foreign_session_id}")]).map_err(e("drop import state"))?;
+    tx.commit().map_err(e("commit"))
+}
+
 /// The cursor an import was last read up to, "" when there is none.
 pub fn read_import_state(conn: &Connection, key: &str) -> Result<String, StoreError> {
     conn.query_row("SELECT cursor FROM import_state WHERE source = ?", [key], |r| r.get(0))

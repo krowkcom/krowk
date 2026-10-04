@@ -466,6 +466,7 @@ async fn session(opts: Options) -> Outcome {
         ui.reattach(&mut app, &id, replayed_to.clone());
     }
     let result = ui.run(&mut app, &mut term).await;
+    ui.drain(&mut app);
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
     ui.turn = None;
@@ -822,6 +823,18 @@ async fn until(at: Option<Instant>) {
 }
 
 impl<'h> Ui<'h> {
+    /// What the host already sent, read before leaving: keys go ahead of
+    /// the stream in the loop, so a second Ctrl-C pressed just after a
+    /// prompt can beat the session's start to the TUI, and the resume line
+    /// would name no session although the host has recorded one.
+    fn drain(&mut self, app: &mut App) {
+        if let Some(rx) = self.rx.as_mut() {
+            while let Ok(line) = rx.try_recv() {
+                app.on_line(&line);
+            }
+        }
+    }
+
     // Legacy: the TUI's event loop, one select over every source. TODO: split into helpers and drop this allow.
     #[allow(clippy::cognitive_complexity)]
     async fn run<W: Write>(&mut self, app: &mut App, term: &mut Term<W>) -> std::io::Result<()> {
