@@ -36,8 +36,11 @@ pub enum Event {
     Note(String),
     /// A turn begun elsewhere, for the TUI to follow as its own: its lines,
     /// then its result.
-    Turn(mpsc::Receiver<StreamLine>, oneshot::Receiver<Result<Option<RunResult>, EngineError>>),
+    Turn(mpsc::Receiver<StreamLine>, Done),
 }
+
+/// Where a followed turn's end is told: its result, or why it has none.
+pub type Done = oneshot::Receiver<Result<Option<RunResult>, EngineError>>;
 
 /// The running turn's lines go here, and its result to `done`.
 struct Sink {
@@ -369,7 +372,7 @@ mod tests {
         ev(id, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: None })
     }
 
-    fn turns(rx: &mut mpsc::UnboundedReceiver<Event>) -> Vec<(mpsc::Receiver<StreamLine>, oneshot::Receiver<Result<Option<krowk_harness::protocol::RunResult>, krowk_harness::engine::EngineError>>)> {
+    fn turns(rx: &mut mpsc::UnboundedReceiver<Event>) -> Vec<(mpsc::Receiver<StreamLine>, super::Done)> {
         let mut out = Vec::new();
         while let Ok(e) = rx.try_recv() {
             if let Event::Turn(l, d) = e {
