@@ -663,6 +663,14 @@ pub struct App {
     pub answer: String,
     /// What the person last said, as typed: Ctrl-Y offers it.
     pub said: String,
+    /// The last turn's code blocks as they were drawn, each its language
+    /// and its code as written: Ctrl-Y offers them. The one being drawn is
+    /// `block`, with the indent its fence had.
+    pub blocks: Vec<(String, String)>,
+    block: Option<(String, usize, Vec<String>)>,
+    /// What the Ctrl-Y picker offers, taken when it opens, so what streams
+    /// in meanwhile does not move the row chosen.
+    copy_list: Vec<(String, String, String)>,
     /// What the next frame puts on the clipboard, and what it is, for the
     /// flash that says so: set by Ctrl-Y.
     pub copy: Option<(String, String)>,
@@ -788,6 +796,9 @@ impl App {
             approvals: Vec::new(),
             answer: String::new(),
             said: String::new(),
+            blocks: Vec::new(),
+            block: None,
+            copy_list: Vec::new(),
             copy: None,
             copy_at: 0,
             left: Vec::new(),
@@ -1150,6 +1161,7 @@ impl App {
     /// One line of an answer, in light markdown, wrapped under its hanging
     /// indent. A table's rows are held until the first line that is not one.
     fn push_md(&mut self, text: &str) {
+        let raw = text;
         let text = look::untagged(&clean(&text.replace('\t', "    ")));
         if !self.md.fenced() && table::is_row(&text) {
             self.table.push(text);
@@ -1161,12 +1173,34 @@ impl App {
         }
         let opening = !self.md.fenced();
         let md = look::markdown(&text, &mut self.md);
+        self.collect_code(raw, opening, md.band.as_deref());
         // A code block stands off the text above it, as a table does.
         if opening && self.md.fenced() {
             self.gap();
         }
         for line in hung(md, usize::from(self.width)) {
             self.push_answer(line);
+        }
+    }
+
+    /// A code block's lines as they are drawn, into `blocks` for Ctrl-Y:
+    /// `raw` the answer's line, `opening` whether no block was open before
+    /// it, and `band` its label when it was drawn as a block's row.
+    fn collect_code(&mut self, raw: &str, opening: bool, band: Option<&str>) {
+        match (opening, self.md.fenced()) {
+            (true, true) => self.block = Some((band.unwrap_or_default().to_string(), raw.len() - raw.trim_start_matches(' ').len(), Vec::new())),
+            (false, true) => {
+                if let Some((_, at, code)) = &mut self.block {
+                    let cut = (raw.len() - raw.trim_start_matches(' ').len()).min(*at);
+                    code.push(raw[cut..].to_string());
+                }
+            }
+            (false, false) => {
+                if let Some((lang, _, code)) = self.block.take() {
+                    self.blocks.push((lang, code.join("\n")));
+                }
+            }
+            (true, false) => {}
         }
     }
 
@@ -2410,11 +2444,11 @@ impl App {
             1 => "1 line".to_string(),
             n => format!("{n} lines"),
         };
-        let mut out: Vec<(String, String, String)> = look::code_blocks(&self.answer)
-            .into_iter()
+        let mut out: Vec<(String, String, String)> = self.blocks
+            .iter()
             .enumerate()
             .filter(|(_, (_, code))| !code.trim().is_empty())
-            .map(|(i, (lang, code))| (format!("{} {}", if lang.is_empty() { "code" } else { &lang }, i + 1), format!("{} · {}", lines(&code), first(&code)), code))
+            .map(|(i, (lang, code))| (format!("{} {}", if lang.is_empty() { "code" } else { lang }, i + 1), format!("{} · {}", lines(code), first(code)), code.clone()))
             .collect();
         let answer = self.answer.trim_end();
         if !answer.trim().is_empty() {
@@ -2427,7 +2461,7 @@ impl App {
     }
 
     fn copy_overlay(&self, width: usize) -> Vec<Line<'static>> {
-        let rows: Vec<Choice> = self.copy_choices().into_iter().map(|(name, says, _)| Choice { name, value: Span::raw(""), says: clean(&says), warning: None }).collect();
+        let rows: Vec<Choice> = self.copy_list.iter().map(|(name, says, _)| Choice { name: name.clone(), value: Span::raw(""), says: clean(says), warning: None }).collect();
         let mut out = vec![picker_title("copy", "`↑` `↓` choose · `enter` copies · `esc` close", width)];
         out.extend(choices(&rows, self.copy_at, false, width));
         out
@@ -2445,15 +2479,21 @@ impl App {
                 self.copy = Some((name, text));
             }
             _ => {
+                self.copy_list = choices;
                 self.copy_at = 0;
                 self.overlay = Overlay::Copy;
             }
         }
     }
 
+    /// How many rows the open picker has.
+    pub fn copy_list_len(&self) -> usize {
+        self.copy_list.len()
+    }
+
     /// The picker's row `at` to the clipboard, on the next frame.
     pub fn copy_chosen(&mut self, at: usize) {
-        if let Some((name, _, text)) = self.copy_choices().into_iter().nth(at) {
+        if let Some((name, _, text)) = self.copy_list.get(at).cloned() {
             self.copy = Some((name, text));
             self.overlay = Overlay::None;
             self.dirty = true;
@@ -2538,6 +2578,9 @@ impl App {
         self.billing = None;
         self.approvals.clear();
         self.answer.clear();
+        self.said.clear();
+        self.blocks.clear();
+        self.block = None;
         self.approval_shown = None;
         self.approval_expanded = false;
         self.subs.clear();
@@ -2616,6 +2659,8 @@ impl App {
     /// A turn has started: `Command::Prompt` is on its way.
     pub fn start_turn(&mut self, now: Instant) {
         self.answer.clear();
+        self.blocks.clear();
+        self.block = None;
         self.turn = Some(Turn { started: now, want_interrupt: false, interrupt_sent: false, tool_running: false, prompt_seen: false });
         self.dirty = true;
     }
@@ -3222,6 +3267,9 @@ mod tests {
         a.open_copy();
         assert_eq!(a.copy.take(), Some(("your prompt".to_string(), "fix\tit".to_string())), "one thing: copied straight away, its tab kept");
         a.answer = "Run:\n```sh\n\tmake check\n```\nThen:\n```\nls\n```\n".into();
+        for l in a.answer.clone().lines() {
+            a.push_md(l);
+        }
         let names: Vec<String> = a.copy_choices().into_iter().map(|(n, _, _)| n).collect();
         assert_eq!(names, ["sh 1", "code 2", "answer", "your prompt"]);
         a.open_copy();
@@ -3231,6 +3279,17 @@ mod tests {
         assert_eq!(a.overlay, Overlay::None);
         a.copy_chosen(2);
         assert_eq!(a.copy.take().map(|(_, t)| t), Some(a.answer.trim_end().to_string()), "the answer whole, its fences too");
+        // A block one part of the answer ends inside is closed with it, as
+        // it is drawn, and the next part's is a block of its own.
+        a.blocks.clear();
+        for l in ["```sh", "ls"] {
+            a.push_md(l);
+        }
+        a.end_md();
+        for l in ["Done:", "  ```py", "  print()", "  ```"] {
+            a.push_md(l);
+        }
+        assert_eq!(a.blocks, [("sh".to_string(), "ls".to_string()), ("py".to_string(), "print()".to_string())]);
     }
 
     #[test]

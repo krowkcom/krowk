@@ -1118,7 +1118,8 @@ impl<'h> Ui<'h> {
         if let Some((what, text)) = app.copy.take() {
             // As written, tabs and all, but no escape or bidi control
             // reaches the place it is pasted.
-            let text: String = text.split('\n').map(|l| l.split('\t').map(card::clean).collect::<Vec<_>>().join("\t")).collect::<Vec<_>>().join("\n");
+            // The joiner that makes one emoji of several is kept too.
+            let text: String = text.chars().filter(|&c| matches!(c, '\n' | '\t' | '\u{200D}') || (!c.is_control() && !card::is_bidi(c))).collect();
             app.flash = Some(if text.len() > clipboard::MAX {
                 format!("{what} is too long to copy ({} KB)", text.len() / 1024)
             } else {
@@ -1874,9 +1875,9 @@ impl<'h> Ui<'h> {
                 _ => {}
             }
         }
-        // So does the mode picker.
+        // And the Ctrl-Y picker.
         if app.overlay == Overlay::Copy && !ctrl && !alt {
-            let n = app.copy_choices().len();
+            let n = app.copy_list_len();
             match k.code {
                 KeyCode::Up => {
                     app.copy_at = app.copy_at.saturating_sub(1);
@@ -1893,6 +1894,7 @@ impl<'h> Ui<'h> {
                 _ => {}
             }
         }
+        // So does the mode picker.
         if app.overlay == Overlay::Modes && !ctrl && !alt {
             match k.code {
                 KeyCode::Up => {

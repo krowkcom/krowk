@@ -380,41 +380,6 @@ fn fence_line(trimmed: &str) -> Option<(char, usize, &str)> {
     (len >= 3).then(|| (mark, len, trimmed[len..].trim()))
 }
 
-/// The fenced code blocks in `answer`, in order: each one's language and
-/// its code as written, the fence's own indent taken off each line. One
-/// the answer ends inside of is a block to its end, as it is drawn.
-pub fn code_blocks(answer: &str) -> Vec<(String, String)> {
-    let mut blocks = Vec::new();
-    let mut open: Option<(char, usize, usize, String, Vec<&str>)> = None;
-    for line in answer.lines() {
-        let trimmed = line.trim_start();
-        let indent = line.len() - trimmed.len();
-        match &mut open {
-            Some((mark, len, at, lang, code)) => {
-                if fence_line(trimmed).is_some_and(|(m, l, rest)| m == *mark && l >= *len && rest.is_empty()) {
-                    blocks.push((std::mem::take(lang), code.join("\n")));
-                    open = None;
-                } else {
-                    let cut = line.len() - line.trim_start_matches(' ').len();
-                    code.push(&line[cut.min(*at)..]);
-                }
-            }
-            None => {
-                if let Some((mark, len, info)) = fence_line(trimmed)
-                    && !(mark == '`' && info.contains('`'))
-                {
-                    let lang = info.split_whitespace().next().unwrap_or_default();
-                    open = Some((mark, len, indent, lang.rsplit(':').next().unwrap_or(lang).to_string(), Vec::new()));
-                }
-            }
-        }
-    }
-    if let Some((_, _, _, lang, code)) = open {
-        blocks.push((lang, code.join("\n")));
-    }
-    blocks
-}
-
 /// An open list item: the column its marker is at in the answer, and the
 /// one its text is shown at.
 #[derive(Debug)]
@@ -845,13 +810,6 @@ mod tests {
         assert_eq!(hang(markdown("> c", &mut f)), "│ ");
         assert_eq!(hang(markdown("plain", &mut f)), "");
         assert_eq!(hang(markdown("    \"key\": 1,", &mut f)), "", "an indent typed outside a list does not hang");
-    }
-
-    #[test]
-    fn an_answers_code_blocks_are_found_as_written() {
-        let answer = "Run:\n```rust title\nfn main() {\n\tlet a = 1;\n}\n```\n- in a list:\n  ~~~\n  ls -la\n    two in\n  ~~~\n````md\n```\nnot a close\n````\n```\nleft open";
-        let got = code_blocks(answer);
-        assert_eq!(got, [("rust".into(), "fn main() {\n\tlet a = 1;\n}".into()), (String::new(), "ls -la\n  two in".into()), ("md".into(), "```\nnot a close".into()), (String::new(), "left open".into())]);
     }
 
     #[test]
