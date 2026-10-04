@@ -3,7 +3,7 @@ stdout:
 {
   "name": "krowk",
   "version": "0.0.0-golden",
-  "summary": "a coding agent, and permalinks for its output",
+  "summary": "a coding agent harness: one session, any machine, model or agent",
   "commands": [
     {
       "name": "push",
@@ -1082,7 +1082,7 @@ stdout:
     },
     {
       "name": "sync",
-      "summary": "End-to-end encryption keys for syncing sessions",
+      "summary": "Sync sessions between your machines, end-to-end encrypted",
       "subcommands": [
         {
           "name": "init",
@@ -1378,7 +1378,7 @@ stdout:
 {
   "name": "krowk",
   "version": "0.0.0-golden",
-  "summary": "a coding agent, and permalinks for its output",
+  "summary": "a coding agent harness: one session, any machine, model or agent",
   "commands": [
     {
       "name": "push",
@@ -2457,7 +2457,7 @@ stdout:
     },
     {
       "name": "sync",
-      "summary": "End-to-end encryption keys for syncing sessions",
+      "summary": "Sync sessions between your machines, end-to-end encrypted",
       "subcommands": [
         {
           "name": "init",
@@ -2755,7 +2755,7 @@ stdout:
 █▀▀▄
 
 Krowk 0.0.0-golden
-A coding agent, and permalinks for its output
+A coding agent harness: one session, any machine, model or agent
 
   krowk push screenshot.png  Upload a file, get a link — no key, lasts a day
   krowk login --token …      Add a key: uploads keep, group under runs
@@ -2767,7 +2767,7 @@ stdout:
 {
   "name": "krowk",
   "version": "0.0.0-golden",
-  "summary": "a coding agent, and permalinks for its output",
+  "summary": "a coding agent harness: one session, any machine, model or agent",
   "commands": [
     {
       "name": "push",
@@ -3846,7 +3846,7 @@ stdout:
     },
     {
       "name": "sync",
-      "summary": "End-to-end encryption keys for syncing sessions",
+      "summary": "Sync sessions between your machines, end-to-end encrypted",
       "subcommands": [
         {
           "name": "init",
@@ -4144,7 +4144,7 @@ tty:
 █▀▀▄
 
 Krowk 0.0.0-golden
-A coding agent, and permalinks for its output
+A coding agent harness: one session, any machine, model or agent
 
   krowk push screenshot.png  Upload a file, get a link — no key, lasts a day
   krowk login --token …      Add a key: uploads keep, group under runs
@@ -4156,7 +4156,7 @@ tty:
 {
   "name": "krowk",
   "version": "0.0.0-golden",
-  "summary": "a coding agent, and permalinks for its output",
+  "summary": "a coding agent harness: one session, any machine, model or agent",
   "commands": [
     {
       "name": "push",
@@ -5235,7 +5235,7 @@ tty:
     },
     {
       "name": "sync",
-      "summary": "End-to-end encryption keys for syncing sessions",
+      "summary": "Sync sessions between your machines, end-to-end encrypted",
       "subcommands": [
         {
           "name": "init",
@@ -5540,7 +5540,7 @@ tty:
 █▀▀▄
 
 Krowk 0.0.0-golden
-A coding agent, and permalinks for its output
+A coding agent harness: one session, any machine, model or agent
 
   krowk push screenshot.png  Upload a file, get a link — no key, lasts a day
   krowk login --token …      Add a key: uploads keep, group under runs

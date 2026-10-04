@@ -1,4 +1,5 @@
-//! krowk: permalinks for agent output. `cli::run` is the whole entry point,
+//! krowk: a coding agent harness, whose lean build only publishes agent
+//! output to permalinks. `cli::run` is the whole entry point,
 //! taking its streams and environment as arguments so tests never touch the
 //! process.
 

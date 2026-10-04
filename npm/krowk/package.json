@@ -1,10 +1,11 @@
 {
   "name": "@krowk/cli",
   "version": "0.0.0-unpublished",
-  "description": "A coding agent for your terminal — Claude, GPT, Grok or any OpenAI-compatible model — with a permalink for everything it produces.",
+  "description": "A coding agent harness: one session on any machine, model or agent — Claude, GPT, Grok, any OpenAI-compatible model, Claude Code or Codex — synced end-to-end encrypted, with a permalink for everything it produces.",
   "keywords": [
     "krowk",
     "coding-agent",
+    "agent-harness",
     "agent",
     "llm",
     "tui",

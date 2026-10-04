@@ -248,6 +248,9 @@ echo "Installing"
 BIN="$WORK/bin"
 CLAUDE="$WORK/claude"
 mkdir -p "$CLAUDE/skills"
+# The shared directory krowk and Codex read: the skill goes there as well.
+SHARED="$WORK/home/.agents/skills"
+mkdir -p "$SHARED"
 
 # HOME is redirected so a failing test cannot write to the real one, and SHELL is
 # named so the PATH branch picks a file inside the redirected HOME.
@@ -277,6 +280,14 @@ pass "the checksum was verified"
 diff -q skills/krowk/SKILL.md "$CLAUDE/skills/krowk/SKILL.md" >/dev/null \
   || fail "the installed skill differs from the one in the repository"
 pass "the agent skill was written to CLAUDE_CONFIG_DIR"
+
+diff -q skills/krowk/SKILL.md "$SHARED/krowk/SKILL.md" >/dev/null \
+  || fail "the agent skill was not written to ~/.agents/skills"
+[[ -f "$SHARED/krowk/.managed-by-krowk-cli" ]] \
+  || fail "the installer did not mark ~/.agents/skills/krowk as its own"
+grep -qF "krowk skill installed: $CLAUDE/skills/krowk, ~/.agents/skills/krowk" "$WORK/install.log" \
+  || { cat "$WORK/install.log"; fail "one line did not name every directory the skill went to"; }
+pass "the agent skill was written to ~/.agents/skills too, and one line names both"
 
 [[ -f "$CLAUDE/skills/krowk/.managed-by-krowk-cli" ]] \
   || fail "the installer did not mark the skill directory as its own"
