@@ -360,6 +360,10 @@ pub struct Term<W: Write> {
     pub pad: u16,
     /// Whether the cursor's blink is held off (`steady`).
     steady: bool,
+    /// `height`, `whole`, `blank_top` and the screen's height as the last
+    /// frame sent left them: what a resize starts from, whatever an earlier
+    /// one queued and never sent (see `FrameBuf::discard`).
+    sent: (u16, bool, u16, u16),
 }
 
 /// The cursor's blink off (DEC private mode 12), and the cursor the
@@ -383,7 +387,7 @@ impl<W: Write> Term<W> {
         out.write_all(&buf.take())?;
         out.flush()?;
         let terminal = build(&buf, size, top, height)?;
-        Ok(Term { terminal, buf, out, size, height, want: height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, whole, blank_top, steady: false })
+        Ok(Term { terminal, buf, out, size, height, want: height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, whole, blank_top, steady: false, sent: (height, whole, blank_top, size.height) })
     }
 
     pub fn width(&self) -> u16 {
@@ -419,10 +423,7 @@ impl<W: Write> Term<W> {
         }
         let mut top = self.top();
         if want < self.height {
-            self.buf.clear_down(top)?;
-            let moved = anchor(&self.buf, self.size, top, want)?;
-            self.blank_top += moved - top;
-            return self.rebuild(moved, want);
+            return self.drop_to_bottom(top, want);
         }
         let up = (want - self.height).min(self.blank_top);
         if up > 0 {
@@ -438,6 +439,16 @@ impl<W: Write> Term<W> {
             self.whole = false;
         }
         self.rebuild(top, want)
+    }
+
+    /// The region, `want` rows tall, at the bottom of the screen, what is
+    /// above it moved down onto it: only while `whole`. Cleared first, so
+    /// nothing of the old region is moved down with it, or left above.
+    fn drop_to_bottom(&mut self, top: u16, want: u16) -> io::Result<()> {
+        self.buf.clear_down(top)?;
+        let moved = anchor(&self.buf, self.size, top, want)?;
+        self.blank_top += moved - top;
+        self.rebuild(moved, want)
     }
 
     fn rebuild(&mut self, top: u16, height: u16) -> io::Result<()> {
@@ -471,8 +482,9 @@ impl<W: Write> Term<W> {
     /// order — and never the region itself, unless the reflowed region is
     /// taller than the whole screen.
     pub fn resize(&mut self, size: Size, cursor_row: Option<u16>) -> io::Result<()> {
-        let old = self.size;
         self.buf.discard();
+        let old_height;
+        (self.height, self.whole, self.blank_top, old_height) = self.sent;
         let was = self.buf.row();
         self.size = size;
         let narrowed = size.width < self.drawn_width;
@@ -488,7 +500,7 @@ impl<W: Write> Term<W> {
         // the last row) and the blank rows at the top are still there; moved
         // down, rows came back from scrollback above it (tmux, kitty,
         // Alacritty) and the top of the screen is not blank any more.
-        let kept = cursor_row.is_some() && size.width == self.drawn_width && size.height >= old.height;
+        let kept = cursor_row.is_some() && size.width == self.drawn_width && size.height >= old_height;
         self.whole &= kept;
         if !kept || row != was {
             self.blank_top = 0;
@@ -501,9 +513,7 @@ impl<W: Write> Term<W> {
         let want = self.want.clamp(1, size.height.max(1));
         if self.whole {
             // All of the session on screen: it moves down onto the region.
-            let moved = anchor(&self.buf, size, top, want)?;
-            self.blank_top += moved - top;
-            return self.rebuild(moved, want);
+            return self.drop_to_bottom(top, want);
         }
         // Otherwise what is above cannot move down without opening a gap in
         // the conversation, so the region reaches down to the bottom over
@@ -659,6 +669,7 @@ impl<W: Write> Term<W> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        self.sent = (self.height, self.whole, self.blank_top, self.size.height);
         let body = self.buf.take();
         if body.is_empty() {
             return Ok(());
@@ -721,7 +732,9 @@ impl<W: Write> Term<W> {
         let top = anchor(&self.buf, size, top, height)?;
         self.rebuild(top, height)?;
         self.drawn_width = size.width;
-        Ok(())
+        // Out now, as at start: a resize before the next frame measures
+        // against a screen that has already moved.
+        self.flush()
     }
 
     pub fn into_inner(self) -> W {
@@ -1058,6 +1071,25 @@ mod tests {
         let mut t = session(4);
         t.resize(taller, Some(28)).unwrap();
         assert_eq!((t.top(), t.height, t.whole), (37, 3, true));
+        // Two resizes before a frame: the first one's move was never sent,
+        // and is not counted.
+        let mut t = session(4);
+        t.resize(taller, Some(28)).unwrap();
+        t.resize(Size { width: 100, height: 50 }, Some(28)).unwrap();
+        assert_eq!((t.top(), t.blank_top), (47, 43));
+    }
+
+    #[test]
+    fn a_region_as_tall_as_the_screen_leaves_nothing_above_it_when_it_drops() {
+        let mut t = Term::new(Vec::new(), Size { width: 100, height: 10 }, 0, 3).unwrap();
+        t.frame(&[], &prompt(10), (0, 9)).unwrap();
+        assert_eq!((t.top(), t.whole), (0, true));
+        let start = t.out.len();
+        t.resize(Size { width: 100, height: 20 }, Some(9)).unwrap();
+        t.flush().unwrap();
+        let out = String::from_utf8_lossy(&t.out[start..]).into_owned();
+        assert!(out.contains("\r\x1b[9A\x1b[1C\x1b[J"), "the old region cleared from the top row: {out:?}");
+        assert_eq!((t.top(), t.height, t.blank_top), (10, 10, 10));
     }
 
     #[test]
