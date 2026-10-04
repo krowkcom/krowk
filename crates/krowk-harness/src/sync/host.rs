@@ -169,8 +169,9 @@ fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lo
 }
 
 /// How many batches past the relay's last ack make a link that still
-/// answers its heartbeats a dead one: the relay acks every batch it holds,
-/// viewers or none (relay.md → Flow control).
+/// answers its heartbeats a dead one: a relay acks at least every 8th batch
+/// a link sends it, viewers or none (relay.md → Flow control), so a tail
+/// of fewer is never waited on.
 const GHOST_UNACKED: usize = 8;
 /// How long the oldest of them must have waited first: well past the 2
 /// seconds a relay may take to hold a batch.
@@ -511,6 +512,10 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
                             unjoined = None;
                             ws = Some(w);
                             heard = Instant::now();
+                            // What the relay says it holds is as good as acked:
+                            // what `kept` still counts is only what went out on
+                            // this link, which the relay's ack count starts from.
+                            while kept.front().is_some_and(|(s, _)| *s <= at) { kept.pop_front(); }
                             unacked_since = (!kept.is_empty()).then(Instant::now);
                             present = Some((HashSet::new(), Instant::now()));
                         } else {
