@@ -78,8 +78,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   check your device list only when it started, so a long-running host went
   on as before after you removed a device. It now reads the list again every
   minute. If another device was removed, it hosts the session again from
-  the top, under the new list and its new key; if this device was removed,
-  it stops.
+  the top, under the new list; if this device was removed, or the list was
+  started over, it stops.
 
 - **Copying from the TUI no longer drags the layout along.** Text in the
   transcript starts at the first column: a mouse selection of your prompt,

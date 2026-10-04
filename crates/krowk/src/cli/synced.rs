@@ -165,10 +165,9 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
     loop {
         match host_once(ctx, &session) {
             // A device was removed while it ran: hosted again from the top,
-            // so the new list is verified, its key taken up, and the session
-            // moved to a key the removed device never held.
+            // so the new list is verified and its user key taken up.
             Err(e) if e.code() == "device_list_moved" => {
-                let _ = writeln!(ctx.io.stderr, "{}", e.body.get("fix").and_then(|v| v.as_str()).unwrap_or("your device list changed; hosting again"));
+                let _ = writeln!(ctx.io.stderr, "{}", e.fix());
             }
             other => return other,
         }

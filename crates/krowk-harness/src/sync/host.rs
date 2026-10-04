@@ -136,24 +136,11 @@ fn take(o: &Options) -> Result<(SessionKey, Writer, Held), String> {
 /// lease lapsed takes it again when nobody else has. One that finds another
 /// device holding it sets `lost`: the bridge then writes nothing more and
 /// ends (R-SYNC-2's one writer).
-fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lost: Arc<AtomicBool>, stale: Arc<Mutex<Option<String>>>) {
+fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lost: Arc<AtomicBool>) {
     let every = renew_every(o.ttl);
     let mut next = Instant::now() + every;
-    let mut chain = o.chain.clone();
-    let mut list_next = Instant::now() + LIST_EVERY;
     while !stop.load(Ordering::Relaxed) && !lost.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(100).min(next.min(list_next).saturating_duration_since(Instant::now())));
-        if Instant::now() >= list_next {
-            list_next = Instant::now() + LIST_EVERY;
-            match list_news(&o, &chain) {
-                Ok(Some(next)) => chain = next,
-                Ok(None) => {}
-                Err(why) => {
-                    *stale.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
-                    return;
-                }
-            }
-        }
+        std::thread::sleep(Duration::from_millis(100).min(next.saturating_duration_since(Instant::now())));
         if Instant::now() < next {
             continue;
         }
@@ -187,9 +174,8 @@ fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lo
 const LIST_EVERY: Duration = Duration::from_secs(60);
 
 /// What a running host ends with when the list moved on under it and a
-/// device was removed: `krowk sync host` takes the session up again, which
-/// verifies the new list and moves the session to a key the removed device
-/// never held.
+/// device was removed: `krowk sync host` takes the session up again, under
+/// the new list and the user key it leaves current.
 pub const LIST_MOVED: &str = "a device was removed from your device list while this host ran";
 
 /// The list read again past the head `chain` holds and verified onto it:
@@ -198,20 +184,37 @@ pub const LIST_MOVED: &str = "a device was removed from your device list while t
 /// host must stop otherwise — a removal, this device's own, or entries that
 /// do not verify.
 fn list_news(o: &Options, chain: &Chain) -> Result<Option<Chain>, String> {
-    let removed = || format!("this device was removed from your device list, or its key revoked; it stopped hosting session {}", o.session);
-    let served = match o.api.device_list(Some(chain.head().seq)) {
-        Ok(s) => s,
-        // A removal revokes the device's keys: the read that would have
-        // shown it is refused instead.
-        Err(e) if e.status == 401 || e.code() == "device_revoked" => return Err(removed()),
-        Err(_) => return Ok(None),
-    };
-    let refused = |e: String| format!("your device list changed in a way this host does not follow ({e}); it stopped hosting session {} — host it again", o.session);
+    let session = &o.session;
+    let removed = || format!("this device was removed from your device list; it stopped hosting session {session}");
+    let refused = |e: String| format!("your device list changed in a way this host does not follow ({e}); it stopped hosting session {session} — host it again");
     let mut next = chain.clone();
-    for e in served.entries.iter().filter(|e| e.seq > chain.head().seq) {
-        let entry = e2e::unhex(&e.entry).zip(e2e::unhex(&e.signatures)).ok_or_else(|| refused("an entry is not hex".into()))?;
-        let signed = SignedEntry::from_parts(entry.0, &entry.1).map_err(|e| refused(e.0))?;
-        next = next.extend(&signed).map_err(|e| refused(e.0))?;
+    let mut after = chain.head().seq;
+    loop {
+        let served = match o.api.device_list(Some(after)) {
+            Ok(s) => s,
+            Err(e) if e.code() == "device_revoked" => return Err(removed()),
+            // A removal revokes the device's keys, so this may be one; the
+            // key refused is all that is known, and all that is said.
+            Err(e) if e.status == 401 => return Err(format!("the registry refused this machine's key — it may have been removed from your devices, or signed out; it stopped hosting session {session}")),
+            Err(_) => return Ok(None),
+        };
+        // A list that ends before the head held, or holds another entry
+        // there, is a new one: a start-over.
+        if let Some(h) = &served.head
+            && (h.seq < chain.head().seq || (h.seq == chain.head().seq && e2e::unhex(&h.hash).as_deref() != Some(&chain.head().hash[..])))
+        {
+            return Err(format!("your device list was started over; it stopped hosting session {session}"));
+        }
+        let from = next.head().seq;
+        for e in served.entries.iter().filter(|e| e.seq > from) {
+            let entry = e2e::unhex(&e.entry).zip(e2e::unhex(&e.signatures)).ok_or_else(|| refused("an entry is not hex".into()))?;
+            let signed = SignedEntry::from_parts(entry.0, &entry.1).map_err(|e| refused(e.0))?;
+            next = next.extend(&signed).map_err(|e| refused(e.0))?;
+        }
+        match served.next {
+            Some(n) if n > after && !served.entries.is_empty() => after = n,
+            _ => break,
+        }
     }
     if next.head() == chain.head() {
         return Ok(None);
@@ -220,9 +223,32 @@ fn list_news(o: &Options, chain: &Chain) -> Result<Option<Chain>, String> {
         return Err(removed());
     }
     if next.generation() > chain.generation() {
-        return Err(format!("{LIST_MOVED}; session {} is hosted again under a new key", o.session));
+        return Err(format!("{LIST_MOVED}; session {session} is hosted again under the new list"));
     }
     Ok(Some(next))
+}
+
+/// Reads the device list again every `LIST_EVERY`, on a thread of its own
+/// so a slow read never holds up the lease's renewal, until the bridge
+/// stops or the list says it must (`stale`).
+fn list_loop(o: Arc<Options>, stop: Arc<AtomicBool>, stale: Arc<Mutex<Option<String>>>) {
+    let mut chain = o.chain.clone();
+    let mut next = Instant::now() + LIST_EVERY;
+    while !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(100).min(next.saturating_duration_since(Instant::now())));
+        if Instant::now() < next {
+            continue;
+        }
+        next = Instant::now() + LIST_EVERY;
+        match list_news(&o, &chain) {
+            Ok(Some(longer)) => chain = longer,
+            Ok(None) => {}
+            Err(why) => {
+                *stale.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+                return;
+            }
+        }
+    }
 }
 
 /// What the writer thread is asked to do, in order.
@@ -340,8 +366,12 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     // Set when the device list moved on under the host: why it stops.
     let stale = Arc::new(Mutex::new(None));
     {
-        let (o, held, halt, lost, stale) = (o.clone(), held.clone(), halt.clone(), lost.clone(), stale.clone());
-        std::thread::spawn(move || renew_loop(o, held, halt, lost, stale));
+        let (o, held, halt, lost) = (o.clone(), held.clone(), halt.clone(), lost.clone());
+        std::thread::spawn(move || renew_loop(o, held, halt, lost));
+    }
+    {
+        let (o, halt, stale) = (o.clone(), halt.clone(), stale.clone());
+        std::thread::spawn(move || list_loop(o, halt, stale));
     }
     let (heads_tx, mut heads) = mpsc::unbounded_channel();
     let mut head = writer.head();
@@ -821,7 +851,8 @@ mod tests {
         let d = Client::new(&url, "krowk_sk_sync_host_take_000000000000#desktop").signed_by(signer);
         let (_, gone) = three.batch(&removed.newest, vec![Change::Remove(laptop.subject("laptop"))], desktop.key.id(), &desktop.signing, T0 + 3).unwrap();
         d.append_device_list(&post(&gone)).unwrap();
-        assert!(list_news(&o, &three).unwrap_err().contains("this device was removed"));
+        // Its keys revoked with it, the read is refused, and the host says so.
+        assert!(list_news(&o, &three).unwrap_err().contains("refused this machine's key"));
     }
 
     /// D8b: a session the laptop published is taken up again on the
