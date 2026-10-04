@@ -74,6 +74,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A synced host no longer hangs on a relay link that stopped working
+  without saying so.** If the relay kept answering heartbeats but acked none
+  of what the host sent, viewers stopped receiving updates while the host
+  kept writing into the void. The host now drops such a link once eight
+  batches have gone unacked for ten seconds, joins the relay again, and
+  resends what was missed.
+
 - **Copying from the TUI no longer drags the layout along.** Text in the
   transcript starts at the first column: a mouse selection of your prompt,
   an answer, a list or a code block comes without the two-column margin,
