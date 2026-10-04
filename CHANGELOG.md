@@ -84,6 +84,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **`krowk devices add` no longer says "nothing was added" when the new
+  device may have your key.** If the answer to the step that sends the key
+  was lost and checking on it failed too, the pairing used to end as if
+  nothing had happened, although the new device might hold your key
+  without being on your list. Now the laptop goes on: it waits for the new
+  device to confirm and adds it, or, if it never confirms, still lists it so
+  `krowk devices remove` can take it off.
 - **`krowk sync host` notices a device removed while it runs.** It used to
   check your device list only when it started, so a long-running host went
   on as before after you removed a device. It now reads the list again every
