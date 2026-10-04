@@ -74,6 +74,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **Running `krowk sync init --start-over` again says what it did.** While
+  the old keys from a start-over are kept, running it again carries on that
+  start-over (sealing any sessions left under the new list) and never begins
+  a new one. It now says so, and that a new start-over needs
+  `krowk sync recovery discard-old` first.
 - **A new device can't take a name that only looks like one already on your
   list.** Adding or pairing a device is refused when its name reads like
   another device's: a Cyrillic `а` for a Latin `a`, full-width letters, or

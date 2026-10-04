@@ -189,7 +189,10 @@ fn finish_start_over(ctx: &mut Ctx, client: Client, old: Old, served: Vec<Signed
     }
     let keys = chain::adopt_user_key(ctx, &client, &me, &new)?;
     let count = reseal::run(ctx, &client, &me, &old, &keys, &new).map_err(unfinished)?;
-    say(ctx, json!({ "resealed": count.sealed, "already": count.already, "left": count.left }), resealed(&count))
+    // While the old keys are kept, every `--start-over` lands here: said, so
+    // a person who meant to start over again knows nothing new was started.
+    let summary = format!("{}. This went on with the start-over already made; nothing new was started — a new start-over needs `krowk sync recovery discard-old` first", resealed(&count));
+    say(ctx, json!({ "resealed": count.sealed, "already": count.already, "left": count.left, "continued": true }), summary)
 }
 
 fn resealed(c: &reseal::Count) -> String {
