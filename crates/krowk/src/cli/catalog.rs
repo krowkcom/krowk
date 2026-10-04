@@ -261,7 +261,9 @@ fn global_flag() -> Flag {
 }
 
 #[cfg(feature = "harness")]
-const SUMMARY: &str = "a coding agent, and permalinks for its output";
+const SUMMARY: &str = "a coding agent harness: one session, any machine, model or agent";
+// The lean build has no agent: publishing is all it does, so that is all it
+// says it is.
 #[cfg(not(feature = "harness"))]
 const SUMMARY: &str = "permalinks for agent output";
 
@@ -518,7 +520,7 @@ fn sync_command() -> Command {
             #[cfg(unix)]
             cmd("attach", "krowk sync attach SESSION", "Follow a synced session in the TUI, or as stream-json"),
         ],
-        ..cmd("sync", "", "End-to-end encryption keys for syncing sessions")
+        ..cmd("sync", "", "Sync sessions between your machines, end-to-end encrypted")
     }
 }
 
@@ -866,6 +868,9 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     // The harness build's own commands, and the sessions they run.
     #[cfg(feature = "harness")]
     ("AGENT", &["connect", "disconnect", "status", "sessions"]),
+    // What carries a session from one machine to the next.
+    #[cfg(feature = "harness")]
+    ("SYNC", &["sync", "devices"]),
     ("PUBLISH", &["push", "runs", "uploads", "claim"]),
     ("ACCOUNT", &["login", "logout", "whoami", "workspaces", "auth"]),
     (
@@ -879,10 +884,6 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "hosts",
             #[cfg(all(feature = "harness", unix))]
             "relay",
-            #[cfg(feature = "harness")]
-            "sync",
-            #[cfg(feature = "harness")]
-            "devices",
             #[cfg(all(feature = "sessions", not(feature = "harness")))]
             "sessions",
             "config",

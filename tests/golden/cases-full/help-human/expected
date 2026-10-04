@@ -1,6 +1,6 @@
 $ krowk help --format human
 stdout:
-█  █  krowk — a coding agent, and permalinks for its output
+█  █  krowk — a coding agent harness: one session, any machine, model or agent
 █▀▀▄  version 0.0.0-golden
 
 USAGE
@@ -13,6 +13,10 @@ AGENT
   disconnect    Sign a connected model out
   status        What's connected, and whether each is ready
   sessions      List and read agent sessions on this machine
+
+SYNC
+  sync          Sync sessions between your machines, end-to-end encrypted
+  devices       The machines that sync this workspace's sessions
 
 PUBLISH
   push          Upload files, get a link for each
@@ -29,8 +33,6 @@ ACCOUNT
 OTHER
   providers     Low-level instance config (add, list, rename, remove)
   host          The daemon sessions run in, which outlives the terminal
-  sync          End-to-end encryption keys for syncing sessions
-  devices       The machines that sync this workspace's sessions
   config        Show or set configuration
   doctor        Check this machine's setup
   pricing       Refresh model prices
@@ -61,6 +63,19 @@ AGENT
   sessions rebuild  Delete the local store and re-import every transcript
   sessions budget   Check a session against a spend limit
   sessions sync     Import what changed since the last import, refresh prices
+
+SYNC
+  sync init         Set up sync: this device, your user key and a recovery kit
+  sync recover      Back in from the recovery kit's 12 words, on a new machine
+  sync status       This device's list, key generation and recovery kit, checked
+  sync recovery     Your recovery kit: make a new one, or test its words
+  sync join         Add this machine by the code `krowk devices add` shows
+  sync sessions     The synced sessions this machine can open
+  sync host         Run a session here and sync it until interrupted
+  sync attach       Follow a synced session in the TUI, or as stream-json
+  devices list      The devices on your device list, this one marked
+  devices add       Show a code that adds a new machine to your devices
+  devices remove    Take a device off your list and rotate your key
 
 PUBLISH
   push              Upload files, get a link for each
@@ -98,17 +113,6 @@ OTHER
   host disable      Stop the service and remove it
   hosts             The tailnet's machines tagged tag:krowk-host, from Tailscale
   relay serve       Carry sealed sessions between their host and viewers
-  sync init         Set up sync: this device, your user key and a recovery kit
-  sync recover      Back in from the recovery kit's 12 words, on a new machine
-  sync status       This device's list, key generation and recovery kit, checked
-  sync recovery     Your recovery kit: make a new one, or test its words
-  sync join         Add this machine by the code `krowk devices add` shows
-  sync sessions     The synced sessions this machine can open
-  sync host         Run a session here and sync it until interrupted
-  sync attach       Follow a synced session in the TUI, or as stream-json
-  devices list      The devices on your device list, this one marked
-  devices add       Show a code that adds a new machine to your devices
-  devices remove    Take a device off your list and rotate your key
   config show       The effective configuration, and which layer set each value
   config set        Write one value into the repo config, or the global one
   config unset      Remove one value from the repo config, or the global one

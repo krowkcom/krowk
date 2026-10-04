@@ -549,14 +549,17 @@ verify_install() {
   error "$detail"
 }
 
-# skills_dir is where an agent looks for skills on this machine, or empty when
-# nothing here uses them. CLAUDE_CONFIG_DIR wins, since a user who moved their
-# config has said where it lives.
-skills_dir() {
-  local config="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-  if [[ -d "${config}/skills" ]]; then
-    echo "${config}/skills"
-  fi
+# skills_dirs lists, one per line, where the agents on this machine look for
+# skills: Claude Code's directory (CLAUDE_CONFIG_DIR wins, since a user who moved
+# their config has said where it lives) and ~/.agents/skills, the shared one krowk
+# and Codex read. Only directories that already exist count: one that does not
+# says no agent here reads it.
+skills_dirs() {
+  local config="${CLAUDE_CONFIG_DIR:-$HOME/.claude}" dir
+  for dir in "${config}/skills" "${HOME}/.agents/skills"; do
+    [[ -d "$dir" ]] && echo "$dir"
+  done
+  return 0
 }
 
 # The ownership marker and the version stamp krowk writes beside every skill it
@@ -785,19 +788,22 @@ claim_skill_dir() {
 # install_skill is best-effort on purpose. krowk works without it; the skill only
 # teaches an agent which command to reach for. So a machine with no agent config
 # gets a sentence saying where the skill lives, not an error and not a directory
-# created speculatively under someone's home.
+# created speculatively under someone's home. The skill is fetched once and
+# written to every skills directory there is, and one line names them all.
 install_skill() {
-  local version="$1" dir url tmp
+  local version="$1" dirs dir url tmp written=""
 
   if [[ "${KROWK_SKIP_SKILL:-}" == "1" ]]; then
     step "Skipping the agent skill (KROWK_SKIP_SKILL=1)"
     return 0
   fi
 
-  dir=$(skills_dir)
-  if [[ -z "$dir" ]]; then
-    note "No agent skills directory here, so none was written."
-    note "For Claude Code: mkdir -p ~/.claude/skills and re-run, or copy"
+  # A newline-separated string, not an array: macOS still runs `curl | bash`
+  # with bash 3.2, which has no mapfile and calls an empty array unbound.
+  dirs=$(skills_dirs)
+  if [[ -z "$dirs" ]]; then
+    note "No agent skills directory here (~/.claude/skills, ~/.agents/skills), so none was written."
+    note "Create one and re-run, or copy"
     note "https://github.com/${REPO}/blob/main/skills/krowk/SKILL.md yourself."
     return 0
   fi
@@ -817,10 +823,31 @@ install_skill() {
     return 0
   fi
 
-  if ! claim_skill_dir "${dir}/krowk"; then
-    rm -f "$tmp"
-    return 0
+  while IFS= read -r dir; do
+    if write_skill "${dir}/krowk" "$tmp" "$version"; then
+      written="${written:+${written}, }$(tilde "$dir")/krowk"
+    fi
+  done <<<"$dirs"
+  rm -f "$tmp"
+  if [[ -n "$written" ]]; then
+    info "krowk skill installed: ${written}"
   fi
+}
+
+# tilde shortens a path under HOME to ~/…, which is how a person reads it.
+tilde() {
+  case "$1" in
+    "$HOME"/*) printf '%s/%s' '~' "${1#"$HOME"/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# write_skill puts the fetched skill into one skills directory, and fails —
+# having said why — when it could not.
+write_skill() {
+  local dest="$1" src="$2" version="$3"
+
+  claim_skill_dir "$dest" || return 1
 
   # The marker goes down first, then the skill, then the version stamp. A run
   # interrupted anywhere in there leaves a directory that is still recognisably
@@ -831,32 +858,32 @@ install_skill() {
   # Every one of these is best-effort, like the rest of install_skill: the
   # binaries are already in place and working, and a skill that could not be
   # written is a sentence to print, not a reason to fail an install.
-  if ! printf '%s\n' "$MANAGED_MARKER_CONTENT" | write_managed_file "${dir}/krowk/${MANAGED_MARKER}"; then
-    rm -f "$tmp"
-    note "Could not mark ${dir}/krowk as krowk's, so no skill was written — krowk itself is installed and working."
-    return 0
+  if ! printf '%s\n' "$MANAGED_MARKER_CONTENT" | write_managed_file "${dest}/${MANAGED_MARKER}"; then
+    note "Could not mark ${dest} as krowk's, so no skill was written — krowk itself is installed and working."
+    return 1
   fi
-  if ! write_managed_file "${dir}/krowk/SKILL.md" <"$tmp"; then
-    rm -f "$tmp"
-    note "Could not write ${dir}/krowk/SKILL.md — krowk itself is installed and working."
-    return 0
+  if ! write_managed_file "${dest}/SKILL.md" <"$src"; then
+    note "Could not write ${dest}/SKILL.md — krowk itself is installed and working."
+    return 1
   fi
-  rm -f "$tmp"
-  if ! printf '%s\n' "$version" | write_managed_file "${dir}/krowk/${INSTALLED_VERSION_FILE}"; then
-    note "The agent skill was written, but its version could not be stamped."
-    return 0
+  if ! printf '%s\n' "$version" | write_managed_file "${dest}/${INSTALLED_VERSION_FILE}"; then
+    note "The agent skill was written to ${dest}, but its version could not be stamped."
   fi
-  info "Agent skill written to ${dir}/krowk/SKILL.md"
+  return 0
 }
 
 next_steps() {
   echo ""
   echo "  Next:"
   if [[ "$HAS_AGENT" == yes ]]; then
-    echo "    $(bold "krowk")                         Open krowk's agent in this terminal"
+    echo "    $(bold "krowk")                         Open krowk's agent in this terminal — on any model, or Claude Code and Codex"
+    echo "    $(bold "krowk login")                   Sign in to your krowk account"
+    echo "    $(bold "krowk sync init")               Sync sessions across your machines, end-to-end encrypted"
+    echo "    $(bold "krowk push screenshot.png")     Publish a file to a link — no key needed, lasts a day"
+  else
+    echo "    $(bold "krowk push screenshot.png")     Publish a file to a link — no key needed, lasts a day"
+    echo "    $(bold "krowk login --token …")    Add a key, and uploads keep, group under runs and stay yours"
   fi
-  echo "    $(bold "krowk push screenshot.png")     Upload without a key — the link is live, and lasts a day"
-  echo "    $(bold "krowk login --token …")    Add a key, and uploads keep, group under runs and stay yours"
   echo "    $(bold "krowk help")                    Everything else — add --json for the surface as data"
   echo ""
 }
@@ -884,7 +911,7 @@ main() {
   done
 
   echo ""
-  echo "  $(bold "krowk") — permalinks for agent output"
+  echo "  $(bold "krowk") — a coding agent harness: one session, any machine, model or agent"
   echo ""
 
   command -v curl >/dev/null 2>&1 || error "curl is needed and is not installed"

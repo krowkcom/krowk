@@ -9,6 +9,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Changed
+
+- **krowk says what it is: a coding agent harness.** `krowk help`, the
+  installer and the package descriptions lead with one session on any
+  machine, model or agent; publishing to a permalink is one of the things it
+  does. `sync` and `devices` have their own `SYNC` heading in `krowk help`.
+  The lean build, which only publishes, still calls itself that.
+- **The installer writes the agent skill for every agent that reads one.**
+  Besides Claude Code's `~/.claude/skills`, it writes `~/.agents/skills`,
+  which krowk and Codex read, when that directory exists, and names every
+  place it wrote on one line. Its next steps lead with `krowk`, `krowk login`
+  and `krowk sync init`, then `krowk push`.
+
 ## [0.12.0] - 2026-10-04
 
 ### Added
