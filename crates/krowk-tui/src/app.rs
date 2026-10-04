@@ -971,14 +971,19 @@ impl App {
         self.dirty = true;
     }
 
-    /// What the person said, on a band across the width: a thin bar down
-    /// its left edge, the text in the ink, an empty row of it above and below.
+    /// What the person said, each row on a band as wide as its text: a thin
+    /// bar down its left edge, the text in the ink, an empty row of it above
+    /// and below. Not padded out: a terminal that reflows on a narrowing
+    /// resize wraps a row's band with its text, padding and all, and padding
+    /// past the new width would spill onto a row of its own. A row as wide
+    /// as its text wraps only when its text does.
     fn push_said(&mut self, text: &str) {
         let width = usize::from(self.width);
         let room = width.saturating_sub(look::SAID.width()).max(1);
         let rows = wrap(&clean(text), room);
         for row in std::iter::once(String::new()).chain(rows).chain([String::new()]) {
-            let fill = " ".repeat(room.saturating_sub(row.width()));
+            // One column of band past the text, as there is one before it.
+            let fill = " ".repeat(usize::from(row.width() < room));
             self.push_line(Line::from(vec![Span::styled(look::SAID, look::said_bar()), Span::styled(row + &fill, look::said_band())]));
         }
     }
@@ -2121,7 +2126,9 @@ impl App {
         }
         // The prompt on the band of what the person said, across the whole
         // screen (the band is the rows' own style, which the terminal takes
-        // out to the edges) with an empty row of it above and below, and a
+        // out to the edges; the live region is redrawn on a resize, so it can
+        // be, where what is said in scrollback is banded only as wide as its
+        // text, `push_said`) with an empty row of it above and below, and a
         // plain empty row outside it each side, scrolled to keep the caret
         // in view: `→ ` before its first row. The prompt and the
         // status line take all the room there is; the content width is for
@@ -4244,6 +4251,22 @@ mod tests {
         assert_eq!(help::canonical("/clear"), "/new");
         assert!(help::unlisted("/resume"));
         assert_eq!(help::slash("/sessions", &[]).first().map(|s| s.name.as_str()), Some("sessions"));
+    }
+
+    #[test]
+    fn what_the_person_said_is_banded_only_as_wide_as_it_is() {
+        // Padded to the width, a narrowing resize would wrap each row's
+        // band onto a row of its own.
+        let mut a = app();
+        a.set_width(60);
+        a.echo("fix the parser");
+        let rows = a.take_pending();
+        let widths: Vec<usize> = rows.iter().map(|r| r.width()).collect();
+        assert_eq!(widths, [3, 17, 3], "the bar, the text and a column past it: {:?}", text(&rows));
+        // Two rows, one short: neither is padded to the other.
+        a.echo(&format!("{}\nok", "word ".repeat(11).trim_end()));
+        let widths: Vec<usize> = a.take_pending().iter().map(|r| r.width()).filter(|w| *w > 0).collect();
+        assert_eq!(widths, [3, 57, 5, 3]);
     }
 
     #[test]
