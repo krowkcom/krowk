@@ -252,8 +252,10 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         ("POST", ["v1", "devices"]) => sync::signed(a, req, sync::register_device),
         (_, ["v1", "device_approvals", ..]) => sync::sync_reset(),
         (_, ["v1", "users", user, rest @ ..]) => users_route(a, req, &m, user, rest),
-        (_, ["v1", "sessions"]) if get => sync::list_sessions(a, req),
-        (_, ["v1", "sessions", id]) if get => sync::show_session(a, req, id),
+        // Session reads are signed, as the registry has them: the key alone
+        // reads nothing.
+        (_, ["v1", "sessions"]) if get => sync::signed(a, req, |a, req, _| sync::list_sessions(a, req)),
+        (_, ["v1", "sessions", id]) if get => sync::signed(a, req, |a, req, _| sync::show_session(a, req, id)),
         ("PUT" | "PATCH", ["v1", "sessions", id]) => sync::signed(a, req, |a, req, by| sync::put_session(a, req, id, by)),
         (_, ["v1", "sessions", id, "relay_ticket"]) if get => sync::signed(a, req, |a, req, by| sync::viewer_ticket(a, req, id, by)),
         ("POST", ["v1", "sessions", id, "lease"]) => sync::signed(a, req, |a, req, by| sync::acquire_lease(a, req, id, by)),
@@ -263,7 +265,7 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
             let site = site(req, &a.site);
             sync::signed(a, req, |a, req, by| sync::declare_chunk(a, req, id, &site, by))
         }
-        (_, ["v1", "sessions", id, "chunks"]) if get => sync::list_chunks(a, req, id, &site(req, &a.site)),
+        (_, ["v1", "sessions", id, "chunks"]) if get => sync::signed(a, req, |a, req, _| sync::list_chunks(a, req, id, &site(req, &a.site))),
         ("PUT" | "PATCH", ["v1", "sessions", id, "chunks", index, "finalization"]) => sync::signed(a, req, |a, req, by| sync::finalize_chunk(a, req, id, index, by)),
         ("POST", ["v1", "vintages"]) => {
             let site = site(req, &a.site);
