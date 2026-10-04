@@ -74,6 +74,24 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **Copying from the TUI no longer drags the layout along.** Text in the
+  transcript starts at the first column: a mouse selection of your prompt,
+  an answer, a list or a code block comes without the two-column margin,
+  the `▎` bar before your prompts, the padding inside code blocks or the
+  spaces that filled a band to the edge. Code blocks are left for the
+  terminal to wrap, so a long line of code copies as one line, the block's
+  language sits on the row above the code, and tabs in code are four
+  spaces rather than one. Prose still wraps between words, so a selection
+  across a wrapped paragraph has a line break where each row ended:
+  Ctrl-Y now offers the last answer, each code block in it and your last
+  prompt, and copies the one you choose exactly as written, tabs included.
+  In Ghostty, and in herdr, which is built on it, text from the first
+  screen of a session used to copy with a break at every row the terminal
+  had wrapped, because the prompt was kept at the bottom by moving the
+  rows above it; the prompt now sits at the bottom from the start, the
+  conversation filling the screen down to it, and nothing printed is ever
+  moved.
+
 - **Two quick Ctrl-Cs right after a prompt still print the resume line.**
   Leaving that fast could beat the session's start to the TUI, so krowk
   exited 130 without `krowk --resume <id>` although the host had already

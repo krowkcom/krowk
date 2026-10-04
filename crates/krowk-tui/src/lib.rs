@@ -1115,16 +1115,17 @@ impl<'h> Ui<'h> {
         if std::mem::take(&mut app.wipe) {
             term.wipe()?;
         }
-        if std::mem::take(&mut app.copy) {
-            // What was shown, not what was sent: no escape or bidi control
+        if let Some((what, text)) = app.copy.take() {
+            // As written, tabs and all, but no escape or bidi control
             // reaches the place it is pasted.
-            let text: String = app.answer.trim_end().split('\n').map(|l| card::clean(&l.replace('\t', "    "))).collect::<Vec<_>>().join("\n");
+            // The joiner that makes one emoji of several is kept too.
+            let text: String = text.chars().filter(|&c| matches!(c, '\n' | '\t' | '\u{200D}') || (!c.is_control() && !card::is_bidi(c))).collect();
             app.flash = Some(if text.len() > clipboard::MAX {
-                format!("the answer is too long to copy ({} KB)", text.len() / 1024)
+                format!("{what} is too long to copy ({} KB)", text.len() / 1024)
             } else {
                 term.clipboard(&text)?;
                 clipboard::system(&text);
-                format!("sent the last answer to the clipboard ({} lines)", text.lines().count())
+                format!("copied {what} ({} lines)", text.lines().count())
             });
         }
         term.steady(app.running())?;
@@ -1871,6 +1872,25 @@ impl<'h> Ui<'h> {
                     return false;
                 }
                 KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete => app.help_at = 0,
+                _ => {}
+            }
+        }
+        // And the Ctrl-Y picker.
+        if app.overlay == Overlay::Copy && !ctrl && !alt {
+            let n = app.copy_list_len();
+            match k.code {
+                KeyCode::Up => {
+                    app.copy_at = app.copy_at.saturating_sub(1);
+                    return false;
+                }
+                KeyCode::Down => {
+                    app.copy_at = (app.copy_at + 1).min(n.saturating_sub(1));
+                    return false;
+                }
+                KeyCode::Enter => {
+                    app.copy_chosen(app.copy_at);
+                    return false;
+                }
                 _ => {}
             }
         }
@@ -2714,13 +2734,9 @@ fn legacy(k: KeyEvent) -> KeyEvent {
     KeyEvent { code, modifiers: k.modifiers - KeyModifiers::CONTROL, ..k }
 }
 
-/// Ctrl-Y: the last answer to the clipboard, on the next frame.
+/// Ctrl-Y: what there is to copy, or a picker of it (`App::open_copy`).
 fn copy(app: &mut App) {
-    if app.answer.trim().is_empty() {
-        app.flash = Some("nothing to copy yet".into());
-    } else {
-        app.copy = true;
-    }
+    app.open_copy();
 }
 
 #[cfg(test)]

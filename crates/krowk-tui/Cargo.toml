@@ -25,6 +25,9 @@ futures-core = "0.3"
 tokio = { version = "1", default-features = false, features = ["rt", "time", "sync", "macros", "net", "signal"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 unicode-width = "0.2"
+# Graphemes, measured as ratatui and the terminal measure them: already
+# linked through ratatui.
+unicode-segmentation = "1"
 # Fuzzy matching for the `/` menu, as Grok Build's is (nucleo). With the
 # menus' ratatui Table it adds 161,024 bytes to full.size (7,951,400 ->
 # 8,112,424 on x86_64 Linux, 14,040 under the ceiling).

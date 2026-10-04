@@ -199,6 +199,6 @@ fn r_lag_9_a_10k_token_answer_from_the_daemon_lands_in_tmux_scrollback_exactly_o
     let want: Vec<String> = mock::numbered_lines(850).lines().map(String::from).collect();
     assert_eq!(got.len(), want.len(), "every line once, none twice");
     assert!(got.iter().zip(&want).all(|(g, w)| g == w), "in order, byte for byte");
-    assert_eq!(history.matches("▎ write it all out").count(), 1, "{history}");
+    assert_eq!(history.matches("\nwrite it all out\n").count(), 1, "{history}");
     assert_eq!(history.matches("esc to interrupt").count(), 0, "a live row leaked into scrollback");
 }

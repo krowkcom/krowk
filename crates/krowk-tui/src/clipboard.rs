@@ -1,6 +1,6 @@
-//! Ctrl-Y: the last answer onto the clipboard, as the model wrote it — no
-//! padding, no wrapping — since a copy with the mouse brings the TUI's
-//! left padding and its line breaks with it. Two ways, both tried: OSC 52,
+//! Ctrl-Y: the last answer onto the clipboard, as the model wrote it, its
+//! markdown and all — a mouse selection copies it as shown, bullets and
+//! a code block's language with it. Two ways, both tried: OSC 52,
 //! which the terminal (or a multiplexer passing it on) sets the clipboard
 //! from, and the desktop's own clipboard command when there is one.
 

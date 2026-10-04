@@ -25,8 +25,6 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::syntax::Code;
 
-/// Before each row of what the person said, down the band's left edge.
-pub const SAID: &str = "▎ ";
 /// Before the prompt's first row, inside its box.
 pub const ARROW: &str = "→ ";
 pub const TOOL: &str = "◆ ";
@@ -191,7 +189,8 @@ pub fn prompt() -> Style {
     Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD)
 }
 
-/// What the person said: a faint band across the width, its bar blue.
+/// What the person said: a faint band across the width, its text from
+/// the first column so a copy of it has nothing before it.
 pub fn said_band() -> Style {
     Style::new().bg(Color::Indexed(236))
 }
@@ -200,10 +199,6 @@ pub fn said_band() -> Style {
 /// said, so the two are not taken for each other.
 pub fn code_band() -> Style {
     Style::new().bg(Color::Indexed(235))
-}
-
-pub fn said_bar() -> Style {
-    said_band().fg(Color::Blue)
 }
 
 /// A key to press: white, so the keys a hint names stand out of the grey
@@ -393,8 +388,9 @@ struct Item {
     text: usize,
 }
 
-/// How far a list is shown in from the text around it.
-const LIST_INDENT: usize = 2;
+/// How far a list is shown in from the text around it: not at all, so a
+/// copy of an item has nothing before its marker but what nests it.
+const LIST_INDENT: usize = 0;
 /// A bulleted item's marker, by how deep it is nested.
 const BULLETS: [&str; 3] = ["•", "◦", "▪"];
 
@@ -405,10 +401,9 @@ pub struct MdLine {
     pub lead: Vec<Span<'static>>,
     pub body: Vec<Span<'static>>,
     pub hang: Vec<Span<'static>>,
-    /// A row of a fenced block, drawn on the code band across the width:
-    /// its text rows break anywhere, and what is here is shown at the
-    /// right end of the first, dim (the language, on the row above the
-    /// code).
+    /// A row of a fenced block, drawn on the code band across the width,
+    /// and what is here shown on it, dim (the language, on the row above
+    /// the code).
     pub band: Option<String>,
 }
 
@@ -713,7 +708,7 @@ mod tests {
     fn markdown_is_shown_line_by_line() {
         let mut f = Markdown::default();
         assert_eq!(text(&markdown_line("## Usage", &mut f)), "Usage");
-        assert_eq!(text(&markdown_line("  - one `two` **three**", &mut f)), "  • one two three");
+        assert_eq!(text(&markdown_line("  - one `two` **three**", &mut f)), "• one two three");
         let l = markdown_line("use `krowk push` now", &mut f);
         assert_eq!(l.spans[1].style, code(), "{:?}", l.spans);
         let open = markdown("```rust", &mut f);
@@ -760,7 +755,7 @@ mod tests {
     fn a_bracket_before_a_link_is_left_alone() {
         let mut f = Markdown::default();
         let l = markdown_line("- [ ] fix [docs](https://x.io) [1] see [here](https://y.io)", &mut f);
-        assert_eq!(shown(&l), "  ☐ fix docs\u{a0}↗ [1] see here\u{a0}↗");
+        assert_eq!(shown(&l), "☐ fix docs\u{a0}↗ [1] see here\u{a0}↗");
         let l = markdown_line("[see https://x.io] and <https://y.io>>", &mut f);
         assert_eq!(shown(&l), "[see https://x.io\u{a0}↗] and https://y.io\u{a0}↗>");
         assert_eq!(targets(&l), ["https://x.io", "https://x.io", "https://y.io", "https://y.io"]);
@@ -787,21 +782,21 @@ mod tests {
     #[test]
     fn a_list_is_indented_and_nested_by_depth() {
         let md = "Steps:\n- one\n  - two\n    * three\n    * four\n- five\n\n1. first\n   - under it\n10) tenth\nDone.";
-        assert_eq!(lines(md), ["Steps:", "  • one", "    ◦ two", "      ▪ three", "      ▪ four", "  • five", "", "  1. first", "     ◦ under it", "  10) tenth", "Done."]);
-        assert_eq!(lines("-  wide\n* x\n+ y"), ["  •  wide", "  • x", "  • y"], "`*` and `+` are bullets too");
+        assert_eq!(lines(md), ["Steps:", "• one", "  ◦ two", "    ▪ three", "    ▪ four", "• five", "", "1. first", "   ◦ under it", "10) tenth", "Done."]);
+        assert_eq!(lines("-  wide\n* x\n+ y"), ["•  wide", "• x", "• y"], "`*` and `+` are bullets too");
         assert_eq!(lines("1.5 is a number\n1234567890. is too long\n-not a list"), ["1.5 is a number", "1234567890. is too long", "-not a list"]);
     }
 
     #[test]
     fn a_line_under_an_item_lines_up_with_its_text() {
         let md = "1. first\n\n   more on it\n   - sub\n     more on sub\n   back on first\nOut.";
-        assert_eq!(lines(md), ["  1. first", "", "     more on it", "     ◦ sub", "       more on sub", "     back on first", "Out."]);
-        assert_eq!(lines("- a\n## Next\n  b"), ["  • a", "Next", "  b"], "a heading ends the list");
+        assert_eq!(lines(md), ["1. first", "", "   more on it", "   ◦ sub", "     more on sub", "   back on first", "Out."]);
+        assert_eq!(lines("- a\n## Next\n  b"), ["• a", "Next", "  b"], "a heading ends the list");
     }
 
     #[test]
     fn a_task_is_a_box_ticked_or_not() {
-        assert_eq!(lines("- [ ] todo\n- [x] done\n- [X] also"), ["  ☐ todo", "  ☒ done", "  ☒ also"]);
+        assert_eq!(lines("- [ ] todo\n- [x] done\n- [X] also"), ["☐ todo", "☒ done", "☒ also"]);
         let mut f = Markdown::default();
         assert_eq!(markdown("- [x] done", &mut f).lead[1].style, dim(), "a marker is washed, not coloured");
     }
@@ -810,8 +805,8 @@ mod tests {
     fn an_item_and_a_quote_say_what_their_wrapped_rows_start_with() {
         let mut f = Markdown::default();
         let hang = |m: MdLine| m.hang.iter().map(|s| s.content.to_string()).collect::<String>();
-        assert_eq!(hang(markdown("- a", &mut f)), "    ");
-        assert_eq!(hang(markdown("  12. b", &mut f)), "        ", "nested in the item before it");
+        assert_eq!(hang(markdown("- a", &mut f)), "  ");
+        assert_eq!(hang(markdown("  12. b", &mut f)), "      ", "nested in the item before it");
         assert_eq!(hang(markdown("> c", &mut f)), "│ ");
         assert_eq!(hang(markdown("plain", &mut f)), "");
         assert_eq!(hang(markdown("    \"key\": 1,", &mut f)), "", "an indent typed outside a list does not hang");
@@ -821,7 +816,7 @@ mod tests {
     fn a_link_in_bold_or_a_heading_is_a_link_too() {
         let mut f = Markdown::default();
         let l = markdown_line("- **[Title](https://x.io)** — desc", &mut f);
-        assert_eq!((shown(&l).as_str(), targets(&l)), ("  • Title\u{a0}↗ — desc", vec!["https://x.io".to_string(); 2]));
+        assert_eq!((shown(&l).as_str(), targets(&l)), ("• Title\u{a0}↗ — desc", vec!["https://x.io".to_string(); 2]));
         let l = markdown_line("**See [docs](https://x.io) and `this`**", &mut f);
         assert_eq!(shown(&l), "See docs\u{a0}↗ and this");
         assert!(l.spans.iter().filter(|s| link_target(s).is_none() && !s.content.is_empty()).all(|s| s.style.add_modifier.contains(Modifier::BOLD)), "{:?}", l.spans);
