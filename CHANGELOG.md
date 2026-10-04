@@ -84,6 +84,26 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **The installer says when another krowk would run instead.** If a krowk
+  earlier on your `PATH` (an older install, or a build from source) would
+  answer before the one just installed, the installer now names it, says
+  its version, and how to fix it. Before, `krowk --version` quietly showed the
+  old one.
+- **Pairing refuses a malformed key exchange outright.** If the other side
+  of `krowk devices add` / `krowk sync join` sends a degenerate SPAKE2 point
+  (one of small order, or one spelled non-canonically), the pairing ends at
+  once instead of carrying on. An honest device never sends one; this only
+  closes the door on a misbehaving peer.
+- **Running `krowk sync init --start-over` again says what it did.** While
+  the old keys from a start-over are kept, running it again carries on that
+  start-over (sealing any sessions left under the new list) and never begins
+  a new one. It now says so, and that a new start-over needs
+  `krowk sync recovery discard-old` first.
+- **A new device can't take a name that only looks like one already on your
+  list.** Adding or pairing a device is refused when its name reads like
+  another device's: a Cyrillic `а` for a Latin `a`, full-width letters, or
+  `1` or `I` for `l`. Each name in a removal or recovery review now names
+  exactly one device.
 - **A synced session moves to a new key when you host it again after
   removing a device.** A session published before you removed a device used
   to go on under the session key that device held, however often it was

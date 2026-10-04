@@ -418,7 +418,24 @@ impl spake2::rand_core::TryRng for OsRng {
 impl spake2::rand_core::TryCryptoRng for OsRng {}
 
 fn spake_key(state: Spake2<Ed25519Group>, theirs: &[u8]) -> Result<Zeroizing<Vec<u8>>, Error> {
+    check_point(theirs)?;
     state.finish(theirs).map(Zeroizing::new).map_err(|_| failed())
+}
+
+/// The peer's SPAKE2 point, after its side byte: on the curve, spelled the
+/// one canonical way, and not one of the eight points of small order (or a
+/// sum with one). Belt and braces: SPAKE2's blinding already keeps a
+/// small-order point from revealing the code, but a peer sending one is
+/// not following the protocol, and it is refused rather than reasoned
+/// about (review n1 of #198).
+fn check_point(msg: &[u8]) -> Result<(), Error> {
+    use curve25519_dalek::edwards::CompressedEdwardsY;
+    let bytes: [u8; 32] = msg.get(1..).and_then(|b| b.try_into().ok()).ok_or_else(failed)?;
+    let point = CompressedEdwardsY(bytes).decompress().ok_or_else(failed)?;
+    if point.compress().0 != bytes || !point.is_torsion_free() || point.is_small_order() {
+        return Err(failed());
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------- A, the paired device
