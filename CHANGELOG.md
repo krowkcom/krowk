@@ -74,6 +74,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A synced session moves to a new key when you host it again after
+  removing a device.** A session published before you removed a device used
+  to go on under the session key that device held, however often it was
+  hosted again. Now the host first moves it to a new key, sealed under your
+  current user key, which the removed device never had; a start-over does
+  the same for the sessions it brings along. Everything written before
+  still reads on all your devices. A host already running when you remove
+  the device keeps its key until the session is next hosted. A session that
+  was never moved is stored exactly as before and still opens on older
+  krowk versions; one that was needs this version, and a viewer that
+  opened it before the move has to open it again.
+
 - **Copying from the TUI no longer drags the layout along.** Text in the
   transcript starts at the first column: a mouse selection of your prompt,
   an answer, a list or a code block comes without the two-column margin,
