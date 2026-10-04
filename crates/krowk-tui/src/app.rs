@@ -2719,12 +2719,13 @@ impl App {
     }
 
     /// Lets go of every pasted image that nothing unsent names any more:
-    /// not the prompt, not steering, not `also` (what is held).
-    pub fn forget_images(&mut self, also: Option<&str>) {
+    /// not the prompt, not steering, not `also` (what is held, the prompt
+    /// a turn or a limit's offer may hand back).
+    pub fn forget_images(&mut self, also: &[&str]) {
         let named: std::collections::HashSet<u32> = std::iter::once(self.editor.text())
             .chain(self.steers.iter().map(String::as_str))
             .chain(self.unsent_steers.iter().map(String::as_str))
-            .chain(also)
+            .chain(also.iter().copied())
             .flat_map(|t| crate::editor::image_tokens(t).map(|(_, n)| n).collect::<Vec<_>>())
             .collect();
         self.images.retain(|n, _| named.contains(n));
@@ -4502,16 +4503,16 @@ mod tests {
         // Deleted from the prompt and named nowhere else, an image is let go.
         a.editor.backspace();
         a.editor.backspace();
-        a.forget_images(None);
+        a.forget_images(&[]);
         assert_eq!(a.images.keys().copied().collect::<Vec<_>>(), [3]);
         a.unsent_steers.push("[Image #3]".into());
         a.editor.clear();
-        a.forget_images(None);
+        a.forget_images(&[]);
         assert_eq!(a.images.len(), 1, "unsent steering still names it");
         a.unsent_steers.clear();
-        a.forget_images(Some("held: [Image #3]"));
+        a.forget_images(&["held: [Image #3]"]);
         assert_eq!(a.images.len(), 1, "a held prompt still names it");
-        a.forget_images(None);
+        a.forget_images(&[]);
         assert!(a.images.is_empty());
         a.forget_session();
         assert_eq!(a.attach(image(), None), 1, "a new session numbers from 1");

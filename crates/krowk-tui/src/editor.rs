@@ -161,11 +161,11 @@ impl Editor {
     /// written, with the caret at the end of the whole.
     pub fn restore(&mut self, text: &str) {
         self.browsing = None;
-        if self.text.is_empty() {
-            self.marks.clear();
-            self.text = text.to_string();
-        } else {
-            self.splice(0..0, &format!("{text}\n"));
+        // Above the whole prompt, a paste's mark at its start included.
+        let above = if self.text.is_empty() { text.to_string() } else { format!("{text}\n") };
+        self.text.insert_str(0, &above);
+        for (_, at) in &mut self.marks {
+            *at += above.len();
         }
         self.cursor = self.text.len();
     }
@@ -592,6 +592,12 @@ mod tests {
         e.restore("steer");
         e.place_image(Some(m), 4);
         assert_eq!(e.text(), "steer\nlook at [Image #4] ");
+        let mut e = typed("draft");
+        e.home();
+        let m = e.mark();
+        e.restore("steer");
+        e.place_image(Some(m), 6);
+        assert_eq!(e.text(), "steer\n[Image #6] draft", "a mark at the start stays before the draft");
         // And a prompt swapped for another from the history drops it.
         let mut e = Editor::new(None);
         e.insert_str("a much longer prompt sent before");

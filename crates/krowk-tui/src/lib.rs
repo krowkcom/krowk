@@ -994,7 +994,7 @@ impl<'h> Ui<'h> {
                     if refused_images {
                         app.editor.restore(&self.last_prompt);
                     }
-                    app.forget_images(self.held.as_deref());
+                    self.forget_images(app);
                     self.go_on(app);
                 }
                 r = finish(&mut self.model_route) => {
@@ -2792,12 +2792,16 @@ impl Ui<'_> {
     fn pasted(&mut self, app: &mut App, mark: Option<u64>, p: paste::Pasted) {
         app.flash = None;
         let held: std::collections::HashSet<u32> = editor::image_tokens(app.editor.text()).map(|(_, n)| n).filter(|n| app.images.contains_key(n)).collect();
-        let room = krowk_harness::images::MAX_IMAGES.saturating_sub(held.len());
-        if p.images.len() > room {
+        // What the host takes of one prompt: as many, and as much base64.
+        let b64 = |len: usize| len.div_ceil(3) * 4;
+        let bytes: usize = held.iter().filter_map(|n| app.images.get(n)).chain(&p.images).map(|i| b64(i.bytes.len())).sum();
+        let too_many = held.len() + p.images.len() > krowk_harness::images::MAX_IMAGES;
+        if too_many || bytes > krowk_harness::images::SENT_BYTES {
             if let Some(m) = mark {
                 app.editor.unmark(m);
             }
-            app.notice(&format!("nothing pasted — a prompt takes at most {} images", krowk_harness::images::MAX_IMAGES));
+            let why = if too_many { format!("at most {} images", krowk_harness::images::MAX_IMAGES) } else { format!("at most {} MB of images", krowk_harness::images::SENT_BYTES / (1024 * 1024)) };
+            app.notice(&format!("nothing pasted — a prompt takes {why}"));
         } else if !p.images.is_empty() {
             app.attach_all(p.images, mark);
         } else if let Some(t) = &p.text {
@@ -2810,8 +2814,20 @@ impl Ui<'_> {
             Some(why) => app.notice(&format!("nothing pasted — {why}")),
             None => {}
         }
-        app.forget_images(self.held.as_deref());
+        self.forget_images(app);
         app.touch();
+    }
+
+    /// Lets go of the pasted images nothing can still send: kept are the
+    /// held prompt's, and the last prompt's while its turn runs or a
+    /// limit's offer would send it again — a refused prompt comes back to
+    /// the editor, images and all.
+    fn forget_images(&self, app: &mut App) {
+        let mut also: Vec<&str> = self.held.as_deref().into_iter().collect();
+        if self.turn.is_some() || app.offer.is_some() {
+            also.push(&self.last_prompt);
+        }
+        app.forget_images(&also);
     }
 }
 
