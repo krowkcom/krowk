@@ -262,9 +262,10 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
                 session_id: ctx.session_id.clone(),
                 effort: effort_for(self.client.wire_api(), ctx.effort, &takes),
                 reasoning: ctx.model_info.as_ref().map_or_else(|| crate::toolset::reasons(&ctx.model.model), |i| i.reasoning),
-                images: crate::images::Loaded::new(),
+                images: crate::images::Loaded::default(),
             };
-            load_images(&ctx.session_dir, &mut req).await;
+            let reads_images = ctx.model_info.as_ref().and_then(|i| i.images) != Some(false);
+            load_images(&ctx.session_dir, reads_images, &mut req).await;
             let hooks = Hooked::new(&ctx, &events);
             // SessionStart and UserPromptSubmit, before the model sees the
             // prompt: what they print is context the model reads with it,
@@ -314,7 +315,7 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
                     req.history.push(HistoryItem { item, response: None });
                 }
                 if more {
-                    load_images(&ctx.session_dir, &mut req).await;
+                    load_images(&ctx.session_dir, reads_images, &mut req).await;
                 }
                 // R-TODO-3: a list left open too long is put in front of
                 // the model again, where the log shows it was.
@@ -502,27 +503,33 @@ impl<'a> Hooked<'a> {
     }
 }
 
-/// Context a hook added, as the model reads it: a `userText` item in the
-/// log where it landed, framed with the event that produced it.
-/// Reads the images the request's history names and it does not hold yet,
-/// off the runtime's thread.
-async fn load_images(session_dir: &std::path::Path, req: &mut ModelRequest) {
-    let refs: Vec<_> = req.history.iter().filter_map(|h| match &h.item {
-        Item::UserText { images, .. } => Some(images.iter().filter(|r| !req.images.contains_key(&r.file)).cloned()),
-        _ => None,
-    }).flatten().collect();
+/// Chooses and reads the images the request's history names
+/// (`images::load`), off the runtime's thread. `reads`: the model reads
+/// images, unless the catalog says it does not.
+async fn load_images(session_dir: &std::path::Path, reads: bool, req: &mut ModelRequest) {
+    let refs: Vec<_> = req
+        .history
+        .iter()
+        .filter_map(|h| match &h.item {
+            Item::UserText { images, .. } => Some(images.iter().cloned()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
     if refs.is_empty() {
         return;
     }
     let (dir, mut loaded) = (session_dir.to_path_buf(), std::mem::take(&mut req.images));
     req.images = tokio::task::spawn_blocking(move || {
-        crate::images::load(&dir, &refs, &mut loaded);
+        crate::images::load(&dir, &refs.iter().collect::<Vec<_>>(), reads, &mut loaded);
         loaded
     })
     .await
     .unwrap_or_default();
 }
 
+/// Context a hook added, as the model reads it: a `userText` item in the
+/// log where it landed, framed with the event that produced it.
 async fn add_context(events: &Events, req: &mut ModelRequest, event: &str, context: Vec<String>) {
     for text in context {
         let item = Item::user(format!("<hook event=\"{event}\">\n{}\n</hook>", text.trim()));

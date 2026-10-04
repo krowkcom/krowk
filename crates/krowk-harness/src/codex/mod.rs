@@ -815,10 +815,10 @@ fn text_input(input: &[Steer], session_dir: &Path) -> Value {
         for r in &s.images {
             match crate::images::path(session_dir, r).filter(|p| p.is_file()) {
                 Some(p) => {
-                    out.push(text(&crate::images::label(r, false)));
+                    out.push(text(&crate::images::label(r, None)));
                     out.push(json!({"type": "localImage", "path": p}));
                 }
-                None => out.push(text(&crate::images::label(r, true))),
+                None => out.push(text(&crate::images::gone(r))),
             }
         }
     }

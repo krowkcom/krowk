@@ -846,8 +846,8 @@ async fn user_content(text: &str, refs: &[crate::protocol::ImageRef], session_di
     }
     let (dir, wanted) = (session_dir.to_path_buf(), refs.to_vec());
     let loaded = tokio::task::spawn_blocking(move || {
-        let mut l = crate::images::Loaded::new();
-        crate::images::load(&dir, &wanted, &mut l);
+        let mut l = crate::images::Loaded::default();
+        crate::images::load(&dir, &wanted.iter().collect::<Vec<_>>(), true, &mut l);
         l
     })
     .await
