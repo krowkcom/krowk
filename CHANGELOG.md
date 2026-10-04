@@ -14,7 +14,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **krowk says what it is: a coding agent harness.** `krowk help`, the
   installer and the package descriptions lead with one session on any
   machine, model or agent; publishing to a permalink is one of the things it
-  does. `sync` and `devices` have their own `SYNC` heading in `krowk help`.
+  does. `sync` and `devices` move up to the `AGENT` heading in `krowk help`.
   The lean build, which only publishes, still calls itself that.
 - **The installer writes the agent skill for every agent that reads one.**
   Besides Claude Code's `~/.claude/skills`, it writes `~/.agents/skills`,

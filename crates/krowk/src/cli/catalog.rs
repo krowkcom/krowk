@@ -865,12 +865,11 @@ minutes (host.idleMinutes in config.json, or KROWK_HOST_IDLE seconds).
 /// `krowk help` lists each command; `krowk help --all` each with everything
 /// under it. Every command the build has sits under exactly one heading.
 pub const GROUPS: &[(&str, &[&str])] = &[
-    // The harness build's own commands, and the sessions they run.
+    // The harness build's own commands, and the sessions they run. Sync and
+    // devices carry a session from one machine to the next, so they sit here:
+    // a heading of their own would push the overview past one screen.
     #[cfg(feature = "harness")]
-    ("AGENT", &["connect", "disconnect", "status", "sessions"]),
-    // What carries a session from one machine to the next.
-    #[cfg(feature = "harness")]
-    ("SYNC", &["sync", "devices"]),
+    ("AGENT", &["connect", "disconnect", "status", "sessions", "sync", "devices"]),
     ("PUBLISH", &["push", "runs", "uploads", "claim"]),
     ("ACCOUNT", &["login", "logout", "whoami", "workspaces", "auth"]),
     (
