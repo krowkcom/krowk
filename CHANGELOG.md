@@ -11,6 +11,23 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Paste a screenshot into the prompt.** Ctrl-V (or Alt-V, where the
+  terminal keeps Ctrl-V for itself) puts the clipboard's image in the prompt
+  as `[Image #1]`, and the model sees it with the text. Dragging an image
+  file onto the terminal, or pasting its path, does the same, several at
+  once included. A file is read the moment it's dropped, so a macOS
+  screenshot dragged from its thumbnail still works. `[Image #N]` is one
+  unit to the caret: Backspace takes it whole. Typing goes on while a large
+  screenshot is read, and the image lands where you pasted it. PNG, JPEG,
+  GIF and WebP are taken, scaled down to 2,000 pixels a side and under the
+  providers' size limits as they're pasted, and kept beside the session's
+  log in `~/.krowk/sessions/<id>/images/`. Every provider and backend gets them
+  (Anthropic, OpenAI, xAI and other Chat Completions servers, Claude Code
+  and Codex), and a model the catalog says can't read images is refused
+  with the prompt handed back. The clipboard is read with `wl-paste` or
+  `xclip` on Linux (krowk names the one to install if neither is there),
+  `osascript` on macOS, and PowerShell on Windows and under WSL. Ctrl-V with
+  only text on the clipboard pastes the text.
 - **On Linux, `krowk -p` now makes edits without asking, inside a sandbox.**
   A `-p` run with no `--permission-mode` and no `defaultMode` used to refuse
   every edit; where bubblewrap works it now runs in `acceptEdits`, with its

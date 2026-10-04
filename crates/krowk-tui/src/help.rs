@@ -17,6 +17,7 @@ pub enum Action {
     Agents,
     Details,
     Copy,
+    PasteImage,
     Interrupt,
     Quit,
 }
@@ -51,6 +52,7 @@ pub const ENTRIES: &[Entry] = &[
     e("Subagents", "See, expand or stop subagents", "`ctrl-g`", Action::Agents),
     e("Session", "Tokens, limits and the log file", "`ctrl-o`", Action::Details),
     e("Copy", "Copy the last answer, a code block in it, or your prompt, as written", "`ctrl-y`", Action::Copy),
+    e("Paste image", "Paste a screenshot, or drop an image file onto the terminal", "`ctrl-v` `alt-v`", Action::PasteImage),
     e("Editing", "Jump to line ends, delete words", "`ctrl-a/e` `ctrl-u/k/w`", Action::Tell),
     e("Quit", "Leave krowk", "`ctrl-d` · /exit", Action::Quit),
 ];

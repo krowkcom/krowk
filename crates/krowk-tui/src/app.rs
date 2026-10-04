@@ -19,7 +19,7 @@ use crate::table;
 use krowk_harness::host::Pricer;
 use krowk_harness::log::Recent;
 use krowk_harness::protocol::{
-    ApprovalRequest, BackendAgent, Billing, Delta, ErrorInfo, HandoffKind, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
+    ApprovalRequest, BackendAgent, Billing, Delta, ErrorInfo, HandoffKind, ImageInput, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
     TurnStatus, Usage,
 };
 use std::collections::BTreeMap;
@@ -683,6 +683,13 @@ pub struct App {
     pub wipe: bool,
     /// A word under the prompt until the next key: "copied".
     pub flash: Option<String>,
+    /// The images pasted into the prompt and not sent yet, by the number
+    /// their `[Image #N]` carries: sent with the prompt or steer that
+    /// names them (`images_for`).
+    pub images: std::collections::BTreeMap<u32, crate::paste::Image>,
+    /// The highest `[Image #N]` the session's log has: a paste numbers on
+    /// from it, so a number always means the same image.
+    pub images_seen: u32,
     /// When the approval shown now came up: keys typed in the moment
     /// before are not taken as its answer.
     pub approval_shown: Option<Instant>,
@@ -804,6 +811,8 @@ impl App {
             left: Vec::new(),
             wipe: false,
             flash: None,
+            images: Default::default(),
+            images_seen: 0,
             approval_shown: None,
             approval_expanded: false,
             subs: Vec::new(),
@@ -1002,14 +1011,15 @@ impl App {
     /// terminal that reflows on a narrowing resize wraps a row's band with
     /// its text, padding and all, and padding past the new width would
     /// spill onto a row of its own. A row as wide as its text wraps only
-    /// when its text does.
-    fn push_said(&mut self, text: &str) {
+    /// when its text does. The `[Image #N]` of each image it carried
+    /// (`images`) is in the accent.
+    fn push_said(&mut self, text: &str, images: &[u32]) {
         self.said = text.to_string();
         let width = usize::from(self.width);
         let rows = wrap(&clean(&text.replace('\t', "    ")), width);
         for row in std::iter::once(String::new()).chain(rows).chain([String::new()]) {
             let fill = " ".repeat(usize::from(row.width() < width));
-            self.push_line(Line::from(Span::styled(row + &fill, look::said_band())));
+            self.push_line(Line::from(with_images(row + &fill, look::said_band(), |n| images.contains(&n))));
         }
     }
 
@@ -1840,6 +1850,9 @@ impl App {
 
     fn on_item(&mut self, item_id: &str, item: &Item, live: bool) {
         let streamed = self.live.as_ref().is_some_and(|l| l.id == item_id);
+        if let Item::UserText { images, .. } = item {
+            self.images_seen = images.iter().map(|r| r.number).fold(self.images_seen, u32::max);
+        }
         match item {
             // krowk's own reminder, not the person's words.
             Item::UserText { text, .. } if text.starts_with(krowk_harness::todo::REMINDER) => {
@@ -1867,7 +1880,11 @@ impl App {
                 }
                 self.finish_live();
                 self.gap();
-                self.push_said(text);
+                let numbers: Vec<u32> = match item {
+                    Item::UserText { images, .. } => images.iter().map(|r| r.number).collect(),
+                    _ => Vec::new(),
+                };
+                self.push_said(text, &numbers);
             }
             Item::AssistantText { text } => {
                 // What streamed is on screen already. A message a backend
@@ -2205,7 +2222,10 @@ impl App {
                 (row.clone(), band)
             };
             let fill = " ".repeat(inner.saturating_sub(2 + text.width()));
-            rows.push(Line::from(vec![prefix, Span::styled(text, style), Span::styled(fill, band)]).style(band));
+            let mut spans = vec![prefix];
+            spans.extend(with_images(text, style, |n| self.images.contains_key(&n)));
+            spans.push(Span::styled(fill, band));
+            rows.push(Line::from(spans).style(band));
         }
         rows.push(blank);
         rows.push(Line::default());
@@ -2579,6 +2599,7 @@ impl App {
         self.finish_live();
         self.flush_calls();
         self.session_id = None;
+        self.images_seen = 0;
         self.cost = 0.0;
         self.unpriced = false;
         self.costed = false;
@@ -2662,12 +2683,60 @@ impl App {
         self.dirty = true;
     }
 
+    /// A pasted image into the prompt, where `mark` was left for it (at
+    /// the caret with none), under the next number the session has not
+    /// used.
+    pub fn attach(&mut self, image: crate::paste::Image, mark: Option<u64>) -> u32 {
+        self.attach_all(vec![image], mark)[0]
+    }
+
+    /// One paste's images, together where `mark` was left, numbered in turn.
+    pub fn attach_all(&mut self, images: Vec<crate::paste::Image>, mark: Option<u64>) -> Vec<u32> {
+        let mut numbers = Vec::new();
+        for image in images {
+            let n = self.images.keys().next_back().copied().unwrap_or(0).max(self.images_seen) + 1;
+            self.images.insert(n, image);
+            numbers.push(n);
+        }
+        self.editor.place_images(mark, &numbers);
+        self.dirty = true;
+        numbers
+    }
+
+    /// The pasted images `text` names, once each, as a command carries
+    /// them. A number nothing was pasted under here — typed, or a recalled
+    /// prompt's whose image is gone — stays text.
+    pub fn images_for(&self, text: &str) -> Vec<ImageInput> {
+        let mut out: Vec<ImageInput> = Vec::new();
+        for (_, n) in crate::editor::image_tokens(text) {
+            if let Some(i) = self.images.get(&n)
+                && !out.iter().any(|o| o.number == n)
+            {
+                out.push(ImageInput { number: n, media_type: i.media_type.to_string(), data: i.base64() });
+            }
+        }
+        out
+    }
+
+    /// Lets go of every pasted image that nothing unsent names any more:
+    /// not the prompt, not steering, not `also` (what is held).
+    pub fn forget_images(&mut self, also: Option<&str>) {
+        let named: std::collections::HashSet<u32> = std::iter::once(self.editor.text())
+            .chain(self.steers.iter().map(String::as_str))
+            .chain(self.unsent_steers.iter().map(String::as_str))
+            .chain(also)
+            .flat_map(|t| crate::editor::image_tokens(t).map(|(_, n)| n).collect::<Vec<_>>())
+            .collect();
+        self.images.retain(|n, _| named.contains(n));
+    }
+
     /// `text`, sent as a prompt, on screen now: the host logs it only once
     /// the model is routed and its key read.
     pub fn echo(&mut self, text: &str) {
         self.finish_live();
         self.gap();
-        self.push_said(text);
+        let numbers: Vec<u32> = self.images.keys().copied().collect();
+        self.push_said(text, &numbers);
         self.echoed = Some(text.to_string());
     }
 
@@ -2880,6 +2949,24 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
         }
     }
     rows
+}
+
+/// `text` as spans in `style`, each `[Image #N]` that `is_image` says is a
+/// pasted image's in the accent: one only typed stays as it was.
+fn with_images(text: String, style: Style, is_image: impl Fn(u32) -> bool) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for (r, _) in crate::editor::image_tokens(&text).filter(|(_, n)| is_image(*n)) {
+        if r.start > at {
+            out.push(Span::styled(text[at..r.start].to_string(), style));
+        }
+        out.push(Span::styled(text[r.clone()].to_string(), style.patch(look::accent())));
+        at = r.end;
+    }
+    if at < text.len() || out.is_empty() {
+        out.push(Span::styled(text[at..].to_string(), style));
+    }
+    out
 }
 
 /// `rows`, each on a branch as a file tree draws a directory's entries:
@@ -4396,6 +4483,38 @@ mod tests {
         assert_eq!(help::canonical("/clear"), "/new");
         assert!(help::unlisted("/resume"));
         assert_eq!(help::slash("/sessions", &[]).first().map(|s| s.name.as_str()), Some("sessions"));
+    }
+
+    #[test]
+    fn a_pasted_image_numbers_on_from_the_log_and_goes_with_the_text_that_names_it() {
+        let image = || crate::paste::Image { media_type: "image/png", bytes: b"\x89PNG\r\n\x1a\n".to_vec().into(), width: 1, height: 1 };
+        let mut a = app();
+        let r = |n| krowk_harness::protocol::ImageRef { number: n, media_type: "image/png".into(), file: format!("{n}.png") };
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::UserText { text: "[Image #1] [Image #2]".into(), images: vec![r(1), r(2)] } }));
+        a.editor.insert_str("compare");
+        assert_eq!(a.attach(image(), None), 3, "on from the log's highest");
+        assert_eq!(a.attach(image(), None), 4);
+        assert_eq!(a.editor.text(), "compare [Image #3] [Image #4] ");
+        // A number nothing was pasted under here stays text.
+        let sent = a.images_for("[Image #4] then [Image #3], [Image #4] again, and [Image #9]");
+        assert_eq!(sent.iter().map(|i| i.number).collect::<Vec<_>>(), [4, 3], "once each, in the order named");
+        assert_eq!(sent[0].data, "iVBORw0KGgo=");
+        // Deleted from the prompt and named nowhere else, an image is let go.
+        a.editor.backspace();
+        a.editor.backspace();
+        a.forget_images(None);
+        assert_eq!(a.images.keys().copied().collect::<Vec<_>>(), [3]);
+        a.unsent_steers.push("[Image #3]".into());
+        a.editor.clear();
+        a.forget_images(None);
+        assert_eq!(a.images.len(), 1, "unsent steering still names it");
+        a.unsent_steers.clear();
+        a.forget_images(Some("held: [Image #3]"));
+        assert_eq!(a.images.len(), 1, "a held prompt still names it");
+        a.forget_images(None);
+        assert!(a.images.is_empty());
+        a.forget_session();
+        assert_eq!(a.attach(image(), None), 1, "a new session numbers from 1");
     }
 
     #[test]

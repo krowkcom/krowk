@@ -39,6 +39,15 @@ nucleo-matcher = "0.3"
 # full.size (8,648,392 -> 10,874,280 on x86_64 Linux).
 syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+# A pasted image's bytes as they travel in a command, and as PowerShell
+# hands them over. Already linked, by the harness.
+base64 = "0.22"
+# A pasted image, made small enough for every provider (`paste`): read as
+# PNG, JPEG, GIF or WebP, resized, and written back as PNG or JPEG. No
+# rayon; no BMP or TIFF, which a clipboard is asked for as PNG instead
+# (237,024 bytes more for the two). Adds 419,616 bytes for PNG and JPEG and
+# 165,568 for GIF and WebP: 13,345,000 -> 13,930,184 on x86_64 Linux.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [target.'cfg(unix)'.dependencies]
 # Ctrl-Z: stopping ourselves with SIGTSTP once the terminal is given back.
