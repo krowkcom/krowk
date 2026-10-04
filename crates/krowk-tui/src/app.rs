@@ -1208,6 +1208,10 @@ impl App {
     /// block it ended in closed.
     fn end_md(&mut self) {
         self.end_table();
+        // A block it ended in is done, whatever closes its fence below.
+        if let Some((lang, _, code)) = self.block.take() {
+            self.blocks.push((lang, code.join("\n")));
+        }
         if self.md.fenced() {
             self.push_md("```");
         }
@@ -1712,6 +1716,9 @@ impl App {
                 if !live {
                     self.settle_replayed(None);
                 }
+                // Ctrl-Y offers the last turn's code blocks, replayed too.
+                self.blocks.clear();
+                self.block = None;
                 self.follow.turn_started();
                 self.session_id = Some(ev.session_id.clone());
                 self.model = Some(model.clone());
@@ -3282,7 +3289,7 @@ mod tests {
         // A block one part of the answer ends inside is closed with it, as
         // it is drawn, and the next part's is a block of its own.
         a.blocks.clear();
-        for l in ["```sh", "ls"] {
+        for l in ["~~~sh", "ls"] {
             a.push_md(l);
         }
         a.end_md();
