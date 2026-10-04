@@ -300,10 +300,22 @@ pub fn same_name(a: &str, b: &str) -> bool {
 pub fn confusable_names(a: &str, b: &str) -> bool {
     fn fold(s: &str) -> String {
         use unicode_normalization::UnicodeNormalization;
-        let once: String = unicode_security::skeleton(&s.nfkc().collect::<String>()).collect();
+        let nfkc: String = s.nfkc().collect();
+        // Runs of space of any kind read as one, and none at the ends; what
+        // draws nothing (a Hangul filler, U+034F) does not count.
+        let spaced = nfkc.split(char::is_whitespace).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+        let shown: String = spaced.chars().filter(|&c| !invisible(c)).collect();
+        let once: String = unicode_security::skeleton(&shown).collect();
         unicode_security::skeleton(&once.to_lowercase()).collect()
     }
     fold(a) == fold(b)
+}
+
+/// What draws nothing beside text: Unicode's default-ignorable code points
+/// the refused list leaves out (Hangul fillers, the combining grapheme
+/// joiner, variation selectors).
+fn invisible(c: char) -> bool {
+    matches!(c as u32, 0x034F | 0x115F | 0x1160 | 0x17B4 | 0x17B5 | 0x3164 | 0xFFA0 | 0xFE00..=0xFE0F | 0xE0100..=0xE01EF | 0x180B..=0x180D | 0x180F)
 }
 
 fn check_text(seq: u64, what: &str, s: &str, min: usize, max: usize) -> Result<(), Error> {
@@ -1199,7 +1211,7 @@ mod tests {
     #[test]
     fn d1_a_name_that_reads_like_one_on_the_list_is_not_written() {
         let (laptop, _kit, phone, entries, g1) = three();
-        for alike in ["l\u{430}ptop", "\u{FF4C}\u{FF41}\u{FF50}\u{FF54}\u{FF4F}\u{FF50}", "1aptop", "Iaptop", "PHONE"] {
+        for alike in ["l\u{430}ptop", "\u{FF4C}\u{FF41}\u{FF50}\u{FF54}\u{FF4F}\u{FF50}", "1aptop", "Iaptop", "PHONE", "laptop ", "laptop\u{A0}", "lap\u{3164}top", "lap\u{34F}top"] {
             let mut s = Dev::new("x").subject();
             s.name = alike.into();
             let e = chain(&entries).batch(&g1, vec![Change::Add(s)], laptop.id(), &laptop.signing, T).err().expect("refused").0;
