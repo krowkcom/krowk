@@ -1037,33 +1037,12 @@ impl Proc {
         r
     }
 
-    // Legacy: one loop over every Claude Code message of a turn. TODO: split into helpers and drop this allow.
-    #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
+    #[allow(clippy::too_many_arguments)]
     async fn read_turn(&mut self, prompt: Option<&Value>, t: &mut Translator, ctx: &mut TurnContext, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<TurnEnd, EngineError> {
         if let Some(prompt) = prompt {
             self.send(&json!({"type": "user", "message": {"role": "user", "content": prompt}, "parent_tool_use_id": null, "session_id": ""})).await?;
         }
-        // A turn Claude Code began is read from where the idle loop left
-        // it. Under a prompt it is the race the host could not see — it
-        // began as the prompt was on its way — and its `result` is not the
-        // prompt's: an `origin` says so, and a binary too old to send one
-        // is taken at its word that one result is owed first.
-        let mut queued: VecDeque<Value> = std::mem::take(&mut self.begun).into();
-        let mut why = self.status.pending().take().map(|p| p.reason);
-        let mut owed = u32::from(prompt.is_some() && !queued.is_empty() && !self.origins);
-        queued.append(&mut self.backlog);
-        self.held_init = None;
-        if !queued.is_empty() {
-            self.ended.clear();
-        }
-        // What finished before a prompt either began its turn — waiting, or
-        // folded here — or begins it only after the prompt's answer, which
-        // a stray `init` is not proof of: the leave to start one goes, the
-        // words stay for the turn that does follow.
-        let mut before = if prompt.is_some() { self.finished.take() } else { None };
-        if prompt.is_some() {
-            self.armed = false;
-        }
+        let (mut queued, mut why, mut owed, mut before) = self.take_begun(prompt.is_some());
         let mut interrupted = false;
         let mut receipt_required = false;
         let mut receipt: Option<String> = None;
@@ -1072,36 +1051,21 @@ impl Proc {
         let mut gone = false;
         let mut drain: Option<tokio::time::Instant> = None;
         let result = loop {
-            let d = deadline;
-            let until = async move {
-                match d {
-                    Some(d) => tokio::time::sleep_until(d).await,
-                    None => std::future::pending().await,
-                }
-            };
-            let dr = drain;
-            let drained = async move {
-                match dr {
-                    Some(d) => tokio::time::sleep_until(d).await,
-                    None => std::future::pending().await,
-                }
-            };
+            let until = crate::engine::sleep_until(deadline);
+            let drained = crate::engine::sleep_until(drain);
             tokio::select! {
                 biased;
                 _ = cancelled(&mut ctx.cancel), if !interrupted => {
                     interrupted = true;
-                    let id = self.request_id();
-                    receipt = Some(id.clone());
-                    self.send(&json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}})).await?;
-                    deadline = Some(tokio::time::Instant::now() + if receipt_required { RECEIPT_GRACE } else { INTERRUPT_GRACE });
+                    let (id, until) = self.interrupt(receipt_required).await?;
+                    receipt = Some(id);
+                    deadline = Some(until);
                 }
                 _ = until => {
                     // Claude Code did not stop in time: the process goes, the
                     // turn keeps what it made, the session continues on --resume.
                     self.terminate().await;
-                    let mut out = Vec::new();
-                    t.finish(&mut out);
-                    forward(events, out).await;
+                    finish(t, events).await;
                     return Ok(TurnEnd::Interrupted);
                 }
                 // Claude Code exited — crashed, or was killed — while
@@ -1112,17 +1076,13 @@ impl Proc {
                     drain = Some(tokio::time::Instant::now() + DRAIN_GRACE);
                 }
                 _ = drained => {
-                    let mut out = Vec::new();
-                    t.finish(&mut out);
-                    forward(events, out).await;
+                    finish(t, events).await;
                     let e = self.died("before the turn finished");
                     return if interrupted { Ok(TurnEnd::Interrupted) } else { Err(e) };
                 }
                 msg = next_line(&mut queued, &mut self.out) => {
                     let Some(msg) = msg else {
-                        let mut out = Vec::new();
-                        t.finish(&mut out);
-                        forward(events, out).await;
+                        finish(t, events).await;
                         let e = self.died("before the turn finished");
                         if interrupted {
                             return Ok(TurnEnd::Interrupted);
@@ -1130,21 +1090,7 @@ impl Proc {
                         return Err(e);
                     };
                     match msg["type"].as_str() {
-                        Some("control_request") => {
-                            let answer = ask.answer(msg["request_id"].as_str().unwrap_or_default(), &msg["request"], Some((events, &ctx.cancel))).await;
-                            // An approved ExitPlanMode or EnterPlanMode moves
-                            // Claude Code to default or plan for what follows.
-                            if msg.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool")
-                                && answer.pointer("/response/response/behavior").and_then(Value::as_str) == Some("allow")
-                            {
-                                match msg.pointer("/request/tool_name").and_then(Value::as_str) {
-                                    Some("ExitPlanMode") => self.mode = "default".into(),
-                                    Some("EnterPlanMode") => self.mode = "plan".into(),
-                                    _ => {}
-                                }
-                            }
-                            self.send(&answer).await?;
-                        }
+                        Some("control_request") => self.answer(&msg, ask, events, &ctx.cancel).await?,
                         Some("control_response") => {
                             // The interrupt's receipt: once acknowledged, the
                             // result is waited for the full grace.
@@ -1162,37 +1108,10 @@ impl Proc {
                             if !announced && let Some(init) = t.init.clone() {
                                 announced = true;
                                 receipt_required = init.capabilities.iter().any(|c| c == "interrupt_receipt_v1");
-                                self.mode.clone_from(&init.permission_mode);
-                                // A mode looser than krowk's — a setting, a
-                                // wrapper — is stopped before it runs anything.
-                                if !init.permission_mode.is_empty() && looser_than(&init.permission_mode, ask.mode) {
-                                    self.terminate().await;
-                                    return Err(EngineError::new(
-                                        "backend_permission_mode",
-                                        format!(
-                                            "Claude Code on {instance} came up in its `{}` permission mode, looser than krowk's `{}` for this turn, so krowk stopped it before it ran anything — check `permissions.defaultMode` in its settings and the instance's `args`, or rerun krowk with a mode that allows it",
-                                            init.permission_mode,
-                                            ask.mode.name()
-                                        ),
-                                    ));
-                                }
-                                announce(events, &init, b, instance).await?;
+                                self.came_up(&init, ask, events, b, instance).await?;
                             }
                             if let Some(o) = t.outcome.take() {
-                                self.origins |= o.unprompted;
-                                if self.origins {
-                                    owed = 0;
-                                }
-                                if prompt.is_some() && (o.unprompted || owed > 0) {
-                                    // Claude Code's own turn ended inside
-                                    // this one: noted, and the prompt's
-                                    // answer read on.
-                                    owed = if o.unprompted { 0 } else { owed - 1 };
-                                    let reason = why.take().or_else(|| self.finished.take()).or_else(|| before.take()).unwrap_or_else(|| BEGAN.into());
-                                    before = None;
-                                    self.armed = false;
-                                    self.ended.clear();
-                                    note(events, folded(&reason)).await;
+                                if self.fold(&o, prompt.is_some(), &mut owed, (&mut why, &mut before), events).await {
                                     continue;
                                 }
                                 break o;
@@ -1202,6 +1121,73 @@ impl Proc {
                 }
             }
         };
+        self.wind_up(before, events).await;
+        if interrupted {
+            return Ok(TurnEnd::Interrupted);
+        }
+        if result.subtype == "success" && !result.is_error {
+            return Ok(TurnEnd::Completed);
+        }
+        Err(failed(&result, t.limit.as_ref(), instance))
+    }
+
+    /// Asks Claude Code to stop: the request's id, and how long it has.
+    async fn interrupt(&mut self, receipt_required: bool) -> Result<(String, tokio::time::Instant), EngineError> {
+        let id = self.request_id();
+        self.send(&json!({"type": "control_request", "request_id": id.clone(), "request": {"subtype": "interrupt"}})).await?;
+        Ok((id, tokio::time::Instant::now() + if receipt_required { RECEIPT_GRACE } else { INTERRUPT_GRACE }))
+    }
+
+    /// What was read between turns, for the turn about to be read: the
+    /// lines queued, why Claude Code began its own turn, how many results
+    /// are owed before a prompt's, and the words of what finished before.
+    fn take_begun(&mut self, prompted: bool) -> (VecDeque<Value>, Option<String>, u32, Option<String>) {
+        // A turn Claude Code began is read from where the idle loop left
+        // it. Under a prompt it is the race the host could not see — it
+        // began as the prompt was on its way — and its `result` is not the
+        // prompt's: an `origin` says so, and a binary too old to send one
+        // is taken at its word that one result is owed first.
+        let mut queued: VecDeque<Value> = std::mem::take(&mut self.begun).into();
+        let why = self.status.pending().take().map(|p| p.reason);
+        let owed = u32::from(prompted && !queued.is_empty() && !self.origins);
+        queued.append(&mut self.backlog);
+        self.held_init = None;
+        if !queued.is_empty() {
+            self.ended.clear();
+        }
+        // What finished before a prompt either began its turn — waiting, or
+        // folded here — or begins it only after the prompt's answer, which
+        // a stray `init` is not proof of: the leave to start one goes, the
+        // words stay for the turn that does follow.
+        let before = if prompted { self.finished.take() } else { None };
+        if prompted {
+            self.armed = false;
+        }
+        (queued, why, owed, before)
+    }
+
+    /// Whether the `result` read ends a turn of Claude Code's own inside a
+    /// prompted one, which is folded into it: noted, and the prompt's
+    /// answer read on. `owed` counts results due before the prompt's.
+    async fn fold(&mut self, o: &stream::Outcome, prompted: bool, owed: &mut u32, (why, before): (&mut Option<String>, &mut Option<String>), events: &Events) -> bool {
+        self.origins |= o.unprompted;
+        if self.origins {
+            *owed = 0;
+        }
+        if !(prompted && (o.unprompted || *owed > 0)) {
+            return false;
+        }
+        *owed = if o.unprompted { 0 } else { *owed - 1 };
+        let reason = why.take().or_else(|| self.finished.take()).or_else(|| before.take()).unwrap_or_else(|| BEGAN.into());
+        *before = None;
+        self.armed = false;
+        self.ended.clear();
+        note(events, folded(&reason)).await;
+        true
+    }
+
+    /// What is left once a turn's `result` is read.
+    async fn wind_up(&mut self, before: Option<String>, events: &Events) {
         // Words no fold took are the next self-started turn's, unless an
         // agent finished since.
         if self.finished.is_none() {
@@ -1211,31 +1197,42 @@ impl Proc {
         if let Some(agents) = self.drop_foreground() {
             let _ = events.send(EngineEvent::BackendAgents { agents }).await;
         }
-        if interrupted {
-            return Ok(TurnEnd::Interrupted);
+    }
+
+    /// Answers a `control_request` of Claude Code's. An approved
+    /// ExitPlanMode or EnterPlanMode moves it to default or plan for what
+    /// follows.
+    async fn answer(&mut self, msg: &Value, ask: &Answers, events: &Events, cancel: &tokio::sync::watch::Receiver<bool>) -> Result<(), EngineError> {
+        let answer = ask.answer(msg["request_id"].as_str().unwrap_or_default(), &msg["request"], Some((events, cancel))).await;
+        if msg.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool")
+            && answer.pointer("/response/response/behavior").and_then(Value::as_str) == Some("allow")
+        {
+            match msg.pointer("/request/tool_name").and_then(Value::as_str) {
+                Some("ExitPlanMode") => self.mode = "default".into(),
+                Some("EnterPlanMode") => self.mode = "plan".into(),
+                _ => {}
+            }
         }
-        if result.subtype == "success" && !result.is_error {
-            return Ok(TurnEnd::Completed);
+        self.send(&answer).await
+    }
+
+    /// Claude Code's `init`: its mode taken, then the turn announced.
+    async fn came_up(&mut self, init: &Init, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<(), EngineError> {
+        self.mode.clone_from(&init.permission_mode);
+        // A mode looser than krowk's — a setting, a
+        // wrapper — is stopped before it runs anything.
+        if !init.permission_mode.is_empty() && looser_than(&init.permission_mode, ask.mode) {
+            self.terminate().await;
+            return Err(EngineError::new(
+                "backend_permission_mode",
+                format!(
+                    "Claude Code on {instance} came up in its `{}` permission mode, looser than krowk's `{}` for this turn, so krowk stopped it before it ran anything — check `permissions.defaultMode` in its settings and the instance's `args`, or rerun krowk with a mode that allows it",
+                    init.permission_mode,
+                    ask.mode.name()
+                ),
+            ));
         }
-        let said = if !result.text.trim().is_empty() { result.text.trim().to_string() } else if !result.errors.is_empty() { result.errors.join("; ") } else { result.subtype.clone() };
-        let lower = said.to_lowercase();
-        // The account's plan limit, or the API's rate limit: what a switch to
-        // another instance answers (R-INST-7), with when it lifts.
-        let rejected = t.limit.as_ref().filter(|l| l.status == crate::protocol::LimitState::Limited);
-        // Only what Claude Code reports about the account — its rate-limit
-        // event, the API's status, its own error list — never the model's
-        // words, which a prompt can make say anything.
-        let errors = result.errors.join(" ").to_lowercase();
-        if rejected.is_some() || result.api_status == Some(429) || errors.contains("usage limit") || errors.contains("limit reached") || errors.contains("rate limit") {
-            let resets = rejected.and_then(|l| l.resets_at_ms).or_else(|| t.limit.as_ref().and_then(|l| l.resets_at_ms));
-            let until = resets.map(|ms| format!(" until {}", crate::host::clock(ms))).unwrap_or_default();
-            return Err(EngineError::new("rate_limited", format!("Claude Code on {instance} is limited{until} ({said}) — continue on another instance with --model, or wait")).with_status(result.api_status.unwrap_or(429)).with_resets(resets));
-        }
-        if lower.contains("/login") || lower.contains("not logged in") || lower.contains("invalid api key") || result.api_status == Some(401) {
-            let add = crate::connect::connect_command(instance, "claude-code");
-            return Err(EngineError::new("not_authenticated", format!("Claude Code is not signed in for the {instance} instance ({said}) — sign in with `{add}`, which runs Claude's own login")).with_status(401));
-        }
-        Err(EngineError::new("backend_failed", format!("Claude Code could not finish the turn: {said}")).with_status(result.api_status.unwrap_or(0)))
+        announce(events, init, b, instance).await
     }
 
     /// Keeps the list of agents from Claude Code's `system` lines, and says
@@ -1366,6 +1363,36 @@ impl Proc {
     }
 }
 
+
+/// Why a turn Claude Code ended without success failed.
+fn failed(result: &stream::Outcome, limit: Option<&crate::protocol::LimitStatus>, instance: &str) -> EngineError {
+    let said = if !result.text.trim().is_empty() { result.text.trim().to_string() } else if !result.errors.is_empty() { result.errors.join("; ") } else { result.subtype.clone() };
+    let lower = said.to_lowercase();
+    // The account's plan limit, or the API's rate limit: what a switch to
+    // another instance answers (R-INST-7), with when it lifts.
+    let rejected = limit.filter(|l| l.status == crate::protocol::LimitState::Limited);
+    // Only what Claude Code reports about the account — its rate-limit
+    // event, the API's status, its own error list — never the model's
+    // words, which a prompt can make say anything.
+    let errors = result.errors.join(" ").to_lowercase();
+    if rejected.is_some() || result.api_status == Some(429) || errors.contains("usage limit") || errors.contains("limit reached") || errors.contains("rate limit") {
+        let resets = rejected.and_then(|l| l.resets_at_ms).or_else(|| limit.and_then(|l| l.resets_at_ms));
+        let until = resets.map(|ms| format!(" until {}", crate::host::clock(ms))).unwrap_or_default();
+        return EngineError::new("rate_limited", format!("Claude Code on {instance} is limited{until} ({said}) — continue on another instance with --model, or wait")).with_status(result.api_status.unwrap_or(429)).with_resets(resets);
+    }
+    if lower.contains("/login") || lower.contains("not logged in") || lower.contains("invalid api key") || result.api_status == Some(401) {
+        let add = crate::connect::connect_command(instance, "claude-code");
+        return EngineError::new("not_authenticated", format!("Claude Code is not signed in for the {instance} instance ({said}) — sign in with `{add}`, which runs Claude's own login")).with_status(401);
+    }
+    EngineError::new("backend_failed", format!("Claude Code could not finish the turn: {said}")).with_status(result.api_status.unwrap_or(0))
+}
+
+/// What the translator still holds, sent on as the turn ends.
+async fn finish(t: &mut Translator, events: &Events) {
+    let mut out = Vec::new();
+    t.finish(&mut out);
+    forward(events, out).await;
+}
 
 async fn forward(events: &Events, out: Vec<EngineEvent>) {
     for ev in out {

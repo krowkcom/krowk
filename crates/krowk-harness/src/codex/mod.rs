@@ -791,6 +791,95 @@ fn tail(s: &str) -> String {
     s[cut..].to_string()
 }
 
+/// A notification of Codex's during a turn on `thread`.
+async fn on_note(thread: &str, method: &str, params: &Value, (subs, t): (&mut stream::SubThreads, &mut Translator), (codex_turn, completed): (&mut Option<String>, &mut Option<Value>), limit: &mut Option<LimitStatus>, events: &Events) {
+    // Another thread's — a subagent Codex runs — is
+    // its own conversation, which Codex keeps; what
+    // its calls cost is the session's spend.
+    if method == "thread/started" || params.get("threadId").and_then(Value::as_str).is_some_and(|th| th != thread) {
+        forward(events, subs.apply(thread, method, params).into_iter().collect()).await;
+        return;
+    }
+    let of_turn = params.get("turnId").and_then(Value::as_str).or_else(|| params.pointer("/turn/id").and_then(Value::as_str));
+    if let (Some(mine), Some(theirs)) = (&*codex_turn, of_turn)
+        && mine != theirs
+    {
+        return;
+    }
+    match method {
+        "turn/started" if codex_turn.is_none() => *codex_turn = of_turn.map(String::from),
+        // How near the account is to its limit (R-INST-6).
+        "account/rateLimits/updated" => {
+            if let Some(l) = params.get("rateLimits").and_then(limit_of) {
+                *limit = Some(l.clone());
+                let _ = events.send(EngineEvent::Limits(l)).await;
+            }
+        }
+        "turn/completed" => *completed = Some(params.get("turn").cloned().unwrap_or(Value::Null)),
+        _ => forward(events, t.apply(method, params)).await,
+    }
+}
+
+/// How krowk's turn ends with the Codex turn that completed, when it does:
+/// interrupted, or failed for Codex's reason.
+async fn concluded(turn: &Value, interrupted: bool, t: &mut Translator, events: &Events, limit: Option<&LimitStatus>, instance: &str) -> Option<Result<TurnEnd, EngineError>> {
+    match str_of(turn, "status") {
+        _ if interrupted => {
+            finish(t, events).await;
+            Some(Ok(TurnEnd::Interrupted))
+        }
+        "interrupted" => {
+            finish(t, events).await;
+            Some(Ok(TurnEnd::Interrupted))
+        }
+        "failed" => {
+            finish(t, events).await;
+            let err = turn.get("error").filter(|e| !e.is_null()).cloned().or_else(|| t.error.clone()).unwrap_or_else(|| json!({"message": "no reason given"}));
+            let e = failure(&err, instance);
+            // A limit says when it lifts, when Codex said.
+            Some(Err(if e.limited() { e.with_resets(limit.and_then(|l| l.resets_at_ms)) } else { e }))
+        }
+        _ => None,
+    }
+}
+
+/// What the next Codex turn in krowk's reads, once Codex finished one:
+/// the steering it refused, and any that arrived since, each logged where
+/// it landed. None when nothing is waiting, and krowk's turn ends.
+async fn more_input(refused: Vec<Steer>, steers: &crate::engine::Steers, t: &mut Translator, events: &Events) -> Option<Vec<Steer>> {
+    let mut more = refused;
+    more.extend(steers.take());
+    if more.is_empty() {
+        if steers.close_if_empty() {
+            finish(t, events).await;
+            return None;
+        }
+        more = steers.take();
+    }
+    for steer in &more {
+        steered(events, steer.clone()).await;
+    }
+    Some(more)
+}
+
+/// Steering Codex answered: taken into the running turn, it is logged
+/// where it landed; refused, as the turn was ending, it is the next Codex
+/// turn's input instead.
+async fn steer_answered(taken: bool, steer: Steer, refused: &mut Vec<Steer>, events: &Events) {
+    if taken {
+        steered(events, steer).await;
+    } else {
+        refused.push(steer);
+    }
+}
+
+/// What the translator still holds, sent on as the turn ends.
+async fn finish(t: &mut Translator, events: &Events) {
+    let mut out = Vec::new();
+    t.finish(&mut out);
+    forward(events, out).await;
+}
+
 async fn forward(events: &Events, out: Vec<EngineEvent>) {
     for ev in out {
         let _ = events.send(ev).await;
@@ -803,6 +892,15 @@ async fn steered(events: &Events, steer: Steer) {
     let id = krowk_store::new_id();
     let _ = events.send(EngineEvent::ItemStarted { item_id: id.clone(), kind: ItemKind::UserText }).await;
     let _ = events.send(EngineEvent::ItemCompleted { item_id: id, item: steer.item() }).await;
+}
+
+/// `turn/start`'s params.
+fn turn_params(thread: &str, input: &[Steer], session_dir: &Path, model: &str, effort: Option<&String>) -> Value {
+    let mut params = json!({"threadId": thread, "input": text_input(input, session_dir), "model": model});
+    if let Some(e) = effort {
+        params["effort"] = json!(e);
+    }
+    params
 }
 
 /// A turn's input: each text, and after it the images it names, as files
@@ -898,6 +996,13 @@ impl Proc {
 
     fn alive(&mut self) -> bool {
         !self.exited && matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// How a turn ends when Codex exits during it: an interrupted turn
+    /// keeps what it made, any other fails.
+    fn died_in_turn(&mut self, interrupted: bool) -> Result<TurnEnd, EngineError> {
+        let e = self.died("before the turn finished");
+        if interrupted { Ok(TurnEnd::Interrupted) } else { Err(e) }
     }
 
     fn died(&mut self, while_doing: &str) -> EngineError {
@@ -1028,8 +1133,6 @@ impl Proc {
 
     /// Runs one krowk turn: the prompt as a Codex turn, steering passed in
     /// as it arrives, until Codex completes it with nothing left unread.
-    // Legacy: one loop over every Codex notification of a turn. TODO: split into helpers and drop this allow.
-    #[allow(clippy::cognitive_complexity)]
     async fn turn(&mut self, prompt: Steer, ctx: &mut TurnContext, ask: &Answers, events: &Events, instance: &str) -> Result<TurnEnd, EngineError> {
         let thread = self.thread.clone().expect("opened before a turn");
         let _ = events.send(EngineEvent::Context { system: SYSTEM_NOTE.into(), tools: bridge::definitions() }).await;
@@ -1041,10 +1144,7 @@ impl Proc {
         let mut input = vec![prompt];
         let mut interrupted = false;
         loop {
-            let mut params = json!({"threadId": thread, "input": text_input(&input, &ctx.session_dir), "model": ctx.model.model});
-            if let Some(e) = &effort {
-                params["effort"] = json!(e);
-            }
+            let params = turn_params(&thread, &input, &ctx.session_dir, &ctx.model.model, effort.as_ref());
             let mut pending: HashMap<u64, Pending> = HashMap::new();
             pending.insert(self.call("turn/start", params).await?, Pending::TurnStart);
             let mut codex_turn: Option<String> = None;
@@ -1057,31 +1157,14 @@ impl Proc {
             let mut poll = tokio::time::interval(STEER_POLL);
             poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             while completed.is_none() || pending.values().any(|p| matches!(p, Pending::Steer(_))) {
-                let d = deadline;
-                let until = async move {
-                    match d {
-                        Some(d) => tokio::time::sleep_until(d).await,
-                        None => std::future::pending().await,
-                    }
-                };
-                let dr = drain;
-                let drained = async move {
-                    match dr {
-                        Some(d) => tokio::time::sleep_until(d).await,
-                        None => std::future::pending().await,
-                    }
-                };
+                let until = crate::engine::sleep_until(deadline);
+                let drained = crate::engine::sleep_until(drain);
                 let steering = codex_turn.is_some() && !interrupted && completed.is_none();
                 tokio::select! {
                     biased;
                     _ = cancelled(&mut ctx.cancel), if !interrupted => {
                         interrupted = true;
-                        match codex_turn.clone() {
-                            Some(turn) => {
-                                pending.insert(self.call("turn/interrupt", json!({"threadId": thread, "turnId": turn})).await?, Pending::Interrupt);
-                            }
-                            None => want_interrupt = true,
-                        }
+                        want_interrupt = !self.interrupt(&thread, codex_turn.as_deref(), &mut pending).await?;
                         deadline = Some(tokio::time::Instant::now() + INTERRUPT_GRACE);
                     }
                     _ = until => {
@@ -1089,9 +1172,7 @@ impl Proc {
                         // turn keeps what it made, the session continues on
                         // `thread/resume`.
                         self.terminate().await;
-                        let mut out = Vec::new();
-                        t.finish(&mut out);
-                        forward(events, out).await;
+                        finish(&mut t, events).await;
                         return Ok(TurnEnd::Interrupted);
                     }
                     // Codex exited — crashed, or was killed — while something
@@ -1102,127 +1183,75 @@ impl Proc {
                         drain = Some(tokio::time::Instant::now() + DRAIN_GRACE);
                     }
                     _ = drained => {
-                        let mut out = Vec::new();
-                        t.finish(&mut out);
-                        forward(events, out).await;
-                        let e = self.died("before the turn finished");
-                        return if interrupted { Ok(TurnEnd::Interrupted) } else { Err(e) };
+                        finish(&mut t, events).await;
+                        return self.died_in_turn(interrupted);
                     }
                     _ = poll.tick(), if steering => {
                         let turn = codex_turn.clone().expect("steering only once the turn has an id");
-                        for steer in ctx.steers.take() {
-                            let id = self.call("turn/steer", json!({"threadId": thread, "expectedTurnId": turn, "input": text_input(std::slice::from_ref(&steer), &ctx.session_dir)})).await?;
-                            pending.insert(id, Pending::Steer(steer));
-                        }
+                        self.steer(&thread, &turn, ctx.steers.take(), &ctx.session_dir, &mut pending).await?;
                     }
                     msg = next_msg(&mut self.out) => {
                         let Some(msg) = msg else {
-                            let mut out = Vec::new();
-                            t.finish(&mut out);
-                            forward(events, out).await;
-                            let e = self.died("before the turn finished");
-                            return if interrupted { Ok(TurnEnd::Interrupted) } else { Err(e) };
+                            finish(&mut t, events).await;
+                            return self.died_in_turn(interrupted);
                         };
                         match msg {
                             Msg::Response { id, result } => match id.as_u64().and_then(|id| pending.remove(&id)) {
-                                Some(Pending::TurnStart) => {
-                                    let r = result.map_err(|e| EngineError::new("backend_failed", format!("Codex refused the turn: {e}")))?;
-                                    if codex_turn.is_none() {
-                                        codex_turn = r.pointer("/turn/id").and_then(Value::as_str).map(String::from);
-                                    }
-                                    if want_interrupt && let Some(turn) = codex_turn.clone() {
-                                        want_interrupt = false;
-                                        pending.insert(self.call("turn/interrupt", json!({"threadId": thread, "turnId": turn})).await?, Pending::Interrupt);
-                                    }
-                                }
-                                // Taken into the running turn: logged where it
-                                // landed. Refused — the turn was ending — it is
-                                // the next Codex turn's input instead.
-                                Some(Pending::Steer(text)) => match result {
-                                    Ok(_) => steered(events, text).await,
-                                    Err(_) => refused.push(text),
-                                },
+                                Some(Pending::TurnStart) => self.turn_started(result, &thread, &mut codex_turn, &mut want_interrupt, &mut pending).await?,
+                                Some(Pending::Steer(steer)) => steer_answered(result.is_ok(), steer, &mut refused, events).await,
                                 Some(Pending::Interrupt) | None => {}
                             },
                             Msg::Request { id, method, params } => {
                                 let answer = ask.answer(&method, &params, &mut t, Some((events, &ctx.cancel))).await;
                                 self.reply(id, answer).await?;
                             }
-                            Msg::Note { method, params } => {
-                                // Another thread's — a subagent Codex runs — is
-                                // its own conversation, which Codex keeps; what
-                                // its calls cost is the session's spend.
-                                if method == "thread/started" || params.get("threadId").and_then(Value::as_str).is_some_and(|th| th != thread) {
-                                    forward(events, subs.apply(&thread, &method, &params).into_iter().collect()).await;
-                                    continue;
-                                }
-                                let of_turn = params.get("turnId").and_then(Value::as_str).or_else(|| params.pointer("/turn/id").and_then(Value::as_str));
-                                if let (Some(mine), Some(theirs)) = (&codex_turn, of_turn)
-                                    && mine != theirs
-                                {
-                                    continue;
-                                }
-                                match method.as_str() {
-                                    "turn/started" if codex_turn.is_none() => codex_turn = of_turn.map(String::from),
-                                    // How near the account is to its limit (R-INST-6).
-                                    "account/rateLimits/updated" => {
-                                        if let Some(l) = params.get("rateLimits").and_then(limit_of) {
-                                            limit = Some(l.clone());
-                                            let _ = events.send(EngineEvent::Limits(l)).await;
-                                        }
-                                    }
-                                    "turn/completed" => completed = Some(params.get("turn").cloned().unwrap_or(Value::Null)),
-                                    _ => forward(events, t.apply(&method, &params)).await,
-                                }
-                            }
+                            Msg::Note { method, params } => on_note(&thread, &method, &params, (&mut subs, &mut t), (&mut codex_turn, &mut completed), &mut limit, events).await,
                         }
                     }
                 }
             }
             let turn = completed.unwrap_or(Value::Null);
-            match str_of(&turn, "status") {
-                _ if interrupted => {
-                    let mut out = Vec::new();
-                    t.finish(&mut out);
-                    forward(events, out).await;
-                    return Ok(TurnEnd::Interrupted);
-                }
-                "interrupted" => {
-                    let mut out = Vec::new();
-                    t.finish(&mut out);
-                    forward(events, out).await;
-                    return Ok(TurnEnd::Interrupted);
-                }
-                "failed" => {
-                    let mut out = Vec::new();
-                    t.finish(&mut out);
-                    forward(events, out).await;
-                    let err = turn.get("error").filter(|e| !e.is_null()).cloned().or_else(|| t.error.clone()).unwrap_or_else(|| json!({"message": "no reason given"}));
-                    let e = failure(&err, instance);
-                    // A limit says when it lifts, when Codex said.
-                    return Err(if e.limited() { e.with_resets(limit.and_then(|l| l.resets_at_ms)) } else { e });
-                }
-                _ => {}
+            if let Some(end) = concluded(&turn, interrupted, &mut t, events, limit.as_ref(), instance).await {
+                return end;
             }
-            // Codex finished its turn. Steering it refused, and any that
-            // arrived since, is read by another Codex turn in this one; the
-            // turn ends only once nothing is waiting.
-            let mut more = refused;
-            more.extend(ctx.steers.take());
-            if more.is_empty() {
-                if ctx.steers.close_if_empty() {
-                    let mut out = Vec::new();
-                    t.finish(&mut out);
-                    forward(events, out).await;
-                    return Ok(TurnEnd::Completed);
-                }
-                more = ctx.steers.take();
+            match more_input(refused, &ctx.steers, &mut t, events).await {
+                Some(more) => input = more,
+                None => return Ok(TurnEnd::Completed),
             }
-            for steer in &more {
-                steered(events, steer.clone()).await;
-            }
-            input = more;
         }
+    }
+
+    /// Asks Codex to interrupt its turn; false when it has no id yet, and
+    /// the interrupt waits for one.
+    async fn interrupt(&mut self, thread: &str, codex_turn: Option<&str>, pending: &mut HashMap<u64, Pending>) -> Result<bool, EngineError> {
+        let Some(turn) = codex_turn else {
+            return Ok(false);
+        };
+        pending.insert(self.call("turn/interrupt", json!({"threadId": thread, "turnId": turn})).await?, Pending::Interrupt);
+        Ok(true)
+    }
+
+    /// Passes steering into Codex's running turn.
+    async fn steer(&mut self, thread: &str, turn: &str, steers: Vec<Steer>, session_dir: &Path, pending: &mut HashMap<u64, Pending>) -> Result<(), EngineError> {
+        for steer in steers {
+            let id = self.call("turn/steer", json!({"threadId": thread, "expectedTurnId": turn, "input": text_input(std::slice::from_ref(&steer), session_dir)})).await?;
+            pending.insert(id, Pending::Steer(steer));
+        }
+        Ok(())
+    }
+
+    /// Codex's answer to `turn/start`: the Codex turn's id, and the
+    /// interrupt that waited for it.
+    async fn turn_started(&mut self, result: Result<Value, String>, thread: &str, codex_turn: &mut Option<String>, want_interrupt: &mut bool, pending: &mut HashMap<u64, Pending>) -> Result<(), EngineError> {
+        let r = result.map_err(|e| EngineError::new("backend_failed", format!("Codex refused the turn: {e}")))?;
+        if codex_turn.is_none() {
+            *codex_turn = r.pointer("/turn/id").and_then(Value::as_str).map(String::from);
+        }
+        if *want_interrupt && let Some(turn) = codex_turn.clone() {
+            *want_interrupt = false;
+            pending.insert(self.call("turn/interrupt", json!({"threadId": thread, "turnId": turn})).await?, Pending::Interrupt);
+        }
+        Ok(())
     }
 
     /// Stops the whole process group — Codex and every shell and server it

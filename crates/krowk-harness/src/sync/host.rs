@@ -395,8 +395,6 @@ const PAGE: usize = 256;
 
 /// Runs the bridge until `stop`. `daemon` is a client of the daemon that
 /// says it answers approvals.
-// Legacy: the bridge's whole run loop, one select over every source. TODO: split into helpers and drop this allow.
-#[allow(clippy::cognitive_complexity)]
 pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool>, mut on_demand: mpsc::UnboundedReceiver<()>) -> Result<(), String> {
     let o = Arc::new(o);
     let taken = {
@@ -418,7 +416,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         std::thread::spawn(move || list_loop(o, halt, stale));
     }
     let (heads_tx, mut heads) = mpsc::unbounded_channel();
-    let mut head = writer.head();
+    let head = writer.head();
     let (jobs, jobs_rx) = std::sync::mpsc::channel();
     let writing = {
         let (held, lost) = (held.clone(), lost.clone());
@@ -431,55 +429,47 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let (lines_tx, mut lines) = mpsc::channel(4096);
     daemon.attach(&o.session, None, lines_tx.clone()).await.map_err(|e| e.to_string())?;
     let raw = crate::daemon::ws::uuid(&o.session);
-    let mut link = HostLink::new(key.current(), raw);
-    let mut kept: VecDeque<(u64, Vec<u8>)> = VecDeque::new();
-    // Since when the relay has acked none of what `kept` holds.
-    let mut unacked_since: Option<Instant> = None;
-    let mut waiting: Vec<StreamLine> = Vec::new();
-    let mut approvals: BTreeMap<String, (ApprovalRequest, Instant)> = BTreeMap::new();
-    // Every event logged since the bridge followed the session, in order:
-    // what a viewer's catch-up is answered from.
-    let mut log: Vec<crate::protocol::LogEvent> = Vec::new();
-    let mut logged = HashSet::new();
-    let mut mode = PermissionMode::Default;
-    // Turns a viewer's prompt started: the only ones whose approvals the
-    // bridge ever denies by itself.
-    let remote_turns: Arc<Mutex<HashSet<String>>> = Arc::default();
-    let mut done: HashMap<String, Answer> = HashMap::new();
-    let mut done_order: VecDeque<String> = VecDeque::new();
-    // Commands being taken, by id, with the link that last sent each: a
-    // viewer that moved between the relay and a direct path while one ran
-    // is answered where it is now, not on the link it left.
-    let mut running: HashMap<String, u64> = HashMap::new();
-    // Since when no viewer has been here to answer.
-    let mut alone_since = Some(Instant::now());
-    // Links the relay said are present since the host last joined; chains
-    // of any other link are forgotten a second after the join.
-    let mut present: Option<(HashSet<u64>, Instant)> = None;
-    // The same for the direct listener, which speaks for its own links.
-    let mut dpresent: Option<(HashSet<u64>, Instant)> = None;
-    let mut ws: Option<super::Ws> = None;
-    let mut heard = Instant::now();
-    let mut retry = Instant::now();
-    // The last reason the relay could not be joined, said once on stderr
-    // when it first comes or changes, not every second: a host that never
-    // reaches the relay otherwise looks exactly like one nobody watches.
-    let mut unjoined: Option<String> = None;
-    // The direct listener, when tailscaled gives this machine an address:
-    // a second uplink, sent every batch the relay is, never in its place.
-    let listening = match o.direct.as_ref().map(|c| super::direct::listen(c, crate::daemon::ws::uuid(&o.session), o.device)) {
-        Some(Ok(l)) => Some(l),
-        Some(Err(e)) => {
-            eprintln!("krowk: no direct path ({e}); the session goes by the relay");
-            None
-        }
-        None => None,
-    };
+    let link = HostLink::new(key.current(), raw);
+    let listening = listen_direct(&o);
     let candidates = listening.as_ref().map(|l| l.candidates.clone()).unwrap_or_default();
-    let mut dws: Option<super::Ws> = None;
-    let mut dheard = Instant::now();
-    let mut dretry = Instant::now();
     let (answers_tx, mut answers) = mpsc::unbounded_channel::<(u64, Answer)>();
+    let mut h = Hosting {
+        o: o.clone(),
+        daemon,
+        key,
+        raw,
+        link,
+        held: held.clone(),
+        lost: lost.clone(),
+        stale,
+        jobs,
+        lines_tx,
+        answers_tx,
+        head,
+        kept: VecDeque::new(),
+        unacked_since: None,
+        waiting: Vec::new(),
+        approvals: BTreeMap::new(),
+        log: Vec::new(),
+        logged: HashSet::new(),
+        mode: PermissionMode::Default,
+        remote_turns: Arc::default(),
+        done: HashMap::new(),
+        done_order: VecDeque::new(),
+        running: HashMap::new(),
+        alone_since: Some(Instant::now()),
+        present: None,
+        dpresent: None,
+        ws: None,
+        heard: Instant::now(),
+        retry: Instant::now(),
+        unjoined: None,
+        listening,
+        candidates,
+        dws: None,
+        dheard: Instant::now(),
+        dretry: Instant::now(),
+    };
     let mut tick = tokio::time::interval(FRAME);
     let mut beat = tokio::time::interval(PING);
     let mut beaten = Instant::now();
@@ -489,307 +479,459 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         tokio::select! {
             line = lines.recv() => {
                 let Some(line) = line else { break };
-                if let StreamLine::Log(e) = &line {
-                    // A line both followed and executed arrives once in the log.
-                    if !logged.insert(e.id.clone()) {
-                        continue;
-                    }
-                    let _ = jobs.send(Write::Event(serde_json::to_value(e).expect("json")));
-                    match &e.body {
-                        LogBody::TurnCompleted { .. } => { let _ = jobs.send(Write::Flush); }
-                        LogBody::TurnStarted { permission_mode, .. } => mode = *permission_mode,
-                        _ => {}
-                    }
-                    log.push(e.clone());
-                }
-                match &line {
-                    StreamLine::Live(LiveEvent::ApprovalRequested(r)) => { approvals.insert(r.request_id.clone(), (r.clone(), Instant::now())); }
-                    StreamLine::Live(LiveEvent::ApprovalResolved { request_id, .. }) => { approvals.remove(request_id); }
-                    _ => {}
-                }
-                waiting.push(line);
+                h.line(line);
             }
-            _ = tick.tick(), if !waiting.is_empty() => {
-                let body = serde_json::to_vec(&Batch { lines: std::mem::take(&mut waiting), head }).expect("json");
-                let sealed = link.batch(&body, false).map_err(|e| e.to_string())?;
-                kept.push_back((link.last_seq(), sealed.clone()));
-                if kept.len() > o.keep.max(1) { kept.pop_front(); }
-                unacked_since.get_or_insert_with(Instant::now);
-                if let Some(w) = dws.as_mut() && !super::send(w, sealed.clone()).await { dws = None; dretry = Instant::now() + Duration::from_secs(1); }
-                if let Some(w) = ws.as_mut() && !super::send(w, sealed).await { ws = None; }
-            }
-            Some(h) = heads.recv() => head = Some(h),
-            Some((mut to, a)) = answers.recv() => {
-                if let Answer::Ack { id, .. } = &a && !id.is_empty() {
-                    if let Some(now) = running.remove(id) { to = now; }
-                    if done.insert(id.clone(), a.clone()).is_none() {
-                        done_order.push_back(id.clone());
-                        if done_order.len() > REMEMBERED && let Some(old) = done_order.pop_front() { done.remove(&old); }
-                    }
-                }
-                let sock = if to >= super::direct::FIRST_LINK { &mut dws } else { &mut ws };
-                if let Some(w) = sock.as_mut() && let Ok(b) = link.to_viewer(to, &serde_json::to_vec(&a).expect("json"), false) && !super::send(w, b).await { *sock = None; }
-            }
-            _ = on_demand.recv() => { let _ = jobs.send(Write::Checkpoint(worktree(&o.cwd))); }
+            _ = tick.tick(), if !h.waiting.is_empty() => h.send_batch().await?,
+            Some(head) = heads.recv() => h.head = Some(head),
+            Some((to, a)) = answers.recv() => h.answer(to, a).await,
+            _ = on_demand.recv() => { let _ = h.jobs.send(Write::Checkpoint(worktree(&h.o.cwd))); }
             _ = sweep.tick() => {
-                if lost.load(Ordering::Relaxed) {
-                    ended = Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", o.session));
+                if let Err(e) = h.sweep().await {
+                    ended = Err(e);
                     break;
                 }
-                if let Some(why) = stale.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                    ended = Err(why);
-                    break;
-                }
-                // Each uplink speaks for its own links only: a viewer on the
-                // direct path is not one the relay could have named, nor the
-                // other way round.
-                if let Some((here, since)) = &present && since.elapsed() > Duration::from_secs(1) {
-                    for l in link.links() { if l < super::direct::FIRST_LINK && !here.contains(&l) { link.forget(l); } }
-                    present = None;
-                }
-                if let Some((here, since)) = &dpresent && since.elapsed() > Duration::from_secs(1) {
-                    for l in link.links() { if l >= super::direct::FIRST_LINK && !here.contains(&l) { link.forget(l); } }
-                    dpresent = None;
-                }
-                if link.viewers().is_empty() { alone_since.get_or_insert_with(Instant::now); } else { alone_since = None; }
-                // Only a request of a turn a viewer started, and only once no
-                // viewer has been here to answer it for the whole wait: the
-                // person at the host's own terminal is never overruled.
-                let turns = remote_turns.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let late: Vec<_> = approvals.iter().filter(|(_, (r, t))| turns.contains(&r.turn_id) && alone_since.is_some_and(|a| a.elapsed() > APPROVAL_WAIT) && t.elapsed() > APPROVAL_WAIT).map(|(k, (r, _))| (k.clone(), r.clone())).collect();
-                for (k, r) in late {
-                    approvals.remove(&k);
-                    let (tx, _) = mpsc::channel(1);
-                    let _ = daemon.execute(Command::Approve { session_id: r.session_id, request_id: r.request_id, decision: ApprovalDecision::Deny }, tx).await;
-                }
             }
-            _ = beat.tick() => {
-                // A beat far later than `PING`: this process did not run in
-                // between (stopped, suspended, a laptop asleep) for longer than a
-                // relay keeps a silent link. What it holds may be a link the relay
-                // let go, or one it no longer counts as the host, with a viewer's
-                // command lost on it: joined again, and the viewers, told the
-                // host is present, send again what was never acknowledged.
-                //
-                // And a link that answers its heartbeats while the relay acks
-                // none of what the host sends (`link_dead`): a ghost, which
-                // neither an error nor a close will ever end.
-                let gap = beaten.elapsed();
-                beaten = Instant::now();
-                let waited = unacked_since.map(|t| t.elapsed());
-                if let Some(w) = ws.as_mut() && (link_dead(gap, heard.elapsed(), kept.len(), waited) || !super::ping(w).await) { ws = None; }
-                if let Some(w) = dws.as_mut() && (link_dead(gap, dheard.elapsed(), 0, None) || !super::ping(w).await) { dws = None; }
-            }
-            _ = tokio::time::sleep_until(dretry.into()), if dws.is_none() && listening.is_some() => {
-                // The listener's viewers went with the host's link to it,
-                // however it was lost: none of them is here to answer, so a
-                // remote turn's approval is denied after `APPROVAL_WAIT`
-                // rather than waiting on a chain nobody holds.
-                for l in link.links() { if l >= super::direct::FIRST_LINK { link.forget(l); } }
-                dpresent = None;
-                // The direct listener, joined as the relay is: the same
-                // ticket, the same stream. What the relay has not yet
-                // acknowledged seeds it, so a viewer moving over resumes
-                // from its cursor there.
-                let ticket = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let dial = listening.as_ref().expect("listening").dial.clone();
-                let j = Join { relay: &dial, session: &o.session, env: &o.env, ticket: &ticket.ticket, device: o.device, signing: &o.signing, role: e2e::RELAY_ROLE_HOST, extra: json!({"fence": ticket.fence, "stream": e2e::hex(&link.stream())}) };
-                dretry = Instant::now() + Duration::from_secs(2);
-                if let Ok((mut w, joined)) = super::join(j).await && link.continues_after(joined["seq"].as_u64().unwrap_or(0)) {
-                    let at = joined["seq"].as_u64().unwrap_or(0);
-                    let mut ok = true;
-                    for (_, b) in kept.iter().filter(|(s, _)| *s > at) {
-                        if !super::send(&mut w, b.clone()).await { ok = false; break; }
-                    }
-                    if ok { dws = Some(w); dheard = Instant::now(); dpresent = Some((HashSet::new(), Instant::now())); }
-                }
-            }
-            _ = tokio::time::sleep_until(retry.into()), if ws.is_none() => {
-                let ticket = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let j = Join { relay: &o.relay, session: &o.session, env: &o.env, ticket: &ticket.ticket, device: o.device, signing: &o.signing, role: e2e::RELAY_ROLE_HOST, extra: json!({"fence": ticket.fence, "stream": e2e::hex(&link.stream())}) };
-                match super::join(j).await {
-                    Ok((mut w, joined)) => {
-                        let at = joined["seq"].as_u64().unwrap_or(0);
-                        // A relay holding more of this stream than it was sent, or
-                        // less than the oldest batch still kept (a cut outlasted
-                        // what is kept): this stream cannot follow on there, so
-                        // start another. Nothing is lost with the old one's
-                        // batches: every viewer is told `resync`, joins again,
-                        // and asks the host for the logged events it lacks.
-                        if !link.continues_after(at) || (at > 0 && kept.front().is_some_and(|(s, _)| *s > at + 1)) {
-                            link = HostLink::new(key.current(), raw);
-                            kept.clear();
-                            drop(w);
-                            retry = Instant::now();
-                            continue;
-                        }
-                        let mut ok = true;
-                        for (_, b) in kept.iter().filter(|(s, _)| *s > at) {
-                            if !super::send(&mut w, b.clone()).await { ok = false; break; }
-                        }
-                        if ok {
-                            unjoined = None;
-                            ws = Some(w);
-                            heard = Instant::now();
-                            // What the relay says it holds is as good as acked:
-                            // what `kept` still counts is only what went out on
-                            // this link, which the relay's ack count starts from.
-                            while kept.front().is_some_and(|(s, _)| *s <= at) { kept.pop_front(); }
-                            unacked_since = (!kept.is_empty()).then(Instant::now);
-                            present = Some((HashSet::new(), Instant::now()));
-                        } else {
-                            retry = Instant::now() + Duration::from_secs(1);
-                        }
-                    }
-                    Err(e) => {
-                        if unjoined.as_deref() != Some(e.as_str()) {
-                            eprintln!("krowk: session {} is not on the relay {}: {e}; trying again every second", o.session, o.relay);
-                            unjoined = Some(e);
-                        }
-                        retry = Instant::now() + Duration::from_secs(1);
-                    }
-                }
-            }
-            (direct, m) = async {
-                tokio::select! {
-                    m = async { match ws.as_mut() { Some(w) => super::recv(w).await, None => std::future::pending().await } } => (false, m),
-                    m = async { match dws.as_mut() { Some(w) => super::recv(w).await, None => std::future::pending().await } } => (true, m),
-                }
-            } => {
-                if direct { dheard = Instant::now(); } else { heard = Instant::now(); }
-                let sock = if direct { &mut dws } else { &mut ws };
-                match m {
-                    In::Closed if direct => { dws = None; dretry = Instant::now() + Duration::from_secs(1); }
-                    In::Closed => { ws = None; retry = Instant::now() + Duration::from_secs(1); }
-                    In::Alive => {}
-                    // A refusal comes before the relay closes the link — `replaced`,
-                    // `link_overflow`, `rate_limited` — and the close itself may never
-                    // arrive, while the edge goes on answering this link's heartbeats:
-                    // the link is let go here, and joined again, rather than kept as a
-                    // host connection the relay no longer counts.
-                    In::Control(v) if v["type"] == "error" => {
-                        let why = format!("the relay let this host's link go: {} — {}; joining again", v["code"].as_str().unwrap_or("?"), v["message"].as_str().unwrap_or(""));
-                        if unjoined.as_deref() != Some(why.as_str()) {
-                            eprintln!("krowk: session {}: {why}", o.session);
-                            unjoined = Some(why);
-                        }
-                        if direct { dws = None; dretry = Instant::now() + Duration::from_secs(1); } else { ws = None; retry = Instant::now() + Duration::from_secs(1); }
-                    }
-                    In::Control(v) => {
-                        if v["type"] == "viewer" && let Some(l) = v["link"].as_u64() {
-                            if v["event"] == "left" { link.forget(l); }
-                            if v["event"] == "joined" && let Some((here, _)) = if direct { dpresent.as_mut() } else { present.as_mut() } { here.insert(l); }
-                        }
-                    }
-                    // The direct listener's acks free nothing: what is kept
-                    // is kept for the relay.
-                    In::Envelope(b) if b[1] == KIND_ACK && !direct => {
-                        let upto = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
-                        while kept.front().is_some_and(|(s, _)| *s <= upto) { kept.pop_front(); }
-                        unacked_since = (!kept.is_empty()).then(Instant::now);
-                    }
-                    In::Envelope(b) if b[1] == KIND_ROUTED => {
-                        let from = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
-                        match link.open(from, &b[HEADER..]) {
-                            Ok(Inbound::Hello { .. }) => {
-                                let body = serde_json::to_vec(&Welcome { head, approvals: approvals.values().map(|(r, _)| r.clone()).collect(), candidates: candidates.clone() }).expect("json");
-                                if let (Some(w), Ok(sealed)) = (sock.as_mut(), link.welcome(from, &body)) && !super::send(w, sealed).await { *sock = None; }
-                            }
-                            Ok(Inbound::Frame { body, .. }) => match serde_json::from_slice::<ViewerFrame>(&body) {
-                                Ok(ViewerFrame::CatchUp { after }) => {
-                                    let from_here = after.and_then(|a| log.iter().position(|e| e.id == a)).map_or(0, |i| i + 1);
-                                    let rest = &log[from_here..];
-                                    let pages: Vec<_> = rest.chunks(PAGE).collect();
-                                    if pages.is_empty() {
-                                        let _ = answers_tx.send((from, Answer::CatchUp { events: Vec::new(), more: false }));
-                                    }
-                                    for (i, p) in pages.iter().enumerate() {
-                                        let _ = answers_tx.send((from, Answer::CatchUp { events: p.to_vec(), more: i + 1 < pages.len() }));
-                                    }
-                                }
-                                // Run once: a command sent again (its ack lost, the
-                                // viewer reconnected) is answered with the ack it
-                                // had, or nothing while it is still being taken.
-                                Ok(ViewerFrame::Command(r)) if done.contains_key(&r.id) => {
-                                    let _ = answers_tx.send((from, done[&r.id].clone()));
-                                }
-                                Ok(ViewerFrame::Command(r)) if running.contains_key(&r.id) => { running.insert(r.id, from); }
-                                Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &o.session) => {
-                                    let _ = answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, and nothing else", o.session)) }));
-                                }
-                                // A rule for the whole project is written into the
-                                // host's repository settings: made at the host, not
-                                // from a viewer, which allows once or for the session.
-                                Ok(ViewerFrame::Command(r)) if matches!(r.command, Command::Approve { decision: ApprovalDecision::AllowProject, .. }) => {
-                                    let _ = answers_tx.send((from, Answer::Ack { id: r.id, error: Some("a viewer allows a call once or for the session; a rule for the project is made on the host".into()) }));
-                                }
-                                Ok(ViewerFrame::Command(r)) => {
-                                    running.insert(r.id.clone(), from);
-                                    let command = under_session_settings(r.command, mode);
-                                    let (daemon, answers, tx, turns) = (daemon.clone(), answers_tx.clone(), lines_tx.clone(), remote_turns.clone());
-                                    tokio::spawn(async move {
-                                        let streaming = matches!(command, Command::Prompt { .. });
-                                        let (mine, mut rx) = mpsc::channel(1024);
-                                        // The turn's lines go where every other line
-                                        // goes, the turn remembered as a viewer's.
-                                        tokio::spawn(async move {
-                                            while let Some(l) = rx.recv().await {
-                                                if let StreamLine::Log(e) = &l && let LogBody::TurnStarted { turn_id, .. } = &e.body {
-                                                    turns.lock().unwrap_or_else(|e| e.into_inner()).insert(turn_id.clone());
-                                                }
-                                                if tx.send(l).await.is_err() { return; }
-                                            }
-                                        });
-                                        let run = daemon.execute(command, mine);
-                                        if streaming {
-                                            // A prompt is acknowledged as taken, not when its turn ends.
-                                            let _ = answers.send((from, Answer::Ack { id: r.id, error: None }));
-                                            let _ = run.await;
-                                        } else {
-                                            let error = run.await.err().map(|e| e.to_string());
-                                            let _ = answers.send((from, Answer::Ack { id: r.id, error }));
-                                        }
-                                    });
-                                }
-                                Err(e) => { let _ = answers_tx.send((from, Answer::Ack { id: String::new(), error: Some(format!("not a frame this host reads: {e}")) })); }
-                            },
-                            // What does not open is dropped: the relay or a stranger sent it.
-                            Err(_) => {}
-                        }
-                    }
-                    In::Envelope(_) => {}
-                }
-            }
+            _ = beat.tick() => h.beat(&mut beaten).await,
+            _ = tokio::time::sleep_until(h.dretry.into()), if h.dws.is_none() && h.listening.is_some() => h.join_direct().await,
+            _ = tokio::time::sleep_until(h.retry.into()), if h.ws.is_none() => h.join_relay().await,
+            (direct, m) = recv_either(&mut h.ws, &mut h.dws) => h.inbound(direct, m).await,
             _ = stop.changed() => break,
         }
     }
-    // The stream's end, sealed: a viewer that sees the link stop without it
-    // knows it was cut short.
-    if let Ok(end) = link.batch(&serde_json::to_vec(&Batch { lines: std::mem::take(&mut waiting), head }).expect("json"), true) {
-        if let Some(w) = dws.as_mut() {
-            let _ = super::send(w, end.clone()).await;
+    h.stop(&halt, writing).await;
+    ended
+}
+
+/// The direct listener, when tailscaled gives this machine an address:
+/// a second uplink, sent every batch the relay is, never in its place.
+fn listen_direct(o: &Options) -> Option<super::direct::Listening> {
+    match o.direct.as_ref().map(|c| super::direct::listen(c, crate::daemon::ws::uuid(&o.session), o.device)) {
+        Some(Ok(l)) => Some(l),
+        Some(Err(e)) => {
+            eprintln!("krowk: no direct path ({e}); the session goes by the relay");
+            None
         }
-        if let Some(w) = ws.as_mut() {
-            let _ = super::send(w, end).await;
+        None => None,
+    }
+}
+
+/// The next message on either uplink: whether it came on the direct one,
+/// and what it was.
+async fn recv_either(ws: &mut Option<super::Ws>, dws: &mut Option<super::Ws>) -> (bool, In) {
+    tokio::select! {
+        m = async { match ws.as_mut() { Some(w) => super::recv(w).await, None => std::future::pending().await } } => (false, m),
+        m = async { match dws.as_mut() { Some(w) => super::recv(w).await, None => std::future::pending().await } } => (true, m),
+    }
+}
+
+/// The bridge as it runs: the session's lines sealed into batches for the
+/// relay and, when there is one, the direct path, and its viewers'
+/// frames answered.
+struct Hosting {
+    o: Arc<Options>,
+    daemon: Arc<Daemon>,
+    key: SessionKeys,
+    raw: [u8; 16],
+    link: HostLink,
+    held: Arc<Mutex<Held>>,
+    lost: Arc<AtomicBool>,
+    /// Set when the device list moved on under the host: why it stops.
+    stale: Arc<Mutex<Option<String>>>,
+    jobs: std::sync::mpsc::Sender<Write>,
+    lines_tx: mpsc::Sender<StreamLine>,
+    answers_tx: mpsc::UnboundedSender<(u64, Answer)>,
+    head: Option<store::Head>,
+    kept: VecDeque<(u64, Vec<u8>)>,
+    /// Since when the relay has acked none of what `kept` holds.
+    unacked_since: Option<Instant>,
+    waiting: Vec<StreamLine>,
+    approvals: BTreeMap<String, (ApprovalRequest, Instant)>,
+    /// Every event logged since the bridge followed the session, in order:
+    /// what a viewer's catch-up is answered from.
+    log: Vec<crate::protocol::LogEvent>,
+    logged: HashSet<String>,
+    mode: PermissionMode,
+    /// Turns a viewer's prompt started: the only ones whose approvals the
+    /// bridge ever denies by itself.
+    remote_turns: Arc<Mutex<HashSet<String>>>,
+    done: HashMap<String, Answer>,
+    done_order: VecDeque<String>,
+    /// Commands being taken, by id, with the link that last sent each: a
+    /// viewer that moved between the relay and a direct path while one ran
+    /// is answered where it is now, not on the link it left.
+    running: HashMap<String, u64>,
+    /// Since when no viewer has been here to answer.
+    alone_since: Option<Instant>,
+    /// Links the relay said are present since the host last joined; chains
+    /// of any other link are forgotten a second after the join.
+    present: Option<(HashSet<u64>, Instant)>,
+    /// The same for the direct listener, which speaks for its own links.
+    dpresent: Option<(HashSet<u64>, Instant)>,
+    ws: Option<super::Ws>,
+    heard: Instant,
+    retry: Instant,
+    /// The last reason the relay could not be joined, said once on stderr
+    /// when it first comes or changes, not every second: a host that never
+    /// reaches the relay otherwise looks exactly like one nobody watches.
+    unjoined: Option<String>,
+    listening: Option<super::direct::Listening>,
+    candidates: Vec<super::direct::Candidate>,
+    dws: Option<super::Ws>,
+    dheard: Instant,
+    dretry: Instant,
+}
+
+impl Hosting {
+    /// A line of the session's, for the next batch; a logged one is
+    /// written to the store and kept for catch-up.
+    fn line(&mut self, line: StreamLine) {
+        if let StreamLine::Log(e) = &line {
+            // A line both followed and executed arrives once in the log.
+            if !self.logged.insert(e.id.clone()) {
+                return;
+            }
+            let _ = self.jobs.send(Write::Event(serde_json::to_value(e).expect("json")));
+            match &e.body {
+                LogBody::TurnCompleted { .. } => { let _ = self.jobs.send(Write::Flush); }
+                LogBody::TurnStarted { permission_mode, .. } => self.mode = *permission_mode,
+                _ => {}
+            }
+            self.log.push(e.clone());
+        }
+        match &line {
+            StreamLine::Live(LiveEvent::ApprovalRequested(r)) => { self.approvals.insert(r.request_id.clone(), (r.clone(), Instant::now())); }
+            StreamLine::Live(LiveEvent::ApprovalResolved { request_id, .. }) => { self.approvals.remove(request_id); }
+            _ => {}
+        }
+        self.waiting.push(line);
+    }
+
+    /// The lines waiting, sealed as one batch and sent up both uplinks.
+    async fn send_batch(&mut self) -> Result<(), String> {
+        let body = serde_json::to_vec(&Batch { lines: std::mem::take(&mut self.waiting), head: self.head }).expect("json");
+        let sealed = self.link.batch(&body, false).map_err(|e| e.to_string())?;
+        self.kept.push_back((self.link.last_seq(), sealed.clone()));
+        if self.kept.len() > self.o.keep.max(1) { self.kept.pop_front(); }
+        self.unacked_since.get_or_insert_with(Instant::now);
+        if let Some(w) = self.dws.as_mut() && !super::send(w, sealed.clone()).await { self.dws = None; self.dretry = Instant::now() + Duration::from_secs(1); }
+        if let Some(w) = self.ws.as_mut() && !super::send(w, sealed).await { self.ws = None; }
+        Ok(())
+    }
+
+    /// An answer for the viewer on link `to`, remembered when it acks a
+    /// command, and sent where that viewer is now.
+    async fn answer(&mut self, mut to: u64, a: Answer) {
+        if let Answer::Ack { id, .. } = &a && !id.is_empty() {
+            if let Some(now) = self.running.remove(id) { to = now; }
+            self.remember(id, &a);
+        }
+        let sock = if to >= super::direct::FIRST_LINK { &mut self.dws } else { &mut self.ws };
+        if let Some(w) = sock.as_mut() && let Ok(b) = self.link.to_viewer(to, &serde_json::to_vec(&a).expect("json"), false) && !super::send(w, b).await { *sock = None; }
+    }
+
+    /// A command's ack, for a command sent again: bounded, the oldest let
+    /// go first.
+    fn remember(&mut self, id: &str, a: &Answer) {
+        if self.done.insert(id.to_string(), a.clone()).is_none() {
+            self.done_order.push_back(id.to_string());
+            if self.done_order.len() > REMEMBERED && let Some(old) = self.done_order.pop_front() { self.done.remove(&old); }
         }
     }
-    drop(listening);
-    let _ = jobs.send(Write::Flush);
-    drop(jobs);
-    halt.store(true, Ordering::Relaxed);
-    // The lease goes back, so the next host takes it at once rather than
-    // after its TTL, once the writer has put its last chunk — unless it is
-    // another device's already.
-    let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
-    let (o2, lost2) = (o.clone(), lost.clone());
-    let _ = tokio::task::spawn_blocking(move || {
-        let _ = writing.join();
-        if !lost2.load(Ordering::Relaxed) {
-            let _ = o2.api.release_lease(&o2.session, &token);
+
+    /// The bridge's second: an error once the lease is another device's;
+    /// otherwise viewers gone are forgotten, and a remote turn's approval
+    /// nobody is here to answer is denied.
+    async fn sweep(&mut self) -> Result<(), String> {
+        if self.lost.load(Ordering::Relaxed) {
+            return Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", self.o.session));
         }
-    })
-    .await;
-    ended
+        if let Some(why) = self.stale.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            return Err(why);
+        }
+        // Each uplink speaks for its own links only: a viewer on the
+        // direct path is not one the relay could have named, nor the
+        // other way round.
+        if let Some((here, since)) = &self.present && since.elapsed() > Duration::from_secs(1) {
+            for l in self.link.links() { if l < super::direct::FIRST_LINK && !here.contains(&l) { self.link.forget(l); } }
+            self.present = None;
+        }
+        if let Some((here, since)) = &self.dpresent && since.elapsed() > Duration::from_secs(1) {
+            for l in self.link.links() { if l >= super::direct::FIRST_LINK && !here.contains(&l) { self.link.forget(l); } }
+            self.dpresent = None;
+        }
+        if self.link.viewers().is_empty() { self.alone_since.get_or_insert_with(Instant::now); } else { self.alone_since = None; }
+        self.deny_late().await;
+        Ok(())
+    }
+
+    /// Only a request of a turn a viewer started, and only once no viewer
+    /// has been here to answer it for the whole wait: the person at the
+    /// host's own terminal is never overruled.
+    async fn deny_late(&mut self) {
+        let turns = self.remote_turns.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let alone_since = self.alone_since;
+        let late: Vec<_> = self.approvals.iter().filter(|(_, (r, t))| turns.contains(&r.turn_id) && alone_since.is_some_and(|a| a.elapsed() > APPROVAL_WAIT) && t.elapsed() > APPROVAL_WAIT).map(|(k, (r, _))| (k.clone(), r.clone())).collect();
+        for (k, r) in late {
+            self.approvals.remove(&k);
+            let (tx, _) = mpsc::channel(1);
+            let _ = self.daemon.execute(Command::Approve { session_id: r.session_id, request_id: r.request_id, decision: ApprovalDecision::Deny }, tx).await;
+        }
+    }
+
+    /// A beat far later than `PING`: this process did not run in
+    /// between (stopped, suspended, a laptop asleep) for longer than a
+    /// relay keeps a silent link. What it holds may be a link the relay
+    /// let go, or one it no longer counts as the host, with a viewer's
+    /// command lost on it: joined again, and the viewers, told the
+    /// host is present, send again what was never acknowledged.
+    ///
+    /// And a link that answers its heartbeats while the relay acks
+    /// none of what the host sends (`link_dead`): a ghost, which
+    /// neither an error nor a close will ever end.
+    async fn beat(&mut self, beaten: &mut Instant) {
+        let gap = beaten.elapsed();
+        *beaten = Instant::now();
+        let waited = self.unacked_since.map(|t| t.elapsed());
+        if let Some(w) = self.ws.as_mut() && (link_dead(gap, self.heard.elapsed(), self.kept.len(), waited) || !super::ping(w).await) { self.ws = None; }
+        if let Some(w) = self.dws.as_mut() && (link_dead(gap, self.dheard.elapsed(), 0, None) || !super::ping(w).await) { self.dws = None; }
+    }
+
+    /// Joins the direct listener again.
+    async fn join_direct(&mut self) {
+        // The listener's viewers went with the host's link to it,
+        // however it was lost: none of them is here to answer, so a
+        // remote turn's approval is denied after `APPROVAL_WAIT`
+        // rather than waiting on a chain nobody holds.
+        for l in self.link.links() { if l >= super::direct::FIRST_LINK { self.link.forget(l); } }
+        self.dpresent = None;
+        // The direct listener, joined as the relay is: the same
+        // ticket, the same stream. What the relay has not yet
+        // acknowledged seeds it, so a viewer moving over resumes
+        // from its cursor there.
+        let ticket = self.held.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let dial = self.listening.as_ref().expect("listening").dial.clone();
+        let o = &self.o;
+        let j = Join { relay: &dial, session: &o.session, env: &o.env, ticket: &ticket.ticket, device: o.device, signing: &o.signing, role: e2e::RELAY_ROLE_HOST, extra: json!({"fence": ticket.fence, "stream": e2e::hex(&self.link.stream())}) };
+        self.dretry = Instant::now() + Duration::from_secs(2);
+        if let Ok((mut w, joined)) = super::join(j).await && self.link.continues_after(joined["seq"].as_u64().unwrap_or(0)) {
+            let at = joined["seq"].as_u64().unwrap_or(0);
+            if self.resend(&mut w, at).await { self.dws = Some(w); self.dheard = Instant::now(); self.dpresent = Some((HashSet::new(), Instant::now())); }
+        }
+    }
+
+    /// Joins the relay again.
+    async fn join_relay(&mut self) {
+        let ticket = self.held.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let o = &self.o;
+        let j = Join { relay: &o.relay, session: &o.session, env: &o.env, ticket: &ticket.ticket, device: o.device, signing: &o.signing, role: e2e::RELAY_ROLE_HOST, extra: json!({"fence": ticket.fence, "stream": e2e::hex(&self.link.stream())}) };
+        match super::join(j).await {
+            Ok((mut w, joined)) => {
+                let at = joined["seq"].as_u64().unwrap_or(0);
+                // A relay holding more of this stream than it was sent, or
+                // less than the oldest batch still kept (a cut outlasted
+                // what is kept): this stream cannot follow on there, so
+                // start another. Nothing is lost with the old one's
+                // batches: every viewer is told `resync`, joins again,
+                // and asks the host for the logged events it lacks.
+                if !self.link.continues_after(at) || (at > 0 && self.kept.front().is_some_and(|(s, _)| *s > at + 1)) {
+                    self.link = HostLink::new(self.key.current(), self.raw);
+                    self.kept.clear();
+                    drop(w);
+                    self.retry = Instant::now();
+                    return;
+                }
+                if self.resend(&mut w, at).await {
+                    self.unjoined = None;
+                    self.ws = Some(w);
+                    self.heard = Instant::now();
+                    // What the relay says it holds is as good as acked:
+                    // what `kept` still counts is only what went out on
+                    // this link, which the relay's ack count starts from.
+                    while self.kept.front().is_some_and(|(s, _)| *s <= at) { self.kept.pop_front(); }
+                    self.unacked_since = (!self.kept.is_empty()).then(Instant::now);
+                    self.present = Some((HashSet::new(), Instant::now()));
+                } else {
+                    self.retry = Instant::now() + Duration::from_secs(1);
+                }
+            }
+            Err(e) => {
+                if self.unjoined.as_deref() != Some(e.as_str()) {
+                    eprintln!("krowk: session {} is not on the relay {}: {e}; trying again every second", self.o.session, self.o.relay);
+                    self.unjoined = Some(e);
+                }
+                self.retry = Instant::now() + Duration::from_secs(1);
+            }
+        }
+    }
+
+    /// Sends a link just joined the batches kept after `at`; false when
+    /// one could not be sent.
+    async fn resend(&self, w: &mut super::Ws, at: u64) -> bool {
+        for (_, b) in self.kept.iter().filter(|(s, _)| *s > at) {
+            if !super::send(w, b.clone()).await { return false; }
+        }
+        true
+    }
+
+    /// Lets an uplink go, to be joined again in a second.
+    fn let_go(&mut self, direct: bool) {
+        if direct { self.dws = None; self.dretry = Instant::now() + Duration::from_secs(1); } else { self.ws = None; self.retry = Instant::now() + Duration::from_secs(1); }
+    }
+
+    /// What came on an uplink.
+    async fn inbound(&mut self, direct: bool, m: In) {
+        if direct { self.dheard = Instant::now(); } else { self.heard = Instant::now(); }
+        match m {
+            In::Closed => self.let_go(direct),
+            In::Alive => {}
+            // A refusal comes before the relay closes the link — `replaced`,
+            // `link_overflow`, `rate_limited` — and the close itself may never
+            // arrive, while the edge goes on answering this link's heartbeats:
+            // the link is let go here, and joined again, rather than kept as a
+            // host connection the relay no longer counts.
+            In::Control(v) if v["type"] == "error" => {
+                let why = format!("the relay let this host's link go: {} — {}; joining again", v["code"].as_str().unwrap_or("?"), v["message"].as_str().unwrap_or(""));
+                if self.unjoined.as_deref() != Some(why.as_str()) {
+                    eprintln!("krowk: session {}: {why}", self.o.session);
+                    self.unjoined = Some(why);
+                }
+                self.let_go(direct);
+            }
+            In::Control(v) => {
+                if v["type"] == "viewer" && let Some(l) = v["link"].as_u64() {
+                    if v["event"] == "left" { self.link.forget(l); }
+                    if v["event"] == "joined" && let Some((here, _)) = if direct { self.dpresent.as_mut() } else { self.present.as_mut() } { here.insert(l); }
+                }
+            }
+            // The direct listener's acks free nothing: what is kept
+            // is kept for the relay.
+            In::Envelope(b) if b[1] == KIND_ACK && !direct => {
+                let upto = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
+                while self.kept.front().is_some_and(|(s, _)| *s <= upto) { self.kept.pop_front(); }
+                self.unacked_since = (!self.kept.is_empty()).then(Instant::now);
+            }
+            In::Envelope(b) if b[1] == KIND_ROUTED => self.routed(direct, &b).await,
+            In::Envelope(_) => {}
+        }
+    }
+
+    /// A viewer's envelope, routed to this host.
+    async fn routed(&mut self, direct: bool, b: &[u8]) {
+        let from = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
+        match self.link.open(from, &b[HEADER..]) {
+            Ok(Inbound::Hello { .. }) => {
+                let body = serde_json::to_vec(&Welcome { head: self.head, approvals: self.approvals.values().map(|(r, _)| r.clone()).collect(), candidates: self.candidates.clone() }).expect("json");
+                let sock = if direct { &mut self.dws } else { &mut self.ws };
+                if let (Some(w), Ok(sealed)) = (sock.as_mut(), self.link.welcome(from, &body)) && !super::send(w, sealed).await { *sock = None; }
+            }
+            Ok(Inbound::Frame { body, .. }) => self.frame(from, &body),
+            // What does not open is dropped: the relay or a stranger sent it.
+            Err(_) => {}
+        }
+    }
+
+    /// A viewer's frame, from link `from`.
+    fn frame(&mut self, from: u64, body: &[u8]) {
+        match serde_json::from_slice::<ViewerFrame>(body) {
+            Ok(ViewerFrame::CatchUp { after }) => self.catch_up(from, after),
+            // Run once: a command sent again (its ack lost, the
+            // viewer reconnected) is answered with the ack it
+            // had, or nothing while it is still being taken.
+            Ok(ViewerFrame::Command(r)) if self.done.contains_key(&r.id) => {
+                let _ = self.answers_tx.send((from, self.done[&r.id].clone()));
+            }
+            Ok(ViewerFrame::Command(r)) if self.running.contains_key(&r.id) => { self.running.insert(r.id, from); }
+            Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &self.o.session) => {
+                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, and nothing else", self.o.session)) }));
+            }
+            // A rule for the whole project is written into the
+            // host's repository settings: made at the host, not
+            // from a viewer, which allows once or for the session.
+            Ok(ViewerFrame::Command(r)) if matches!(r.command, Command::Approve { decision: ApprovalDecision::AllowProject, .. }) => {
+                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some("a viewer allows a call once or for the session; a rule for the project is made on the host".into()) }));
+            }
+            Ok(ViewerFrame::Command(r)) => self.execute(from, r),
+            Err(e) => { let _ = self.answers_tx.send((from, Answer::Ack { id: String::new(), error: Some(format!("not a frame this host reads: {e}")) })); }
+        }
+    }
+
+    /// The logged events after `after`, a page at a time.
+    fn catch_up(&self, from: u64, after: Option<String>) {
+        let from_here = after.and_then(|a| self.log.iter().position(|e| e.id == a)).map_or(0, |i| i + 1);
+        let rest = &self.log[from_here..];
+        let pages: Vec<_> = rest.chunks(PAGE).collect();
+        if pages.is_empty() {
+            let _ = self.answers_tx.send((from, Answer::CatchUp { events: Vec::new(), more: false }));
+        }
+        for (i, p) in pages.iter().enumerate() {
+            let _ = self.answers_tx.send((from, Answer::CatchUp { events: p.to_vec(), more: i + 1 < pages.len() }));
+        }
+    }
+
+    /// Runs a viewer's command on the daemon, under the session's settings.
+    fn execute(&mut self, from: u64, r: super::Remote) {
+        self.running.insert(r.id.clone(), from);
+        let command = under_session_settings(r.command, self.mode);
+        let (daemon, answers, tx, turns) = (self.daemon.clone(), self.answers_tx.clone(), self.lines_tx.clone(), self.remote_turns.clone());
+        tokio::spawn(async move {
+            let streaming = matches!(command, Command::Prompt { .. });
+            let (mine, mut rx) = mpsc::channel(1024);
+            // The turn's lines go where every other line
+            // goes, the turn remembered as a viewer's.
+            tokio::spawn(async move {
+                while let Some(l) = rx.recv().await {
+                    if let StreamLine::Log(e) = &l && let LogBody::TurnStarted { turn_id, .. } = &e.body {
+                        turns.lock().unwrap_or_else(|e| e.into_inner()).insert(turn_id.clone());
+                    }
+                    if tx.send(l).await.is_err() { return; }
+                }
+            });
+            let run = daemon.execute(command, mine);
+            if streaming {
+                // A prompt is acknowledged as taken, not when its turn ends.
+                let _ = answers.send((from, Answer::Ack { id: r.id, error: None }));
+                let _ = run.await;
+            } else {
+                let error = run.await.err().map(|e| e.to_string());
+                let _ = answers.send((from, Answer::Ack { id: r.id, error }));
+            }
+        });
+    }
+
+    /// Stops the bridge: the stream ended, the listener closed, and the
+    /// lease given back once the writer is done.
+    async fn stop(mut self, halt: &AtomicBool, writing: std::thread::JoinHandle<()>) {
+        self.seal().await;
+        drop(self.listening.take());
+        let _ = self.jobs.send(Write::Flush);
+        drop(self.jobs);
+        halt.store(true, Ordering::Relaxed);
+        // The lease goes back, so the next host takes it at once rather than
+        // after its TTL, once the writer has put its last chunk — unless it is
+        // another device's already.
+        let token = self.held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+        let (o2, lost2) = (self.o.clone(), self.lost.clone());
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = writing.join();
+            if !lost2.load(Ordering::Relaxed) {
+                let _ = o2.api.release_lease(&o2.session, &token);
+            }
+        })
+        .await;
+    }
+
+    /// The stream's end, sealed: a viewer that sees the link stop without
+    /// it knows it was cut short.
+    async fn seal(&mut self) {
+        if let Ok(end) = self.link.batch(&serde_json::to_vec(&Batch { lines: std::mem::take(&mut self.waiting), head: self.head }).expect("json"), true) {
+            if let Some(w) = self.dws.as_mut() {
+                let _ = super::send(w, end.clone()).await;
+            }
+            if let Some(w) = self.ws.as_mut() {
+                let _ = super::send(w, end).await;
+            }
+        }
+    }
 }
 
 /// Waits for Ctrl-C or SIGTERM: `krowk sync host` then ends the stream with

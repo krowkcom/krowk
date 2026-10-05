@@ -361,6 +361,14 @@ pub async fn cancelled(cancel: &mut watch::Receiver<bool>) {
     }
 }
 
+/// Resolves at `deadline`; with none, never.
+pub async fn sleep_until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(d) => tokio::time::sleep_until(d).await,
+        None => std::future::pending().await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

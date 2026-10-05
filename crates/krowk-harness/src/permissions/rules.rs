@@ -543,8 +543,6 @@ fn ansi_c(chars: &[char], mut i: usize) -> Option<(String, usize)> {
     None
 }
 
-// Legacy: the shell lexer the permission rules rest on, kept whole until it can be split under its own tests. TODO: split into helpers and drop this allow.
-#[allow(clippy::cognitive_complexity)]
 fn lex(cmd: &str, out: &mut Parsed, depth: usize) {
     if depth > MAX_NESTING {
         out.opaque = true;
@@ -556,34 +554,6 @@ fn lex(cmd: &str, out: &mut Parsed, depth: usize) {
     // The next word is a redirection's target, and whether it writes.
     let mut redirect: Option<bool> = None;
     let mut i = 0;
-    let finish_word = |w: &mut Word, cur: &mut Simple, redirect: &mut Option<bool>| {
-        if w.started {
-            match redirect.take() {
-                Some(writes) => {
-                    if writes && (w.text != "/dev/null" || w.dynamic) && !w.text.starts_with('&') {
-                        cur.writes = true;
-                    }
-                }
-                None => {
-                    cur.words.push(std::mem::take(&mut w.text));
-                    cur.dynamic.push(w.dynamic);
-                }
-            }
-            *w = Word::default();
-        }
-    };
-    // `[` and `[[` alone are the test command, not a glob.
-    let settle = |w: &mut Word| {
-        if w.text == "[" || w.text == "[[" || w.text == "]" || w.text == "]]" || w.text == "{" || w.text == "}" {
-            w.dynamic = false;
-        }
-    };
-    let finish_cmd = |cur: &mut Simple, out: &mut Parsed| {
-        let c = std::mem::take(cur);
-        if !c.words.is_empty() || c.writes {
-            out.commands.push(c);
-        }
-    };
     while i < chars.len() {
         let c = chars[i];
         match c {
@@ -598,20 +568,7 @@ fn lex(cmd: &str, out: &mut Parsed, depth: usize) {
                 w.started = true;
                 i += 2;
             }
-            '\'' => {
-                w.started = true;
-                match chars[i + 1..].iter().position(|x| *x == '\'') {
-                    Some(end) => {
-                        w.text.extend(&chars[i + 1..i + 1 + end]);
-                        i += end + 2;
-                    }
-                    None => {
-                        out.opaque = true;
-                        w.text.extend(&chars[i + 1..]);
-                        i = chars.len();
-                    }
-                }
-            }
+            '\'' => i = single_quoted(&chars, i, &mut w, out),
             // `$'…'`: ANSI-C quoting, where `\'` does not end the string.
             '$' if chars.get(i + 1) == Some(&'\'') => {
                 w.started = true;
@@ -634,57 +591,9 @@ fn lex(cmd: &str, out: &mut Parsed, depth: usize) {
                     i += 1;
                 }
                 w.started = true;
-                i += 1;
-                let mut closed = false;
-                while i < chars.len() {
-                    match chars[i] {
-                        '"' => {
-                            closed = true;
-                            i += 1;
-                            break;
-                        }
-                        '\\' if matches!(chars.get(i + 1), Some('"' | '\\' | '$' | '`' | '\n')) => {
-                            w.text.push(chars[i + 1]);
-                            i += 2;
-                        }
-                        '$' if chars.get(i + 1) == Some(&'(') => {
-                            let (inner, next) = balanced(&chars, i + 2);
-                            lex(&inner, out, depth + 1);
-                            w.text.push_str("$(…)");
-                            w.dynamic = true;
-                            i = next;
-                        }
-                        '`' => {
-                            let end = chars[i + 1..].iter().position(|x| *x == '`').map(|e| i + 1 + e);
-                            let inner: String = chars[i + 1..end.unwrap_or(chars.len())].iter().collect();
-                            lex(&inner, out, depth + 1);
-                            w.text.push_str("`…`");
-                            w.dynamic = true;
-                            i = end.map_or(chars.len(), |e| e + 1);
-                        }
-                        '$' => {
-                            w.text.push('$');
-                            w.dynamic = true;
-                            i += 1;
-                        }
-                        ch => {
-                            w.text.push(ch);
-                            i += 1;
-                        }
-                    }
-                }
-                if !closed {
-                    out.opaque = true;
-                }
+                i = double_quoted(&chars, i + 1, &mut w, out, depth);
             }
-            '$' if chars.get(i + 1) == Some(&'(') => {
-                let (inner, next) = balanced(&chars, i + 2);
-                lex(&inner, out, depth + 1);
-                w.text.push_str("$(…)");
-                w.started = true;
-                w.dynamic = true;
-                i = next;
-            }
+            '$' if chars.get(i + 1) == Some(&'(') => i = substitution(&chars, i, "$(…)", &mut w, out, depth),
             '`' => {
                 let end = chars[i + 1..].iter().position(|x| *x == '`').map(|e| i + 1 + e);
                 let inner: String = chars[i + 1..end.unwrap_or(chars.len())].iter().collect();
@@ -697,42 +606,10 @@ fn lex(cmd: &str, out: &mut Parsed, depth: usize) {
                 w.dynamic = true;
                 i = end.map_or(chars.len(), |e| e + 1);
             }
-            '<' | '>' if chars.get(i + 1) == Some(&'(') => {
-                let (inner, next) = balanced(&chars, i + 2);
-                lex(&inner, out, depth + 1);
-                w.text.push_str("<(…)");
-                w.started = true;
-                w.dynamic = true;
-                i = next;
-            }
-            '>' | '<' => {
-                // A file descriptor written straight before it (`2>`) is part
-                // of the redirection, not a word.
-                if w.started && !w.text.is_empty() && !w.dynamic && w.text.chars().all(|d| d.is_ascii_digit()) {
-                    w = Word::default();
-                } else {
-                    { settle(&mut w); finish_word(&mut w, &mut cur, &mut redirect); }
-                }
-                // `>`, `>>`, `>|` and `<>` (opened read-write) write; `<`,
-                // `<<` and `<<<` read.
-                let writes = c == '>' || chars.get(i + 1) == Some(&'>');
-                i += 1;
-                while i < chars.len() && matches!(chars[i], '>' | '<' | '|') {
-                    i += 1;
-                }
-                if chars.get(i) == Some(&'&') {
-                    // `>&2`: a descriptor, not a file.
-                    i += 1;
-                    let fd_end = chars[i..].iter().position(|x| !x.is_ascii_digit() && *x != '-').map_or(chars.len(), |e| i + e);
-                    if fd_end > i {
-                        i = fd_end;
-                        continue;
-                    }
-                }
-                redirect = Some(writes);
-            }
+            '<' | '>' if chars.get(i + 1) == Some(&'(') => i = substitution(&chars, i, "<(…)", &mut w, out, depth),
+            '>' | '<' => i = redirection(&chars, i, &mut w, &mut cur, &mut redirect),
             '&' if chars.get(i + 1) == Some(&'>') => {
-                { settle(&mut w); finish_word(&mut w, &mut cur, &mut redirect); }
+                end_word(&mut w, &mut cur, &mut redirect);
                 i += 2;
                 if chars.get(i) == Some(&'>') {
                     i += 1;
@@ -740,8 +617,8 @@ fn lex(cmd: &str, out: &mut Parsed, depth: usize) {
                 redirect = Some(true);
             }
             ';' | '&' | '|' | '\n' | '(' | ')' => {
-                { settle(&mut w); finish_word(&mut w, &mut cur, &mut redirect); }
-                finish_cmd(&mut cur, out);
+                end_word(&mut w, &mut cur, &mut redirect);
+                end_command(&mut cur, out);
                 i += 1;
             }
             '#' if !w.started => {
@@ -750,7 +627,7 @@ fn lex(cmd: &str, out: &mut Parsed, depth: usize) {
                 }
             }
             c if c.is_whitespace() => {
-                { settle(&mut w); finish_word(&mut w, &mut cur, &mut redirect); }
+                end_word(&mut w, &mut cur, &mut redirect);
                 i += 1;
             }
             c => {
@@ -765,9 +642,43 @@ fn lex(cmd: &str, out: &mut Parsed, depth: usize) {
             }
         }
     }
-    { settle(&mut w); finish_word(&mut w, &mut cur, &mut redirect); }
-    finish_cmd(&mut cur, out);
-    // Shell grammar words are not commands: `if rm x; then …` runs `rm x`.
+    end_word(&mut w, &mut cur, &mut redirect);
+    end_command(&mut cur, out);
+    strip_keywords(out);
+}
+
+/// Ends the word being read: a redirection's target marks the command as
+/// writing, anything else is one of its words.
+fn end_word(w: &mut Word, cur: &mut Simple, redirect: &mut Option<bool>) {
+    // `[` and `[[` alone are the test command, not a glob.
+    if w.text == "[" || w.text == "[[" || w.text == "]" || w.text == "]]" || w.text == "{" || w.text == "}" {
+        w.dynamic = false;
+    }
+    if w.started {
+        match redirect.take() {
+            Some(writes) => {
+                if writes && (w.text != "/dev/null" || w.dynamic) && !w.text.starts_with('&') {
+                    cur.writes = true;
+                }
+            }
+            None => {
+                cur.words.push(std::mem::take(&mut w.text));
+                cur.dynamic.push(w.dynamic);
+            }
+        }
+        *w = Word::default();
+    }
+}
+
+fn end_command(cur: &mut Simple, out: &mut Parsed) {
+    let c = std::mem::take(cur);
+    if !c.words.is_empty() || c.writes {
+        out.commands.push(c);
+    }
+}
+
+/// Shell grammar words are not commands: `if rm x; then …` runs `rm x`.
+fn strip_keywords(out: &mut Parsed) {
     for c in &mut out.commands {
         while c.words.first().is_some_and(|w| KEYWORDS.contains(&w.as_str())) {
             c.words.remove(0);
@@ -775,6 +686,110 @@ fn lex(cmd: &str, out: &mut Parsed, depth: usize) {
         }
     }
     out.commands.retain(|c| !c.words.is_empty() || c.writes);
+}
+
+/// A `'…'` string from its opening quote at `i`; the index after it.
+fn single_quoted(chars: &[char], i: usize, w: &mut Word, out: &mut Parsed) -> usize {
+    w.started = true;
+    match chars[i + 1..].iter().position(|x| *x == '\'') {
+        Some(end) => {
+            w.text.extend(&chars[i + 1..i + 1 + end]);
+            i + end + 2
+        }
+        None => {
+            out.opaque = true;
+            w.text.extend(&chars[i + 1..]);
+            chars.len()
+        }
+    }
+}
+
+/// A `"…"` string from just after its opening quote; the index after the
+/// closing one. The substitutions inside are lexed as commands of their own.
+fn double_quoted(chars: &[char], mut i: usize, w: &mut Word, out: &mut Parsed, depth: usize) -> usize {
+    let mut closed = false;
+    while i < chars.len() {
+        match chars[i] {
+            '"' => {
+                closed = true;
+                i += 1;
+                break;
+            }
+            '\\' if matches!(chars.get(i + 1), Some('"' | '\\' | '$' | '`' | '\n')) => {
+                w.text.push(chars[i + 1]);
+                i += 2;
+            }
+            '$' if chars.get(i + 1) == Some(&'(') => {
+                let (inner, next) = balanced(chars, i + 2);
+                lex(&inner, out, depth + 1);
+                w.text.push_str("$(…)");
+                w.dynamic = true;
+                i = next;
+            }
+            '`' => {
+                let end = chars[i + 1..].iter().position(|x| *x == '`').map(|e| i + 1 + e);
+                let inner: String = chars[i + 1..end.unwrap_or(chars.len())].iter().collect();
+                lex(&inner, out, depth + 1);
+                w.text.push_str("`…`");
+                w.dynamic = true;
+                i = end.map_or(chars.len(), |e| e + 1);
+            }
+            '$' => {
+                w.text.push('$');
+                w.dynamic = true;
+                i += 1;
+            }
+            ch => {
+                w.text.push(ch);
+                i += 1;
+            }
+        }
+    }
+    if !closed {
+        out.opaque = true;
+    }
+    i
+}
+
+/// An unquoted `$(…)` or `<(…)`/`>(…)` at `i`, lexed as a command of its
+/// own and standing in the word as `marker`; the index after it.
+fn substitution(chars: &[char], i: usize, marker: &str, w: &mut Word, out: &mut Parsed, depth: usize) -> usize {
+    let (inner, next) = balanced(chars, i + 2);
+    lex(&inner, out, depth + 1);
+    w.text.push_str(marker);
+    w.started = true;
+    w.dynamic = true;
+    next
+}
+
+/// A redirection operator at `i`; the index after it. Unless it names a
+/// descriptor (`>&2`), the next word is its target.
+fn redirection(chars: &[char], mut i: usize, w: &mut Word, cur: &mut Simple, redirect: &mut Option<bool>) -> usize {
+    let c = chars[i];
+    // A file descriptor written straight before it (`2>`) is part
+    // of the redirection, not a word.
+    if w.started && !w.text.is_empty() && !w.dynamic && w.text.chars().all(|d| d.is_ascii_digit()) {
+        *w = Word::default();
+    } else {
+        end_word(w, cur, redirect);
+    }
+    // `>`, `>>`, `>|` and `<>` (opened read-write) write; `<`,
+    // `<<` and `<<<` read.
+    let writes = c == '>' || chars.get(i + 1) == Some(&'>');
+    i += 1;
+    while i < chars.len() && matches!(chars[i], '>' | '<' | '|') {
+        i += 1;
+    }
+    if chars.get(i) == Some(&'&') {
+        // `>&2`: a descriptor, not a file.
+        i += 1;
+        let fd_end = chars[i..].iter().position(|x| !x.is_ascii_digit() && *x != '-').map_or(chars.len(), |e| i + e);
+        if fd_end > i {
+            return fd_end;
+        }
+    }
+    *redirect = Some(writes);
+    i
 }
 
 const KEYWORDS: &[&str] = &["if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!", "{", "}", "case", "esac", "in"];
