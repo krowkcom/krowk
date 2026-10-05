@@ -163,6 +163,9 @@ pub struct Options {
     /// kit: the status line says so until one is made (canon, devices.md →
     /// Skippable, with a reminder).
     pub no_recovery_kit: bool,
+    /// A newer release: a header row when it is due, and always a line in
+    /// the details overlay (canon, harness.md → Update notice).
+    pub update: Option<app::Update>,
     pub version: String,
     /// krowk's config.json, which `/connect` writes definitions into; none
     /// (no home directory) and `/connect` says so.
@@ -360,6 +363,7 @@ async fn session(opts: Options) -> Outcome {
     app.model = shown;
     app.device = device::name(&|k| std::env::var(k).unwrap_or_default());
     app.no_recovery_kit = opts.no_recovery_kit;
+    app.update = opts.update;
     app.skills = krowk_harness::compat::skills::discover(&opts.host.permissions, &opts.host.cwd).into_iter().filter(|k| k.user_invocable).map(|k| (k.name, k.description)).collect();
     app.vendor_instances = opts.host.registry.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
     let branch = pr::branch(&opts.host.cwd);
@@ -1355,6 +1359,11 @@ impl<'h> Ui<'h> {
     /// goes now, or once the question is answered. True when the probe's
     /// target changed.
     fn routed(&mut self, app: &mut App, r: Result<ModelRef, EngineError>) -> bool {
+        // The header's `Update:` row waits to go under the routed model's;
+        // with no such row coming, it goes now.
+        if r.is_err() || self.model.is_some() {
+            app.header_update();
+        }
         let m = match r {
             // Nothing here can run a model: the first run. Connecting one
             // is offered instead of the failure the first prompt would be.
