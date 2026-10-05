@@ -15,8 +15,9 @@ use std::time::Duration;
 
 const RELEASE_API: &str = "https://api.github.com/repos/krowkcom/krowk/releases/latest";
 /// The recent releases, for the check: a security fix in one skipped counts
-/// as much as one in the newest.
-const RELEASES_API: &str = "https://api.github.com/repos/krowkcom/krowk/releases?per_page=20";
+/// as much as one in the newest. A hundred is GitHub's most to a page; a
+/// krowk further behind than that is a major release behind regardless.
+const RELEASES_API: &str = "https://api.github.com/repos/krowkcom/krowk/releases?per_page=100";
 const DAY: i64 = 24 * 3600;
 const RELEASE_DOWNLOAD: &str = "https://github.com/krowkcom/krowk/releases/download";
 
@@ -121,7 +122,7 @@ fn recent_releases(timeout: Duration) -> Option<(String, Vec<String>)> {
     if res.status().as_u16() != 200 {
         return None;
     }
-    read_releases(&res.body_mut().with_config().limit(4 << 20).read_json().ok()?)
+    read_releases(&res.body_mut().with_config().limit(16 << 20).read_json().ok()?)
 }
 
 pub(crate) fn upgrade(ctx: &mut Ctx) -> Result<(), Error> {
@@ -132,9 +133,10 @@ pub(crate) fn upgrade(ctx: &mut Ctx) -> Result<(), Error> {
         ));
     }
     let latest = latest_version(Duration::from_secs(10))?;
+    // The newest, for the notice; not when it was checked, since this asked
+    // nothing about security fixes and the next check still should.
     if let Some(path) = state_path(ctx) {
         let mut state = read_state(&path);
-        state["checked_at"] = json!(jiff::Timestamp::now().to_string());
         state["latest"] = json!(latest);
         write_state(&path, &state);
     }
@@ -317,6 +319,17 @@ pub(crate) struct Newer {
     pub security: bool,
     /// Worth a line now; otherwise it is only there to be looked up.
     pub due: bool,
+    /// What saying it is kept against (`line`).
+    line: String,
+}
+
+/// What a notice is kept against: the release line the gap is to — `0.13`
+/// before 1.0, `2` for a major release after, `1.4` for a minor — so a patch
+/// on a line already mentioned is not news, and a security fix is its own.
+fn line(latest: &str, gap: Gap, security: bool) -> String {
+    let n = numbers(latest);
+    let line = if gap == Gap::Major && n[0] > 0 { n[0].to_string() } else { format!("{}.{}", n[0], n[1]) };
+    if security { format!("{line} security") } else { line }
 }
 
 /// What `state` says about `current` at `now`; none when it is current.
@@ -327,7 +340,8 @@ fn newer(state: &Value, current: &str, now: jiff::Timestamp) -> Option<Newer> {
         .get("security")
         .and_then(Value::as_array)
         .is_some_and(|s| s.iter().filter_map(Value::as_str).any(|v| version_less(current, v) && !version_less(&latest, v)));
-    let shown = state.get("shown").filter(|s| s.get("version").and_then(Value::as_str) == Some(latest.as_str()));
+    let key = line(&latest, gap, security);
+    let shown = state.get("shown").filter(|s| s.get("line").and_then(Value::as_str) == Some(key.as_str()));
     let first = shown.and_then(|s| since(at(s, "first"), now));
     let last = shown.and_then(|s| since(at(s, "last"), now));
     let times = shown.and_then(|s| s.get("times")).and_then(Value::as_u64).unwrap_or(0);
@@ -340,18 +354,18 @@ fn newer(state: &Value, current: &str, now: jiff::Timestamp) -> Option<Newer> {
             Gap::Patch => false,
         }
     };
-    Some(Newer { latest, security, due })
+    Some(Newer { latest, security, due, line: key })
 }
 
-/// Records that the notice for `latest` was given at `now`.
-fn mark_shown(state: &mut Value, latest: &str, now: jiff::Timestamp) {
+/// Records that the notice for `line` was given at `now`.
+fn mark_shown(state: &mut Value, line: &str, now: jiff::Timestamp) {
     let now = json!(now.to_string());
-    match state.get_mut("shown").filter(|s| s.get("version").and_then(Value::as_str) == Some(latest)) {
+    match state.get_mut("shown").filter(|s| s.get("line").and_then(Value::as_str) == Some(line)) {
         Some(s) => {
             s["times"] = json!(s.get("times").and_then(Value::as_u64).unwrap_or(0) + 1);
             s["last"] = now;
         }
-        None => state["shown"] = json!({ "version": latest, "first": now, "last": now, "times": 1 }),
+        None => state["shown"] = json!({ "line": line, "first": now, "last": now, "times": 1 }),
     }
 }
 
@@ -371,7 +385,7 @@ pub(crate) fn maybe_notify(ctx: &mut Ctx) {
     let Some(n) = newer(&state, VERSION, now).filter(|n| n.due) else { return };
     let what = if n.security { "with a security fix " } else { "" };
     let _ = writeln!(ctx.io.stderr, "krowk {} is available {what}(this is {VERSION}) — run `krowk upgrade`", n.latest);
-    mark_shown(&mut state, &n.latest, now);
+    mark_shown(&mut state, &n.line, now);
     write_state(&path, &state);
 }
 
@@ -390,7 +404,7 @@ pub(crate) fn for_tui(ctx: &Ctx) -> Option<Newer> {
     // Marked before the refresh starts, which reads the file again only
     // once its answer is in.
     if let Some(n) = n.as_ref().filter(|n| n.due) {
-        mark_shown(&mut state, &n.latest, now);
+        mark_shown(&mut state, &n.line, now);
         write_state(&path, &state);
     }
     if stale(&state, now) {
@@ -444,7 +458,7 @@ mod tests {
         let n = newer(state, current, ts(now));
         let due = n.as_ref().is_some_and(|n| n.due);
         if due {
-            mark_shown(state, &n.unwrap().latest, ts(now));
+            mark_shown(state, &n.unwrap().line, ts(now));
         }
         due
     }
@@ -457,8 +471,14 @@ mod tests {
         assert!(!start(&mut s, "0.12.1", "2026-10-07T09:00:00Z"));
         assert!(start(&mut s, "0.12.1", "2026-10-08T09:00:00Z"), "the reminder");
         assert!(!start(&mut s, "0.12.1", "2026-10-30T09:00:00Z"), "and then nothing");
+        s["latest"] = json!("0.13.1");
+        assert!(!start(&mut s, "0.12.1", "2026-10-30T10:00:00Z"), "a patch on a line already said is not news");
         s["latest"] = json!("0.14.0");
-        assert!(start(&mut s, "0.12.1", "2026-10-31T09:00:00Z"), "a newer release is news again");
+        assert!(start(&mut s, "0.12.1", "2026-10-31T09:00:00Z"), "a newer line is news again");
+        let mut s = json!({ "latest": "2.0.0" });
+        assert!(start(&mut s, "1.4.0", "2026-10-01T09:00:00Z"));
+        s["latest"] = json!("2.1.0");
+        assert!(!start(&mut s, "1.4.0", "2026-10-02T09:00:00Z"), "after 1.0 a major line is its first number");
     }
 
     #[test]
@@ -466,6 +486,8 @@ mod tests {
         let mut s = json!({ "latest": "1.3.0" });
         assert!(start(&mut s, "1.2.0", "2026-10-01T09:00:00Z"));
         assert!(!start(&mut s, "1.2.0", "2026-10-09T09:00:00Z"));
+        s["latest"] = json!("1.3.4");
+        assert!(!start(&mut s, "1.2.0", "2026-10-10T09:00:00Z"));
         let mut s = json!({ "latest": "0.12.2" });
         assert!(!start(&mut s, "0.12.1", "2026-10-01T09:00:00Z"));
         let n = newer(&s, "0.12.1", ts("2026-10-01T09:00:00Z")).unwrap();
@@ -479,5 +501,10 @@ mod tests {
         assert!(!start(&mut s, "0.12.1", "2026-10-01T20:00:00Z"));
         assert!(start(&mut s, "0.12.1", "2026-10-02T09:00:00Z"));
         assert!(!start(&mut s, "0.12.2", "2026-10-09T09:00:00Z"), "already has the fix: a patch, so nothing");
+        let mut s = json!({ "latest": "0.13.0" });
+        assert!(start(&mut s, "0.12.1", "2026-10-01T09:00:00Z"));
+        s["latest"] = json!("0.13.1");
+        s["security"] = json!(["0.13.1"]);
+        assert!(start(&mut s, "0.12.1", "2026-10-01T12:00:00Z"), "a security fix on a line just said is said at once");
     }
 }
