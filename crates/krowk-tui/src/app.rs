@@ -44,6 +44,18 @@ const LOGO: [&str; 6] = ["......", ".#..#.", ".#..#.", ".###..", ".#..#.", "....
 const MAX_LIVE_ROWS: usize = 3;
 
 pub use look::dim;
+
+/// A newer krowk release than this one, as the launcher's last check found it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Update {
+    pub current: String,
+    pub latest: String,
+    /// A release since this one fixes a security issue.
+    pub security: bool,
+    /// Worth the header's `Update:` row this time; known either way, for
+    /// the details overlay.
+    pub due: bool,
+}
 use look::{bold, error as red, warning as yellow};
 
 /// Between the status line's items.
@@ -598,6 +610,8 @@ pub struct App {
     pub device: Option<String>,
     /// Sync is set up and there is no recovery kit (`Options`).
     pub no_recovery_kit: bool,
+    /// A newer krowk release (`Options::update`).
+    pub update: Option<Update>,
     /// The session runs on another machine, followed through sync: whether
     /// its host is there and the path it comes by, for the status line.
     pub sync: Option<Synced>,
@@ -775,6 +789,7 @@ impl App {
             offline: None,
             device: None,
             no_recovery_kit: false,
+            update: None,
             sync: None,
             follow: crate::pr::Follow::default(),
             branch: String::new(),
@@ -926,6 +941,7 @@ impl App {
         }
         let label = stack.iter().map(|(l, _)| l.width()).max().unwrap_or(0) + 2;
         let width = usize::from(self.width);
+        let routed = self.model.is_some();
         for (l, v) in stack {
             // A value too long gives way from its start: the end of a path
             // is the part that says where this is.
@@ -940,6 +956,10 @@ impl App {
                 v
             };
             self.pending.push(Line::from(vec![Span::styled(format!("{:<label$}", format!("{l}:")), dim()), Span::raw(v)]));
+        }
+        // Under the model; one still to be routed brings it (`header_model`).
+        if routed {
+            self.update_row(label);
         }
         self.pending.push(Line::default());
         self.last_blank = true;
@@ -956,10 +976,39 @@ impl App {
         }
         let label = "Directory".width() + 2;
         self.pending.push(Line::from(vec![Span::styled(format!("{:<label$}", "Model:"), dim()), Span::raw(clean(&model))]));
+        self.update_row(label);
         self.pending.push(Line::default());
         self.last_blank = true;
         self.after_tool = false;
         self.dirty = true;
+    }
+
+    /// The `Update:` row on its own, for a header whose model was never
+    /// routed under it.
+    pub fn header_update(&mut self) {
+        let before = self.pending.len();
+        self.update_row("Directory".width() + 2);
+        if self.pending.len() > before {
+            self.pending.push(Line::default());
+            self.last_blank = true;
+            self.after_tool = false;
+            self.dirty = true;
+        }
+    }
+
+    /// The header's last row when a newer release is worth a word: dim, as
+    /// the labels are, and yellow only for a security fix. Once a run — not
+    /// again under the header `/clear` prints. The details overlay keeps it.
+    fn update_row(&mut self, label: usize) {
+        let Some(u) = self.update.as_mut().filter(|u| u.due) else { return };
+        u.due = false;
+        let (said, style) = if u.security { (", with a security fix", yellow()) } else { ("", dim()) };
+        // Narrow, it gives way from the end — the command, then the reason —
+        // rather than wrapping under the label.
+        let room = usize::from(self.width).saturating_sub(label);
+        let fits = [format!("{} is out{said} · krowk upgrade", u.latest), format!("{} is out{said}", u.latest), format!("{} is out", u.latest)];
+        let text = fits.iter().find(|t| t.width() <= room).unwrap_or(&fits[2]).clone();
+        self.pending.push(Line::from(vec![Span::styled(format!("{:<label$}", "Update:"), dim()), Span::styled(clean(&text), style)]));
     }
 
     /// A blank line before a new block, unless there is one already.
@@ -2457,6 +2506,11 @@ impl App {
         ];
         if let (Some(dir), Some(id)) = (&self.log_dir, &self.session_id) {
             lines.push(format!("log {dir}/{id}/events.jsonl"));
+        }
+        // Always here, said or not: looked up, never pushed.
+        if let Some(u) = &self.update {
+            let security = if u.security { ", with a security fix" } else { "" };
+            lines.push(format!("krowk {} · {} is out{security} — krowk upgrade", u.current, u.latest));
         }
         // Usage and limits per instance (R-INST-6).
         for (name, u) in &self.instances {
@@ -4134,6 +4188,47 @@ mod tests {
         assert_eq!(&t[..4], ["▀▀▀▀▀▀", "▀▀▀▀▀▀", "▀▀▀▀▀▀", ""], "the mark, two units to a cell");
         assert!(t[4].starts_with("Directory: …") && t[4].ends_with("crates") && t[4].chars().count() <= 40, "{:?}", t[4]);
         assert_eq!(t[5..], ["Branch:    main", "Model:     anthropic/claude-x (medium)", ""]);
+    }
+
+    #[test]
+    fn a_due_release_is_the_headers_last_row_once_and_the_details_keep_it() {
+        let mut a = app();
+        a.width = 80;
+        a.update = Some(Update { current: "0.12.1".into(), latest: "0.13.0".into(), security: false, due: true });
+        a.header("~/p", "main", None);
+        let t = text(&a.take_pending());
+        assert_eq!(t[5..], ["Branch:    main", "Model:     anthropic/claude-x", "Update:    0.13.0 is out · krowk upgrade", ""]);
+        a.start_over("~/p", None);
+        assert!(!text(&a.take_pending()).iter().any(|r| r.contains("Update")), "said once a run");
+        a.overlay = Overlay::Details;
+        assert!(text(&a.view(Instant::now()).0).iter().any(|r| r.contains("krowk 0.12.1 · 0.13.0 is out — krowk upgrade")));
+
+        // A model routed after the header: the row comes under it.
+        let mut a = app();
+        a.width = 80;
+        a.model = None;
+        a.update = Some(Update { current: "0.12.1".into(), latest: "0.12.3".into(), security: true, due: true });
+        a.header("~/p", "", None);
+        a.take_pending();
+        a.header_model(&ModelRef { instance: "x".into(), model: "y".into() }, None);
+        assert_eq!(text(&a.take_pending()), ["Model:     x/y", "Update:    0.12.3 is out, with a security fix · krowk upgrade", ""]);
+        a.width = 40;
+        a.update = Some(Update { current: "0.12.1".into(), latest: "0.12.3".into(), security: true, due: true });
+        a.header_model(&ModelRef { instance: "x".into(), model: "y".into() }, None);
+        assert_eq!(text(&a.take_pending())[1], "Update:    0.12.3 is out", "narrow: the words give way, nothing wraps");
+        a.update = Some(Update { current: "0.12.1".into(), latest: "0.13.0".into(), security: false, due: true });
+        a.header_update();
+        assert_eq!(text(&a.take_pending()), ["Update:    0.13.0 is out · krowk upgrade", ""], "no model routed: on its own");
+        a.header_update();
+        assert!(a.take_pending().is_empty());
+    }
+
+    #[test]
+    fn a_release_not_due_is_only_in_the_details() {
+        let mut a = app();
+        a.update = Some(Update { current: "0.12.1".into(), latest: "0.12.2".into(), security: false, due: false });
+        a.header("~/p", "main", None);
+        assert!(!text(&a.take_pending()).iter().any(|r| r.contains("Update")));
     }
 
     /// R-SUB-3 for a backend's own agents: counted with krowk's, listed

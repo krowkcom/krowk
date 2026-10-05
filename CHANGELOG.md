@@ -98,6 +98,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   without the device's key reads none of your sessions, not even their
   sizes and times. Two reads signed in the same millisecond on one machine
   are told apart by signing the second again.
+- **The new-release notice speaks up only when the release is worth it.**
+  A major release (before 1.0, a new middle number, like 0.12 → 0.13) is
+  mentioned once and once more a week later, a minor release once, and a
+  patch release never — unless a release you skipped has a security fix,
+  which is mentioned once a day until you upgrade. In the agent it's one dim
+  `Update:` row under the session header, never a banner, and Ctrl-O's
+  session details always say whether a newer release is out. The agent
+  never waits on the check: it uses the last answer and asks for the next
+  one in the background. After other commands the line on stderr follows
+  the same rules. `KROWK_NO_UPDATE_CHECK=1` still turns it all off.
 
 ### Fixed
 
