@@ -92,9 +92,9 @@ fn wire_shape_matches_the_registrys_routes() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// The sync calls (R-SYNC-1): a device registered by `krowk sync recover`,
-/// the listing, and the session and lease calls krowk-api makes for the
-/// host (ticket 19 puts them behind a command).
+/// The sync calls (R-SYNC-1): the device list `krowk sync init` posts, and
+/// the session and lease calls krowk-api makes for the host (ticket 19 puts
+/// them behind a command).
 #[cfg(all(feature = "harness", unix))]
 #[test]
 fn sync_wire_shape_matches_the_registrys_routes() {
@@ -114,22 +114,22 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     *api.lock().unwrap() = format!("http://{proxy}/v1");
     let laptop = Krowk { home: laptop_home, api: api.lock().unwrap().clone() };
 
-    // Sync on the account key, as the lease calls still run on it: set up in
-    // the laptop's home and registered, as `sync recover` did from the phrase.
-    let keys = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk"));
-    let (setup, _) = keys.recover(krowk_client::e2e::AccountKey::generate()).unwrap();
-    let signing = keys.signing_key().unwrap();
-    let signing_public = krowk_client::e2e::hex(&signing.public().0);
-    krowk_api::Client::new(&laptop.api, "krowk_sk_test")
-        .signed_by(krowk_client::e2e::DeviceSigner::new(setup.device.id(), signing).shared())
-        .register_device(&krowk_client::e2e::hex(&setup.device.public().0), &signing_public, "laptop", &setup.account.id().to_string())
-        .unwrap();
-
-    let store = krowk_client::keystore::Keystore::new(&laptop.home.join(".krowk"));
-    let device_id = store.device().unwrap().unwrap().id();
-    let signer = krowk_client::e2e::DeviceSigner::new(device_id, store.signing_key().unwrap()).shared();
-    let client = krowk_api::Client::new(&laptop.api, "krowk_sk_test").signed_by(signer);
-    let device = device_id.to_string();
+    // The laptop's device list, as `krowk sync init` posts it: its first
+    // entry adds the laptop, and the post binds the key making it to it.
+    use krowk_client::device_chain::{Chain, Kind, Subject};
+    use krowk_client::e2e::{hex, DeviceKey, DeviceSigner, SigningKey};
+    let (key, signing) = (DeviceKey::generate(), SigningKey::generate());
+    let subject = Subject { kind: Kind::Device, name: "laptop".into(), os: "linux".into(), device: key.public(), signing: signing.public() };
+    let (_, start) = Chain::start(subject, &signing, None, jiff::Timestamp::now().as_second() as u64).unwrap();
+    let post = krowk_api::sync::ListPost {
+        entries: start.entries.iter().map(|e| (hex(&e.bytes), hex(&e.signatures_bytes()))).collect(),
+        links: Vec::new(),
+        wraps: vec![(key.id().to_string(), hex(&start.newest.wrap_to(&key.public()).unwrap()))],
+        start_over: false,
+    };
+    let client = krowk_api::Client::new(&laptop.api, "krowk_sk_test").signed_by(DeviceSigner::new(key.id(), signing).shared());
+    client.init_device_list(&post).unwrap();
+    let device = key.id().to_string();
     let id = "0190f3a8-7c1e-7a9b-8c2d-3e4f5a6b7c8d";
     client.put_sync_session(id, &"00".repeat(74), None, Some(&"00".repeat(40)), None).unwrap();
     let lease = client.acquire_lease(id, &device, 60, "production").unwrap();
@@ -147,10 +147,12 @@ fn sync_wire_shape_matches_the_registrys_routes() {
 
     assert!(failures.lock().unwrap().is_empty(), "{:?}", failures.lock().unwrap());
     let want = [
-        // The laptop's device, registered. +signed marks
-        // the calls that act as a device, signed by its key (crypto.md →
-        // Signed registry requests), and only they are.
-        "POST /v1/devices +signed",
+        // The laptop's device list, started: the key's person first, whose
+        // list it is, then the list's first entry. +signed marks the calls
+        // that act as a device, signed by its key (crypto.md → Signed
+        // registry requests), and only they are.
+        "GET /v1/key",
+        "POST /v1/users/{slug}/devices +signed",
         // A session is PUT under the id its client minted; its lease is a
         // singular resource: POST acquires, PUT renews or hands over, DELETE
         // lets go.
@@ -284,7 +286,7 @@ fn wire_call(method: &str, path: &str, keyed: bool, signed: bool) -> Option<Stri
     let slugged: Vec<String> = path
         .split('/')
         .map(|seg| {
-            let slug = ["art_", "aut_", "run_", "ws_", "dap_"].iter().any(|p| seg.starts_with(p) && seg.len() > p.len());
+            let slug = ["art_", "aut_", "run_", "ws_", "dap_", "usr_"].iter().any(|p| seg.starts_with(p) && seg.len() > p.len());
             // A synced session is named by the UUID its client minted.
             let uuid = seg.len() == 36 && seg.bytes().filter(|b| *b == b'-').count() == 4;
             if slug { "{slug}".to_string() } else if uuid { "{id}".to_string() } else { seg.to_string() }

@@ -67,10 +67,12 @@ pub struct Listed {
     pub removed_seq: Option<u64>,
     pub revoked_at: Option<Timestamp>,
     pub created_at: Timestamp,
+    /// None until a lease call of its own.
+    pub last_seen_at: Option<Timestamp>,
 }
 
 impl Listed {
-    fn active(&self) -> bool {
+    pub fn active(&self) -> bool {
         self.removed_seq.is_none() && self.revoked_at.is_none()
     }
 }
@@ -133,20 +135,34 @@ pub struct Caller {
     pub key: String,
 }
 
-/// The key and the paid gate, then the person behind the key. A key
-/// revoked with its device is refused like any unknown key.
+/// The key, then the paid gate, and the person behind the key. A key
+/// revoked with its device is refused like any unknown key, before the
+/// plan is read, as the registry authenticates first.
 pub fn caller_of(s: &SyncStore, req: &Req) -> Result<Caller, Resp> {
-    gate(req)?;
     let token = token(req).unwrap_or_default();
     let key = sha256_hex(token.as_bytes());
     if s.revoked_keys.contains(&key) {
         return Err(crate::errors::unauthorized());
     }
+    gate(req)?;
     Ok(Caller { person: person_for(&token), key })
 }
 
-fn device_revoked(id: &str) -> Resp {
-    error(403, "device_revoked", &format!("device {id} was revoked or removed — sign in again on a device on your list"), None)
+/// A device a call is signed by or names, removed from the list or revoked
+/// from the dashboard (Device#refuse_if_revoked!).
+pub fn revoked(d: &Listed) -> Resp {
+    let how = if d.removed_seq.is_some() { "removed from" } else { "revoked on" };
+    error(403, "device_revoked", &format!("device {} was {how} your device list and can no longer act", d.id), None)
+}
+
+pub fn refuse_if_revoked(d: &Listed) -> Result<(), Resp> {
+    if d.active() { Ok(()) } else { Err(revoked(d)) }
+}
+
+/// The key's own device, gone from the list or revoked
+/// (Api::Sync#refuse_key_without_an_active_device).
+fn key_device_revoked() -> Resp {
+    error(403, "device_revoked", "the device this key speaks for was revoked or removed — sign in again on a device on your list", None)
 }
 
 /// The device a signed call is signed by: on the person's list, not removed
@@ -155,13 +171,9 @@ fn device_revoked(id: &str) -> Resp {
 pub fn signed_device(s: &mut SyncStore, req: &Req, caller: &Caller, body: &[u8]) -> Result<String, Resp> {
     let (device, at, signature) = signature_headers(req)?;
     let person = s.people.get(&caller.person).filter(|p| !p.entries.is_empty()).ok_or_else(no_device_list)?;
-    let listed = person.device(&device).cloned();
-    let key = listed.as_ref().map(|d| d.signing_key.to_vec()).unwrap_or_default();
-    check_signature(s, req, &device, &at, &signature, &key, body)?;
-    let listed = listed.ok_or_else(|| device_revoked(&device))?;
-    if !listed.active() {
-        return Err(device_revoked(&device));
-    }
+    let listed = person.device(&device).cloned().ok_or_else(|| error(401, "signature_invalid", &format!("device {device} has no signing key on record to check this request against"), None))?;
+    check_signature(s, req, &device, &at, &signature, &listed.signing_key, body)?;
+    refuse_if_revoked(&listed)?;
     // The recovery kit posts from whichever machine holds its words, on
     // that machine's key, as the registry lets it.
     if let Some(bound) = s.bindings.get(&caller.key)
@@ -182,7 +194,7 @@ pub fn key_device(s: &SyncStore, caller: &Caller) -> Result<String, Resp> {
     };
     match s.people.get(&caller.person).and_then(|p| p.device(bound)) {
         Some(d) if d.active() => Ok(bound.clone()),
-        _ => Err(device_revoked(bound)),
+        _ => Err(key_device_revoked()),
     }
 }
 
@@ -387,7 +399,11 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
     }
     let decoded = p.entries.iter().map(|e| Entry::decode(&e.bytes).map_err(|e| refused(&e.0))).collect::<Result<Vec<_>, _>>()?;
     let mut person = s.people.get(&caller.person).cloned().unwrap_or_default();
+    // The devices whose keys go with them, and whether the key posting is
+    // spared: only by a start-over, which it binds to the new list's first
+    // device. A device that removes itself takes its own key with it.
     let mut revoke: Vec<String> = Vec::new();
+    let mut spare = false;
     if init && !person.entries.is_empty() {
         if !p.start_over {
             return Err(error(409, "chain_exists", "you already have a device list — add this machine from one of your devices with `krowk sync join`, or start over with `krowk sync init --start-over` if every device and the kit are lost", None));
@@ -395,6 +411,7 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
         // A new chain, never a shorter one: the old devices are refused and
         // their keys revoked, but for the key doing it.
         revoke.extend(person.devices.iter().map(|d| d.id.clone()));
+        spare = true;
         person = Person { epoch: person.epoch + 1, ..Person::default() };
     }
     if !init && person.entries.is_empty() {
@@ -443,6 +460,7 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
                         removed_seq: None,
                         revoked_at: None,
                         created_at: now,
+                        last_seen_at: None,
                     });
                     added.push(id);
                 }
@@ -459,7 +477,7 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
                 }
                 let subject = &e.subjects[0];
                 let id = subject.id().to_string();
-                person.devices.push(Listed { id: id.clone(), kind: "recovery", name: subject.name.clone(), os: subject.os.clone(), public_key: subject.device.0, signing_key: subject.signing.0, added_seq: e.seq, removed_seq: None, revoked_at: None, created_at: now });
+                person.devices.push(Listed { id: id.clone(), kind: "recovery", name: subject.name.clone(), os: subject.os.clone(), public_key: subject.device.0, signing_key: subject.signing.0, added_seq: e.seq, removed_seq: None, revoked_at: None, created_at: now, last_seen_at: None });
                 added.push(id);
             }
         }
@@ -503,7 +521,7 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
     // Commit: the person, every key bound to a device this post removed, and
     // at init the key doing it bound to the first device.
     for (key, device) in &s.bindings {
-        if revoke.contains(device) && *key != caller.key {
+        if revoke.contains(device) && !(spare && *key == caller.key) {
             s.revoked_keys.insert(key.clone());
         }
     }
@@ -577,7 +595,7 @@ pub fn serialize(d: &Listed) -> Json {
         ("added_seq", Json::Int(d.added_seq as i64)),
         ("removed_seq", d.removed_seq.map_or(Json::Null, |q| Json::Int(q as i64))),
         ("created_at", Json::str(rfc3339_nano(d.created_at))),
-        ("last_seen_at", Json::Null),
+        ("last_seen_at", d.last_seen_at.map_or(Json::Null, |t| Json::str(rfc3339_nano(t)))),
         ("revoked_at", d.revoked_at.map_or(Json::Null, |t| Json::str(rfc3339_nano(t)))),
     ])
 }

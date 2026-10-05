@@ -991,15 +991,21 @@ mod tests {
     use krowk_client::user_key::UserKey;
 
     const T0: u64 = 1_790_000_000;
+    /// The person's key, which each device holds one of (`tok#…`).
+    const TOKEN: &str = "krowk_sk_sync_host_take_000000000000";
 
     struct Dev {
         key: e2e::DeviceKey,
         signing: SigningKey,
+        /// The key it holds, which speaks for it.
+        token: String,
     }
 
     impl Dev {
         fn new() -> Dev {
-            Dev { key: e2e::DeviceKey::generate(), signing: SigningKey::generate() }
+            let key = e2e::DeviceKey::generate();
+            let token = format!("{TOKEN}#{}", key.id());
+            Dev { key, signing: SigningKey::generate(), token }
         }
         fn subject(&self, name: &str) -> Subject {
             Subject { kind: Kind::Device, name: name.into(), os: "linux".into(), device: self.key.public(), signing: self.signing.public() }
@@ -1009,18 +1015,37 @@ mod tests {
         }
     }
 
-    /// A laptop and a desktop on one person's list, generation 1.
-    fn list(laptop: &Dev, desktop: &Dev) -> (Chain, UserKey) {
+    /// A device list post of `b`, as the chain made it.
+    fn post(b: &krowk_client::device_chain::Batch) -> krowk_api::sync::ListPost {
+        krowk_api::sync::ListPost {
+            entries: b.entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect(),
+            links: b.links.iter().map(|l| e2e::hex(l)).collect(),
+            wraps: b.wraps.iter().map(|(d, w)| (d.to_string(), e2e::hex(w))).collect(),
+            start_over: false,
+        }
+    }
+
+    /// A laptop and a desktop on one person's list, generation 1, in the
+    /// registry at `url` too: the laptop starts it, which binds its key,
+    /// adds the desktop, and the desktop's key claims it.
+    fn list(url: &str, laptop: &Dev, desktop: &Dev) -> (Chain, UserKey) {
         let (chain, start) = Chain::start(laptop.subject("laptop"), &laptop.signing, None, T0).unwrap();
-        let (chain, _) = chain.batch(&start.newest, vec![Change::Add(desktop.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 1).unwrap();
+        let (chain, add) = chain.batch(&start.newest, vec![Change::Add(desktop.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 1).unwrap();
+        let as_laptop = client(url, laptop);
+        as_laptop.init_device_list(&post(&start)).unwrap();
+        as_laptop.append_device_list(&post(&add)).unwrap();
+        client(url, desktop).claim_key_device().unwrap();
         (chain, start.newest)
+    }
+
+    /// The stand-in registry at `url` as `d`: on its own key, signed by it.
+    fn client(url: &str, d: &Dev) -> Client {
+        Client::new(url, &d.token).signed_by(e2e::DeviceSigner::new(d.key.id(), d.signing()).shared())
     }
 
     /// `d` on the stand-in registry at `url`, hosting `session`.
     fn options(url: &str, d: &Dev, keys: UserKeys, chain: Chain, session: &str) -> Options {
-        let signer = e2e::DeviceSigner::new(d.key.id(), d.signing()).shared();
-        let api = Arc::new(Client::new(url, "krowk_sk_sync_host_take_000000000000").signed_by(signer));
-        api.register_device(&e2e::hex(&d.key.public().0), &e2e::hex(&d.signing.public().0), "host", &"0".repeat(32)).unwrap();
+        let api = Arc::new(client(url, d));
         Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), ttl: LEASE_TTL, keep: KEEP, direct: None }
     }
 
@@ -1028,15 +1053,6 @@ mod tests {
         let reg = krowk_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
         let url = format!("{}/v1", reg.url());
         (reg, url)
-    }
-
-    fn post(batch: &krowk_client::device_chain::Batch) -> krowk_api::sync::ListPost {
-        krowk_api::sync::ListPost {
-            entries: batch.entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect(),
-            links: batch.links.iter().map(|l| e2e::hex(l)).collect(),
-            wraps: batch.wraps.iter().map(|(d, w)| (d.to_string(), e2e::hex(w))).collect(),
-            start_over: false,
-        }
     }
 
     /// D5 mB: a running host reads the list again. Nothing new, or a device
@@ -1077,7 +1093,7 @@ mod tests {
     fn d8b_another_listed_device_takes_up_a_session_the_first_published() {
         let (_reg, url) = registry();
         let (laptop, desktop) = (Dev::new(), Dev::new());
-        let (chain, user) = list(&laptop, &desktop);
+        let (chain, user) = list(&url, &laptop, &desktop);
         let id = "01a0ec7b-3333-7000-8000-0000000000d1";
         let keys = || UserKeys::new(user.clone(), []).unwrap();
         let o = options(&url, &laptop, keys(), chain.clone(), id);
@@ -1097,7 +1113,7 @@ mod tests {
     fn d8b_the_host_never_takes_up_a_record_no_listed_device_signed() {
         let (_reg, url) = registry();
         let (laptop, desktop) = (Dev::new(), Dev::new());
-        let (chain, user) = list(&laptop, &desktop);
+        let (chain, user) = list(&url, &laptop, &desktop);
         let o = |id: &str| options(&url, &laptop, UserKeys::new(user.clone(), []).unwrap(), chain.clone(), id);
         let raw = |id: &str| crate::daemon::ws::uuid(id);
         let planted = |id: &str| e2e::wrap_session_key(&SessionKey::generate(), &raw(id), &user);
@@ -1133,7 +1149,7 @@ mod tests {
         let _reg = krowk_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), config).unwrap();
         let url = format!("{}/v1", _reg.url());
         let (laptop, desktop) = (Dev::new(), Dev::new());
-        let (chain, user) = list(&laptop, &desktop);
+        let (chain, user) = list(&url, &laptop, &desktop);
         let o = |id: &str| options(&url, &laptop, UserKeys::new(user.clone(), []).unwrap(), chain.clone(), id);
         take(&o("01a0ec7b-3333-7000-8000-0000000000d5")).unwrap();
         let second = o("01a0ec7b-3333-7000-8000-0000000000d6");
@@ -1153,7 +1169,7 @@ mod tests {
     fn d8b_the_host_never_takes_up_a_removed_devices_planted_record() {
         let (_reg, url) = registry();
         let (laptop, thief) = (Dev::new(), Dev::new());
-        let (chain, g1) = list(&laptop, &thief);
+        let (chain, g1) = list(&url, &laptop, &thief);
         let (chain, removed) = chain.batch(&g1, vec![Change::Remove(thief.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 2).unwrap();
         let g2 = removed.newest;
         let keys = UserKeys::new(g2.clone(), [g2.wrap_previous(&g1).unwrap()]).unwrap();
@@ -1180,7 +1196,7 @@ mod tests {
     fn epochs_a_session_from_before_a_removal_is_rotated_when_taken_up() {
         let (_reg, url) = registry();
         let (laptop, thief) = (Dev::new(), Dev::new());
-        let (chain, g1) = list(&laptop, &thief);
+        let (chain, g1) = list(&url, &laptop, &thief);
         let id = "01a0ec7b-3333-7000-8000-0000000000d9";
         let raw = crate::daemon::ws::uuid(id);
         let before = options(&url, &laptop, UserKeys::new(g1.clone(), []).unwrap(), chain.clone(), id);
@@ -1218,12 +1234,12 @@ mod tests {
     fn d8_a_host_behind_the_chains_generation_publishes_nothing() {
         let (_reg, url) = registry();
         let (laptop, desktop) = (Dev::new(), Dev::new());
-        let (chain, user) = list(&laptop, &desktop);
+        let (chain, user) = list(&url, &laptop, &desktop);
         let (chain, _) = chain.batch(&user, vec![Change::Remove(desktop.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 2).unwrap();
         let id = "01a0ec7b-4444-7000-8000-0000000000d8";
         let o = options(&url, &laptop, UserKeys::new(user, []).unwrap(), chain, id);
         let refused = take(&o).err().expect("generation 1 seals nothing when the list names 2");
         assert!(refused.contains("names generation 2"), "{refused}");
-        assert!(o.api.show_sync_session(id).is_err(), "nothing reached the registry");
+        assert_eq!(o.api.show_sync_session(id).unwrap_err().status, 404, "nothing reached the registry");
     }
 }

@@ -201,20 +201,30 @@ pub fn fresh_dir(work: &Path, name: &str) -> PathBuf {
 /// The session is 40 turns: a checkpoint cut after 30, ten turns of tail.
 #[cfg(unix)]
 pub fn remote_attach(runs: usize) -> Outcome {
-    use krowk_client::e2e::{self, AccountKey, DeviceKey, SessionKey, SessionKeys};
+    use krowk_client::device_chain::{Chain, Kind, Subject};
+    use krowk_client::e2e::{self, DeviceKey, SessionKey, SessionKeys};
     use krowk_harness::sync::store;
     let reg = match krowk_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").expect("loopback"), Default::default()) {
         Ok(r) => r,
         Err(e) => return Outcome::Error(e.to_string()),
     };
-    let account = AccountKey::generate();
-    let user = krowk_client::user_key::UserKey::first();
     let device = DeviceKey::generate();
     let signing = e2e::SigningKey::generate();
     let signer = e2e::DeviceSigner::new(device.id(), e2e::SigningKey::from_secret(&*signing.secret_bytes()).expect("a key")).shared();
     let api = std::sync::Arc::new(krowk_api::Client::new(&format!("{}/v1", reg.url()), "krowk_sk_bench_remote_attach_000000000").signed_by(signer));
     let setup = || -> Result<(String, SessionKeys), String> {
-        api.register_device(&e2e::hex(&device.public().0), &e2e::hex(&signing.public().0), "bench", &account.id().to_string()).map_err(|e| e.to_string())?;
+        // The device alone on a device list, as `krowk sync init` posts it,
+        // which binds the key to it.
+        let subject = Subject { kind: Kind::Device, name: "bench".into(), os: "linux".into(), device: device.public(), signing: signing.public() };
+        let (_, start) = Chain::start(subject, &signing, None, 1_790_000_000).map_err(|e| e.0)?;
+        let user = start.newest;
+        let post = krowk_api::sync::ListPost {
+            entries: start.entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect(),
+            links: Vec::new(),
+            wraps: start.wraps.iter().map(|(d, w)| (d.to_string(), e2e::hex(w))).collect(),
+            start_over: false,
+        };
+        api.init_device_list(&post).map_err(|e| e.to_string())?;
         let id = "01a0ec7b-0000-7000-8000-00000000be0c".to_string();
         let raw = krowk_harness::daemon::ws::uuid(&id);
         let key = SessionKeys::from(SessionKey::generate());

@@ -7,7 +7,7 @@
 
 #![cfg(all(feature = "harness", unix))]
 
-use krowk_client::e2e::{self, AccountKey, SessionKey, SigningKey};
+use krowk_client::e2e::{self, AccountKey, SessionKey};
 use krowk_client::keystore::Keystore;
 use krowk_client::session_record;
 use krowk_harness::sync::store;
@@ -51,16 +51,16 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
     people.enlist(&a_keys, "machine-a");
     let (b_home, ks) = home("b");
     people.enlist(&ks, "machine-b");
-    // The registry holds the list too: B brings the list it keeps up to
-    // date from it before it attaches.
+    // The registry holds the list too, and each machine a key of its own
+    // speaking for its device: B brings the list it keeps up to date from
+    // it before it attaches.
     people.publish(&api_url, TOKEN);
 
     // Machine A wrote the session to the registry, its record signed, and
     // went away.
     let (a, a_signing) = (a_keys.device().unwrap().unwrap(), a_keys.signing_key().unwrap());
-    // A's calls act as A, signed by its key.
-    let api = Arc::new(krowk_api::Client::new(&api_url, TOKEN).signed_by(e2e::DeviceSigner::new(a.id(), SigningKey::from_secret(&*a_signing.secret_bytes()).unwrap()).shared()));
-    api.register_device(&e2e::hex(&a.public().0), &e2e::hex(&a_signing.public().0), "machine-a", &account.id().to_string()).unwrap();
+    // A's calls act as A, on its key, signed by its device.
+    let api = Arc::new(people.client(&api_url, TOKEN, 0));
     let id = "01a0ec7b-1111-7000-8000-000000000019".to_string();
     let raw = krowk_harness::daemon::ws::uuid(&id);
     let key = SessionKey::generate();
@@ -75,12 +75,7 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
     w.checkpoint(None, &lease.token).unwrap();
     api.release_lease(&id, &lease.token).unwrap();
 
-    // Machine B: keys of its own, registered.
-    let b = ks.device().unwrap().unwrap();
-    let b_signing = ks.signing_key().unwrap();
-    let b_api = krowk_api::Client::new(&api_url, TOKEN).signed_by(e2e::DeviceSigner::new(b.id(), SigningKey::from_secret(&*b_signing.secret_bytes()).unwrap()).shared());
-    b_api.register_device(&e2e::hex(&b.public().0), &e2e::hex(&b_signing.public().0), "machine-b", &account.id().to_string()).unwrap();
-
+    // Machine B, on its own key.
     let mut child = Command::new(env!("CARGO_BIN_EXE_krowk"))
         .args(["--resume", &id])
         .env_clear()
@@ -88,7 +83,7 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
         .env("HOME", &b_home)
         .env("KROWK_NO_UPDATE_CHECK", "1")
         .env("KROWK_API_URL", &api_url)
-        .env("KROWK_TOKEN", TOKEN)
+        .env("KROWK_TOKEN", device_list::key(TOKEN, "machine-b"))
         .env("KROWK_RELAY_URL", &relay_url)
         .current_dir(&b_home)
         // Held open: `sync attach` ends when its stdin does.
