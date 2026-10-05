@@ -134,11 +134,14 @@ pub(crate) fn upgrade(ctx: &mut Ctx) -> Result<(), Error> {
     }
     let latest = latest_version(Duration::from_secs(10))?;
     // The newest, for the notice; not when it was checked, since this asked
-    // nothing about security fixes and the next check still should.
+    // nothing about security fixes and the next check still should. Only
+    // ever raised: GitHub's "latest" can be a backport older than another.
     if let Some(path) = state_path(ctx) {
         let mut state = read_state(&path);
-        state["latest"] = json!(latest);
-        write_state(&path, &state);
+        if state.get("latest").and_then(Value::as_str).is_none_or(|l| version_less(l, &latest)) {
+            state["latest"] = json!(latest);
+            write_state(&path, &state);
+        }
     }
     if !version_less(VERSION, &latest) {
         return report(ctx, json!({ "upgraded": false, "version": VERSION, "latest": latest }), &format!("krowk {VERSION} is the latest release"));
