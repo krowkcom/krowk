@@ -832,6 +832,56 @@ async fn until(at: Option<Instant>) {
     }
 }
 
+/// A probe of whether `t` can be reached.
+fn probe(t: Target) -> ProbeFuture {
+    Box::pin(async move { net::reachable(&t).await })
+}
+
+/// When the next frame is drawn, and when the last was.
+#[derive(Default)]
+struct Frames {
+    at: Option<Instant>,
+    last: Option<Instant>,
+}
+
+/// When what the event loop waits on besides its sources falls due.
+struct Due {
+    tick: Option<Instant>,
+    stall: Option<Instant>,
+    retry: Option<Instant>,
+    quit: Option<Instant>,
+}
+
+/// Whether the model's provider can be reached, as the loop finds out:
+/// the probe running, when the next is due, how many failed in a row,
+/// and when the stream last brought anything.
+struct Reach {
+    probe: Option<ProbeFuture>,
+    probe_at: Option<Instant>,
+    failures: u32,
+    last_activity: Instant,
+    stall_quiet_until: Option<Instant>,
+}
+
+impl Reach {
+    fn online(&mut self, app: &mut App) {
+        app.set_online();
+        self.failures = 0;
+        self.probe_at = None;
+    }
+
+    /// A probe's answer.
+    fn probed(&mut self, app: &mut App, ok: bool, target: Option<&Target>) {
+        if ok {
+            self.online(app);
+        } else {
+            app.set_offline(target.map(Target::label).unwrap_or_default());
+            self.probe_at = Some(Instant::now() + net::retry_after(self.failures));
+            self.failures += 1;
+        }
+    }
+}
+
 impl<'h> Ui<'h> {
     /// What the host already sent, read before leaving: keys go ahead of
     /// the stream in the loop, so a second Ctrl-C pressed just after a
@@ -845,41 +895,19 @@ impl<'h> Ui<'h> {
         }
     }
 
-    // Legacy: the TUI's event loop, one select over every source. TODO: split into helpers and drop this allow.
-    #[allow(clippy::cognitive_complexity)]
     async fn run<W: Write>(&mut self, app: &mut App, term: &mut Term<W>) -> std::io::Result<()> {
         self.keys = Some(EventStream::new());
-        let mut frame_at: Option<Instant> = None;
-        let mut last_frame: Option<Instant> = None;
+        let mut frames = Frames::default();
         // One probe at start, so a machine that is offline says so before
         // anybody types into it.
-        let mut probe: Option<ProbeFuture> = self.target.clone().map(|t| Box::pin(async move { net::reachable(&t).await }) as ProbeFuture);
-        let mut probe_at: Option<Instant> = None;
-        let mut failures = 0u32;
-        let mut last_activity = Instant::now();
-        let mut stall_quiet_until: Option<Instant> = None;
+        let mut reach = Reach { probe: self.target.clone().map(probe), probe_at: None, failures: 0, last_activity: Instant::now(), stall_quiet_until: None };
         let mut quitting = false;
         let mut hangups = Signals::hangups();
         let mut interrupts = Signals::interrupts();
-        self.draw(app, term)?;
-        last_frame.replace(Instant::now());
-        // A model known at start needs nothing routed; whether anything
-        // here can run it at all is asked now, behind the first frame.
-        // A synced session runs on its host's models: nothing here to ask
-        // about, and no first-run card over it on a machine with none.
-        if self.routing.is_none() && self.host.synced().is_none() {
-            self.startup_sweep(app);
-        }
-        self.look_for_pr(app);
+        self.first_frame(app, term, &mut frames)?;
         loop {
-            let now = Instant::now();
-            // Deadlines, only for what is actually pending.
-            let tick_at = app.turn.as_ref().map(|t| next_tick(Instant::from_std(t.started), now));
-            let stall_at = (app.waiting_on_model() && probe.is_none() && app.offline.is_none() && self.target.is_some())
-                .then(|| (last_activity + STALL).max(stall_quiet_until.unwrap_or(now)));
-            let retry_at = app.turn.as_ref().filter(|t| (t.want_interrupt && !t.interrupt_sent) || !app.unsent_steers.is_empty()).map(|_| now + INTERRUPT_RETRY);
-            let quit_at = self.quit_armed.map(|(_, t)| t + QUIT_CONFIRM);
-            let wake = [frame_at, tick_at, stall_at, retry_at, probe_at, quit_at].into_iter().flatten().min();
+            let due = self.due(app, &reach);
+            let wake = [frames.at, due.tick, due.stall, due.retry, reach.probe_at, due.quit].into_iter().flatten().min();
             tokio::select! {
                 biased;
                 // Ctrl-C or Ctrl-\ on the terminal a vendor's login has: that
@@ -889,217 +917,271 @@ impl<'h> Ui<'h> {
                 // SIGHUP are what ask it to from outside.
                 _ = interrupts.recv() => {}
                 _ = hangups.recv() => {
-                    // A turn in the daemon is the daemon's: the terminal
-                    // going takes nothing with it, and it runs on for
-                    // `krowk --resume` to follow (R-HOST-1).
-                    if self.host.remote().is_some() || self.host.synced().is_some() {
+                    if self.on_hangup(app, &mut quitting).await {
                         return Ok(());
                     }
-                    if !app.running() || quitting {
-                        self.abandoned = app.running();
-                        return Ok(());
-                    }
-                    quitting = true;
-                    self.interrupt(app).await;
                 }
                 ev = next_key(&mut self.keys) => match ev {
                     Some(Ok(ev)) => {
                         if self.on_event(app, term, ev, &mut quitting).await? {
-                            probe_at = Some(Instant::now());
+                            reach.probe_at = Some(Instant::now());
                         }
                     }
                     // The terminal is gone: nobody is left to answer.
                     Some(Err(_)) | None => return Ok(()),
                 },
-                line = recv(&mut self.rx) => {
-                    last_activity = Instant::now();
-                    if matches!(&line, StreamLine::Live(krowk_harness::protocol::LiveEvent::ItemDelta { .. })) {
-                        // Bytes are arriving from the model: it is reachable,
-                        // and a retry probe still scheduled is moot.
-                        app.set_online();
-                        failures = 0;
-                        probe_at = None;
-                    }
-                    app.on_line(&line);
-                    self.follow(app);
-                    self.follow_the_agent(app);
-                    self.flush_requests(app).await;
-                }
+                line = recv(&mut self.rx) => self.on_stream_line(app, &line, &mut reach).await,
                 line = watched(&mut self.watch) => {
                     app.on_line(&line);
                     self.go_on(app);
                 }
                 e = recv_sync(&mut self.sync_events) => self.on_sync(app, e),
                 r = finish(&mut self.turn) => {
-                    self.turn = None;
-                    if let Some(n) = self.host.take_note() {
-                        app.note(&n);
-                    }
-                    // What the host sent before answering is already queued.
-                    if let Some(mut rx) = self.rx.take() {
-                        while let Ok(line) = rx.try_recv() {
-                            app.on_line(&line);
-                        }
-                    }
-                    self.follow(app);
-                    if let (Some(project), Some(id)) = (&self.project, &app.session_id) {
-                        let (project, id) = (project.clone(), id.clone());
-                        std::thread::spawn(move || project(&id));
-                    }
-                    // What the engine never read, as the host says on the
-                    // result (its own queue, so nothing is guessed), and what
-                    // was never accepted at all.
-                    let (acked, unsent) = app.end_turn_parts();
-                    let mut left = match &r {
-                        Ok(Some(res)) => res.unread_steers.clone(),
-                        _ => acked,
-                    };
-                    left.extend(unsent);
-                    let network = match &r {
-                        Ok(Some(res)) => res.error.as_ref().is_some_and(|e| e.code == "network_unreachable"),
-                        Ok(None) => false,
-                        Err(e) => e.code == "network_unreachable",
-                    };
-                    let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
-                    let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image");
-                    // A `continue` whose turn a prompt already ran is no
-                    // news.
-                    if let Err(e) = r
-                        && e.code != "nothing_pending"
-                    {
-                        app.error(&e.info());
-                    }
-                    if network && probe.is_none() {
-                        probe_at = Some(Instant::now());
-                    }
-                    self.look_for_pr(app);
-                    if quitting {
+                    if self.on_turn_end(app, r, &mut reach, quitting).await {
                         return Ok(());
                     }
-                    // Steering the turn never read: after an answer it is
-                    // the next prompt, as it would have been the turn's next
-                    // step. After an interrupt or a failure it is not sent
-                    // on its own — it goes back into the prompt, to send,
-                    // edit or drop.
-                    if !left.is_empty() {
-                        if completed {
-                            self.prompt(app, left.join("\n\n"));
-                        } else {
-                            app.editor.restore(&left.join("\n\n"));
-                            app.notice("the steering this turn never read is back in the prompt");
-                        }
-                    }
-                    // A prompt refused for its images goes back, images and
-                    // all, to switch the model or drop them.
-                    if refused_images {
-                        app.editor.restore(&self.last_prompt);
-                    }
-                    self.forget_images(app);
-                    self.go_on(app);
                 }
-                r = finish(&mut self.model_route) => {
-                    self.model_route = None;
-                    match r {
-                        Ok(m) => {
-                            self.switch(app, m).await;
-                            self.release(app);
-                        }
-                        Err(e) => {
-                            app.error(&e.info());
-                            self.unhold(app);
-                        }
-                    }
-                }
+                r = finish(&mut self.model_route) => self.on_model_route(app, r).await,
                 m = recv_auth(&mut self.auth) => self.on_auth(app, term, m)?,
-                p = finish_paste(&mut self.pasting) => {
-                    let mark = self.pasting.take().and_then(|(m, _)| m);
-                    self.pasted(app, mark, p);
-                    self.next_paste(app);
-                }
-                (branch, found) = finish(&mut self.pr) => {
-                    self.pr = None;
-                    if app.branch != branch || app.pr != found {
-                        app.branch = branch;
-                        app.pr = found;
-                        app.touch();
-                    }
-                    // The agent moved on while this was read.
-                    self.follow_the_agent(app);
-                }
+                p = finish_paste(&mut self.pasting) => self.on_pasted(app, p),
+                (branch, found) = finish(&mut self.pr) => self.on_pr(app, branch, found),
                 reports = finish(&mut self.checks) => {
                     self.checks = None;
                     self.marked(app, reports);
                 }
-                r = finish(&mut self.routing) => {
-                    self.routing = None;
-                    if self.routed(app, r) && probe.is_none()
-                        && let Some(t) = self.target.clone()
-                    {
-                        probe = Some(Box::pin(async move { net::reachable(&t).await }));
-                    }
+                r = finish(&mut self.routing) => self.on_routing(app, r, &mut reach),
+                ok = finish(&mut reach.probe) => {
+                    reach.probe = None;
+                    reach.probed(app, ok, self.target.as_ref());
                 }
-                ok = finish(&mut probe) => {
-                    probe = None;
-                    if ok {
-                        app.set_online();
-                        failures = 0;
-                        probe_at = None;
-                    } else {
-                        app.set_offline(self.target.as_ref().map(Target::label).unwrap_or_default());
-                        probe_at = Some(Instant::now() + net::retry_after(failures));
-                        failures += 1;
-                    }
-                }
-                _ = until(wake) => {
-                    let now = Instant::now();
-                    if frame_at.is_some_and(|t| t <= now) {
-                        frame_at = None;
-                        self.draw(app, term)?;
-                        last_frame = Some(now);
-                    }
-                    if tick_at.is_some_and(|t| t <= now) {
-                        app.touch();
-                    }
-                    let stalled = stall_at.is_some_and(|t| t <= now);
-                    if (stalled || probe_at.is_some_and(|t| t <= now))
-                        && probe.is_none()
-                        && let Some(t) = self.target.clone()
-                    {
-                        // A stall that proves reachable is not asked about
-                        // again for a while: a model can think in silence.
-                        if stalled {
-                            stall_quiet_until = Some(now + STALL * 4);
-                        }
-                        probe_at = None;
-                        probe = Some(Box::pin(async move { net::reachable(&t).await }));
-                    }
-                    if retry_at.is_some_and(|t| t <= now) {
-                        self.flush_requests(app).await;
-                    }
-                    // The second press never came: its hint goes.
-                    if quit_at.is_some_and(|t| t <= now) {
-                        self.quit_armed = None;
-                        app.flash = None;
-                        app.touch();
-                    }
-                }
+                _ = until(wake) => self.on_wake(app, term, &due, &mut frames, &mut reach).await?,
             }
             if self.abandoned || (app.quit && self.turn.is_none()) {
                 return Ok(());
             }
-            if app.take_dirty() && frame_at.is_none() {
-                let now = Instant::now();
-                frame_at = Some(last_frame.map_or(now, |t| (t + FRAME).max(now)));
-            }
-            // A frame that is due is drawn here too, whichever branch woke
-            // the loop: a stream that never pauses must not starve the screen.
+            self.paint(app, term, &mut frames)?;
+        }
+    }
+
+    /// The first frame, and what is asked behind it.
+    fn first_frame<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, frames: &mut Frames) -> std::io::Result<()> {
+        self.draw(app, term)?;
+        frames.last.replace(Instant::now());
+        // A model known at start needs nothing routed; whether anything
+        // here can run it at all is asked now, behind the first frame.
+        // A synced session runs on its host's models: nothing here to ask
+        // about, and no first-run card over it on a machine with none.
+        if self.routing.is_none() && self.host.synced().is_none() {
+            self.startup_sweep(app);
+        }
+        self.look_for_pr(app);
+        Ok(())
+    }
+
+    /// After whatever woke the loop: a frame for what changed, drawn when
+    /// due.
+    fn paint<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, frames: &mut Frames) -> std::io::Result<()> {
+        if app.take_dirty() && frames.at.is_none() {
             let now = Instant::now();
-            if frame_at.is_some_and(|t| t <= now) {
-                frame_at = None;
-                self.draw(app, term)?;
-                last_frame = Some(now);
+            frames.at = Some(frames.last.map_or(now, |t| (t + FRAME).max(now)));
+        }
+        // A frame that is due is drawn here too, whichever branch woke
+        // the loop: a stream that never pauses must not starve the screen.
+        self.draw_due(app, term, frames, Instant::now())
+    }
+
+    /// Deadlines, only for what is actually pending.
+    fn due(&self, app: &App, reach: &Reach) -> Due {
+        let now = Instant::now();
+        Due {
+            tick: app.turn.as_ref().map(|t| next_tick(Instant::from_std(t.started), now)),
+            stall: (app.waiting_on_model() && reach.probe.is_none() && app.offline.is_none() && self.target.is_some())
+                .then(|| (reach.last_activity + STALL).max(reach.stall_quiet_until.unwrap_or(now))),
+            retry: app.turn.as_ref().filter(|t| (t.want_interrupt && !t.interrupt_sent) || !app.unsent_steers.is_empty()).map(|_| now + INTERRUPT_RETRY),
+            quit: self.quit_armed.map(|(_, t)| t + QUIT_CONFIRM),
+        }
+    }
+
+    /// SIGHUP or SIGTERM; true when the TUI stops now.
+    async fn on_hangup(&mut self, app: &mut App, quitting: &mut bool) -> bool {
+        // A turn in the daemon is the daemon's: the terminal
+        // going takes nothing with it, and it runs on for
+        // `krowk --resume` to follow (R-HOST-1).
+        if self.host.remote().is_some() || self.host.synced().is_some() {
+            return true;
+        }
+        if !app.running() || *quitting {
+            self.abandoned = app.running();
+            return true;
+        }
+        *quitting = true;
+        self.interrupt(app).await;
+        false
+    }
+
+    /// A line of the turn's stream.
+    async fn on_stream_line(&mut self, app: &mut App, line: &StreamLine, reach: &mut Reach) {
+        reach.last_activity = Instant::now();
+        if matches!(line, StreamLine::Live(krowk_harness::protocol::LiveEvent::ItemDelta { .. })) {
+            // Bytes are arriving from the model: it is reachable,
+            // and a retry probe still scheduled is moot.
+            reach.online(app);
+        }
+        app.on_line(line);
+        self.follow(app);
+        self.follow_the_agent(app);
+        self.flush_requests(app).await;
+    }
+
+    /// The turn's end, `r` as the host answered it; true when the TUI
+    /// stops now, `quitting`.
+    async fn on_turn_end(&mut self, app: &mut App, r: Result<Option<RunResult>, EngineError>, reach: &mut Reach, quitting: bool) -> bool {
+        self.turn = None;
+        if let Some(n) = self.host.take_note() {
+            app.note(&n);
+        }
+        // What the host sent before answering is already queued.
+        if let Some(mut rx) = self.rx.take() {
+            while let Ok(line) = rx.try_recv() {
+                app.on_line(&line);
             }
         }
+        self.follow(app);
+        if let (Some(project), Some(id)) = (&self.project, &app.session_id) {
+            let (project, id) = (project.clone(), id.clone());
+            std::thread::spawn(move || project(&id));
+        }
+        // What the engine never read, as the host says on the
+        // result (its own queue, so nothing is guessed), and what
+        // was never accepted at all.
+        let (acked, unsent) = app.end_turn_parts();
+        let mut left = match &r {
+            Ok(Some(res)) => res.unread_steers.clone(),
+            _ => acked,
+        };
+        left.extend(unsent);
+        let network = match &r {
+            Ok(Some(res)) => res.error.as_ref().is_some_and(|e| e.code == "network_unreachable"),
+            Ok(None) => false,
+            Err(e) => e.code == "network_unreachable",
+        };
+        let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
+        let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image");
+        // A `continue` whose turn a prompt already ran is no
+        // news.
+        if let Err(e) = r
+            && e.code != "nothing_pending"
+        {
+            app.error(&e.info());
+        }
+        if network && reach.probe.is_none() {
+            reach.probe_at = Some(Instant::now());
+        }
+        self.look_for_pr(app);
+        if quitting {
+            return true;
+        }
+        // Steering the turn never read: after an answer it is
+        // the next prompt, as it would have been the turn's next
+        // step. After an interrupt or a failure it is not sent
+        // on its own — it goes back into the prompt, to send,
+        // edit or drop.
+        if !left.is_empty() {
+            if completed {
+                self.prompt(app, left.join("\n\n"));
+            } else {
+                app.editor.restore(&left.join("\n\n"));
+                app.notice("the steering this turn never read is back in the prompt");
+            }
+        }
+        // A prompt refused for its images goes back, images and
+        // all, to switch the model or drop them.
+        if refused_images {
+            app.editor.restore(&self.last_prompt);
+        }
+        self.forget_images(app);
+        self.go_on(app);
+        false
+    }
+
+    /// The model asked for at start, routed or not; a probe follows a
+    /// route that took.
+    fn on_routing(&mut self, app: &mut App, r: Result<ModelRef, EngineError>, reach: &mut Reach) {
+        self.routing = None;
+        if self.routed(app, r) && reach.probe.is_none()
+            && let Some(t) = self.target.clone()
+        {
+            reach.probe = Some(probe(t));
+        }
+    }
+
+    /// A `/model <id>` routed, or not.
+    async fn on_model_route(&mut self, app: &mut App, r: Result<ModelRef, EngineError>) {
+        self.model_route = None;
+        match r {
+            Ok(m) => {
+                self.switch(app, m).await;
+                self.release(app);
+            }
+            Err(e) => {
+                app.error(&e.info());
+                self.unhold(app);
+            }
+        }
+    }
+
+    /// The branch and its pull request, as read.
+    fn on_pr(&mut self, app: &mut App, branch: String, found: Option<pr::Pr>) {
+        self.pr = None;
+        if app.branch != branch || app.pr != found {
+            app.branch = branch;
+            app.pr = found;
+            app.touch();
+        }
+        // The agent moved on while this was read.
+        self.follow_the_agent(app);
+    }
+
+    /// The loop woke for a deadline: whichever are due are seen to.
+    async fn on_wake<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, due: &Due, frames: &mut Frames, reach: &mut Reach) -> std::io::Result<()> {
+        let now = Instant::now();
+        self.draw_due(app, term, frames, now)?;
+        if due.tick.is_some_and(|t| t <= now) {
+            app.touch();
+        }
+        let stalled = due.stall.is_some_and(|t| t <= now);
+        if (stalled || reach.probe_at.is_some_and(|t| t <= now))
+            && reach.probe.is_none()
+            && let Some(t) = self.target.clone()
+        {
+            // A stall that proves reachable is not asked about
+            // again for a while: a model can think in silence.
+            if stalled {
+                reach.stall_quiet_until = Some(now + STALL * 4);
+            }
+            reach.probe_at = None;
+            reach.probe = Some(probe(t));
+        }
+        if due.retry.is_some_and(|t| t <= now) {
+            self.flush_requests(app).await;
+        }
+        // The second press never came: its hint goes.
+        if due.quit.is_some_and(|t| t <= now) {
+            self.quit_armed = None;
+            app.flash = None;
+            app.touch();
+        }
+        Ok(())
+    }
+
+    /// Draws the frame due by `now`, if one is.
+    fn draw_due<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, frames: &mut Frames, now: Instant) -> std::io::Result<()> {
+        if frames.at.is_some_and(|t| t <= now) {
+            frames.at = None;
+            self.draw(app, term)?;
+            frames.last = Some(now);
+        }
+        Ok(())
     }
 
     fn draw<W: Write>(&mut self, app: &mut App, term: &mut Term<W>) -> std::io::Result<()> {
@@ -1719,333 +1801,344 @@ impl<'h> Ui<'h> {
     /// A key no question or overlay took: the prompt's, the menus' and the
     /// commands'. `armed`: the key before this one that asked for a second
     /// to leave krowk.
-    // Legacy: one match over every prompt key. TODO: split into helpers and drop this allow.
-    #[allow(clippy::cognitive_complexity)]
     async fn on_prompt_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool, armed: Option<char>) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         // Shift-enter is alt-enter: a new line wherever alt-enter makes one.
         // Only a terminal that took KEYS_PUSH tells the two enters apart.
         let alt = k.modifiers.contains(KeyModifiers::ALT) || (k.code == KeyCode::Enter && k.modifiers.contains(KeyModifiers::SHIFT));
-        // Settings takes every key while it is open, ahead of the trust
-        // question and a limit's offer, which are no one's answer here: ↑
-        // and ↓ choose a setting, ← and → change it, enter, esc or Ctrl-C
-        // close it, Ctrl-D still leaves krowk, and nothing reaches the prompt.
-        // Choosing goes one way and stops at the end, so a key held down,
-        // whose repeats most terminals send as presses, chooses the same
-        // value again; and a key typed ahead, before it was up to be seen,
-        // does nothing. Ctrl-C on a running turn interrupts it, as anywhere.
-        if app.overlay == Overlay::Settings && !(ctrl && k.code == KeyCode::Char('d')) && !(ctrl && k.code == KeyCode::Char('c') && app.running()) {
-            let settled = self.settings_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE);
-            match k.code {
-                KeyCode::Esc => app.overlay = Overlay::None,
-                KeyCode::Char('c') if ctrl => app.overlay = Overlay::None,
-                KeyCode::Enter if settled && !ctrl && !alt => app.overlay = Overlay::None,
-                KeyCode::Up if !ctrl && !alt => app.setting_at = 0,
-                KeyCode::Down if !ctrl && !alt => app.setting_at = 1,
-                KeyCode::Left | KeyCode::Right if settled && !ctrl && !alt => self.step_setting(app, if k.code == KeyCode::Left { -1 } else { 1 }),
-                _ => {}
-            }
-            app.touch();
-            return false;
+        let plain = !ctrl && !alt;
+        if let Some(done) = self.settings_key(app, k, ctrl, alt) {
+            return done;
         }
-        // The Agents overlay takes the keys that move through it: select a
-        // subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3).
-        if app.overlay == Overlay::Agents && !ctrl && !alt {
-            match k.code {
-                KeyCode::Up | KeyCode::Down => {
-                    app.agent_move(if k.code == KeyCode::Up { -1 } else { 1 });
-                    return false;
-                }
-                KeyCode::Enter => {
-                    app.agent_toggle();
-                    return false;
-                }
-                KeyCode::Char('x') => {
-                    if let Some(id) = app.agent_selected_running()
-                        && let Err(e) = self.command(Command::Interrupt { session_id: id }).await
-                    {
-                        app.notice(&e.message);
-                    }
-                    return false;
-                }
-                _ => {}
-            }
+        if app.overlay == Overlay::Agents && plain && let Some(done) = self.agents_key(app, k).await {
+            return done;
         }
-        // The trust question for a routed backend. It is answered by one
-        // key on an empty prompt once it has been up for APPROVAL_SETTLE:
-        // `y` trusts the repository and sends what was held; `n` or Esc
-        // does not, and puts it back in the prompt, to be asked again on
-        // the next send. Any other key — and any key typed ahead, before
-        // the settle or onto text in the prompt — is no answer, and goes to
-        // the prompt as it would.
-        if app.trust_question.is_some() && !ctrl && !alt && app.editor.is_empty() && self.trust_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE) {
-            match k.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    app.trust_question = None;
-                    self.needs_trust = None;
-                    if let Some(t) = &self.trust
-                        && let Some(e) = (t.accept)()
-                    {
-                        app.notice(&e);
-                    }
-                    self.release(app);
-                    return false;
-                }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                    app.trust_question = None;
-                    app.notice("not trusted, so nothing ran — send the prompt again to be asked again, or pick an API model with /model");
-                    self.unhold(app);
-                    return false;
-                }
-                _ => {}
-            }
+        if let Some(done) = self.trust_key(app, k, plain) {
+            return done;
         }
-        // A limit's offer (R-INST-7): one keystroke, y, and never taken
-        // silently — anything else declines it, and a key that is not an
-        // answer still does what it does.
-        if let Some(offer) = app.offer.clone()
-            && !ctrl
-            && !app.running()
-        {
-            app.offer = None;
-            match k.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if self.switch(app, offer.to).await && !self.last_prompt.is_empty() {
-                        let text = self.last_prompt.clone();
-                        self.prompt(app, text);
-                    }
-                    return false;
-                }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Enter => return false,
-                _ => {}
-            }
+        if let Some(done) = self.offer_key(app, k, ctrl).await {
+            return done;
         }
-        // The `/` menu, while a command is being typed: the arrows choose,
-        // tab completes, enter runs a command or completes a skill, esc
-        // puts the menu away. Everything else goes to the prompt.
-        if app.slash_open() && !ctrl && !alt {
-            let found = help::slash(app.editor.text(), &app.skills);
-            match k.code {
-                KeyCode::Up => {
-                    app.slash_at = app.slash_at.saturating_sub(1);
-                    return false;
+        if app.slash_open() && plain && let Some(done) = self.slash_key(app, k).await {
+            return done;
+        }
+        if app.overlay == Overlay::Keys && plain && let Some(done) = self.help_key(app, k).await {
+            return done;
+        }
+        if app.overlay == Overlay::Copy && plain && let Some(done) = self.copy_key(app, k) {
+            return done;
+        }
+        if app.overlay == Overlay::Modes && plain && let Some(done) = self.modes_key(app, k) {
+            return done;
+        }
+        if app.overlay == Overlay::Sessions && plain && let Some(done) = self.sessions_key(app, k) {
+            return done;
+        }
+        if app.overlay == Overlay::Models && plain && let Some(done) = self.models_key(app, k).await {
+            return done;
+        }
+        if let Some(done) = self.command_key(app, k, (ctrl, alt), quitting, armed).await {
+            return done;
+        }
+        if !app.editor.text().starts_with('/') {
+            app.slash_closed = false;
+        }
+        false
+    }
+
+    /// Settings takes every key while it is open, ahead of the trust
+    /// question and a limit's offer, which are no one's answer here: ↑
+    /// and ↓ choose a setting, ← and → change it, enter, esc or Ctrl-C
+    /// close it, Ctrl-D still leaves krowk, and nothing reaches the prompt.
+    /// Choosing goes one way and stops at the end, so a key held down,
+    /// whose repeats most terminals send as presses, chooses the same
+    /// value again; and a key typed ahead, before it was up to be seen,
+    /// does nothing. Ctrl-C on a running turn interrupts it, as anywhere.
+    /// Like each `…_key` here: Some with what `on_prompt_key` answers when
+    /// it took the key, None when the key goes on.
+    fn settings_key(&mut self, app: &mut App, k: KeyEvent, ctrl: bool, alt: bool) -> Option<bool> {
+        if app.overlay != Overlay::Settings || (ctrl && k.code == KeyCode::Char('d')) || (ctrl && k.code == KeyCode::Char('c') && app.running()) {
+            return None;
+        }
+        let settled = self.settings_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE);
+        match k.code {
+            KeyCode::Esc => app.overlay = Overlay::None,
+            KeyCode::Char('c') if ctrl => app.overlay = Overlay::None,
+            KeyCode::Enter if settled && !ctrl && !alt => app.overlay = Overlay::None,
+            KeyCode::Up if !ctrl && !alt => app.setting_at = 0,
+            KeyCode::Down if !ctrl && !alt => app.setting_at = 1,
+            KeyCode::Left | KeyCode::Right if settled && !ctrl && !alt => self.step_setting(app, if k.code == KeyCode::Left { -1 } else { 1 }),
+            _ => {}
+        }
+        app.touch();
+        Some(false)
+    }
+
+    /// The Agents overlay takes the keys that move through it: select a
+    /// subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3).
+    async fn agents_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+        match k.code {
+            KeyCode::Up | KeyCode::Down => app.agent_move(if k.code == KeyCode::Up { -1 } else { 1 }),
+            KeyCode::Enter => app.agent_toggle(),
+            KeyCode::Char('x') => {
+                if let Some(id) = app.agent_selected_running()
+                    && let Err(e) = self.command(Command::Interrupt { session_id: id }).await
+                {
+                    app.notice(&e.message);
                 }
-                KeyCode::Down => {
-                    app.slash_at = (app.slash_at + 1).min(found.len().saturating_sub(1));
-                    return false;
+            }
+            _ => return None,
+        }
+        Some(false)
+    }
+
+    /// The trust question for a routed backend. It is answered by one
+    /// key on an empty prompt once it has been up for APPROVAL_SETTLE:
+    /// `y` trusts the repository and sends what was held; `n` or Esc
+    /// does not, and puts it back in the prompt, to be asked again on
+    /// the next send. Any other key — and any key typed ahead, before
+    /// the settle or onto text in the prompt — is no answer, and goes to
+    /// the prompt as it would.
+    fn trust_key(&mut self, app: &mut App, k: KeyEvent, plain: bool) -> Option<bool> {
+        if app.trust_question.is_none() || !plain || !app.editor.is_empty() || !self.trust_shown.is_some_and(|t| t.elapsed() >= APPROVAL_SETTLE) {
+            return None;
+        }
+        match k.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                app.trust_question = None;
+                self.needs_trust = None;
+                if let Some(t) = &self.trust
+                    && let Some(e) = (t.accept)()
+                {
+                    app.notice(&e);
                 }
-                KeyCode::Esc => {
-                    app.slash_closed = true;
-                    return false;
+                self.release(app);
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                app.trust_question = None;
+                app.notice("not trusted, so nothing ran — send the prompt again to be asked again, or pick an API model with /model");
+                self.unhold(app);
+            }
+            _ => return None,
+        }
+        Some(false)
+    }
+
+    /// A limit's offer (R-INST-7): one keystroke, y, and never taken
+    /// silently — anything else declines it, and a key that is not an
+    /// answer still does what it does.
+    async fn offer_key(&mut self, app: &mut App, k: KeyEvent, ctrl: bool) -> Option<bool> {
+        let offer = app.offer.clone()?;
+        if ctrl || app.running() {
+            return None;
+        }
+        app.offer = None;
+        match k.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if self.switch(app, offer.to).await && !self.last_prompt.is_empty() {
+                    let text = self.last_prompt.clone();
+                    self.prompt(app, text);
                 }
-                // An unlisted command runs as typed.
-                KeyCode::Enter if app.slash_at == 0 && help::unlisted(app.editor.text()) => return self.submit(app).await,
-                KeyCode::Tab | KeyCode::Enter => {
-                    let Some(s) = found.get(app.slash_at.min(found.len().saturating_sub(1))) else { return false };
+                Some(false)
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Enter => Some(false),
+            _ => None,
+        }
+    }
+
+    /// The `/` menu, while a command is being typed: the arrows choose,
+    /// tab completes, enter runs a command or completes a skill, esc
+    /// puts the menu away. Everything else goes to the prompt.
+    async fn slash_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+        let found = help::slash(app.editor.text(), &app.skills);
+        match k.code {
+            KeyCode::Up => app.slash_at = app.slash_at.saturating_sub(1),
+            KeyCode::Down => app.slash_at = (app.slash_at + 1).min(found.len().saturating_sub(1)),
+            KeyCode::Esc => app.slash_closed = true,
+            // An unlisted command runs as typed.
+            KeyCode::Enter if app.slash_at == 0 && help::unlisted(app.editor.text()) => return Some(self.submit(app).await),
+            KeyCode::Tab | KeyCode::Enter => {
+                let Some(s) = found.get(app.slash_at.min(found.len().saturating_sub(1))) else { return Some(false) };
+                app.editor.clear();
+                app.slash_at = 0;
+                if s.skill || k.code == KeyCode::Tab {
+                    // A skill takes what follows it: the menu closes on
+                    // the space, and the next enter sends it.
+                    app.editor.insert_str(&format!("/{} ", s.name));
+                    return Some(false);
+                }
+                app.editor.insert_str(&format!("/{}", s.name));
+                return Some(self.submit(app).await);
+            }
+            KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete => {
+                app.slash_at = 0;
+                return None;
+            }
+            _ => return None,
+        }
+        Some(false)
+    }
+
+    /// The help menu takes the arrows, enter and esc while it is open;
+    /// everything typed goes to the prompt, and filters it.
+    async fn help_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+        let found = help::filter(app.editor.text());
+        match k.code {
+            KeyCode::Up => app.help_at = app.help_at.saturating_sub(1),
+            KeyCode::Down => app.help_at = (app.help_at + 1).min(found.len().saturating_sub(1)),
+            KeyCode::Esc => {
+                app.overlay = Overlay::None;
+                app.editor.clear();
+            }
+            KeyCode::Enter => {
+                app.overlay = Overlay::None;
+                app.editor.clear();
+                if let Some(entry) = found.get(app.help_at) {
+                    self.help_action(app, entry).await;
+                }
+            }
+            KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete => {
+                app.help_at = 0;
+                return None;
+            }
+            _ => return None,
+        }
+        Some(false)
+    }
+
+    /// What a help menu entry chosen with enter does.
+    async fn help_action(&mut self, app: &mut App, entry: &help::Entry) {
+        match entry.action {
+            help::Action::Tell => {}
+            help::Action::Model | help::Action::Mode | help::Action::New | help::Action::Sessions if self.synced_refuses(app, entry.title) => {}
+            help::Action::Model => self.open_models(app),
+            help::Action::Mode => app.open_mode_picker(),
+            help::Action::Settings => self.open_settings(app),
+            help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
+            help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
+            help::Action::New => self.new_session(app),
+            help::Action::Sessions => self.open_resume(app),
+            help::Action::Todos => app.overlay = Overlay::Todos,
+            help::Action::Agents => app.overlay = Overlay::Agents,
+            help::Action::Details => app.overlay = Overlay::Details,
+            help::Action::Copy => copy(app),
+            help::Action::PasteImage => self.start_paste(app, paste::from_clipboard),
+            help::Action::Interrupt => {
+                if app.running() {
+                    self.interrupt(app).await;
+                }
+            }
+            help::Action::Quit => app.quit = true,
+        }
+    }
+
+    /// The Ctrl-Y picker takes the arrows and enter while it is open.
+    fn copy_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+        let n = app.copy_list_len();
+        match k.code {
+            KeyCode::Up => app.copy_at = app.copy_at.saturating_sub(1),
+            KeyCode::Down => app.copy_at = (app.copy_at + 1).min(n.saturating_sub(1)),
+            KeyCode::Enter => app.copy_chosen(app.copy_at),
+            _ => return None,
+        }
+        Some(false)
+    }
+
+    /// The mode picker takes the arrows and enter while it is open.
+    fn modes_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+        match k.code {
+            KeyCode::Up => app.mode_at = app.mode_at.saturating_sub(1),
+            KeyCode::Down => app.mode_at = (app.mode_at + 1).min(PermissionMode::NAMES.len() - 1),
+            KeyCode::Enter => {
+                app.overlay = Overlay::None;
+                if let Some(m) = PermissionMode::NAMES.get(app.mode_at).and_then(|n| PermissionMode::parse(n)) {
+                    self.set_mode(app, m);
+                }
+            }
+            _ => return None,
+        }
+        Some(false)
+    }
+
+    /// `/sessions` takes the arrows and enter while it is open.
+    fn sessions_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+        match k.code {
+            KeyCode::Up => app.resume_at = app.resume_at.saturating_sub(1),
+            KeyCode::Down => app.resume_at = (app.resume_at + 1).min(app.resumable.len().saturating_sub(1)),
+            KeyCode::Enter => {
+                app.overlay = Overlay::None;
+                if let Some(r) = app.resumable.get(app.resume_at).cloned() {
+                    self.resume(app, &r.id);
+                }
+            }
+            _ => return None,
+        }
+        Some(false)
+    }
+
+    /// The model picker takes the arrows, enter and esc while it is open;
+    /// everything typed goes to the prompt, and filters it.
+    async fn models_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+        let found = app.found_picks().len();
+        match k.code {
+            KeyCode::Up => app.pick_at = app.pick_at.min(found.saturating_sub(1)).saturating_sub(1),
+            KeyCode::Down => app.pick_at = (app.pick_at + 1).min(found.saturating_sub(1)),
+            KeyCode::Esc => {
+                app.overlay = Overlay::None;
+                app.editor.clear();
+            }
+            KeyCode::Enter => return Some(self.pick_model(app, found).await),
+            KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete => {
+                app.pick_at = 0;
+                return None;
+            }
+            _ => return None,
+        }
+        Some(false)
+    }
+
+    /// Enter in the model picker, `found` its matches: the one chosen, or
+    /// with none, what was typed routed as `/model` would.
+    async fn pick_model(&mut self, app: &mut App, found: usize) -> bool {
+        app.overlay = Overlay::None;
+        let typed = app.editor.text().trim().to_string();
+        let chosen = app.found_picks().get(app.pick_at.min(found.saturating_sub(1))).map(|p| (*p).clone());
+        app.editor.clear();
+        // Nothing listed matches: what was typed is a model to
+        // route, as `/model` would.
+        if chosen.is_none() && !typed.is_empty() {
+            app.editor.insert_str(&format!("/model {typed}"));
+            return self.submit(app).await;
+        }
+        if let Some(p) = chosen {
+            match p.model {
+                Some(model) => {
+                    self.switch(app, ModelRef { instance: p.instance, model }).await;
+                }
+                // No model known for it: the id is the person's to type.
+                None => {
                     app.editor.clear();
-                    app.slash_at = 0;
-                    if s.skill || k.code == KeyCode::Tab {
-                        // A skill takes what follows it: the menu closes on
-                        // the space, and the next enter sends it.
-                        app.editor.insert_str(&format!("/{} ", s.name));
-                        return false;
-                    }
-                    app.editor.insert_str(&format!("/{}", s.name));
-                    return self.submit(app).await;
+                    app.editor.insert_str(&format!("/model {}/", p.instance));
                 }
-                KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete => app.slash_at = 0,
-                _ => {}
             }
         }
-        // The help menu takes the arrows, enter and esc while it is open;
-        // everything typed goes to the prompt, and filters it.
-        if app.overlay == Overlay::Keys && !ctrl && !alt {
-            let found = help::filter(app.editor.text());
-            match k.code {
-                KeyCode::Up => {
-                    app.help_at = app.help_at.saturating_sub(1);
-                    return false;
-                }
-                KeyCode::Down => {
-                    app.help_at = (app.help_at + 1).min(found.len().saturating_sub(1));
-                    return false;
-                }
-                KeyCode::Esc => {
-                    app.overlay = Overlay::None;
-                    app.editor.clear();
-                    return false;
-                }
-                KeyCode::Enter => {
-                    app.overlay = Overlay::None;
-                    app.editor.clear();
-                    if let Some(entry) = found.get(app.help_at) {
-                        match entry.action {
-                            help::Action::Tell => {}
-                            help::Action::Model | help::Action::Mode | help::Action::New | help::Action::Sessions if self.synced_refuses(app, entry.title) => {}
-                            help::Action::Model => self.open_models(app),
-                            help::Action::Mode => app.open_mode_picker(),
-                            help::Action::Settings => self.open_settings(app),
-                            help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
-                            help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
-                            help::Action::New => self.new_session(app),
-                            help::Action::Sessions => self.open_resume(app),
-                            help::Action::Todos => app.overlay = Overlay::Todos,
-                            help::Action::Agents => app.overlay = Overlay::Agents,
-                            help::Action::Details => app.overlay = Overlay::Details,
-                            help::Action::Copy => copy(app),
-                            help::Action::PasteImage => self.start_paste(app, paste::from_clipboard),
-                            help::Action::Interrupt => {
-                                if app.running() {
-                                    self.interrupt(app).await;
-                                }
-                            }
-                            help::Action::Quit => app.quit = true,
-                        }
-                    }
-                    return false;
-                }
-                KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete => app.help_at = 0,
-                _ => {}
-            }
-        }
-        // And the Ctrl-Y picker.
-        if app.overlay == Overlay::Copy && !ctrl && !alt {
-            let n = app.copy_list_len();
-            match k.code {
-                KeyCode::Up => {
-                    app.copy_at = app.copy_at.saturating_sub(1);
-                    return false;
-                }
-                KeyCode::Down => {
-                    app.copy_at = (app.copy_at + 1).min(n.saturating_sub(1));
-                    return false;
-                }
-                KeyCode::Enter => {
-                    app.copy_chosen(app.copy_at);
-                    return false;
-                }
-                _ => {}
-            }
-        }
-        // So does the mode picker.
-        if app.overlay == Overlay::Modes && !ctrl && !alt {
-            match k.code {
-                KeyCode::Up => {
-                    app.mode_at = app.mode_at.saturating_sub(1);
-                    return false;
-                }
-                KeyCode::Down => {
-                    app.mode_at = (app.mode_at + 1).min(PermissionMode::NAMES.len() - 1);
-                    return false;
-                }
-                KeyCode::Enter => {
-                    app.overlay = Overlay::None;
-                    if let Some(m) = PermissionMode::NAMES.get(app.mode_at).and_then(|n| PermissionMode::parse(n)) {
-                        self.set_mode(app, m);
-                    }
-                    return false;
-                }
-                _ => {}
-            }
-        }
-        // So does `/sessions`.
-        if app.overlay == Overlay::Sessions && !ctrl && !alt {
-            match k.code {
-                KeyCode::Up => {
-                    app.resume_at = app.resume_at.saturating_sub(1);
-                    return false;
-                }
-                KeyCode::Down => {
-                    app.resume_at = (app.resume_at + 1).min(app.resumable.len().saturating_sub(1));
-                    return false;
-                }
-                KeyCode::Enter => {
-                    app.overlay = Overlay::None;
-                    if let Some(r) = app.resumable.get(app.resume_at).cloned() {
-                        self.resume(app, &r.id);
-                    }
-                    return false;
-                }
-                _ => {}
-            }
-        }
-        // The model picker takes the arrows, enter and esc while it is open;
-        // everything typed goes to the prompt, and filters it.
-        if app.overlay == Overlay::Models && !ctrl && !alt {
-            let found = app.found_picks().len();
-            match k.code {
-                KeyCode::Up => {
-                    app.pick_at = app.pick_at.min(found.saturating_sub(1)).saturating_sub(1);
-                    return false;
-                }
-                KeyCode::Down => {
-                    app.pick_at = (app.pick_at + 1).min(found.saturating_sub(1));
-                    return false;
-                }
-                KeyCode::Esc => {
-                    app.overlay = Overlay::None;
-                    app.editor.clear();
-                    return false;
-                }
-                KeyCode::Enter => {
-                    app.overlay = Overlay::None;
-                    let typed = app.editor.text().trim().to_string();
-                    let chosen = app.found_picks().get(app.pick_at.min(found.saturating_sub(1))).map(|p| (*p).clone());
-                    app.editor.clear();
-                    // Nothing listed matches: what was typed is a model to
-                    // route, as `/model` would.
-                    if chosen.is_none() && !typed.is_empty() {
-                        app.editor.insert_str(&format!("/model {typed}"));
-                        return self.submit(app).await;
-                    }
-                    if let Some(p) = chosen {
-                        match p.model {
-                            Some(model) => {
-                                self.switch(app, ModelRef { instance: p.instance, model }).await;
-                            }
-                            // No model known for it: the id is the person's to type.
-                            None => {
-                                app.editor.clear();
-                                app.editor.insert_str(&format!("/model {}/", p.instance));
-                            }
-                        }
-                    }
-                    return false;
-                }
-                KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete => app.pick_at = 0,
-                _ => {}
-            }
-        }
-        let e = &mut app.editor;
+        false
+    }
+
+    /// The keys that are commands rather than editing: Ctrl-C, Ctrl-D,
+    /// esc, the overlays' and enter. The rest edit the prompt.
+    async fn command_key(&mut self, app: &mut App, k: KeyEvent, (ctrl, alt): (bool, bool), quitting: &mut bool, armed: Option<char>) -> Option<bool> {
         match k.code {
             KeyCode::Char('c') if ctrl => {
-                if app.running() {
-                    if *quitting || app.turn.as_ref().is_some_and(|t| t.want_interrupt) {
-                        // A second Ctrl-C does not wait for the first — but
-                        // still leaves through the front door: the terminal
-                        // restored, the resume line printed, the session
-                        // recorded, then exit 130.
-                        self.abandoned = true;
-                        return false;
-                    }
-                    self.interrupt(app).await;
-                } else if !app.editor.is_empty() {
-                    app.editor.clear();
-                } else if self.held.is_some() || app.trust_question.is_some() {
-                    // What is waiting on the route or the trust question
-                    // comes back unsent; Ctrl-C twice more then quits.
-                    app.trust_question = None;
-                    self.unhold(app);
-                    app.notice("not sent — it is back in the prompt");
-                } else {
-                    self.ask_to_leave(app, 'c', armed, quitting).await;
+                if self.ctrl_c(app, quitting, armed).await {
+                    return Some(false);
                 }
             }
             KeyCode::Char('d') if ctrl => {
-                if e.is_empty() {
+                if app.editor.is_empty() {
                     self.ask_to_leave(app, 'd', armed, quitting).await;
                 } else {
-                    e.delete();
+                    app.editor.delete();
                 }
             }
             KeyCode::Esc => {
@@ -2061,41 +2154,42 @@ impl<'h> Ui<'h> {
             KeyCode::Char('t') if ctrl => app.overlay = if app.overlay == Overlay::Todos { Overlay::None } else { Overlay::Todos },
             KeyCode::Char('g') if ctrl => app.overlay = if app.overlay == Overlay::Agents { Overlay::None } else { Overlay::Agents },
             KeyCode::F(1) => app.toggle_help(),
-            KeyCode::Char('?') if e.is_empty() && !ctrl && !alt => app.toggle_help(),
-            KeyCode::Enter if alt => e.insert('\n'),
-            KeyCode::Char('j') if ctrl => e.insert('\n'),
+            KeyCode::Char('?') if app.editor.is_empty() && !ctrl && !alt => app.toggle_help(),
+            KeyCode::Enter if alt => app.editor.insert('\n'),
             KeyCode::Enter => {
-                if e.enter() {
-                    return self.submit(app).await;
+                if app.editor.enter() {
+                    return Some(self.submit(app).await);
                 }
             }
-            KeyCode::Char('a') if ctrl => e.home(),
-            KeyCode::Char('e') if ctrl => e.end(),
-            KeyCode::Char('b') if ctrl => e.left(),
-            KeyCode::Char('f') if ctrl => e.right(),
-            KeyCode::Char('b') if alt => e.word_left(),
-            KeyCode::Char('f') if alt => e.word_right(),
-            KeyCode::Char('u') if ctrl => e.kill_to_start(),
-            KeyCode::Char('k') if ctrl => e.kill_to_end(),
-            KeyCode::Char('w') if ctrl => e.kill_word(),
-            KeyCode::Char('h') if ctrl => e.backspace(),
-            KeyCode::Backspace if alt || ctrl => e.kill_word(),
-            KeyCode::Backspace => e.backspace(),
-            KeyCode::Delete => e.delete(),
-            KeyCode::Left if ctrl || alt => e.word_left(),
-            KeyCode::Right if ctrl || alt => e.word_right(),
-            KeyCode::Left => e.left(),
-            KeyCode::Right => e.right(),
-            KeyCode::Home => e.home(),
-            KeyCode::End => e.end(),
-            KeyCode::Up => e.up(),
-            KeyCode::Down => e.down(),
-            KeyCode::Tab => e.insert_str("    "),
-            KeyCode::Char(c) if !ctrl => e.insert(c),
-            _ => {}
+            _ => edit_key(&mut app.editor, k, ctrl, alt),
         }
-        if !app.editor.text().starts_with('/') {
-            app.slash_closed = false;
+        None
+    }
+
+    /// Ctrl-C: interrupts a running turn, clears the prompt, gives back
+    /// what waits on the route or the trust question, or asks to leave.
+    /// True when a second one on a running turn leaves krowk now.
+    async fn ctrl_c(&mut self, app: &mut App, quitting: &mut bool, armed: Option<char>) -> bool {
+        if app.running() {
+            if *quitting || app.turn.as_ref().is_some_and(|t| t.want_interrupt) {
+                // A second Ctrl-C does not wait for the first — but
+                // still leaves through the front door: the terminal
+                // restored, the resume line printed, the session
+                // recorded, then exit 130.
+                self.abandoned = true;
+                return true;
+            }
+            self.interrupt(app).await;
+        } else if !app.editor.is_empty() {
+            app.editor.clear();
+        } else if self.held.is_some() || app.trust_question.is_some() {
+            // What is waiting on the route or the trust question
+            // comes back unsent; Ctrl-C twice more then quits.
+            app.trust_question = None;
+            self.unhold(app);
+            app.notice("not sent — it is back in the prompt");
+        } else {
+            self.ask_to_leave(app, 'c', armed, quitting).await;
         }
         false
     }
@@ -2768,6 +2862,37 @@ fn legacy(k: KeyEvent) -> KeyEvent {
     KeyEvent { code, modifiers: k.modifiers - KeyModifiers::CONTROL, ..k }
 }
 
+/// A key that edits the prompt.
+fn edit_key(e: &mut Editor, k: KeyEvent, ctrl: bool, alt: bool) {
+    match k.code {
+        KeyCode::Char('j') if ctrl => e.insert('\n'),
+        KeyCode::Char('a') if ctrl => e.home(),
+        KeyCode::Char('e') if ctrl => e.end(),
+        KeyCode::Char('b') if ctrl => e.left(),
+        KeyCode::Char('f') if ctrl => e.right(),
+        KeyCode::Char('b') if alt => e.word_left(),
+        KeyCode::Char('f') if alt => e.word_right(),
+        KeyCode::Char('u') if ctrl => e.kill_to_start(),
+        KeyCode::Char('k') if ctrl => e.kill_to_end(),
+        KeyCode::Char('w') if ctrl => e.kill_word(),
+        KeyCode::Char('h') if ctrl => e.backspace(),
+        KeyCode::Backspace if alt || ctrl => e.kill_word(),
+        KeyCode::Backspace => e.backspace(),
+        KeyCode::Delete => e.delete(),
+        KeyCode::Left if ctrl || alt => e.word_left(),
+        KeyCode::Right if ctrl || alt => e.word_right(),
+        KeyCode::Left => e.left(),
+        KeyCode::Right => e.right(),
+        KeyCode::Home => e.home(),
+        KeyCode::End => e.end(),
+        KeyCode::Up => e.up(),
+        KeyCode::Down => e.down(),
+        KeyCode::Tab => e.insert_str("    "),
+        KeyCode::Char(c) if !ctrl => e.insert(c),
+        _ => {}
+    }
+}
+
 impl Ui<'_> {
     /// Reads a paste off the runtime's thread, the keys waiting on none of
     /// it: what is typed meanwhile goes on after where it will land (the
@@ -2785,6 +2910,13 @@ impl Ui<'_> {
         let Some((mark, read)) = self.pastes.pop_front() else { return };
         app.flash = Some("pasting…".into());
         self.pasting = Some((Some(mark), Box::pin(async move { tokio::task::spawn_blocking(read).await.unwrap_or_default() })));
+    }
+
+    /// A paste read, and the next one asked for begun.
+    fn on_pasted(&mut self, app: &mut App, p: paste::Pasted) {
+        let mark = self.pasting.take().and_then(|(m, _)| m);
+        self.pasted(app, mark, p);
+        self.next_paste(app);
     }
 
     /// A paste read: its images into the prompt where it was asked for,
