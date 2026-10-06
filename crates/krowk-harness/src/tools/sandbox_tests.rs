@@ -395,7 +395,7 @@ fn wt4_only_a_worktree_krowk_made_is_opened_to_a_commit() {
     let w = crate::sandbox::managed_worktree(&r.wt, &root).expect("krowk's worktree");
     assert_eq!((w.common.clone(), w.admin.clone(), w.hex.as_str()), (common.clone(), common.join("worktrees/abcd1234"), "abcd1234"));
     let plan = r.plan(&r.wt);
-    assert_eq!(plan.git, [(common.clone(), false), (common.join("objects"), true), (common.join("logs"), true), (common.join("refs/heads/krowk"), true), (common.join("worktrees/abcd1234"), true)]);
+    assert_eq!(plan.git, [(common.clone(), false), (common.join("objects"), true), (common.join("refs/heads/krowk"), true), (common.join("logs/refs/heads/krowk"), true), (common.join("worktrees/abcd1234"), true)]);
     for p in ["config", "hooks", "info", "HEAD", "packed-refs", "worktrees/own", "worktrees/feedbeef", "refs/heads/krowk/feedbeef", "worktrees/abcd1234/commondir"] {
         assert!(plan.read_only.contains(&common.join(p)), "{p}: {:?}", plan.read_only);
     }
@@ -544,6 +544,26 @@ async fn wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is
     let commondir = read(&c.join("worktrees/abcd1234/commondir"));
     let (out, err) = bash(&r.wt, &scope, &format!("echo '{}' > '{}'", r.base.join("evil").display(), c.join("worktrees/abcd1234/commondir").display())).await;
     assert!(err && out.contains(rofs) && read(&c.join("worktrees/abcd1234/commondir")) == commondir, "its own commondir: {out}");
+
+    // Not the rest of the reflogs: git outside the sandbox appends to them.
+    let logs_head = read(&c.join("logs/HEAD"));
+    let (out, err) = bash(&r.wt, &scope, &format!("echo x >> '{}'", c.join("logs/HEAD").display())).await;
+    assert!(err && out.contains(rofs) && logs_head.is_some() && read(&c.join("logs/HEAD")) == logs_head, "<common>/logs/HEAD: {out}");
+    // And no link where git outside the sandbox writes through what is
+    // there: each one planted is gone after the call, which says so.
+    let victim = r.base.join("victim");
+    std::fs::write(&victim, "mine\n").unwrap();
+    for at in [c.join("worktrees/abcd1234/logs/HEAD"), c.join("logs/refs/heads/krowk/abcd1234"), c.join("refs/heads/krowk/evil")] {
+        let (out, err) = bash(&r.wt, &scope, &format!("rm -f '{0}' && ln -s '{1}' '{0}'", at.display(), victim.display())).await;
+        assert!(err && out.contains("the sandbox removed") && std::fs::symlink_metadata(&at).is_err(), "{}: {out}", at.display());
+    }
+    // One a crashed call left is gone before the next binds anything, and
+    // does not stop it.
+    std::os::unix::fs::symlink(&victim, c.join("refs/heads/krowk/left")).unwrap();
+    let (out, err) = bash(&r.wt, &scope, "git log -1 --format=%s").await;
+    assert!(!err && out.starts_with("b") && std::fs::symlink_metadata(c.join("refs/heads/krowk/left")).is_err(), "{out}");
+    git(&r.main, &["commit", "-q", "--allow-empty", "-m", "the person's"]);
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "mine\n");
 
     // And git still works there after all of it.
     let (out, err) = bash(&r.wt, &scope, "git commit -q --allow-empty -m c").await;

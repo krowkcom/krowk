@@ -33,9 +33,10 @@
 //! worktree writes objects and refs into the repository's common git
 //! directory, outside the workspace, so when the workspace is one
 //! (`managed_worktree`) the plan binds the common directory read-only (it
-//! may be in the hidden home), then `<common>/objects`, `logs`,
-//! `refs/heads/krowk` (made first if missing) and the worktree's own admin
-//! directory writable, and then, read-only on top, what in them decides
+//! may be in the hidden home), then `<common>/objects`, `refs/heads/krowk`
+//! and `logs/refs/heads/krowk` (each made first if missing) and the
+//! worktree's own admin directory writable, and then, read-only on top,
+//! what in them decides
 //! what runs or what another checkout is on: every other entry in
 //! `refs/heads/krowk` (another agent's branch), and this worktree's
 //! `config.worktree`, `commondir`, `gitdir` and `modules`. The rest of
@@ -44,7 +45,13 @@
 //! renaming `refs/heads` and making a new one (a mount point cannot be
 //! renamed, but its parent directory can), and a `refs/replace/<commit>`
 //! changes what `main` shows and checks out in the main checkout without
-//! moving it. So a command can make no tag, and no branch outside
+//! moving it. Only the `krowk/` reflogs are writable, not all of
+//! `logs`, and the writable git directories but `objects` are swept of
+//! anything that is not a regular file or a directory before and after
+//! every call (`sweep`): git outside the sandbox appends to a reflog in
+//! place, so a reflog a command replaced with a symlink to `~/.bashrc`
+//! would have the person's next commit write a line the agent chose
+//! there. So a command can make no tag, and no branch outside
 //! `krowk/`. `packed-refs` stays read-only for the second reason: a line
 //! appended to it is a ref, and git never rewrites it in place anyway (it
 //! writes `packed-refs.lock` beside it, in the read-only common directory).
@@ -205,6 +212,11 @@ pub struct Plan {
     /// writable. Empty for every other workspace. Not the file tools' to
     /// write.
     pub git: Vec<(PathBuf, bool)>,
+    /// The writable ones of `git` that git outside the sandbox later
+    /// writes through — a reflog it appends to, a ref, the worktree's
+    /// admin directory — swept of anything but regular files and
+    /// directories before and after each call (`sweep`).
+    pub swept: Vec<PathBuf>,
     /// The person's `user.name` and `user.email` as git resolves them in a
     /// krowk worktree, handed to its commands as `GIT_AUTHOR_*` and
     /// `GIT_COMMITTER_*`: the config that names them is in the hidden home.
@@ -297,8 +309,14 @@ impl Plan {
         // A worktree krowk made, as it is now: its common git directory's
         // parts a commit writes, the fences on top of them, and who the
         // commit is by.
-        let (mut git, mut identity) = (Vec::new(), None);
+        let (mut git, mut swept, mut identity) = (Vec::new(), Vec::new(), None);
         if let Some(w) = worktrees.as_deref().and_then(|r| managed_worktree(&writable[0], r)) {
+            // A link a call left there (one that crashed, or ran before
+            // the sweep after it) goes before this one binds anything.
+            swept = w.swept();
+            for d in &swept {
+                sweep(d, &mut Vec::new());
+            }
             git = w.binds();
             read_only.extend(w.read_only(&writable[0], home));
             identity = git_identity(&writable[0], config_env);
@@ -326,6 +344,7 @@ impl Plan {
             cwd: canon(cwd),
             writable,
             git,
+            swept,
             identity,
             read_only,
             hidden,
@@ -453,6 +472,7 @@ impl Plan {
 /// clone, a copy) has an inode the workspace did not have, and goes.
 pub struct Unfenced {
     missing: Vec<PathBuf>,
+    swept: Vec<PathBuf>,
     writable: Vec<PathBuf>,
     home: Option<PathBuf>,
     repos: Vec<(u64, u64)>,
@@ -477,12 +497,15 @@ impl Unfenced {
     pub fn before(plan: &Plan) -> Unfenced {
         let missing = plan.read_only.iter().filter(|p| std::fs::symlink_metadata(p).is_err()).cloned().collect();
         let repos = plan.repos.iter().filter_map(|r| identity(r)).collect();
-        Unfenced { missing, writable: plan.writable.clone(), home: plan.home.clone(), repos, walk: plan.inputs.walk.clone() }
+        Unfenced { missing, swept: plan.swept.clone(), writable: plan.writable.clone(), home: plan.home.clone(), repos, walk: plan.inputs.walk.clone() }
     }
 
     /// Removes what appeared and says so; empty when nothing did.
     pub fn appeared(&mut self) -> Vec<PathBuf> {
         let mut out = Vec::new();
+        for d in std::mem::take(&mut self.swept) {
+            sweep(&d, &mut out);
+        }
         let mut gone = std::mem::take(&mut self.missing);
         if let Ok(now) = self.walk.lock().unwrap_or_else(|e| e.into_inner()).repositories(&std::mem::take(&mut self.writable), self.home.as_deref()) {
             gone.extend(now.repos.into_iter().filter(|r| identity(r).is_none_or(|id| !self.repos.contains(&id))));
@@ -753,18 +776,26 @@ impl ManagedWorktree {
     /// What the sandbox binds of the common directory, in order: all of it
     /// read-only (it may be in the hidden home), then writable what a
     /// commit on `krowk/<hex>` writes — objects, the `krowk/` branches and
-    /// the reflogs, and the worktree's own index, `HEAD` and logs in its
-    /// admin directory. `refs/heads/krowk` is made here when missing, and
-    /// left read-only when it is not a directory of its own.
+    /// their reflogs, and the worktree's own index, `HEAD` and logs in its
+    /// admin directory. Not the rest of `logs`: git appends to a reflog
+    /// outside the sandbox too, so one a command made a symlink would have
+    /// the person's next commit append to whatever it leads to. The two
+    /// `krowk` directories are made here when missing, and left read-only
+    /// when one is not a directory of its own.
     fn binds(&self) -> Vec<(PathBuf, bool)> {
         let c = &self.common;
-        let krowk = c.join("refs/heads/krowk");
-        let _ = std::fs::create_dir(&krowk);
-        let mut out = vec![(c.clone(), false), (c.join("objects"), true), (c.join("logs"), true)];
-        if std::fs::symlink_metadata(&krowk).is_ok_and(|m| m.is_dir()) {
-            out.push((krowk, true));
-        }
+        let mut out = vec![(c.clone(), false), (c.join("objects"), true)];
+        out.extend(["refs/heads/krowk", "logs/refs/heads/krowk"].into_iter().filter_map(|d| own_dir(c, d)).map(|d| (d, true)));
         out.push((self.admin.clone(), true));
+        out
+    }
+
+    /// The writable directories `swept` keeps to regular files and
+    /// directories: all of `binds`' but `objects`.
+    fn swept(&self) -> Vec<PathBuf> {
+        let c = &self.common;
+        let mut out: Vec<PathBuf> = ["refs/heads/krowk", "logs/refs/heads/krowk"].iter().map(|d| c.join(d)).collect();
+        out.push(self.admin.clone());
         out
     }
 
@@ -782,9 +813,57 @@ impl ManagedWorktree {
         out.extend(["config.worktree", "commondir", "gitdir", "modules"].iter().map(|f| self.admin.join(f)));
         out.push(top.join(".git"));
         let own = std::ffi::OsString::from(&self.hex);
-        out.extend(std::fs::read_dir(c.join("refs/heads/krowk")).into_iter().flatten().flatten().filter(|e| e.file_name() != own).map(|e| e.path()));
+        out.extend(std::fs::read_dir(c.join("refs/heads/krowk")).into_iter().flatten().flatten().filter(|e| e.file_name() != own && e.file_type().is_ok_and(|t| t.is_file() || t.is_dir())).map(|e| e.path()));
         out.extend(std::fs::read_dir(c.join("worktrees")).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.file_name() != self.admin.file_name()));
         out
+    }
+}
+
+/// `rel` under `base`, made when missing, when every part of it is a
+/// directory and none a symlink: a bind follows a link, and a writable
+/// one would then open wherever it leads.
+fn own_dir(base: &Path, rel: &str) -> Option<PathBuf> {
+    let d = base.join(rel);
+    let _ = std::fs::create_dir_all(&d);
+    let mut at = base.to_path_buf();
+    for part in Path::new(rel).components() {
+        at.push(part);
+        if !std::fs::symlink_metadata(&at).is_ok_and(|m| m.is_dir()) {
+            return None;
+        }
+    }
+    Some(d)
+}
+
+/// Removes from `dir`, recursively and following no link, everything
+/// that is not a regular file or a directory — a symlink, a FIFO, a
+/// socket — and names it in `out`. git outside the sandbox writes
+/// through what is in a krowk worktree's writable git directories (it
+/// appends to a reflog in place), so a link a command left there would
+/// have it write wherever the link leads. Bounded, as the workspace
+/// search is.
+fn sweep(dir: &Path, out: &mut Vec<PathBuf>) {
+    let mut stack = vec![dir.to_path_buf()];
+    let mut seen = 0usize;
+    while let Some(d) = stack.pop() {
+        if !std::fs::symlink_metadata(&d).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            seen += 1;
+            if seen > WALK_BUDGET {
+                return;
+            }
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(t) if t.is_file() => {}
+                _ => {
+                    if std::fs::remove_file(e.path()).is_ok() {
+                        out.push(e.path());
+                    }
+                }
+            }
+        }
     }
 }
 

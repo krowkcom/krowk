@@ -21,7 +21,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   them in, without exposing your `.gitconfig`. The agent can move only
   its own `krowk/…` branches. Your other branches, tags, replace refs and
   `packed-refs` stay read-only, and so do the repository's config, hooks
-  and `HEAD`, and your other worktrees. So `git tag` fails in there.
+  and `HEAD`, and your other worktrees. So `git tag` fails in there. A
+  symlink the agent leaves among those branches, their reflogs or the
+  worktree's git files is removed after the command, and the command
+  fails and says so.
   Every other repository, your own linked worktrees included, keeps
   `.git` read-only as before.
 
