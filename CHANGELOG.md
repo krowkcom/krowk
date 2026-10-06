@@ -107,12 +107,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
   It refuses while a running session uses it, and refuses one with
   uncommitted changes or commits ahead of its base unless you add
   `--force`. A forced removal first saves the uncommitted changes, new
-  files included, as `refs/krowk/snapshots/<hex>`, and prints the two
-  commands that bring the worktree back. `krowk worktrees prune` clears
-  what deleting a worktree directory by hand leaves in git, deletes
-  worktree directories git no longer knows, and deletes snapshots older
-  than 30 days. It also runs by itself in the background, at most once a
-  day, when a session starts. Worktrees made by an earlier krowk are
+  files included, as `refs/krowk/snapshots/<hex>`, and a `HEAD` its
+  branch doesn't hold (the agent detached it, or switched branch, and
+  committed) as `refs/krowk/snapshots/<hex>-head`, and prints the commands
+  that bring the worktree back. Ignored files, such as build output and
+  the copies `.worktreeinclude` made, don't count as changes and are
+  deleted with it. `krowk worktrees prune` clears git's record of krowk's
+  worktrees whose directory you deleted (only krowk's: your own
+  worktrees' records are left alone, even when their drive isn't
+  mounted), deletes worktree directories git no longer knows when their
+  files match their branch (one with changes is left in place and
+  named), and deletes snapshots older than 30 days. A repository that has
+  moved, or whose drive isn't mounted, is skipped and named. Prune also
+  runs by itself in the background, at most once a day, when a session
+  starts. Worktrees made by an earlier krowk are
   listed too, with their base shown as unknown, so removing one of them
   needs `--force`.
 

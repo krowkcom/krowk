@@ -11,8 +11,10 @@
 //!   holds it (`worktree_live`), and while it has uncommitted changes or
 //!   commits ahead of its base unless forced (`worktree_has_changes`).
 //!   Forced, its uncommitted changes are saved as
-//!   `refs/krowk/snapshots/<hex>` first. Its branch is always kept, and the
-//!   answer says how to bring it back.
+//!   `refs/krowk/snapshots/<hex>` first, and a HEAD off its branch as
+//!   `refs/krowk/snapshots/<hex>-head`. Its branch is always kept, and the
+//!   answer says how to bring it back. Ignored files (build output,
+//!   `.worktreeinclude` copies) are not changes, and are deleted with it.
 //! - `prune`: clears git's record of worktrees whose directory is gone,
 //!   deletes directories whose record is gone, and snapshots over 30 days
 //!   old. It also runs by itself once a day when a session starts.
@@ -123,11 +125,14 @@ pub(super) fn remove(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let l = &removed.listed;
     let restore = removed.restore();
     let mut summary = format!("Removed {}. Branch {} is kept", l.path.display(), l.own_branch());
+    if let Some(h) = &removed.head {
+        summary.push_str(&format!("; its HEAD, which that branch does not hold, is saved as {h}"));
+    }
     if let Some(r) = &removed.snapshot {
-        summary.push_str(&format!(", and its uncommitted changes are saved as {r}"));
+        summary.push_str(&format!("; its uncommitted changes are saved as {r}"));
     }
     if !human {
-        let data = json!({ "removed": row(l, now_ms()), "branch": l.own_branch(), "snapshot": removed.snapshot, "restore": restore });
+        let data = json!({ "removed": row(l, now_ms()), "branch": l.own_branch(), "snapshot": removed.snapshot, "head": removed.head, "restore": restore });
         return super::sessions::emit_data(ctx, data, summary);
     }
     let _ = writeln!(ctx.io.stdout, "{summary}.\nTo bring it back:\n  {}", restore.join("\n  "));

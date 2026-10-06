@@ -960,6 +960,12 @@ checked by both machines, not by the registry, and this one asks you to
 confirm the new machine by name before anything is added. A wrong code ends
 it: run `add` again for a new one. Needs a Pro workspace.",
         #[cfg(feature = "harness")]
+        "worktrees remove" => "\
+Its branch krowk/<hex> is kept. Forced, uncommitted changes are saved as
+refs/krowk/snapshots/<hex>, and a HEAD off that branch as <hex>-head; the
+answer prints the commands that bring it back. Ignored files (build output,
+.worktreeinclude copies) are not changes: they are deleted with it.",
+        #[cfg(feature = "harness")]
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle
 minutes (host.idleMinutes in config.json, or KROWK_HOST_IDLE seconds).

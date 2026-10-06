@@ -33,15 +33,24 @@
 //!   every change, untracked files included, staged into an index of
 //!   krowk's (never the worktree's own), `git stash create`d, and kept as
 //!   `refs/krowk/snapshots/<hex>`. Its branch is always kept, so its
-//!   commits are too.
-//! - **`prune`**: per repository, its krowk worktrees whose directory is gone
-//!   unlocked (unless a live session holds one) and `git worktree prune`d;
-//!   then each worktree directory under the root whose admin directory is
-//!   gone deleted, never through a symlink and never anything else in the
-//!   repository's directory (the seeding probe and log, a WT10 template);
-//!   then the `refs/krowk/snapshots/*` whose commit is over
-//!   `SNAPSHOT_DAYS` old. `prune_daily` runs it in the background at most
-//!   once a day, when a session starts.
+//!   commits are too, and a HEAD its branch does not hold (an agent that
+//!   detached it, or switched branch, and committed) is kept as
+//!   `refs/krowk/snapshots/<hex>-head`. Ignored files — build output, the
+//!   copies `.worktreeinclude` made — are not changes, and go with it.
+//! - **`prune`**: per repository, and only while its git directory is
+//!   where it was recorded (a repository moved, or on a drive not mounted,
+//!   is left alone and reported): git's record of each krowk worktree
+//!   whose directory is gone and which no live session holds is cleared —
+//!   its one admin directory, never a blanket `git worktree prune`, which
+//!   would clear the person's own worktrees on a drive not mounted, their
+//!   index, HEAD and reflog with them. Then each worktree directory under
+//!   the root that git does not list and whose admin directory is gone is
+//!   deleted, when no live session holds it and its files are its
+//!   branch's (`unchanged`) — never through a symlink, and never anything
+//!   else in the repository's directory (the seeding probe and log, a
+//!   WT10 template). Then the `refs/krowk/snapshots/*` whose commit is
+//!   over `SNAPSHOT_DAYS` old. `prune_daily` runs it in the background at
+//!   most once a day, when a session starts.
 //!
 //! Every change holds the repository's lock (`super::lock`), as creating
 //! and finishing do.
@@ -51,6 +60,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The file in a repository's directory under the root naming its common
@@ -452,14 +462,21 @@ pub struct Removed {
     pub listed: Listed,
     /// The ref its uncommitted changes were saved as, when it had any.
     pub snapshot: Option<String>,
+    /// The ref its HEAD was kept under (`keep_head`), when that was not on
+    /// its branch: commits made on a detached HEAD, or another branch.
+    pub head: Option<String>,
 }
 
 impl Removed {
     /// The commands that bring it back, run anywhere: its branch checked
-    /// out where it was, then its uncommitted changes applied.
+    /// out where it was — or, when its HEAD was elsewhere, that HEAD,
+    /// detached — then its uncommitted changes applied.
     pub fn restore(&self) -> Vec<String> {
         let l = &self.listed;
-        let mut out = vec![format!("git -C {} worktree add {} {}", quote(&l.main), quote(&l.path), l.own_branch())];
+        let mut out = vec![match &self.head {
+            Some(h) => format!("git -C {} worktree add --detach {} {h}^", quote(&l.main), quote(&l.path)),
+            None => format!("git -C {} worktree add {} {}", quote(&l.main), quote(&l.path), l.own_branch()),
+        }];
         if let Some(r) = &self.snapshot {
             out.push(format!("git -C {} stash apply {r}", quote(&l.path)));
         }
@@ -480,8 +497,9 @@ fn quote(p: &Path) -> String {
 /// while a live session holds it; refused when it has uncommitted changes
 /// or commits ahead of its base (or either cannot be told) unless `force`.
 /// A forced one with uncommitted changes is snapshotted first (`snapshot`),
-/// and is not removed when that fails. One whose directory is gone has
-/// git's record of it cleared. Blocking.
+/// and is not removed when that fails; a HEAD off its branch is kept
+/// (`keep_head`). One whose directory is gone has git's record of it, and
+/// only it, cleared (`unregister`). Blocking.
 pub fn remove(root: &Path, key: &str, force: bool) -> Result<Removed, Refusal> {
     let found = find(root, key)?;
     let _locked = lock(&found.common)?;
@@ -500,19 +518,76 @@ pub fn remove(root: &Path, key: &str, force: bool) -> Result<Removed, Refusal> {
     if !force && !l.missing && l.changed() {
         return Err(Refusal::Changed(Box::new(l)));
     }
-    let _ = read(git(&l.main)?.args(["worktree", "unlock"]).arg(&l.path), "worktree unlock");
+    let head = keep_head(&l.common, &l.hex, l.head.as_deref())?;
     if l.missing {
-        read(git(&l.main)?.args(["worktree", "prune"]), "worktree prune")?;
+        unregister(&l.common, &l.path)?;
         forget(&dir, &l.hex);
-        return Ok(Removed { listed: l, snapshot: None });
+        return Ok(Removed { listed: l, snapshot: None, head });
     }
     let snapshot = match l.dirty {
         Some(true) => Some(snapshot(&l, &dir)?),
         _ => None,
     };
+    let _ = read(git(&l.main)?.args(["worktree", "unlock"]).arg(&l.path), "worktree unlock");
     read(git(&l.main)?.args(["-c", "status.showUntrackedFiles=normal", "worktree", "remove", "--force", "--force"]).arg(&l.path), "worktree remove")?;
     forget(&dir, &l.hex);
-    Ok(Removed { listed: l, snapshot })
+    Ok(Removed { listed: l, snapshot, head })
+}
+
+/// Keeps `head`, a krowk worktree's HEAD, as `refs/krowk/snapshots/<hex>-head`
+/// when its branch `krowk/<hex>` does not hold it — an agent that detached
+/// HEAD, or switched branch, and committed — and names that ref: what is
+/// kept is a commit of krowk's made now, whose parent is `head` and whose
+/// tree is `head`'s, so it expires 30 days from now like any snapshot
+/// whatever `head`'s own date. None when the branch holds it, or there is
+/// no HEAD.
+fn keep_head(common: &Path, hex: &str, head: Option<&str>) -> Result<Option<String>, Error> {
+    let Some(head) = head.filter(|h| !h.is_empty()) else { return Ok(None) };
+    let branch = format!("refs/heads/{BRANCH_PREFIX}{hex}");
+    let held = query(common)?.args(["merge-base", "--is-ancestor", head, &branch]).output().is_ok_and(|o| o.status.success());
+    if held {
+        return Ok(None);
+    }
+    let message = format!("krowk: HEAD of worktree {hex} when it was removed");
+    let tree = format!("{head}^{{tree}}");
+    let commit = |identity: &[&str]| read(git(common)?.args(identity).args(["commit-tree", &tree, "-p", head, "-m", &message]), "commit-tree");
+    let kept = commit(&[]).or_else(|_| commit(&["-c", "user.name=krowk", "-c", "user.email=krowk@localhost"]))?;
+    let name = format!("{SNAPSHOTS}{hex}-head");
+    read(git(common)?.args(["update-ref", "-m", &message, &name, &kept]), "update-ref")?;
+    Ok(Some(name))
+}
+
+/// git's record of the worktree whose directory was `path`, cleared: the
+/// one admin directory in `<common>/worktrees/` whose `gitdir` names it,
+/// deleted, its lock with it. Never `git worktree prune`, which would
+/// clear the person's own worktrees whose directory is away too (on a
+/// drive not mounted), and their index, HEAD and reflog with them.
+fn unregister(common: &Path, path: &Path) -> Result<(), Error> {
+    let admin = registration(common, path).ok_or_else(|| Error::Failed(format!("git's record of {} was not found", path.display())))?;
+    std::fs::remove_dir_all(&admin).map_err(|e| Error::Failed(format!("remove {}: {e}", admin.display())))
+}
+
+/// The admin directory in `<common>/worktrees/` whose `gitdir` file names
+/// `path`'s `.git`: real directories only, never through a link.
+fn registration(common: &Path, path: &Path) -> Option<PathBuf> {
+    let dir = common.join("worktrees");
+    if !dir.symlink_metadata().ok()?.is_dir() {
+        return None;
+    }
+    std::fs::read_dir(&dir).ok()?.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).find(|admin| {
+        let named = std::fs::read_to_string(admin.join("gitdir")).ok().map(|t| PathBuf::from(t.trim()));
+        named.as_deref().and_then(Path::parent).is_some_and(|p| same_path(p, path))
+    })
+}
+
+/// Whether `a` and `b` name one path, either of which may be gone: equal,
+/// or the same name in the same (canonical) directory.
+fn same_path(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    let real = |p: &Path| p.parent().and_then(|d| d.canonicalize().ok()).map(|d| d.join(p.file_name().unwrap_or_default()));
+    real(a).is_some_and(|r| Some(r) == real(b))
 }
 
 /// Saves the uncommitted changes of `l` as `refs/krowk/snapshots/<hex>`
@@ -575,41 +650,48 @@ pub fn prune(root: &Path, now: SystemTime) -> Pruned {
 }
 
 fn prune_repo(repo: &Repo, now: SystemTime, done: &mut Pruned) -> Result<(), Error> {
-    // A repository that is gone has no lock to take, and no worktree of it
-    // can be made: its directories are judged by their `.git` files alone.
-    let common = repo.common.as_ref().filter(|c| c.is_dir());
-    let _locked = common.map(|c| lock(c)).transpose()?;
-    let mut registered = HashSet::new();
-    if let Some(common) = common {
-        let before = entries(common)?;
-        for (hex, e) in ours(repo, &before) {
-            let gone = repo.dir.join(&hex).symlink_metadata().is_err();
-            let krowks = e.locked.as_deref().is_some_and(|r| r.starts_with(LOCK_REASON));
-            if gone && krowks && !live(&repo.dir, &hex) {
-                let _ = read(git(common)?.args(["worktree", "unlock"]).arg(&e.path), "worktree unlock");
-            }
+    // A repository whose git directory is not where it was — moved, or on
+    // a drive not mounted — cannot say which of its worktrees are gone:
+    // all of them are left alone.
+    let Some(common) = repo.common.as_ref().filter(|c| c.is_dir()) else {
+        let noted = std::fs::read_to_string(repo.dir.join(COMMON_FILE)).unwrap_or_else(|_| "unknown".into());
+        done.failures.push(format!("{}: its repository's git directory ({noted}) is not there, so its worktrees were left alone", repo.dir.display()));
+        return Ok(());
+    };
+    let _locked = lock(common)?;
+    // krowk's own records whose directory is gone, and which no live
+    // session holds: on its `krowk/<hex>` branch, or locked by krowk.
+    for (hex, e) in ours(repo, &entries(common)?) {
+        let gone = repo.dir.join(&hex).symlink_metadata().is_err();
+        let krowks = e.branch.as_deref() == Some(&format!("{BRANCH_PREFIX}{hex}")) || e.locked.as_deref().is_some_and(|r| r.starts_with(LOCK_REASON));
+        if !gone || !krowks || live(&repo.dir, &hex) {
+            continue;
         }
-        read(git(common)?.args(["worktree", "prune"]), "worktree prune")?;
-        let after = entries(common)?;
-        registered = ours(repo, &after).into_iter().map(|(hex, _)| hex).collect();
-        let kept: HashSet<&Path> = after.iter().map(|e| e.path.as_path()).collect();
-        done.registrations.extend(ours(repo, &before).into_iter().filter(|(_, e)| !kept.contains(e.path.as_path())).map(|(_, e)| e.path.clone()));
-        expire(common, now, done)?;
+        match keep_head(common, &hex, e.head.as_deref()).and_then(|_| unregister(common, &e.path)) {
+            Ok(()) => done.registrations.push(e.path.clone()),
+            Err(e) => done.failures.push(e.to_string()),
+        }
     }
+    let registered: HashSet<String> = ours(repo, &entries(common)?).into_iter().map(|(hex, _)| hex).collect();
+    expire(common, now, done)?;
     for (hex, path) in hex_dirs(&repo.dir, 8) {
-        if registered.contains(&hex) {
+        // Gone means git does not list it, and its `.git` file points at no
+        // admin directory or it has none: never one whose admin directory
+        // is there, or which another repository's `.git` file names.
+        let orphan = !registered.contains(&hex) && admin_dir(&path).map_or_else(|| path.join(".git").symlink_metadata().is_err(), |a| a.symlink_metadata().is_err());
+        if !orphan || live(&repo.dir, &hex) {
             continue;
         }
-        // Gone means its `.git` file points at no admin directory, or, with
-        // the repository's lock held, that it has none at all: never one
-        // whose admin directory is there, or which another repository's
-        // `.git` file names.
-        let orphan = match admin_dir(&path) {
-            Some(admin) => admin.symlink_metadata().is_err(),
-            None => common.is_some() && path.join(".git").symlink_metadata().is_err(),
-        };
-        if !orphan {
-            continue;
+        match unchanged(repo, common, &hex, &path) {
+            Ok(true) => {}
+            Ok(false) => {
+                done.failures.push(format!("{}: its files differ from its branch {BRANCH_PREFIX}{hex}, so it was left in place — copy out what you need, then delete it", path.display()));
+                continue;
+            }
+            Err(e) => {
+                done.failures.push(format!("{}: left in place, as krowk could not tell whether it holds changes: {e}", path.display()));
+                continue;
+            }
         }
         match std::fs::remove_dir_all(&path) {
             Ok(()) => done.dirs.push(path),
@@ -631,6 +713,30 @@ fn prune_repo(repo: &Repo, now: SystemTime, done: &mut Pruned) -> Result<(), Err
         let _ = std::fs::remove_file(f.path());
     }
     Ok(())
+}
+
+/// Whether the worktree directory `path`, which git no longer knows, holds
+/// exactly what its branch `krowk/<hex>` (else its recorded base) does:
+/// read through a scratch index of krowk's with the repository's git
+/// directory, so no modified or untracked file is deleted with it. Ignored
+/// files (build output, `.worktreeinclude` copies) are not judged.
+fn unchanged(repo: &Repo, common: &Path, hex: &str, path: &Path) -> Result<bool, Error> {
+    let branch = format!("refs/heads/{BRANCH_PREFIX}{hex}");
+    let rev = match read(query(common)?.args(["rev-parse", "--verify", "--quiet", &format!("{branch}^{{commit}}")]), "rev-parse") {
+        Ok(c) => c,
+        Err(_) => read_record(&repo.dir, hex).map(|r| r.base).ok_or_else(|| Error::Failed(format!("neither {BRANCH_PREFIX}{hex} nor a recorded base is there to compare it with")))?,
+    };
+    let index = Scratch(std::path::absolute(repo.dir.join(format!(".index-{}", random_hex()))).map_err(|e| Error::Failed(format!("the index: {e}")))?);
+    let at = |c: Result<Command, Error>| c.map(|mut c| {
+        c.arg(format!("--git-dir={}", common.display())).arg(format!("--work-tree={}", path.display())).env("GIT_INDEX_FILE", &index.0);
+        c
+    });
+    read(at(git(path))?.args(["read-tree", &rev]), "read-tree")?;
+    // Exits 1 when files need refreshing, which is what it is for.
+    let _ = at(git(path))?.args(["update-index", "-q", "--refresh"]).output();
+    let differs = at(query(path))?.args(["diff-files", "--quiet"]).output().map_err(|e| Error::Failed(format!("git diff-files: {e}")))?;
+    let untracked = read(at(query(path))?.args(["ls-files", "--others", "--exclude-standard"]), "ls-files")?;
+    Ok(differs.status.success() && untracked.is_empty())
 }
 
 /// Deletes the repository's snapshot refs whose commit's committer date is
@@ -662,8 +768,8 @@ pub fn prune_daily(root: PathBuf) {
 }
 
 /// `prune`, when the time in `<root>/.pruned` is a day or more before
-/// `now`, or there is none; that time set to `now` first, so krowks
-/// starting at once prune once. Nothing when the root does not exist: no
+/// `now`, or there is none; that time set to `now` first, under a lock on
+/// the file, so krowks starting at once prune once. Nothing when the root does not exist: no
 /// worktree was ever made.
 pub fn prune_if_due(root: &Path, now: SystemTime) -> Option<Pruned> {
     if !root.symlink_metadata().is_ok_and(|m| m.is_dir()) {
@@ -671,8 +777,10 @@ pub fn prune_if_due(root: &Path, now: SystemTime) -> Option<Pruned> {
     }
     let at = root.join(STAMP_FILE);
     let mut file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&at).ok()?;
-    // Another krowk is judging it: that one prunes.
-    file.try_lock().ok()?;
+    // Waited for, not tried: another krowk judging it holds it only to
+    // write the time (and a process forked meanwhile, for a moment), and
+    // then this one finds it not due.
+    file.lock().ok()?;
     let mut text = String::new();
     std::io::Read::read_to_string(&mut file, &mut text).ok()?;
     let last = text.trim().parse::<i64>().ok();
@@ -860,6 +968,103 @@ mod tests {
         // Their branches are the person's to delete.
         assert_eq!(git_ok(&main, &["branch", "--list", "--format=%(refname:short)", &gone.branch()]), gone.branch());
         drop(held);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A repository whose git directory moved (or whose drive is not
+    /// mounted): prune leaves its worktrees, uncommitted work and all,
+    /// alone, and says so.
+    #[test]
+    fn wt9_prune_leaves_a_moved_repository_alone() {
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let (base, main, root) = repo("wt9-moved");
+        let w = create(&main, &root, "s1").unwrap();
+        std::fs::write(w.path.join("work.txt"), "work\n").unwrap();
+        let moved = base.join("moved");
+        std::fs::rename(&main, &moved).unwrap();
+        let done = prune(&root, SystemTime::now());
+        assert!(done.dirs.is_empty() && done.registrations.is_empty(), "{done:?}");
+        assert!(done.failures.iter().any(|f| f.contains("left alone")), "{:?}", done.failures);
+        assert_eq!(std::fs::read_to_string(w.path.join("work.txt")).unwrap(), "work\n");
+        assert!(read_record(w.repo_dir(), &w.hex).is_some());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The person's own worktree, outside the root, its directory away:
+    /// its record is not krowk's to clear. A krowk directory git no longer
+    /// knows is deleted only when its files are its branch's and no live
+    /// session holds it.
+    #[test]
+    fn wt9_prune_keeps_the_persons_worktrees_and_orphans_with_changes() {
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let (base, main, root) = repo("wt9-own");
+        let own = base.join("own");
+        git_ok(&main, &["worktree", "add", "-q", "-b", "mine", own.to_str().unwrap()]);
+        std::fs::rename(&own, base.join("own-away")).unwrap();
+        let gone = create(&main, &root, "s1").unwrap();
+        std::fs::remove_dir_all(&gone.path).unwrap();
+        let orphan = |owner: &str| {
+            let w = create(&main, &root, owner).unwrap();
+            std::fs::remove_dir_all(admin_dir(&w.path).unwrap()).unwrap();
+            w
+        };
+        let dirty = orphan("s2");
+        std::fs::write(dirty.path.join("work.txt"), "work\n").unwrap();
+        let edited = orphan("s3");
+        std::fs::write(edited.path.join("a.txt"), "edited\n").unwrap();
+        let clean = orphan("s4");
+        let held = create_held(&main, &root, "s5").unwrap();
+        std::fs::remove_dir_all(admin_dir(&held.0.path).unwrap()).unwrap();
+
+        let done = prune(&root, SystemTime::now());
+        let listed = git_ok(&main, &["worktree", "list", "--porcelain"]);
+        assert!(listed.contains(own.to_str().unwrap()), "the person's own record is kept: {listed}");
+        assert!(!listed.contains(&gone.hex), "{listed}");
+        assert_eq!(done.dirs, std::slice::from_ref(&clean.path));
+        assert_eq!(std::fs::read_to_string(dirty.path.join("work.txt")).unwrap(), "work\n");
+        assert_eq!(std::fs::read_to_string(edited.path.join("a.txt")).unwrap(), "edited\n");
+        assert!(held.0.path.is_dir(), "a live one is left");
+        assert_eq!(done.failures.iter().filter(|f| f.contains("differ from its branch")).count(), 2, "{:?}", done.failures);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A forced removal of a worktree whose agent detached HEAD and
+    /// committed there: that commit is kept, and the restore commands bring
+    /// back it and the uncommitted change on top.
+    #[test]
+    fn wt9_a_forced_remove_keeps_a_head_off_its_branch() {
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let (base, main, root) = repo("wt9-detached");
+        let w = create(&main, &root, "s1").unwrap();
+        git_ok(&w.path, &["checkout", "-q", "--detach"]);
+        std::fs::write(w.path.join("b.txt"), "b\n").unwrap();
+        git_ok(&w.path, &["add", "b.txt"]);
+        git_ok(&w.path, &["commit", "-q", "-m", "detached"]);
+        let head = git_ok(&w.path, &["rev-parse", "HEAD"]);
+        std::fs::write(w.path.join("a.txt"), "changed\n").unwrap();
+        let removed = remove(&root, &w.hex, true).unwrap();
+        let kept = format!("{SNAPSHOTS}{}-head", w.hex);
+        assert_eq!(removed.head.as_deref(), Some(kept.as_str()));
+        assert_eq!(git_ok(&main, &["rev-parse", &format!("{kept}^")]), head);
+        for line in removed.restore() {
+            git_ok(&main, &line.split(' ').skip(1).collect::<Vec<_>>());
+        }
+        assert_eq!(git_ok(&w.path, &["rev-parse", "HEAD"]), head);
+        assert_eq!(std::fs::read_to_string(w.path.join("a.txt")).unwrap(), "changed\n");
+        // On its branch, nothing extra is kept.
+        git_ok(&main, &["worktree", "remove", "--force", w.path.to_str().unwrap()]);
+        let w = create(&main, &root, "s2").unwrap();
+        git_ok(&w.path, &["commit", "-q", "--allow-empty", "-m", "on the branch"]);
+        assert_eq!(remove(&root, &w.hex, true).unwrap().head, None);
         let _ = std::fs::remove_dir_all(&base);
     }
 
