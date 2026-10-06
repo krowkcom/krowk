@@ -294,7 +294,7 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
             // Response indexes continue from the history's, so a replayed
             // turn and this one never share an index.
             let first_response = req.history.iter().filter_map(|h| h.response).max().map_or(0, |m| m + 1);
-            let tool_env = tools::ToolEnv { cwd: &ctx.cwd, permission_mode: ctx.permission_mode, edit: ctx.preset.edit, evidence: ctx.evidence.as_ref().map(|e| (e, &events)), builds: Some(&ctx.builds), live: None };
+            let tool_env = tools::ToolEnv { cwd: &ctx.cwd, permission_mode: ctx.permission_mode, edit: ctx.preset.edit, evidence: ctx.evidence.as_ref().map(|e| (e, &events)), builds: Some(&ctx.builds), live: None, env: &ctx.env };
             for (made, response) in (first_response..).take(MAX_STEPS).enumerate() {
                 if *ctx.cancel.borrow() {
                     return Ok(TurnEnd::Interrupted);

@@ -372,8 +372,9 @@ impl Subagents {
                 Err(why) => return (why, true),
             },
         };
-        let cwd = worktree.as_ref().map_or_else(|| p.cwd.clone(), |w| w.path.clone());
-        let result = host.subagent(&self.0, call_id, &input.description, &prompt, model, run, (&child, &cwd), events).await;
+        let cwd = worktree.as_ref().map_or_else(|| p.cwd.clone(), |w| w.worktree.path.clone());
+        let env = worktree.as_ref().map(|w| w.env()).unwrap_or_default();
+        let result = host.subagent(&self.0, call_id, &input.description, &prompt, model, run, (&child, &cwd, env), events).await;
         if let Ok(r) = &result {
             let mut spent = self.0.spent.lock().unwrap_or_else(|e| e.into_inner());
             match r.cost_usd {
@@ -394,15 +395,37 @@ impl Subagents {
     /// A worktree of the parent's repository for the child `child`, readied
     /// by the prepare steps, with their notes for its first prompt; why
     /// not, for the model, when there is none.
-    async fn worktree(&self, child: &str) -> Result<(crate::worktree::Worktree, Vec<String>), String> {
+    async fn worktree(&self, child: &str) -> Result<(Isolated, Vec<String>), String> {
         let Some(root) = self.0.host.cfg.agents.worktrees.clone() else {
             return Err("isolation: worktree has nowhere to make worktrees: krowk found no home directory (set HOME or XDG_DATA_HOME)".into());
         };
-        let (cwd, child, config) = (self.0.parent.cwd.clone(), child.to_string(), self.0.host.registry().worktrees.clone());
+        let registry = self.0.host.registry();
+        let (cwd, child, config, builds) = (self.0.parent.cwd.clone(), child.to_string(), registry.worktrees.clone(), registry.builds.clone());
+        // The parent's settings: whether its repository is trusted, the
+        // repository's own `worktrees`, and the fences a sandbox keeps.
+        let policy = self.0.parent.gate.policy().clone();
+        let runtime = crate::slots::runtime_dir(&|k| std::env::var(k).unwrap_or_default());
         let made = tokio::task::spawn_blocking(move || {
             let w = crate::worktree::create(&cwd, &root, &child)?;
-            let notes = crate::worktree::prepare(&crate::worktree::Prepare { worktree: &w, config: &config });
-            Ok((w, notes))
+            let (port, missing) = match crate::worktree::setup::port_slot(runtime) {
+                Ok(Some(slot)) => (Some(slot), None),
+                Ok(None) => (None, Some("every port slot is held, so KROWK_PORT_BASE is not set here".to_string())),
+                Err(e) => (None, Some(format!("no port slot could be taken ({e}), so KROWK_PORT_BASE is not set here"))),
+            };
+            let port_base = port.as_ref().map(crate::worktree::setup::port_base);
+            let sandbox = crate::worktree::setup::sandbox(&policy, &w.path);
+            let prepare = crate::worktree::Prepare {
+                worktree: &w,
+                config: &config,
+                project: policy.loaded.worktrees.as_ref(),
+                trusted: policy.loaded.trusted,
+                sandbox: sandbox.as_ref(),
+                port_base,
+                builds: Some(&builds),
+            };
+            let mut notes: Vec<String> = missing.into_iter().collect();
+            notes.extend(crate::worktree::prepare(&prepare));
+            Ok((Isolated { worktree: w, port, port_base }, notes))
         })
         .await;
         match made {
@@ -429,11 +452,29 @@ fn answer(result: Result<crate::protocol::RunResult, crate::engine::EngineError>
     }
 }
 
+/// A child's worktree, and the port slot it holds until it is finished.
+struct Isolated {
+    worktree: crate::worktree::Worktree,
+    port: Option<crate::slots::Slot>,
+    port_base: Option<u16>,
+}
+
+impl Isolated {
+    /// What the child's commands get in their environment: its port base.
+    fn env(&self) -> Vec<(String, String)> {
+        self.port_base.map(|b| ("KROWK_PORT_BASE".to_string(), b.to_string())).into_iter().collect()
+    }
+}
+
 /// A child's worktree, finished when the child is (`crate::worktree::finish`):
-/// what its parent is told of it, when it is kept.
-async fn finish(w: crate::worktree::Worktree) -> Option<String> {
+/// what its parent is told of it, when it is kept. Its port slot is let go
+/// once it is.
+async fn finish(i: Isolated) -> Option<String> {
+    let Isolated { worktree: w, port, .. } = i;
     let path = w.path.clone();
-    match tokio::task::spawn_blocking(move || crate::worktree::finish(&w).map(|f| f.note(&w))).await {
+    let finished = tokio::task::spawn_blocking(move || crate::worktree::finish(&w).map(|f| f.note(&w))).await;
+    drop(port);
+    match finished {
         Ok(Ok(note)) => note,
         Ok(Err(e)) => Some(format!("Worktree: {} was left as it is: {e}", path.display())),
         Err(e) => Some(format!("Worktree: {} was left as it is: {e}", path.display())),

@@ -217,7 +217,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn prepared(w: &Worktree) -> Vec<String> {
-        prepare(&Prepare { worktree: w, config: &WorktreesConfig::default() })
+        prepare(&Prepare::new(w, &WorktreesConfig::default()))
     }
 
     fn logged(w: &Worktree) -> String {

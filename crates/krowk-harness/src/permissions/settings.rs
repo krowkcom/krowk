@@ -6,7 +6,7 @@
 //! | krowk, user | `config.json` in krowk's home: `permissions`, `hooks` | in full |
 //! | Claude Code, user | `settings.json` in Claude's config directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) | in full |
 //! | krowk, remembered | `permissions.json` in krowk's home: what a person allowed for a project | in full, for that project |
-//! | krowk, project | `<repository>/.krowk/config.json` | trusted repository: in full; otherwise its `deny` and `ask` only |
+//! | krowk, project | `<repository>/.krowk/config.json` | trusted repository: in full; otherwise its `deny` and `ask` only (and its `worktrees.setup` command not at all) |
 //! | Claude Code, project | `.claude/settings.json` and `.claude/settings.local.json`, from the repository's root down to the working directory | the same |
 //!
 //! Every file has Claude Code's shape — `permissions.allow`, `.ask`,
@@ -121,6 +121,10 @@ pub struct Loaded {
     /// The repository has settings that widen, which it would take trust
     /// to apply: what the trust question is for.
     pub widens: bool,
+    /// The repository's own `worktrees` (in its `.krowk/config.json`),
+    /// trusted or not: its `setup` is a command, which runs only when
+    /// `trusted` (`crate::worktree::setup`), as a hook does.
+    pub worktrees: Option<crate::instances::WorktreesConfig>,
 }
 
 /// One settings file's worth, before it is believed or not.
@@ -218,14 +222,19 @@ fn resolve_dir(d: &str, base: &Path, home: Option<&Path>) -> PathBuf {
 /// Reads a settings file, if there is one. A file that is there and cannot
 /// be read or parsed is an error, never an empty file.
 fn read_file(path: &Path, root: &Path, base: &Path, home: Option<&Path>) -> Result<Option<File>, String> {
+    let Some(v) = read_json(path)? else { return Ok(None) };
+    read_object(&v, &path.display().to_string(), root, base, home).map(Some)
+}
+
+/// A settings file's JSON, if there is one: `read_file`'s first half.
+fn read_json(path: &Path) -> Result<Option<Value>, String> {
     let raw = match std::fs::read(path) {
         Ok(r) => r,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => return Ok(None),
         Err(e) => return Err(format!("{} could not be read: {e}", path.display())),
     };
-    let v: Value = serde_json::from_slice(&raw).map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?;
-    read_object(&v, &path.display().to_string(), root, base, home).map(Some)
+    serde_json::from_slice(&raw).map(Some).map_err(|e| format!("{} is not valid JSON: {e}", path.display()))
 }
 
 /// The directories from the repository's root down to the working
@@ -276,8 +285,14 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
         user.extend(remembered(&path, &root)?);
     }
     let mut project: Vec<File> = Vec::new();
-    if let Some(f) = read_file(&root.join(".krowk/config.json"), &root, &root, home)? {
-        project.push(f);
+    let mut worktrees = None;
+    let own = root.join(".krowk/config.json");
+    if let Some(v) = read_json(&own)? {
+        let source = own.display().to_string();
+        if let Some(w) = v.get("worktrees") {
+            worktrees = Some(crate::instances::WorktreesConfig::parse(w).map_err(|e| format!("{source}: {e}"))?);
+        }
+        project.push(read_object(&v, &source, &root, &root, home)?);
     }
     for dir in chain(&root, cwd) {
         for name in ["settings.json", "settings.local.json"] {
@@ -292,7 +307,9 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
         let user_file = dir.join("settings.json").display().to_string();
         project.retain(|f| f.source != user_file);
     }
-    let mut out = Loaded { root: root.clone(), trusted, ..Loaded::default() };
+    // A setup command widens as a hook does: it is a command the
+    // repository names.
+    let mut out = Loaded { root: root.clone(), trusted, widens: worktrees.as_ref().is_some_and(|w| w.setup().is_some()), worktrees, ..Loaded::default() };
     let config = cfg.user_path.as_ref().map(|p| tilde(&p.display().to_string(), home)).unwrap_or_else(|| "krowk's config.json".into());
     // `auto`'s notices, said only if nothing sets a mode.
     let mut unknown: Vec<String> = Vec::new();

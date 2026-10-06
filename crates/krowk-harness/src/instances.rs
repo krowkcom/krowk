@@ -142,11 +142,44 @@ pub struct WorktreesConfig {
     /// `["target", "node_modules"]` when absent; `[]` copies none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<Vec<String>>,
+    /// A shell command run in a new worktree before its agent starts —
+    /// install dependencies, generate code — inside the sandbox's
+    /// workspace profile with only the worktree writable
+    /// (`crate::worktree::setup`). A repository's own, in its
+    /// `.krowk/config.json`, runs only once the repository is trusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<String>,
+    /// Seconds `setup` may take before it is stopped; 600 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_timeout: Option<u64>,
 }
 
 impl WorktreesConfig {
     pub fn is_empty(&self) -> bool {
-        self.seed.is_none()
+        self.seed.is_none() && self.setup.is_none() && self.setup_timeout.is_none()
+    }
+
+    /// The setup command, when there is one that is not blank.
+    pub fn setup(&self) -> Option<&str> {
+        self.setup.as_deref().filter(|s| !s.trim().is_empty())
+    }
+
+    /// How long `setup` may take: the config's, else 600 s.
+    pub fn setup_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.setup_timeout.unwrap_or(crate::worktree::setup::DEFAULT_TIMEOUT))
+    }
+
+    /// The config read from `v`, a config file's `worktrees`, checked:
+    /// what is wrong is said with `"worktrees": ` in front.
+    pub fn parse(v: &serde_json::Value) -> Result<WorktreesConfig, String> {
+        let cfg: WorktreesConfig = serde_json::from_value(v.clone()).map_err(|e| format!("\"worktrees\": {e}"))?;
+        if let Some(bad) = cfg.seed.iter().flatten().find(|n| !crate::worktree::seed::top_level_name(n)) {
+            return Err(format!("\"worktrees\": seed names directories at the repository's top, and {bad:?} is not one"));
+        }
+        if cfg.setup_timeout == Some(0) {
+            return Err("\"worktrees\": setupTimeout must be at least 1 (seconds)".into());
+        }
+        Ok(cfg)
     }
 
     /// The directories seeded: the config's, else `DEFAULT_SEED`.
@@ -1087,10 +1120,7 @@ pub fn from_config_json(raw: &serde_json::Value) -> Result<InstancesConfig, Stri
         }
     }
     if let Some(v) = raw.get("worktrees") {
-        cfg.worktrees = serde_json::from_value(v.clone()).map_err(|e| format!("\"worktrees\": {e}"))?;
-        if let Some(bad) = cfg.worktrees.seed.iter().flatten().find(|n| !crate::worktree::seed::top_level_name(n)) {
-            return Err(format!("\"worktrees\": seed names directories at the repository's top, and {bad:?} is not one"));
-        }
+        cfg.worktrees = WorktreesConfig::parse(v)?;
     }
     if let Some(v) = raw.get("builds") {
         cfg.builds = serde_json::from_value(v.clone()).map_err(|e| format!("\"builds\": {e}"))?;
@@ -1380,6 +1410,19 @@ mod tests {
             let e = from_config_json(&serde_json::json!({"worktrees": {"seed": [bad]}})).unwrap_err();
             assert!(e.contains("\"worktrees\"") && e.contains(&format!("{bad:?}")), "{bad:?}: {e}");
         }
+    }
+
+    #[test]
+    fn wt8_worktrees_setup_is_read_and_its_timeout_checked() {
+        let cfg = from_config_json(&serde_json::json!({"worktrees": {"setup": "npm ci", "setupTimeout": 30}})).unwrap();
+        assert_eq!((cfg.worktrees.setup(), cfg.worktrees.setup_timeout()), (Some("npm ci"), std::time::Duration::from_secs(30)));
+        let none = from_config_json(&serde_json::json!({"worktrees": {"setup": "  "}})).unwrap();
+        assert_eq!((none.worktrees.setup(), none.worktrees.setup_timeout()), (None, std::time::Duration::from_secs(600)), "blank is none, and 600 s by default");
+        let zero = from_config_json(&serde_json::json!({"worktrees": {"setup": "x", "setupTimeout": 0}})).unwrap_err();
+        assert!(zero.contains("\"worktrees\"") && zero.contains("setupTimeout must be at least 1"), "{zero}");
+        let typo = from_config_json(&serde_json::json!({"worktrees": {"setupTimout": 5}})).unwrap_err();
+        assert!(typo.contains("\"worktrees\"") && typo.contains("setupTimout"), "{typo}");
+        assert!(from_config_json(&serde_json::json!({"worktrees": {"setup": 3}})).unwrap_err().contains("\"worktrees\""));
     }
 
     #[test]

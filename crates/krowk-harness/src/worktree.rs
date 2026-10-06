@@ -36,11 +36,17 @@
 //! - **Prepared** by `STEPS` before its agent starts: submodules first
 //!   (`submodules`), then the main checkout's build output cloned in where
 //!   that is nearly free (`seed`), then the ignored files its
-//!   `.worktreeinclude` lists, copied (`include`). A step that falls short leaves a note,
-//!   and the notes open the agent's first prompt (`first_prompt`).
+//!   `.worktreeinclude` lists, copied (`include`), and last the
+//!   repository's setup command, in the sandbox (`setup`). A step that
+//!   falls short leaves a note, and the notes open the agent's first
+//!   prompt (`first_prompt`).
+//! - **A port slot** (`setup::port_slot`) is held by whoever uses the
+//!   worktree, for as long as they do: `KROWK_PORT_BASE` for the setup
+//!   command and the agent's commands.
 
 pub mod include;
 pub mod seed;
+pub mod setup;
 
 use crate::instances::WorktreesConfig;
 use sha2::{Digest, Sha256};
@@ -128,12 +134,34 @@ impl Finished {
     }
 }
 
-/// What a prepare step is handed. The inputs later steps need (trust)
-/// join it as fields, so a step's signature stays one argument.
+/// What a prepare step is handed. The inputs a step needs join it as
+/// fields, so a step's signature stays one argument.
 pub struct Prepare<'a> {
     pub worktree: &'a Worktree,
     /// The person's `worktrees` config.
     pub config: &'a WorktreesConfig,
+    /// The repository's own `worktrees` config, from its
+    /// `.krowk/config.json` (`permissions::settings::Loaded::worktrees`).
+    pub project: Option<&'a WorktreesConfig>,
+    /// Whether the person trusts the repository the worktree is of: the
+    /// parent session's decision, as for its hooks.
+    pub trusted: bool,
+    /// What the setup command runs in (`setup::sandbox`): none where this
+    /// machine has no sandbox.
+    pub sandbox: Option<&'a crate::sandbox::Plan>,
+    /// The worktree's `KROWK_PORT_BASE`, from the port slot its user holds
+    /// (`setup::port_slot`); none without one.
+    pub port_base: Option<u16>,
+    /// The build slots a heavy setup command waits for.
+    pub builds: Option<&'a crate::builds::Builds>,
+}
+
+impl<'a> Prepare<'a> {
+    /// The steps' inputs for `worktree` with `config` alone: an untrusted
+    /// repository, no sandbox, no port slot, no build slots.
+    pub fn new(worktree: &'a Worktree, config: &'a WorktreesConfig) -> Prepare<'a> {
+        Prepare { worktree, config, project: None, trusted: false, sandbox: None, port_base: None, builds: None }
+    }
 }
 
 /// One step that readies a new worktree before its agent starts. It does
@@ -144,8 +172,8 @@ pub struct Prepare<'a> {
 pub type Step = fn(&Prepare<'_>) -> Option<String>;
 
 /// The prepare steps, run in this order after `create` and before the
-/// agent's first turn: submodules, seed, include, setup, as each lands.
-pub const STEPS: &[(&str, Step)] = &[("submodules", submodules), ("seed", seed::seed), ("include", include::include)];
+/// agent's first turn: submodules, seed, include, setup.
+pub const STEPS: &[(&str, Step)] = &[("submodules", submodules), ("seed", seed::seed), ("include", include::include), ("setup", setup::setup)];
 
 /// Runs `STEPS`, in order: their notes, in the same order. Blocking: off
 /// the async runtime.
@@ -1016,7 +1044,7 @@ mod tests {
         let config = std::fs::read(main.join(".git/config")).unwrap();
         let w = create(&main, &root, "s1").unwrap();
         assert!(std::fs::read_dir(w.path.join("mid")).unwrap().next().is_none(), "git worktree add leaves it empty");
-        assert_eq!(prepare(&Prepare { worktree: &w, config: &WorktreesConfig::default() }), Vec::<String>::new());
+        assert_eq!(prepare(&Prepare::new(&w, &WorktreesConfig::default())), Vec::<String>::new());
         assert_eq!(std::fs::read(main.join(".git/config")).unwrap(), config, "the shared config is not written");
         assert_eq!(std::fs::read_to_string(w.path.join("mid/f")).unwrap(), "mid\n");
         assert_eq!(std::fs::read_to_string(w.path.join("mid/inner/f")).unwrap(), "inner\n");
@@ -1042,13 +1070,13 @@ mod tests {
         // An edit in `inner`, which `mid`'s `.gitmodules` ignores, is a
         // change: the worktree is kept, not force-removed.
         let w = create(&main, &root, "s2").unwrap();
-        prepare(&Prepare { worktree: &w, config: &WorktreesConfig::default() });
+        prepare(&Prepare::new(&w, &WorktreesConfig::default()));
         std::fs::write(w.path.join("mid/inner/f"), "changed\n").unwrap();
         assert_eq!(finish(&w).unwrap(), Finished::Kept { commits: 0, dirty: true });
         assert_eq!(std::fs::read_to_string(w.path.join("mid/inner/f")).unwrap(), "changed\n");
         // So is a new file in `mid`, whose own config hides untracked files.
         let w = create(&main, &root, "s3").unwrap();
-        prepare(&Prepare { worktree: &w, config: &WorktreesConfig::default() });
+        prepare(&Prepare::new(&w, &WorktreesConfig::default()));
         git_ok(&w.path.join("mid"), &["config", "status.showUntrackedFiles", "no"]);
         std::fs::write(w.path.join("mid/new.txt"), "new\n").unwrap();
         assert_eq!(finish(&w).unwrap(), Finished::Kept { commits: 0, dirty: true });
@@ -1070,7 +1098,7 @@ mod tests {
         git_ok(&main, &["update-index", "--add", "--cacheinfo", &format!("160000,{head},lib")]);
         git_ok(&main, &["commit", "-q", "-m", "a gitlink"]);
         let w = create(&main, &root, "s1").unwrap();
-        assert_eq!(prepare(&Prepare { worktree: &w, config: &WorktreesConfig::default() }), Vec::<String>::new());
+        assert_eq!(prepare(&Prepare::new(&w, &WorktreesConfig::default())), Vec::<String>::new());
         let mut failed = Vec::new();
         init_submodules(&w.path, Path::new("/nonexistent"), "", 0, &mut failed);
         assert!(failed.is_empty());
@@ -1106,7 +1134,7 @@ mod tests {
         git_ok(&main, &["submodule", "deinit", "-q", "-f", "mid"]);
         let config = std::fs::read(main.join(".git/config")).unwrap();
         let w = create(&main, &root, "s1").unwrap();
-        let notes = prepare(&Prepare { worktree: &w, config: &WorktreesConfig::default() });
+        let notes = prepare(&Prepare::new(&w, &WorktreesConfig::default()));
         assert_eq!(std::fs::read(main.join(".git/config")).unwrap(), config, "the deinitialised submodule is not brought back");
         assert_eq!(notes.len(), 1, "{notes:?}");
         let note = &notes[0];

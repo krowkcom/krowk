@@ -76,6 +76,28 @@ the versions are the `v*` tags a release is cut from. Entries land under
   copied is skipped and noted in `seed.log`. Without a
   `.worktreeinclude`, nothing is copied.
 
+- **A subagent's worktree can run your project's setup command first.**
+  Set `worktrees.setup` to a shell command (`npm ci`, a code generator,
+  a database script) and krowk runs it in each new worktree before the
+  subagent starts, so the agent doesn't burn turns finding out the
+  project isn't installed. Put it in `~/.krowk/config.json` for yourself,
+  or in a repository's `.krowk/config.json`, where it runs only once you
+  have trusted the repository (the same question that turns its hooks
+  on); a trusted repository's command is the one that runs. It runs in
+  the sandbox: network on, the worktree writable, your main checkout and
+  your home not, so a cloned repository's install can't touch anything
+  else. On a machine with no sandbox it runs only for a trusted
+  repository. It gets `KROWK_PROJECT_ROOT` (your main checkout),
+  `KROWK_WORKTREE_PATH` and `KROWK_PORT_BASE`: each live worktree holds
+  its own ten ports from 20000 up (20000, 20010, …), and the subagent's
+  own commands see `KROWK_PORT_BASE` too, so dev servers in two worktrees
+  don't collide. A build or install command waits for a build slot as the
+  agent's would. Its output is in `krowk-setup.log` in the worktree's git
+  directory. When it fails, or runs past `worktrees.setupTimeout` (600
+  seconds by default), the subagent starts anyway and its first prompt
+  says so, with the exit code or "timed out" and the last 50 lines of
+  output.
+
 - **An agent can commit inside a worktree krowk made for it.** When a
   sandboxed session runs in a worktree under
   `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`) on

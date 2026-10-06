@@ -607,7 +607,7 @@ pub(crate) fn stop(child: &mut std::process::Child) {
 /// SIGKILL to the process group `child` leads (`probing` made it its own).
 /// Also after the leader exited: whatever it left behind in its group
 /// would otherwise hold the output pipes, and the check with them.
-fn kill_group(child: &std::process::Child) {
+pub(crate) fn kill_group(child: &std::process::Child) {
     #[cfg(unix)]
     // SAFETY: kill with a negative pid signals a process group; it touches
     // no memory. A group with nobody left in it is ESRCH, ignored.

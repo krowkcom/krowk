@@ -57,12 +57,12 @@ fn setup_by(name: &str, profile: Profile, by: By) -> (PathBuf, PathBuf, Scope) {
 }
 
 async fn bash(ws: &Path, scope: &Scope, command: &str) -> (String, bool) {
-    let env = ToolEnv { cwd: ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+    let env = ToolEnv { cwd: ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
     execute(BASH, &json!({ "command": command }), &env, scope.clone()).await
 }
 
 async fn tool(ws: &Path, scope: &Scope, name: &str, input: Value) -> (String, bool) {
-    let env = ToolEnv { cwd: ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+    let env = ToolEnv { cwd: ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
     execute(name, &input, &env, scope.clone()).await
 }
 
@@ -260,7 +260,7 @@ async fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_ses
     // A timeout still kills what the command started, inside its own
     // session and namespace.
     let started = std::time::Instant::now();
-    let env = ToolEnv { cwd: &ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+    let env = ToolEnv { cwd: &ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
     let (out, err) = execute(BASH, &json!({"command": "sleep 7.31 & sleep 7.31", "timeout_ms": 300}), &env, scope.clone()).await;
     assert!(err && out.contains("timed out") && started.elapsed() < Duration::from_secs(3), "{out}");
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -610,7 +610,7 @@ async fn wt4_a_link_replanted_by_a_call_that_times_out_or_is_interrupted_is_gone
     std::fs::write(&victim, "mine\n").unwrap();
     // Eight loops, so one is likely mid-`ln` whenever the sweep runs.
     let command = format!("for i in 1 2 3 4 5 6 7 8; do (while true; do ln -sfn '{}' '{}' 2>/dev/null; done) & done; sleep 30", victim.display(), logs_head.display());
-    let env = ToolEnv { cwd: &r.wt, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+    let env = ToolEnv { cwd: &r.wt, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
     let linked = || std::fs::symlink_metadata(&logs_head).is_ok_and(|m| m.file_type().is_symlink());
     // Timed out: the sweep is done when the call returns.
     let (out, err) = execute(BASH, &json!({ "command": command, "timeout_ms": 1500 }), &env, scope.clone()).await;
@@ -632,4 +632,20 @@ async fn wt4_a_link_replanted_by_a_call_that_times_out_or_is_interrupted_is_gone
     assert!(!linked(), "and nothing planted one since");
     assert_eq!(std::fs::read_to_string(&victim).unwrap(), "mine\n");
     let _ = std::fs::remove_dir_all(&r.base);
+}
+
+/// Worktrees WT8: a worktree's `KROWK_PORT_BASE` reaches the agent's
+/// commands, in the sandbox, whose environment is otherwise an allowlist
+/// that keeps every other `KROWK_*` out.
+#[tokio::test(flavor = "current_thread")]
+async fn wt8_the_port_base_reaches_a_sandboxed_command() {
+    if !enforced("wt8_the_port_base_reaches_a_sandboxed_command") {
+        return;
+    }
+    let (base, ws, scope) = setup("wt8-port", Profile::Workspace);
+    let extra = [("KROWK_PORT_BASE".to_string(), "20030".to_string())];
+    let env = ToolEnv { cwd: &ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &extra };
+    let (out, err) = execute(BASH, &json!({ "command": "echo \"base=$KROWK_PORT_BASE\"; env | grep -c '^KROWK_'" }), &env, scope.clone()).await;
+    assert_eq!((out.as_str(), err), ("base=20030\n1\nexit code 0", false));
+    let _ = std::fs::remove_dir_all(&base);
 }

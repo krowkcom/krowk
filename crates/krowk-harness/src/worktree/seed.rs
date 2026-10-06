@@ -414,7 +414,7 @@ mod tests {
 
     /// `prepare` with the default config.
     fn prepared(w: &Worktree) -> Vec<String> {
-        prepare(&Prepare { worktree: w, config: &WorktreesConfig::default() })
+        prepare(&Prepare::new(w, &WorktreesConfig::default()))
     }
 
     /// cargo, with no target directory but the crate's own and nothing

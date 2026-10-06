@@ -230,6 +230,9 @@ pub struct ToolEnv<'a> {
     /// Where a call's live output goes, and the result item it belongs to:
     /// bash says there that it waits for a build slot.
     pub live: Option<(&'a crate::engine::Events, &'a str)>,
+    /// What bash's commands get in their environment beyond krowk's own,
+    /// passed into the sandbox too: a krowk worktree's `KROWK_PORT_BASE`.
+    pub env: &'a [(String, String)],
 }
 
 /// Parses a call's input, or answers why it cannot.
@@ -1038,7 +1041,7 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     // before it starts, held until it is done — dropped after the group
     // is killed, since it was taken first.
     let builds = env.builds.filter(|b| b.pool.is_some() && crate::builds::heavy(&i.command));
-    let jobs: Vec<(String, String)> = builds.and_then(|b| b.jobs.clone()).map(|n| ("CARGO_BUILD_JOBS".to_string(), n)).into_iter().collect();
+    let jobs: Vec<(String, String)> = env.env.iter().cloned().chain(builds.and_then(|b| b.jobs.clone()).map(|n| ("CARGO_BUILD_JOBS".to_string(), n))).collect();
     let (_slot, slot_note) = match builds.and_then(|b| b.pool.as_ref()) {
         Some(pool) => build_slot(env, pool).await,
         None => (None, None),
@@ -1284,7 +1287,7 @@ pub(crate) mod tests {
         symlink(&outside, cwd.join("dir-link")).unwrap();
         symlink(outside.join("not-yet.txt"), cwd.join("dangling")).unwrap();
         symlink(cwd.join("a.txt"), cwd.join("inside-link")).unwrap();
-        let env = ToolEnv { cwd: &cwd, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &cwd, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[] };
         let refused = |r: (String, bool)| r.1 && r.0.contains("outside the working directory") && r.0.contains("bypassPermissions");
         let abs = outside.join("new.txt").display().to_string();
         for path in ["../outside/new.txt", abs.as_str(), "dir-link/new.txt", "dangling", "file-link", "sub/../../outside/x", "new/../../x"] {
@@ -1356,7 +1359,7 @@ pub(crate) mod tests {
         let marker = d.join("fsmonitor-ran");
         let config = std::fs::read_to_string(d.join(".git/config")).unwrap();
         std::fs::write(d.join(".git/config"), format!("{config}[core]\n\tfsmonitor = \"touch '{}'; false\"\n", marker.display())).unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[] };
         assert_eq!(run(GREP, &json!({"pattern": "needle"}), &env).await, ("a.txt:1:needle\n".into(), false));
         assert_eq!(run(GLOB, &json!({"pattern": "*.txt"}), &env).await, ("a.txt\n".into(), false));
         assert!(!marker.exists(), "the repository's fsmonitor ran");
@@ -1406,7 +1409,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn r_back_3_codex_config_and_the_instances_home_are_kept_like_git() {
         let d = dir("codex-guard");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[] };
         let fenced = |r: (String, bool), dir: &str| r.1 && r.0.contains(&format!("inside a {dir} directory"));
         assert!(fenced(run(WRITE, &json!({"path": ".codex/config.toml", "content": "x"}), &env).await, ".codex"));
         assert!(fenced(run(WRITE, &json!({"path": "sub/.Codex/rules/x.rules", "content": "x"}), &env).await, ".codex"), "any component, any case");
@@ -1442,7 +1445,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn r_sub_5_krowk_agent_definitions_are_kept_like_git() {
         let d = dir("krowk-guard");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         for path in [".krowk/agents/evil.md", ".KROWK/agents/evil.md", "sub/.krowk./agents/x.md", ".claude/agents/evil.md"] {
             let (out, refused) = run(WRITE, &json!({"path": path, "content": "---\nname: evil\n---\n"}), &env).await;
             assert!(refused && out.contains("inside a ."), "{path}: {out}");
@@ -1461,7 +1464,7 @@ pub(crate) mod tests {
         let f = d.join("locked.txt");
         std::fs::write(&f, "keep\n").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         for (tool, input) in [
             (WRITE, json!({"path": "locked.txt", "content": "gone"})),
             (STR_REPLACE, json!({"path": "locked.txt", "old_str": "keep", "new_str": "gone"})),
@@ -1484,7 +1487,7 @@ pub(crate) mod tests {
     async fn only_the_turns_edit_tool_runs() {
         let d = dir("edit-gate");
         std::fs::write(d.join("a.txt"), "x\n").unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[] };
         let (out, err) = run(STR_REPLACE, &json!({"path": "a.txt", "old_str": "x", "new_str": "y"}), &env).await;
         assert!(err && out.contains("edit files with apply_patch"), "{out}");
         assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "x\n");
@@ -1504,7 +1507,7 @@ pub(crate) mod tests {
         let d = dir("read");
         std::fs::write(d.join("a.txt"), "one\ntwo\nthree\n").unwrap();
         std::fs::write(d.join("bin"), [0u8, 1, 2]).unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         let (out, err) = run(READ, &json!({"path": "a.txt"}), &env).await;
         assert!(!err);
         assert_eq!(out, "     1\tone\n     2\ttwo\n     3\tthree\n");
@@ -1530,7 +1533,7 @@ pub(crate) mod tests {
         assert!(made.success());
         // Bypassed, so the devices outside the working directory are reached
         // at all: what is refused here is what they are, not where.
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         for path in [fifo.display().to_string(), "/dev/zero".into(), "/dev/stdin".into(), d.display().to_string()] {
             let r = tokio::time::timeout(Duration::from_secs(2), run(READ, &json!({ "path": path }), &env)).await.expect("read never blocks");
             assert!(r.1 && r.0.contains("not a regular file"), "{path}: {r:?}");
@@ -1545,9 +1548,9 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn bash_runs_only_when_permissions_are_bypassed_and_is_bounded() {
         let d = dir("bash");
-        let refused = run(BASH, &json!({"command": "echo hi"}), &ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None }).await;
+        let refused = run(BASH, &json!({"command": "echo hi"}), &ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] }).await;
         assert!(refused.1 && refused.0.contains("bypassPermissions"), "{refused:?}");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         assert_eq!(run(BASH, &json!({"command": "echo hi; echo oops >&2"}), &env).await, ("hi\noops\nexit code 0".into(), false));
         // One pipe: stdout and stderr arrive in the order they were written.
         let interleaved = "for i in 1 2 3 4 5 6 7 8; do echo out$i; echo err$i >&2; done";
@@ -1599,7 +1602,7 @@ pub(crate) mod tests {
         std::fs::write(d.join("Makefile"), "slow:\n\tsleep 2\n").unwrap();
         let b = builds(&d, 1);
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None, env: &[] };
         let (first, second) = (ToolEnv { live: Some((&tx, "first")), ..env }, ToolEnv { live: Some((&tx, "second")), ..env });
         let started = std::time::Instant::now();
         let timed = async |env: &ToolEnv<'_>, command: &str| (run(BASH, &json!({ "command": command }), env).await, started.elapsed());
@@ -1639,7 +1642,7 @@ pub(crate) mod tests {
         let d = dir("build-slot-interrupt");
         let b = builds(&d, 1);
         let held = b.pool.as_ref().unwrap().try_take().unwrap().expect("free");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None, env: &[] };
         let input = json!({"command": "touch ran && make --version"});
         let call = run(BASH, &input, &env);
         // Dropped mid-wait, as the loop drops a call when the turn is interrupted.
@@ -1654,7 +1657,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn an_interrupted_bash_call_kills_what_the_command_started() {
         let d = dir("bash-cancel");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         let input = json!({"command": "sleep 30 & echo $! > grandchild; wait"});
         let call = run(BASH, &input, &env);
         // Dropped mid-run, as the loop drops a call when the turn is interrupted.

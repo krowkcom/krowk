@@ -360,6 +360,9 @@ struct TurnPlan {
     permission_mode: PermissionMode,
     effort: Option<Effort>,
     cwd: PathBuf,
+    /// What the turn's commands get in their environment beyond krowk's
+    /// own: a worktree's `KROWK_PORT_BASE`.
+    env: Vec<(String, String)>,
     backend_session: Option<String>,
     budget: Budget,
     evidence: Option<Evidence>,
@@ -879,6 +882,7 @@ impl Shared {
             permission_mode,
             effort,
             cwd,
+            env: Vec::new(),
             backend_session,
             budget,
             evidence,
@@ -906,7 +910,7 @@ impl Shared {
     /// parent's, or a worktree of its own (WT3). Its lines go to the
     /// parent's client; its result comes back here, for the tool call.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn subagent(self: &Arc<Self>, spawn: &Spawn, call_id: &str, description: &str, prompt: &str, model: ModelRef, run: AgentRun, (child, cwd): (&str, &std::path::Path), events: &Events) -> Result<RunResult, EngineError> {
+    pub(crate) async fn subagent(self: &Arc<Self>, spawn: &Spawn, call_id: &str, description: &str, prompt: &str, model: ModelRef, run: AgentRun, (child, cwd, env): (&str, &std::path::Path, Vec<(String, String)>), events: &Events) -> Result<RunResult, EngineError> {
         let instance = self.registry().get(&model.instance).map_err(|e| EngineError::new("no_instance", e))?.clone();
         // A vendor runs its own agents, with its own tools: it could not be
         // held to the allowlist, so a subagent is always krowk's own loop.
@@ -943,6 +947,7 @@ impl Shared {
             permission_mode: p.permission_mode,
             effort: instance.effort,
             cwd: cwd.to_path_buf(),
+            env,
             backend_session: None,
             budget,
             evidence: p.evidence.as_ref().map(|e| e.for_subagent(events.clone(), producer)),
@@ -1059,6 +1064,7 @@ impl Shared {
             model: model.clone(),
             history,
             cwd: plan.cwd.clone(),
+            env: plan.env.clone(),
             session_dir,
             permission_mode: plan.permission_mode,
             preset: plan.preset,

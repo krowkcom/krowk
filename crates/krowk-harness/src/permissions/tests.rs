@@ -765,3 +765,23 @@ fn wt3_the_repositorys_rules_hold_in_a_worktree_where_they_hold_in_the_checkout(
     assert_eq!(verdict(&w, edit(top.join("notes/a.md"))), 'Y', "notes/ is under sub/, as in the checkout");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Worktrees WT8: a repository's `worktrees` is read from its
+/// `.krowk/config.json` trusted or not, its `setup` is a reason to ask for
+/// trust, and a bad one stops the turn with the file's name.
+#[test]
+fn wt8_a_repositorys_worktree_setup_is_read_and_asks_for_trust() {
+    let d = repo("wt8-setup");
+    let untrusted = Policy::load(&Config::default(), &d).unwrap();
+    assert!(untrusted.loaded.worktrees.is_none() && !untrusted.loaded.widens);
+    std::fs::create_dir_all(d.join(".krowk")).unwrap();
+    std::fs::write(d.join(".krowk/config.json"), json!({"worktrees": {"setup": "npm ci", "setupTimeout": 60}}).to_string()).unwrap();
+    let untrusted = Policy::load(&Config::default(), &d.join("src")).unwrap();
+    assert_eq!(untrusted.loaded.worktrees.as_ref().and_then(|w| w.setup()), Some("npm ci"));
+    assert!(untrusted.loaded.widens && !untrusted.loaded.trusted, "a command the repository names is asked about");
+    let trusted = Policy::load(&Config { trusted: Some(Arc::new(|_: &Path| true)), ..Config::default() }, &d).unwrap();
+    assert!(trusted.loaded.trusted && trusted.loaded.worktrees.is_some());
+    std::fs::write(d.join(".krowk/config.json"), json!({"worktrees": {"setupTimeout": 0}}).to_string()).unwrap();
+    let e = Policy::load(&Config::default(), &d).unwrap_err();
+    assert!(e.contains(".krowk/config.json") && e.contains("setupTimeout must be at least 1"), "{e}");
+}
