@@ -294,7 +294,7 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
             // Response indexes continue from the history's, so a replayed
             // turn and this one never share an index.
             let first_response = req.history.iter().filter_map(|h| h.response).max().map_or(0, |m| m + 1);
-            let tool_env = tools::ToolEnv { cwd: &ctx.cwd, permission_mode: ctx.permission_mode, edit: ctx.preset.edit, evidence: ctx.evidence.as_ref().map(|e| (e, &events)) };
+            let tool_env = tools::ToolEnv { cwd: &ctx.cwd, permission_mode: ctx.permission_mode, edit: ctx.preset.edit, evidence: ctx.evidence.as_ref().map(|e| (e, &events)), builds: Some(&ctx.builds), live: None };
             for (made, response) in (first_response..).take(MAX_STEPS).enumerate() {
                 if *ctx.cancel.borrow() {
                     return Ok(TurnEnd::Interrupted);
@@ -398,7 +398,7 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
                         // an interrupt: a subagent hears the parent's and
                         // stops itself, so its log ends with its turn.
                         let runs: Vec<BoxFuture<'_, (String, bool)>> =
-                            batch.iter().map(|(call_id, name, input)| Box::pin(call_tool(&ctx, &hooks, &tool_env, &events, call_id, name, input)) as BoxFuture<'_, (String, bool)>).collect();
+                            batch.iter().zip(&ids).map(|((call_id, name, input), item_id)| Box::pin(call_tool(&ctx, &hooks, &tool_env, &events, (call_id, item_id), name, input)) as BoxFuture<'_, (String, bool)>).collect();
                         let out = join_all(runs).await;
                         interrupted = *ctx.cancel.borrow();
                         out
@@ -406,7 +406,7 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
                         let (call_id, name, input) = &batch[0];
                         let mut cancel = ctx.cancel.clone();
                         let r = tokio::select! {
-                            r = call_tool(&ctx, &hooks, &tool_env, &events, call_id, name, input) => r,
+                            r = call_tool(&ctx, &hooks, &tool_env, &events, (call_id, &ids[0]), name, input) => r,
                             _ = crate::engine::cancelled(&mut cancel) => ("interrupted before it finished".to_string(), true),
                         };
                         // An interrupt that landed while the call waited for
@@ -627,7 +627,7 @@ struct SessionCall {
 /// file tool or bash — its PreToolUse hooks, its permission, the run, its
 /// PostToolUse hooks. A subagent's calls come here like any other's, under
 /// the parent's mode and rules.
-async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'_>, events: &Events, call_id: &str, name: &str, input: &serde_json::Value) -> (String, bool) {
+async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'_>, events: &Events, (call_id, item_id): (&str, &str), name: &str, input: &serde_json::Value) -> (String, bool) {
     if !offers(ctx, name) {
         return (format!("there is no tool named {name:?} in this session — use the tools it offers"), true);
     }
@@ -677,7 +677,8 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
         None if name == crate::mcp::SEARCH && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.search(input, &|s, t| mcp_denied(ctx, s, t), &ctx.cancel).await,
         None if name == crate::mcp::CALL && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.call(input, &|s, t| mcp_denied(ctx, s, t), &ctx.cancel).await,
         None if skill => crate::compat::skills::load(&ctx.compat.skills, input),
-        None => tools::execute(name, input, env, ctx.gate.scope(opens)).await,
+        // Its live output — a wait for a build slot — goes on its result.
+        None => tools::execute(name, input, &tools::ToolEnv { live: Some((events, item_id)), ..*env }, ctx.gate.scope(opens)).await,
     };
     let post = hooks.run(hooks::Event::PostToolUse, Some(&claude), json!({"tool_name": claude, "tool_input": tool_input, "tool_response": {"output": output, "isError": is_error}})).await;
     if let Some(why) = post.block {

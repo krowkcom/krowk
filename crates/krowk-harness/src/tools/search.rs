@@ -529,7 +529,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn r_tool_1_grep_and_glob_respect_gitignore_and_skip_binaries() {
         let Some(d) = git_repo("search") else { return };
-        let e = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None };
+        let e = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
         let (out, err) = run(GREP, &json!({"pattern": "TODO"}), &e).await;
         assert!(!err, "{out}");
         assert_eq!(out, "src/main.rs:2:    // TODO: say hello\n", "ignored files (root and nested .gitignore) and binaries are not searched");
@@ -568,7 +568,7 @@ mod tests {
         std::fs::write(d.join(".git/HEAD"), "match\n").unwrap();
         std::fs::write(d.join("many.txt"), "match\n".repeat(500)).unwrap();
         std::fs::write(d.join("wide.txt"), format!("match{}\n", "x".repeat(5000))).unwrap();
-        let e = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None };
+        let e = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
         // Not a work tree: an empty .git directory is not a repository.
         let (out, err) = run(GREP, &json!({"pattern": "^match"}), &e).await;
         assert!(!err && !out.contains(".git/HEAD"), "{out}");

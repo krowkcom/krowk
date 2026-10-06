@@ -29,6 +29,10 @@
       "description": "How subagents run: how many at once, and on which model.",
       "$ref": "#/$defs/SubagentsConfig"
     },
+    "builds": {
+      "description": "How many build and test commands run at once, machine-wide.",
+      "$ref": "#/$defs/BuildsConfig"
+    },
     "rollover": {
       "description": "What happens when an instance hits its rate or usage limit\n(R-INST-7, R-INST-8): `offer` (the default) asks the person whether\nto continue on the next instance; `auto` moves there by itself, says\nso in every client and logs it. Stacking one plan's limits across\naccounts is the person's own responsibility: Anthropic's plan limits\nassume ordinary, individual usage.",
       "anyOf": [
@@ -531,6 +535,22 @@
             "string",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "BuildsConfig": {
+      "description": "`builds` in config.json.",
+      "type": "object",
+      "properties": {
+        "slots": {
+          "description": "Build and test commands that run at once across every krowk on the\nmachine; a quarter of the cores (at least one) when absent.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
         }
       },
       "additionalProperties": false

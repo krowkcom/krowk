@@ -54,15 +54,8 @@ const SPAWN_WAIT: Duration = Duration::from_secs(5);
 /// when it is a symlink or another user's — the same rules krowk's home is
 /// held to (`krowk_api::home::own`).
 pub fn dir(env: &dyn Fn(&str) -> String) -> Result<PathBuf, String> {
-    let runtime = env("XDG_RUNTIME_DIR");
-    let dir = if !runtime.is_empty() && Path::new(&runtime).is_absolute() {
-        PathBuf::from(runtime).join("krowk")
-    } else {
-        let tmp = env("TMPDIR");
-        let base = if !tmp.is_empty() && Path::new(&tmp).is_absolute() { PathBuf::from(tmp) } else { PathBuf::from("/tmp") };
-        // SAFETY: getuid has no preconditions and cannot fail.
-        base.join(format!("krowk-{}", unsafe { libc::getuid() }))
-    };
+    // The runtime directory the build slots share (`crate::slots`).
+    let dir = crate::slots::runtime_dir(env);
     krowk_api::home::make(&dir)?;
     let home = krowk_api::home::resolve(env).map_err(|e| e.fix())?;
     let dir = dir.join(home_key(&home));

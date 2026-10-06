@@ -687,10 +687,14 @@ fn probe() -> Result<PathBuf, String> {
 }
 
 /// The program and arguments that run `bash -c <command>` inside `plan`,
-/// or why it cannot run at all.
-pub fn bash(plan: &Plan, command: &str) -> Result<(PathBuf, Vec<String>), String> {
+/// with `env` set beside the allowlist (`CARGO_BUILD_JOBS` for a build), or
+/// why it cannot run at all.
+pub fn bash(plan: &Plan, command: &str, env: &[(String, String)]) -> Result<(PathBuf, Vec<String>), String> {
     let bwrap = enforcer()?;
     let mut args = plan.bwrap_args();
+    for (k, v) in env {
+        args.extend(["--setenv".into(), k.clone(), v.clone()]);
+    }
     args.extend(["--".into(), "bash".into(), "-c".into(), command.into()]);
     Ok((bwrap.to_path_buf(), args))
 }

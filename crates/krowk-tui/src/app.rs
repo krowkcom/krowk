@@ -1790,6 +1790,13 @@ impl App {
                     live.tail.drain(..=end);
                 }
             }
+            // What a tool says while it runs — bash waiting for a build
+            // slot — as its last line.
+            LiveKind::Result => {
+                live.tail.push_str(text);
+                let last = live.tail.trim_end().rsplit('\n').next().unwrap_or_default().to_string();
+                live.tail = last;
+            }
             _ => {}
         }
         self.dirty = true;
@@ -2165,7 +2172,13 @@ impl App {
                     tool_gap(rows, stacks);
                     rows.push(Line::from(vec![Span::styled(look::TOOL, look::running()), Span::styled(clip(name, width.saturating_sub(2)), dim())]));
                 }
-                LiveKind::Result => {}
+                LiveKind::Result => {
+                    let tail = clean(live.tail.trim());
+                    if !tail.is_empty() {
+                        tool_gap(rows, stacks);
+                        rows.push(Line::from(Span::styled(clip(&format!("  {tail}"), width), dim())));
+                    }
+                }
             }
         }
     }
@@ -3759,6 +3772,17 @@ mod tests {
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "ok\nall done".into() } }));
         assert_eq!(text(&a.take_pending()), ["ok", "all done"]);
         assert_eq!(a.answer, "ok\nall done", "what Ctrl-Y copies");
+    }
+
+    #[test]
+    fn a_tool_waiting_for_a_build_slot_says_so_while_it_runs() {
+        let mut a = app();
+        a.start_turn(Instant::now());
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "r".into(), item: ItemKind::ToolResult { call_id: "c".into() } }));
+        a.on_line(&live(LiveEvent::ItemDelta { session_id: "s".into(), turn_id: "t".into(), item_id: "r".into(), delta: Delta::Text { text: "waiting for a build slot (2 in use)\n".into() } }));
+        let (rows, _) = a.view(Instant::now());
+        assert!(text(&rows).iter().any(|l| l.trim() == "waiting for a build slot (2 in use)"), "{:?}", text(&rows));
+        assert!(a.take_pending().is_empty(), "nothing of it in scrollback");
     }
 
     #[test]
