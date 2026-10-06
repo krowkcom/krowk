@@ -476,6 +476,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         unjoined: None,
         listening,
         candidates,
+        unreached: Default::default(),
         dws: None,
         dheard: Instant::now(),
         dretry: Instant::now(),
@@ -586,6 +587,8 @@ struct Hosting {
     unjoined: Option<String>,
     listening: Option<super::direct::Listening>,
     candidates: Vec<super::direct::Candidate>,
+    /// Viewers offered the direct addresses that never reached them.
+    unreached: super::direct::Unreached,
     dws: Option<super::Ws>,
     dheard: Instant,
     dretry: Instant,
@@ -670,6 +673,9 @@ impl Hosting {
             self.dpresent = None;
         }
         if self.link.viewers().is_empty() { self.alone_since.get_or_insert_with(Instant::now); } else { self.alone_since = None; }
+        for d in self.unreached.due(Instant::now()) {
+            eprintln!("{}", super::direct::unreached_line(&self.o.session, &d, &self.candidates));
+        }
         self.deny_late().await;
         Ok(())
     }
@@ -811,6 +817,13 @@ impl Hosting {
                 if v["type"] == "viewer" && let Some(l) = v["link"].as_u64() {
                     if v["event"] == "left" { self.link.forget(l); }
                     if v["event"] == "joined" && let Some((here, _)) = if direct { self.dpresent.as_mut() } else { self.present.as_mut() } { here.insert(l); }
+                    if let Some(d) = v["device"].as_str() {
+                        match (v["event"].as_str(), direct) {
+                            (Some("joined"), false) if !self.candidates.is_empty() => self.unreached.on_relay(d, Instant::now()),
+                            (Some("joined"), true) | (Some("left"), false) => self.unreached.settled(d),
+                            _ => {}
+                        }
+                    }
                 }
             }
             // The direct listener's acks free nothing: what is kept

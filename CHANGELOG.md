@@ -133,6 +133,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **A host says why a viewer stays on the relay.** When a viewer offered
+  the direct path never reaches it — a firewall on the host, or a tailnet
+  access policy that doesn't allow the port, drops the connection before
+  krowk sees it — `krowk sync host` now says so once per device, ten seconds
+  after the viewer joined:
+  `krowk: session …: device 756da7b4 stays on the relay — nothing it sent
+  reached this machine's direct address (100.64.0.1:51915); if it is on this
+  tailnet, a firewall here or the tailnet's access policy is refusing that
+  port …`. The session goes on by the relay, as before.
 - **Uploads are now `krowk artifacts`, matching the API and the JSON.**
   `krowk artifacts create | list | show | attach | delete | claim` is the
   full set, named as `/v1/artifacts` and `data.artifacts` already were.

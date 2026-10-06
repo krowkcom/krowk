@@ -16,7 +16,9 @@
 use super::tailscale::{self, SameUser};
 use crate::relay::{self, Limits, Roster};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, TcpListener};
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 /// Where a direct listener numbers its links from.
@@ -147,9 +149,84 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
     Ok(Listening { dial, candidates, stop })
 }
 
+/// How long a viewer the host offered direct addresses may stay on the
+/// relay before the host says none of them reached it: the viewer races
+/// them as soon as it is welcomed, each given `viewer::PROBE`, so past this
+/// its race is long over.
+pub const UNREACHED_AFTER: Duration = Duration::from_secs(10);
+
+/// The viewers the host offered direct addresses that have not reached
+/// them. A firewall on the host, or a tailnet access policy that does not
+/// allow the port, drops a viewer's connection before the listener sees
+/// it, so the host has nothing to refuse and nothing to log; what it can
+/// see is a viewer joined on the relay that never joins here. It says so
+/// once per device, so a person at the host learns why the session stays
+/// on the relay.
+#[derive(Debug, Default)]
+pub struct Unreached {
+    since: HashMap<String, Instant>,
+    told: HashSet<String>,
+}
+
+impl Unreached {
+    /// `device` joined on the relay, offered the direct addresses.
+    pub fn on_relay(&mut self, device: &str, now: Instant) {
+        if !self.told.contains(device) {
+            self.since.entry(device.to_string()).or_insert(now);
+        }
+    }
+
+    /// `device` joined on the direct path, or left: nothing to say of it.
+    pub fn settled(&mut self, device: &str) {
+        self.since.remove(device);
+    }
+
+    /// The devices that have stayed on the relay past `UNREACHED_AFTER`,
+    /// each answered once.
+    pub fn due(&mut self, now: Instant) -> Vec<String> {
+        let mut due: Vec<String> = self.since.iter().filter(|(_, t)| now.duration_since(**t) >= UNREACHED_AFTER).map(|(d, _)| d.clone()).collect();
+        due.sort();
+        for d in &due {
+            self.since.remove(d);
+            self.told.insert(d.clone());
+        }
+        due
+    }
+}
+
+/// What the host says of a viewer `device` that never reached `candidates`.
+pub fn unreached_line(session: &str, device: &str, candidates: &[Candidate]) -> String {
+    let at = candidates.iter().map(|c| c.url.trim_start_matches("ws://")).collect::<Vec<_>>().join(", ");
+    let short = &device[..device.len().min(8)];
+    format!(
+        "krowk: session {session}: device {short} stays on the relay — nothing it sent reached this machine's direct address ({at}); if it is on this tailnet, a firewall here or the tailnet's access policy is refusing that port (on macOS, allow incoming connections for krowk under System Settings → Network → Firewall → Options)"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A viewer that stays on the relay past the race is named once; one
+    /// that reaches the direct path, or leaves, is not.
+    #[test]
+    fn r_net_3_a_viewer_that_never_reaches_the_direct_path_is_named_once() {
+        let t0 = Instant::now();
+        let mut u = Unreached::default();
+        u.on_relay("aaaa", t0);
+        u.on_relay("bbbb", t0);
+        u.on_relay("cccc", t0);
+        u.settled("bbbb");
+        assert!(u.due(t0 + UNREACHED_AFTER - Duration::from_millis(1)).is_empty(), "not before the race is over");
+        u.on_relay("aaaa", t0 + Duration::from_secs(5));
+        assert_eq!(u.due(t0 + UNREACHED_AFTER), ["aaaa", "cccc"], "from when it first joined, not again");
+        u.on_relay("aaaa", t0 + UNREACHED_AFTER);
+        assert!(u.due(t0 + UNREACHED_AFTER * 3).is_empty(), "each device once");
+
+        let c = [Candidate { url: "ws://100.64.0.1:51915".into(), via: "tailscale".into() }];
+        let line = unreached_line("s1", "0123456789abcdef", &c);
+        assert!(line.contains("device 01234567 ") && line.contains("100.64.0.1:51915") && line.contains("Firewall"), "{line}");
+    }
 
     /// R-NET-3: the same-user check holds a far end to this node's person,
     /// and is refused on a tagged node, which `whois` names as the
