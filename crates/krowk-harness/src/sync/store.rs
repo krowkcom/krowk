@@ -72,6 +72,21 @@ pub struct Index {
     pub updated_ms: u64,
     pub head: Option<Head>,
     pub checkpoint: Option<Mark>,
+    /// The machine that last took the session up, which `krowk hosts`
+    /// lists it under; absent from an index written before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostedOn>,
+}
+
+/// A host as it names itself in the sealed index: its device, and its
+/// tailnet node when Tailscale was up as it took the session up. Sealed,
+/// so neither the registry nor the relay learns an address from it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedOn {
+    pub device: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailnet: Option<super::tailscale::Tailnet>,
 }
 
 /// A checkpoint: the compacted context (every event logged to `log_offset`,
