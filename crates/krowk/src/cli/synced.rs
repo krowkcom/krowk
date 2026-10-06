@@ -190,22 +190,46 @@ fn kept_keys(text: &str, registry: &str, now_ms: i64) -> Option<krowk_harness::r
     krowk_harness::relay::Roster::parse(text).ok()
 }
 
-/// `krowk hosts`: the tailnet's machines tagged `tag:krowk-host`, from the
-/// local tailscaled, with no pairing step (R-NET-4).
+/// `krowk hosts` (R-NET-4): the machines of yours that host synced
+/// sessions, from the registry's sessions and your device list, each
+/// marked hosting when it holds one's lease now and direct when the
+/// tailnet reaches it — no tag, and no step in the Tailscale admin
+/// console. Tailscale not answering here leaves the list whole, with no
+/// machine marked direct.
 pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
     use krowk_harness::sync::tailscale;
-    let s = tailscale::status(&tailscale::socket(ctx.io.env)).map_err(|e| fail("tailscale_unavailable", e))?;
-    let hosts = s.hosts();
+    let k = keys(ctx)?;
+    let api = signed(ctx, &k, "krowk hosts")?;
+    let (listed, _) = viewer::list(&api, &k.user, &k.chain).map_err(|e| fail("sync_failed", e))?;
+    let status = tailscale::status(&tailscale::socket(ctx.io.env)).ok().filter(|s| s.running());
+    let hosts = krowk_harness::sync::hosts::hosts(&listed, &k.chain, &k.device.to_string(), status.as_ref());
     if ctx.format == crate::output::Format::Json {
-        let rows: Vec<_> = hosts.iter().map(|h| json!({"name": h.host_name, "dnsName": h.dns_name.trim_end_matches('.'), "addresses": h.tailscale_ips, "online": h.online})).collect();
-        return ctx.emit(&json!({"hosts": rows}).to_string());
+        let rows: Vec<_> = hosts
+            .iter()
+            .map(|h| {
+                let (dns, ips) = h.tailnet.as_ref().map_or((String::new(), Vec::new()), |t| (t.dns_name.clone(), t.ips.clone()));
+                // `online` keeps its meaning from before: on the tailnet,
+                // which this machine is whenever its Tailscale is up.
+                let online = if h.this_machine { status.is_some() } else { h.direct() };
+                json!({"device": h.device, "name": h.name, "os": h.os, "thisMachine": h.this_machine, "hosting": h.hosting, "online": online, "direct": h.direct(), "sessions": h.sessions, "dnsName": dns, "addresses": ips})
+            })
+            .collect();
+        return ctx.emit(&json!({"hosts": rows, "tailscale": status.is_some()}).to_string());
     }
     for h in &hosts {
-        let ip = h.tailscale_ips.first().map(|i| i.to_string()).unwrap_or_default();
-        let _ = writeln!(ctx.io.stdout, "{}  {}  {}  {}", super::sync::printable(&h.host_name), super::sync::printable(h.dns_name.trim_end_matches('.')), ip, if h.online { "online" } else { "offline" });
+        let reach = match (&h.tailnet, &h.peer) {
+            _ if h.this_machine => "this machine",
+            _ if status.is_none() => "Tailscale is not running here",
+            (_, Some(p)) if p.online => "reachable directly",
+            (_, Some(_)) => "offline on the tailnet",
+            (Some(_), None) => "not on this tailnet",
+            (None, None) => "no tailnet address known",
+        };
+        let n = if h.sessions == 1 { "1 session".to_string() } else { format!("{} sessions", h.sessions) };
+        let _ = writeln!(ctx.io.stdout, "{}  {}  {}  {n}", super::sync::printable(&h.name), if h.hosting { "hosting" } else { "not hosting" }, reach);
     }
     if hosts.is_empty() {
-        let _ = writeln!(ctx.io.stdout, "no machine on this tailnet is tagged {}", tailscale::HOST_TAG);
+        let _ = writeln!(ctx.io.stdout, "no machine of yours hosts a synced session yet — `krowk sync host <session>` on one hosts it");
     }
     Ok(())
 }
@@ -281,6 +305,8 @@ fn host_once(ctx: &mut Ctx, session: &str) -> Result<(), Error> {
         ttl: host::LEASE_TTL,
         keep: host::KEEP,
         direct,
+        // Kept in the session's sealed index, for `krowk hosts`.
+        tailnet: krowk_harness::sync::tailscale::status(&krowk_harness::sync::tailscale::socket(ctx.io.env)).ok().and_then(|s| s.tailnet()),
     };
     krowk_harness::sync::run_host(o, ctx.io.env, &cwd, super::VERSION, &spawn).map_err(|(code, message)| fail(&code, message))
 }

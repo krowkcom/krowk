@@ -189,12 +189,17 @@ Claude Code hook blocks only on exit 2, so block on a trip alone:
 
 #[cfg(all(feature = "harness", unix))]
 const HOSTS_ABOUT: &str = "\
-Read from tailscaled's LocalAPI, which the direct path asks too. On Linux that
-is /var/run/tailscale/tailscaled.sock. On macOS krowk tries the open-source
-tailscaled's socket (/var/run/tailscaled.socket or the Linux path), then the
-Tailscale app's LocalAPI on 127.0.0.1, whose port and token it finds in the
-app's sameuserproof file: the App Store app's group container, or
-/Library/Tailscale for the standalone app. To name one yourself:
+Read from the registry's synced sessions with this machine's sync keys:
+hosting when it holds one now; reachable directly when this machine's
+Tailscale finds it online. No tag and no admin console step: a host names
+its tailnet node, sealed, in each session it hosts.
+
+Tailscale is read from tailscaled's LocalAPI, which the direct path asks
+too. On Linux that is /var/run/tailscale/tailscaled.sock. On macOS krowk tries
+the open-source tailscaled's socket (/var/run/tailscaled.socket or the Linux
+path), then the Tailscale app's LocalAPI on 127.0.0.1, whose port and token it
+finds in the app's sameuserproof file: the App Store app's group container,
+or /Library/Tailscale for the standalone app. To name one yourself:
 
   KROWK_TAILSCALE_SOCKET=/path/to/tailscaled.sock
   KROWK_TAILSCALE_LOCALAPI=http://127.0.0.1:<port>
@@ -493,7 +498,7 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(relay_command());
     #[cfg(all(feature = "harness", unix))]
-    c.commands.push(cmd("hosts", "krowk hosts", "The tailnet's machines tagged tag:krowk-host, from Tailscale"));
+    c.commands.push(cmd("hosts", "krowk hosts", "Your machines that host synced sessions"));
     #[cfg(feature = "harness")]
     c.commands.push(sync_command());
     #[cfg(feature = "harness")]
@@ -951,7 +956,7 @@ pub const ALL_ONLY: &[&str] = &[
     "help",
     #[cfg(all(feature = "harness", unix))]
     "relay",
-    // Only for a tailnet whose machines are tagged for krowk.
+    // Only for a person with more than one machine syncing.
     #[cfg(all(feature = "harness", unix))]
     "hosts",
 ];

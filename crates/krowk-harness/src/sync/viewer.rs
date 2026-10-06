@@ -35,6 +35,8 @@ pub struct Listed {
     pub id: String,
     pub index: store::Index,
     pub holder: Option<String>,
+    /// The device whose signature the session's record carries.
+    pub signer: String,
 }
 
 /// Every synced session this device can open, most recently written first.
@@ -51,7 +53,7 @@ pub fn list(api: &Client, keys: &UserKeys, chain: &Chain) -> Result<(Vec<Listed>
             // A listing leaves the index out; `show` has it.
             let full = api.show_sync_session(&s.id).map_err(|e| e.to_string())?;
             match store::open_session_key(&full, &s.id, keys, chain, Signer::EverHeld).and_then(|k| store::open_index(&k, &s.id, &full.sealed_index)) {
-                Ok(index) => out.push(Listed { id: s.id.clone(), index, holder: full.lease.map(|l| l.device) }),
+                Ok(index) => out.push(Listed { id: s.id.clone(), index, holder: full.lease.map(|l| l.device), signer: full.signer.clone() }),
                 Err(_) => unreadable += 1,
             }
         }

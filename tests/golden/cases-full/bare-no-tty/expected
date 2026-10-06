@@ -1133,7 +1133,7 @@ stdout:
     {
       "name": "hosts",
       "usage": "krowk hosts",
-      "summary": "The tailnet's machines tagged tag:krowk-host, from Tailscale"
+      "summary": "Your machines that host synced sessions"
     },
     {
       "name": "sync",
@@ -2569,7 +2569,7 @@ stdout:
     {
       "name": "hosts",
       "usage": "krowk hosts",
-      "summary": "The tailnet's machines tagged tag:krowk-host, from Tailscale"
+      "summary": "Your machines that host synced sessions"
     },
     {
       "name": "sync",
@@ -4019,7 +4019,7 @@ stdout:
     {
       "name": "hosts",
       "usage": "krowk hosts",
-      "summary": "The tailnet's machines tagged tag:krowk-host, from Tailscale"
+      "summary": "Your machines that host synced sessions"
     },
     {
       "name": "sync",
@@ -5469,7 +5469,7 @@ tty:
     {
       "name": "hosts",
       "usage": "krowk hosts",
-      "summary": "The tailnet's machines tagged tag:krowk-host, from Tailscale"
+      "summary": "Your machines that host synced sessions"
     },
     {
       "name": "sync",

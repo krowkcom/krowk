@@ -111,7 +111,7 @@ OTHER
   host stop         Stop the daemon, once no turn runs in it
   host enable       Run the daemon as a systemd or launchd user service
   host disable      Stop the service and remove it
-  hosts             The tailnet's machines tagged tag:krowk-host, from Tailscale
+  hosts             Your machines that host synced sessions
   relay serve       Carry sealed sessions between their host and viewers
   config show       The effective configuration, and which layer set each value
   config set        Write one value into the repo config, or the global one
