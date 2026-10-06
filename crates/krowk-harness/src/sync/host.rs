@@ -673,8 +673,12 @@ impl Hosting {
             self.dpresent = None;
         }
         if self.link.viewers().is_empty() { self.alone_since.get_or_insert_with(Instant::now); } else { self.alone_since = None; }
+        // However the host's link to its listener went, nothing is said
+        // until it is back (`join_direct`).
+        if self.dws.is_none() { self.unreached.direct_down(); }
+        let same_user = self.o.direct.as_ref().is_some_and(|c| c.same_user);
         for d in self.unreached.due(Instant::now()) {
-            eprintln!("{}", super::direct::unreached_line(&self.o.session, &d, &self.candidates));
+            eprintln!("{}", super::direct::unreached_line(&self.o.session, &d, &self.candidates, same_user));
         }
         self.deny_late().await;
         Ok(())
@@ -731,7 +735,7 @@ impl Hosting {
         self.dretry = Instant::now() + Duration::from_secs(2);
         if let Ok((mut w, joined)) = super::join(j).await && self.link.continues_after(joined["seq"].as_u64().unwrap_or(0)) {
             let at = joined["seq"].as_u64().unwrap_or(0);
-            if self.resend(&mut w, at).await { self.dws = Some(w); self.dheard = Instant::now(); self.dpresent = Some((HashSet::new(), Instant::now())); }
+            if self.resend(&mut w, at).await { self.dws = Some(w); self.dheard = Instant::now(); self.dpresent = Some((HashSet::new(), Instant::now())); self.unreached.direct_up(Instant::now()); }
         }
     }
 
@@ -766,6 +770,9 @@ impl Hosting {
                     while self.kept.front().is_some_and(|(s, _)| *s <= at) { self.kept.pop_front(); }
                     self.unacked_since = (!self.kept.is_empty()).then(Instant::now);
                     self.present = Some((HashSet::new(), Instant::now()));
+                    // Who is on the relay is said again by its replay; a
+                    // viewer that left while this link was down is not.
+                    self.unreached.relay_lost();
                 } else {
                     self.retry = Instant::now() + Duration::from_secs(1);
                 }
@@ -817,10 +824,13 @@ impl Hosting {
                 if v["type"] == "viewer" && let Some(l) = v["link"].as_u64() {
                     if v["event"] == "left" { self.link.forget(l); }
                     if v["event"] == "joined" && let Some((here, _)) = if direct { self.dpresent.as_mut() } else { self.present.as_mut() } { here.insert(l); }
-                    if let Some(d) = v["device"].as_str() {
+                    // The relay names the device; anything that is not an
+                    // id is no device to say anything of.
+                    if let Some(d) = v["device"].as_str().and_then(DeviceId::parse) {
                         match (v["event"].as_str(), direct) {
-                            (Some("joined"), false) if !self.candidates.is_empty() => self.unreached.on_relay(d, Instant::now()),
-                            (Some("joined"), true) | (Some("left"), false) => self.unreached.settled(d),
+                            (Some("joined"), false) if !self.candidates.is_empty() => self.unreached.relay_joined(l, d, Instant::now()),
+                            (Some("left"), false) => self.unreached.relay_left(l),
+                            (Some("joined"), true) => self.unreached.direct_joined(d),
                             _ => {}
                         }
                     }
