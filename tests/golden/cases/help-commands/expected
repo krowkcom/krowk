@@ -242,7 +242,7 @@ Usage
   krowk help [command|topic] [--all]
 
 Arguments
-  [command]  The command or topic to describe, e.g. `uploads attach` or
+  [command]  The command or topic to describe, e.g. `artifacts attach` or
              `exit-codes`
 
 Flags

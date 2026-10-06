@@ -923,7 +923,7 @@ stdout:
       "args": [
         {
           "name": "command",
-          "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
+          "summary": "The command or topic to describe, e.g. `artifacts attach` or `exit-codes`",
           "required": false
         }
       ],

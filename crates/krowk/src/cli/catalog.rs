@@ -491,7 +491,7 @@ pub fn catalog(version: &str) -> Catalog {
             },
             cmd("upgrade", "krowk upgrade", "Upgrade krowk"),
             Command {
-                args: vec![arg("command", "The command or topic to describe, e.g. `uploads attach` or `exit-codes`", false)],
+                args: vec![arg("command", "The command or topic to describe, e.g. `artifacts attach` or `exit-codes`", false)],
                 flags: vec![flag("all", BOOL, "List every command and subcommand")],
                 ..cmd("help", "krowk help [command|topic] [--all]", "This, a command's help, or a topic")
             },
@@ -888,7 +888,7 @@ pub fn about(name: &str) -> &'static str {
     match name {
         "push" => PUSH_SHORTCUT_ABOUT,
         "artifacts create" => PUSH_ABOUT,
-        "uploads delete" => DELETE_ABOUT,
+        "artifacts delete" => DELETE_ABOUT,
         "claim" | "artifacts claim" => CLAIM_ABOUT,
         "artifacts" => "An artifact is a file published to a link. `krowk push` and `krowk claim`\nare the short forms of `create` and `claim`; `uploads` is an older name.",
         "login" | "auth login" => LOGIN_ABOUT,
