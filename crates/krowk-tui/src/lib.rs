@@ -30,6 +30,7 @@
 //! nothing but a key.
 
 pub mod app;
+pub mod ask;
 pub mod card;
 pub mod clipboard;
 pub mod connect;
@@ -1614,6 +1615,15 @@ impl<'h> Ui<'h> {
                 // answer or nothing: a key pasted early, before the question
                 // is up or while it is a pick, never reaches the prompt, a
                 // turn or the history.
+                // The agent's questions take a paste as the person's own
+                // answer, once they have settled.
+                if let Some(a) = app.asking.as_mut() {
+                    if app.approval_shown.is_none_or(|t| t.elapsed() >= APPROVAL_SETTLE) {
+                        a.paste(&s);
+                    }
+                    app.touch();
+                    return Ok(false);
+                }
                 match app.flow.as_mut().filter(|_| app.overlay == Overlay::Connect) {
                     Some(f) => {
                         if f.settled(APPROVAL_SETTLE) {
@@ -1709,7 +1719,8 @@ impl<'h> Ui<'h> {
         // A call waiting for the person's say takes the keys that answer it
         // (R-PERM-2): y once, s for the session, p for the project, n or
         // Esc no, v to print a request that was cut to fit (its y/s/p work
-        // only after). Ctrl-C still interrupts the turn, which declines it too.
+        // only after); the agent's questions take every key but Ctrl's.
+        // Ctrl-C still interrupts the turn, which declines it too.
         // Not while `/connect`'s text question is being typed into: an
         // account name with a `p` in it would allow a call for the project.
         let typing_answer = app.overlay == Overlay::Connect && app.flow.as_ref().is_some_and(|f| f.typing());
@@ -1720,6 +1731,21 @@ impl<'h> Ui<'h> {
             // A key already on its way when the request came up — the
             // person was typing — is not an answer.
             if app.approval_shown.is_some_and(|t| t.elapsed() < APPROVAL_SETTLE) {
+                return false;
+            }
+            // The agent's questions: the keys pick and type answers, and
+            // the last answer sends them all.
+            if let Some(a) = app.asking.as_mut() {
+                let done = a.key(k);
+                let (decision, answers) = match done {
+                    None => return false,
+                    Some(ask::Done::Answered(answers)) => (ApprovalDecision::Allow, answers),
+                    Some(ask::Done::Declined) => (ApprovalDecision::Deny, Vec::new()),
+                };
+                app.answered(&req.request_id);
+                if let Err(e) = self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision, answers }).await {
+                    app.notice(if e.code == SLOW { "the host daemon is slow to answer — the answers were sent, and the turn goes on once it takes them" } else { "those questions were already answered, or their turn is over" });
+                }
                 return false;
             }
             // A request cut to fit takes no allow until it is seen whole.

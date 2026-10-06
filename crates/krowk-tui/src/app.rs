@@ -671,6 +671,9 @@ pub struct App {
     /// the first is shown over the prompt until it is answered, here or by
     /// another client.
     pub approvals: Vec<ApprovalRequest>,
+    /// The questions of the request shown now, when it asks some, and the
+    /// person's answers so far.
+    pub asking: Option<crate::ask::Asking>,
     /// The last turn's answer as the model wrote it, unwrapped and
     /// unpadded: what Ctrl-Y copies, cleaned as it was shown. One answer,
     /// not the conversation.
@@ -816,6 +819,7 @@ impl App {
             slash_at: 0,
             slash_closed: false,
             approvals: Vec::new(),
+            asking: None,
             answer: String::new(),
             said: String::new(),
             blocks: Vec::new(),
@@ -1585,11 +1589,13 @@ impl App {
                     self.approval_expanded = false;
                 }
                 self.approvals.push(req.clone());
+                self.ask_head();
                 self.dirty = true;
             }
             StreamLine::Live(LiveEvent::ApprovalResolved { request_id, .. }) => self.answered(request_id),
             StreamLine::Live(LiveEvent::Result(r)) => {
                 self.approvals.clear();
+                self.asking = None;
                 self.on_result(r);
                 self.offer = r.switch_offer.clone();
             }
@@ -1610,7 +1616,16 @@ impl App {
             self.approval_shown = (!self.approvals.is_empty()).then(Instant::now);
             self.approval_expanded = false;
         }
+        self.ask_head();
         self.dirty = true;
+    }
+
+    /// The questions of the request shown now, kept while it stays shown.
+    fn ask_head(&mut self) {
+        let head = self.approvals.first();
+        if self.asking.as_ref().map(|a| &a.request_id) != head.map(|r| &r.request_id) {
+            self.asking = head.and_then(crate::ask::Asking::new);
+        }
     }
 
     /// Whether the request shown now may be allowed: shown whole, or
@@ -1618,7 +1633,7 @@ impl App {
     /// not allowed unseen — the part cut is where a long command hides
     /// what it does.
     pub fn approval_ready(&self) -> bool {
-        self.approvals.first().is_none_or(|r| !approval_cut(r) || self.approval_expanded)
+        self.approvals.first().is_none_or(|r| !r.questions.is_empty() || !approval_cut(r) || self.approval_expanded)
     }
 
     /// `v`: the request shown now, whole, into scrollback — where the
@@ -2246,7 +2261,10 @@ impl App {
             // A subagent's request is answered here like the session's own,
             // under the subagent's session, and says whose it is.
             let from = self.subs.iter().find(|s| s.session_id == req.session_id).map(|s| if s.description.is_empty() { "a subagent".to_string() } else { format!("subagent “{}”", s.description) });
-            rows.extend(approval_rows(req, self.approvals.len(), width, self.approval_ready(), from.as_deref(), self.sync.is_none()));
+            match &self.asking {
+                Some(a) => rows.extend(a.rows(width, from.as_deref(), self.approvals.len())),
+                None => rows.extend(approval_rows(req, self.approvals.len(), width, self.approval_ready(), from.as_deref(), self.sync.is_none())),
+            }
         }
         if let Some(o) = &self.offer {
             for row in wrap(&offer_question(o), width) {
@@ -2730,6 +2748,7 @@ impl App {
         self.table.clear();
         self.billing = None;
         self.approvals.clear();
+        self.asking = None;
         self.answer.clear();
         self.said.clear();
         self.blocks.clear();
@@ -3328,7 +3347,7 @@ fn approval_cut(req: &ApprovalRequest) -> bool {
 /// looks like the prompt's keys), without control or formatting characters
 /// (escapes, bidi overrides, zero-width marks), and at most `max`
 /// characters.
-fn shown(s: &str, max: usize) -> String {
+pub(crate) fn shown(s: &str, max: usize) -> String {
     let flat = flat(s);
     // Cut from the middle: the start says what runs, and the end is where
     // a long command hides what it does last.
@@ -4364,6 +4383,24 @@ mod tests {
         let cut = super::shown(&long, 400);
         assert!(cut.starts_with("git status && true") && cut.ends_with("&& rm -rf ~") && cut.contains(" … "), "head and tail both shown: {cut}");
         assert!(cut.chars().count() <= 403);
+    }
+
+    #[test]
+    fn the_agents_questions_show_over_the_prompt_in_place_of_an_allow_until_answered() {
+        use krowk_harness::protocol::{Question, QuestionOption};
+        let mut a = app();
+        a.set_width(120);
+        a.start_turn(Instant::now());
+        let options = vec![QuestionOption { label: "Postgres".into(), description: "what production runs".into() }];
+        let q = Question { id: "db".into(), header: "Database".into(), question: "Which database?".into(), options, multi_select: false, secret: false };
+        let asked = ApprovalRequest { session_id: "s".into(), turn_id: "t".into(), request_id: "q1".into(), tool: "ask_user".into(), input: serde_json::json!({}), summary: "Which database?".into(), reason: String::new(), remember: vec![], questions: vec![q] };
+        a.on_line(&live(LiveEvent::ApprovalRequested(asked)));
+        assert!(a.approval_ready());
+        let shown = text(&a.view(Instant::now()).0).join("\n");
+        assert!(shown.contains("Database — Which database?") && shown.contains("❯ 1. Postgres  what production runs") && shown.contains("esc decline") && !shown.contains("allow"), "{shown}");
+        assert_eq!(a.asking.as_ref().map(|q| q.request_id.as_str()), Some("q1"));
+        a.on_line(&live(LiveEvent::ApprovalResolved { session_id: "s".into(), turn_id: "t".into(), request_id: "q1".into(), decision: krowk_harness::protocol::ApprovalDecision::Allow }));
+        assert!(a.asking.is_none() && !text(&a.view(Instant::now()).0).join("\n").contains("Which database?"));
     }
 
     #[test]
