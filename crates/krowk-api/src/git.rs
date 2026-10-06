@@ -56,8 +56,8 @@ fn no_hooks() -> std::io::Result<PathBuf> {
 /// another when that one has filled. Never a path krowk did not make:
 /// `/dev/null` is a directory anyone may create on a Windows drive.
 fn pick(home: Option<&Path>, tmp: &Path, fresh: &mut Option<PathBuf>) -> std::io::Result<PathBuf> {
-    let shared = tmp.join(format!("krowk-no-hooks-{}", user()));
-    if let Some(d) = home.map(|h| h.join(crate::home::NO_HOOKS)).into_iter().chain([shared]).find(|d| empty(d)) {
+    let shared = shared(tmp);
+    if let Some(d) = home.map(|h| h.join(crate::home::NO_HOOKS)).into_iter().chain(shared).find(|d| empty(d)) {
         return Ok(d);
     }
     if let Some(d) = fresh.as_ref().filter(|d| empty(d)) {
@@ -68,17 +68,19 @@ fn pick(home: Option<&Path>, tmp: &Path, fresh: &mut Option<PathBuf>) -> std::io
     Ok(d)
 }
 
-/// Who the shared fallback is named for: the uid, or on Windows the
-/// account name (its temp directory is the user's own already).
+/// The shared fallback, named for the uid. Only on Unix, where `make`
+/// checks the owner: on Windows it does not, and a `TEMP` other users can
+/// write to would let one of them plant the directory, so each process
+/// makes its own there.
 #[cfg(unix)]
-fn user() -> String {
+fn shared(tmp: &Path) -> Option<PathBuf> {
     // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }.to_string()
+    Some(tmp.join(format!("krowk-no-hooks-{}", unsafe { libc::getuid() })))
 }
 
 #[cfg(not(unix))]
-fn user() -> String {
-    crate::home::process_env("USERNAME")
+fn shared(_tmp: &Path) -> Option<PathBuf> {
+    None
 }
 
 /// Whether `d` is a directory of krowk's own (made when missing) with
@@ -175,7 +177,7 @@ mod tests {
 
         std::fs::write(own.join("post-checkout"), "#!/bin/sh\n").unwrap();
         let shared = pick(Some(&home), &tmp, &mut fresh).unwrap();
-        assert_eq!(shared, tmp.join(format!("krowk-no-hooks-{}", user())));
+        assert_eq!(Some(&shared), super::shared(&tmp).as_ref());
         assert_eq!(std::fs::metadata(&shared).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(pick(None, &tmp, &mut fresh).unwrap(), shared, "the same one, while empty");
         std::fs::write(shared.join("pre-commit"), "#!/bin/sh\n").unwrap();
