@@ -71,6 +71,11 @@ jobs:
           )
           [[ -z "$stale" ]] || { echo "::error::not at $VERSION: ${stale//$'\n'/, }" >&2; exit 1; }
 
+      # The MCP registry refuses a server.json whose description is over 100
+      # characters; the others are held to one line.
+      - name: Manifests' descriptions fit where they are listed
+        run: node scripts/descriptions_check.mjs
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-notes

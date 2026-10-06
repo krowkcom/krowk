@@ -121,6 +121,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The Gemini extension, the MCP registry entry and `@krowk/mcp` describe
+  Krowk as a coding agent harness.** They used to describe a permalink
+  uploader. Each now says that it's Krowk's publishing, for Gemini CLI or
+  for any MCP client, and what it turns into links. With
+  the Claude Code plugin's, they no longer say links unfurl in GitHub and
+  Linear, which don't unfurl links. Those links unfurl in Slack and Basecamp;
+  in GitHub and Linear, images show inline. The `server.json` here was over the
+  MCP registry's 100-character description limit and didn't validate against
+  its schema; it's within it now. `make release-check` and the release
+  workflow now hold it to that limit, and the other descriptions to one line.
 - **What you say in a session is shown in markdown, as answers are.**
   `` `code` `` is in the code colour, `**bold**` is bold, and links, lists,
   quotes and fenced blocks look as they do in an answer, all on the band of
