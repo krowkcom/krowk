@@ -641,10 +641,16 @@ impl Answers {
                     .collect()
             })
             .unwrap_or_default();
-        let answered = match asking {
-            Some((events, cancel)) if !questions.is_empty() => self.gate.ask("request_user_input", params, questions.clone(), events, cancel).await,
+        // A deny rule on Claude Code's name for it holds, as it does for
+        // the native tool and Claude Code's own.
+        let call = Call { tool: "AskUserQuestion".into(), access: Access::Session, subject: None };
+        let answered = match (self.gate.verdict(&call, None), asking) {
+            (Verdict::Deny(m), _) => Err(m),
+            (_, Some((events, cancel))) if !questions.is_empty() => self.gate.ask("request_user_input", params, questions.clone(), events, cancel).await,
             _ => Err(permissions::NOBODY_TO_ASK.into()),
         };
+        // Answered with nothing — a client that sent no answers — is a decline.
+        let answered = answered.and_then(|a| if a.iter().any(|a| crate::ask::said(a).is_some()) { Ok(a) } else { Err(permissions::DECLINED.into()) });
         let answers: serde_json::Map<String, Value> = questions
             .iter()
             .map(|q| {
@@ -1588,6 +1594,12 @@ mod tests {
         ]});
         let got = ask.answer("item/tool/requestUserInput", &params, &mut Translator::default(), Some((&tx, &cancel))).await.unwrap();
         assert_eq!(got, json!({"answers": {"db": {"answers": ["Postgres", "user_note: on 16"]}, "key": {"answers": ["s3cret"]}, "skip": {"answers": []}}}));
+        // A deny rule on AskUserQuestion holds for Codex's questions too.
+        let mut policy = permissions::Policy::modes_only(Path::new("/repo"));
+        policy.loaded.rules.push((permissions::Kind::Deny, permissions::rules::parse("AskUserQuestion", "test", Path::new("/repo")).unwrap()));
+        let denied = Answers { gate: Gate::new(policy, PermissionMode::Default, Default::default(), Some(permissions::Approvals::default()), None, "s-1", "t-1"), ..ask };
+        let got = denied.answer("item/tool/requestUserInput", &params, &mut Translator::default(), Some((&tx, &cancel))).await.unwrap();
+        assert!(!got["answers"]["db"]["answers"][0].as_str().unwrap().contains("Postgres"), "{got}");
     }
 
     #[tokio::test(flavor = "current_thread")]
