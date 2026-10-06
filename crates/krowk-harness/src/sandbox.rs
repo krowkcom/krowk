@@ -32,24 +32,40 @@
 //! WT4), which the agent must be able to commit in. A commit in a linked
 //! worktree writes objects and refs into the repository's common git
 //! directory, outside the workspace, so when the workspace is one
-//! (`managed_worktree`) the plan binds `<common>/objects`, `refs`, `logs`,
-//! `packed-refs` and the worktree's own admin directory writable, and then,
-//! read-only on top, everything in them that decides what runs or what
-//! another checkout is on: `<common>/config`, `hooks` and any
-//! `core.hooksPath` target, `info`, `HEAD`, `modules` and `shallow`; every
-//! other worktree's admin directory, and the branch each has checked out;
-//! this worktree's `config.worktree`, `commondir`, `gitdir` and `modules`;
-//! its `.git` file; and the main checkout's branch ref. Being under
-//! `krowk_api::home::worktrees_root` is not enough, since the environment
-//! names that directory: the worktree's `.git` must lead to
-//! `<common>/worktrees/<name>` in a real common directory outside the root,
-//! that admin directory must lead back to it, and its branch must be
-//! `krowk/<8 hex>`. Anything else — a person's own linked worktree
-//! included — keeps the fences above, and so does a worktree whose `HEAD`
-//! a command moves off its `krowk/` branch, from the next call on.
-//! Known gap, accepted: a branch whose ref lives only in `packed-refs` —
-//! the main checkout's included — has no file to bind read-only, so the
-//! agent could rewrite it there, or shadow it with a loose ref.
+//! (`managed_worktree`) the plan binds the common directory read-only (it
+//! may be in the hidden home), then `<common>/objects`, `logs`,
+//! `refs/heads/krowk` (made first if missing) and the worktree's own admin
+//! directory writable, and then, read-only on top, what in them decides
+//! what runs or what another checkout is on: every other entry in
+//! `refs/heads/krowk` (another agent's branch), and this worktree's
+//! `config.worktree`, `commondir`, `gitdir` and `modules`. The rest of
+//! `refs` stays read-only, not just the branches checked out somewhere: a
+//! fence on `refs/heads/main` inside a writable `refs` is undone by
+//! renaming `refs/heads` and making a new one (a mount point cannot be
+//! renamed, but its parent directory can), and a `refs/replace/<commit>`
+//! changes what `main` shows and checks out in the main checkout without
+//! moving it. So a command can make no tag, and no branch outside
+//! `krowk/`. `packed-refs` stays read-only for the second reason: a line
+//! appended to it is a ref, and git never rewrites it in place anyway (it
+//! writes `packed-refs.lock` beside it, in the read-only common directory).
+//! The fences above are listed in `read_only` with `<common>/config`,
+//! `hooks` and any `core.hooksPath` target, `info`, `HEAD`, `modules`,
+//! `shallow`, every other worktree's admin directory and the worktree's
+//! `.git` file, so the file tools hold them too. A write inside a writable
+//! directory cannot get round a fence the same way: each fence's parent is
+//! itself a mount point. Being under `krowk_api::home::worktrees_root` is
+//! not enough, since the environment names that directory: the worktree's
+//! `.git` must lead to `<common>/worktrees/<name>` in a real common
+//! directory outside the root, that admin directory must lead back to it,
+//! and its branch must be `krowk/<8 hex>`. Anything else — a person's own
+//! linked worktree included — keeps the fences above, and so does a
+//! worktree whose `HEAD` a command moves off its `krowk/` branch, from the
+//! next call on. The person's git identity is in their hidden home, so
+//! `user.name` and `user.email` as git resolves them in the worktree are
+//! read outside the sandbox and handed in as `GIT_AUTHOR_*` and
+//! `GIT_COMMITTER_*`; the home's `.gitconfig` is never bound, since it can
+//! hold credentials. Accepted: `objects` is writable, so a command can
+//! rewrite an object file already there in place.
 //!
 //! `/tmp` is private to the call, and `/run` — where the ssh
 //! agent, the session bus and the Docker socket live — is empty but for
@@ -163,8 +179,15 @@ struct Inputs {
     home: Option<PathBuf>,
     toolchains: Vec<(&'static str, PathBuf)>,
     worktrees: Option<PathBuf>,
+    /// Where git finds the person's own config (`GIT_CONFIG_ENV`), as
+    /// krowk's environment names it: a krowk worktree's identity is read
+    /// with it.
+    config_env: Vec<(&'static str, Option<std::ffi::OsString>)>,
     walk: Walk,
 }
+
+/// The variables that say where git reads the person's own config.
+const GIT_CONFIG_ENV: [&str; 2] = ["HOME", "XDG_CONFIG_HOME"];
 
 #[derive(Debug, Clone)]
 pub struct Plan {
@@ -176,11 +199,16 @@ pub struct Plan {
     pub cwd: PathBuf,
     /// Bound read-write (read-only under the read-only profile).
     pub writable: Vec<PathBuf>,
-    /// What a commit in a krowk worktree writes in its repository's common
-    /// git directory (`managed_worktree`), bound writable after `writable`
-    /// and before `read_only`; empty for every other workspace. Not the
-    /// file tools' to write.
-    pub git: Vec<PathBuf>,
+    /// A krowk worktree's common git directory (`managed_worktree`), in
+    /// the order it is bound after `writable` and before `read_only`: the
+    /// directory read-only, then what a commit writes in it (`true`)
+    /// writable. Empty for every other workspace. Not the file tools' to
+    /// write.
+    pub git: Vec<(PathBuf, bool)>,
+    /// The person's `user.name` and `user.email` as git resolves them in a
+    /// krowk worktree, handed to its commands as `GIT_AUTHOR_*` and
+    /// `GIT_COMMITTER_*`: the config that names them is in the hidden home.
+    pub identity: Option<(String, String)>,
     /// Bound read-only over what `writable` and `git` opened: `.git` and
     /// its kind, and the settings directories that decide what runs.
     pub read_only: Vec<PathBuf>,
@@ -223,16 +251,16 @@ impl Plan {
     #[allow(clippy::too_many_arguments)]
     pub fn new_with(sandbox: Sandbox, cwd: &Path, roots: &[PathBuf], readable: &[PathBuf], protected: &[PathBuf], secrets: &[PathBuf], home: Option<&Path>, walk: Walk) -> Plan {
         let env = |k: &str| std::env::var_os(k);
-        let (toolchains, worktrees) = (toolchains(home, &env), worktrees_root(&env));
-        Plan::build(Inputs { sandbox, cwd: cwd.into(), roots: roots.into(), readable: readable.into(), protected: protected.into(), secrets: secrets.into(), home: home.map(Into::into), toolchains, worktrees, walk })
+        let (toolchains, worktrees, config_env) = (toolchains(home, &env), worktrees_root(&env), GIT_CONFIG_ENV.map(|k| (k, env(k))).to_vec());
+        Plan::build(Inputs { sandbox, cwd: cwd.into(), roots: roots.into(), readable: readable.into(), protected: protected.into(), secrets: secrets.into(), home: home.map(Into::into), toolchains, worktrees, config_env, walk })
     }
 
-    /// `new`, reading `RUSTUP_HOME`, `CARGO_HOME` and the worktrees root's
-    /// variables from `env`.
+    /// `new`, reading `RUSTUP_HOME`, `CARGO_HOME`, the worktrees root's
+    /// variables and where git's own config is from `env`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_in(sandbox: Sandbox, cwd: &Path, roots: &[PathBuf], readable: &[PathBuf], protected: &[PathBuf], secrets: &[PathBuf], home: Option<&Path>, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Plan {
-        let (toolchains, worktrees) = (toolchains(home, env), worktrees_root(env));
-        Plan::build(Inputs { sandbox, cwd: cwd.into(), roots: roots.into(), readable: readable.into(), protected: protected.into(), secrets: secrets.into(), home: home.map(Into::into), toolchains, worktrees, walk: Walk::default() })
+        let (toolchains, worktrees, config_env) = (toolchains(home, env), worktrees_root(env), GIT_CONFIG_ENV.map(|k| (k, env(k))).to_vec());
+        Plan::build(Inputs { sandbox, cwd: cwd.into(), roots: roots.into(), readable: readable.into(), protected: protected.into(), secrets: secrets.into(), home: home.map(Into::into), toolchains, worktrees, config_env, walk: Walk::default() })
     }
 
     /// The plan laid out again, as the workspace and the home are now: a
@@ -244,7 +272,7 @@ impl Plan {
     }
 
     fn build(inputs: Inputs) -> Plan {
-        let Inputs { sandbox, ref cwd, ref roots, ref readable, ref protected, ref secrets, ref home, ref toolchains, ref worktrees, ref walk } = inputs;
+        let Inputs { sandbox, ref cwd, ref roots, ref readable, ref protected, ref secrets, ref home, ref toolchains, ref worktrees, ref config_env, ref walk } = inputs;
         let (cwd, home) = (cwd.as_path(), home.as_deref());
         // As they lead: a bind mount is of the real directory, and a
         // symlinked working directory would otherwise leave `.git` where
@@ -267,11 +295,13 @@ impl Plan {
         let repos = fences.repos.clone();
         read_only.extend(fences.all());
         // A worktree krowk made, as it is now: its common git directory's
-        // parts a commit writes, and the fences on top of them.
-        let mut git = Vec::new();
+        // parts a commit writes, the fences on top of them, and who the
+        // commit is by.
+        let (mut git, mut identity) = (Vec::new(), None);
         if let Some(w) = worktrees.as_deref().and_then(|r| managed_worktree(&writable[0], r)) {
-            git = w.writable();
+            git = w.binds();
             read_only.extend(w.read_only(&writable[0], home));
+            identity = git_identity(&writable[0], config_env);
         }
         // A settings directory outside the workspace is read-only already
         // (the root is bound read-only, the home is hidden); one inside it
@@ -296,6 +326,7 @@ impl Plan {
             cwd: canon(cwd),
             writable,
             git,
+            identity,
             read_only,
             hidden,
             home,
@@ -357,11 +388,10 @@ impl Plan {
         for w in &self.writable {
             a.extend([bind.into(), s(w), s(w)]);
         }
-        // `-try`: a fresh repository has no `packed-refs`, and one never
-        // logging refs no `logs`.
-        let bind_try = if self.profile.writes() { "--bind-try" } else { "--ro-bind-try" };
-        for g in &self.git {
-            a.extend([bind_try.into(), s(g), s(g)]);
+        // `-try`: a repository never logging refs has no `logs`.
+        for (g, writes) in &self.git {
+            let bind = if *writes && self.profile.writes() { "--bind-try" } else { "--ro-bind-try" };
+            a.extend([bind.into(), s(g), s(g)]);
         }
         // `-try`: a fence that does not exist is not there to protect (and
         // `.git` is a file in a worktree, bound read-only all the same).
@@ -388,6 +418,12 @@ impl Plan {
         }
         for (k, d) in &self.toolchains {
             a.extend(["--setenv".into(), (*k).into(), s(d)]);
+        }
+        if let Some((name, email)) = &self.identity {
+            for who in ["AUTHOR", "COMMITTER"] {
+                a.extend(["--setenv".into(), format!("GIT_{who}_NAME"), name.clone()]);
+                a.extend(["--setenv".into(), format!("GIT_{who}_EMAIL"), email.clone()]);
+            }
         }
         a.extend(["--dir".into(), HOME.into()]);
         // A session of its own, so it cannot push keystrokes into the
@@ -666,6 +702,8 @@ fn worktrees_root(env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Option<Pa
 pub struct ManagedWorktree {
     pub common: PathBuf,
     pub admin: PathBuf,
+    /// The `<hex>` of its `krowk/<hex>` branch.
+    pub hex: String,
 }
 
 /// Whether `top`, a workspace, is a worktree krowk made under `root`
@@ -699,7 +737,7 @@ pub fn managed_worktree(top: &Path, root: &Path) -> Option<ManagedWorktree> {
     }
     let branch = branch_of(&admin)?;
     let hex = branch.strip_prefix("refs/heads/krowk/")?;
-    (hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))).then_some(ManagedWorktree { common, admin })
+    (hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))).then(|| ManagedWorktree { common, admin, hex: hex.to_string() })
 }
 
 /// The branch a git directory has checked out (`ref: refs/heads/…` in its
@@ -712,36 +750,69 @@ fn branch_of(gitdir: &Path) -> Option<String> {
 }
 
 impl ManagedWorktree {
-    /// What a commit writes: objects, refs and their logs, and the
-    /// worktree's own index, `HEAD` and logs in its admin directory.
-    fn writable(&self) -> Vec<PathBuf> {
+    /// What the sandbox binds of the common directory, in order: all of it
+    /// read-only (it may be in the hidden home), then writable what a
+    /// commit on `krowk/<hex>` writes — objects, the `krowk/` branches and
+    /// the reflogs, and the worktree's own index, `HEAD` and logs in its
+    /// admin directory. `refs/heads/krowk` is made here when missing, and
+    /// left read-only when it is not a directory of its own.
+    fn binds(&self) -> Vec<(PathBuf, bool)> {
         let c = &self.common;
-        vec![c.join("objects"), c.join("refs"), c.join("logs"), c.join("packed-refs"), self.admin.clone()]
+        let krowk = c.join("refs/heads/krowk");
+        let _ = std::fs::create_dir(&krowk);
+        let mut out = vec![(c.clone(), false), (c.join("objects"), true), (c.join("logs"), true)];
+        if std::fs::symlink_metadata(&krowk).is_ok_and(|m| m.is_dir()) {
+            out.push((krowk, true));
+        }
+        out.push((self.admin.clone(), true));
+        out
     }
 
-    /// What stays read-only on top of `writable`, the worktree at `top`:
-    /// what git runs (config, hooks, a submodule's git directory), what
-    /// another checkout is on (its admin directory, its branch, the main
-    /// checkout's `HEAD` and branch), and what leads this worktree to its
-    /// repository (`.git`, `commondir`, `gitdir`). A missing one a command
-    /// makes is removed after the call, as a missing `.git` is (`Unfenced`).
+    /// What stays read-only on top of `binds`, the worktree at `top`: in
+    /// the writable directories, every other `krowk/` branch and what
+    /// leads this worktree to its repository or runs in it (`commondir`,
+    /// `gitdir`, `config.worktree`, a submodule's git directory); and,
+    /// read-only already but fenced from the file tools too, what git runs
+    /// and what another checkout is on. A missing one a command makes is
+    /// removed after the call, as a missing `.git` is (`Unfenced`).
     fn read_only(&self, top: &Path, home: Option<&Path>) -> Vec<PathBuf> {
         let c = &self.common;
-        let mut out: Vec<PathBuf> = ["config", "hooks", "info", "HEAD", "modules", "shallow"].iter().map(|f| c.join(f)).collect();
+        let mut out: Vec<PathBuf> = ["config", "hooks", "info", "HEAD", "modules", "shallow", "packed-refs"].iter().map(|f| c.join(f)).collect();
         out.extend(hooks_path(c, top, home));
         out.extend(["config.worktree", "commondir", "gitdir", "modules"].iter().map(|f| self.admin.join(f)));
         out.push(top.join(".git"));
-        // A branch's loose ref, when it has one: one only in `packed-refs`
-        // is the known gap the module docs name.
-        let branch = |gitdir: &Path| branch_of(gitdir).map(|r| c.join(r)).filter(|r| r.is_file());
-        out.extend(branch(c));
-        let others = std::fs::read_dir(c.join("worktrees")).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.file_name() != self.admin.file_name());
-        for o in others {
-            out.extend(branch(&o));
-            out.push(o);
-        }
+        let own = std::ffi::OsString::from(&self.hex);
+        out.extend(std::fs::read_dir(c.join("refs/heads/krowk")).into_iter().flatten().flatten().filter(|e| e.file_name() != own).map(|e| e.path()));
+        out.extend(std::fs::read_dir(c.join("worktrees")).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.file_name() != self.admin.file_name()));
         out
     }
+}
+
+/// `user.name` and `user.email` as git resolves them in `top`, with
+/// `config_env` saying where the person's own config is; none unless both
+/// are set. Read by git outside the sandbox, through krowk's git (hooks
+/// and fsmonitor off): `git config` reads config and runs nothing.
+fn git_identity(top: &Path, config_env: &[(&'static str, Option<std::ffi::OsString>)]) -> Option<(String, String)> {
+    let mut c = krowk_api::git::query(top).ok()?;
+    c.args(["config", "--get-regexp", r"^user\.(name|email)$"]).stderr(std::process::Stdio::null());
+    for (k, v) in config_env {
+        match v {
+            Some(v) => c.env(k, v),
+            None => c.env_remove(k),
+        };
+    }
+    let out = c.output().ok()?;
+    let text = String::from_utf8(out.stdout).ok()?;
+    // The last of a key wins, as it does for git.
+    let (mut name, mut email) = (None, None);
+    for line in text.lines() {
+        match line.split_once(' ') {
+            Some(("user.name", v)) => name = Some(v.to_string()),
+            Some(("user.email", v)) => email = Some(v.to_string()),
+            _ => {}
+        }
+    }
+    Some((name.filter(|n| !n.is_empty())?, email.filter(|e| !e.is_empty())?))
 }
 
 /// The Rust toolchain's homes that exist: `RUSTUP_HOME` and `CARGO_HOME`

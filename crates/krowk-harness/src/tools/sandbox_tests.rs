@@ -320,26 +320,20 @@ async fn r_perm_3_cargo_runs_in_the_sandbox_and_its_credentials_stay_hidden() {
     let _ = std::fs::remove_dir_all(base);
 }
 
-/// git in a test repository, with none of this machine's config and no
-/// hooks: what it prints, trimmed.
+/// git in a test repository, through krowk's own git (hooks off), with
+/// none of this machine's config: what it prints, trimmed.
 fn git(dir: &Path, args: &[&str]) -> String {
-    let o = std::process::Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgSign=false", "-c", "core.hooksPath=/dev/null"])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .unwrap();
+    let o = krowk_api::git::command(dir).unwrap().args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
     assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// A repository with `main` checked out, in a fake home the sandbox hides;
-/// a worktree krowk made for an agent under that home's worktrees root
-/// (`.local/share/krowk/worktrees/<repo-id>/<hex>`, branch
-/// `krowk/abcd1234`); and the person's own linked worktree, `own`, beside
-/// the repository. The environment names only the fake home.
+/// A repository with `main` checked out, in a fake home the sandbox hides,
+/// whose own config names who commits; two worktrees krowk made for agents
+/// under that home's worktrees root (`.local/share/krowk/worktrees/
+/// <repo-id>/<hex>`, branches `krowk/abcd1234` and `krowk/feedbeef`); and
+/// the person's own linked worktree, `own`, beside the repository. The
+/// environment names only the fake home, which has no `.gitconfig`.
 struct Repo {
     base: PathBuf,
     home: PathBuf,
@@ -355,11 +349,15 @@ impl Repo {
         let main = home.join("src/repo");
         std::fs::create_dir_all(&main).unwrap();
         git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["config", "user.name", "Wt Four"]);
+        git(&main, &["config", "user.email", "wt4@example.com"]);
         std::fs::write(main.join("a.txt"), "a\n").unwrap();
         git(&main, &["add", "-A"]);
         git(&main, &["commit", "-q", "-m", "first"]);
-        let wt = home.join(".local/share/krowk/worktrees/0123456789abcdef/abcd1234");
+        let root = home.join(".local/share/krowk/worktrees/0123456789abcdef");
+        let wt = root.join("abcd1234");
         git(&main, &["worktree", "add", "-q", "--no-track", "-b", "krowk/abcd1234", &wt.to_string_lossy(), "main"]);
+        git(&main, &["worktree", "add", "-q", "--no-track", "-b", "krowk/feedbeef", &root.join("feedbeef").to_string_lossy(), "main"]);
         let own = home.join("src/own");
         git(&main, &["worktree", "add", "-q", "-b", "feature", &own.to_string_lossy(), "main"]);
         Repo { base, home, main, wt, own }
@@ -370,12 +368,16 @@ impl Repo {
         move |k| (k == "HOME").then(|| home.clone().into_os_string())
     }
 
+    fn plan(&self, ws: &Path) -> Plan {
+        Plan::new_in(Sandbox { profile: Profile::Workspace, by: By::Bubblewrap }, ws, &[], &[], &[], &[], Some(&self.home), &self.env())
+    }
+
     /// The scope of a sandboxed session in `ws`, wide open otherwise.
     fn scope(&self, ws: &Path) -> Scope {
         let mut scope = Scope::within(ws);
         scope.outside = true;
         scope.open = true;
-        let plan = Plan::new_in(Sandbox { profile: Profile::Workspace, by: By::Bubblewrap }, ws, &[], &[], &[], &[], Some(&self.home), &self.env());
+        let plan = self.plan(ws);
         scope.secrets.extend(plan.hidden.iter().cloned());
         scope.sandbox = Some(Arc::new(plan));
         scope
@@ -391,22 +393,30 @@ fn wt4_only_a_worktree_krowk_made_is_opened_to_a_commit() {
     let root = r.home.join(".local/share/krowk/worktrees");
     let common = r.main.join(".git");
     let w = crate::sandbox::managed_worktree(&r.wt, &root).expect("krowk's worktree");
-    assert_eq!((w.common.clone(), w.admin.clone()), (common.clone(), common.join("worktrees/abcd1234")));
-    let plan = Plan::new_in(Sandbox { profile: Profile::Workspace, by: By::Bubblewrap }, &r.wt, &[], &[], &[], &[], Some(&r.home), &r.env());
-    for p in ["objects", "refs", "logs", "worktrees/abcd1234"] {
-        assert!(plan.git.contains(&common.join(p)), "{p}: {:?}", plan.git);
-    }
-    for p in ["config", "hooks", "info", "HEAD", "refs/heads/main", "worktrees/own", "refs/heads/feature", "worktrees/abcd1234/commondir"] {
+    assert_eq!((w.common.clone(), w.admin.clone(), w.hex.as_str()), (common.clone(), common.join("worktrees/abcd1234"), "abcd1234"));
+    let plan = r.plan(&r.wt);
+    assert_eq!(plan.git, [(common.clone(), false), (common.join("objects"), true), (common.join("logs"), true), (common.join("refs/heads/krowk"), true), (common.join("worktrees/abcd1234"), true)]);
+    for p in ["config", "hooks", "info", "HEAD", "packed-refs", "worktrees/own", "worktrees/feedbeef", "refs/heads/krowk/feedbeef", "worktrees/abcd1234/commondir"] {
         assert!(plan.read_only.contains(&common.join(p)), "{p}: {:?}", plan.read_only);
     }
+    assert!(!plan.read_only.contains(&common.join("refs/heads/krowk/abcd1234")), "its own branch is its to move");
+    assert_eq!(plan.identity, Some(("Wt Four".into(), "wt4@example.com".into())), "as git resolves it in the worktree");
     let args = plan.bwrap_args();
     let at = |x: &str, v: &Path| args.windows(3).position(|w| w[0] == x && w[1] == v.to_string_lossy()).unwrap_or_else(|| panic!("{x} {}", v.display()));
-    assert!(at("--bind", &r.wt) < at("--bind-try", &common.join("refs")) && at("--bind-try", &common.join("refs")) < at("--ro-bind-try", &common.join("refs/heads/main")), "the read-only ones win");
+    assert!(at("--bind", &r.wt) < at("--ro-bind-try", &common) && at("--ro-bind-try", &common) < at("--bind-try", &common.join("refs/heads/krowk")), "the common directory read-only first");
+    assert!(at("--bind-try", &common.join("refs/heads/krowk")) < at("--ro-bind-try", &common.join("refs/heads/krowk/feedbeef")), "the read-only ones win");
+    for v in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_EMAIL"] {
+        assert!(args.windows(2).any(|w| w[0] == "--setenv" && w[1] == v), "{v}");
+    }
+    // No identity named anywhere git looks: none handed in, git's own
+    // error stands.
+    git(&r.main, &["config", "--unset", "user.email"]);
+    assert_eq!(r.plan(&r.wt).identity, None);
     // The person's own linked worktree, and the main checkout: as today.
     assert_eq!(crate::sandbox::managed_worktree(&r.own, &root), None);
     for ws in [&r.own, &r.main] {
-        let plan = Plan::new_in(Sandbox { profile: Profile::Workspace, by: By::Bubblewrap }, ws, &[], &[], &[], &[], Some(&r.home), &r.env());
-        assert!(plan.git.is_empty() && plan.read_only.contains(&ws.join(".git")), "{}", ws.display());
+        let plan = r.plan(ws);
+        assert!(plan.git.is_empty() && plan.identity.is_none() && plan.read_only.contains(&ws.join(".git")), "{}", ws.display());
     }
     // Not the root's subdirectory, not on a krowk branch, not under the
     // root the environment names, not with a `.git` leading elsewhere.
@@ -438,7 +448,7 @@ fn wt4_only_a_worktree_krowk_made_is_opened_to_a_commit() {
 }
 
 /// Worktrees WT4: an agent in a worktree krowk made commits from inside
-/// the sandbox, and the commit is the repository's.
+/// the sandbox, as the person, and the commit is the repository's.
 #[tokio::test(flavor = "current_thread")]
 async fn wt4_a_sandboxed_agent_commits_in_a_krowk_worktree() {
     if !enforced("wt4_a_sandboxed_agent_commits_in_a_krowk_worktree") {
@@ -446,11 +456,14 @@ async fn wt4_a_sandboxed_agent_commits_in_a_krowk_worktree() {
     }
     let r = Repo::new("wt4-commit");
     let scope = r.scope(&r.wt);
-    let (out, err) = bash(&r.wt, &scope, "echo new > new.txt && git add -A && git -c user.name=a -c user.email=a@b commit -q -m x && git status --porcelain").await;
+    let (out, err) = bash(&r.wt, &scope, "echo new > new.txt && git add -A && git commit -q -m x && git status --porcelain").await;
     assert!(!err, "{out}");
-    assert_eq!(git(&r.main, &["log", "-1", "--format=%s", "krowk/abcd1234"]), "x");
+    assert_eq!(git(&r.main, &["log", "-1", "--format=%s %an <%ae> %cn <%ce>", "krowk/abcd1234"]), "x Wt Four <wt4@example.com> Wt Four <wt4@example.com>");
     assert_eq!(git(&r.main, &["show", "krowk/abcd1234:new.txt"]), "new");
     assert_eq!(git(&r.main, &["log", "-1", "--format=%s", "main"]), "first", "main did not move");
+    // A branch of its own under `krowk/` it may make.
+    let (out, err) = bash(&r.wt, &scope, "git branch krowk/abcd1234-2").await;
+    assert!(!err && git(&r.main, &["rev-parse", "krowk/abcd1234-2"]) == git(&r.main, &["rev-parse", "krowk/abcd1234"]), "{out}");
     let _ = std::fs::remove_dir_all(&r.base);
 }
 
@@ -464,48 +477,76 @@ async fn wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is
     let r = Repo::new("wt4-fences");
     let scope = r.scope(&r.wt);
     let c = r.main.join(".git");
+    // A `packed-refs` to append to: a tag, packed.
+    git(&r.main, &["tag", "v0"]);
+    git(&r.main, &["pack-refs"]);
+    assert!(c.join("packed-refs").is_file());
     // A commit of its own first, so moving `main` to it would be a move.
-    let (out, err) = bash(&r.wt, &scope, "echo b > b.txt && git add -A && git -c user.name=a -c user.email=a@b commit -q -m b").await;
+    let (out, err) = bash(&r.wt, &scope, "echo b > b.txt && git add -A && git commit -q -m b").await;
     assert!(!err, "{out}");
     let main_was = git(&r.main, &["rev-parse", "main"]);
+    let ours = git(&r.main, &["rev-parse", "krowk/abcd1234"]);
     let read = |p: &Path| std::fs::read(p).ok();
+    let rofs = "Read-only file system";
 
     let config = read(&c.join("config"));
     let (out, err) = bash(&r.wt, &scope, &format!("printf '[core]\\n\\thooksPath = /tmp\\n' >> '{}'", c.join("config").display())).await;
-    assert!(err && out.contains("Read-only file system") && read(&c.join("config")) == config, "<common>/config: {out}");
+    assert!(err && out.contains(rofs) && read(&c.join("config")) == config, "<common>/config: {out}");
 
     let (out, err) = bash(&r.wt, &scope, &format!("echo 'touch /tmp/pwned' > '{}'", c.join("hooks/post-commit").display())).await;
-    assert!(err && out.contains("Read-only file system") && !c.join("hooks/post-commit").exists(), "<common>/hooks/post-commit: {out}");
+    assert!(err && out.contains(rofs) && !c.join("hooks/post-commit").exists(), "<common>/hooks/post-commit: {out}");
 
     let (out, err) = bash(&r.wt, &scope, &format!("echo '* filter=evil' > '{}'", c.join("info/attributes").display())).await;
-    assert!(err && out.contains("Read-only file system") && !c.join("info/attributes").exists(), "<common>/info/attributes: {out}");
+    assert!(err && out.contains(rofs) && !c.join("info/attributes").exists(), "<common>/info/attributes: {out}");
 
     let head = read(&c.join("HEAD"));
     let (out, err) = bash(&r.wt, &scope, &format!("echo 'ref: refs/heads/krowk/abcd1234' > '{}'", c.join("HEAD").display())).await;
-    assert!(err && out.contains("Read-only file system") && read(&c.join("HEAD")) == head, "<common>/HEAD: {out}");
+    assert!(err && out.contains(rofs) && read(&c.join("HEAD")) == head, "<common>/HEAD: {out}");
 
     let (out, err) = bash(&r.wt, &scope, "git update-ref refs/heads/main HEAD").await;
     assert!(err && git(&r.main, &["rev-parse", "main"]) == main_was && !c.join("refs/heads/main.lock").exists(), "refs/heads/main: {out}");
     let (out, err) = bash(&r.wt, &scope, &format!("git rev-parse HEAD > '{}'", c.join("refs/heads/main").display())).await;
-    assert!(err && out.contains("Read-only file system") && git(&r.main, &["rev-parse", "main"]) == main_was, "refs/heads/main, written: {out}");
+    assert!(err && out.contains(rofs) && git(&r.main, &["rev-parse", "main"]) == main_was, "refs/heads/main, written: {out}");
+    // Nor by putting a new `refs/heads` where the old one was.
+    let (out, err) = bash(&r.wt, &scope, &format!("cd '{}' && mv heads old && mkdir heads && git -C '{}' rev-parse HEAD > heads/main", c.join("refs").display(), r.wt.display())).await;
+    assert!(err && c.join("refs/heads/main").is_file() && !c.join("refs/old").exists() && git(&r.main, &["rev-parse", "main"]) == main_was, "refs/heads, renamed: {out}");
+
+    // Nor what `main` shows, by a replacement for its commit.
+    let (out, err) = bash(&r.wt, &scope, &format!("git replace {main_was} HEAD")).await;
+    assert!(err && !c.join("refs/replace").exists(), "git replace: {out}");
+    let (out, err) = bash(&r.wt, &scope, &format!("mkdir -p '{0}/refs/replace' && echo {ours} > '{0}/refs/replace/{main_was}'", c.display())).await;
+    assert!(err && out.contains(rofs) && !c.join("refs/replace").exists(), "refs/replace, written: {out}");
+    let packed = read(&c.join("packed-refs"));
+    let (out, err) = bash(&r.wt, &scope, &format!("echo '{ours} refs/replace/{main_was}' >> '{}'", c.join("packed-refs").display())).await;
+    assert!(err && out.contains(rofs) && read(&c.join("packed-refs")) == packed && git(&r.main, &["log", "-1", "--format=%s", "main"]) == "first", "packed-refs: {out}");
+
+    // A tag is a ref outside `krowk/`: the accepted cost.
+    let (out, err) = bash(&r.wt, &scope, "git tag t").await;
+    assert!(err && !c.join("refs/tags/t").exists(), "git tag: {out}");
+
+    let feedbeef = git(&r.main, &["rev-parse", "krowk/feedbeef"]);
+    let (out, err) = bash(&r.wt, &scope, "git update-ref refs/heads/krowk/feedbeef HEAD").await;
+    assert!(err && git(&r.main, &["rev-parse", "krowk/feedbeef"]) == feedbeef, "another agent's branch: {out}");
+    let (out, err) = bash(&r.wt, &scope, &format!("echo {ours} > '{}'", c.join("refs/heads/krowk/feedbeef").display())).await;
+    assert!(err && out.contains(rofs) && git(&r.main, &["rev-parse", "krowk/feedbeef"]) == feedbeef, "another agent's branch, written: {out}");
 
     let other = c.join("worktrees/own/HEAD");
     let other_was = read(&other);
     let (out, err) = bash(&r.wt, &scope, &format!("echo 'ref: refs/heads/main' > '{}'", other.display())).await;
-    assert!(err && out.contains("Read-only file system") && read(&other) == other_was, "another worktree's admin dir: {out}");
+    assert!(err && out.contains(rofs) && read(&other) == other_was, "another worktree's admin dir: {out}");
     let (out, err) = bash(&r.wt, &scope, &format!("touch '{}'", c.join("worktrees/own/config.worktree").display())).await;
-    assert!(err && out.contains("Read-only file system") && !c.join("worktrees/own/config.worktree").exists(), "another worktree's admin dir, a new file: {out}");
+    assert!(err && out.contains(rofs) && !c.join("worktrees/own/config.worktree").exists(), "another worktree's admin dir, a new file: {out}");
 
     let dot_git = read(&r.wt.join(".git"));
     let (out, err) = bash(&r.wt, &scope, &format!("echo 'gitdir: {}' > .git", r.base.join("evil").display())).await;
-    assert!(err && out.contains("Read-only file system") && read(&r.wt.join(".git")) == dot_git, "the .git file: {out}");
+    assert!(err && out.contains(rofs) && read(&r.wt.join(".git")) == dot_git, "the .git file: {out}");
 
     let commondir = read(&c.join("worktrees/abcd1234/commondir"));
     let (out, err) = bash(&r.wt, &scope, &format!("echo '{}' > '{}'", r.base.join("evil").display(), c.join("worktrees/abcd1234/commondir").display())).await;
-    assert!(err && out.contains("Read-only file system") && read(&c.join("worktrees/abcd1234/commondir")) == commondir, "its own commondir: {out}");
+    assert!(err && out.contains(rofs) && read(&c.join("worktrees/abcd1234/commondir")) == commondir, "its own commondir: {out}");
 
     // And git still works there after all of it.
-    let (out, err) = bash(&r.wt, &scope, "git -c user.name=a -c user.email=a@b commit -q --allow-empty -m c").await;
+    let (out, err) = bash(&r.wt, &scope, "git commit -q --allow-empty -m c").await;
     assert!(!err && git(&r.main, &["log", "-1", "--format=%s", "krowk/abcd1234"]) == "c", "{out}");
     let _ = std::fs::remove_dir_all(&r.base);
 }
