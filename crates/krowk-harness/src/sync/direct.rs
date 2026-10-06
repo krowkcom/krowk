@@ -17,7 +17,6 @@ use super::tailscale::{self, SameUser};
 use crate::relay::{self, Limits, Roster};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, TcpListener};
-use std::path::PathBuf;
 use tokio::sync::watch;
 
 /// Where a direct listener numbers its links from.
@@ -26,8 +25,8 @@ pub const FIRST_LINK: u64 = 1 << 40;
 /// How the bridge offers direct paths.
 #[derive(Clone)]
 pub struct Config {
-    /// tailscaled's LocalAPI socket.
-    pub socket: PathBuf,
+    /// tailscaled's LocalAPI.
+    pub socket: tailscale::LocalApi,
     /// The registry's ticket-signing keys, as the relay has them.
     pub roster: Roster,
     /// Also require tailscaled to name the far end as this tailnet user.

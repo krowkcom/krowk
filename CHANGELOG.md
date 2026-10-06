@@ -111,6 +111,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A Mac with the Tailscale app can host over the direct path.** The app
+  has no `tailscaled` socket: its LocalAPI is on 127.0.0.1 behind a token.
+  On macOS, `krowk sync host` and `krowk hosts` now try the open-source
+  `tailscaled`'s sockets, then the App Store app's `sameuserproof` file in
+  its group container, then the standalone app's in `/Library/Tailscale`.
+  `KROWK_TAILSCALE_LOCALAPI` names the app's LocalAPI by hand
+  (`http://127.0.0.1:<port>` with `KROWK_TAILSCALE_LOCALAPI_TOKEN`, or the
+  `sameuserproof` file's path); only loopback is taken.
+  `KROWK_TAILSCALE_SOCKET` still names a socket, and wins over it.
 - **A synced host no longer hangs on a relay link that stopped working
   without saying so.** If the relay kept answering heartbeats but acked none
   of what the host sent, viewers stopped receiving updates while the host
