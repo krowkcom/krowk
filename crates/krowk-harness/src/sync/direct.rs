@@ -69,6 +69,17 @@ impl Drop for Listening {
     }
 }
 
+/// This node as tailscaled reads it, when Tailscale answers and is up;
+/// otherwise why there is no direct path: "Tailscale isn't running" for a
+/// node that answered as down, else what asking it gave, as said.
+pub fn running(socket: &tailscale::LocalApi) -> Result<tailscale::Status, String> {
+    let status = tailscale::status(socket).map_err(|e| format!("Tailscale: {e}"))?;
+    if !status.running() {
+        return Err(if status.backend_state.is_empty() { "Tailscale isn't running".into() } else { format!("Tailscale isn't running: it is {}", status.backend_state) });
+    }
+    Ok(status)
+}
+
 /// The tailnet user the same-user check holds a connection's far end to:
 /// this node's, when a person owns it. Tailscale owns a tagged node by its
 /// tags, and `whois` names every tagged node of a tailnet as one shared
@@ -88,16 +99,13 @@ pub fn same_user(status: &tailscale::Status) -> Result<u64, String> {
 /// LAN address), on one port. Errors say why there is no direct path; the
 /// session then goes by the relay alone.
 pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) -> Result<Listening, String> {
-    let status = tailscale::status(&c.socket)?;
-    if !status.running() {
-        return Err(format!("tailscale is {}", if status.backend_state.is_empty() { "not running" } else { &status.backend_state }));
-    }
+    let status = running(&c.socket)?;
     // Only a tailnet address is listened on, whatever the LocalAPI says: on
     // macOS it is a port on 127.0.0.1 that anyone may bind once the app
     // quits, and an answer of 0.0.0.0 would put plain ws:// on every
     // network, past KROWK_DIRECT_LAN.
     let ips: Vec<IpAddr> = status.me.tailscale_ips.iter().copied().filter(tailscale::is_tailnet).collect();
-    let ip = ips.iter().find(|i| i.is_ipv4()).or(ips.first()).copied().ok_or("tailscale gives this machine no tailnet address")?;
+    let ip = ips.iter().find(|i| i.is_ipv4()).or(ips.first()).copied().ok_or("Tailscale gives this machine no tailnet address")?;
     let whois = if c.same_user { Some(SameUser { socket: c.socket.clone(), user: same_user(&status)? }) } else { None };
     let first = TcpListener::bind((ip, 0)).map_err(|e| format!("the tailnet address {ip} could not be listened on: {e}"))?;
     let port = first.local_addr().map_err(|e| e.to_string())?.port();

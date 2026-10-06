@@ -175,6 +175,39 @@ fn r_perm_1_a_hook_that_blocks_still_blocks_under_unhinged() {
     assert!(!h.repo().join("ran.txt").exists(), "a hook is the person's own program, not a rule: its block stands");
 }
 
+/// A `gh` post, through a shell function standing in for `gh`: it leaves
+/// `posted.txt` behind when it runs.
+fn gh_comment(body: &str) -> String {
+    format!("gh() {{ echo \"$@\" > posted.txt; }}; gh pr comment 12 --body '{body}'")
+}
+
+#[test]
+fn a_gh_post_with_a_bare_card_link_is_refused_in_every_mode_and_the_krowk_block_runs() {
+    let card = "https://krowk.com/a/art_0123456789abcdefghijklmn";
+    let bare = gh_comment(&format!("Fixed, see {card}"));
+    let block = gh_comment(&format!("Fixed:\n\n**Cart after** · [View preview ↗]({card})"));
+    for mode in [PermissionMode::Default, PermissionMode::AcceptEdits, PermissionMode::BypassPermissions, PermissionMode::Unhinged] {
+        let m = mock::serve(one_tool("bash", json!({"command": bare})));
+        let h = Home::new("paste-guard", &m.url);
+        // Every command allowed: the refusal is no permission rule.
+        let host = h.host(Config { user: Some(json!({"permissions": {"allow": ["Bash"]}})), ..Config::default() });
+        let (_, r) = run(&host, prompt("post the result", mode));
+        assert_eq!(r.result, "Done.", "{mode:?}");
+        let sent = tool_result_sent(&m);
+        assert!(sent.contains("bare krowk card link") && sent.contains("krowk block") && sent.contains(card), "{mode:?}: {sent}");
+        assert!(!h.repo().join("posted.txt").exists(), "{mode:?}: the post ran");
+        if !mode.asks_nothing() {
+            continue;
+        }
+        let m = mock::serve(one_tool("bash", json!({"command": block})));
+        let h = Home::new("paste-guard-block", &m.url);
+        let host = h.host(Config { user: Some(json!({"permissions": {"allow": ["Bash"]}})), ..Config::default() });
+        let (_, r) = run(&host, prompt("post the result", mode));
+        assert_eq!(r.result, "Done.", "{mode:?}");
+        assert!(h.repo().join("posted.txt").exists(), "{mode:?}: the block was refused: {}", tool_result_sent(&m));
+    }
+}
+
 #[test]
 fn r_compat_1_a_pretooluse_hook_exiting_2_blocks_the_tool_and_the_model_reads_why() {
     let m = mock::serve(one_tool("bash", json!({"command": "touch ran.txt"})));
@@ -249,7 +282,7 @@ fn r_perm_2_an_asked_call_is_an_approval_request_a_client_answers_over_the_proto
                 while let Some(l) = rx.recv().await {
                     if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
                         let (itx, _) = tokio::sync::mpsc::channel(1);
-                        host.execute(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision }, itx).await.unwrap();
+                        host.execute(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision, answers: Vec::new() }, itx).await.unwrap();
                     }
                     let done = matches!(l, StreamLine::Live(LiveEvent::Result(_)));
                     lines.push(l);
@@ -274,8 +307,55 @@ fn r_perm_2_an_asked_call_is_an_approval_request_a_client_answers_over_the_proto
     }
     // A request nobody is waiting on is refused, not ignored.
     let (itx, _) = tokio::sync::mpsc::channel(1);
-    let e = rt.block_on(host.execute(Command::Approve { session_id: "s".into(), request_id: "r".into(), decision: ApprovalDecision::Allow }, itx)).unwrap_err();
+    let e = rt.block_on(host.execute(Command::Approve { session_id: "s".into(), request_id: "r".into(), decision: ApprovalDecision::Allow, answers: Vec::new() }, itx)).unwrap_err();
     assert_eq!(e.code, "no_approval_request");
+}
+
+#[test]
+fn ask_user_is_offered_where_a_person_answers_and_the_model_reads_their_answers() {
+    use krowk_harness::protocol::QuestionAnswer;
+    let question = json!({"questions": [{"question": "Which database?", "header": "DB", "options": [{"label": "Postgres"}, {"label": "SQLite"}]}]});
+    let m = mock::serve(one_tool("ask_user", question));
+    let h = Home::new("ask-user", &m.url);
+    let host = h.host(Config { approvals: true, ..Config::default() });
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let lines = rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        // Plan mode: a question changes nothing, so it is asked there too.
+        let turn = host.execute(prompt("pick a database", PermissionMode::Plan), tx);
+        let client = async {
+            let mut lines = Vec::new();
+            while let Some(l) = rx.recv().await {
+                if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
+                    let answers = vec![QuestionAnswer { id: req.questions[0].id.clone(), picked: vec!["Postgres".into()], text: None }];
+                    let (itx, _) = tokio::sync::mpsc::channel(1);
+                    host.execute(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers }, itx).await.unwrap();
+                }
+                let done = matches!(l, StreamLine::Live(LiveEvent::Result(_)));
+                lines.push(l);
+                if done {
+                    break;
+                }
+            }
+            lines
+        };
+        let (r, lines) = tokio::join!(turn, client);
+        assert_eq!(r.unwrap().unwrap().result, "Done.");
+        lines
+    });
+    let req = lines.iter().find_map(|l| if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = l { Some(r.clone()) } else { None }).expect("the questions went out");
+    assert_eq!((req.tool.as_str(), req.questions[0].header.as_str(), req.questions[0].options.len()), ("ask_user", "DB", 2));
+    let offered = m.seen.lock().unwrap()[0].body["tools"].as_array().unwrap().iter().any(|t| t["name"] == "ask_user");
+    assert!(offered, "offered where a person answers");
+    assert_eq!(tool_result_sent(&m), r#"User has answered your questions: "Which database?"="Postgres". You can now continue with the user's answers in mind."#);
+
+    // Headless: not offered, and a call of it anyway is told nobody is here.
+    let m = mock::serve(one_tool("ask_user", json!({"questions": [{"question": "x?", "options": []}]})));
+    let h = Home::new("ask-user-headless", &m.url);
+    let (lines, _) = run(&h.host(Config::default()), prompt("pick", PermissionMode::Default));
+    assert!(!lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::ApprovalRequested(_)))));
+    assert!(!m.seen.lock().unwrap()[0].body["tools"].as_array().unwrap().iter().any(|t| t["name"] == "ask_user"), "not offered headless");
+    assert!(tool_result_sent(&m).contains("no tool named \"ask_user\""));
 }
 
 #[test]

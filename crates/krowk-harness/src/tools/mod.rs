@@ -1,8 +1,8 @@
 //! The tools the native loop offers (R-TOOL-1): `read`, `write`, one edit
 //! tool, `bash`, `grep`, `glob`, `todo_write` (`crate::todo`), `publish`
-//! (`crate::evidence`) and `subagent` (`crate::subagent`) — the last two of
-//! which the loop runs itself, since they act on the session rather than
-//! the file system. Which edit tool — `str_replace`,
+//! (`crate::evidence`), `subagent` (`crate::subagent`) and `ask_user`
+//! (`crate::ask`). The loop runs `todo_write`, `subagent` and `ask_user`
+//! itself, since they act on the session rather than the file system. Which edit tool — `str_replace`,
 //! `apply_patch` or `search_replace` — is the turn's toolset preset's to
 //! say (`crate::toolset`). Each input is a Rust type the tool's JSON Schema
 //! is derived from, so the definition the model sees and the parser that
@@ -152,6 +152,7 @@ pub fn definitions(ts: &Toolset) -> Vec<ToolDefinition> {
         function(crate::todo::TODO_WRITE, crate::todo::DESCRIPTION, input_schema::<crate::todo::TodoWriteInput>()),
         function(crate::evidence::PUBLISH, crate::evidence::DESCRIPTION, input_schema::<crate::evidence::PublishInput>()),
         function(crate::subagent::SUBAGENT, crate::subagent::DESCRIPTION, input_schema::<crate::subagent::SubagentInput>()),
+        function(crate::ask::ASK_USER, crate::ask::DESCRIPTION, input_schema::<crate::ask::AskUserInput>()),
     ]
 }
 
@@ -261,7 +262,7 @@ pub fn describe(name: &str, input: &Value, env: &ToolEnv<'_>) -> Result<Call, (S
         GLOB => call(Access::Read(vec![parse_input::<GlobInput>(name, input)?.path.as_deref().map_or_else(|| env.cwd.to_path_buf(), at)])),
         BASH => call(Access::Bash(parse_input::<BashInput>(name, input)?.command)),
         crate::evidence::PUBLISH => crate::evidence::call(env.cwd, input)?,
-        other => return Err((format!("there is no tool named {other:?} — the tools are read, write, {}, bash, grep, glob, todo_write, publish and subagent", env.edit.name()), true)),
+        other => return Err((format!("there is no tool named {other:?} — the tools are read, write, {}, bash, grep, glob, todo_write, publish, subagent and ask_user", env.edit.name()), true)),
     })
 }
 
@@ -342,8 +343,8 @@ pub async fn execute(name: &str, input: &Value, env: &ToolEnv<'_>, scope: Scope)
             None => (crate::evidence::UNAVAILABLE.into(), true),
         },
         // The loop's own: they act on the session, not the file system.
-        crate::todo::TODO_WRITE | crate::subagent::SUBAGENT => (format!("{name} is not available in this session"), true),
-        other => (format!("there is no tool named {other:?} — the tools are read, write, {}, bash, grep, glob, todo_write, publish and subagent", env.edit.name()), true),
+        crate::todo::TODO_WRITE | crate::subagent::SUBAGENT | crate::ask::ASK_USER => (format!("{name} is not available in this session"), true),
+        other => (format!("there is no tool named {other:?} — the tools are read, write, {}, bash, grep, glob, todo_write, publish, subagent and ask_user", env.edit.name()), true),
     }
 }
 
@@ -1075,7 +1076,7 @@ pub(crate) mod tests {
     fn r_tool_1_the_core_tools_are_derived_object_schemas_in_a_fixed_order() {
         for (preset, edit) in [("claude", STR_REPLACE), ("gpt", APPLY_PATCH), ("grok", SEARCH_REPLACE)] {
             let defs = definitions(&toolset(preset, false));
-            assert_eq!(defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), [READ, WRITE, edit, BASH, GREP, GLOB, crate::todo::TODO_WRITE, crate::evidence::PUBLISH, crate::subagent::SUBAGENT], "{preset}");
+            assert_eq!(defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), [READ, WRITE, edit, BASH, GREP, GLOB, crate::todo::TODO_WRITE, crate::evidence::PUBLISH, crate::subagent::SUBAGENT, crate::ask::ASK_USER], "{preset}");
             assert!(defs.iter().all(|d| d.input_schema["type"] == "object" && d.grammar.is_none()), "function tools everywhere without custom tools");
             assert_eq!(definitions(&toolset(preset, false)), defs, "deterministic: the definitions are part of the cached prefix");
         }
@@ -1088,6 +1089,7 @@ pub(crate) mod tests {
         assert_eq!(defs[6].input_schema["required"], json!(["todos"]), "todo_write takes the whole list");
         assert_eq!(defs[7].input_schema["required"], json!(["files"]), "publish takes the files krowk_push takes");
         assert_eq!(defs[8].input_schema["required"], json!(["description", "prompt"]));
+        assert_eq!(defs[9].input_schema["required"], json!(["questions"]), "ask_user takes Claude Code's AskUserQuestion input");
     }
 
     #[test]
@@ -1321,7 +1323,7 @@ pub(crate) mod tests {
         let (out, err) = run(STR_REPLACE, &json!({"path": "a.txt", "old_str": "x", "new_str": "y"}), &env).await;
         assert!(err && out.contains("edit files with apply_patch"), "{out}");
         assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "x\n");
-        assert!(run("frobnicate", &json!({}), &env).await.0.contains("read, write, apply_patch, bash, grep, glob, todo_write, publish and subagent"));
+        assert!(run("frobnicate", &json!({}), &env).await.0.contains("read, write, apply_patch, bash, grep, glob, todo_write, publish, subagent and ask_user"));
         let (out, err) = run(crate::evidence::PUBLISH, &json!({"files": ["a.txt"]}), &env).await;
         assert!(err && out.contains("publish is not available"), "a host with no publisher says so: {out}");
         for mode in [PermissionMode::Default, PermissionMode::Plan] {

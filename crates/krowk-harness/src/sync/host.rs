@@ -684,7 +684,7 @@ impl Hosting {
         for (k, r) in late {
             self.approvals.remove(&k);
             let (tx, _) = mpsc::channel(1);
-            let _ = self.daemon.execute(Command::Approve { session_id: r.session_id, request_id: r.request_id, decision: ApprovalDecision::Deny }, tx).await;
+            let _ = self.daemon.execute(Command::Approve { session_id: r.session_id, request_id: r.request_id, decision: ApprovalDecision::Deny, answers: Vec::new() }, tx).await;
         }
     }
 

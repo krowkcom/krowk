@@ -446,7 +446,7 @@ mod tests {
     async fn d11_a_subagents_approval_is_not_offered_to_a_viewer() {
         let (p, mut rx, _) = pump();
         let mut watch = p.watch.subscribe();
-        let req = ApprovalRequest { session_id: "sub".into(), turn_id: "t".into(), request_id: "r".into(), tool: "bash".into(), input: serde_json::json!({}), summary: "run ls".into(), reason: String::new(), remember: Vec::new() };
+        let req = ApprovalRequest { session_id: "sub".into(), turn_id: "t".into(), request_id: "r".into(), tool: "bash".into(), input: serde_json::json!({}), summary: "run ls".into(), reason: String::new(), remember: Vec::new(), questions: Vec::new() };
         p.update(Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(req)))).await;
         assert!(watch.try_recv().is_err(), "no dialog");
         assert!(matches!(rx.try_recv(), Ok(Event::Note(n)) if n.contains("answered on the host")));

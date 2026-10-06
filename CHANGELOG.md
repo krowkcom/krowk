@@ -11,6 +11,38 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A bare krowk link no longer lands in a pull request or an issue.** On
+  GitHub a bare `krowk.com/a/…` link doesn't unfurl. It shows up as a blue
+  link that says nothing about the file. When an agent running in krowk
+  calls `gh pr create|edit|comment` or `gh issue create|edit|comment` with
+  one in the body, krowk refuses that one call and tells the agent to paste
+  the krowk block instead, and where to get it (`paste.markdown` from
+  `krowk uploads show <link> --json`). The agent rewrites the body and posts
+  again without you stepping in. The body is checked whether it is given
+  inline, through a heredoc, or with `--body-file` when the file can be
+  read. A card link inside a krowk block is fine, and nothing else is
+  touched: other `gh` commands, bodies without a card link, and posts to
+  Slack or Basecamp, where a bare link unfurls. This isn't a permission
+  rule, so it holds in every mode, `bypassPermissions` and `unhinged`
+  included, on krowk's own models, Claude Code and Codex alike. On Codex,
+  krowk passes the check as a hook, and the first time, has Codex record it
+  as trusted in its `config.toml` (a `hooks.state` entry for that one
+  command), because Codex runs only trusted hooks. krowk's Codex accounts
+  share your `~/.codex/config.toml`, so that is where the entry lands. On
+  Windows, Codex sessions don't have the check yet. A code span or fenced
+  block that quotes a card link is left alone.
+- **The agent can ask you which way to go.** When a choice is yours, the
+  agent asks up to four questions with options to pick from, and you answer
+  over the prompt: a number or Enter picks, Space toggles where several may
+  be picked, Tab moves between questions, and typing gives your own answer
+  instead. Esc declines and the agent carries on with its best judgment.
+  The native agent gets an `ask_user` tool for this. Claude Code's
+  `AskUserQuestion` and Codex's questions, which krowk used to refuse, now
+  reach you the same way, in plan mode too. Questions are only asked where
+  someone can answer: `krowk -p` doesn't offer the tool, and a backend that
+  asks anyway is told to decide and say what it assumed. For protocol
+  clients, an `approval.requested` frame can carry `questions`, and
+  `approve` answers them with `answers`.
 - **Paste a screenshot into the prompt.** Ctrl-V (or Alt-V, where the
   terminal keeps Ctrl-V for itself) puts the clipboard's image in the prompt
   as `[Image #1]`, and the model sees it with the text. Dragging an image
@@ -120,6 +152,30 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `tagged-devices`, so on a tagged host `KROWK_TAILSCALE_SAME_USER=1` would
   have let in any tagged machine and turned away your own. It now says so
   and offers no direct path; untag the machine, or leave the check off.
+- **A synced session goes direct over Tailscale with no setup.** With
+  Tailscale running on both machines, `krowk sync host` offers the direct
+  path by itself: it fetches the registry's relay ticket public keys
+  (`GET /v1/relay/ticket_keys`) at every hosting, so a viewer's session
+  moves off the relay with no `KROWK_RELAY_TICKET_KEYS` file to write, and
+  a key the registry rotates in reaches the next session without a
+  reinstall. It keeps them in `~/.krowk/cache/` for a day, used only when
+  the registry can't be reached. Admission is unchanged: only the
+  registry's ticket and the device's signed challenge get in, and being on
+  the tailnet admits nobody. When there is no direct path, the host says
+  why in one line on stderr, such as `krowk: no direct path (Tailscale
+  isn't running: it is Stopped); the session goes by the relay`, and the
+  session goes by the relay. `KROWK_RELAY_TICKET_KEYS` still names the keys
+  by hand, and wins over the fetched ones, for a stand-in registry.
+- **The Gemini extension, the MCP registry entry and `@krowk/mcp` describe
+  Krowk as a coding agent harness.** They used to describe a permalink
+  uploader. Each now says that it's Krowk's publishing, for Gemini CLI or
+  for any MCP client, and what it turns into links. With
+  the Claude Code plugin's, they no longer say links unfurl in GitHub and
+  Linear, which don't unfurl links. Those links unfurl in Slack and Basecamp;
+  in GitHub and Linear, images show inline. The `server.json` here was over the
+  MCP registry's 100-character description limit and didn't validate against
+  its schema; it's within it now. `make release-check` and the release
+  workflow now hold it to that limit, and the other descriptions to one line.
 - **What you say in a session is shown in markdown, as answers are.**
   `` `code` `` is in the code colour, `**bold**` is bold, and links, lists,
   quotes and fenced blocks look as they do in an answer, all on the band of

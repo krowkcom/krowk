@@ -25,8 +25,9 @@
 //!
 //! | subtype | direction | what krowk does |
 //! |---|---|---|
-//! | `initialize` | krowk → claude | first, on every process; its answer lists the `models`, which is how in-place model switching is detected |
-//! | `can_use_tool` | claude → krowk | judged by krowk's permission evaluator (`crate::permissions`), asking the person when a client is attached |
+//! | `initialize` | krowk → claude | first, on every process, registering the paste guard as a `PreToolUse` hook on `Bash`; its answer lists the `models`, which is how in-place model switching is detected |
+//! | `can_use_tool` | claude → krowk | judged by krowk's permission evaluator (`crate::permissions`), asking the person when a client is attached; `AskUserQuestion` is the person's to answer (`crate::ask`), its answers returned in `updatedInput` |
+//! | `hook_callback` | claude → krowk | the paste guard (`crate::paste_guard`): a `gh` post carrying a bare krowk card link is denied, whatever the mode and the person's allow rules |
 //! | `mcp_message` | claude → krowk | a JSON-RPC message for the `krowk` MCP server, answered by `crate::bridge` |
 //! | `interrupt` | krowk → claude | a `Command::Interrupt`; the turn ends at the next `result` and the process lives on |
 //! | `set_model` | krowk → claude | a turn on another model of the same instance, when `initialize` listed models; otherwise a new process on `--resume` |
@@ -671,6 +672,16 @@ async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Re
     say(EngineEvent::Unprompted { reason });
 }
 
+/// The paste guard's callback id (`crate::paste_guard`).
+const PASTE_GUARD: &str = "krowk_paste_guard";
+
+/// The hooks `initialize` registers: the paste guard, before every Bash
+/// call. A hook runs ahead of Claude Code's own permission decision, so it
+/// sees the calls an allow rule in settings lets through without asking.
+fn hooks() -> Value {
+    json!({"PreToolUse": [{"matcher": "Bash", "hookCallbackIds": [PASTE_GUARD]}]})
+}
+
 /// What a control request is answered with: the turn it arrived in.
 struct Answers {
     session_id: String,
@@ -695,9 +706,6 @@ impl Answers {
     /// Judges a call, asking a person when the verdict says to and a turn
     /// is there to ask through.
     async fn permit(&self, tool: &str, input: &Value, asking: Asking<'_>) -> Result<(), String> {
-        if tool == "AskUserQuestion" && !self.mode.asks_nothing() {
-            return Err("krowk is running this turn without a person to ask: decide, say what you assumed, and carry on.".into());
-        }
         let call = call_of(tool, input, &self.cwd);
         match asking {
             Some((events, cancel)) => self.gate.check(&call, tool, input, None, events, cancel).await.map(drop),
@@ -709,6 +717,29 @@ impl Answers {
         }
     }
 
+    /// `AskUserQuestion`, asked of the person: its input with their
+    /// `answers`, keyed by each question's text and several picks joined
+    /// as Claude Code joins them — or the refusal the model reads. A deny
+    /// rule on it holds.
+    async fn ask_user(&self, input: &Value, asking: Asking<'_>) -> Result<Value, String> {
+        // The session's own, as the native `ask_user` is: no mode refuses
+        // it, plan included.
+        let call = Call { tool: "AskUserQuestion".into(), access: Access::Session, subject: None };
+        if let Verdict::Deny(m) = self.gate.verdict(&call, None) {
+            return Err(m);
+        }
+        let Some((events, cancel)) = asking else { return Err(permissions::NOBODY_TO_ASK.into()) };
+        let questions = crate::ask::parse(input)?;
+        let answers = self.gate.ask("AskUserQuestion", input, questions.clone(), events, cancel).await?;
+        let said: serde_json::Map<String, Value> = questions.iter().filter_map(|q| answers.iter().find(|a| a.id == q.id).and_then(crate::ask::said).map(|a| (q.id.clone(), Value::String(a)))).collect();
+        if said.is_empty() {
+            return Err(permissions::DECLINED.into());
+        }
+        let mut input = input.clone();
+        input["answers"] = Value::Object(said);
+        Ok(input)
+    }
+
     /// The answer to one of Claude Code's control requests.
     async fn answer(&self, request_id: &str, req: &Value, asking: Asking<'_>) -> Value {
         let subtype = req.get("subtype").and_then(Value::as_str).unwrap_or_default();
@@ -717,6 +748,12 @@ impl Answers {
             "can_use_tool" => {
                 let tool = req.get("tool_name").and_then(Value::as_str).unwrap_or_default();
                 let input = req.get("input").cloned().unwrap_or_else(|| json!({}));
+                if tool == "AskUserQuestion" {
+                    return success(match self.ask_user(&input, asking).await {
+                        Ok(input) => json!({"behavior": "allow", "updatedInput": input}),
+                        Err(message) => json!({"behavior": "deny", "message": message}),
+                    });
+                }
                 match self.permit(tool, &input, asking).await {
                     Ok(()) => success(json!({"behavior": "allow", "updatedInput": input})),
                     Err(message) => success(json!({"behavior": "deny", "message": message})),
@@ -736,7 +773,8 @@ impl Answers {
                 };
                 success(json!({"mcp_response": bridge::handle(req.get("message").unwrap_or(&Value::Null), &env).await}))
             }
-            // No hooks are registered, so none should be called back.
+            "hook_callback" if req.get("callback_id").and_then(Value::as_str) == Some(PASTE_GUARD) => success(crate::paste_guard::pre_tool_use(req.get("input").unwrap_or(&Value::Null))),
+            // The paste guard is the only hook registered.
             "hook_callback" => success(json!({})),
             other => json!({"type": "control_response", "response": {"subtype": "error", "request_id": request_id, "error": format!("krowk does not answer the control request {other:?}")}}),
         }
@@ -941,7 +979,7 @@ impl Proc {
             backlog: VecDeque::new(),
             origins: false,
         };
-        let init = p.request(json!({"subtype": "initialize", "hooks": null}), ask, INITIALIZE_TIMEOUT).await?;
+        let init = p.request(json!({"subtype": "initialize", "hooks": hooks()}), ask, INITIALIZE_TIMEOUT).await?;
         p.set_model = init.get("models").is_some_and(Value::is_array);
         Ok(p)
     }
@@ -1438,6 +1476,44 @@ async fn announce(events: &Events, init: &Init, b: &Backend, instance: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ask_user_question_is_the_persons_to_answer_and_their_answers_ride_back_in_updated_input() {
+        use crate::protocol::{ApprovalDecision, QuestionAnswer};
+        let approvals = permissions::Approvals::default();
+        let gate = Gate::new(permissions::Policy::modes_only(Path::new("/repo")), PermissionMode::Plan, Default::default(), Some(approvals.clone()), None, "s", "t");
+        let ask = Answers { session_id: "s".into(), turn_id: "t".into(), model: ModelRef { instance: "claude:me".into(), model: "claude-opus-5-5".into() }, cwd: PathBuf::from("/repo"), mode: PermissionMode::Plan, krowk_version: "test".into(), gate, evidence: None };
+        let input = json!({"questions": [
+            {"question": "Which database?", "header": "DB", "multiSelect": false, "options": [{"label": "Postgres", "description": "x"}, {"label": "SQLite", "description": "y"}]},
+            {"question": "Which tests?", "header": "Tests", "multiSelect": true, "options": [{"label": "unit", "description": ""}, {"label": "e2e", "description": ""}]},
+        ]});
+        let req = json!({"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": input});
+        let (tx, mut rx) = mpsc::channel(8);
+        let (_c, cancel) = tokio::sync::watch::channel(false);
+        let answering = approvals.clone();
+        tokio::spawn(async move {
+            let mut n = 0;
+            while let Some(ev) = rx.recv().await {
+                if let EngineEvent::Approval(req) = ev {
+                    // Asked in plan mode too: a question changes nothing.
+                    let answers = vec![QuestionAnswer { id: "Which database?".into(), picked: vec![], text: Some("DuckDB".into()) }, QuestionAnswer { id: "Which tests?".into(), picked: vec!["unit".into(), "e2e".into()], text: None }];
+                    let decision = if n == 0 { ApprovalDecision::Allow } else { ApprovalDecision::Deny };
+                    answering.answer("s", &req.request_id, decision, if n == 0 { answers } else { vec![] }).unwrap();
+                    n += 1;
+                }
+            }
+        });
+        let got = ask.answer("r1", &req, Some((&tx, &cancel))).await;
+        let r = &got["response"]["response"];
+        assert_eq!(r["behavior"], "allow", "{got}");
+        assert_eq!(r["updatedInput"]["answers"], json!({"Which database?": "DuckDB", "Which tests?": "unit, e2e"}));
+        assert_eq!(r["updatedInput"]["questions"], input["questions"], "its questions as Claude Code sent them");
+        let declined = ask.answer("r2", &req, Some((&tx, &cancel))).await;
+        assert_eq!((declined["response"]["response"]["behavior"].as_str(), declined["response"]["response"]["message"].as_str()), (Some("deny"), Some(permissions::DECLINED)));
+        // Between turns nobody is asked.
+        let idle = ask.answer("r3", &req, None).await;
+        assert_eq!(idle["response"]["response"]["message"], permissions::NOBODY_TO_ASK);
+    }
 
     #[test]
     fn r_back_1_the_process_is_launched_with_the_stream_json_protocol_and_krowks_mcp_server() {

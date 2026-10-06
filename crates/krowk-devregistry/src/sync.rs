@@ -746,6 +746,12 @@ pub fn viewer_ticket(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     run().unwrap_or_else(|r| r)
 }
 
+/// `GET /v1/relay/ticket_keys`: the stand-in's ticket public key, keyless,
+/// as the registry publishes its own.
+pub fn ticket_keys() -> Resp {
+    Resp::json(200, &Json::map([("ticketKeys", Json::map_of(vec![(hex(&TICKET_KID), Json::str(hex(&ticket_public_key())))]))]))
+}
+
 pub fn release_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let (mut s, key, _, v) = lease_call(app, req, id, false)?;

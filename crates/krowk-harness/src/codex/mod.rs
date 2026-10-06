@@ -4,7 +4,7 @@
 //! subscription from one — as one long-lived process per session:
 //!
 //! ```text
-//! codex app-server --listen stdio:// [the instance's args]
+//! codex app-server --listen stdio:// [the instance's args] -c hooks.PreToolUse=[…]
 //! ```
 //!
 //! with `CODEX_HOME` set to the instance's home. One JSON object per line
@@ -16,6 +16,7 @@
 //! | message | direction | what krowk does |
 //! |---|---|---|
 //! | `initialize`, `initialized` | krowk → codex | first on every process, as client `krowk`, opting into the experimental API for dynamic tools |
+//! | `hooks/list`, `config/value/write` | krowk → codex | the paste guard krowk passes as a `PreToolUse` hook (`-c hooks.PreToolUse=…`, `with_paste_guard`) is trusted, by its hash, in the instance's Codex config |
 //! | `account/read` | krowk → codex | whether the instance is signed in, and to what: a ChatGPT plan is a subscription, an API key a key (R-INST-3) |
 //! | `model/list` | krowk → codex | the efforts each model takes, so `--effort` lands on one it does |
 //! | `thread/start`, `thread/resume` | krowk → codex | the session's thread, in krowk's mode, with krowk's tools; resumed by the id the log's `backend.session` holds |
@@ -25,6 +26,7 @@
 //! | `item/*`, `thread/tokenUsage/updated` | codex → krowk | translated into krowk's events by `stream` (R-BACK-5) |
 //! | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, … | codex → krowk | judged by krowk's permission evaluator (`crate::permissions`), as `Bash(<command>)` and `Edit(<files>)` |
 //! | `item/tool/call` | codex → krowk | a call of krowk's own tools, answered by `crate::bridge` |
+//! | `item/tool/requestUserInput` | codex → krowk | the model's questions, asked of the person (`crate::ask`) and answered by question id |
 //!
 //! **The mode.** Every mode but `bypassPermissions` and `unhinged` runs Codex in its
 //! `read-only` sandbox with approvals `on-request` and krowk as the
@@ -58,7 +60,7 @@ use crate::catalog::ModelInfo;
 use crate::engine::{cancelled, BoxFuture, Engine, EngineError, EngineEvent, Events, Steer, TurnContext, TurnEnd};
 use crate::instances::{Backend, Resolved};
 use crate::permissions::{self, Access, Call, Gate, Verdict};
-use crate::protocol::{Billing, Effort, Item, ItemKind, LimitState, LimitStatus, ModelRef, PermissionMode, WireApi};
+use crate::protocol::{Billing, Effort, Item, ItemKind, LimitState, LimitStatus, ModelRef, PermissionMode, Question, QuestionOption, WireApi};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -160,6 +162,54 @@ pub fn args(extra: &[String]) -> Vec<String> {
     let mut a: Vec<String> = ["app-server", "--listen", "stdio://"].iter().map(|s| s.to_string()).collect();
     a.extend(extra.iter().cloned());
     a
+}
+
+/// How long the paste guard's trust is waited for: a Codex that stalls on
+/// it starts without the guard rather than late.
+const TRUST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The command Codex runs the paste guard (`crate::paste_guard`) with:
+/// `exe` — this krowk — as `krowk __paste-guard`, quoted for the shell.
+/// Linux names a binary replaced since it started `… (deleted)`; the hook
+/// runs the one now at that path.
+pub fn paste_guard_command(exe: &Path) -> String {
+    let exe = exe.display().to_string();
+    let exe = exe.strip_suffix(" (deleted)").unwrap_or(&exe);
+    format!("{} {}", permissions::quote(exe), crate::paste_guard::HOOK_ARG)
+}
+
+/// The instance's arguments with the paste guard as a Codex `PreToolUse`
+/// hook on its shell tool. Codex runs a hook under every approval policy
+/// and sandbox, and the model reads its deny reason, where a declined
+/// approval would tell it nothing. A `hooks.PreToolUse` the instance sets
+/// itself is kept, and the guard added to it: a second `-c` would replace
+/// it whole.
+pub fn with_paste_guard(mut args: Vec<String>, command: &str) -> Vec<String> {
+    // A JSON string is a TOML basic string, escapes and all.
+    let entry = format!("{{matcher=\"^Bash$\",hooks=[{{type=\"command\",command={}}}]}}", Value::String(command.into()));
+    // Codex keeps the last one. Only a one-line inline array without
+    // comments is added to: anything else gets a `-c` of its own after it,
+    // so Codex always starts, the guard on.
+    let last = args.iter().rposition(|a| a.trim_start_matches("--config=").starts_with("hooks.PreToolUse="));
+    let own = last.filter(|&i| {
+        let v = args[i].trim_start_matches("--config=").trim_start_matches("hooks.PreToolUse=").trim();
+        v.starts_with('[') && v.ends_with(']') && !v.contains(['#', '\n'])
+    });
+    match own {
+        Some(i) => {
+            let list = args[i].trim_end().strip_suffix(']').unwrap_or_default().trim_end().to_string();
+            let sep = if list.ends_with('[') || list.ends_with(',') { "" } else { "," };
+            args[i] = format!("{list}{sep}{entry}]");
+        }
+        None => args.extend(["-c".to_string(), format!("hooks.PreToolUse=[{entry}]")]),
+    }
+    args
+}
+
+/// Whether a hook `hooks/list` reports is the paste guard krowk passed:
+/// its command exactly, from the command line.
+fn is_paste_guard(hook: &Value, command: &str) -> bool {
+    str_of(hook, "source") == "sessionFlags" && str_of(hook, "eventName") == "preToolUse" && str_of(hook, "command") == command
 }
 
 /// Codex's approval policy and sandbox for a krowk mode.
@@ -569,6 +619,51 @@ impl Answers {
         r.map_err(|e| if e.starts_with("krowk declined") { e } else { format!("krowk declined it: {e}") })
     }
 
+    /// `item/tool/requestUserInput`, asked of the person: each question's
+    /// answers by its id — the option picked, or what the person wrote,
+    /// or both, the writing as Codex's own `user_note:`. Nobody to ask, a
+    /// decline or an interrupt is said to the model as every question's
+    /// answer, so it goes on knowing why.
+    async fn ask_user(&self, params: &Value, asking: Asking<'_>) -> Value {
+        let questions: Vec<Question> = params
+            .get("questions")
+            .and_then(Value::as_array)
+            .map(|qs| {
+                qs.iter()
+                    .map(|q| Question {
+                        id: str_of(q, "id").to_string(),
+                        header: str_of(q, "header").to_string(),
+                        question: str_of(q, "question").to_string(),
+                        options: q.get("options").and_then(Value::as_array).map(|os| os.iter().map(|o| QuestionOption { label: str_of(o, "label").to_string(), description: str_of(o, "description").to_string() }).collect()).unwrap_or_default(),
+                        multi_select: false,
+                        secret: q.get("isSecret").and_then(Value::as_bool).unwrap_or(false),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // A deny rule on Claude Code's name for it holds, as it does for
+        // the native tool and Claude Code's own.
+        let call = Call { tool: "AskUserQuestion".into(), access: Access::Session, subject: None };
+        let answered = match (self.gate.verdict(&call, None), asking) {
+            (Verdict::Deny(m), _) => Err(m),
+            (_, Some((events, cancel))) if !questions.is_empty() => self.gate.ask("request_user_input", params, questions.clone(), events, cancel).await,
+            _ => Err(permissions::NOBODY_TO_ASK.into()),
+        };
+        // Answered with nothing — a client that sent no answers — is a decline.
+        let answered = answered.and_then(|a| if questions.iter().any(|q| a.iter().find(|a| a.id == q.id).and_then(crate::ask::said).is_some()) { Ok(a) } else { Err(permissions::DECLINED.into()) });
+        let answers: serde_json::Map<String, Value> = questions
+            .iter()
+            .map(|q| {
+                let said: Vec<String> = match &answered {
+                    Ok(answers) => answers.iter().find(|a| a.id == q.id).map(|a| a.picked.iter().cloned().chain(a.text.as_ref().map(|t| if a.picked.is_empty() { t.clone() } else { format!("user_note: {t}") })).collect()).unwrap_or_default(),
+                    Err(why) => vec![why.clone()],
+                };
+                (q.id.clone(), json!({ "answers": said }))
+            })
+            .collect();
+        json!({ "answers": answers })
+    }
+
     /// The answer to one of Codex's requests: a result, or a JSON-RPC error.
     async fn answer(&self, method: &str, params: &Value, t: &mut Translator, asking: Asking<'_>) -> Result<Value, (i64, String)> {
         let item = str_of(params, "itemId").to_string();
@@ -598,14 +693,7 @@ impl Answers {
             // More sandbox for the rest of the turn: none is granted — what
             // needs it is asked about call by call.
             "item/permissions/requestApproval" => Ok(json!({"permissions": {}, "scope": "turn"})),
-            "item/tool/requestUserInput" => {
-                let answers: serde_json::Map<String, Value> = params
-                    .get("questions")
-                    .and_then(Value::as_array)
-                    .map(|qs| qs.iter().map(|q| (str_of(q, "id").to_string(), json!({"answers": ["krowk is running this turn without a person to ask: decide, say what you assumed, and carry on."]}))).collect())
-                    .unwrap_or_default();
-                Ok(json!({ "answers": answers }))
-            }
+            "item/tool/requestUserInput" => Ok(self.ask_user(params, asking).await),
             "mcpServer/elicitation/request" => Ok(json!({"action": "decline"})),
             "item/tool/call" => Ok(self.tool_call(params, asking).await),
             // The requests of Codex's first protocol, for a Codex that
@@ -926,7 +1014,14 @@ fn text_input(input: &[Steer], session_dir: &Path) -> Value {
 impl Proc {
     async fn spawn(b: &Backend, cwd: &Path, bypass: bool, ask: &Answers, instance: &str) -> Result<Proc, EngineError> {
         let mut cmd = tokio::process::Command::new(b.path.as_deref().unwrap_or(Path::new(&b.binary)));
-        cmd.args(args(&b.args)).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        // Unix only: how Codex runs a hook's command on Windows is not
+        // known here, so it is not guessed at.
+        let guard = std::env::current_exe().ok().filter(|_| cfg!(unix)).map(|exe| paste_guard_command(&exe));
+        let argv = match &guard {
+            Some(command) => args(&with_paste_guard(b.args.clone(), command)),
+            None => args(&b.args),
+        };
+        cmd.args(argv).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let (remove, set) = environment(b);
         for k in remove {
             cmd.env_remove(k);
@@ -991,7 +1086,26 @@ impl Proc {
                 }
             }
         }
+        if let Some(command) = &guard {
+            p.trust_paste_guard(cwd, command, ask).await;
+        }
         Ok(p)
+    }
+
+    /// Codex runs a hook only once its user has trusted it, by its hash.
+    /// The paste guard krowk passed is trusted here, by Codex's own config
+    /// write, so it holds from the first thread. A Codex that lists no
+    /// hooks runs without it.
+    async fn trust_paste_guard(&mut self, cwd: &Path, command: &str, ask: &Answers) {
+        let Ok(list) = self.request("hooks/list", json!({ "cwds": [cwd] }), ask, TRUST_TIMEOUT).await else { return };
+        let hooks = list.get("data").and_then(Value::as_array).into_iter().flatten().flat_map(|d| d.get("hooks").and_then(Value::as_array).into_iter().flatten());
+        let state: serde_json::Map<String, Value> = hooks
+            .filter(|h| is_paste_guard(h, command) && !matches!(str_of(h, "trustStatus"), "trusted" | "managed"))
+            .map(|h| (str_of(h, "key").to_string(), json!({ "trusted_hash": str_of(h, "currentHash") })))
+            .collect();
+        if !state.is_empty() {
+            let _ = self.request("config/value/write", json!({"keyPath": "hooks.state", "mergeStrategy": "upsert", "value": state}), ask, TRUST_TIMEOUT).await;
+        }
     }
 
     fn alive(&mut self) -> bool {
@@ -1294,6 +1408,27 @@ mod tests {
     #[test]
     fn r_back_3_the_process_is_app_server_on_stdio_in_krowks_mode() {
         assert_eq!(args(&["-c".into(), "model_provider=openrouter".into()]).join(" "), "app-server --listen stdio:// -c model_provider=openrouter");
+        // The hook's command is this krowk's path, quoted for the shell
+        // Codex runs it in, inside a TOML string.
+        let command = paste_guard_command(Path::new("/opt/my tools/krowk (deleted)"));
+        assert_eq!(command, "'/opt/my tools/krowk' __paste-guard");
+        let entry = r#"{matcher="^Bash$",hooks=[{type="command",command="'/opt/my tools/krowk' __paste-guard"}]}"#;
+        assert_eq!(with_paste_guard(vec!["-c".into(), "model=x".into()], &command), ["-c", "model=x", "-c", &format!("hooks.PreToolUse=[{entry}]")]);
+        // The instance's own hooks are kept, the guard added beside them.
+        let own = r#"hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command="/usr/bin/user-guard"}]}]"#;
+        let merged = with_paste_guard(vec!["-c".into(), own.into()], &command);
+        assert_eq!(merged, ["-c".to_string(), format!("{},{entry}]", own.strip_suffix(']').unwrap())]);
+        assert_eq!(with_paste_guard(vec!["-c".into(), "hooks.PreToolUse=[]".into()], &command), ["-c".to_string(), format!("hooks.PreToolUse=[{entry}]")]);
+        let trailing = "hooks.PreToolUse=[{matcher=\"x\",hooks=[]}, ]";
+        assert_eq!(with_paste_guard(vec!["-c".into(), trailing.into()], &command)[1], format!("hooks.PreToolUse=[{{matcher=\"x\",hooks=[]}},{entry}]"), "TOML's trailing comma");
+        // What cannot be added to safely keeps its own `-c`, and Codex starts.
+        let commented = "hooks.PreToolUse=[{matcher=\"x\",hooks=[]}, # mine\n]";
+        assert_eq!(with_paste_guard(vec!["-c".into(), commented.into()], &command), ["-c", commented, "-c", &format!("hooks.PreToolUse=[{entry}]")]);
+        // Of two, the guard joins the last, which is the one Codex keeps.
+        let twice = with_paste_guard(vec!["-c".into(), "hooks.PreToolUse=[]".into(), "-c".into(), "hooks.PreToolUse=[]".into()], &command);
+        assert_eq!(twice[1..], ["hooks.PreToolUse=[]".to_string(), "-c".into(), format!("hooks.PreToolUse=[{entry}]")]);
+        let then_commented = with_paste_guard(vec!["-c".into(), "hooks.PreToolUse=[]".into(), "-c".into(), commented.into()], &command);
+        assert_eq!(then_commented.last().unwrap(), &format!("hooks.PreToolUse=[{entry}]"));
         for m in [PermissionMode::Default, PermissionMode::Plan, PermissionMode::AcceptEdits] {
             assert_eq!(policy(m), Policy { approval: "on-request", sandbox: "read-only" }, "every edit and command beyond reading is asked about");
         }
@@ -1436,6 +1571,38 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn codexs_questions_are_the_persons_to_answer_by_id_with_what_they_wrote_as_a_note() {
+        use crate::protocol::{ApprovalDecision, QuestionAnswer};
+        let approvals = permissions::Approvals::default();
+        let gate = Gate::new(permissions::Policy::modes_only(Path::new("/repo")), PermissionMode::Default, Default::default(), Some(approvals.clone()), None, "s-1", "t-1");
+        let ask = Answers { session_id: "s-1".into(), turn_id: "t-1".into(), model: ModelRef { instance: "codex:team".into(), model: "gpt-5.5".into() }, cwd: PathBuf::from("/repo"), krowk_version: "test".into(), gate, evidence: None };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (_c, cancel) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            while let Some(ev) = rx.recv().await {
+                if let EngineEvent::Approval(req) = ev {
+                    assert_eq!((req.questions[0].id.as_str(), req.questions[0].options.len(), req.questions[1].secret), ("db", 2, true), "{req:?}");
+                    let answers = vec![QuestionAnswer { id: "db".into(), picked: vec!["Postgres".into()], text: Some("on 16".into()) }, QuestionAnswer { id: "key".into(), picked: vec![], text: Some("s3cret".into()) }];
+                    approvals.answer("s-1", &req.request_id, ApprovalDecision::Allow, answers).unwrap();
+                }
+            }
+        });
+        let params = json!({"itemId": "i", "questions": [
+            {"id": "db", "header": "DB", "question": "Which?", "isOther": true, "options": [{"label": "Postgres", "description": "d"}, {"label": "SQLite", "description": "e"}]},
+            {"id": "key", "header": "Key", "question": "Token?", "isSecret": true, "options": null},
+            {"id": "skip", "header": "", "question": "Skipped?", "options": [{"label": "a", "description": ""}]},
+        ]});
+        let got = ask.answer("item/tool/requestUserInput", &params, &mut Translator::default(), Some((&tx, &cancel))).await.unwrap();
+        assert_eq!(got, json!({"answers": {"db": {"answers": ["Postgres", "user_note: on 16"]}, "key": {"answers": ["s3cret"]}, "skip": {"answers": []}}}));
+        // A deny rule on AskUserQuestion holds for Codex's questions too.
+        let mut policy = permissions::Policy::modes_only(Path::new("/repo"));
+        policy.loaded.rules.push((permissions::Kind::Deny, permissions::rules::parse("AskUserQuestion", "test", Path::new("/repo")).unwrap()));
+        let denied = Answers { gate: Gate::new(policy, PermissionMode::Default, Default::default(), Some(permissions::Approvals::default()), None, "s-1", "t-1"), ..ask };
+        let got = denied.answer("item/tool/requestUserInput", &params, &mut Translator::default(), Some((&tx, &cancel))).await.unwrap();
+        assert!(!got["answers"]["db"]["answers"][0].as_str().unwrap().contains("Postgres"), "{got}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn r_back_3_codex_requests_are_answered_and_krowks_tools_run_through_the_bridge() {
         let ask = Answers {
             session_id: "s-1".into(),
@@ -1458,7 +1625,7 @@ mod tests {
         assert_eq!(ask.answer("item/permissions/requestApproval", &json!({"itemId": "p1"}), &mut t, None).await.unwrap(), json!({"permissions": {}, "scope": "turn"}));
         assert_eq!(ask.answer("mcpServer/elicitation/request", &json!({}), &mut t, None).await.unwrap()["action"], "decline");
         let q = ask.answer("item/tool/requestUserInput", &json!({"questions": [{"id": "q1", "header": "h", "question": "which?"}]}), &mut t, None).await.unwrap();
-        assert!(q["answers"]["q1"]["answers"][0].as_str().unwrap().contains("decide"));
+        assert!(q["answers"]["q1"]["answers"][0].as_str().unwrap().contains("Decide"), "nobody to ask: the model is told to decide");
         assert_eq!(ask.answer("execCommandApproval", &json!({}), &mut t, None).await.unwrap()["decision"], "denied");
         // publish is offered too, and judged as the native one is.
         let refused = ask.answer("item/tool/call", &json!({"namespace": "krowk", "tool": "publish", "arguments": {"files": ["a.png"]}}), &mut t, None).await.unwrap();
