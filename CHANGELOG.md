@@ -92,13 +92,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **The Claude Code plugin brings the MCP server.** Installing `krowk@krowk`
   in Claude Code now adds the krowk MCP server (`npx -y @krowk/mcp`) beside
   the skill, so publishing works without a separate `claude mcp add`; if you
-  added `krowk-mcp` that way, remove it (`claude mcp remove krowk`) or the
-  model sees every krowk tool twice. When krowk drives Claude Code as a
-  backend the plugin's server is not started, and krowk's own MCP server is
-  the only one. The plugin's version now moves with every release: 0.12.0
-  and 0.12.1 shipped without moving it, so Claude Code offered no update,
-  and a release now refuses to go out until the plugin, the Gemini
-  extension and the MCP registry entry carry its version.
+  added `krowk-mcp` that way, run `claude mcp remove krowk` in the project
+  where you added it, or the model sees every krowk tool twice there. When
+  krowk drives Claude Code as a backend the plugin's server is not started,
+  and krowk's own MCP server is the only one. The plugin's version now
+  moves with every release: 0.12.0 and 0.12.1 shipped without moving it, so
+  Claude Code offered no update.
 
 ### Changed
 
