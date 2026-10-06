@@ -25,9 +25,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Slack or Basecamp, where a bare link unfurls. This isn't a permission
   rule, so it holds in every mode, `bypassPermissions` and `unhinged`
   included, on krowk's own models, Claude Code and Codex alike. On Codex,
-  krowk passes the check as a hook and records it as trusted in the
-  instance's Codex config (`hooks.state`) the first time, because Codex
-  runs only trusted hooks.
+  krowk passes the check as a hook, and the first time, has Codex record it
+  as trusted in its `config.toml` (a `hooks.state` entry for that one
+  command), because Codex runs only trusted hooks. krowk's Codex accounts
+  share your `~/.codex/config.toml`, so that is where the entry lands. On
+  Windows, Codex sessions don't have the check yet. A code span or fenced
+  block that quotes a card link is left alone.
 - **Paste a screenshot into the prompt.** Ctrl-V (or Alt-V, where the
   terminal keeps Ctrl-V for itself) puts the clipboard's image in the prompt
   as `[Image #1]`, and the model sees it with the text. Dragging an image
