@@ -282,7 +282,7 @@ fn r_perm_2_an_asked_call_is_an_approval_request_a_client_answers_over_the_proto
                 while let Some(l) = rx.recv().await {
                     if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
                         let (itx, _) = tokio::sync::mpsc::channel(1);
-                        host.execute(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision }, itx).await.unwrap();
+                        host.execute(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision, answers: Vec::new() }, itx).await.unwrap();
                     }
                     let done = matches!(l, StreamLine::Live(LiveEvent::Result(_)));
                     lines.push(l);
@@ -307,7 +307,7 @@ fn r_perm_2_an_asked_call_is_an_approval_request_a_client_answers_over_the_proto
     }
     // A request nobody is waiting on is refused, not ignored.
     let (itx, _) = tokio::sync::mpsc::channel(1);
-    let e = rt.block_on(host.execute(Command::Approve { session_id: "s".into(), request_id: "r".into(), decision: ApprovalDecision::Allow }, itx)).unwrap_err();
+    let e = rt.block_on(host.execute(Command::Approve { session_id: "s".into(), request_id: "r".into(), decision: ApprovalDecision::Allow, answers: Vec::new() }, itx)).unwrap_err();
     assert_eq!(e.code, "no_approval_request");
 }
 

@@ -4347,6 +4347,7 @@ mod tests {
             summary: "Bash `npm test`".into(),
             reason: "it runs a command, and no allow rule covers it".into(),
             remember,
+            questions: vec![],
         };
         a.on_line(&live(LiveEvent::ApprovalRequested(req("r1", vec!["Bash(npm test)".into()]))));
         a.on_line(&live(LiveEvent::ApprovalRequested(req("r2", vec![]))));
@@ -4380,6 +4381,7 @@ mod tests {
             summary: format!("Bash `{long}`"),
             reason: "it runs a command".into(),
             remember: vec![],
+            questions: vec![],
         };
         a.on_line(&live(LiveEvent::ApprovalRequested(req.clone())));
         assert!(!a.approval_ready(), "cut: no allow yet");
@@ -4397,7 +4399,7 @@ mod tests {
         assert!(!a.approval_ready(), "each request is seen on its own");
         // A short one needs no expanding.
         a.answered("r2");
-        a.on_line(&live(LiveEvent::ApprovalRequested(ApprovalRequest { request_id: "r3".into(), summary: "Bash `ls`".into(), session_id: "s".into(), turn_id: "t".into(), tool: "bash".into(), input: serde_json::json!({}), reason: "x".into(), remember: vec![] })));
+        a.on_line(&live(LiveEvent::ApprovalRequested(ApprovalRequest { request_id: "r3".into(), summary: "Bash `ls`".into(), session_id: "s".into(), turn_id: "t".into(), tool: "bash".into(), input: serde_json::json!({}), reason: "x".into(), remember: vec![], questions: vec![] })));
         assert!(a.approval_ready());
     }
 

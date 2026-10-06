@@ -1737,7 +1737,7 @@ impl<'h> Ui<'h> {
             };
             if let Some(d) = decision {
                 app.answered(&req.request_id);
-                match self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d }).await {
+                match self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d, answers: Vec::new() }).await {
                     Ok(()) => {}
                     // Sent, and not answered in time: the daemon has it.
                     Err(e) if e.code == SLOW => app.notice("the host daemon is slow to answer — the approval was sent, and the turn goes on once it takes it"),
