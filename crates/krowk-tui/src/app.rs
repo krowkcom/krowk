@@ -1060,15 +1060,25 @@ impl App {
     /// terminal that reflows on a narrowing resize wraps a row's band with
     /// its text, padding and all, and padding past the new width would
     /// spill onto a row of its own. A row as wide as its text wraps only
-    /// when its text does. The `[Image #N]` of each image it carried
+    /// when its text does. In light markdown, as an answer is (`push_md`),
+    /// all of it on the band. The `[Image #N]` of each image it carried
     /// (`images`) is in the accent.
     fn push_said(&mut self, text: &str, images: &[u32]) {
         self.said = text.to_string();
         let width = usize::from(self.width);
-        let rows = wrap(&clean(&text.replace('\t', "    ")), width);
-        for row in std::iter::once(String::new()).chain(rows).chain([String::new()]) {
+        let band = look::said_band();
+        let mut md = look::Markdown::default();
+        let rows = clean(&text.replace('\t', "    ")).split('\n').flat_map(|l| hung(look::markdown(l, &mut md), width)).collect::<Vec<_>>();
+        for row in std::iter::once(Line::default()).chain(rows).chain([Line::default()]) {
             let fill = " ".repeat(usize::from(row.width() < width));
-            self.push_line(Line::from(with_images(row + &fill, look::said_band(), |n| images.contains(&n))));
+            let mut spans: Vec<Span<'static>> = row
+                .spans
+                .into_iter()
+                .filter(|s| !s.content.is_empty())
+                .flat_map(|s| if look::link_target(&s).is_some() { vec![Span::styled(s.content, s.style.patch(band))] } else { with_images(s.content.into_owned(), s.style.patch(band), |n| images.contains(&n)) })
+                .collect();
+            spans.push(Span::styled(fill, band));
+            self.push_line(Line::from(spans));
         }
     }
 
@@ -4679,6 +4689,22 @@ mod tests {
         a.echo(&format!("{}\nok", "word ".repeat(11).trim_end()));
         let widths: Vec<usize> = a.take_pending().iter().map(|r| r.width()).filter(|w| *w > 0).collect();
         assert_eq!(widths, [1, 55, 3, 1]);
+    }
+
+    #[test]
+    fn what_the_person_said_is_in_markdown_as_an_answer_is() {
+        let mut a = app();
+        a.set_width(60);
+        a.echo("rename `foo` in **parse**, see [docs](https://krowk.com/d)\n- one");
+        a.open_copy();
+        let rows = a.take_pending();
+        assert_eq!(text(&rows)[1..3].iter().map(|r| look::untagged(r)).collect::<Vec<_>>(), ["rename foo in parse, see docs\u{a0}↗", "• one"]);
+        let span = |t: &str| rows[1].spans.iter().find(|s| s.content.starts_with(t)).unwrap().clone();
+        assert_eq!(span("foo").style, look::code().patch(look::said_band()), "code in the code colour, on the band");
+        assert!(span("parse").style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(look::link_target(&span("docs")).map(|(_, u)| u).as_deref(), Some("https://krowk.com/d"), "a link on the band still opens");
+        assert!(rows.iter().flat_map(|r| &r.spans).all(|s| s.style.bg == look::said_band().bg), "all of it on the band");
+        assert_eq!(a.copy.take().map(|(_, t)| t).as_deref(), Some("rename `foo` in **parse**, see [docs](https://krowk.com/d)\n- one"), "copied as typed");
     }
 
     #[test]
