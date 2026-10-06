@@ -235,10 +235,11 @@ fn bare_link(text: &str) -> Option<String> {
         let t = line.trim_start();
         if t.starts_with("```") || t.starts_with("~~~") {
             fenced = !fenced;
-        } else if !fenced && line.contains(ARTIFACT_PATH) {
-            if let Some(link) = bare_in(line) {
-                return Some(link);
-            }
+        } else if !fenced
+            && line.contains(ARTIFACT_PATH)
+            && let Some(link) = bare_in(line)
+        {
+            return Some(link);
         }
     }
     None
