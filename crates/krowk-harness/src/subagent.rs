@@ -365,15 +365,15 @@ impl Subagents {
         // before the session exists, and the session records it as its
         // directory.
         let child = krowk_store::new_id();
-        let worktree = match input.isolation.or(def.and_then(|d| d.isolation)).unwrap_or_default() {
-            Isolation::None => None,
+        let (worktree, prompt) = match input.isolation.or(def.and_then(|d| d.isolation)).unwrap_or_default() {
+            Isolation::None => (None, input.prompt.clone()),
             Isolation::Worktree => match self.worktree(&child).await {
-                Ok(w) => Some(w),
+                Ok((w, notes)) => (Some(w), crate::worktree::first_prompt(&notes, &input.prompt)),
                 Err(why) => return (why, true),
             },
         };
         let cwd = worktree.as_ref().map_or_else(|| p.cwd.clone(), |w| w.path.clone());
-        let result = host.subagent(&self.0, call_id, &input.description, &input.prompt, model, run, (&child, &cwd), events).await;
+        let result = host.subagent(&self.0, call_id, &input.description, &prompt, model, run, (&child, &cwd), events).await;
         if let Ok(r) = &result {
             let mut spent = self.0.spent.lock().unwrap_or_else(|e| e.into_inner());
             match r.cost_usd {
@@ -392,20 +392,21 @@ impl Subagents {
     }
 
     /// A worktree of the parent's repository for the child `child`, readied
-    /// by the prepare steps; why not, for the model, when there is none.
-    async fn worktree(&self, child: &str) -> Result<crate::worktree::Worktree, String> {
+    /// by the prepare steps, with their notes for its first prompt; why
+    /// not, for the model, when there is none.
+    async fn worktree(&self, child: &str) -> Result<(crate::worktree::Worktree, Vec<String>), String> {
         let Some(root) = self.0.host.cfg.agents.worktrees.clone() else {
             return Err("isolation: worktree has nowhere to make worktrees: krowk found no home directory (set HOME or XDG_DATA_HOME)".into());
         };
         let (cwd, child) = (self.0.parent.cwd.clone(), child.to_string());
         let made = tokio::task::spawn_blocking(move || {
             let w = crate::worktree::create(&cwd, &root, &child)?;
-            crate::worktree::prepare(&crate::worktree::Prepare { worktree: &w });
-            Ok(w)
+            let notes = crate::worktree::prepare(&crate::worktree::Prepare { worktree: &w });
+            Ok((w, notes))
         })
         .await;
         match made {
-            Ok(Ok(w)) => Ok(w),
+            Ok(Ok(made)) => Ok(made),
             Ok(Err(crate::worktree::Error::NotARepository)) => Err(NEEDS_A_REPOSITORY.into()),
             Ok(Err(e)) => Err(format!("the subagent's worktree could not be made: {e}")),
             Err(e) => Err(format!("the subagent's worktree could not be made: {e}")),

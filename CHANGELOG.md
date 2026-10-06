@@ -34,6 +34,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
   with `"none"`, a subagent runs in your directory as before. Your
   repository's git hooks do not run when the worktree is made.
 
+- **A subagent's worktree has your submodules checked out.** Before the
+  subagent starts, krowk initialises every submodule of its worktree,
+  submodules inside submodules too, at the commits the worktree records.
+  One you have initialised in your main checkout is copied from there,
+  with no download; its `origin` stays its own URL. One you haven't is
+  cloned from its URL. A submodule that can't be initialised stays empty,
+  and the subagent's first prompt says which and what git said. URLs from
+  `.gitmodules` that would run a command (`ext::`) or copy a repository from
+  a local path are refused. The agent can edit files in a submodule but
+  not commit in it. Removing the worktree removes its submodules' git
+  data too.
+
 - **An agent can commit inside a worktree krowk made for it.** When a
   sandboxed session runs in a worktree under
   `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`) on

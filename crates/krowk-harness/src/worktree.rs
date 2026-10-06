@@ -33,6 +33,9 @@
 //!   leaves it alone and a listing can say whose it is.
 //! - **Every git through `krowk_api::git`**: hooks off, so `worktree add`
 //!   runs no `post-checkout` of the repository's, outside any sandbox.
+//! - **Prepared** by `STEPS` before its agent starts (submodules first,
+//!   `submodules`). A step that falls short leaves a note, and the notes
+//!   open the agent's first prompt (`first_prompt`).
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -120,19 +123,174 @@ pub struct Prepare<'a> {
 }
 
 /// One step that readies a new worktree before its agent starts. It does
-/// not fail the creation: a step that cannot do its part says why in its
-/// own way and the agent starts anyway.
-pub type Step = fn(&Prepare<'_>);
+/// not fail the creation: a step that cannot do its part returns a note
+/// saying why, which the agent reads at the top of its first prompt
+/// (`first_prompt`), and the agent starts anyway. `None` when there is
+/// nothing to say.
+pub type Step = fn(&Prepare<'_>) -> Option<String>;
 
 /// The prepare steps, run in this order after `create` and before the
 /// agent's first turn: submodules, seed, include, setup, as each lands.
-pub const STEPS: &[(&str, Step)] = &[];
+pub const STEPS: &[(&str, Step)] = &[("submodules", submodules)];
 
-/// Runs `STEPS`, in order. Blocking: off the async runtime.
-pub fn prepare(p: &Prepare<'_>) {
-    for (_, step) in STEPS {
-        step(p);
+/// Runs `STEPS`, in order: their notes, in the same order. Blocking: off
+/// the async runtime.
+pub fn prepare(p: &Prepare<'_>) -> Vec<String> {
+    STEPS.iter().filter_map(|(_, step)| step(p)).collect()
+}
+
+/// The first prompt of the agent that works in a prepared worktree: the
+/// prepare steps' notes, each marked as krowk's so the model does not take
+/// it for its parent's words, then `prompt`.
+pub fn first_prompt(notes: &[String], prompt: &str) -> String {
+    let mut out = String::new();
+    for note in notes {
+        out.push_str("Note from krowk, which prepared this worktree: ");
+        out.push_str(note.trim_end());
+        out.push_str("\n\n");
     }
+    out.push_str(prompt);
+    out
+}
+
+/// How deep `submodules` follows submodules inside submodules: a bound on
+/// what a repository's `.gitmodules` can make krowk clone.
+const SUBMODULE_DEPTH: usize = 8;
+
+/// The first prepare step (WT15). `git worktree add` leaves a submodule an
+/// empty directory, so a build fails in every new worktree of a repository
+/// that has any. Each one `.gitmodules` lists, submodules inside
+/// submodules too, is initialised at the commit the worktree records:
+///
+/// - **From the main checkout, without the network**, when the main
+///   checkout has it initialised: cloned from that submodule's git
+///   directory (`submodule.<name>.url` pointed there for the one call), so
+///   the objects are hard-linked or copied locally and nothing is
+///   downloaded, then its `origin` set back to the submodule's own URL, so
+///   a later fetch there goes where the main checkout's does. A local
+///   clone has no alternates, so a `gc` on either side cannot take objects
+///   the other needs. If that clone lacks the commit, it is fetched from
+///   the submodule's own URL.
+/// - **From its URL** otherwise, as `git submodule update --init` would.
+///
+/// Its git directory lands in the worktree's admin directory
+/// (`<common>/worktrees/<name>/modules/`), which the sandbox binds
+/// read-only (WT4: a submodule's config is there), so it goes with the
+/// worktree and the agent can edit a submodule's files but not commit in
+/// it. Nothing the repository's files name is run: hooks are off
+/// (`krowk_api::git`), `ext::` URLs are refused whatever config says, a
+/// local path from `.gitmodules` is refused as git refuses it by default
+/// (only the main checkout's own git directory, which krowk chose, is
+/// cloned locally), `--checkout` overrides any `submodule.<name>.update`,
+/// and git itself refuses a `!command` one from `.gitmodules`. Filters
+/// from config still run, as on any checkout. A submodule that cannot be
+/// initialised stays empty, and the note names it with what git said.
+fn submodules(p: &Prepare<'_>) -> Option<String> {
+    let mut failed = Vec::new();
+    init_submodules(&p.worktree.path, &p.worktree.main, "", 0, &mut failed);
+    (!failed.is_empty()).then(|| format!("these submodules could not be initialised and are empty directories here:\n{}", failed.join("\n")))
+}
+
+/// Initialises the submodules of the checkout `dir`, whose counterpart in
+/// the main checkout is `main`, then theirs; a line in `failed` for each
+/// that could not be, `prefix` being `dir`'s path from the worktree's top.
+fn init_submodules(dir: &Path, main: &Path, prefix: &str, depth: usize, failed: &mut Vec<String>) {
+    // No `.gitmodules`, no git run.
+    if !dir.join(".gitmodules").symlink_metadata().is_ok_and(|m| m.is_file()) {
+        return;
+    }
+    if depth >= SUBMODULE_DEPTH {
+        failed.push(format!("- {prefix}: submodules nested more than {SUBMODULE_DEPTH} deep are not initialised"));
+        return;
+    }
+    let listed = match listed_submodules(dir) {
+        Ok(l) => l,
+        Err(e) => return failed.push(format!("- {prefix}.gitmodules: {}", last_lines(&e.to_string()))),
+    };
+    for (name, path) in listed {
+        let shown = format!("{prefix}{path}");
+        match init_submodule(dir, &main.join(&path), &name, &path) {
+            Ok(()) => init_submodules(&dir.join(&path), &main.join(&path), &format!("{shown}/"), depth + 1, failed),
+            Err(e) => failed.push(format!("- {shown}: {}", last_lines(&e.to_string()))),
+        }
+    }
+}
+
+/// The submodules `dir`'s `.gitmodules` lists whose path is a submodule in
+/// its index, as (name, path), by path. Read as a file with no includes:
+/// it is the repository's content.
+fn listed_submodules(dir: &Path) -> Result<Vec<(String, String)>, Error> {
+    let links = gitlinks(&read(query(dir)?.args(["ls-files", "--stage", "-z"]), "ls-files")?);
+    let out = query(dir)?
+        .args(["config", "--no-includes", "-z", "--file"])
+        .arg(dir.join(".gitmodules"))
+        .args(["--get-regexp", r"^submodule\..*\.path$"])
+        .output()
+        .map_err(|e| Error::Failed(format!("git config: {e}")))?;
+    // 1: no submodule has a path.
+    if !out.status.success() && out.status.code() != Some(1) {
+        return Err(Error::Failed(format!("git config: {}", String::from_utf8_lossy(&out.stderr).trim())));
+    }
+    let mut listed: Vec<(String, String)> = String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter_map(|e| e.split_once('\n'))
+        .filter_map(|(key, path)| Some((key.strip_prefix("submodule.")?.strip_suffix(".path")?.to_string(), path.to_string())))
+        .filter(|(_, path)| links.contains(path))
+        .collect();
+    listed.sort_by(|a, b| a.1.cmp(&b.1));
+    listed.dedup_by(|a, b| a.1 == b.1);
+    Ok(listed)
+}
+
+/// The submodule `name` at `path` in `dir`, initialised and checked out:
+/// from `main`, its counterpart in the main checkout, when that is
+/// initialised, else from its URL (see `submodules`).
+fn init_submodule(dir: &Path, main: &Path, name: &str, path: &str) -> Result<(), Error> {
+    read(git(dir)?.args(["submodule", "init", "--quiet", "--", path]), "submodule init")?;
+    let url_key = format!("submodule.{name}.url");
+    if let Some(local) = own_git_dir(main) {
+        let cloned = update(dir, path, &[(&url_key, local.as_os_str()), ("protocol.file.allow", "always".as_ref())]);
+        let url = read(query(dir)?.args(["config", "--get", &url_key]), "config");
+        // Only a repository of its own: an empty directory would be the
+        // worktree's, and its config the person's.
+        if let (Some(own), Ok(url)) = (own_git_dir(&dir.join(path)), url) {
+            read(git(dir)?.arg("config").arg("--file").arg(own.join("config")).args(["remote.origin.url", &url]), "config")?;
+        }
+        if cloned.is_ok() {
+            return Ok(());
+        }
+    }
+    update(dir, path, &[("protocol.file.allow", "user".as_ref())])
+}
+
+/// `git submodule update --checkout` of `path` in `dir`, `ext::` refused,
+/// with `config` on top, passed as `GIT_CONFIG_KEY_<n>` so a submodule's
+/// name needs no quoting. No credential prompt: nobody is at the terminal
+/// for it, and it would draw over krowk's.
+fn update(dir: &Path, path: &str, config: &[(&str, &std::ffi::OsStr)]) -> Result<(), Error> {
+    let mut c = git(dir)?;
+    let config: Vec<(&str, &std::ffi::OsStr)> = std::iter::once(("protocol.ext.allow", "never".as_ref())).chain(config.iter().copied()).collect();
+    for (i, (key, value)) in config.iter().enumerate() {
+        c.env(format!("GIT_CONFIG_KEY_{i}"), key).env(format!("GIT_CONFIG_VALUE_{i}"), value);
+    }
+    c.env("GIT_CONFIG_COUNT", config.len().to_string()).env("GIT_TERMINAL_PROMPT", "0");
+    read(c.args(["submodule", "update", "--quiet", "--checkout", "--", path]), "submodule update").map(drop)
+}
+
+/// The git directory of the repository whose top is `dir`: none when `dir`
+/// is missing, or is not a repository's top (an uninitialised submodule's
+/// empty directory is its superproject's).
+fn own_git_dir(dir: &Path) -> Option<PathBuf> {
+    let out = read(query(dir).ok()?.args(["rev-parse", "--show-toplevel", "--absolute-git-dir"]), "rev-parse").ok()?;
+    let (top, git_dir) = out.split_once('\n')?;
+    let same = Path::new(top).canonicalize().ok()? == dir.canonicalize().ok()?;
+    same.then(|| PathBuf::from(git_dir))
+}
+
+/// The last lines of what git said: enough to say why, not a page of it.
+fn last_lines(text: &str) -> String {
+    let lines: Vec<&str> = text.trim().lines().collect();
+    lines[lines.len().saturating_sub(10)..].join("\n  ")
 }
 
 /// A new worktree of the repository `cwd` is in, at its working state
@@ -257,7 +415,9 @@ impl Drop for Scratch {
 }
 
 /// When the agent is done: unchanged (HEAD still the base, `git status`
-/// empty) it is removed with its branch; otherwise unlocked and kept.
+/// empty, so every submodule at its recorded commit and clean) it is
+/// removed with its branch, the submodules' git directories with its admin
+/// directory; otherwise unlocked and kept.
 /// Unlocked on every way out: the session is over. Blocking: off the async
 /// runtime.
 pub fn finish(wt: &Worktree) -> Result<Finished, Error> {
@@ -294,6 +454,12 @@ fn remove(wt: &Worktree, force: bool) -> Result<(), Error> {
     c.args(["-c", "status.showUntrackedFiles=normal", "worktree", "remove"]);
     if force {
         c.args(["--force", "--force"]);
+    } else if wt.path.join(".gitmodules").exists() {
+        // git refuses to remove a worktree with submodules checked out
+        // without one `--force`, which also skips its own clean check:
+        // `finish` has judged it unchanged, submodules included, under
+        // the lock.
+        c.arg("--force");
     }
     read(c.arg(&wt.path), "worktree remove")?;
     read(git(&wt.main)?.args(["branch", "--quiet", "-D"]).arg(wt.branch()), "branch -D").map(drop)
@@ -634,6 +800,138 @@ mod tests {
             assert_eq!(r, Err(Error::NotARepository));
             assert!(!base.join("worktrees").exists());
         }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A repository with a submodule `mid` that has a submodule `inner`,
+    /// both initialised in the main checkout, their sources at
+    /// `<base>/mid` and `<base>/inner`.
+    fn with_submodules(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let (base, main, root) = repo(name);
+        let source = |n: &str| {
+            let d = base.join(n);
+            std::fs::create_dir_all(&d).unwrap();
+            git_ok(&d, &["init", "-q", "-b", "main"]);
+            std::fs::write(d.join("f"), format!("{n}\n")).unwrap();
+            git_ok(&d, &["add", "f"]);
+            git_ok(&d, &["commit", "-q", "-m", n]);
+            d
+        };
+        let (inner, mid) = (source("inner"), source("mid"));
+        let add = |dir: &Path, from: &Path, path: &str| {
+            git_ok(dir, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", from.to_str().unwrap(), path]);
+            git_ok(dir, &["commit", "-q", "-m", path]);
+        };
+        add(&mid, &inner, "inner");
+        add(&main, &mid, "mid");
+        git_ok(&main, &["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "-q"]);
+        (base, main, root)
+    }
+
+    /// A submodule in a submodule, initialised in the main checkout: both
+    /// populated in a new worktree at the recorded commits from the main
+    /// checkout's copies, with their sources gone (no network), `origin`
+    /// still their own URL. Removing the worktree leaves nothing of them.
+    #[test]
+    fn wt15_nested_submodules_come_from_the_main_checkout_without_the_network() {
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let (base, main, root) = with_submodules("submodules");
+        let url = git_ok(&main, &["config", "--get", "submodule.mid.url"]);
+        std::fs::rename(base.join("mid"), base.join("mid-gone")).unwrap();
+        std::fs::rename(base.join("inner"), base.join("inner-gone")).unwrap();
+        let w = create(&main, &root, "s1").unwrap();
+        assert!(std::fs::read_dir(w.path.join("mid")).unwrap().next().is_none(), "git worktree add leaves it empty");
+        assert_eq!(prepare(&Prepare { worktree: &w }), Vec::<String>::new());
+        assert_eq!(std::fs::read_to_string(w.path.join("mid/f")).unwrap(), "mid\n");
+        assert_eq!(std::fs::read_to_string(w.path.join("mid/inner/f")).unwrap(), "inner\n");
+        let status = git_ok(&w.path, &["submodule", "status", "--recursive"]);
+        assert_eq!(status.lines().count(), 2, "{status}");
+        assert!(!status.lines().any(|l| l.starts_with(['-', '+', 'U'])), "both at the recorded commits: {status}");
+        assert_eq!(status, git_ok(&main, &["submodule", "status", "--recursive"]));
+        assert_eq!(git_ok(&w.path.join("mid"), &["config", "--get", "remote.origin.url"]), url, "origin is the submodule's own URL");
+        let admin = PathBuf::from(git_ok(&w.path, &["rev-parse", "--absolute-git-dir"]));
+        assert_eq!(PathBuf::from(git_ok(&w.path.join("mid/inner"), &["rev-parse", "--absolute-git-dir"])), admin.join("modules/mid/modules/inner"), "in the worktree's admin dir");
+        assert_eq!(git_ok(&w.path, &["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]), "");
+
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
+        assert!(!w.path.exists() && !admin.exists());
+        assert!(!w.common.join("worktrees").exists() || std::fs::read_dir(w.common.join("worktrees")).unwrap().next().is_none(), "no admin dir left");
+        let modules: Vec<_> = std::fs::read_dir(w.common.join("modules")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(modules, ["mid"], "the main checkout's own, nothing more");
+        assert_eq!(git_ok(&main, &["worktree", "list", "--porcelain"]).lines().filter(|l| l.starts_with("worktree ")).count(), 1);
+        assert_eq!(git_ok(&main, &["branch", "--list", "krowk/*"]), "");
+
+        // A submodule edited in the worktree is a change: it is kept.
+        let w = create(&main, &root, "s2").unwrap();
+        prepare(&Prepare { worktree: &w });
+        std::fs::write(w.path.join("mid/inner/f"), "changed\n").unwrap();
+        assert_eq!(finish(&w).unwrap(), Finished::Kept { commits: 0, dirty: true });
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// No `.gitmodules`: the step runs no git and says nothing, even with a
+    /// gitlink in the tree.
+    #[test]
+    fn wt15_without_gitmodules_nothing_runs() {
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let (base, main, root) = repo("no-gitmodules");
+        let head = git_ok(&main, &["rev-parse", "HEAD"]);
+        git_ok(&main, &["update-index", "--add", "--cacheinfo", &format!("160000,{head},lib")]);
+        git_ok(&main, &["commit", "-q", "-m", "a gitlink"]);
+        let w = create(&main, &root, "s1").unwrap();
+        assert_eq!(prepare(&Prepare { worktree: &w }), Vec::<String>::new());
+        let mut failed = Vec::new();
+        init_submodules(&w.path, Path::new("/nonexistent"), "", 0, &mut failed);
+        assert!(failed.is_empty());
+        assert!(std::fs::read_dir(w.path.join("lib")).map_or(true, |mut d| d.next().is_none()));
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A submodule that cannot be initialised leaves the worktree usable and
+    /// a note naming it with git's words at the top of the agent's first
+    /// prompt. Nothing `.gitmodules` names runs or is copied: an `ext::`
+    /// URL is refused, and so is a local path the main checkout has not
+    /// initialised.
+    #[test]
+    fn wt15_a_submodule_that_fails_is_a_note_in_the_first_prompt() {
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let (base, main, root) = with_submodules("submodule-fails");
+        let marker = base.join("ran");
+        let head = git_ok(&main, &["rev-parse", "HEAD"]);
+        // Its empty directory, as a checkout leaves it: missing, it would be
+        // a deletion in the parent's working state.
+        std::fs::create_dir(main.join("evil")).unwrap();
+        git_ok(&main, &["update-index", "--add", "--cacheinfo", &format!("160000,{head},evil")]);
+        git_ok(&main, &["config", "--file", ".gitmodules", "submodule.evil.path", "evil"]);
+        git_ok(&main, &["config", "--file", ".gitmodules", "submodule.evil.url", &format!("ext::sh -c touch% {}", marker.display())]);
+        git_ok(&main, &["add", ".gitmodules"]);
+        git_ok(&main, &["commit", "-q", "-m", "evil"]);
+        // `mid` not initialised in the main checkout, its source a local
+        // path that exists.
+        git_ok(&main, &["submodule", "deinit", "-q", "-f", "mid"]);
+        let w = create(&main, &root, "s1").unwrap();
+        let notes = prepare(&Prepare { worktree: &w });
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let note = &notes[0];
+        assert!(note.contains("- evil: git submodule update:") && note.contains("transport 'ext' not allowed"), "{note}");
+        assert!(note.contains("- mid: git submodule update:") && note.contains("transport 'file' not allowed"), "{note}");
+        assert!(!marker.exists(), "the ext:: command did not run");
+        assert!(!w.path.join("mid/f").exists());
+        let prompt = first_prompt(&notes, "Fix the build.");
+        assert!(prompt.starts_with("Note from krowk, which prepared this worktree: these submodules could not be initialised"), "{prompt}");
+        assert!(prompt.ends_with("\n\nFix the build."), "{prompt}");
+        assert_eq!(first_prompt(&[], "Fix the build."), "Fix the build.");
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
         let _ = std::fs::remove_dir_all(&base);
     }
 
