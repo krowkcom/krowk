@@ -31,6 +31,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
   share your `~/.codex/config.toml`, so that is where the entry lands. On
   Windows, Codex sessions don't have the check yet. A code span or fenced
   block that quotes a card link is left alone.
+- **The agent can ask you which way to go.** When a choice is yours, the
+  agent asks up to four questions with options to pick from, and you answer
+  over the prompt: a number or Enter picks, Space toggles where several may
+  be picked, Tab moves between questions, and typing gives your own answer
+  instead. Esc declines and the agent carries on with its best judgment.
+  The native agent gets an `ask_user` tool for this. Claude Code's
+  `AskUserQuestion` and Codex's questions, which krowk used to refuse, now
+  reach you the same way, in plan mode too. Questions are only asked where
+  someone can answer: `krowk -p` doesn't offer the tool, and a backend that
+  asks anyway is told to decide and say what it assumed. For protocol
+  clients, an `approval.requested` frame can carry `questions`, and
+  `approve` answers them with `answers`.
 - **Paste a screenshot into the prompt.** Ctrl-V (or Alt-V, where the
   terminal keeps Ctrl-V for itself) puts the clipboard's image in the prompt
   as `[Image #1]`, and the model sees it with the text. Dragging an image

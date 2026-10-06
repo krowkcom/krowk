@@ -332,7 +332,7 @@
           ]
         },
         {
-          "description": "Answer an `approval.requested`.",
+          "description": "Answer an `approval.requested`: for one with `questions`, `allow`\nwith the person's `answers`.",
           "type": "object",
           "properties": {
             "sessionId": {
@@ -343,6 +343,12 @@
             },
             "decision": {
               "$ref": "#/$defs/ApprovalDecision"
+            },
+            "answers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/QuestionAnswer"
+              }
             },
             "type": {
               "type": "string",
@@ -525,6 +531,31 @@
         "allowSession",
         "allowProject",
         "deny"
+      ]
+    },
+    "QuestionAnswer": {
+      "description": "The person's answer to one question: the labels of the options picked,\nand what they wrote, if anything. Neither means they left it unanswered.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The question's `id`.",
+          "type": "string"
+        },
+        "picked": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
       ]
     }
   }

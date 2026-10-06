@@ -264,6 +264,78 @@ fn r_perm_1_rules_load_from_every_source_and_a_broken_file_stops_the_turn() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn questions_go_out_as_an_approval_request_and_come_back_answered_declined_or_unasked() {
+    use crate::protocol::{Question, QuestionAnswer, QuestionOption};
+    let d = repo("questions");
+    let approvals = Approvals::default();
+    // Asked in every mode, plan and unhinged too: it is not a call to allow.
+    let g = Gate::new(Policy::modes_only(&d), PermissionMode::Unhinged, SessionGrants::default(), Some(approvals.clone()), None, "s", "t");
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let (_c, cancel) = watch::channel(false);
+    let q = Question { id: "db".into(), header: "Database".into(), question: "Which database?".into(), options: vec![QuestionOption { label: "Postgres".into(), description: String::new() }], multi_select: false, secret: false };
+    let answering = approvals.clone();
+    let client = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            if let EngineEvent::Approval(req) = &ev {
+                let a = QuestionAnswer { id: "db".into(), picked: vec!["Postgres".into()], text: None };
+                answering.answer("s", &req.request_id, ApprovalDecision::Allow, vec![a]).unwrap();
+            }
+            seen.push(ev);
+            if seen.len() == 2 {
+                return seen;
+            }
+        }
+        seen
+    });
+    let got = g.ask("ask_user", &json!({}), vec![q.clone()], &tx, &cancel).await.unwrap();
+    assert_eq!(got, [QuestionAnswer { id: "db".into(), picked: vec!["Postgres".into()], text: None }]);
+    let seen = client.await.unwrap();
+    let EngineEvent::Approval(req) = &seen[0] else { panic!("{seen:?}") };
+    assert_eq!((req.summary.as_str(), req.questions.len(), req.remember.len()), ("Which database?", 1, 0));
+    assert!(matches!(&seen[1], EngineEvent::ApprovalResolved { decision: ApprovalDecision::Allow, .. }));
+
+    // Declined, and interrupted, the model reads which.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let answering = approvals.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            if let EngineEvent::Approval(req) = ev {
+                answering.answer("s", &req.request_id, ApprovalDecision::Deny, Vec::new()).unwrap();
+            }
+        }
+    });
+    assert_eq!(g.ask("ask_user", &json!({}), vec![q.clone()], &tx, &cancel).await.unwrap_err(), DECLINED);
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    let (c, cancel) = watch::channel(false);
+    let input = json!({});
+    let asking = g.ask("ask_user", &input, vec![q.clone()], &tx, &cancel);
+    c.send(true).unwrap();
+    assert!(asking.await.unwrap_err().contains("interrupted"));
+
+    // The last client gone, the model reads that nobody is here.
+    let (_c, cancel) = watch::channel(false);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let leaving = approvals.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            if let EngineEvent::Approval(_) = ev {
+                leaving.deny_session("s");
+            }
+        }
+    });
+    assert_eq!(g.ask("ask_user", &input, vec![q.clone()], &tx, &cancel).await.unwrap_err(), NOBODY_TO_ASK);
+
+    // With nobody to answer, it is never sent.
+    let nobody = Gate::new(Policy::modes_only(&d), PermissionMode::Default, SessionGrants::default(), None, None, "s", "t");
+    assert!(!nobody.can_ask() && g.can_ask());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    assert_eq!(nobody.ask("ask_user", &json!({}), vec![q], &tx, &cancel).await.unwrap_err(), NOBODY_TO_ASK);
+    assert!(rx.try_recv().is_err());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_grants_are_remembered() {
     let d = repo("approve");
     let krowk = d.join("krowk-config");
@@ -280,8 +352,8 @@ async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_gr
         let mut seen = Vec::new();
         while let Some(ev) = rx.recv().await {
             if let EngineEvent::Approval(req) = &ev {
-                assert!(answering.answer("another-session", &req.request_id, ApprovalDecision::Allow).is_err(), "only its own session answers it");
-                answering.answer("s1", &req.request_id, ApprovalDecision::AllowSession).unwrap();
+                assert!(answering.answer("another-session", &req.request_id, ApprovalDecision::Allow, Vec::new()).is_err(), "only its own session answers it");
+                answering.answer("s1", &req.request_id, ApprovalDecision::AllowSession, Vec::new()).unwrap();
             }
             seen.push(ev);
             if seen.len() == 2 {
@@ -314,7 +386,7 @@ async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_gr
     tokio::spawn(async move {
         while let Some(ev) = rx.recv().await {
             if let EngineEvent::Approval(req) = ev {
-                answering.answer("s2", &req.request_id, ApprovalDecision::AllowProject).unwrap();
+                answering.answer("s2", &req.request_id, ApprovalDecision::AllowProject, Vec::new()).unwrap();
             }
         }
     });
@@ -337,7 +409,7 @@ async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_gr
     tokio::spawn(async move {
         while let Some(ev) = rx.recv().await {
             if let EngineEvent::Approval(req) = ev {
-                answering.answer("s3", &req.request_id, ApprovalDecision::Deny).unwrap();
+                answering.answer("s3", &req.request_id, ApprovalDecision::Deny, Vec::new()).unwrap();
             }
         }
     });
@@ -488,7 +560,7 @@ async fn r_perm_2_allowing_a_glob_named_file_for_the_session_does_not_cover_its_
         while let Some(ev) = rx.recv().await {
             if let EngineEvent::Approval(req) = ev {
                 assert!(req.remember.is_empty(), "nothing to remember is offered");
-                answering.answer("s", &req.request_id, ApprovalDecision::AllowSession).unwrap();
+                answering.answer("s", &req.request_id, ApprovalDecision::AllowSession, Vec::new()).unwrap();
             }
         }
     });

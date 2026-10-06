@@ -331,8 +331,8 @@ impl Host {
             // Whichever client answers first decides; the turn that asked
             // tells every client it was answered (`approval.resolved`). A
             // subagent's request is answered under the subagent's session.
-            Command::Approve { session_id, request_id, decision } => {
-                shared.approvals.answer(&session_id, &request_id, decision).map_err(|e| EngineError::new("no_approval_request", e))?;
+            Command::Approve { session_id, request_id, decision, answers } => {
+                shared.approvals.answer(&session_id, &request_id, decision, answers).map_err(|e| EngineError::new("no_approval_request", e))?;
                 Ok(None)
             }
             Command::SwitchModel { session_id, model } => shared.switch_model(session_id.as_deref(), model, out).await.map(|()| None),

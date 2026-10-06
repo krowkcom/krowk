@@ -767,7 +767,7 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
 
     // Nor write a rule into A's project (D11): a viewer allows a call once
     // or for the session, and A refuses the rest before looking it up.
-    v.commands.send(Command::Approve { session_id: session.clone(), request_id: "any".into(), decision: ApprovalDecision::AllowProject }).unwrap();
+    v.commands.send(Command::Approve { session_id: session.clone(), request_id: "any".into(), decision: ApprovalDecision::AllowProject, answers: Vec::new() }).unwrap();
     let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
     assert!(got.iter().any(|u| matches!(u, viewer::Update::Acked { error: Some(e), .. } if e.contains("made on the host"))), "{got:?}");
 
@@ -794,7 +794,7 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let req = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).unwrap();
     assert_eq!(req.tool, "bash");
     assert!(!w.repo().join("approved.txt").exists(), "A waits on the approval");
-    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow }).unwrap();
+    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
     assert!(w.repo().join("approved.txt").exists(), "R-PERM-2: B's answer unblocked A's turn");
 
@@ -1407,7 +1407,7 @@ async fn r_net_2_moving_to_the_direct_path_mid_session_stalls_nothing_and_shows_
     let asked: Vec<_> = got.iter().filter_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).collect();
     assert_eq!(asked.len(), 1, "the approval request was shown {} times", asked.len());
     let req = asked[0].clone();
-    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow }).unwrap();
+    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
     got.extend(until(&mut v, Duration::from_secs(30), &mut frames, result_of).await);
     assert!(w.repo().join("approved.txt").exists(), "B's answer unblocked A's turn");
 

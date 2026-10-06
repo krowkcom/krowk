@@ -30,6 +30,7 @@
 //! nothing but a key.
 
 pub mod app;
+pub mod ask;
 pub mod card;
 pub mod clipboard;
 pub mod connect;
@@ -96,7 +97,7 @@ use krowk_harness::engine::EngineError;
 use krowk_harness::host::{Host, HostConfig, Pricer};
 use krowk_harness::instances::Asked;
 use krowk_harness::log;
-use krowk_harness::protocol::{ApprovalDecision, BudgetLimits, Command, Effort, ModelRef, PermissionMode, RunResult, StreamLine, TurnStatus};
+use krowk_harness::protocol::{ApprovalDecision, ApprovalRequest, BudgetLimits, Command, Effort, ModelRef, PermissionMode, RunResult, StreamLine, TurnStatus};
 use net::Target;
 use ratatui::layout::Size;
 use settings::Settings;
@@ -1614,6 +1615,17 @@ impl<'h> Ui<'h> {
                 // answer or nothing: a key pasted early, before the question
                 // is up or while it is a pick, never reaches the prompt, a
                 // turn or the history.
+                // The agent's questions take a paste as the person's own
+                // answer, once they have settled — but not one meant for
+                // `/connect`'s text question, a key perhaps.
+                let connecting = app.overlay == Overlay::Connect && app.flow.as_ref().is_some_and(|f| f.typing());
+                if let Some(a) = app.asking.as_mut().filter(|_| !connecting) {
+                    if app.approval_shown.is_none_or(|t| t.elapsed() >= APPROVAL_SETTLE) {
+                        a.paste(&s);
+                    }
+                    app.touch();
+                    return Ok(false);
+                }
                 match app.flow.as_mut().filter(|_| app.overlay == Overlay::Connect) {
                     Some(f) => {
                         if f.settled(APPROVAL_SETTLE) {
@@ -1700,6 +1712,20 @@ impl<'h> Ui<'h> {
         Ok(())
     }
 
+    /// A key while the agent's questions are shown: it picks or types,
+    /// and the last answer, or a decline, is sent.
+    async fn on_question_key(&mut self, app: &mut App, req: &ApprovalRequest, k: KeyEvent) {
+        let Some(done) = app.asking.as_mut().and_then(|a| a.key(k)) else { return };
+        let (decision, answers) = match done {
+            ask::Done::Answered(answers) => (ApprovalDecision::Allow, answers),
+            ask::Done::Declined => (ApprovalDecision::Deny, Vec::new()),
+        };
+        app.answered(&req.request_id);
+        if let Err(e) = self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision, answers }).await {
+            app.notice(if e.code == SLOW { "the host daemon is slow to answer — the answers were sent, and the turn goes on once it takes them" } else { "those questions were already answered, or their turn is over" });
+        }
+    }
+
     async fn on_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
@@ -1709,7 +1735,8 @@ impl<'h> Ui<'h> {
         // A call waiting for the person's say takes the keys that answer it
         // (R-PERM-2): y once, s for the session, p for the project, n or
         // Esc no, v to print a request that was cut to fit (its y/s/p work
-        // only after). Ctrl-C still interrupts the turn, which declines it too.
+        // only after); the agent's questions take every key but Ctrl's.
+        // Ctrl-C still interrupts the turn, which declines it too.
         // Not while `/connect`'s text question is being typed into: an
         // account name with a `p` in it would allow a call for the project.
         let typing_answer = app.overlay == Overlay::Connect && app.flow.as_ref().is_some_and(|f| f.typing());
@@ -1720,6 +1747,17 @@ impl<'h> Ui<'h> {
             // A key already on its way when the request came up — the
             // person was typing — is not an answer.
             if app.approval_shown.is_some_and(|t| t.elapsed() < APPROVAL_SETTLE) {
+                // Questions take every key, so they settle only once the
+                // person has stopped typing for the moment.
+                if app.asking.is_some() {
+                    app.approval_shown = Some(std::time::Instant::now());
+                }
+                return false;
+            }
+            // The agent's questions: the keys pick and type answers, and
+            // the last answer sends them all.
+            if app.asking.is_some() {
+                self.on_question_key(app, &req, k).await;
                 return false;
             }
             // A request cut to fit takes no allow until it is seen whole.
@@ -1737,7 +1775,7 @@ impl<'h> Ui<'h> {
             };
             if let Some(d) = decision {
                 app.answered(&req.request_id);
-                match self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d }).await {
+                match self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d, answers: Vec::new() }).await {
                     Ok(()) => {}
                     // Sent, and not answered in time: the daemon has it.
                     Err(e) if e.code == SLOW => app.notice("the host daemon is slow to answer — the approval was sent, and the turn goes on once it takes it"),
