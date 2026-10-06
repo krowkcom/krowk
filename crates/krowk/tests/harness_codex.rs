@@ -228,6 +228,22 @@ fn r_back_6_a_codex_turn_is_not_started_headless_in_an_untrusted_repository() {
 }
 
 #[test]
+fn the_paste_guard_codex_runs_is_this_krowk_and_refuses_a_bare_card_link() {
+    let b = Sandbox::new("paste-guard");
+    b.json(&["providers", "add", "codex", "--name", "team", "--json"], &[]);
+    let out = b.json(&["-p", "post it", "--model", "codex:team/gpt-5.5", "--trust", "--permission-mode", "unhinged", "--output-format", "json"], &[("FAKE_CODEX_SCENARIO", &scenario("paste_guard.jsonl"))]);
+    assert_eq!(out["result"], "Posted the block.", "{out}");
+    let fake = b.fake_log();
+    let answers: Vec<Value> = fake.lines().filter_map(|l| l.strip_prefix("hook-answer ")).map(|a| serde_json::from_str(a).unwrap_or_else(|e| panic!("{a}: {e}"))).collect();
+    assert_eq!(answers.len(), 2, "{fake}");
+    assert_eq!(answers[0]["hookSpecificOutput"]["permissionDecision"], "deny", "the bare link: {}", answers[0]);
+    assert!(answers[0]["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("krowk block"));
+    assert_eq!(answers[1], serde_json::json!({}), "the krowk block goes through");
+    // Trusted in the instance's own Codex home, by Codex's own write.
+    assert_eq!(fake.lines().filter(|l| l.starts_with("config-write ")).count(), 1, "{fake}");
+}
+
+#[test]
 fn r_back_3_ctrl_c_interrupts_a_codex_turn_and_the_session_resumes() {
     let b = Sandbox::new("interrupt");
     b.json(&["providers", "add", "codex", "--name", "team", "--json"], &[]);

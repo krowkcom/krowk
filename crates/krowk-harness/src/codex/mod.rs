@@ -16,7 +16,7 @@
 //! | message | direction | what krowk does |
 //! |---|---|---|
 //! | `initialize`, `initialized` | krowk → codex | first on every process, as client `krowk`, opting into the experimental API for dynamic tools |
-//! | `hooks/list`, `config/value/write` | krowk → codex | the paste guard krowk passes as a `PreToolUse` hook (`-c hooks.PreToolUse=…`, `paste_guard_args`) is trusted, by its hash, in the instance's Codex config |
+//! | `hooks/list`, `config/value/write` | krowk → codex | the paste guard krowk passes as a `PreToolUse` hook (`-c hooks.PreToolUse=…`, `with_paste_guard`) is trusted, by its hash, in the instance's Codex config |
 //! | `account/read` | krowk → codex | whether the instance is signed in, and to what: a ChatGPT plan is a subscription, an API key a key (R-INST-3) |
 //! | `model/list` | krowk → codex | the efforts each model takes, so `--effort` lands on one it does |
 //! | `thread/start`, `thread/resume` | krowk → codex | the session's thread, in krowk's mode, with krowk's tools; resumed by the id the log's `backend.session` holds |
@@ -163,20 +163,45 @@ pub fn args(extra: &[String]) -> Vec<String> {
     a
 }
 
-/// The paste guard (`crate::paste_guard`) as a Codex `PreToolUse` hook on
-/// its shell tool, running `exe` — this krowk — as `krowk __paste-guard`.
-/// Codex runs a hook under every approval policy and sandbox, and the
-/// model reads its deny reason; a declined approval would tell it nothing.
-pub fn paste_guard_args(exe: &Path) -> Vec<String> {
-    let command = format!("{} {}", permissions::quote(&exe.display().to_string()), crate::paste_guard::HOOK_ARG);
-    // A JSON string is a TOML basic string, escapes and all.
-    let command = Value::String(command).to_string();
-    vec!["-c".into(), format!("hooks.PreToolUse=[{{matcher=\"^Bash$\",hooks=[{{type=\"command\",command={command}}}]}}]")]
+/// How long the paste guard's trust is waited for: a Codex that stalls on
+/// it starts without the guard rather than late.
+const TRUST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The command Codex runs the paste guard (`crate::paste_guard`) with:
+/// `exe` — this krowk — as `krowk __paste-guard`, quoted for the shell.
+/// Linux names a binary replaced since it started `… (deleted)`; the hook
+/// runs the one now at that path.
+pub fn paste_guard_command(exe: &Path) -> String {
+    let exe = exe.display().to_string();
+    let exe = exe.strip_suffix(" (deleted)").unwrap_or(&exe);
+    format!("{} {}", permissions::quote(exe), crate::paste_guard::HOOK_ARG)
 }
 
-/// Whether a hook `hooks/list` reports is the paste guard krowk passed.
-fn is_paste_guard(hook: &Value) -> bool {
-    str_of(hook, "source") == "sessionFlags" && str_of(hook, "eventName") == "preToolUse" && str_of(hook, "command").ends_with(&format!(" {}", crate::paste_guard::HOOK_ARG))
+/// The instance's arguments with the paste guard as a Codex `PreToolUse`
+/// hook on its shell tool. Codex runs a hook under every approval policy
+/// and sandbox, and the model reads its deny reason, where a declined
+/// approval would tell it nothing. A `hooks.PreToolUse` the instance sets
+/// itself is kept, and the guard added to it: a second `-c` would replace
+/// it whole.
+pub fn with_paste_guard(mut args: Vec<String>, command: &str) -> Vec<String> {
+    // A JSON string is a TOML basic string, escapes and all.
+    let entry = format!("{{matcher=\"^Bash$\",hooks=[{{type=\"command\",command={}}}]}}", Value::String(command.into()));
+    let own = args.iter().position(|a| a.trim_start_matches("--config=").starts_with("hooks.PreToolUse=") && a.trim_end().ends_with(']'));
+    match own {
+        Some(i) => {
+            let list = args[i].trim_end().strip_suffix(']').unwrap_or_default().to_string();
+            let sep = if list.trim_end().ends_with('[') { "" } else { "," };
+            args[i] = format!("{list}{sep}{entry}]");
+        }
+        None => args.extend(["-c".to_string(), format!("hooks.PreToolUse=[{entry}]")]),
+    }
+    args
+}
+
+/// Whether a hook `hooks/list` reports is the paste guard krowk passed:
+/// its command exactly, from the command line.
+fn is_paste_guard(hook: &Value, command: &str) -> bool {
+    str_of(hook, "source") == "sessionFlags" && str_of(hook, "eventName") == "preToolUse" && str_of(hook, "command") == command
 }
 
 /// Codex's approval policy and sandbox for a krowk mode.
@@ -943,10 +968,13 @@ fn text_input(input: &[Steer], session_dir: &Path) -> Value {
 impl Proc {
     async fn spawn(b: &Backend, cwd: &Path, bypass: bool, ask: &Answers, instance: &str) -> Result<Proc, EngineError> {
         let mut cmd = tokio::process::Command::new(b.path.as_deref().unwrap_or(Path::new(&b.binary)));
-        let mut argv = args(&b.args);
-        if let Ok(exe) = std::env::current_exe() {
-            argv.extend(paste_guard_args(&exe));
-        }
+        // Unix only: how Codex runs a hook's command on Windows is not
+        // known here, so it is not guessed at.
+        let guard = std::env::current_exe().ok().filter(|_| cfg!(unix)).map(|exe| paste_guard_command(&exe));
+        let argv = match &guard {
+            Some(command) => args(&with_paste_guard(b.args.clone(), command)),
+            None => args(&b.args),
+        };
         cmd.args(argv).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let (remove, set) = environment(b);
         for k in remove {
@@ -1012,7 +1040,9 @@ impl Proc {
                 }
             }
         }
-        p.trust_paste_guard(cwd, ask).await;
+        if let Some(command) = &guard {
+            p.trust_paste_guard(cwd, command, ask).await;
+        }
         Ok(p)
     }
 
@@ -1020,15 +1050,15 @@ impl Proc {
     /// The paste guard krowk passed is trusted here, by Codex's own config
     /// write, so it holds from the first thread. A Codex that lists no
     /// hooks runs without it.
-    async fn trust_paste_guard(&mut self, cwd: &Path, ask: &Answers) {
-        let Ok(list) = self.request("hooks/list", json!({ "cwds": [cwd] }), ask, INITIALIZE_TIMEOUT).await else { return };
+    async fn trust_paste_guard(&mut self, cwd: &Path, command: &str, ask: &Answers) {
+        let Ok(list) = self.request("hooks/list", json!({ "cwds": [cwd] }), ask, TRUST_TIMEOUT).await else { return };
         let hooks = list.get("data").and_then(Value::as_array).into_iter().flatten().flat_map(|d| d.get("hooks").and_then(Value::as_array).into_iter().flatten());
         let state: serde_json::Map<String, Value> = hooks
-            .filter(|h| is_paste_guard(h) && !matches!(str_of(h, "trustStatus"), "trusted" | "managed"))
+            .filter(|h| is_paste_guard(h, command) && !matches!(str_of(h, "trustStatus"), "trusted" | "managed"))
             .map(|h| (str_of(h, "key").to_string(), json!({ "trusted_hash": str_of(h, "currentHash") })))
             .collect();
         if !state.is_empty() {
-            let _ = self.request("config/value/write", json!({"keyPath": "hooks.state", "mergeStrategy": "upsert", "value": state}), ask, INITIALIZE_TIMEOUT).await;
+            let _ = self.request("config/value/write", json!({"keyPath": "hooks.state", "mergeStrategy": "upsert", "value": state}), ask, TRUST_TIMEOUT).await;
         }
     }
 
@@ -1334,10 +1364,15 @@ mod tests {
         assert_eq!(args(&["-c".into(), "model_provider=openrouter".into()]).join(" "), "app-server --listen stdio:// -c model_provider=openrouter");
         // The hook's command is this krowk's path, quoted for the shell
         // Codex runs it in, inside a TOML string.
-        assert_eq!(
-            paste_guard_args(Path::new("/opt/my tools/krowk")),
-            ["-c", r#"hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command="'/opt/my tools/krowk' __paste-guard"}]}]"#]
-        );
+        let command = paste_guard_command(Path::new("/opt/my tools/krowk (deleted)"));
+        assert_eq!(command, "'/opt/my tools/krowk' __paste-guard");
+        let entry = r#"{matcher="^Bash$",hooks=[{type="command",command="'/opt/my tools/krowk' __paste-guard"}]}"#;
+        assert_eq!(with_paste_guard(vec!["-c".into(), "model=x".into()], &command), ["-c", "model=x", "-c", &format!("hooks.PreToolUse=[{entry}]")]);
+        // The instance's own hooks are kept, the guard added beside them.
+        let own = r#"hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command="/usr/bin/user-guard"}]}]"#;
+        let merged = with_paste_guard(vec!["-c".into(), own.into()], &command);
+        assert_eq!(merged, ["-c".to_string(), format!("{},{entry}]", own.strip_suffix(']').unwrap())]);
+        assert_eq!(with_paste_guard(vec!["-c".into(), "hooks.PreToolUse=[]".into()], &command), ["-c".to_string(), format!("hooks.PreToolUse=[{entry}]")]);
         for m in [PermissionMode::Default, PermissionMode::Plan, PermissionMode::AcceptEdits] {
             assert_eq!(policy(m), Policy { approval: "on-request", sandbox: "read-only" }, "every edit and command beyond reading is asked about");
         }
