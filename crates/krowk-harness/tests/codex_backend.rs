@@ -288,6 +288,29 @@ fn r_back_3_a_tool_using_turn_on_a_codex_instance_completes_and_is_logged() {
 }
 
 #[test]
+fn the_paste_guard_is_passed_to_codex_as_a_hook_and_trusted_once() {
+    let h = Home::new("paste-guard");
+    let home = h.signed_in("codex", "chatgpt team@example.com");
+    rt().block_on(async {
+        // Two hosts, so two processes: the second finds the hook trusted.
+        for mode in [PermissionMode::Unhinged, PermissionMode::Default] {
+            let host = h.host(vec![("codex", h.instance(&home, None, &[]))], trust::allow_all());
+            let (_, r) = run(&host, prompt(None, "hi", "codex/gpt-5.5", mode)).await;
+            r.unwrap().unwrap();
+            host.shutdown().await;
+        }
+    });
+    let log = h.fake_log();
+    // The readiness check's process runs no turn, and is passed no hook.
+    let hooked = lines_of(&log, "argv app-server").iter().filter(|a| a.contains(r#"-c hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command=""#) && a.contains(r#" __paste-guard"}]}]"#)).count();
+    assert_eq!((hooked, backend_processes(&log)), (2, 2), "every turn's process carries the hook, whatever the mode: {log}");
+    let writes = lines_of(&log, "config-write ");
+    assert_eq!(writes.len(), 1, "trusted once, then left alone: {log}");
+    let write: Value = serde_json::from_str(&writes[0]).unwrap();
+    assert_eq!(write["params"], serde_json::json!({"keyPath": "hooks.state", "mergeStrategy": "upsert", "value": {"/<session-flags>/config.toml:pre_tool_use:0:0": {"trusted_hash": "sha256:fake-paste-guard"}}}));
+}
+
+#[test]
 fn r_back_5_a_new_host_resumes_the_codex_thread_the_log_names() {
     let h = Home::new("resume");
     let home = h.signed_in("codex-team", "chatgpt team@example.com");
@@ -556,6 +579,8 @@ fn response_type(method: &str) -> Option<&'static str> {
         "thread/start" => "v2/ThreadStartResponse",
         "thread/resume" => "v2/ThreadResumeResponse",
         "config/read" => "v2/ConfigReadResponse",
+        "hooks/list" => "v2/HooksListResponse",
+        "config/value/write" => "v2/ConfigWriteResponse",
         "turn/start" => "v2/TurnStartResponse",
         "turn/steer" => "v2/TurnSteerResponse",
         "turn/interrupt" => "v2/TurnInterruptResponse",

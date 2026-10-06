@@ -4,7 +4,7 @@
 //! subscription from one — as one long-lived process per session:
 //!
 //! ```text
-//! codex app-server --listen stdio:// [the instance's args]
+//! codex app-server --listen stdio:// [the instance's args] -c hooks.PreToolUse=[…]
 //! ```
 //!
 //! with `CODEX_HOME` set to the instance's home. One JSON object per line
@@ -16,6 +16,7 @@
 //! | message | direction | what krowk does |
 //! |---|---|---|
 //! | `initialize`, `initialized` | krowk → codex | first on every process, as client `krowk`, opting into the experimental API for dynamic tools |
+//! | `hooks/list`, `config/value/write` | krowk → codex | the paste guard krowk passes as a `PreToolUse` hook (`-c hooks.PreToolUse=…`, `paste_guard_args`) is trusted, by its hash, in the instance's Codex config |
 //! | `account/read` | krowk → codex | whether the instance is signed in, and to what: a ChatGPT plan is a subscription, an API key a key (R-INST-3) |
 //! | `model/list` | krowk → codex | the efforts each model takes, so `--effort` lands on one it does |
 //! | `thread/start`, `thread/resume` | krowk → codex | the session's thread, in krowk's mode, with krowk's tools; resumed by the id the log's `backend.session` holds |
@@ -160,6 +161,22 @@ pub fn args(extra: &[String]) -> Vec<String> {
     let mut a: Vec<String> = ["app-server", "--listen", "stdio://"].iter().map(|s| s.to_string()).collect();
     a.extend(extra.iter().cloned());
     a
+}
+
+/// The paste guard (`crate::paste_guard`) as a Codex `PreToolUse` hook on
+/// its shell tool, running `exe` — this krowk — as `krowk __paste-guard`.
+/// Codex runs a hook under every approval policy and sandbox, and the
+/// model reads its deny reason; a declined approval would tell it nothing.
+pub fn paste_guard_args(exe: &Path) -> Vec<String> {
+    let command = format!("{} {}", permissions::quote(&exe.display().to_string()), crate::paste_guard::HOOK_ARG);
+    // A JSON string is a TOML basic string, escapes and all.
+    let command = Value::String(command).to_string();
+    vec!["-c".into(), format!("hooks.PreToolUse=[{{matcher=\"^Bash$\",hooks=[{{type=\"command\",command={command}}}]}}]")]
+}
+
+/// Whether a hook `hooks/list` reports is the paste guard krowk passed.
+fn is_paste_guard(hook: &Value) -> bool {
+    str_of(hook, "source") == "sessionFlags" && str_of(hook, "eventName") == "preToolUse" && str_of(hook, "command").ends_with(&format!(" {}", crate::paste_guard::HOOK_ARG))
 }
 
 /// Codex's approval policy and sandbox for a krowk mode.
@@ -926,7 +943,11 @@ fn text_input(input: &[Steer], session_dir: &Path) -> Value {
 impl Proc {
     async fn spawn(b: &Backend, cwd: &Path, bypass: bool, ask: &Answers, instance: &str) -> Result<Proc, EngineError> {
         let mut cmd = tokio::process::Command::new(b.path.as_deref().unwrap_or(Path::new(&b.binary)));
-        cmd.args(args(&b.args)).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        let mut argv = args(&b.args);
+        if let Ok(exe) = std::env::current_exe() {
+            argv.extend(paste_guard_args(&exe));
+        }
+        cmd.args(argv).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let (remove, set) = environment(b);
         for k in remove {
             cmd.env_remove(k);
@@ -991,7 +1012,24 @@ impl Proc {
                 }
             }
         }
+        p.trust_paste_guard(cwd, ask).await;
         Ok(p)
+    }
+
+    /// Codex runs a hook only once its user has trusted it, by its hash.
+    /// The paste guard krowk passed is trusted here, by Codex's own config
+    /// write, so it holds from the first thread. A Codex that lists no
+    /// hooks runs without it.
+    async fn trust_paste_guard(&mut self, cwd: &Path, ask: &Answers) {
+        let Ok(list) = self.request("hooks/list", json!({ "cwds": [cwd] }), ask, INITIALIZE_TIMEOUT).await else { return };
+        let hooks = list.get("data").and_then(Value::as_array).into_iter().flatten().flat_map(|d| d.get("hooks").and_then(Value::as_array).into_iter().flatten());
+        let state: serde_json::Map<String, Value> = hooks
+            .filter(|h| is_paste_guard(h) && !matches!(str_of(h, "trustStatus"), "trusted" | "managed"))
+            .map(|h| (str_of(h, "key").to_string(), json!({ "trusted_hash": str_of(h, "currentHash") })))
+            .collect();
+        if !state.is_empty() {
+            let _ = self.request("config/value/write", json!({"keyPath": "hooks.state", "mergeStrategy": "upsert", "value": state}), ask, INITIALIZE_TIMEOUT).await;
+        }
     }
 
     fn alive(&mut self) -> bool {
@@ -1294,6 +1332,12 @@ mod tests {
     #[test]
     fn r_back_3_the_process_is_app_server_on_stdio_in_krowks_mode() {
         assert_eq!(args(&["-c".into(), "model_provider=openrouter".into()]).join(" "), "app-server --listen stdio:// -c model_provider=openrouter");
+        // The hook's command is this krowk's path, quoted for the shell
+        // Codex runs it in, inside a TOML string.
+        assert_eq!(
+            paste_guard_args(Path::new("/opt/my tools/krowk")),
+            ["-c", r#"hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command="'/opt/my tools/krowk' __paste-guard"}]}]"#]
+        );
         for m in [PermissionMode::Default, PermissionMode::Plan, PermissionMode::AcceptEdits] {
             assert_eq!(policy(m), Policy { approval: "on-request", sandbox: "read-only" }, "every edit and command beyond reading is asked about");
         }
