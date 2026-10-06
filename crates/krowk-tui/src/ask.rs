@@ -85,10 +85,10 @@ impl Asking {
                 self.text[self.at].pop();
             }
             KeyCode::Enter => return self.enter(),
-            KeyCode::Char(' ') if multi && !typing => self.toggle(cur),
-            KeyCode::Char(' ') if !typing => return self.enter(),
-            // A number picks — until the person has started their own
-            // answer, which it is then part of.
+            // Space and a number pick — until the person has started their
+            // own answer, which they are then part of.
+            KeyCode::Char(' ') if multi && !typing && self.text[self.at].is_empty() => self.toggle(cur),
+            KeyCode::Char(' ') if !typing && self.text[self.at].is_empty() => return self.enter(),
             KeyCode::Char(c) if !typing && self.text[self.at].is_empty() && c.is_ascii_digit() && (1..=own).contains(&(c as usize - '0' as usize)) => {
                 let i = c as usize - '1' as usize;
                 self.cursor[self.at] = i;
@@ -324,6 +324,8 @@ mod tests {
         a.key(key(KeyCode::Char('x')));
         a.key(key(KeyCode::Up));
         assert_eq!(a.key(key(KeyCode::Char('2'))), None, "typed, though the cursor was on an option");
+        a.key(key(KeyCode::Up));
+        assert_eq!(a.key(key(KeyCode::Char(' '))), None, "a space too");
         assert!(matches!(a.key(key(KeyCode::Enter)), Some(Done::Answered(ans)) if ans[0].text.as_deref() == Some("x2")));
         // Space picks where one may be picked.
         assert!(matches!(asking(vec![question("db", false, &["a", "b"])]).key(key(KeyCode::Char(' '))), Some(Done::Answered(ans)) if ans[0].picked == ["a"]));
