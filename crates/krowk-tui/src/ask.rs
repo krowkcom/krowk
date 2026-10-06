@@ -31,7 +31,9 @@ pub struct Asking {
     cursor: Vec<usize>,
     picked: Vec<BTreeSet<usize>>,
     text: Vec<String>,
-    answered: Vec<bool>,
+    /// Per question: its answer as Enter last took it — kept as it was
+    /// when the person goes back to look.
+    saved: Vec<Option<QuestionAnswer>>,
 }
 
 /// How the person finished with the questions.
@@ -52,7 +54,7 @@ impl Asking {
             cursor: vec![0; n],
             picked: vec![BTreeSet::new(); n],
             text: vec![String::new(); n],
-            answered: vec![false; n],
+            saved: vec![None; n],
         })
     }
 
@@ -84,7 +86,10 @@ impl Asking {
             }
             KeyCode::Enter => return self.enter(),
             KeyCode::Char(' ') if multi && !typing => self.toggle(cur),
-            KeyCode::Char(c) if !typing && c.is_ascii_digit() && (1..=own).contains(&(c as usize - '0' as usize)) => {
+            KeyCode::Char(' ') if !typing => return self.enter(),
+            // A number picks — until the person has started their own
+            // answer, which it is then part of.
+            KeyCode::Char(c) if !typing && self.text[self.at].is_empty() && c.is_ascii_digit() && (1..=own).contains(&(c as usize - '0' as usize)) => {
                 let i = c as usize - '1' as usize;
                 self.cursor[self.at] = i;
                 if multi {
@@ -133,30 +138,35 @@ impl Asking {
     }
 
     /// Enter: the row under the cursor is the answer — for several picks,
-    /// those picked (the row under the cursor, when none is) — and the next
-    /// question unanswered comes up, or, with none left, they are sent.
+    /// those picked (the row under the cursor, when none is), with what
+    /// the person wrote — and the next question unanswered comes up, or,
+    /// with none left, they are sent.
     fn enter(&mut self) -> Option<Done> {
-        let own = self.q().options.len();
+        let q = &self.questions[self.at];
+        let own = q.options.len();
         let cur = self.cursor[self.at];
         let text = self.text[self.at].trim().to_string();
-        if self.q().multi_select {
+        let label = |i: &usize| q.options[*i].label.clone();
+        let answer = if q.multi_select {
             if self.picked[self.at].is_empty() && cur < own {
                 self.picked[self.at].insert(cur);
             }
             if self.picked[self.at].is_empty() && text.is_empty() {
                 return None;
             }
+            QuestionAnswer { id: q.id.clone(), picked: self.picked[self.at].iter().map(label).collect(), text: (!text.is_empty()).then_some(text) }
         } else if cur == own {
             if text.is_empty() {
                 return None;
             }
-            self.picked[self.at].clear();
+            QuestionAnswer { id: q.id.clone(), picked: Vec::new(), text: Some(text) }
         } else {
             self.picked[self.at] = BTreeSet::from([cur]);
-        }
-        self.answered[self.at] = true;
+            QuestionAnswer { id: q.id.clone(), picked: vec![label(&cur)], text: None }
+        };
+        self.saved[self.at] = Some(answer);
         let n = self.questions.len();
-        match (1..n).map(|d| (self.at + d) % n).find(|&i| !self.answered[i]) {
+        match (1..n).map(|d| (self.at + d) % n).find(|&i| self.saved[i].is_none()) {
             Some(next) => {
                 self.at = next;
                 None
@@ -167,23 +177,7 @@ impl Asking {
 
     /// The answers, a question each, in the order asked.
     pub fn answers(&self) -> Vec<QuestionAnswer> {
-        self.questions
-            .iter()
-            .enumerate()
-            .map(|(i, q)| {
-                if !self.answered[i] {
-                    return QuestionAnswer { id: q.id.clone(), ..QuestionAnswer::default() };
-                }
-                let text = self.text[i].trim();
-                // One pick: the own answer, typed, is the pick.
-                let own = !q.multi_select && self.cursor[i] == q.options.len();
-                QuestionAnswer {
-                    id: q.id.clone(),
-                    picked: if own { Vec::new() } else { self.picked[i].iter().filter_map(|&o| q.options.get(o)).map(|o| o.label.clone()).collect() },
-                    text: (!text.is_empty() && (own || q.multi_select)).then(|| text.to_string()),
-                }
-            })
-            .collect()
+        self.questions.iter().zip(&self.saved).map(|(q, a)| a.clone().unwrap_or_else(|| QuestionAnswer { id: q.id.clone(), ..QuestionAnswer::default() })).collect()
     }
 
     /// The questions as they are shown over the prompt: the one shown, its
@@ -206,7 +200,7 @@ impl Asking {
                     tabs.push(Span::styled(" · ", dim()));
                 }
                 let name = if q.header.is_empty() { format!("Question {}", i + 1) } else { shown(&q.header, 40) };
-                let tick = if self.answered[i] { "✓ " } else { "" };
+                let tick = if self.saved[i].is_some() { "✓ " } else { "" };
                 tabs.push(Span::styled(format!("{tick}{name}"), if i == self.at { bold() } else { dim() }));
             }
             rows.push(Line::from(clip_spans(tabs, width)));
@@ -325,6 +319,14 @@ mod tests {
         a.key(key(KeyCode::Backspace));
         assert!(a.typing() && text(&a.rows(80, None, 1)).contains("❯ 3. duckdb "));
         assert_eq!(a.key(key(KeyCode::Enter)), Some(Done::Answered(vec![QuestionAnswer { id: "db".into(), picked: vec![], text: Some("duckdb".into()) }])));
+        // Once the person writes, a number is part of what they write.
+        let mut a = asking(vec![question("n", false, &["one", "two"])]);
+        a.key(key(KeyCode::Char('x')));
+        a.key(key(KeyCode::Up));
+        assert_eq!(a.key(key(KeyCode::Char('2'))), None, "typed, though the cursor was on an option");
+        assert!(matches!(a.key(key(KeyCode::Enter)), Some(Done::Answered(ans)) if ans[0].text.as_deref() == Some("x2")));
+        // Space picks where one may be picked.
+        assert!(matches!(asking(vec![question("db", false, &["a", "b"])]).key(key(KeyCode::Char(' '))), Some(Done::Answered(ans)) if ans[0].picked == ["a"]));
         // An empty own answer is no answer.
         let mut a = asking(vec![question("db", false, &["Postgres"])]);
         a.key(key(KeyCode::Down));
@@ -361,6 +363,14 @@ mod tests {
                 QuestionAnswer { id: "tests".into(), picked: vec!["unit".into(), "e2e".into()], text: Some("fuzz".into()) },
             ]))
         );
+        // An answer stays as Enter took it while the person looks back.
+        let mut a = asking(vec![question("a", false, &["x", "y"]), question("b", false, &["x", "y"])]);
+        a.key(key(KeyCode::Char('1')));
+        a.key(key(KeyCode::Tab));
+        a.key(key(KeyCode::Down));
+        a.key(key(KeyCode::Down));
+        a.key(key(KeyCode::Tab));
+        assert!(matches!(a.key(key(KeyCode::Char('2'))), Some(Done::Answered(ans)) if ans[0].picked == ["x"] && ans[1].picked == ["y"]));
         // Enter on the last goes back to one left unanswered.
         let mut a = asking(vec![question("a", false, &["x", "y"]), question("b", false, &["x", "y"])]);
         a.key(key(KeyCode::Tab));

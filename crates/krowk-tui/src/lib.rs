@@ -1616,8 +1616,10 @@ impl<'h> Ui<'h> {
                 // is up or while it is a pick, never reaches the prompt, a
                 // turn or the history.
                 // The agent's questions take a paste as the person's own
-                // answer, once they have settled.
-                if let Some(a) = app.asking.as_mut() {
+                // answer, once they have settled — but not one meant for
+                // `/connect`'s text question, a key perhaps.
+                let connecting = app.overlay == Overlay::Connect && app.flow.as_ref().is_some_and(|f| f.typing());
+                if let Some(a) = app.asking.as_mut().filter(|_| !connecting) {
                     if app.approval_shown.is_none_or(|t| t.elapsed() >= APPROVAL_SETTLE) {
                         a.paste(&s);
                     }
@@ -1745,6 +1747,11 @@ impl<'h> Ui<'h> {
             // A key already on its way when the request came up — the
             // person was typing — is not an answer.
             if app.approval_shown.is_some_and(|t| t.elapsed() < APPROVAL_SETTLE) {
+                // Questions take every key, so they settle only once the
+                // person has stopped typing for the moment.
+                if app.asking.is_some() {
+                    app.approval_shown = Some(std::time::Instant::now());
+                }
                 return false;
             }
             // The agent's questions: the keys pick and type answers, and
