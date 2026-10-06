@@ -293,8 +293,10 @@ impl Approvals {
 /// What the model reads when it asks a question nobody is here to answer.
 pub const NOBODY_TO_ASK: &str = "nobody is here to answer: this session cannot ask. Decide, say what you assumed, and carry on.";
 
-/// What the model reads when the person declines to answer.
-pub const DECLINED: &str = "the person declined to answer. Carry on with your best judgment, or ask something else.";
+/// What the model reads when its questions are declined: by the person,
+/// or for them when nobody came to answer in time (a synced turn left
+/// alone), which the decline does not tell apart.
+pub const DECLINED: &str = "no answer came: the person declined, or was not there. Carry on with your best judgment, or ask something else.";
 
 /// Grants a person gave for the rest of a session.
 pub type SessionGrants = Arc<Mutex<Vec<Rule>>>;
