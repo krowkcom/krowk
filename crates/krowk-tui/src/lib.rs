@@ -97,7 +97,7 @@ use krowk_harness::engine::EngineError;
 use krowk_harness::host::{Host, HostConfig, Pricer};
 use krowk_harness::instances::Asked;
 use krowk_harness::log;
-use krowk_harness::protocol::{ApprovalDecision, BudgetLimits, Command, Effort, ModelRef, PermissionMode, RunResult, StreamLine, TurnStatus};
+use krowk_harness::protocol::{ApprovalDecision, ApprovalRequest, BudgetLimits, Command, Effort, ModelRef, PermissionMode, RunResult, StreamLine, TurnStatus};
 use net::Target;
 use ratatui::layout::Size;
 use settings::Settings;
@@ -1710,6 +1710,20 @@ impl<'h> Ui<'h> {
         Ok(())
     }
 
+    /// A key while the agent's questions are shown: it picks or types,
+    /// and the last answer, or a decline, is sent.
+    async fn on_question_key(&mut self, app: &mut App, req: &ApprovalRequest, k: KeyEvent) {
+        let Some(done) = app.asking.as_mut().and_then(|a| a.key(k)) else { return };
+        let (decision, answers) = match done {
+            ask::Done::Answered(answers) => (ApprovalDecision::Allow, answers),
+            ask::Done::Declined => (ApprovalDecision::Deny, Vec::new()),
+        };
+        app.answered(&req.request_id);
+        if let Err(e) = self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision, answers }).await {
+            app.notice(if e.code == SLOW { "the host daemon is slow to answer — the answers were sent, and the turn goes on once it takes them" } else { "those questions were already answered, or their turn is over" });
+        }
+    }
+
     async fn on_key(&mut self, app: &mut App, k: KeyEvent, quitting: &mut bool) -> bool {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
@@ -1735,17 +1749,8 @@ impl<'h> Ui<'h> {
             }
             // The agent's questions: the keys pick and type answers, and
             // the last answer sends them all.
-            if let Some(a) = app.asking.as_mut() {
-                let done = a.key(k);
-                let (decision, answers) = match done {
-                    None => return false,
-                    Some(ask::Done::Answered(answers)) => (ApprovalDecision::Allow, answers),
-                    Some(ask::Done::Declined) => (ApprovalDecision::Deny, Vec::new()),
-                };
-                app.answered(&req.request_id);
-                if let Err(e) = self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision, answers }).await {
-                    app.notice(if e.code == SLOW { "the host daemon is slow to answer — the answers were sent, and the turn goes on once it takes them" } else { "those questions were already answered, or their turn is over" });
-                }
+            if app.asking.is_some() {
+                self.on_question_key(app, &req, k).await;
                 return false;
             }
             // A request cut to fit takes no allow until it is seen whole.
