@@ -23,7 +23,7 @@ pub struct Host {
     pub this_machine: bool,
     /// It holds the lease of one of its sessions now: hosting.
     pub hosting: bool,
-    /// How many synced sessions it last took up.
+    /// How many synced sessions are its: held now, else last taken up.
     pub sessions: usize,
     /// Its tailnet node, as it last kept it in a session's index: none
     /// when it hosted with Tailscale down, or before it kept one.
@@ -34,7 +34,8 @@ pub struct Host {
 }
 
 impl Host {
-    /// Reachable directly: on this tailnet and online there.
+    /// Reachable directly: on this tailnet and online there. Never this
+    /// machine, which is no peer of its own.
     pub fn direct(&self) -> bool {
         self.peer.as_ref().is_some_and(|p| p.online)
     }

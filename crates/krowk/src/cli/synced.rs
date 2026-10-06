@@ -112,8 +112,9 @@ fn direct(ctx: &Ctx) -> Result<Option<krowk_harness::sync::direct::Config>, Erro
 /// `krowk hosts` (R-NET-4): the machines of yours that host synced
 /// sessions, from the registry's sessions and your device list, each
 /// marked hosting when it holds one's lease now and direct when the
-/// tailnet reaches it — no tag, and no step in the Tailscale admin console. Tailscale not
-/// answering here leaves the list whole, with no machine marked direct.
+/// tailnet reaches it — no tag, and no step in the Tailscale admin
+/// console. Tailscale not answering here leaves the list whole, with no
+/// machine marked direct.
 pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
     use krowk_harness::sync::tailscale;
     let k = keys(ctx)?;
@@ -126,8 +127,10 @@ pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
             .iter()
             .map(|h| {
                 let (dns, ips) = h.tailnet.as_ref().map_or((String::new(), Vec::new()), |t| (t.dns_name.clone(), t.ips.clone()));
-                // `online` keeps its meaning from before: on the tailnet.
-                json!({"device": h.device, "name": h.name, "os": h.os, "thisMachine": h.this_machine, "hosting": h.hosting, "online": h.direct(), "direct": h.direct(), "sessions": h.sessions, "dnsName": dns, "addresses": ips})
+                // `online` keeps its meaning from before: on the tailnet,
+                // which this machine is whenever its Tailscale is up.
+                let online = if h.this_machine { status.is_some() } else { h.direct() };
+                json!({"device": h.device, "name": h.name, "os": h.os, "thisMachine": h.this_machine, "hosting": h.hosting, "online": online, "direct": h.direct(), "sessions": h.sessions, "dnsName": dns, "addresses": ips})
             })
             .collect();
         return ctx.emit(&json!({"hosts": rows, "tailscale": status.is_some()}).to_string());
