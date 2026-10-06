@@ -187,6 +187,24 @@ Claude Code hook blocks only on exit 2, so block on a trip alone:
 
 — any other failure then warns without stopping the agent.";
 
+#[cfg(all(feature = "harness", unix))]
+const HOSTS_ABOUT: &str = "\
+Read from tailscaled's LocalAPI, which the direct path asks too. On Linux that
+is /var/run/tailscale/tailscaled.sock. On macOS krowk tries the open-source
+tailscaled's socket (/var/run/tailscaled.socket or the Linux path), then the
+Tailscale app's LocalAPI on 127.0.0.1, whose port and token it finds in the
+app's sameuserproof file: the App Store app's group container, or
+/Library/Tailscale for the standalone app. To name one yourself:
+
+  KROWK_TAILSCALE_SOCKET=/path/to/tailscaled.sock
+  KROWK_TAILSCALE_LOCALAPI=http://127.0.0.1:<port>
+    with KROWK_TAILSCALE_LOCALAPI_TOKEN=<token>
+  KROWK_TAILSCALE_LOCALAPI=/path/to/sameuserproof-<port>-<token>
+    or /Library/Tailscale/sameuserproof-<port>, which holds the token
+
+The socket wins over the LocalAPI. krowk dials 127.0.0.1 and nowhere else
+(localhost is taken as a name for it).";
+
 fn run_flag(usage: &str) -> Flag {
     flag("run", STRING, format!("{usage}. Its slug, or a link carrying it"))
 }
@@ -848,6 +866,8 @@ pub fn about(name: &str) -> &'static str {
         "sessions budget" => BUDGET_ABOUT,
         "sessions" => "Lists every agent thread on this machine, newest first.",
         "upgrade" => "Upgrades krowk to the latest release.",
+        #[cfg(all(feature = "harness", unix))]
+        "hosts" => HOSTS_ABOUT,
         #[cfg(feature = "harness")]
         "status" => "Also where its key or login comes from, and what fixes it. Exits 3 if none is.",
         #[cfg(feature = "harness")]

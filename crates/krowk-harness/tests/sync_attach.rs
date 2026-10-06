@@ -322,7 +322,7 @@ impl World {
             cwd: self.repo().display().to_string(),
             ttl: host::LEASE_TTL,
             keep: host::KEEP,
-            direct: Some(direct::Config { socket: ts.socket.clone(), roster: krowk_harness::relay::Roster::parse(&roster).unwrap(), same_user, lan: false, stop: Some(stop) }),
+            direct: Some(direct::Config { socket: ts.socket.clone().into(), roster: krowk_harness::relay::Roster::parse(&roster).unwrap(), same_user, lan: false, stop: Some(stop) }),
         };
         self.run_bridge(o, daemon)
     }
@@ -1282,7 +1282,7 @@ async fn r_net_2_the_session_moves_to_the_direct_path_and_live_frames_leave_the_
     let (_stop, _cp, _bridge) = w.bridge_direct(&a, &session, w.daemon().await, &ts, true, kill_rx);
     w.synced(&session).await;
 
-    let status = krowk_harness::sync::tailscale::status(&ts.socket).unwrap();
+    let status = krowk_harness::sync::tailscale::status(&ts.socket.clone().into()).unwrap();
     assert_eq!(status.hosts().iter().map(|h| h.host_name.as_str()).collect::<Vec<_>>(), ["b"], "R-NET-4");
 
     let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();

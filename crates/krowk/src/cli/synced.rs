@@ -113,7 +113,7 @@ fn direct(ctx: &Ctx) -> Result<Option<krowk_harness::sync::direct::Config>, Erro
 /// local tailscaled, with no pairing step (R-NET-4).
 pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
     use krowk_harness::sync::tailscale;
-    let s = tailscale::status(&tailscale::socket(ctx.io.env)).map_err(|e| fail("tailscale_unavailable", format!("{e} — start Tailscale, or name its socket in KROWK_TAILSCALE_SOCKET")))?;
+    let s = tailscale::status(&tailscale::socket(ctx.io.env)).map_err(|e| fail("tailscale_unavailable", e))?;
     let hosts = s.hosts();
     if ctx.format == crate::output::Format::Json {
         let rows: Vec<_> = hosts.iter().map(|h| json!({"name": h.host_name, "dnsName": h.dns_name.trim_end_matches('.'), "addresses": h.tailscale_ips, "online": h.online})).collect();
