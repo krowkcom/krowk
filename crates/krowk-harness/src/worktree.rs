@@ -35,9 +35,11 @@
 //!   runs no `post-checkout` of the repository's, outside any sandbox.
 //! - **Prepared** by `STEPS` before its agent starts: submodules first
 //!   (`submodules`), then the main checkout's build output cloned in where
-//!   that is nearly free (`seed`). A step that falls short leaves a note,
+//!   that is nearly free (`seed`), then the ignored files its
+//!   `.worktreeinclude` lists, copied (`include`). A step that falls short leaves a note,
 //!   and the notes open the agent's first prompt (`first_prompt`).
 
+pub mod include;
 pub mod seed;
 
 use crate::instances::WorktreesConfig;
@@ -143,7 +145,7 @@ pub type Step = fn(&Prepare<'_>) -> Option<String>;
 
 /// The prepare steps, run in this order after `create` and before the
 /// agent's first turn: submodules, seed, include, setup, as each lands.
-pub const STEPS: &[(&str, Step)] = &[("submodules", submodules), ("seed", seed::seed)];
+pub const STEPS: &[(&str, Step)] = &[("submodules", submodules), ("seed", seed::seed), ("include", include::include)];
 
 /// Runs `STEPS`, in order: their notes, in the same order. Blocking: off
 /// the async runtime.

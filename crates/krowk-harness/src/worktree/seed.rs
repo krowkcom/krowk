@@ -391,8 +391,9 @@ fn same_bytes(a: &Path, b: &Path) -> bool {
 }
 
 /// Appends `line` to the repository's `seed.log`, for the worktree `hex`.
-/// Best effort: a log that cannot be written stops nothing.
-fn log(dir: &Path, hex: &str, line: &str) {
+/// Best effort: a log that cannot be written stops nothing. The include
+/// step (WT7) writes here too.
+pub(super) fn log(dir: &Path, hex: &str, line: &str) {
     use std::io::Write;
     let at = dir.join(LOG_FILE);
     if std::fs::metadata(&at).is_ok_and(|m| m.len() > LOG_MAX) {

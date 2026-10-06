@@ -63,6 +63,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
   What was skipped and why is in `seed.log`, beside the repository's
   worktrees.
 
+- **A subagent's worktree gets the ignored files you list in
+  `.worktreeinclude`.** As in Claude Code, put a `.worktreeinclude` at the
+  top of your main checkout, in `.gitignore` syntax (`.env*`,
+  `config/local.yml`), and every file it matches that git ignores is
+  copied into a new worktree before the subagent starts, with its mode.
+  They are copies, never links, so the agent can't change your real
+  `.env`; on a file system that clones files they cost no disk. Tracked
+  files are never copied over the worktree's, nothing is read through a
+  symlink or written over a file the worktree has, and the
+  `worktrees.seed` directories are left to seeding. A file that can't be
+  copied is skipped and noted in `seed.log`. Without a
+  `.worktreeinclude`, nothing is copied.
+
 - **An agent can commit inside a worktree krowk made for it.** When a
   sandboxed session runs in a worktree under
   `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`) on
