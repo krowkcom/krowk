@@ -144,7 +144,7 @@ mod tests {
     fn r_net_4_a_session_a_removed_device_signed_names_no_host() {
         let (chain, [laptop, server, _, gone]) = chain();
         let planted = listed(&gone, Some((&server, Some(node("evil", "100.64.6.6")))), None);
-        assert!(hosts(&[planted.clone()], &chain, &laptop, None).is_empty());
+        assert!(hosts(std::slice::from_ref(&planted), &chain, &laptop, None).is_empty());
         let got = hosts(&[planted, listed(&laptop, Some((&server, Some(node("srv", "100.64.0.2")))), None)], &chain, &laptop, None);
         assert_eq!(got[0].tailnet, Some(node("srv", "100.64.0.2")), "the planted node is never shown");
     }
