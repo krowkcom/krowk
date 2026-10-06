@@ -89,6 +89,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   archived, and `unpin` undoes it. It needs `krowk sync` set up on the
   machine.
 
+- **The Claude Code plugin brings the MCP server.** Installing `krowk@krowk`
+  in Claude Code now adds the krowk MCP server (`npx -y @krowk/mcp`) beside
+  the skill, so publishing works without a separate `claude mcp add`; if you
+  added `krowk-mcp` that way, run `claude mcp remove krowk` in the project
+  where you added it, or the model sees every krowk tool twice there. When
+  krowk drives Claude Code as a backend the plugin's server is not started,
+  and krowk's own MCP server is the only one. The plugin's version now
+  moves with every release: 0.12.0 and 0.12.1 shipped without moving it, so
+  Claude Code offered no update.
+
 ### Changed
 
 - **Reading your synced sessions is signed by this machine's device key.**
