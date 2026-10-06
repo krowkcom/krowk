@@ -189,7 +189,8 @@ Claude Code hook blocks only on exit 2, so block on a trip alone:
 
 #[cfg(all(feature = "harness", unix))]
 const HOSTS_ABOUT: &str = "\
-Online when it hosts a session now; reachable directly when this machine's
+Read from the registry's synced sessions with this machine's sync keys:
+hosting when it holds one now; reachable directly when this machine's
 Tailscale finds it online. No tag and no admin console step: a host names
 its tailnet node, sealed, in each session it hosts.
 

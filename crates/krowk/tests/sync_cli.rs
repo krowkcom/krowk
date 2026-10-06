@@ -489,7 +489,7 @@ fn on_tailscale(m: &mut Machine, status: serde_json::Value) {
 
 /// Ticket 43: on a tailnet with no tags and no policy, `krowk hosts` on B
 /// lists A — the machine of B's person that hosts a synced session — by
-/// its device list name, online, and reachable directly over the node A
+/// its device list name, hosting, and reachable directly over the node A
 /// kept in the session's sealed index. A peer on the tailnet that is not
 /// on the device list, and B itself, which hosts nothing, are not listed.
 /// With Tailscale down on B, A is listed still, not direct.
@@ -499,7 +499,13 @@ fn r_net_4_hosts_lists_your_machines_that_host_with_no_tailscale_tags() {
     let mut a = w.machine("a");
     let mut b = w.machine("b");
     on_tailscale(&mut a, serde_json::json!({"BackendState": "Running", "Self": {"HostName": "a-box", "DNSName": "a-box.tail1.ts.net.", "TailscaleIPs": ["100.64.0.1"], "UserID": 1, "Online": true}, "Peer": {}}));
-    let (_host, _session) = hosted(&w, &a);
+    let (host, session) = hosted(&w, &a);
+    // Hosting is the lease, which the bridge takes after it publishes.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while a.api.show_sync_session(&session).ok().and_then(|s| s.lease).is_none() {
+        assert!(Instant::now() < deadline, "A holds the lease: {:?}", host.stderr());
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let peers = serde_json::json!({
         "k1": {"HostName": "a-box", "DNSName": "a-box.tail1.ts.net.", "TailscaleIPs": ["100.64.0.1"], "UserID": 1, "Online": true},
         "k2": {"HostName": "stranger", "DNSName": "stranger.tail1.ts.net.", "TailscaleIPs": ["100.64.0.9"], "UserID": 2, "Online": true}});
@@ -512,12 +518,12 @@ fn r_net_4_hosts_lists_your_machines_that_host_with_no_tailscale_tags() {
     let hosts = v["hosts"].as_array().unwrap();
     assert_eq!(hosts.len(), 1, "A alone: {v}");
     let h = &hosts[0];
-    assert_eq!((h["name"].as_str(), h["online"].as_bool(), h["direct"].as_bool(), h["thisMachine"].as_bool(), h["sessions"].as_u64()), (Some("a"), Some(true), Some(true), Some(false), Some(1)), "{h}");
+    assert_eq!((h["name"].as_str(), h["hosting"].as_bool(), h["online"].as_bool(), h["direct"].as_bool(), h["thisMachine"].as_bool(), h["sessions"].as_u64()), (Some("a"), Some(true), Some(true), Some(true), Some(false), Some(1)), "{h}");
     assert_eq!(h["dnsName"], "a-box.tail1.ts.net");
 
     let human = b.command(&["hosts", "--format", "human"]).output().unwrap();
     let human = String::from_utf8_lossy(&human.stdout);
-    assert_eq!(human.trim(), "a  online  reachable directly  1 session", "{human}");
+    assert_eq!(human.trim(), "a  hosting  reachable directly  1 session", "{human}");
 
     b.env = b_plain;
     let out = b.command(&["hosts", "--json"]).output().unwrap();

@@ -312,15 +312,29 @@ impl Status {
     }
 
     /// The peer `node` names: by its MagicDNS name, which names its tailnet
-    /// too, when both have one; else by a tailnet address, which another
-    /// tailnet may give out as well.
+    /// too; else, for a machine renamed since, by a tailnet address among
+    /// the peers of that same tailnet (the name's domain), since another
+    /// tailnet may give the address out as well. Without MagicDNS on either
+    /// side, by address alone.
     pub fn peer_for(&self, node: &Tailnet) -> Option<&Node> {
+        let dns = |p: &Node| p.dns_name.trim_end_matches('.').to_ascii_lowercase();
+        let domain = |name: &str| name.split_once('.').map(|(_, d)| d.to_ascii_lowercase()).unwrap_or_default();
+        let at = |p: &&Node| p.tailscale_ips.iter().any(|ip| node.ips.contains(ip));
         let mut peers = self.peer.iter().flatten().map(|(_, n)| n);
         if node.dns_name.is_empty() {
-            peers.find(|p| p.dns_name.is_empty() && p.tailscale_ips.iter().any(|ip| node.ips.contains(ip)))
-        } else {
-            peers.find(|p| p.dns_name.trim_end_matches('.').eq_ignore_ascii_case(&node.dns_name))
+            return peers.find(|p| p.dns_name.is_empty() && at(p));
         }
+        let name = node.dns_name.to_ascii_lowercase();
+        let mut by_address = None;
+        for p in peers {
+            if dns(p) == name {
+                return Some(p);
+            }
+            if by_address.is_none() && domain(&dns(p)) == domain(&name) && at(&p) {
+                by_address = Some(p);
+            }
+        }
+        by_address
     }
 }
 
@@ -424,12 +438,12 @@ mod tests {
     use super::*;
 
     const STATUS: &str = r#"{"BackendState":"Running","Self":{"HostName":"a","DNSName":"a.tail1.ts.net.","TailscaleIPs":["100.64.0.1","fd7a::1"],"Addrs":["84.15.112.34:1257","192.168.1.147:41641"],"UserID":7,"Online":true},
-        "Peer":{"k1":{"HostName":"b","DNSName":"b.tail1.ts.net.","TailscaleIPs":["100.64.0.2"],"Online":false,"Tags":["tag:krowk-host"]},"k2":{"HostName":"phone","Tags":null,"Addrs":null,"TailscaleIPs":null}}}"#;
+        "Peer":{"k1":{"HostName":"b","DNSName":"b.tail1.ts.net.","TailscaleIPs":["100.64.0.2"],"Online":false,"Tags":["tag:ops"]},"k2":{"HostName":"phone","Tags":null,"Addrs":null,"TailscaleIPs":null}}}"#;
 
     /// R-NET-1, R-NET-4: the status as tailscaled writes it gives this
     /// node's tailnet address, its MagicDNS name and its LAN address; this
     /// node as a host keeps it; and a peer found again from what a host
-    /// kept, with no tag on it.
+    /// kept, whatever tags it carries.
     #[test]
     fn r_net_1_status_reads_the_addresses_and_r_net_4_finds_a_kept_node_among_the_peers() {
         let s: Status = serde_json::from_str(STATUS).unwrap();
@@ -444,6 +458,7 @@ mod tests {
         let b = |dns: &str, ip: &str| Tailnet { name: "b".into(), dns_name: dns.into(), ips: vec![ip.parse().unwrap()] };
         assert_eq!(s.peer_for(&b("B.tail1.ts.net", "100.64.9.9")).map(|p| p.host_name.as_str()), Some("b"), "by MagicDNS name, which outlives an address");
         assert!(s.peer_for(&b("b.tail2.ts.net", "100.64.0.2")).is_none(), "the same address on another tailnet is another machine");
+        assert_eq!(s.peer_for(&b("old-name.tail1.ts.net", "100.64.0.2")).map(|p| p.host_name.as_str()), Some("b"), "renamed since, at the same address on the same tailnet");
         assert!(s.peer_for(&b("", "100.64.0.2")).is_none(), "a peer with a MagicDNS name is not matched by address alone");
         let down: Status = serde_json::from_str(&STATUS.replace("Running", "Stopped")).unwrap();
         assert!(down.tailnet().is_none(), "nothing kept while Tailscale is down");

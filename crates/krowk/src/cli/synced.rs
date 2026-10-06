@@ -111,8 +111,8 @@ fn direct(ctx: &Ctx) -> Result<Option<krowk_harness::sync::direct::Config>, Erro
 
 /// `krowk hosts` (R-NET-4): the machines of yours that host synced
 /// sessions, from the registry's sessions and your device list, each
-/// marked online when it hosts one now and direct when the tailnet reaches
-/// it — no tag, and no step in the Tailscale admin console. Tailscale not
+/// marked hosting when it holds one's lease now and direct when the
+/// tailnet reaches it — no tag, and no step in the Tailscale admin console. Tailscale not
 /// answering here leaves the list whole, with no machine marked direct.
 pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
     use krowk_harness::sync::tailscale;
@@ -126,7 +126,8 @@ pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
             .iter()
             .map(|h| {
                 let (dns, ips) = h.tailnet.as_ref().map_or((String::new(), Vec::new()), |t| (t.dns_name.clone(), t.ips.clone()));
-                json!({"device": h.device, "name": h.name, "os": h.os, "thisMachine": h.this_machine, "online": h.hosting, "direct": h.direct(), "sessions": h.sessions, "dnsName": dns, "addresses": ips})
+                // `online` keeps its meaning from before: on the tailnet.
+                json!({"device": h.device, "name": h.name, "os": h.os, "thisMachine": h.this_machine, "hosting": h.hosting, "online": h.direct(), "direct": h.direct(), "sessions": h.sessions, "dnsName": dns, "addresses": ips})
             })
             .collect();
         return ctx.emit(&json!({"hosts": rows, "tailscale": status.is_some()}).to_string());
@@ -141,7 +142,7 @@ pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
             (None, None) => "no tailnet address known",
         };
         let n = if h.sessions == 1 { "1 session".to_string() } else { format!("{} sessions", h.sessions) };
-        let _ = writeln!(ctx.io.stdout, "{}  {}  {}  {n}", super::sync::printable(&h.name), if h.hosting { "online" } else { "offline" }, reach);
+        let _ = writeln!(ctx.io.stdout, "{}  {}  {}  {n}", super::sync::printable(&h.name), if h.hosting { "hosting" } else { "not hosting" }, reach);
     }
     if hosts.is_empty() {
         let _ = writeln!(ctx.io.stdout, "no machine of yours hosts a synced session yet — `krowk sync host <session>` on one hosts it");
