@@ -27,9 +27,7 @@ pub struct Pr {
 /// detached head.
 pub fn branch(dir: &Path) -> String {
     krowk_api::git::query(dir)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .stderr(Stdio::null())
-        .output()
+        .and_then(|mut c| c.args(["rev-parse", "--abbrev-ref", "HEAD"]).stderr(Stdio::null()).output())
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())

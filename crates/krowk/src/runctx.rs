@@ -259,14 +259,13 @@ fn first(values: &[String]) -> String {
 /// own — `core.fsmonitor` on `status` above all — and the repository may be
 /// one a model was handed, so none is run and no lock is taken
 /// (`krowk_api::git`).
-fn git_cmd(dir: Option<&Path>) -> Command {
+fn git_cmd(dir: Option<&Path>) -> std::io::Result<Command> {
     krowk_api::git::query(dir.unwrap_or(Path::new(".")))
 }
 
 fn git(dir: Option<&Path>, args: &[&str]) -> String {
     git_cmd(dir)
-        .args(args)
-        .output()
+        .and_then(|mut c| c.args(args).output())
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -401,13 +400,13 @@ pub fn ci_pull_request(env: Env) -> String {
 /// answer is unknown rather than a command run. Submodules, whose own
 /// config is another repository's, are not looked into.
 fn dirty(dir: Option<&Path>) -> Option<bool> {
-    let filters = git_cmd(dir).args(["config", "--get-regexp", r"^filter\."]).output().ok()?;
+    let filters = git_cmd(dir).ok()?.args(["config", "--get-regexp", r"^filter\."]).output().ok()?;
     // 1: no filter is configured; 0: some are; anything else, no answer.
     match filters.status.code() {
         Some(1) => {}
         _ => return None,
     }
-    let out = git_cmd(dir).args(["status", "--porcelain", "--ignore-submodules=all"]).output().ok().filter(|o| o.status.success())?;
+    let out = git_cmd(dir).ok()?.args(["status", "--porcelain", "--ignore-submodules=all"]).output().ok().filter(|o| o.status.success())?;
     Some(!String::from_utf8_lossy(&out.stdout).trim().is_empty())
 }
 

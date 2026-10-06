@@ -11,12 +11,12 @@
 //! sessions/          krowk.db and each session's log
 //! cache/             the models.dev listing, the update check
 //! readiness/         where a vendor is asked whether it is signed in
+//! no-hooks/          empty: where krowk's own git looks for hooks
 //! ```
 //!
 //! The home is `0700` and made on first need. One that is a symlink, or
 //! belongs to another user, is refused rather than used: whoever controls
-//! where it leads controls krowk's keys. XDG variables are not read for it;
-//! `XDG_DATA_HOME` names only the machine-local directory (`local_data`).
+//! where it leads controls krowk's keys. XDG variables are not read.
 
 use crate::creds::Env;
 use crate::error::{fail, Error};
@@ -30,13 +30,10 @@ pub const SESSIONS: &str = "sessions";
 pub const CACHE: &str = "cache";
 pub const READINESS: &str = "readiness";
 pub const LEDGER: &str = "ledger";
+/// Kept empty: what `crate::git` points `core.hooksPath` at.
+pub const NO_HOOKS: &str = "no-hooks";
 /// Marks a home whose old-layout check is done (`migrate::note_old`).
 pub const CHECKED: &str = ".old-layout-checked";
-/// What krowk keeps in `local_data` today, which an older krowk's files in
-/// the same directory are told apart from.
-pub const LOCAL: &[&str] = &[NO_HOOKS];
-/// The empty directory git looks for hooks in (`crate::git`).
-pub const NO_HOOKS: &str = "no-hooks";
 
 /// The process environment, for the callers that have no `Env` of their own.
 pub fn process_env(k: &str) -> String {
@@ -82,17 +79,6 @@ fn user_home(env: Env, windows: bool) -> Option<PathBuf> {
         user = env("USERPROFILE");
     }
     Some(PathBuf::from(user)).filter(|p| p.is_absolute()).map(|p| lexical(&p))
-}
-
-/// Where krowk keeps what belongs to this machine rather than to the home:
-/// `$XDG_DATA_HOME/krowk` when that is absolute, else `.local/share/krowk`
-/// in the user's home directory, `..` taken out either way. Not made here;
-/// none when there is no user home to put it in.
-pub fn local_data(env: Env) -> Option<PathBuf> {
-    match PathBuf::from(env("XDG_DATA_HOME")) {
-        x if x.is_absolute() => Some(lexical(&x).join("krowk")),
-        _ => user_home(env, cfg!(windows)).map(|u| u.join(".local/share/krowk")),
-    }
 }
 
 /// Everything the file tools and `krowk_push` keep away from: the home in
@@ -277,15 +263,6 @@ mod tests {
         assert_eq!(resolve(&env(&[])).unwrap_err().code(), "no_home");
         let xdg = env(&[("HOME", "/h"), ("XDG_CONFIG_HOME", "/x"), ("XDG_DATA_HOME", "/y")]);
         assert_eq!(resolve(&xdg).unwrap(), PathBuf::from("/h/.krowk"), "XDG is not read");
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn local_data_is_xdg_data_home_or_dot_local_share() {
-        assert_eq!(local_data(&env(&[("HOME", "/h"), ("XDG_DATA_HOME", "/y/z/..")])), Some(PathBuf::from("/y/krowk")));
-        assert_eq!(local_data(&env(&[("HOME", "/h"), ("XDG_DATA_HOME", "rel")])), Some(PathBuf::from("/h/.local/share/krowk")));
-        assert_eq!(local_data(&env(&[("HOME", "/h")])), Some(PathBuf::from("/h/.local/share/krowk")));
-        assert_eq!(local_data(&env(&[])), None);
     }
 
     #[test]

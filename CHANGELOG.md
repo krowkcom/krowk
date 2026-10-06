@@ -143,15 +143,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
-- **krowk's own git calls no longer run a repository's hooks.** When
-  krowk asks git something itself — the branch and pull request on the
-  status line, the commit a synced session is at, the files a search
-  lists — git now looks for hooks in an empty directory of krowk's
-  (`~/.local/share/krowk/no-hooks`, or under `$XDG_DATA_HOME`) and runs no
-  `core.fsmonitor` command. A repository you cloned but don't trust can no
-  longer run code through `post-checkout`, `pre-commit` or its fsmonitor
-  just because krowk looked at it. Git the agent runs through its bash
-  tool is unchanged.
+- **krowk's own git calls now run with repository hooks, fsmonitor and
+  commit signing turned off.** The git krowk runs itself — the branch on
+  the status line, the commit a synced session is at, the files a search
+  lists, and soon the worktrees it makes for parallel agents — looks for
+  hooks in an empty directory in krowk's home (`~/.krowk/no-hooks`), runs
+  no `core.fsmonitor` command and signs nothing. A worktree krowk checks
+  out for an agent won't run the repository's `post-checkout` hook outside
+  the sandbox. Filters such as git-lfs still run, as a checkout needs them.
+  Git the agent runs through its bash tool is unchanged.
 - **Uploads are now `krowk artifacts`, matching the API and the JSON.**
   `krowk artifacts create | list | show | attach | delete | claim` is the
   full set, named as `/v1/artifacts` and `data.artifacts` already were.

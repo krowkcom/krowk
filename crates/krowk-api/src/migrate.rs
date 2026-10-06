@@ -254,9 +254,6 @@ pub fn note_old(home: &Path, env: Env) {
             let (p, name) = (e.path(), e.file_name().to_string_lossy().into_owned());
             match name.as_str() {
                 "krowk.db-wal" | "krowk.db-shm" | "import.lock" => {}
-                // The machine-local directory is the old data directory's
-                // place too: what krowk keeps there now is not left over.
-                _ if dir == &data && home::LOCAL.contains(&name.as_str()) => {}
                 "krowk.db" => lines.push(format!("the session index {} is not used — run `krowk sessions rebuild`, then delete it", p.display())),
                 "config.json" | "credentials.json" | "providers" => lines.push(format!("{} is not used — krowk reads {h}; copy what you need across, then delete it", p.display())),
                 "claude" | "codex" => {
