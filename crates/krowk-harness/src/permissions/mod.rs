@@ -278,15 +278,10 @@ impl Approvals {
 
     /// Answers every request of `session_id` still waiting with `deny`:
     /// nobody is left to answer them (the daemon's last client of the
-    /// session went away).
+    /// session went away). Dropped unanswered, which a call reads as a
+    /// deny and a question as nobody here to answer it.
     pub fn deny_session(&self, session_id: &str) {
-        let mut map = self.lock();
-        let ids: Vec<String> = map.iter().filter(|(_, w)| w.session_id == session_id).map(|(id, _)| id.clone()).collect();
-        for id in ids {
-            if let Some(w) = map.remove(&id) {
-                let _ = w.answer.send((ApprovalDecision::Deny, Vec::new()));
-            }
-        }
+        self.lock().retain(|_, w| w.session_id != session_id);
     }
 
     /// Drops whatever a session's finished turn left waiting.
@@ -594,16 +589,19 @@ impl Gate {
         };
         let _ = events.send(EngineEvent::Approval(req)).await;
         let mut cancel = cancel.clone();
-        let (decision, answers) = tokio::select! {
-            r = answer => r.unwrap_or((ApprovalDecision::Deny, Vec::new())),
-            _ = crate::engine::cancelled(&mut cancel) => (ApprovalDecision::Deny, Vec::new()),
+        // None: nobody is left to answer (`deny_session`).
+        let reply = tokio::select! {
+            r = answer => r.ok(),
+            _ = crate::engine::cancelled(&mut cancel) => Some((ApprovalDecision::Deny, Vec::new())),
         };
         approvals.forget(&request_id);
+        let decision = reply.as_ref().map_or(ApprovalDecision::Deny, |(d, _)| *d);
         let _ = events.send(EngineEvent::ApprovalResolved { request_id, decision }).await;
-        match decision {
-            ApprovalDecision::Deny if *cancel.borrow() => Err("the turn was interrupted before the person answered".into()),
-            ApprovalDecision::Deny => Err(DECLINED.into()),
-            _ => Ok(answers),
+        match reply {
+            _ if *cancel.borrow() => Err("the turn was interrupted before the person answered".into()),
+            None => Err(NOBODY_TO_ASK.into()),
+            Some((ApprovalDecision::Deny, _)) => Err(DECLINED.into()),
+            Some((_, answers)) => Ok(answers),
         }
     }
 

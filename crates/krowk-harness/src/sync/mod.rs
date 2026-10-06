@@ -338,8 +338,15 @@ fn jsonl(u: viewer::Update) -> Result<String, String> {
         viewer::Update::Line(l) => {
             // Said once per request, beside the line a script reads: what
             // answers it, typed here.
-            if let crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)) = &l {
-                eprintln!("krowk: {} wants approval — type `/approve {id}`, `/allow-session {id}` or `/deny {id}`", r.tool, id = r.request_id);
+            match &l {
+                // Questions are answered in the TUI, which can pick and type.
+                crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)) if !r.questions.is_empty() => {
+                    eprintln!("krowk: {} asks a question — answer it in krowk's TUI, or type `/deny {id}` to decline", r.tool, id = r.request_id);
+                }
+                crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)) => {
+                    eprintln!("krowk: {} wants approval — type `/approve {id}`, `/allow-session {id}` or `/deny {id}`", r.tool, id = r.request_id);
+                }
+                _ => {}
             }
             serde_json::to_string(&l).unwrap_or_default()
         }

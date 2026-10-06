@@ -313,6 +313,19 @@ async fn questions_go_out_as_an_approval_request_and_come_back_answered_declined
     c.send(true).unwrap();
     assert!(asking.await.unwrap_err().contains("interrupted"));
 
+    // The last client gone, the model reads that nobody is here.
+    let (_c, cancel) = watch::channel(false);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let leaving = approvals.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            if let EngineEvent::Approval(_) = ev {
+                leaving.deny_session("s");
+            }
+        }
+    });
+    assert_eq!(g.ask("ask_user", &input, vec![q.clone()], &tx, &cancel).await.unwrap_err(), NOBODY_TO_ASK);
+
     // With nobody to answer, it is never sent.
     let nobody = Gate::new(Policy::modes_only(&d), PermissionMode::Default, SessionGrants::default(), None, None, "s", "t");
     assert!(!nobody.can_ask() && g.can_ask());
