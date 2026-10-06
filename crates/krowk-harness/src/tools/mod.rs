@@ -938,7 +938,7 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     // before it starts, held until it is done — dropped after the group
     // is killed, since it was taken first.
     let builds = env.builds.filter(|b| b.pool.is_some() && crate::builds::heavy(&i.command));
-    let jobs: Vec<(String, String)> = builds.and_then(|b| b.jobs).map(|n| ("CARGO_BUILD_JOBS".to_string(), n.to_string())).into_iter().collect();
+    let jobs: Vec<(String, String)> = builds.and_then(|b| b.jobs.clone()).map(|n| ("CARGO_BUILD_JOBS".to_string(), n)).into_iter().collect();
     let (_slot, slot_note) = match builds.and_then(|b| b.pool.as_ref()) {
         Some(pool) => build_slot(env, pool).await,
         None => (None, None),
@@ -1458,7 +1458,7 @@ pub(crate) mod tests {
     /// The build slots for a test: `slots` of them in a directory of its
     /// own, never the machine's runtime directory.
     fn builds(d: &Path, slots: usize) -> crate::builds::Builds {
-        crate::builds::Builds { pool: Some(crate::slots::Pool::new(d.join("run"), crate::builds::POOL, slots)), jobs: Some(3) }
+        crate::builds::Builds { pool: Some(crate::slots::Pool::new(d.join("run"), crate::builds::POOL, slots)), jobs: Some("3".into()) }
     }
 
     #[cfg(unix)]
@@ -1479,14 +1479,16 @@ pub(crate) mod tests {
         let ((a, at), (b2, bt), (light, lt)) = tokio::join!(
             timed(&first, "make -s slow && echo first"),
             timed(&second, "make -s slow && echo second"),
-            timed(&env, "sleep 0.5 && echo $CARGO_BUILD_JOBS light"),
+            timed(&env, "sleep 0.5 && echo \"jobs=[$CARGO_BUILD_JOBS]\""),
         );
         assert!(!a.1 && !b2.1 && !light.1, "{a:?} {b2:?} {light:?}");
         // One after the other: the second ends a whole build after the first.
         let (early, late) = if at < bt { (at, bt) } else { (bt, at) };
         assert!(early >= Duration::from_secs(2) && late >= Duration::from_secs(4), "{early:?} {late:?}");
         assert!(lt < Duration::from_secs(2), "the light command ran straight away: {lt:?}");
-        assert_eq!(light.0, "light\nexit code 0", "a light command gets no CARGO_BUILD_JOBS");
+        // Whatever krowk's own environment holds, and nothing krowk added.
+        let inherited = std::env::var("CARGO_BUILD_JOBS").unwrap_or_default();
+        assert_eq!(light.0, format!("jobs=[{inherited}]\nexit code 0"), "a light command gets no CARGO_BUILD_JOBS of krowk's");
         let waited = if at < bt { &b2.0 } else { &a.0 };
         assert!(waited.contains("waited") && waited.contains("for a build slot"), "the result says it waited: {waited}");
         let said = rx.try_recv().expect("the wait was said live");

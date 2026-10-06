@@ -17,17 +17,22 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `npm install` at once and it runs out of memory. Now, when the agent's
   bash command runs a build or test program (`cargo`, `make`, `npm`,
   `pnpm`, `yarn`, `go`, `pytest`, `gradle`, `mvn`, `dotnet`, `swift` and
-  the like, anywhere in the command line), it first waits for one of a
-  fixed number of build slots that every krowk session and subagent on
-  the machine shares, and holds it until the command ends. Other
-  commands run straight away. While it waits, the command shows
+  the like, wherever the command line itself runs one, but not inside a
+  script it calls or a `bash -c "…"`), it first waits for one of a fixed
+  number of build slots that every krowk session and subagent on the
+  machine shares, and holds it until the command ends. Other commands run
+  straight away. While it waits, the command shows
   `waiting for a build slot (N in use)`, and its result says how long it
   waited when that was over a second. Interrupting the turn stops the
-  wait. A krowk that is killed or crashes frees its slot at once. There
-  are a quarter as many slots as cores by default (at least one); set
-  `"builds": {"slots": 2}` in `~/.krowk/config.json` to change that. A
-  build that runs also gets `CARGO_BUILD_JOBS` set to its share of the
-  cores, unless you set it yourself. This applies to krowk's own agent;
+  wait. A krowk that is killed or crashes frees its slot at once. A build
+  the command starts in the background (`cargo build &`) is not held to a
+  slot once the command returns. There are a quarter as many slots as
+  cores by default (at least one); set `"builds": {"slots": 2}` in
+  `~/.krowk/config.json` to change that. A build also gets
+  `CARGO_BUILD_JOBS` set to the cores divided by the slots, so even a
+  build running alone gets only that share; set `CARGO_BUILD_JOBS`
+  yourself, or raise `builds.slots`, to change it. Your own value is
+  passed on in the sandbox too. This applies to krowk's own agent;
   Claude Code and Codex run their own shells.
 - **A host says why a viewer stays on the relay.** When a viewer offered
   the direct path never reaches it — a firewall on the host, or a tailnet
