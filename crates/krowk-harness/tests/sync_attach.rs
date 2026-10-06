@@ -1456,6 +1456,45 @@ async fn r_net_3_with_whois_on_another_tailnet_user_is_refused_and_stays_on_the_
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
 }
 
+/// R-NET-3: being on the tailnet admits nobody. A connection to the direct
+/// listener's address — from this tailnet user, so whois passes — joins
+/// only with a ticket under a key the registry publishes and a challenge
+/// signed by the key that ticket names: none, one signed by anyone else,
+/// and the device's own presented under another key are each refused.
+#[tokio::test]
+async fn r_net_3_on_the_tailnet_without_the_registrys_ticket_nobody_joins_the_direct_path() {
+    let w = World::new("tailnet");
+    let ts = FakeTailscale::start(&w.root);
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_kill, kill_rx) = watch::channel(false);
+    let (_stop, _cp, _bridge) = w.bridge_direct(&a, &session, w.daemon().await, &ts, true, kill_rx);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let got = until(&mut v, Duration::from_secs(15), &mut Vec::new(), direct_path).await;
+    let via = got.iter().find_map(|u| if let viewer::Update::Path { via: Some(via), .. } = u { Some(via.clone()) } else { None }).unwrap();
+
+    let (api, id, device) = (w.as_device(&b), session.clone(), b.key.id().to_string());
+    let real = tokio::task::spawn_blocking(move || api.relay_ticket(&id, &device, "development").unwrap().relay_ticket).await.unwrap();
+    let keys = [(krowk_devregistry::TICKET_KID, krowk_devregistry::ticket_public_key())];
+    let forged = krowk_client::relay_ticket::verify(&real, &keys, krowk_client::relay_ticket::now()).unwrap().sign(&[0x77; 32]);
+    let stranger = SigningKey::from_secret(&[0x42; 32]).unwrap();
+    for (what, ticket, signing, code) in [("no ticket", "", &b.signing, "bad_ticket"), ("a ticket the registry did not sign", &forged, &b.signing, "bad_ticket"), ("B's ticket under another key", &real, &stranger, "bad_signature")] {
+        match join_direct(&via, &session, &b, ticket, signing).await {
+            Ok(()) => panic!("{what}: joined the direct path"),
+            Err(e) => assert!(e.contains(code), "{what}: {e}"),
+        }
+    }
+    join_direct(&via, &session, &b, &real, &b.signing).await.expect("B's own ticket and key join, so each refusal above was the ticket's or the key's");
+}
+
+/// Joins the direct listener at `via` as `b`'s viewer, with `ticket` and a
+/// challenge signed by `signing`.
+async fn join_direct(via: &str, session: &str, b: &Device, ticket: &str, signing: &SigningKey) -> Result<(), String> {
+    let j = krowk_harness::sync::Join { relay: via, session, env: "development", ticket, device: b.key.id(), signing, role: e2e::RELAY_ROLE_VIEWER, extra: serde_json::json!({}) };
+    krowk_harness::sync::join(j).await.map(|_| ())
+}
+
 
 /// R-OFF-2: the relay drops every batch of a whole turn to B, and B sees
 /// the gap only when a later turn's batch arrives. The catch-up asks from

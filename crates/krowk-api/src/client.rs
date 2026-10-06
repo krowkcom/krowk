@@ -166,7 +166,7 @@ impl Client {
         self.base_url.starts_with("http://")
     }
 
-    fn keyless(&self) -> Client {
+    pub(crate) fn keyless(&self) -> Client {
         Client { sleep: self.sleep, ..Client::new(&self.base_url, "") }
     }
 

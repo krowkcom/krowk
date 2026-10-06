@@ -91,22 +91,68 @@ fn relay_for(asked: &str, base_url: &str) -> String {
     if base_url.trim_end_matches('/') == krowk_api::DEFAULT_BASE_URL { HOSTED_RELAY.to_string() } else { format!("ws://{}", super::relay::DEFAULT_ADDR) }
 }
 
-/// Direct paths beside the relay (R-NET-1): on when this machine can check
-/// a viewer's ticket as the relay does, with the registry's ticket-signing
-/// keys in `KROWK_RELAY_TICKET_KEYS` (the file `krowk relay serve
-/// --ticket-keys` reads). Without them there is no direct listener: nothing
-/// but a ticket may let a device in. `KROWK_TAILSCALE_SAME_USER=1` also
-/// requires tailscaled to name the far end as this tailnet user (R-NET-3).
-/// The LAN address is offered only with `KROWK_DIRECT_LAN=1`: it is off the
-/// tailnet, so plain `ws://` there is reachable by the whole network.
-fn direct(ctx: &Ctx) -> Result<Option<krowk_harness::sync::direct::Config>, Error> {
-    let keys = ctx.env("KROWK_RELAY_TICKET_KEYS");
-    if keys.trim().is_empty() {
-        return Ok(None);
-    }
-    let text = std::fs::read_to_string(keys.trim()).map_err(|e| fail("bad_ticket_keys", format!("KROWK_RELAY_TICKET_KEYS names {}, which could not be read: {e}", keys.trim())))?;
-    let roster = krowk_harness::relay::Roster::parse(&text).map_err(|e| fail("bad_ticket_keys", e))?;
+/// Direct paths beside the relay (R-NET-1): offered whenever the local
+/// tailscaled answers, a viewer's ticket checked as the relay checks it,
+/// with the registry's ticket public keys (`ticket_keys`). Without them
+/// there is no direct listener, never a weaker one: nothing but a ticket
+/// may let a device in, so the host says why and goes by the relay.
+/// `KROWK_TAILSCALE_SAME_USER=1` also requires tailscaled to name the far
+/// end as this tailnet user (R-NET-3). The LAN address is offered only with
+/// `KROWK_DIRECT_LAN=1`: it is off the tailnet, so plain `ws://` there is
+/// reachable by the whole network.
+fn direct(ctx: &mut Ctx, api: &Client) -> Result<Option<krowk_harness::sync::direct::Config>, Error> {
+    let roster = match ticket_keys(ctx, api)? {
+        Ok(roster) => roster,
+        Err(why) => {
+            let _ = writeln!(ctx.io.stderr, "krowk: no direct path ({why}); the session goes by the relay");
+            return Ok(None);
+        }
+    };
     Ok(Some(krowk_harness::sync::direct::Config { socket: krowk_harness::sync::tailscale::socket(ctx.io.env), roster, same_user: ctx.env("KROWK_TAILSCALE_SAME_USER") == "1", lan: ctx.env("KROWK_DIRECT_LAN") == "1", stop: None }))
+}
+
+/// Where the registry's ticket keys are kept between hostings, in krowk's
+/// cache: `{"registry": "<base url>", "ticketKeys": {...}}`.
+const TICKET_KEYS_CACHE: &str = "relay-ticket-keys.json";
+
+/// The keys a direct listener trusts, or why there are none.
+/// `KROWK_RELAY_TICKET_KEYS` names a file of them (the one `krowk relay
+/// serve --ticket-keys` reads), for a stand-in registry, and a file that
+/// does not read is an error. Otherwise they are the registry's own, from
+/// `GET /v1/relay/ticket_keys`, fetched at every hosting — so a rotation's
+/// next key, published before the registry signs with it, reaches the next
+/// session with nothing reinstalled — and kept, so a registry that does not
+/// answer that once leaves the last keys in place. Only the same registry's
+/// keys are ever read back.
+fn ticket_keys(ctx: &Ctx, api: &Client) -> Result<Result<krowk_harness::relay::Roster, String>, Error> {
+    use krowk_harness::relay::Roster;
+    let named = ctx.env("KROWK_RELAY_TICKET_KEYS");
+    let named = named.trim();
+    if !named.is_empty() {
+        let text = std::fs::read_to_string(named).map_err(|e| fail("bad_ticket_keys", format!("KROWK_RELAY_TICKET_KEYS names {named}, which could not be read: {e}")))?;
+        return Roster::parse(&text).map(Ok).map_err(|e| fail("bad_ticket_keys", e));
+    }
+    let cache = krowk_api::home::dir(ctx.io.env).ok().map(|h| h.join(krowk_api::home::CACHE).join(TICKET_KEYS_CACHE));
+    let fetched = api.relay_ticket_keys().map_err(|e| format!("the registry's relay ticket keys could not be fetched: {}", e.code())).and_then(|v| {
+        let keys = json!({"registry": api.base_url, "ticketKeys": v["ticketKeys"]});
+        Roster::parse(&keys.to_string()).map(|roster| (roster, keys)).map_err(|e| format!("the registry's relay ticket keys do not read: {e}"))
+    });
+    match fetched {
+        Ok((roster, keys)) => {
+            // By rename, so a host starting beside another never reads half a file.
+            if let Some(path) = cache.filter(|p| p.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok())) {
+                let tmp = path.with_file_name(format!(".{TICKET_KEYS_CACHE}.{}", std::process::id()));
+                if std::fs::write(&tmp, format!("{keys}\n")).and_then(|()| std::fs::rename(&tmp, &path)).is_err() {
+                    let _ = std::fs::remove_file(&tmp);
+                }
+            }
+            Ok(Ok(roster))
+        }
+        Err(why) => {
+            let kept = cache.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()).filter(|v| v["registry"] == api.base_url.as_str());
+            Ok(kept.and_then(|v| Roster::parse(&v.to_string()).ok()).ok_or(why))
+        }
+    }
 }
 
 /// `krowk hosts`: the tailnet's machines tagged `tag:krowk-host`, from the
@@ -185,6 +231,7 @@ fn host_once(ctx: &mut Ctx, session: &str) -> Result<(), Error> {
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let spawn = super::host::spawner(ctx)?;
+    let direct = direct(ctx, &api)?;
     let o = host::Options {
         relay: relay(ctx, &api.base_url),
         env,
@@ -198,7 +245,7 @@ fn host_once(ctx: &mut Ctx, session: &str) -> Result<(), Error> {
         cwd: cwd.display().to_string(),
         ttl: host::LEASE_TTL,
         keep: host::KEEP,
-        direct: direct(ctx)?,
+        direct,
     };
     krowk_harness::sync::run_host(o, ctx.io.env, &cwd, super::VERSION, &spawn).map_err(|(code, message)| fail(&code, message))
 }

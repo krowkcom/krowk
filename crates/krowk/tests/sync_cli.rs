@@ -2,7 +2,9 @@
 //! machines in one test: A hosts a session it made with `krowk -p`, B
 //! attaches it and answers A's approvals and interrupts its turn by typing
 //! slash commands on stdin (todo 22a). And `sync host` for a session A does
-//! not have fails at once, saying so, rather than hanging (todo 22b).
+//! not have fails at once, saying so, rather than hanging (todo 22b). And
+//! the direct path with no setup (ticket 42): the host goes direct with the
+//! registry's published ticket keys, or says in one line why it does not.
 //! Against the stand-in registry, the reference relay and a mock model.
 
 #![cfg(all(feature = "harness", unix))]
@@ -122,6 +124,9 @@ impl World {
             ("KROWK_API_URL".into(), self.api.clone()),
             ("KROWK_TOKEN".into(), device_list::key(TOKEN, name)),
             ("KROWK_RELAY_URL".into(), self.relay.clone()),
+            // No tailscaled unless a test fakes one: never the one this
+            // machine may run.
+            ("KROWK_TAILSCALE_SOCKET".into(), run.join("no-tailscaled.sock").display().to_string()),
             ("ANTHROPIC_API_KEY".into(), "sk-test".into()),
             ("ANTHROPIC_BASE_URL".into(), self.mock.clone()),
         ];
@@ -454,4 +459,103 @@ fn sync_host_takes_the_id_an_older_store_listed_a_session_under() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!err.contains("no session"), "the store's id names the log: {err}");
     assert!(!out.status.success() && err.contains("device list"), "it got as far as the registry: {err}");
+}
+
+/// A tailscaled on a unix socket in `dir`, answering `status` for a node
+/// whose tailnet address is loopback, in `state`.
+fn fake_tailscaled(dir: &std::path::Path, state: &'static str) -> PathBuf {
+    let socket = dir.join("ts.sock");
+    let l = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        for mut c in l.incoming().flatten() {
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                match std::io::Read::read(&mut c, &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => raw.extend_from_slice(&buf[..n]),
+                }
+            }
+            let status = serde_json::json!({"BackendState": state, "Self": {"HostName": "a", "DNSName": "localhost.", "TailscaleIPs": ["127.0.0.1"], "Addrs": [], "UserID": 1, "Online": true}, "Peer": {}});
+            let _ = write!(c, "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{status}");
+        }
+    });
+    socket
+}
+
+/// What B's `sync attach` says of its path, until `want` passes.
+fn path_until(view: &mut Running, want: &str) -> serde_json::Value {
+    view.until(want, |v| v["type"] == "sync.path" && v["path"] == want)
+}
+
+/// Ticket 42: with Tailscale up and no krowk variable set, the host fetches
+/// the registry's ticket keys itself, keeps them, and B's session moves to
+/// the direct path.
+#[test]
+fn r_net_1_sync_host_goes_direct_with_the_ticket_keys_the_registry_publishes() {
+    let w = World::new("direct-keys");
+    let mut a = w.machine("a");
+    let b = w.machine("b");
+    let socket = fake_tailscaled(&a.run, "Running");
+    a.env.retain(|(k, _)| k != "KROWK_TAILSCALE_SOCKET");
+    a.env.push(("KROWK_TAILSCALE_SOCKET".into(), socket.display().to_string()));
+    assert!(!a.env.iter().any(|(k, _)| k == "KROWK_RELAY_TICKET_KEYS"));
+
+    let (host, session) = hosted(&w, &a);
+    let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
+    let moved = path_until(&mut view, "direct over Tailscale");
+    assert!(moved["via"].as_str().unwrap_or_default().starts_with("ws://127.0.0.1:"), "{moved}");
+    assert!(!host.stderr().iter().any(|l| l.contains("no direct path")), "A offered a direct path");
+
+    let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(a.home.join(".krowk/cache/relay-ticket-keys.json")).unwrap()).unwrap();
+    assert_eq!(kept["registry"], w.api.as_str());
+    assert_eq!(kept["ticketKeys"][e2e::hex(&krowk_devregistry::TICKET_KID)], e2e::hex(&krowk_devregistry::ticket_public_key()));
+}
+
+/// Ticket 42: with Tailscale stopped, the host says in one line that there
+/// is no direct path and why, and the session goes by the relay.
+#[test]
+fn r_net_1_with_tailscale_stopped_the_host_says_why_in_one_line_and_goes_by_the_relay() {
+    let w = World::new("direct-stopped");
+    let mut a = w.machine("a");
+    let b = w.machine("b");
+    let socket = fake_tailscaled(&a.run, "Stopped");
+    a.env.retain(|(k, _)| k != "KROWK_TAILSCALE_SOCKET");
+    a.env.push(("KROWK_TAILSCALE_SOCKET".into(), socket.display().to_string()));
+
+    let (host, session) = hosted(&w, &a);
+    let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
+    path_until(&mut view, "relay");
+    view.type_line("still by the relay");
+    view.until("the turn's end", is("result"));
+    let said: Vec<_> = host.stderr().into_iter().filter(|l| l.contains("direct path")).collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("Tailscale isn't running"), "{said:?}");
+}
+
+/// Ticket 42: `KROWK_RELAY_TICKET_KEYS` still wins over the registry's
+/// keys, for a stand-in registry: keys that are not the registry's let no
+/// viewer onto the direct path, though the registry publishes its own.
+#[test]
+fn r_net_1_krowk_relay_ticket_keys_overrides_the_published_keys() {
+    let w = World::new("direct-override");
+    let mut a = w.machine("a");
+    let b = w.machine("b");
+    let socket = fake_tailscaled(&a.run, "Running");
+    let keys = a.run.join("keys.json");
+    std::fs::write(&keys, format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), "ab".repeat(32))).unwrap();
+    a.env.retain(|(k, _)| k != "KROWK_TAILSCALE_SOCKET");
+    a.env.push(("KROWK_TAILSCALE_SOCKET".into(), socket.display().to_string()));
+    a.env.push(("KROWK_RELAY_TICKET_KEYS".into(), keys.display().to_string()));
+
+    let (host, session) = hosted(&w, &a);
+    let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
+    path_until(&mut view, "relay");
+    // Past the time B's race for a direct path takes.
+    std::thread::sleep(krowk_harness::sync::viewer::PROBE + Duration::from_secs(2));
+    view.type_line("still by the relay");
+    view.until("the turn's end", is("result"));
+    assert!(!view.seen.iter().any(|l| l.contains("direct over")), "B joined under keys A does not hold: {:?}", view.seen);
+    assert!(!a.home.join(".krowk/cache/relay-ticket-keys.json").exists(), "the registry's keys were not fetched");
+    assert!(!host.stderr().iter().any(|l| l.contains("no direct path")), "A listened, under the named keys");
 }
