@@ -108,7 +108,9 @@ fn link_arrow() -> Style {
 /// Where a span links to, and the text it shows: `link()`'s style on an
 /// http(s) URL links to itself; a `linked` span to the URL it carries.
 pub fn link_target<'a>(span: &'a Span<'_>) -> Option<(&'a str, String)> {
-    if span.style != link() && span.style != link_arrow() {
+    // On whatever band it is drawn on: what the person said has one.
+    let style = Style { bg: None, ..span.style };
+    if style != link() && style != link_arrow() {
         return None;
     }
     let content = span.content.as_ref();
@@ -116,7 +118,7 @@ pub fn link_target<'a>(span: &'a Span<'_>) -> Option<(&'a str, String)> {
         let url: String = content[at..].chars().filter(|c| is_tag(*c)).filter_map(|c| char::from_u32(u32::from(c) - TAG)).collect();
         return is_url(&url).then(|| (&content[..at], url));
     }
-    (span.style == link() && is_url(content)).then(|| (content, content.to_string()))
+    (style == link() && is_url(content)).then(|| (content, content.to_string()))
 }
 
 /// A live region cell's symbol and the URL a `linked` span left on it, if

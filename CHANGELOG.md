@@ -101,6 +101,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **What you say in a session is shown in markdown, as answers are.**
+  `` `code` `` is in the code colour, `**bold**` is bold, and links, lists,
+  quotes and fenced blocks look as they do in an answer, all on the band of
+  your prompt. Ctrl-Y still copies the prompt as you typed it.
 - **Reading your synced sessions is signed by this machine's device key.**
   `krowk sync sessions`, attaching, `--resume` and the host now sign the
   calls that list a session, show it and list its chunks, as they already
