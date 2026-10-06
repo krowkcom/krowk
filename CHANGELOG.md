@@ -89,6 +89,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   archived, and `unpin` undoes it. It needs `krowk sync` set up on the
   machine.
 
+- **The Claude Code plugin brings the MCP server.** Installing `krowk@krowk`
+  in Claude Code now adds the krowk MCP server (`npx -y @krowk/mcp`) beside
+  the skill, so publishing works without a separate `claude mcp add`. When
+  krowk drives Claude Code as a backend the plugin's server is not started,
+  and krowk's own tools are the only ones. The plugin is at 0.12.1 again:
+  0.12.0 and 0.12.1 shipped without moving its version, so Claude Code
+  offered no update. A release now refuses to go out until the plugin, the
+  Gemini extension and the MCP registry entry carry its version.
+
 ### Changed
 
 - **Reading your synced sessions is signed by this machine's device key.**

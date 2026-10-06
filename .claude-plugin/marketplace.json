@@ -4,11 +4,14 @@
     "name": "Krowk",
     "url": "https://krowk.com"
   },
+  "metadata": {
+    "description": "Krowk, the coding agent harness, for Claude Code."
+  },
   "plugins": [
     {
       "name": "krowk",
       "displayName": "Krowk",
-      "description": "See what your agent built without spinning it up — push screenshots, recordings and reports to permalinks that unfurl in GitHub, Slack, Basecamp and Linear.",
+      "description": "Publishing from Krowk, the coding agent harness, for Claude Code: the krowk skill and MCP server turn a session's screenshots, recordings, diffs and logs into links that unfurl in GitHub, Slack, Basecamp and Linear.",
       "author": { "name": "Krowk" },
       "category": "development",
       "source": "./",
