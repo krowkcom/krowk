@@ -26,6 +26,9 @@
 //!   `Bash`, `Grep`, `Glob`, `TodoWrite`); absent, every tool. A name krowk
 //!   has no tool for — `WebFetch`, an MCP tool — is left out, and so is the
 //!   subagent tool itself: subagents do not start subagents.
+//! - `isolation` — `worktree` runs it in a git worktree of its own
+//!   (`crate::worktree`), as Claude Code's does; `none`, or absent, in the
+//!   parent's directory. A call's own `isolation` wins.
 //! - The body is the subagent's instructions, after krowk's own system
 //!   prompt.
 //!
@@ -36,6 +39,7 @@
 //! is always the parent's, so an allowlist never grants what the mode
 //! refuses, and nothing in a definition is run.
 
+use crate::subagent::Isolation;
 use std::path::{Path, PathBuf};
 
 /// One definition.
@@ -47,6 +51,8 @@ pub struct AgentDef {
     pub model: Option<String>,
     /// krowk's tool names, the edit tool as `edit`; none is every tool.
     pub tools: Option<Vec<String>>,
+    /// Where it works, when the definition says.
+    pub isolation: Option<Isolation>,
     /// The body: what the subagent is told beyond krowk's own prompt.
     pub instructions: String,
     pub path: PathBuf,
@@ -170,11 +176,18 @@ pub fn parse(text: &str, path: &Path) -> Result<AgentDef, String> {
         }
         out
     });
+    let isolation = match get("isolation").map(|i| i.to_ascii_lowercase()).as_deref() {
+        None => None,
+        Some("none") => Some(Isolation::None),
+        Some("worktree") => Some(Isolation::Worktree),
+        Some(other) => return Err(format!("isolation {other:?} is not one krowk knows: `worktree` or `none`")),
+    };
     Ok(AgentDef {
         name,
         description: get("description").unwrap_or_default(),
         model: get("model"),
         tools,
+        isolation,
         instructions: text.get(consumed.min(text.len())..).unwrap_or_default().trim().to_string(),
         path: path.to_path_buf(),
         project: false,
@@ -221,6 +234,10 @@ mod tests {
         assert_eq!(d.model.as_deref(), Some("haiku"));
         assert_eq!(d.tools.as_deref(), Some(&["read".to_string(), "grep".into(), "glob".into(), "bash".into()][..]), "what krowk has no tool for is left out, and so is Task");
         assert_eq!(d.instructions, "You are a senior reviewer.\n\nBe terse.");
+        assert_eq!(d.isolation, None);
+        let isolated = parse("---\nname: editor\nisolation: worktree\n---\nEdit.", Path::new("a.md")).unwrap();
+        assert_eq!(isolated.isolation, Some(Isolation::Worktree), "Claude Code's `isolation: worktree`");
+        assert!(parse("---\nname: x\nisolation: container\n---\n", Path::new("a.md")).unwrap_err().contains("isolation \"container\""));
         // krowk's own format: a YAML list, and no model or name.
         let native = "---\ndescription: Finds files\ntools:\n  - read\n  - glob\n  - Edit\n---\nFind things.";
         let d = parse(native, Path::new("/r/.krowk/agents/finder.md")).unwrap();

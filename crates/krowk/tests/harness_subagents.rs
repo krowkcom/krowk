@@ -1026,3 +1026,113 @@ fn r_sub_1_a_subagents_file_tools_are_fenced_from_krowks_home_as_its_parents_are
         assert!(!s.body.to_string().contains(KEY), "the key reached a model: {}", s.body);
     }
 }
+
+/// git in the sandbox's repository, through krowk's own git, with none of
+/// this machine's config: what it prints, trimmed.
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let o = krowk_api::git::command(dir).unwrap().args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+/// Every `tool_result` of the parent's log: the call it answers, its
+/// output and whether it is an error.
+fn parent_results(b: &Sandbox, session: &str) -> Vec<(String, String, bool)> {
+    b.log(session)
+        .into_iter()
+        .filter(|e| e["item"]["kind"] == "toolResult")
+        .map(|e| (e["item"]["callId"].as_str().unwrap_or_default().to_string(), e["item"]["output"].as_str().unwrap().to_string(), e["item"]["isError"].as_bool().unwrap()))
+        .collect()
+}
+
+/// The parent starts two subagents in worktrees in one response: one
+/// writes a file, the other changes nothing.
+fn two_in_worktrees(body: &Value, _: usize) -> mock::Reply {
+    if is_child(body) {
+        if answered(body) || task(body).contains("TASK-NOOP") {
+            return mock::Reply::sse(&mock::text_stream("done."));
+        }
+        return mock::Reply::sse(&mock::tool_use("toolu_w", "write", &json!({"path": "NEW.md", "content": "from the child\n"})));
+    }
+    if answered(body) {
+        return mock::Reply::sse(&mock::fixture("turn2_answer.sse"));
+    }
+    mock::Reply::sse(&tool_calls(&[
+        ("toolu_edit", "subagent", json!({"description": "write a file", "prompt": "TASK-EDIT", "isolation": "worktree"})),
+        ("toolu_noop", "subagent", json!({"description": "do nothing", "prompt": "TASK-NOOP", "isolation": "worktree"})),
+    ]))
+}
+
+/// Worktrees WT3: each child in its own worktree and branch, recorded as
+/// its directory; the one that changed nothing leaves nothing behind, the
+/// one that wrote a file leaves its worktree and branch, named in its
+/// summary, and the parent's checkout is untouched.
+#[test]
+fn wt3_two_subagents_in_worktrees_each_get_their_own_and_only_a_changed_one_is_kept() {
+    let m = mock::serve(two_in_worktrees);
+    let b = Sandbox::new("worktrees", &m.url);
+    let repo = b.root.join("repo");
+    std::fs::remove_dir_all(repo.join(".git")).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-q", "-m", "one"]);
+    let root = b.root.join("worktrees");
+    let cfg = HostConfig { agents: krowk_harness::subagent::AgentsConfig { worktrees: Some(root.clone()), ..krowk_harness::subagent::AgentsConfig::none() }, ..b.host() };
+    let r = run_in_process(&b, cfg, None, "two subagents in worktrees", PermissionMode::AcceptEdits);
+    assert_eq!(r.status, TurnStatus::Completed, "{:?}", r.error);
+    let cwd = |child: &str| b.log(child).iter().find(|e| e["type"] == "session.started").unwrap()["cwd"].as_str().unwrap().to_string();
+    let children = children_of(&b, &r.session_id);
+    assert_eq!(children.len(), 2);
+    let dirs: Vec<String> = children.iter().map(|c| cwd(c)).collect();
+    assert_ne!(dirs[0], dirs[1], "a directory each");
+    for d in &dirs {
+        assert!(std::path::Path::new(d).starts_with(&root), "under the worktrees root: {d}");
+    }
+    let results = parent_results(&b, &r.session_id);
+    let (edit, noop) = (results.iter().find(|(c, ..)| c == "toolu_edit").unwrap(), results.iter().find(|(c, ..)| c == "toolu_noop").unwrap());
+    assert!(!noop.2 && noop.1 == "done.", "nothing to say of a removed worktree: {noop:?}");
+    let note = edit.1.lines().last().unwrap();
+    let kept = dirs.iter().find(|d| std::path::Path::new(d).join("NEW.md").is_file()).expect("the file is in a worktree");
+    let hex = std::path::Path::new(kept).file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(note, format!("Worktree: {kept} (branch krowk/{hex}, 0 commits, uncommitted changes: yes)"), "{edit:?}");
+    assert!(!repo.join("NEW.md").exists(), "not in the parent's checkout");
+    assert_eq!(git(&repo, &["branch", "--list", "--format=%(refname:short)", "krowk/*"]), format!("krowk/{hex}"), "the unchanged one's branch is gone");
+    let removed = dirs.iter().find(|d| *d != kept).unwrap();
+    assert!(!std::path::Path::new(removed).exists());
+    let list = git(&repo, &["worktree", "list", "--porcelain"]);
+    assert!(list.contains(kept.as_str()) && !list.contains(removed.as_str()), "{list}");
+}
+
+/// Worktrees WT3: outside a git repository a worktree is refused by name
+/// and no subagent starts; `"none"` runs in the parent's directory as
+/// before.
+#[test]
+fn wt3_isolation_outside_a_repository_is_refused_and_none_is_todays() {
+    let m = mock::serve(|body: &Value, _: usize| {
+        if is_child(body) {
+            return mock::Reply::sse(&mock::text_stream("done."));
+        }
+        if answered(body) {
+            return mock::Reply::sse(&mock::fixture("turn2_answer.sse"));
+        }
+        mock::Reply::sse(&tool_calls(&[
+            ("toolu_wt", "subagent", json!({"description": "isolated", "prompt": "TASK-W", "isolation": "worktree"})),
+            ("toolu_none", "subagent", json!({"description": "here", "prompt": "TASK-N", "isolation": "none"})),
+        ]))
+    });
+    // The sandbox's `.git` is an empty directory: no repository to git.
+    let b = Sandbox::new("no-repo", &m.url);
+    let root = b.root.join("worktrees");
+    let cfg = HostConfig { agents: krowk_harness::subagent::AgentsConfig { worktrees: Some(root.clone()), ..krowk_harness::subagent::AgentsConfig::none() }, ..b.host() };
+    let r = run_in_process(&b, cfg, None, "try a worktree", PermissionMode::AcceptEdits);
+    let results = parent_results(&b, &r.session_id);
+    let wt = results.iter().find(|(c, ..)| c == "toolu_wt").unwrap();
+    assert_eq!((wt.1.as_str(), wt.2), ("isolation: worktree needs a git repository", true));
+    let none = results.iter().find(|(c, ..)| c == "toolu_none").unwrap();
+    assert_eq!((none.1.as_str(), none.2), ("done.", false));
+    let children = children_of(&b, &r.session_id);
+    assert_eq!(children.len(), 1, "only the one with no worktree started");
+    let cwd = b.log(&children[0]).iter().find(|e| e["type"] == "session.started").unwrap()["cwd"].as_str().unwrap().to_string();
+    assert_eq!(cwd, b.root.join("repo").display().to_string());
+    assert!(!root.exists());
+}

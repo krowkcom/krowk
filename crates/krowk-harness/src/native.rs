@@ -773,7 +773,8 @@ mod tests {
     /// `context.tokens` in budgets.toml was raised to 1,625 for the two MCP
     /// meta-tools (ticket 25), and this keeps the core toolset held to the
     /// 1,500 it had before, so that headroom is MCP's alone. `ask_user`
-    /// raised both by 175 (1,641 for gpt, its largest).
+    /// raised both by 175 (1,641 for gpt, its largest); the `subagent`
+    /// tool's `isolation` field (WT3) takes 29 of what was left (1,670).
     const BASE_CONTEXT_TOKENS: u64 = 1675;
 
     fn freeform_or(ts: &Toolset) -> bool {

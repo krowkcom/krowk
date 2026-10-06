@@ -535,6 +535,7 @@ pub(super) fn catalog(env: &dyn Fn(&str) -> String) -> krowk_harness::host::Cata
 /// config directory, then Claude Code's (`$CLAUDE_CONFIG_DIR`, else
 /// `~/.claude`) — and the models.dev cache's listing, which a subagent's
 /// cheaper tier is chosen from. Read from the cache only, like the catalog.
+/// And where a subagent's worktree is made.
 pub(super) fn agents_config(env: &dyn Fn(&str) -> String) -> AgentsConfig {
     let home = env("HOME");
     let claude = match env("CLAUDE_CONFIG_DIR") {
@@ -554,7 +555,10 @@ pub(super) fn agents_config(env: &dyn Fn(&str) -> String) -> AgentsConfig {
         };
         pricing::cache_path(&env).and_then(|p| std::fs::read(p).ok()).map(|raw| krowk_harness::catalog::models(&raw, provider)).unwrap_or_default()
     });
-    AgentsConfig { user_dirs, models }
+    // WT3: a subagent's worktree, under the data directory the sandbox
+    // knows krowk's worktrees by.
+    let worktrees = krowk_api::home::worktrees_root(env);
+    AgentsConfig { user_dirs, models, worktrees }
 }
 
 /// An engine failure as krowk's error: the code and its fix, with the HTTP

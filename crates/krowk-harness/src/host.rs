@@ -835,7 +835,7 @@ impl Shared {
         let (log, events) = match opened {
             Some(opened) => opened,
             None => {
-                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &self.cfg.cwd, &self.cfg.krowk_version, None, None).await.map_err(log_failure)?;
+                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &krowk_store::new_id(), &self.cfg.cwd, &self.cfg.krowk_version, None, None).await.map_err(log_failure)?;
                 here.register(&log.session_id)?;
                 let _ = out.send(StreamLine::Log(root.clone())).await;
                 (log, vec![root])
@@ -902,10 +902,11 @@ impl Shared {
 
     /// A subagent (R-SUB-1): a child session of the parent turn `spawn`
     /// describes, answering its tool call `call_id` with one turn on
-    /// `model`. Its lines go to the parent's client; its result comes back
-    /// here, for the tool call.
+    /// `model`, as the session `child` in the directory `cwd` — the
+    /// parent's, or a worktree of its own (WT3). Its lines go to the
+    /// parent's client; its result comes back here, for the tool call.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn subagent(self: &Arc<Self>, spawn: &Spawn, call_id: &str, description: &str, prompt: &str, model: ModelRef, run: AgentRun, events: &Events) -> Result<RunResult, EngineError> {
+    pub(crate) async fn subagent(self: &Arc<Self>, spawn: &Spawn, call_id: &str, description: &str, prompt: &str, model: ModelRef, run: AgentRun, (child, cwd): (&str, &std::path::Path), events: &Events) -> Result<RunResult, EngineError> {
         let instance = self.registry().get(&model.instance).map_err(|e| EngineError::new("no_instance", e))?.clone();
         // A vendor runs its own agents, with its own tools: it could not be
         // held to the allowlist, so a subagent is always krowk's own loop.
@@ -922,7 +923,7 @@ impl Shared {
         key_off_thread(&instance).await?;
         let engine = engine_for(&instance, wire, &self.cfg.credentials, &self.cfg.krowk_version)?;
         let p = &spawn.parent;
-        let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &p.cwd, &self.cfg.krowk_version, Some(&p.session_id), run.name.as_deref()).await.map_err(log_failure)?;
+        let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, child, cwd, &self.cfg.krowk_version, Some(&p.session_id), run.name.as_deref()).await.map_err(log_failure)?;
         let _ = spawn.out.send(StreamLine::Log(root.clone())).await;
         let child = log.session_id.clone();
         let _ = events.send(EngineEvent::SubagentStarted { call_id: call_id.into(), session_id: child.clone(), description: description.into(), agent: run.name.clone(), model: model.clone() }).await;
@@ -930,7 +931,7 @@ impl Shared {
         let producer = crate::evidence::Producer::new(&instance, &model.model);
         let plan = TurnPlan {
             log,
-            past: Past { cwd: Some(p.cwd.clone()), ..Past::default() },
+            past: Past { cwd: Some(cwd.to_path_buf()), ..Past::default() },
             text: prompt.into(),
             images: Vec::new(),
             model,
@@ -941,14 +942,19 @@ impl Shared {
             info,
             permission_mode: p.permission_mode,
             effort: instance.effort,
-            cwd: p.cwd.clone(),
+            cwd: cwd.to_path_buf(),
             backend_session: None,
             budget,
             evidence: p.evidence.as_ref().map(|e| e.for_subagent(events.clone(), producer)),
             // The parent's rules, instructions, skills and hooks, and its
             // session's grants: a subagent is judged as its parent would be,
-            // in its parent's mode, and asks under its own session id.
-            policy: p.gate.policy().clone(),
+            // in its parent's mode, and asks under its own session id. In
+            // a worktree of its own, that is its working directory: what
+            // it may edit unasked, and the sandbox's workspace.
+            policy: match cwd == p.cwd {
+                true => p.gate.policy().clone(),
+                false => permissions::Policy { cwd: cwd.to_path_buf(), walk: Default::default(), ..p.gate.policy().clone() },
+            },
             compat: compat::Compat { session_start: None, transcript: self.cfg.sessions_dir.join(&child).join(log::EVENTS_FILE).display().to_string(), ..(*p.compat).clone() },
             grants: p.grants.clone(),
             agent: Some(run),

@@ -11,9 +11,25 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
-- **An agent can commit inside a worktree krowk made for it.** Groundwork
-  for running agents in their own worktrees: no command creates one yet.
-  When a sandboxed session runs in a worktree under
+- **A subagent can work in a git worktree of its own.** Give the
+  `subagent` tool `isolation: "worktree"`, or put `isolation: worktree` in
+  an agent definition's frontmatter as in Claude Code's agent files (the
+  call's value wins), and the subagent runs in a new worktree of your
+  repository at its `HEAD`, on a branch `krowk/<8 hex>`, under
+  `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`).
+  Subagents started together no longer overwrite each other's files. When
+  it finishes having changed nothing, the worktree and its branch are
+  removed. When it changed something, both are kept, and the summary the
+  parent agent gets ends with
+  `Worktree: <path> (branch krowk/<hex>, <n> commits, uncommitted changes: yes|no)`.
+  Its changes are not brought back into your checkout yet: merge the
+  branch, or work in the directory. Outside a git repository the call fails
+  with `isolation: worktree needs a git repository`. Without the field, or
+  with `"none"`, a subagent runs in your directory as before. Your
+  repository's git hooks do not run when the worktree is made.
+
+- **An agent can commit inside a worktree krowk made for it.** When a
+  sandboxed session runs in a worktree under
   `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`) on
   a `krowk/…` branch, `git add` and `git commit` now work there, and the
   commit shows up in your main checkout under your own name and email:

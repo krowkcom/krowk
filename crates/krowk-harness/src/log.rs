@@ -78,7 +78,13 @@ impl SessionLog {
     /// finds what a session's subagents spent. `agent` is the definition the
     /// subagent runs, when it runs one.
     pub fn create_child(sessions: &Path, cwd: &Path, krowk_version: &str, parent: Option<&str>, agent: Option<&str>) -> Result<(SessionLog, LogEvent), LogError> {
-        let session_id = krowk_store::new_id();
+        SessionLog::create_as(sessions, krowk_store::new_id(), cwd, krowk_version, parent, agent)
+    }
+
+    /// `create_child` under an id the caller chose (`krowk_store::new_id`):
+    /// a subagent's worktree is locked in its session's name before the
+    /// session is made.
+    pub fn create_as(sessions: &Path, session_id: String, cwd: &Path, krowk_version: &str, parent: Option<&str>, agent: Option<&str>) -> Result<(SessionLog, LogEvent), LogError> {
         let dir = sessions.join(&session_id);
         private_dir(&dir).map_err(|e| io(format_args!("create {}", dir.display()), e))?;
         let mut log = SessionLog::open_files(session_id.clone(), dir)?;
@@ -167,10 +173,10 @@ impl SessionLog {
     // the TUI on its own host) does them where it is: a blocking pool's
     // thread there would outlive the work and wake the idle process.
 
-    /// `create_child`, off the thread.
-    pub async fn create_child_off(sessions: &Path, cwd: &Path, krowk_version: &str, parent: Option<&str>, agent: Option<&str>) -> Result<(SessionLog, LogEvent), LogError> {
-        let (sessions, cwd, v, parent, agent) = (sessions.to_path_buf(), cwd.to_path_buf(), krowk_version.to_string(), parent.map(String::from), agent.map(String::from));
-        off(move || SessionLog::create_child(&sessions, &cwd, &v, parent.as_deref(), agent.as_deref())).await
+    /// `create_as`, off the thread.
+    pub async fn create_child_off(sessions: &Path, session_id: &str, cwd: &Path, krowk_version: &str, parent: Option<&str>, agent: Option<&str>) -> Result<(SessionLog, LogEvent), LogError> {
+        let (sessions, id, cwd, v, parent, agent) = (sessions.to_path_buf(), session_id.to_string(), cwd.to_path_buf(), krowk_version.to_string(), parent.map(String::from), agent.map(String::from));
+        off(move || SessionLog::create_as(&sessions, id, &cwd, &v, parent.as_deref(), agent.as_deref())).await
     }
 
     /// `open`, off the thread.

@@ -32,6 +32,12 @@
 //! - **Visible**: every line of a child's stream goes to the parent's
 //!   client under the child's session id, which is how the TUI draws each
 //!   subagent's line (R-SUB-3).
+//! - **In a worktree of its own, when asked** (`isolation: "worktree"`, on
+//!   the call or in the definition, the call's winning): the child works in
+//!   a new git worktree of the parent's repository on a `krowk/<hex>`
+//!   branch (`crate::worktree`), so parallel children that edit do not
+//!   overwrite each other. One it left unchanged is removed when it ends;
+//!   a changed one is kept, and its summary says where.
 
 use crate::agents::AgentDef;
 use crate::budget::Budget;
@@ -68,7 +74,24 @@ pub struct SubagentInput {
     /// An agent definition's name.
     #[serde(default)]
     pub agent: Option<String>,
+    /// worktree: its own git worktree and branch.
+    #[serde(default)]
+    #[schemars(with = "Isolation")]
+    pub isolation: Option<Isolation>,
 }
+
+/// Where a subagent works: the parent's directory, or a git worktree of
+/// its own (`crate::worktree`). Claude Code's agent files spell it the same.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Isolation {
+    #[default]
+    None,
+    Worktree,
+}
+
+/// What a subagent is told when it is asked for a worktree outside one.
+pub const NEEDS_A_REPOSITORY: &str = "isolation: worktree needs a git repository";
 
 /// What a subagent's turn runs with, from its definition.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -123,13 +146,17 @@ pub struct AgentsConfig {
     /// Code's — read after the repository's.
     pub user_dirs: Vec<PathBuf>,
     pub models: Models,
+    /// Where a subagent's worktree is made (`krowk_api::home::worktrees_root`);
+    /// none refuses `isolation: "worktree"`.
+    pub worktrees: Option<PathBuf>,
 }
 
 impl AgentsConfig {
     /// No definitions of the person's, and a catalog that lists nothing:
-    /// subagents run on the parent's model unless told otherwise.
+    /// subagents run on the parent's model unless told otherwise, and in
+    /// no worktree.
     pub fn none() -> AgentsConfig {
-        AgentsConfig { user_dirs: Vec::new(), models: Arc::new(|_| Vec::new()) }
+        AgentsConfig { user_dirs: Vec::new(), models: Arc::new(|_| Vec::new()), worktrees: None }
     }
 }
 
@@ -333,7 +360,19 @@ impl Subagents {
             },
             _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true),
         };
-        let result = host.subagent(&self.0, call_id, &input.description, &input.prompt, model, run, events).await;
+        // Its session id is chosen now: a worktree is locked in its name
+        // before the session exists, and the session records it as its
+        // directory.
+        let child = krowk_store::new_id();
+        let worktree = match input.isolation.or(def.and_then(|d| d.isolation)).unwrap_or_default() {
+            Isolation::None => None,
+            Isolation::Worktree => match self.worktree(&child).await {
+                Ok(w) => Some(w),
+                Err(why) => return (why, true),
+            },
+        };
+        let cwd = worktree.as_ref().map_or_else(|| p.cwd.clone(), |w| w.path.clone());
+        let result = host.subagent(&self.0, call_id, &input.description, &input.prompt, model, run, (&child, &cwd), events).await;
         if let Ok(r) = &result {
             let mut spent = self.0.spent.lock().unwrap_or_else(|e| e.into_inner());
             match r.cost_usd {
@@ -341,16 +380,61 @@ impl Subagents {
                 None => spent.1 = true,
             }
         }
-        match result {
-            Ok(r) => match r.status {
-                TurnStatus::Completed if r.result.trim().is_empty() => ("the subagent finished without a summary".into(), false),
-                TurnStatus::Completed => (r.result, false),
-                TurnStatus::Interrupted if r.result.trim().is_empty() => ("the subagent was interrupted before it said anything".into(), true),
-                TurnStatus::Interrupted => (format!("the subagent was interrupted; what it said last:\n{}", r.result), true),
-                TurnStatus::Failed => (format!("the subagent failed: {}", r.error.map(|e| e.message).unwrap_or_default()), true),
+        let (text, failed) = answer(result);
+        match worktree {
+            Some(w) => match finish(w).await {
+                Some(note) => (format!("{text}\n\n{note}"), failed),
+                None => (text, failed),
             },
-            Err(e) => (format!("the subagent could not start: {}", e.message), true),
+            None => (text, failed),
         }
+    }
+
+    /// A worktree of the parent's repository for the child `child`, readied
+    /// by the prepare steps; why not, for the model, when there is none.
+    async fn worktree(&self, child: &str) -> Result<crate::worktree::Worktree, String> {
+        let Some(root) = self.0.host.cfg.agents.worktrees.clone() else {
+            return Err("isolation: worktree has nowhere to make worktrees: krowk found no home directory (set HOME or XDG_DATA_HOME)".into());
+        };
+        let (cwd, child) = (self.0.parent.cwd.clone(), child.to_string());
+        let made = tokio::task::spawn_blocking(move || {
+            let w = crate::worktree::create(&cwd, &root, &child)?;
+            crate::worktree::prepare(&crate::worktree::Prepare { worktree: &w });
+            Ok(w)
+        })
+        .await;
+        match made {
+            Ok(Ok(w)) => Ok(w),
+            Ok(Err(crate::worktree::Error::NotARepository)) => Err(NEEDS_A_REPOSITORY.into()),
+            Ok(Err(e)) => Err(format!("the subagent's worktree could not be made: {e}")),
+            Err(e) => Err(format!("the subagent's worktree could not be made: {e}")),
+        }
+    }
+}
+
+/// What a child's turn answers its call with: its summary, or why there
+/// is none.
+fn answer(result: Result<crate::protocol::RunResult, crate::engine::EngineError>) -> (String, bool) {
+    match result {
+        Ok(r) => match r.status {
+            TurnStatus::Completed if r.result.trim().is_empty() => ("the subagent finished without a summary".into(), false),
+            TurnStatus::Completed => (r.result, false),
+            TurnStatus::Interrupted if r.result.trim().is_empty() => ("the subagent was interrupted before it said anything".into(), true),
+            TurnStatus::Interrupted => (format!("the subagent was interrupted; what it said last:\n{}", r.result), true),
+            TurnStatus::Failed => (format!("the subagent failed: {}", r.error.map(|e| e.message).unwrap_or_default()), true),
+        },
+        Err(e) => (format!("the subagent could not start: {}", e.message), true),
+    }
+}
+
+/// A child's worktree, finished when the child is (`crate::worktree::finish`):
+/// what its parent is told of it, when it is kept.
+async fn finish(w: crate::worktree::Worktree) -> Option<String> {
+    let path = w.path.clone();
+    match tokio::task::spawn_blocking(move || crate::worktree::finish(&w).map(|f| f.note(&w))).await {
+        Ok(Ok(note)) => note,
+        Ok(Err(e)) => Some(format!("Worktree: {} was left as it is: {e}", path.display())),
+        Err(e) => Some(format!("Worktree: {} was left as it is: {e}", path.display())),
     }
 }
 
@@ -387,7 +471,7 @@ mod tests {
 
     #[test]
     fn r_sub_5_the_definitions_listed_cost_every_call_a_bounded_amount() {
-        let def = |i: usize, description: String| AgentDef { name: format!("agent-{i:02}"), description, model: None, tools: None, instructions: String::new(), path: PathBuf::new(), project: true };
+        let def = |i: usize, description: String| AgentDef { name: format!("agent-{i:02}"), description, model: None, tools: None, isolation: None, instructions: String::new(), path: PathBuf::new(), project: true };
         let long = format!("{}\n\nA second paragraph nobody lists.", "word ".repeat(200));
         let many: Vec<AgentDef> = (0..50).map(|i| def(i, long.clone())).collect();
         let text = describe(&many);
