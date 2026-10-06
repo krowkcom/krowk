@@ -155,14 +155,14 @@ pub fn create(cwd: &Path, root: &Path, owner: &str) -> Result<Worktree, Error> {
 
 /// When the agent is done: unchanged (HEAD still the base, `git status`
 /// empty) it is removed with its branch; otherwise unlocked and kept.
-/// Blocking: off the async runtime.
+/// Unlocked on every way out: the session is over. Blocking: off the async
+/// runtime.
 pub fn finish(wt: &Worktree) -> Result<Finished, Error> {
     let _held = lock(&wt.common)?;
-    let head = read(query(&wt.path)?.args(["rev-parse", "HEAD"]), "rev-parse HEAD")?;
-    let status = read(query(&wt.path)?.args(["status", "--porcelain"]), "status")?;
-    // Unlocked either way: the session is over. One that was never locked
-    // is not a reason to stop.
+    let judged = changes(wt);
+    // One that was never locked is not a reason to stop.
     let _ = read(git(&wt.main)?.args(["worktree", "unlock"]).arg(&wt.path), "worktree unlock");
+    let (head, status) = judged?;
     if head == wt.base && status.is_empty() {
         remove(wt, false)?;
         return Ok(Finished::Removed);
@@ -172,11 +172,23 @@ pub fn finish(wt: &Worktree) -> Result<Finished, Error> {
     Ok(Finished::Kept { commits, dirty: !status.is_empty() })
 }
 
+/// The worktree's HEAD, and its `git status --porcelain`: every untracked
+/// file and submodule change counted whatever the repository's config
+/// says (`status.showUntrackedFiles=no` would hide a new file, and the
+/// removal would take it).
+fn changes(wt: &Worktree) -> Result<(String, String), Error> {
+    let head = read(query(&wt.path)?.args(["rev-parse", "HEAD"]), "rev-parse HEAD")?;
+    let status = read(query(&wt.path)?.args(["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]), "status")?;
+    Ok((head, status))
+}
+
 /// The worktree and its branch gone, under the caller's `lock`. `force`
 /// for one being rolled back, which may hold the checkout's files only.
 fn remove(wt: &Worktree, force: bool) -> Result<(), Error> {
     let mut c = git(&wt.main)?;
-    c.args(["worktree", "remove"]);
+    // `worktree remove` judges "clean" by the same status config: held
+    // to every untracked file, as `changes` is.
+    c.args(["-c", "status.showUntrackedFiles=normal", "worktree", "remove"]);
     if force {
         c.args(["--force", "--force"]);
     }
@@ -380,11 +392,26 @@ mod tests {
         let list = git_ok(&main, &["worktree", "list", "--porcelain"]);
         assert!(list.contains(&w.hex) && !list.contains("locked"), "unlocked: {list}");
 
+        // A repository whose config hides untracked files: a new file is
+        // still a change, and is kept.
+        git_ok(&main, &["config", "status.showUntrackedFiles", "no"]);
+        let w = create(&main, &root, "s4").unwrap();
+        std::fs::write(w.path.join("only-new.txt"), "new\n").unwrap();
+        assert_eq!(finish(&w).unwrap(), Finished::Kept { commits: 0, dirty: true });
+        assert!(w.path.join("only-new.txt").is_file());
+        git_ok(&main, &["config", "--unset", "status.showUntrackedFiles"]);
+
         let w = create(&main, &root, "s3").unwrap();
         std::fs::write(w.path.join("b.txt"), "b\n").unwrap();
         git_ok(&w.path, &["add", "b.txt"]);
         git_ok(&w.path, &["commit", "-q", "-m", "two"]);
         assert_eq!(finish(&w).unwrap(), Finished::Kept { commits: 1, dirty: false });
+        // A finish that cannot judge it still unlocks it.
+        let w = create(&main, &root, "s5").unwrap();
+        std::fs::rename(&w.path, w.path.with_extension("moved")).unwrap();
+        assert!(finish(&w).is_err());
+        std::fs::rename(w.path.with_extension("moved"), &w.path).unwrap();
+        assert!(!git_ok(&main, &["worktree", "list", "--porcelain"]).contains(&format!("locked {LOCK_REASON}s5")), "unlocked though its status could not be read");
         let _ = std::fs::remove_dir_all(&base);
     }
 

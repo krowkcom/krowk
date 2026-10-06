@@ -949,11 +949,12 @@ impl Shared {
             // The parent's rules, instructions, skills and hooks, and its
             // session's grants: a subagent is judged as its parent would be,
             // in its parent's mode, and asks under its own session id. In
-            // a worktree of its own, that is its working directory: what
-            // it may edit unasked, and the sandbox's workspace.
+            // a worktree of its own, that is its working directory — what
+            // it may edit unasked, and the sandbox's workspace — and the
+            // repository's rules hold there as they do in the checkout.
             policy: match cwd == p.cwd {
                 true => p.gate.policy().clone(),
-                false => permissions::Policy { cwd: cwd.to_path_buf(), walk: Default::default(), ..p.gate.policy().clone() },
+                false => p.gate.policy().in_worktree(cwd),
             },
             compat: compat::Compat { session_start: None, transcript: self.cfg.sessions_dir.join(&child).join(log::EVENTS_FILE).display().to_string(), ..(*p.compat).clone() },
             grants: p.grants.clone(),

@@ -375,7 +375,7 @@ async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_gr
     assert!(!file.exists(), "a session grant is not written down");
     assert_eq!(remember(&bash("rm 'a b'")), ["Bash(rm 'a b')"], "a grant reads back as the command it was for");
     let quoted = rules::parse("Bash(rm 'a b')", "t", &d).unwrap();
-    let at = rules::Places { cwd: &d, home: None };
+    let at = rules::Places { cwd: &d, home: None, rules_cwd: &d };
     assert!(rules::matches(&quoted, &bash("rm 'a b'"), &at, true) && !rules::matches(&quoted, &bash("rm a b"), &at, true));
     assert!(remember(&bash("git status && rm x")).is_empty(), "a line of several commands is allowed once, never remembered");
 
@@ -541,7 +541,7 @@ fn r_perm_2_a_path_with_glob_characters_is_allowed_once_never_remembered() {
     let p = Policy::load(&cfg, &d).expect("later prompts still load their settings");
     assert_eq!(letter(&gate(&p, PermissionMode::Default).verdict(&bash("ok"), None)), 'Y');
     let exact = rules::parse(&format!("Read(/{}/src/a[1].rs)", d.display()), "hand", &d).unwrap();
-    let at = rules::Places { cwd: &d, home: None };
+    let at = rules::Places { cwd: &d, home: None, rules_cwd: &d };
     assert!(rules::matches(&exact, &read(d.join("src/a1.rs")), &at, true), "why it is never offered: as glob text it covers a1.rs too");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -734,4 +734,34 @@ fn a_rereading_config_holds_a_deny_rule_added_after_it_was_made() {
     let frozen = Config { reread: false, ..cfg.clone() };
     assert_eq!(denies(&frozen), before);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Worktrees WT3: a subagent in a worktree of its own is held to its
+/// repository's rules there as in the checkout — a rule anchored at the
+/// repository's root at the worktree's root, one written against the
+/// working directory (a subdirectory here) at the same place in it — and
+/// no longer to the checkout's paths it does not work in.
+#[test]
+fn wt3_the_repositorys_rules_hold_in_a_worktree_where_they_hold_in_the_checkout() {
+    let d = repo("in-worktree");
+    let sub = d.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let top = std::env::temp_dir().join(format!("krowk-perm-wt-{}", std::process::id()));
+    let mut p = Policy::modes_only(&sub);
+    assert_eq!(p.loaded.root, d);
+    p.loaded.rules = ["Edit(/.github/workflows/**)", "Read(/.env)", "Edit(notes/**)"].iter().map(|t| (Kind::Deny, rules::parse(t, "project settings", &d).unwrap())).collect();
+    let w = p.in_worktree(&top);
+    assert_eq!((w.cwd.as_path(), w.loaded.root.as_path(), w.loaded.trusted), (top.as_path(), d.as_path(), p.loaded.trusted), "trust is the checkout's");
+    let verdict = |p: &Policy, c: Call| letter(&gate(p, PermissionMode::BypassPermissions).verdict(&c, None));
+    for (call, checkout, worktree) in [
+        (edit as fn(PathBuf) -> Call, d.join(".github/workflows/ci.yml"), top.join(".github/workflows/ci.yml")),
+        (read, d.join(".env"), top.join(".env")),
+        (edit, sub.join("notes/a.md"), top.join("sub/notes/a.md")),
+    ] {
+        assert_eq!(verdict(&p, call(checkout.clone())), 'N', "{}", checkout.display());
+        assert_eq!(verdict(&w, call(worktree.clone())), 'N', "the same rule in the worktree: {}", worktree.display());
+    }
+    // What the worktree's own paths are, the checkout's are not.
+    assert_eq!(verdict(&w, edit(top.join("notes/a.md"))), 'Y', "notes/ is under sub/, as in the checkout");
+    let _ = std::fs::remove_dir_all(&d);
 }

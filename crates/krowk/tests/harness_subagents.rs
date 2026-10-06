@@ -1136,3 +1136,34 @@ fn wt3_isolation_outside_a_repository_is_refused_and_none_is_todays() {
     assert_eq!(cwd, b.root.join("repo").display().to_string());
     assert!(!root.exists());
 }
+
+/// Worktrees WT3: a repository's `/`-anchored deny holds in a subagent's
+/// worktree as it does in the checkout, in bypassPermissions too.
+#[test]
+fn wt3_a_repositorys_anchored_deny_holds_inside_the_worktree() {
+    let m = mock::serve(|body: &Value, _: usize| {
+        if is_child(body) {
+            if let Some((_, out, err)) = results(body).into_iter().next() {
+                return mock::Reply::sse(&mock::text_stream(&format!("CHILD-SAW error={err} {}", out.replace('\n', " "))));
+            }
+            return mock::Reply::sse(&mock::tool_use("toolu_w", "write", &json!({"path": "blocked/x.md", "content": "no\n"})));
+        }
+        if answered(body) {
+            return mock::Reply::sse(&mock::fixture("turn2_answer.sse"));
+        }
+        mock::Reply::sse(&tool_calls(&[("toolu_sub", "subagent", json!({"description": "write blocked", "prompt": "TASK-B", "isolation": "worktree"}))]))
+    });
+    let b = Sandbox::new("worktree-deny", &m.url);
+    let repo = b.root.join("repo");
+    std::fs::remove_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join(".claude")).unwrap();
+    std::fs::write(repo.join(".claude/settings.json"), json!({"permissions": {"deny": ["Edit(/blocked/**)"]}}).to_string()).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["add", "README.md", ".claude/settings.json"]);
+    git(&repo, &["commit", "-q", "-m", "one"]);
+    let cfg = HostConfig { agents: krowk_harness::subagent::AgentsConfig { worktrees: Some(b.root.join("worktrees")), ..krowk_harness::subagent::AgentsConfig::none() }, ..b.host() };
+    let r = run_in_process(&b, cfg, None, "write where the repository forbids", PermissionMode::BypassPermissions);
+    let (out, _) = parent_result(&b, &r.session_id);
+    assert!(out.starts_with("CHILD-SAW error=true") && out.contains("Edit(/blocked/**)"), "{out}");
+    assert!(!out.contains("Worktree:"), "nothing written, nothing kept: {out}");
+}
