@@ -155,7 +155,7 @@ fn bw(name: &str, profile: Profile) -> Fx {
 }
 
 async fn run(f: &Fx, name: &str, input: Value) -> (String, bool) {
-    let env = ToolEnv { cwd: &f.ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None };
+    let env = ToolEnv { cwd: &f.ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
     tools::execute(name, &input, &env, f.scope.clone()).await
 }
 
@@ -510,7 +510,7 @@ async fn r192b_5_isolation() {
 
     // --die-with-parent: krowk's stand-in (a shell) killed hard while the
     // sandbox runs; nothing inside survives it.
-    let (program, args) = sandbox::bash(f.scope.sandbox.as_deref().unwrap(), "sleep 9.874 & sleep 9.875").unwrap();
+    let (program, args) = sandbox::bash(f.scope.sandbox.as_deref().unwrap(), "sleep 9.874 & sleep 9.875", &[]).unwrap();
     let quoted: Vec<String> = std::iter::once(program.display().to_string()).chain(args).map(|a| format!("'{}'", a.replace('\'', "'\\''"))).collect();
     let mut parent = std::process::Command::new("bash").arg("-c").arg(format!("{} & wait", quoted.join(" "))).current_dir(&f.ws).spawn().unwrap();
     std::thread::sleep(Duration::from_millis(500));

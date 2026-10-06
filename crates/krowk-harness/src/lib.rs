@@ -17,7 +17,9 @@
 //!   repositories a backend may run in.
 //! - `codex` — the Codex backend: the user's own `codex`, driven as `codex
 //!   app-server` over JSON-RPC, with krowk's tools as its dynamic tools.
-//! - `tools` — read, write, the edit tools, bash, grep and glob;
+//! - `tools` — read, write, the edit tools, bash, grep and glob; `builds`
+//!   — the build slots bash queues build and test commands behind, on
+//!   `slots`, the machine-wide pools of lock files;
 //!   `evidence` — `publish`, and the session's krowk run; `todo` —
 //!   `todo_write` and the stale-list reminder.
 //! - `subagent` — the `subagent` tool: child sessions with their own
@@ -58,6 +60,7 @@ pub mod anthropic;
 pub mod ask;
 pub mod bridge;
 pub mod budget;
+pub mod builds;
 pub mod catalog;
 pub mod chat;
 pub mod claude;
@@ -94,6 +97,7 @@ pub mod readiness;
 pub mod relay;
 pub mod sandbox;
 pub mod schema;
+pub mod slots;
 pub mod subagent;
 #[cfg(unix)]
 pub mod sync;

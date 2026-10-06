@@ -74,6 +74,9 @@ pub struct InstancesConfig {
     /// How krowk readies a worktree it makes for an agent.
     #[serde(default, skip_serializing_if = "WorktreesConfig::is_empty")]
     pub worktrees: WorktreesConfig,
+    /// How many build and test commands run at once, machine-wide.
+    #[serde(default, skip_serializing_if = "crate::builds::BuildsConfig::is_empty")]
+    pub builds: crate::builds::BuildsConfig,
     /// What happens when an instance hits its rate or usage limit
     /// (R-INST-7, R-INST-8): `offer` (the default) asks the person whether
     /// to continue on the next instance; `auto` moves there by itself, says
@@ -546,6 +549,9 @@ pub struct Registry {
     pub toolset: Option<String>,
     pub subagents: SubagentsConfig,
     pub worktrees: WorktreesConfig,
+    /// The build slots heavy commands take, in the runtime directory the
+    /// environment names.
+    pub builds: crate::builds::Builds,
     pub rollover: Rollover,
     /// Config's `rolloverOrder`, as written.
     pub rollover_order: Vec<String>,
@@ -573,6 +579,7 @@ impl Registry {
             toolset: cfg.toolset.clone(),
             subagents: cfg.subagents.clone(),
             worktrees: cfg.worktrees.clone(),
+            builds: crate::builds::Builds::resolve(&cfg.builds, env),
             rollover: cfg.rollover.unwrap_or_default(),
             rollover_order: cfg.rollover_order.clone(),
             renamed: cfg.renamed.clone(),
@@ -1085,6 +1092,12 @@ pub fn from_config_json(raw: &serde_json::Value) -> Result<InstancesConfig, Stri
             return Err(format!("\"worktrees\": seed names directories at the repository's top, and {bad:?} is not one"));
         }
     }
+    if let Some(v) = raw.get("builds") {
+        cfg.builds = serde_json::from_value(v.clone()).map_err(|e| format!("\"builds\": {e}"))?;
+        if cfg.builds.slots == Some(0) {
+            return Err("\"builds\": slots must be at least 1".into());
+        }
+    }
     if let Some(v) = raw.get("renamed") {
         cfg.renamed = serde_json::from_value(v.clone()).map_err(|e| format!("\"renamed\": {e} — an object of old instance names and the names they became"))?;
     }
@@ -1367,6 +1380,18 @@ mod tests {
             let e = from_config_json(&serde_json::json!({"worktrees": {"seed": [bad]}})).unwrap_err();
             assert!(e.contains("\"worktrees\"") && e.contains(&format!("{bad:?}")), "{bad:?}: {e}");
         }
+    }
+
+    #[test]
+    fn build_slots_are_read_and_zero_or_a_typo_refused() {
+        let cfg = from_config_json(&serde_json::json!({"builds": {"slots": 3}})).unwrap();
+        assert_eq!(cfg.builds.slots, Some(3));
+        assert_eq!(from_config_json(&serde_json::json!({})).unwrap().builds.slots, None);
+        let zero = from_config_json(&serde_json::json!({"builds": {"slots": 0}})).unwrap_err();
+        assert!(zero.contains("builds") && zero.contains("slots must be at least 1"), "{zero}");
+        let typo = from_config_json(&serde_json::json!({"builds": {"slot": 2}})).unwrap_err();
+        assert!(typo.contains("builds") && typo.contains("unknown field `slot`"), "{typo}");
+        assert!(from_config_json(&serde_json::json!({"builds": {"slots": -1}})).unwrap_err().contains("builds"));
     }
 
     #[test]

@@ -57,12 +57,12 @@ fn setup_by(name: &str, profile: Profile, by: By) -> (PathBuf, PathBuf, Scope) {
 }
 
 async fn bash(ws: &Path, scope: &Scope, command: &str) -> (String, bool) {
-    let env = ToolEnv { cwd: ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None };
+    let env = ToolEnv { cwd: ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
     execute(BASH, &json!({ "command": command }), &env, scope.clone()).await
 }
 
 async fn tool(ws: &Path, scope: &Scope, name: &str, input: Value) -> (String, bool) {
-    let env = ToolEnv { cwd: ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None };
+    let env = ToolEnv { cwd: ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
     execute(name, &input, &env, scope.clone()).await
 }
 
@@ -206,7 +206,7 @@ async fn r_perm_3_a_sandboxed_command_gets_only_the_allowlisted_environment() {
     // bubblewrap started with a parent's keys in its environment, as
     // krowk's would be: none reaches the command (`--clearenv`). Set on the
     // child only, so no other test's environment moves.
-    let (program, args) = crate::sandbox::bash(scope.sandbox.as_deref().unwrap(), "env").unwrap();
+    let (program, args) = crate::sandbox::bash(scope.sandbox.as_deref().unwrap(), "env", &[]).unwrap();
     let mut direct = std::process::Command::new(&program);
     direct.args(&args).current_dir(&ws);
     for k in planted {
@@ -217,6 +217,11 @@ async fn r_perm_3_a_sandboxed_command_gets_only_the_allowlisted_environment() {
     for k in planted {
         assert!(!got.contains(&format!("{k}=")), "{k} reached the sandbox: {got}");
     }
+    // What krowk sets for the command itself, a build's CARGO_BUILD_JOBS,
+    // is set inside beside the allowlist.
+    let (program, args) = crate::sandbox::bash(scope.sandbox.as_deref().unwrap(), "echo jobs=$CARGO_BUILD_JOBS", &[("CARGO_BUILD_JOBS".into(), "3".into())]).unwrap();
+    let got = std::process::Command::new(&program).args(&args).current_dir(&ws).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&got.stdout).trim(), "jobs=3");
     // And through the tool: the command's environment and bubblewrap's own
     // (pid 1's, which the command can read) are both the allowlist.
     let (out, err) = bash(&ws, &scope, dump).await;
@@ -255,7 +260,7 @@ async fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_ses
     // A timeout still kills what the command started, inside its own
     // session and namespace.
     let started = std::time::Instant::now();
-    let env = ToolEnv { cwd: &ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None };
+    let env = ToolEnv { cwd: &ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
     let (out, err) = execute(BASH, &json!({"command": "sleep 7.31 & sleep 7.31", "timeout_ms": 300}), &env, scope.clone()).await;
     assert!(err && out.contains("timed out") && started.elapsed() < Duration::from_secs(3), "{out}");
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -605,7 +610,7 @@ async fn wt4_a_link_replanted_by_a_call_that_times_out_or_is_interrupted_is_gone
     std::fs::write(&victim, "mine\n").unwrap();
     // Eight loops, so one is likely mid-`ln` whenever the sweep runs.
     let command = format!("for i in 1 2 3 4 5 6 7 8; do (while true; do ln -sfn '{}' '{}' 2>/dev/null; done) & done; sleep 30", victim.display(), logs_head.display());
-    let env = ToolEnv { cwd: &r.wt, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None };
+    let env = ToolEnv { cwd: &r.wt, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
     let linked = || std::fs::symlink_metadata(&logs_head).is_ok_and(|m| m.file_type().is_symlink());
     // Timed out: the sweep is done when the call returns.
     let (out, err) = execute(BASH, &json!({ "command": command, "timeout_ms": 1500 }), &env, scope.clone()).await;

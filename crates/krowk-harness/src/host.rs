@@ -1069,6 +1069,7 @@ impl Shared {
             backend_session: plan.backend_session.clone(),
             budget: budget.clone(),
             evidence: plan.evidence.clone(),
+            builds: self.registry().builds.clone(),
             gate,
             compat,
             subagents,

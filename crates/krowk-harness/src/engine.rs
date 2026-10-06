@@ -160,6 +160,8 @@ pub struct TurnContext {
     pub budget: Budget,
     /// Where `publish` sends files; none when this host publishes nothing.
     pub evidence: Option<Evidence>,
+    /// The build slots bash's heavy commands wait for (`crate::builds`).
+    pub builds: crate::builds::Builds,
     /// The turn's permissions: every call the engine runs or is asked about
     /// is judged here, and asked about through it.
     pub gate: crate::permissions::Gate,
