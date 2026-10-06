@@ -1068,7 +1068,15 @@ impl App {
         let width = usize::from(self.width);
         let band = look::said_band();
         let mut md = look::Markdown::default();
-        let rows = clean(&text.replace('\t', "    ")).split('\n').flat_map(|l| hung(look::markdown(l, &mut md), width)).collect::<Vec<_>>();
+        // A fenced block's row is not left for the terminal to wrap, as an
+        // answer's is: the band ends with its text, so it is broken here.
+        let rows = clean(&text.replace('\t', "    "))
+            .split('\n')
+            .flat_map(|l| match look::markdown(l, &mut md) {
+                m if m.band.is_some() => hung(m, width).into_iter().flat_map(|r| split_spans(r.spans, width)).map(Line::from).collect(),
+                m => hung(m, width),
+            })
+            .collect::<Vec<_>>();
         for row in std::iter::once(Line::default()).chain(rows).chain([Line::default()]) {
             let fill = " ".repeat(usize::from(row.width() < width));
             let mut spans: Vec<Span<'static>> = row
@@ -4705,6 +4713,10 @@ mod tests {
         assert_eq!(look::link_target(&span("docs")).map(|(_, u)| u).as_deref(), Some("https://krowk.com/d"), "a link on the band still opens");
         assert!(rows.iter().flat_map(|r| &r.spans).all(|s| s.style.bg == look::said_band().bg), "all of it on the band");
         assert_eq!(a.copy.take().map(|(_, t)| t).as_deref(), Some("rename `foo` in **parse**, see [docs](https://krowk.com/d)\n- one"), "copied as typed");
+        a.set_width(20);
+        a.echo("```\nlet x = some_function(a, b);\n```");
+        let widths: Vec<usize> = a.take_pending().iter().map(|r| r.width()).filter(|w| *w > 0).collect();
+        assert_eq!(widths, [1, 1, 20, 9, 1, 1], "a long row of code broken at the width, its band no wider than its text");
     }
 
     #[test]
