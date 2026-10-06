@@ -588,3 +588,43 @@ async fn wt4_a_linked_worktree_outside_krowks_root_keeps_todays_fences() {
     assert!(err && out.contains("Read-only file system") && std::fs::read(r.own.join(".git")).unwrap() == dot_git, "{out}");
     let _ = std::fs::remove_dir_all(&r.base);
 }
+
+/// Worktrees WT4: a call that times out, or is interrupted, while a
+/// process it left keeps planting a link where git outside the sandbox
+/// writes through: the sandbox's processes are gone before the sweep, so
+/// the link does not outlive the call.
+#[tokio::test(flavor = "current_thread")]
+async fn wt4_a_link_replanted_by_a_call_that_times_out_or_is_interrupted_is_gone_after_it() {
+    if !enforced("wt4_a_link_replanted_by_a_call_that_times_out_or_is_interrupted_is_gone_after_it") {
+        return;
+    }
+    let r = Repo::new("wt4-replant");
+    let scope = r.scope(&r.wt);
+    let logs_head = r.main.join(".git/worktrees/abcd1234/logs/HEAD");
+    let victim = r.base.join("victim");
+    std::fs::write(&victim, "mine\n").unwrap();
+    // Eight loops, so one is likely mid-`ln` whenever the sweep runs.
+    let command = format!("for i in 1 2 3 4 5 6 7 8; do (while true; do ln -sfn '{}' '{}' 2>/dev/null; done) & done; sleep 30", victim.display(), logs_head.display());
+    let env = ToolEnv { cwd: &r.wt, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None };
+    let linked = || std::fs::symlink_metadata(&logs_head).is_ok_and(|m| m.file_type().is_symlink());
+    // Timed out: the sweep is done when the call returns.
+    let (out, err) = execute(BASH, &json!({ "command": command, "timeout_ms": 1500 }), &env, scope.clone()).await;
+    assert!(err && out.contains("timed out"), "{out}");
+    assert!(!linked(), "a link outlived the call that timed out");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!linked(), "and nothing planted one since");
+    // Interrupted: the call's future dropped mid-run; the sweep follows
+    // on a thread of its own.
+    let input = json!({ "command": command });
+    let call = execute(BASH, &input, &env, scope.clone());
+    assert!(tokio::time::timeout(Duration::from_millis(1500), call).await.is_err());
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while linked() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!linked(), "a link outlived the interrupted call");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!linked(), "and nothing planted one since");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "mine\n");
+    let _ = std::fs::remove_dir_all(&r.base);
+}

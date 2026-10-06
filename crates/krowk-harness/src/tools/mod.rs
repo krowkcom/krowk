@@ -882,19 +882,116 @@ impl Capture {
 /// Kills the command's whole process group when dropped armed: on a timeout,
 /// and when the turn is interrupted and the call's future is dropped — so
 /// what the command started dies with it, not just the shell.
-struct GroupKill(Option<u32>);
+///
+/// Under bubblewrap the command is not in that group: it runs in a session
+/// of its own, in a pid namespace whose first process (`init`, which
+/// bubblewrap names on `--info-fd`) takes everything in it down when it
+/// dies — asynchronously. So after the group, the sandbox's first process
+/// is killed, and only once it has exited, which it does when the
+/// namespace is empty, is the call's `Unfenced` swept: a sweep beside a command still running
+/// could be undone by it (a link planted again just after). On a timeout
+/// that is awaited; on an interrupt, where nothing awaits a drop, it runs
+/// on a thread of its own.
+struct GroupKill {
+    group: Option<u32>,
+    init: Option<std::sync::mpsc::Receiver<Option<Pidfd>>>,
+    unfenced: Option<crate::sandbox::Unfenced>,
+}
+
+#[cfg(unix)]
+type Pidfd = std::os::fd::OwnedFd;
+#[cfg(not(unix))]
+type Pidfd = ();
+
+/// How long a teardown waits to learn the sandbox's first process, and
+/// then for it to exit.
+#[cfg(target_os = "linux")]
+const SANDBOX_LEARN: Duration = Duration::from_secs(2);
+#[cfg(target_os = "linux")]
+const SANDBOX_EXIT_MS: i32 = 10_000;
+
+impl GroupKill {
+    /// Kills the group, at once: its leader is not reaped until the call's
+    /// child is dropped, after this, so the pid cannot name another's.
+    /// Returns whether it was armed, and disarms it.
+    fn kill_group(&mut self) -> bool {
+        let Some(pid) = self.group.take() else { return false };
+        // SAFETY: kill(2) on the group this call created; a group that
+        // already exited is ESRCH, which is fine.
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+        #[cfg(not(unix))]
+        let _ = pid;
+        true
+    }
+
+    /// Kills the sandbox's first process and waits until it has exited —
+    /// when everything in its namespace has — then sweeps. Blocks.
+    fn settle(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(Ok(Some(init))) = self.init.take().map(|rx| rx.recv_timeout(SANDBOX_LEARN)) {
+            use std::os::fd::AsRawFd;
+            // SAFETY: pidfd_send_signal(2) and poll(2) on a pidfd this call
+            // opened; it is readable once the process has exited.
+            unsafe {
+                libc::syscall(libc::SYS_pidfd_send_signal, init.as_raw_fd(), libc::SIGKILL, std::ptr::null::<libc::siginfo_t>(), 0);
+                let mut p = libc::pollfd { fd: init.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                libc::poll(&mut p, 1, SANDBOX_EXIT_MS);
+            }
+        }
+        drop(self.unfenced.take());
+    }
+}
 
 impl Drop for GroupKill {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.0 {
-            // SAFETY: kill(2) on the group this call created; a group that
-            // already exited is ESRCH, which is fine.
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
+        if self.kill_group() {
+            let mut rest = GroupKill { group: None, init: self.init.take(), unfenced: self.unfenced.take() };
+            std::thread::spawn(move || rest.settle());
         }
     }
+}
+
+/// The sandbox's first process, as bubblewrap writes it on `--info-fd`
+/// (`"child-pid": N`), opened as a pidfd — a process that has exited and
+/// whose pid is reused is not mistaken for it — or none when bubblewrap
+/// exits before it says.
+#[cfg(target_os = "linux")]
+fn sandbox_init(mut info: std::io::PipeReader) -> std::sync::mpsc::Receiver<Option<Pidfd>> {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut text, mut chunk) = (Vec::new(), [0u8; 256]);
+        let pid = loop {
+            if let Some(p) = child_pid(&text) {
+                break Some(p);
+            }
+            match info.read(&mut chunk) {
+                Ok(n) if n > 0 => text.extend_from_slice(&chunk[..n]),
+                _ => break None,
+            }
+        };
+        // SAFETY: pidfd_open(2); the descriptor it returns is owned here.
+        let fd = pid.map(|p| unsafe { libc::syscall(libc::SYS_pidfd_open, p, 0) }).filter(|fd| *fd >= 0).map(|fd| unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) });
+        let _ = tx.send(fd);
+        // Read to the end: bubblewrap writes the rest of its JSON after
+        // the pid, and a pipe closed under it would kill it (SIGPIPE).
+        let _ = std::io::copy(&mut info, &mut std::io::sink());
+    });
+    rx
+}
+
+/// The `child-pid` in bubblewrap's `--info-fd` JSON, once all its digits
+/// have arrived.
+#[cfg(target_os = "linux")]
+fn child_pid(json: &[u8]) -> Option<libc::pid_t> {
+    let text = String::from_utf8_lossy(json);
+    let rest = text.split_once("\"child-pid\"")?.1.trim_start().strip_prefix(':')?.trim_start();
+    let end = rest.find(|c: char| !c.is_ascii_digit())?;
+    rest[..end].parse().ok().filter(|p| *p > 0)
 }
 
 async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
@@ -909,6 +1006,9 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
     if let Some(why) = sandbox.and_then(|p| p.refused.as_ref()) {
         return (format!("the command was not run: {why}"), true);
     }
+    // Where bubblewrap says which process is the sandbox's first.
+    #[cfg(target_os = "linux")]
+    let mut info: Option<(std::io::PipeReader, std::io::PipeWriter)> = None;
     let mut cmd = match sandbox.filter(|p| p.kernel).map(|p| crate::sandbox::bash(p, &i.command)) {
         None => {
             let mut c = tokio::process::Command::new("bash");
@@ -917,6 +1017,17 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
         }
         Some(Ok((program, args))) => {
             let mut c = tokio::process::Command::new(program);
+            #[cfg(target_os = "linux")]
+            let info_w = match std::io::pipe() {
+                Ok((r, w)) => {
+                    use std::os::fd::AsRawFd;
+                    let fd = w.as_raw_fd();
+                    info = Some((r, w));
+                    c.args(["--info-fd", "3"]);
+                    fd
+                }
+                Err(e) => return (format!("bash could not be started: {e}"), true),
+            };
             // bubblewrap's own environment is the allowlist too: its
             // process inside the namespace is pid 1, whose environ the
             // command can read.
@@ -928,7 +1039,7 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
             // run after the child's stdio is in place.
             #[cfg(target_os = "linux")]
             unsafe {
-                c.pre_exec(|| {
+                c.pre_exec(move || {
                     const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
                     if libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, libc::c_uint::MAX, CLOSE_RANGE_CLOEXEC) != 0 {
                         // Before Linux 5.11: one by one, up to the limit.
@@ -937,6 +1048,12 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
                             libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
                         }
                     }
+                    // `--info-fd 3`: the one descriptor bubblewrap keeps,
+                    // and closes before the command starts.
+                    let ok = if info_w == 3 { libc::fcntl(3, libc::F_SETFD, 0) } else { libc::dup2(info_w, 3) };
+                    if ok < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                     Ok(())
                 });
             }
@@ -944,7 +1061,7 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
         }
         Some(Err(fix)) => return (format!("the command was not run: {fix}"), true),
     };
-    let mut unfenced = sandbox.filter(|p| p.kernel).map(crate::sandbox::Unfenced::before);
+    let unfenced = sandbox.filter(|p| p.kernel).map(crate::sandbox::Unfenced::before);
     cmd.current_dir(cwd);
     cmd.stdin(std::process::Stdio::null());
     // One pipe for both streams, as a terminal would have it: the model
@@ -969,10 +1086,17 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
         Ok(c) => c,
         Err(e) => return (format!("bash could not be started: {e}"), true),
     };
-    let mut group = GroupKill(child.id());
     // The command's copies of the write end go with it, so the pipe closes
     // when the shell and what it started are done.
     drop(cmd);
+    #[cfg(target_os = "linux")]
+    let init = info.map(|(r, w)| {
+        drop(w);
+        sandbox_init(r)
+    });
+    #[cfg(not(target_os = "linux"))]
+    let init = None;
+    let mut group = GroupKill { group: child.id(), init, unfenced };
     #[cfg(unix)]
     let (mut so, mut se): (_, Option<tokio::process::ChildStderr>) = {
         let std_out = std::process::ChildStdout::from(std::os::fd::OwnedFd::from(merged));
@@ -1030,8 +1154,10 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
     };
     match tokio::time::timeout(timeout, run).await {
         Ok((code, held_open)) => {
-            // Finished: what it left in the background is its business.
-            group.0 = None;
+            // Finished: what it left in the background is its business —
+            // outside the sandbox; inside it, bubblewrap's exit means its
+            // pid namespace, and so all of it, is gone.
+            group.group = None;
             let text = cap.render();
             let mut tail = match code {
                 Some(c) => format!("exit code {c}"),
@@ -1041,7 +1167,7 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
                 tail += " (a process it started in the background still holds its output; krowk stopped reading when the shell exited)";
             }
             let mut body = if text.is_empty() { tail.clone() } else { format!("{}\n{tail}", text.trim_end_matches('\n')) };
-            let appeared = unfenced.as_mut().map(|u| u.appeared()).unwrap_or_default();
+            let appeared = group.unfenced.as_mut().map(|u| u.appeared()).unwrap_or_default();
             if !appeared.is_empty() {
                 let names = appeared.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
                 body += &format!("\nthe sandbox removed {names}, which the command created: git, Claude Code, Codex and krowk run what such a directory names, so none is made from inside the sandbox — ask the person to create it");
@@ -1050,7 +1176,8 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
             (body, code != Some(0))
         }
         Err(_) => {
-            drop(group);
+            group.kill_group();
+            let _ = tokio::task::spawn_blocking(move || group.settle()).await;
             (format!("the command timed out after {} ms and was killed", timeout.as_millis()), true)
         }
     }

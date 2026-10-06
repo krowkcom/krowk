@@ -845,35 +845,90 @@ fn own_dir(base: &Path, rel: &str) -> Option<PathBuf> {
 /// FIFO, a socket — and names it in `out`. git outside the sandbox writes
 /// through what is in a krowk worktree's writable git directories (it
 /// appends to a reflog in place), so a link a command left there would
-/// have it write wherever the link leads. Bounded, as the workspace
-/// search is.
+/// have it write wherever the link leads. Every directory is opened
+/// relative to its parent's handle without following a link, and every
+/// entry judged and removed relative to its own: a command that swaps a
+/// directory for a link to the home while this runs cannot lead it there.
+/// Bounded, as the workspace search is.
+#[cfg(unix)]
 fn sweep(dir: &Path, deep: bool, out: &mut Vec<PathBuf>) {
-    let mut stack = vec![dir.to_path_buf()];
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let open = |at: libc::c_int, name: &std::ffi::CStr| {
+        // SAFETY: openat(2) on a NUL-terminated name; the descriptor it
+        // returns is owned from here on.
+        let fd = unsafe { libc::openat(at, name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+        (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
+    };
+    let Some(root) = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok().and_then(|c| open(libc::AT_FDCWD, &c)) else { return };
+    let mut stack = vec![(root, dir.to_path_buf())];
     let mut seen = 0usize;
-    while let Some(d) = stack.pop() {
-        if !std::fs::symlink_metadata(&d).is_ok_and(|m| m.is_dir()) {
-            continue;
-        }
-        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+    while let Some((fd, path)) = stack.pop() {
+        for name in entries(&fd) {
             seen += 1;
             if seen > WALK_BUDGET {
                 return;
             }
-            match e.file_type() {
-                Ok(t) if t.is_dir() => {
-                    if deep {
-                        stack.push(e.path());
+            let at = path.join(std::ffi::OsString::from_vec(name.to_bytes().to_vec()));
+            // SAFETY: fstatat(2) into a zeroed stat, relative to the open
+            // directory, not following a link.
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            if unsafe { libc::fstatat(fd.as_raw_fd(), name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
+                continue;
+            }
+            match st.st_mode & libc::S_IFMT {
+                libc::S_IFREG => {}
+                libc::S_IFDIR => {
+                    if let Some(sub) = deep.then(|| open(fd.as_raw_fd(), &name)).flatten() {
+                        stack.push((sub, at));
                     }
                 }
-                Ok(t) if t.is_file() => {}
+                // SAFETY: unlinkat(2) of a name in the open directory; a
+                // directory put there since fails, and is not followed.
                 _ => {
-                    if std::fs::remove_file(e.path()).is_ok() {
-                        out.push(e.path());
+                    if unsafe { libc::unlinkat(fd.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+                        out.push(at);
                     }
                 }
             }
         }
     }
+}
+
+#[cfg(not(unix))]
+fn sweep(_: &Path, _: bool, _: &mut Vec<PathBuf>) {}
+
+/// The names in the directory `fd` is open on, `.` and `..` left out.
+#[cfg(unix)]
+fn entries(fd: &std::os::fd::OwnedFd) -> Vec<std::ffi::CString> {
+    use std::os::fd::AsRawFd;
+    let mut out = Vec::new();
+    // SAFETY: a duplicate of the directory's descriptor, owned by the
+    // stream fdopendir(3) makes of it and closed with it; readdir(3)'s
+    // entries are read before the next call.
+    unsafe {
+        let dup = libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0);
+        if dup < 0 {
+            return out;
+        }
+        let d = libc::fdopendir(dup);
+        if d.is_null() {
+            libc::close(dup);
+            return out;
+        }
+        loop {
+            let e = libc::readdir(d);
+            if e.is_null() {
+                break;
+            }
+            let name = std::ffi::CStr::from_ptr((*e).d_name.as_ptr());
+            if name != c"." && name != c".." {
+                out.push(name.to_owned());
+            }
+        }
+        libc::closedir(d);
+    }
+    out
 }
 
 /// `user.name` and `user.email` as git resolves them in `top`, with
