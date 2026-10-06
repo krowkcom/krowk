@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.krowkcom/krowk",
-  "description": "Publishing from Krowk, the coding agent harness, for any agent: screenshots and logs as link cards.",
+  "description": "Publishing from Krowk, the coding agent harness, for any MCP client: screenshots and logs as links.",
   "repository": {
     "url": "https://github.com/krowkcom/krowk",
     "source": "github"

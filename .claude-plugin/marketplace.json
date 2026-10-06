@@ -11,7 +11,7 @@
     {
       "name": "krowk",
       "displayName": "Krowk",
-      "description": "Publishing from Krowk, the coding agent harness, for Claude Code: the krowk skill and MCP server turn a session's screenshots, recordings, diffs and logs into links that unfurl in GitHub, Slack, Basecamp and Linear.",
+      "description": "Publishing from Krowk, the coding agent harness, for Claude Code: the krowk skill and MCP server turn a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp and show inline in GitHub and Linear.",
       "author": { "name": "Krowk" },
       "category": "development",
       "source": "./",
