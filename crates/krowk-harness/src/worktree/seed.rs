@@ -17,13 +17,13 @@
 //!   full copy anywhere else. **Windows**: nothing is seeded.
 //! - **Mtimes kept**: cargo judges freshness by them. The worktree's own
 //!   files were just checked out, newer than any build, so once `target` is
-//!   seeded each tracked file whose content is the main checkout's gets the
-//!   main checkout's mtime (`match_mtimes`), and a build there finds
-//!   nothing to do.
+//!   seeded each tracked file whose bytes are the main checkout's gets the
+//!   main checkout's mtime, and every other one a time after the clone
+//!   (`match_mtimes`): a build there redoes only what differs.
 //! - **Never a build in progress**: `target` is skipped while a cargo holds
-//!   `target/debug/.cargo-lock` or `target/release/.cargo-lock`; both are
-//!   held, with cargo's own kind of lock, while it is cloned, so no build
-//!   starts mid-copy.
+//!   any profile's `.cargo-lock` (`target/debug/`, `target/dist/`,
+//!   `target/<triple>/release/`); all are held, with cargo's own kind of
+//!   lock, while it is cloned, so no build starts mid-copy.
 //! - **Never stale packages**: `node_modules` only when the worktree's
 //!   lockfiles are byte-identical to the main checkout's.
 //! - **Only ignored directories**: one git would see as untracked would
@@ -46,8 +46,9 @@ pub const DEFAULT_SEED: &[&str] = &["target", "node_modules"];
 /// The lockfiles `node_modules` is judged by: npm's, pnpm's, Yarn's, Bun's.
 pub const LOCKFILES: &[&str] = &["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"];
 
-/// The lock files a running cargo holds in `target`.
-const CARGO_LOCKS: &[&str] = &["debug/.cargo-lock", "release/.cargo-lock"];
+/// The lock file a running cargo holds in the profile directory it builds
+/// in.
+const CARGO_LOCK: &str = ".cargo-lock";
 
 /// Where a repository's probe result is remembered, in its directory
 /// under the worktrees root.
@@ -124,6 +125,10 @@ pub fn seed_dir(main: &Path, into: &Path, name: &str) -> Seeded {
     }
     if to.symlink_metadata().is_ok() {
         return Seeded::Skipped("the worktree already has it".into());
+    }
+    // The probe judged the git directory's volume; this is the one copied.
+    if !same_cow_volume(into, &from) {
+        return Seeded::Skipped("it is not on a volume the worktree can clone from".into());
     }
     let _held = if name == "target" {
         match cargo_locks(&from) {
@@ -266,24 +271,46 @@ fn ignored(worktree: &Path, name: &str) -> bool {
 
 /// `target`'s cargo locks, taken without waiting, as cargo takes them
 /// (`flock` on unix, `LockFileEx` on Windows, which is what std's
-/// `try_lock` is), each that exists: held, nobody builds there. Why not,
-/// when a cargo holds one or it cannot be judged.
+/// `try_lock` is): held, nobody builds there. Every `.cargo-lock` one or
+/// two directories down, since cargo locks the profile's directory it
+/// builds in (`debug`, `release`, `dist` for `--profile dist`, each under
+/// `<triple>/` for `--target`). Why not, when a cargo holds one or it
+/// cannot be judged.
 fn cargo_locks(target: &Path) -> Result<Vec<std::fs::File>, String> {
     let mut held = Vec::new();
-    for lock in CARGO_LOCKS {
-        let at = target.join(lock);
+    for at in cargo_lock_files(target) {
+        let shown = at.strip_prefix(target.parent().unwrap_or(target)).unwrap_or(&at).display().to_string();
         let file = match std::fs::File::open(&at) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(format!("target/{lock} could not be opened: {e}")),
+            Err(e) => return Err(format!("{shown} could not be opened: {e}")),
         };
         match file.try_lock() {
             Ok(()) => held.push(file),
-            Err(std::fs::TryLockError::WouldBlock) => return Err(format!("a build is running there (target/{lock} is held)")),
-            Err(std::fs::TryLockError::Error(e)) => return Err(format!("target/{lock} could not be locked: {e}")),
+            Err(std::fs::TryLockError::WouldBlock) => return Err(format!("a build is running there ({shown} is held)")),
+            Err(std::fs::TryLockError::Error(e)) => return Err(format!("{shown} could not be locked: {e}")),
         }
     }
     Ok(held)
+}
+
+/// The `.cargo-lock` files in `target/*/` and `target/*/*/`, symlinked
+/// directories not followed.
+fn cargo_lock_files(target: &Path) -> Vec<PathBuf> {
+    let dirs = |d: &Path| -> Vec<PathBuf> {
+        std::fs::read_dir(d).map(|r| r.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).collect()).unwrap_or_default()
+    };
+    let mut found = Vec::new();
+    for one in dirs(target) {
+        for dir in std::iter::once(one.clone()).chain(dirs(&one)) {
+            let lock = dir.join(CARGO_LOCK);
+            if lock.symlink_metadata().is_ok_and(|m| m.is_file()) {
+                found.push(lock);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 /// Whether `into` has the same lockfiles as `main`, byte for byte, and at
@@ -307,25 +334,30 @@ fn lockfiles_match(main: &Path, into: &Path) -> bool {
     any
 }
 
-/// Gives each tracked file of the worktree whose content is the main
-/// checkout's the main checkout's mtime, so cargo, which compares source
-/// mtimes with its build's, finds the seeded `target` fresh. "The same" is
-/// git's judgement in the main checkout (`git diff <base>`, by its index's
-/// stat cache, so nothing is hashed that has not changed): a file that
-/// differs keeps its new mtime and is rebuilt. Then the worktree's index
-/// takes the new stat data, so its `git status` hashes nothing either.
+/// Sets the mtime of every tracked file of the worktree after `target`
+/// was cloned, so cargo, which compares source mtimes with its build's,
+/// finds what is the same fresh and rebuilds what is not. A file whose
+/// bytes are the main checkout's file's gets the main checkout's mtime:
+/// what the cloned build saw. Every other one gets `now`, taken after the
+/// clone, so it is newer than anything the build recorded. git's word
+/// that a file is unchanged is not enough: a build that finished in the
+/// main checkout between `worktree add` and the clone recorded files newer
+/// than the worktree's, and a skip-worktree or assume-unchanged file in
+/// the main checkout differs where `git diff` does not look. Then the
+/// worktree's index takes the new stat data, so its `git status` hashes
+/// nothing.
 fn match_mtimes(wt: &Worktree) -> Result<(), String> {
     let e = |e: super::Error| e.to_string();
-    let differ: std::collections::HashSet<String> =
-        read(query(&wt.main).map_err(e)?.args(["diff", "--name-only", "--no-relative", "--no-renames", "-z", &wt.base, "--"]), "diff").map_err(e)?.split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect();
+    let now = SystemTime::now();
     let tracked = read(query(&wt.path).map_err(e)?.args(["ls-files", "-z"]), "ls-files").map_err(e)?;
-    for path in tracked.split('\0').filter(|p| !p.is_empty() && !differ.contains(*p)) {
+    for path in tracked.split('\0').filter(|p| !p.is_empty()) {
         let (theirs, ours) = (wt.main.join(path), wt.path.join(path));
-        let (Ok(m), Ok(o)) = (theirs.symlink_metadata(), ours.symlink_metadata()) else { continue };
-        if !m.is_file() || !o.is_file() {
+        let Ok(o) = ours.symlink_metadata() else { continue };
+        if !o.is_file() {
             continue;
         }
-        let Ok(when) = m.modified() else { continue };
+        let same = theirs.symlink_metadata().ok().filter(|m| m.is_file() && m.len() == o.len() && same_bytes(&theirs, &ours));
+        let Some(when) = same.map_or(Some(now), |m| m.modified().ok()) else { continue };
         if o.modified().is_ok_and(|t| t == when) {
             continue;
         }
@@ -338,6 +370,24 @@ fn match_mtimes(wt: &Worktree) -> Result<(), String> {
     // Only spares a later status the hashing: one that fails costs that.
     let _ = read(super::git(&wt.path).map_err(e)?.args(["update-index", "-q", "--refresh"]), "update-index");
     Ok(())
+}
+
+/// Whether the files `a` and `b` hold the same bytes; false when either
+/// cannot be read.
+fn same_bytes(a: &Path, b: &Path) -> bool {
+    use std::io::Read;
+    let (Ok(fa), Ok(fb)) = (std::fs::File::open(a), std::fs::File::open(b)) else { return false };
+    let (mut ra, mut rb) = (std::io::BufReader::new(fa), std::io::BufReader::new(fb));
+    let (mut ba, mut bb) = ([0u8; 8192], [0u8; 8192]);
+    loop {
+        let Ok(n) = ra.read(&mut ba) else { return false };
+        if n == 0 {
+            return rb.read(&mut bb[..1]).is_ok_and(|m| m == 0);
+        }
+        if rb.read_exact(&mut bb[..n]).is_err() || ba[..n] != bb[..n] {
+            return false;
+        }
+    }
 }
 
 /// Appends `line` to the repository's `seed.log`, for the worktree `hex`.
@@ -451,6 +501,82 @@ mod tests {
         assert!(logged(&w).contains("target not seeded: a build is running there"), "{}", logged(&w));
         drop(lock);
         assert_eq!(finish(&w).unwrap(), Finished::Removed);
+        // A custom profile's lock, and one under a target triple: each one
+        // held is a build running.
+        for dir in ["dist", "x86_64-unknown-linux-gnu/release"] {
+            std::fs::create_dir_all(main.join("target").join(dir)).unwrap();
+            std::fs::write(main.join("target").join(dir).join(".cargo-lock"), "").unwrap();
+            let lock = std::fs::File::open(main.join("target").join(dir).join(".cargo-lock")).unwrap();
+            lock.lock().unwrap();
+            let w = create(&main, &root, "s2").unwrap();
+            prepared(&w);
+            assert!(!w.path.join("target").exists(), "{dir}: {}", logged(&w));
+            assert!(logged(&w).contains(&format!("a build is running there (target/{dir}/.cargo-lock is held)")), "{}", logged(&w));
+            drop(lock);
+            assert_eq!(finish(&w).unwrap(), Finished::Removed);
+        }
+        assert_eq!(cargo_lock_files(&main.join("target")).len(), 3);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The main checkout's build is of files the worktree does not have: a
+    /// file edited and built there after the worktree was made, and a
+    /// skip-worktree file whose edit `git diff` does not show. Neither
+    /// passes for the cloned build's, so cargo rebuilds.
+    #[test]
+    fn wt5_a_file_that_differs_from_the_cloned_build_is_rebuilt() {
+        let Some((base, main, root)) = built("seed-stale") else { return };
+        let edited = |main: &Path, text: &str| {
+            std::fs::write(main.join("src/main.rs"), format!("fn main() {{\n    println!(\"{text}\");\n}}\n")).unwrap();
+            let out = cargo(main, &["build", "--quiet"]);
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        };
+        let rebuilt = |w: &Worktree| {
+            let out = cargo(&w.path, &["build", "-v"]);
+            let said = String::from_utf8_lossy(&out.stderr).into_owned();
+            assert!(out.status.success(), "{said}");
+            assert!(said.contains("Compiling fixture"), "rebuilt: {said}");
+            let ran = Command::new(w.path.join("target/debug/fixture")).output().unwrap();
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), "fixture\n", "the worktree's own source");
+        };
+        // Edited and built in the main checkout between `worktree add` and
+        // the clone.
+        let w = create(&main, &root, "s1").unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        edited(&main, "later");
+        prepared(&w);
+        assert!(w.path.join("target/debug").is_dir(), "{}", logged(&w));
+        rebuilt(&w);
+        finish(&w).unwrap();
+        git_ok(&main, &["checkout", "--", "src/main.rs"]);
+
+        // Skip-worktree in the main checkout: its edit is no change to git,
+        // so the worktree starts from HEAD's file.
+        git_ok(&main, &["update-index", "--skip-worktree", "src/main.rs"]);
+        edited(&main, "hidden");
+        assert_eq!(git_ok(&main, &["status", "--porcelain"]), "");
+        let w = create(&main, &root, "s2").unwrap();
+        prepared(&w);
+        assert!(w.path.join("target/debug").is_dir(), "{}", logged(&w));
+        rebuilt(&w);
+        finish(&w).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn wt5_same_bytes_compares_contents() {
+        let base = std::env::temp_dir().join(format!("krowk-seed-bytes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let big: Vec<u8> = (0..20_000u32).map(|i| i as u8).collect();
+        let mut other = big.clone();
+        other[19_999] ^= 1;
+        for (name, bytes) in [("a", &big[..]), ("b", &big[..]), ("c", &other[..]), ("d", &big[..19_000]), ("e", b"")] {
+            std::fs::write(base.join(name), bytes).unwrap();
+        }
+        let same = |x: &str, y: &str| same_bytes(&base.join(x), &base.join(y));
+        assert!(same("a", "b") && same("e", "e"));
+        assert!(!same("a", "c") && !same("a", "d") && !same("d", "a") && !same("a", "missing"));
         let _ = std::fs::remove_dir_all(&base);
     }
 
