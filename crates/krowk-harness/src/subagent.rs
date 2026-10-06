@@ -398,10 +398,10 @@ impl Subagents {
         let Some(root) = self.0.host.cfg.agents.worktrees.clone() else {
             return Err("isolation: worktree has nowhere to make worktrees: krowk found no home directory (set HOME or XDG_DATA_HOME)".into());
         };
-        let (cwd, child) = (self.0.parent.cwd.clone(), child.to_string());
+        let (cwd, child, config) = (self.0.parent.cwd.clone(), child.to_string(), self.0.host.registry().worktrees.clone());
         let made = tokio::task::spawn_blocking(move || {
             let w = crate::worktree::create(&cwd, &root, &child)?;
-            let notes = crate::worktree::prepare(&crate::worktree::Prepare { worktree: &w });
+            let notes = crate::worktree::prepare(&crate::worktree::Prepare { worktree: &w, config: &config });
             Ok((w, notes))
         })
         .await;

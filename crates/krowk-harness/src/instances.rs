@@ -71,6 +71,9 @@ pub struct InstancesConfig {
     /// How subagents run: how many at once, and on which model.
     #[serde(default, skip_serializing_if = "SubagentsConfig::is_empty")]
     pub subagents: SubagentsConfig,
+    /// How krowk readies a worktree it makes for an agent.
+    #[serde(default, skip_serializing_if = "WorktreesConfig::is_empty")]
+    pub worktrees: WorktreesConfig,
     /// What happens when an instance hits its rate or usage limit
     /// (R-INST-7, R-INST-8): `offer` (the default) asks the person whether
     /// to continue on the next instance; `auto` moves there by itself, says
@@ -122,6 +125,30 @@ impl SubagentsConfig {
     /// Subagents at once: the config's, at least one.
     pub fn max_parallel(&self) -> usize {
         self.max_parallel.unwrap_or(crate::subagent::MAX_PARALLEL).max(1)
+    }
+}
+
+/// `worktrees` in config.json: how a worktree krowk makes for an agent is
+/// readied before the agent starts (`crate::worktree::STEPS`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorktreesConfig {
+    /// The main checkout's top-level directories copied into a new
+    /// worktree as copy-on-write clones, where the file system makes one
+    /// nearly free: build output a first build would otherwise redo.
+    /// `["target", "node_modules"]` when absent; `[]` copies none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<Vec<String>>,
+}
+
+impl WorktreesConfig {
+    pub fn is_empty(&self) -> bool {
+        self.seed.is_none()
+    }
+
+    /// The directories seeded: the config's, else `DEFAULT_SEED`.
+    pub fn seed(&self) -> Vec<String> {
+        self.seed.clone().unwrap_or_else(|| crate::worktree::seed::DEFAULT_SEED.iter().map(|s| s.to_string()).collect())
     }
 }
 
@@ -518,6 +545,7 @@ pub struct Registry {
     /// Config's `toolset`, already known to name a preset.
     pub toolset: Option<String>,
     pub subagents: SubagentsConfig,
+    pub worktrees: WorktreesConfig,
     pub rollover: Rollover,
     /// Config's `rolloverOrder`, as written.
     pub rollover_order: Vec<String>,
@@ -544,6 +572,7 @@ impl Registry {
             default_model: cfg.default_model.clone(),
             toolset: cfg.toolset.clone(),
             subagents: cfg.subagents.clone(),
+            worktrees: cfg.worktrees.clone(),
             rollover: cfg.rollover.unwrap_or_default(),
             rollover_order: cfg.rollover_order.clone(),
             renamed: cfg.renamed.clone(),
@@ -1050,6 +1079,12 @@ pub fn from_config_json(raw: &serde_json::Value) -> Result<InstancesConfig, Stri
             return Err("\"subagents\": maxParallel must be at least 1".into());
         }
     }
+    if let Some(v) = raw.get("worktrees") {
+        cfg.worktrees = serde_json::from_value(v.clone()).map_err(|e| format!("\"worktrees\": {e}"))?;
+        if let Some(bad) = cfg.worktrees.seed.iter().flatten().find(|n| !crate::worktree::seed::top_level_name(n)) {
+            return Err(format!("\"worktrees\": seed names directories at the repository's top, and {bad:?} is not one"));
+        }
+    }
     if let Some(v) = raw.get("renamed") {
         cfg.renamed = serde_json::from_value(v.clone()).map_err(|e| format!("\"renamed\": {e} — an object of old instance names and the names they became"))?;
     }
@@ -1318,6 +1353,20 @@ mod tests {
         assert_eq!(from_config_json(&serde_json::json!({})).unwrap().subagents.max_parallel(), crate::subagent::MAX_PARALLEL);
         assert!(from_config_json(&serde_json::json!({"subagents": {"maxParallel": 0}})).unwrap_err().contains("at least 1"));
         assert!(from_config_json(&serde_json::json!({"subagents": {"maxParalel": 2}})).unwrap_err().contains("subagents"), "a typo is named");
+    }
+
+    #[test]
+    fn wt5_worktrees_seed_is_read_and_checked() {
+        assert_eq!(from_config_json(&serde_json::json!({})).unwrap().worktrees.seed(), ["target", "node_modules"]);
+        let cfg = from_config_json(&serde_json::json!({"worktrees": {"seed": ["target", ".venv"]}})).unwrap();
+        assert_eq!(Registry::resolve(&cfg, &env).worktrees.seed(), ["target", ".venv"]);
+        assert_eq!(from_config_json(&serde_json::json!({"worktrees": {"seed": []}})).unwrap().worktrees.seed(), Vec::<String>::new());
+        let typo = from_config_json(&serde_json::json!({"worktrees": {"sead": ["target"]}})).unwrap_err();
+        assert!(typo.contains("\"worktrees\"") && typo.contains("sead"), "a typo is named: {typo}");
+        for bad in ["", ".", "..", ".git", "a/b", "../x", "/abs", "a\\b"] {
+            let e = from_config_json(&serde_json::json!({"worktrees": {"seed": [bad]}})).unwrap_err();
+            assert!(e.contains("\"worktrees\"") && e.contains(&format!("{bad:?}")), "{bad:?}: {e}");
+        }
     }
 
     #[test]

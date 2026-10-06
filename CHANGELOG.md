@@ -49,6 +49,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
   submodule, at any depth, keeps the worktree; an unchanged one is removed
   with its submodules' git data.
 
+- **A subagent's worktree starts with your build output.** On a file
+  system that can clone files without copying their blocks (btrfs, XFS
+  with reflink, APFS on macOS), krowk clones your main checkout's `target`
+  and `node_modules` into a new worktree before the subagent starts, so its
+  first `cargo build` finds nothing to compile and the clone takes almost
+  no disk. `target` is skipped while a build is running in it, and
+  `node_modules` unless the worktree's lockfile (`package-lock.json`,
+  `pnpm-lock.yaml`, `yarn.lock`, `bun.lock` or `bun.lockb`) is the same as
+  your checkout's. Anywhere else, and on Windows, nothing is copied. Choose
+  the directories with `worktrees.seed` in `config.json`, for example
+  `{"worktrees": {"seed": ["target", ".venv"]}}`; `[]` turns it off.
+  What was skipped and why is in `seed.log`, beside the repository's
+  worktrees.
+
 - **An agent can commit inside a worktree krowk made for it.** When a
   sandboxed session runs in a worktree under
   `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`) on

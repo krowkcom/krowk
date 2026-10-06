@@ -29,6 +29,10 @@
       "description": "How subagents run: how many at once, and on which model.",
       "$ref": "#/$defs/SubagentsConfig"
     },
+    "worktrees": {
+      "description": "How krowk readies a worktree it makes for an agent.",
+      "$ref": "#/$defs/WorktreesConfig"
+    },
     "rollover": {
       "description": "What happens when an instance hits its rate or usage limit\n(R-INST-7, R-INST-8): `offer` (the default) asks the person whether\nto continue on the next instance; `auto` moves there by itself, says\nso in every client and logs it. Stacking one plan's limits across\naccounts is the person's own responsibility: Anthropic's plan limits\nassume ordinary, individual usage.",
       "anyOf": [
@@ -531,6 +535,23 @@
             "string",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorktreesConfig": {
+      "description": "`worktrees` in config.json: how a worktree krowk makes for an agent is\nreadied before the agent starts (`crate::worktree::STEPS`).",
+      "type": "object",
+      "properties": {
+        "seed": {
+          "description": "The main checkout's top-level directories copied into a new\nworktree as copy-on-write clones, where the file system makes one\nnearly free: build output a first build would otherwise redo.\n`[\"target\", \"node_modules\"]` when absent; `[]` copies none.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

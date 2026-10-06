@@ -33,10 +33,14 @@
 //!   leaves it alone and a listing can say whose it is.
 //! - **Every git through `krowk_api::git`**: hooks off, so `worktree add`
 //!   runs no `post-checkout` of the repository's, outside any sandbox.
-//! - **Prepared** by `STEPS` before its agent starts (submodules first,
-//!   `submodules`). A step that falls short leaves a note, and the notes
-//!   open the agent's first prompt (`first_prompt`).
+//! - **Prepared** by `STEPS` before its agent starts: submodules first
+//!   (`submodules`), then the main checkout's build output cloned in where
+//!   that is nearly free (`seed`). A step that falls short leaves a note,
+//!   and the notes open the agent's first prompt (`first_prompt`).
 
+pub mod seed;
+
+use crate::instances::WorktreesConfig;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -71,6 +75,12 @@ impl Worktree {
     /// `krowk/<hex>`.
     pub fn branch(&self) -> String {
         format!("{BRANCH_PREFIX}{}", self.hex)
+    }
+
+    /// `<root>/<repo-id>`: the directory of krowk's own for its repository,
+    /// which no sandbox can write, its worktrees inside.
+    pub fn repo_dir(&self) -> &Path {
+        self.path.parent().unwrap_or(&self.path)
     }
 }
 
@@ -116,10 +126,12 @@ impl Finished {
     }
 }
 
-/// What a prepare step is handed. The inputs later steps need (config,
-/// trust) join it as fields, so a step's signature stays one argument.
+/// What a prepare step is handed. The inputs later steps need (trust)
+/// join it as fields, so a step's signature stays one argument.
 pub struct Prepare<'a> {
     pub worktree: &'a Worktree,
+    /// The person's `worktrees` config.
+    pub config: &'a WorktreesConfig,
 }
 
 /// One step that readies a new worktree before its agent starts. It does
@@ -131,7 +143,7 @@ pub type Step = fn(&Prepare<'_>) -> Option<String>;
 
 /// The prepare steps, run in this order after `create` and before the
 /// agent's first turn: submodules, seed, include, setup, as each lands.
-pub const STEPS: &[(&str, Step)] = &[("submodules", submodules)];
+pub const STEPS: &[(&str, Step)] = &[("submodules", submodules), ("seed", seed::seed)];
 
 /// Runs `STEPS`, in order: their notes, in the same order. Blocking: off
 /// the async runtime.
@@ -716,8 +728,13 @@ mod tests {
     use super::*;
 
     /// A repository with one commit, and a worktrees root beside it.
-    fn repo(name: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let base = std::env::temp_dir().join(format!("krowk-worktree-{name}-{}", std::process::id()));
+    pub(super) fn repo(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        repo_in(&std::env::temp_dir(), name)
+    }
+
+    /// `repo`, in `dir`.
+    pub(super) fn repo_in(dir: &Path, name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base = dir.join(format!("krowk-worktree-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let main = base.join("main");
         std::fs::create_dir_all(&main).unwrap();
@@ -729,13 +746,13 @@ mod tests {
     }
 
     /// git in a test repository with none of this machine's config.
-    fn git_ok(dir: &Path, args: &[&str]) -> String {
+    pub(super) fn git_ok(dir: &Path, args: &[&str]) -> String {
         let o = krowk_api::git::command(dir).unwrap().args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
         assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     }
 
-    fn has_git() -> bool {
+    pub(super) fn has_git() -> bool {
         krowk_api::git::query(Path::new(".")).is_ok_and(|mut c| c.arg("--version").output().is_ok_and(|o| o.status.success()))
     }
 
@@ -997,7 +1014,7 @@ mod tests {
         let config = std::fs::read(main.join(".git/config")).unwrap();
         let w = create(&main, &root, "s1").unwrap();
         assert!(std::fs::read_dir(w.path.join("mid")).unwrap().next().is_none(), "git worktree add leaves it empty");
-        assert_eq!(prepare(&Prepare { worktree: &w }), Vec::<String>::new());
+        assert_eq!(prepare(&Prepare { worktree: &w, config: &WorktreesConfig::default() }), Vec::<String>::new());
         assert_eq!(std::fs::read(main.join(".git/config")).unwrap(), config, "the shared config is not written");
         assert_eq!(std::fs::read_to_string(w.path.join("mid/f")).unwrap(), "mid\n");
         assert_eq!(std::fs::read_to_string(w.path.join("mid/inner/f")).unwrap(), "inner\n");
@@ -1023,13 +1040,13 @@ mod tests {
         // An edit in `inner`, which `mid`'s `.gitmodules` ignores, is a
         // change: the worktree is kept, not force-removed.
         let w = create(&main, &root, "s2").unwrap();
-        prepare(&Prepare { worktree: &w });
+        prepare(&Prepare { worktree: &w, config: &WorktreesConfig::default() });
         std::fs::write(w.path.join("mid/inner/f"), "changed\n").unwrap();
         assert_eq!(finish(&w).unwrap(), Finished::Kept { commits: 0, dirty: true });
         assert_eq!(std::fs::read_to_string(w.path.join("mid/inner/f")).unwrap(), "changed\n");
         // So is a new file in `mid`, whose own config hides untracked files.
         let w = create(&main, &root, "s3").unwrap();
-        prepare(&Prepare { worktree: &w });
+        prepare(&Prepare { worktree: &w, config: &WorktreesConfig::default() });
         git_ok(&w.path.join("mid"), &["config", "status.showUntrackedFiles", "no"]);
         std::fs::write(w.path.join("mid/new.txt"), "new\n").unwrap();
         assert_eq!(finish(&w).unwrap(), Finished::Kept { commits: 0, dirty: true });
@@ -1051,7 +1068,7 @@ mod tests {
         git_ok(&main, &["update-index", "--add", "--cacheinfo", &format!("160000,{head},lib")]);
         git_ok(&main, &["commit", "-q", "-m", "a gitlink"]);
         let w = create(&main, &root, "s1").unwrap();
-        assert_eq!(prepare(&Prepare { worktree: &w }), Vec::<String>::new());
+        assert_eq!(prepare(&Prepare { worktree: &w, config: &WorktreesConfig::default() }), Vec::<String>::new());
         let mut failed = Vec::new();
         init_submodules(&w.path, Path::new("/nonexistent"), "", 0, &mut failed);
         assert!(failed.is_empty());
@@ -1087,7 +1104,7 @@ mod tests {
         git_ok(&main, &["submodule", "deinit", "-q", "-f", "mid"]);
         let config = std::fs::read(main.join(".git/config")).unwrap();
         let w = create(&main, &root, "s1").unwrap();
-        let notes = prepare(&Prepare { worktree: &w });
+        let notes = prepare(&Prepare { worktree: &w, config: &WorktreesConfig::default() });
         assert_eq!(std::fs::read(main.join(".git/config")).unwrap(), config, "the deinitialised submodule is not brought back");
         assert_eq!(notes.len(), 1, "{notes:?}");
         let note = &notes[0];
