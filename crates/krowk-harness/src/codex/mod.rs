@@ -650,7 +650,7 @@ impl Answers {
             _ => Err(permissions::NOBODY_TO_ASK.into()),
         };
         // Answered with nothing — a client that sent no answers — is a decline.
-        let answered = answered.and_then(|a| if a.iter().any(|a| crate::ask::said(a).is_some()) { Ok(a) } else { Err(permissions::DECLINED.into()) });
+        let answered = answered.and_then(|a| if questions.iter().any(|q| a.iter().find(|a| a.id == q.id).and_then(crate::ask::said).is_some()) { Ok(a) } else { Err(permissions::DECLINED.into()) });
         let answers: serde_json::Map<String, Value> = questions
             .iter()
             .map(|q| {
