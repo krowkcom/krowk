@@ -1,0 +1,6 @@
+@registry
+@file a.txt hello
+krowk artifacts create a.txt --quiet
+krowk artifacts list
+krowk artifacts show art_000000000000000000000000
+krowk artifacts delete art_000000000000000000000000

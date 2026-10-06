@@ -12,7 +12,7 @@ triggers:
   - krowk push
   - krowk runs
   - krowk claim
-  - krowk uploads
+  - krowk artifacts
   - krowk doctor
   # What the person actually asks for
   - push a screenshot
@@ -106,7 +106,7 @@ environment variable — so never guess at a spelling this file does not carry.
    a key — and let them decide. Chat is the exception: a Slack message about
    today's work outlives nothing.
 10. **Paste the link where a slug is asked for.** Every command that names a
-   record — `uploads show`, `uploads attach`, `uploads delete`, `claim`,
+   record — `artifacts show`, `artifacts attach`, `artifacts delete`, `claim`,
    `runs show`, `runs finish`, and `--run` — reads the slug out of any link that
    carries it. Hand it over whole: never cut a slug out of a URL yourself, and
    never ask a person for "just the slug". A link carrying no slug of the kind
@@ -149,16 +149,17 @@ environment variable — so never guess at a spelling this file does not carry.
 | Close a run | `krowk runs finish run_8Kd2wq --json` |
 | What a run produced | `krowk runs show run_8Kd2wq --json` |
 | Recent runs | `krowk runs list --limit 10 --json` |
-| Recent artifacts | `krowk uploads list --limit 10 --json` |
-| One run's artifacts | `krowk uploads list --run run_8Kd2wq --json` |
-| Next page of a listing | `krowk uploads list --before <next> --json` |
-| Read one artifact back | `krowk uploads show art_2e1d --json` |
-| Read one back from a pasted link | `krowk uploads show https://krowk.com/a/art_6jqi53mmiey1tuxpdo7bbknq --json` |
+| Push, spelled as the resource (`uploads` is the older name, still taken) | `krowk artifacts create shot.png --json` |
+| Recent artifacts | `krowk artifacts list --limit 10 --json` |
+| One run's artifacts | `krowk artifacts list --run run_8Kd2wq --json` |
+| Next page of a listing | `krowk artifacts list --before <next> --json` |
+| Read one artifact back | `krowk artifacts show art_2e1d --json` |
+| Read one back from a pasted link | `krowk artifacts show https://krowk.com/a/art_6jqi53mmiey1tuxpdo7bbknq --json` |
 | Keep an anonymous artifact | `krowk claim art_2e1d <claim-token> --json` |
 | Keep it and group it at once | `krowk claim art_2e1d <claim-token> --run run_8Kd2wq --json` |
-| Group an artifact afterwards | `krowk uploads attach art_2e1d --run run_8Kd2wq --json` |
-| Take an artifact down | `krowk uploads delete art_2e1d --json` |
-| Take down a keyless artifact | `krowk uploads delete art_2e1d <claim-token> --json` |
+| Group an artifact afterwards | `krowk artifacts attach art_2e1d --run run_8Kd2wq --json` |
+| Take an artifact down | `krowk artifacts delete art_2e1d --json` |
+| Take down a keyless artifact | `krowk artifacts delete art_2e1d <claim-token> --json` |
 | Store an API key you were handed | `krowk login --token krowk_sk_… --json` |
 | Sign in when there is no key to paste | `krowk login --no-browser --json` |
 | Which key is this, whose workspace | `krowk whoami --json` |
@@ -169,9 +170,9 @@ environment variable — so never guess at a spelling this file does not carry.
 | One command in another workspace | `krowk push shot.png --workspace ws_9hj3kd8a --json` |
 | Diagnose a failure | `krowk doctor --json` |
 | The whole surface, as data | `krowk help --json` |
-| One command's surface | `krowk help uploads attach --json` |
+| One command's surface | `krowk help artifacts attach --json` |
 | One field out of a result | `krowk push shot.png --jq '.data.artifacts[0].url'` |
-| Every slug in a listing | `krowk uploads list --jq '.data.artifacts[].slug'` |
+| Every slug in a listing | `krowk artifacts list --jq '.data.artifacts[].slug'` |
 
 Global flags on every command: `--json` (or `--format json`), `--format`
 (`human`, `json`, `markdown`, `url`), `--quiet` (the raw record, no envelope and
@@ -195,7 +196,7 @@ JSON, one value per line.
 
 ```bash
 URL=$(krowk push shot.png --jq '.data.artifacts[0].url')
-krowk uploads list --limit 10 --jq '[.data.artifacts[] | {slug, filename}]'
+krowk artifacts list --limit 10 --jq '[.data.artifacts[] | {slug, filename}]'
 krowk help --json --jq '.commands[].name'
 ```
 
@@ -279,14 +280,14 @@ Do you now have a key?
 
 Claiming moves the artifact into the key's workspace and does **not** move the
 link. A claim without `--run` leaves the artifact with no run at all — that is what
-the `krowk uploads attach` breadcrumb in its result is for.
+the `krowk artifacts attach` breadcrumb in its result is for.
 
 ### Something must come down now
 
 ```
 Pushed a secret, or the wrong file?
-├── the artifact is in your workspace → krowk uploads delete <artifact> --json
-└── it was pushed keylessly           → krowk uploads delete <artifact> <claim-token> --json
+├── the artifact is in your workspace → krowk artifacts delete <artifact> --json
+└── it was pushed keylessly           → krowk artifacts delete <artifact> <claim-token> --json
 ```
 
 Immediate and irreversible: the bytes go at once. Withhold the key when using a
@@ -409,8 +410,8 @@ anything already pasted keeps working.
 ### Take down something that should never have been pushed
 
 ```bash
-krowk uploads delete art_2e1d --json                    # yours
-krowk uploads delete art_2e1d "$CLAIM_TOKEN" --json     # pushed keylessly
+krowk artifacts delete art_2e1d --json                    # yours
+krowk artifacts delete art_2e1d "$CLAIM_TOKEN" --json     # pushed keylessly
 ```
 
 Do this before anything else — before reporting it, before cleaning up the

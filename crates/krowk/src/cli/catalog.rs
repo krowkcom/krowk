@@ -92,6 +92,31 @@ fn cmd(name: &str, usage: &'static str, summary: &'static str) -> Command {
     Command { name: name.into(), usage, summary, ..Command::default() }
 }
 
+/// `krowk claim` and its long form, `krowk artifacts claim`.
+fn claim_command(name: &str, usage: &'static str, summary: &'static str) -> Command {
+    Command {
+        args: vec![arg("artifact", ARTIFACT_ARG, true), arg("claim-token", "The token the anonymous upload came back with", true)],
+        flags: vec![run_flag("The run to group it under while claiming — a claimed upload has none otherwise")],
+        ..cmd(name, usage, summary)
+    }
+}
+
+/// Older names a command still answers to, though no help lists them: the
+/// first word typed, and the command it now is.
+pub const ALIASES: &[(&str, &str)] = &[("uploads", "artifacts")];
+
+/// The words typed, with an older name for a command put back as the one it
+/// now is, so routing, help and every check read one name.
+pub fn canonical(words: &[String]) -> Vec<String> {
+    let mut words = words.to_vec();
+    if let Some(first) = words.first_mut()
+        && let Some((_, now)) = ALIASES.iter().find(|(old, _)| old == first)
+    {
+        *first = (*now).to_string();
+    }
+    words
+}
+
 const ARTIFACT_ARG: &str = "The artifact slug, or a link carrying it — the card page or the CDN URL";
 const RUN_ARG: &str = "The run slug, or a link carrying it";
 
@@ -99,13 +124,22 @@ const RUN_ARG: &str = "The run slug, or a link carrying it";
 // columns: what the overview used to carry under its command list, beside
 // the command it is about.
 
-const PUSH_ABOUT: &str = "\
+/// The same words twice — once as `artifacts create` says it, and once
+/// after the line that says `push` is its short form.
+macro_rules! push_about {
+    () => {
+        "\
 Run metadata — the pull request, the links, the references, the session — is
 recorded on a run, and a run belongs to a workspace, so it needs an API key.
 Without one an upload still works: it lands anonymously, expires within a
 day, and comes back with a claim token that `krowk claim` spends to move it
 into a workspace — where a paid plan keeps it and a free one gives it another
-day.";
+day."
+    };
+}
+
+const PUSH_ABOUT: &str = push_about!();
+const PUSH_SHORTCUT_ABOUT: &str = concat!("The short form of `krowk artifacts create`.\n\n", push_about!());
 
 #[cfg(feature = "harness")]
 const SYNC_ATTACH_ABOUT: &str = "\
@@ -303,20 +337,20 @@ pub fn catalog(version: &str) -> Catalog {
                     Command {
                         args: vec![file],
                         flags: upload_flags(),
-                        ..cmd("create", "krowk uploads create <file...> [flags]", "Upload files: the long form of `krowk push`")
+                        ..cmd("create", "krowk artifacts create <file...> [flags]", "Upload files: the long form of `krowk push`")
                     },
                     Command {
                         flags: [page_flags(), vec![run_flag("Narrow it to what one run produced")]].concat(),
-                        ..cmd("list", "krowk uploads list [flags]", "List uploads, newest first: a run's, or the workspace's")
+                        ..cmd("list", "krowk artifacts list [flags]", "List artifacts, newest first: a run's, or the workspace's")
                     },
                     Command {
                         args: vec![arg("artifact", ARTIFACT_ARG, true)],
-                        ..cmd("show", "krowk uploads show <artifact>", "Read one artifact back")
+                        ..cmd("show", "krowk artifacts show <artifact>", "Read one artifact back")
                     },
                     Command {
                         args: vec![arg("artifact", ARTIFACT_ARG, true)],
                         flags: vec![run_flag("The run to put it under — required, and it must be one this workspace holds")],
-                        ..cmd("attach", "krowk uploads attach <art> --run <run>", "Put an upload under a run afterwards")
+                        ..cmd("attach", "krowk artifacts attach <art> --run <run>", "Put an artifact under a run afterwards")
                     },
                     Command {
                         args: vec![
@@ -327,10 +361,11 @@ pub fn catalog(version: &str) -> Catalog {
                                 false,
                             ),
                         ],
-                        ..cmd("delete", "krowk uploads delete <art> [token]", "Take an upload down — immediate, cannot be undone")
+                        ..cmd("delete", "krowk artifacts delete <art> [token]", "Take an artifact down — immediate, cannot be undone")
                     },
+                    claim_command("claim", "krowk artifacts claim <art> <token> [--run]", "The long form of `krowk claim`"),
                 ],
-                ..cmd("uploads", "", "List, show, attach or delete uploads")
+                ..cmd("artifacts", "", "Create, list, show, attach, delete or claim artifacts")
             },
             Command {
                 subcommands: vec![
@@ -341,11 +376,7 @@ pub fn catalog(version: &str) -> Catalog {
                 ],
                 ..cmd("runs", "", "Group uploads under a run")
             },
-            Command {
-                args: vec![arg("artifact", ARTIFACT_ARG, true), arg("claim-token", "The token the anonymous upload came back with", true)],
-                flags: vec![run_flag("The run to group it under while claiming — a claimed upload has none otherwise")],
-                ..cmd("claim", "krowk claim <artifact> <token> [--run]", "Keep an anonymous upload past expiry")
-            },
+            claim_command("claim", "krowk claim <artifact> <token> [--run]", "Keep an anonymous upload past expiry"),
             Command {
                 flags: login_flags(),
                 ..cmd("login", "krowk login [--token <token>] [--no-browser]", "Sign in to your krowk account")
@@ -855,9 +886,11 @@ impl Catalog {
 /// so not in `--json`, whose shape stays the parser's.
 pub fn about(name: &str) -> &'static str {
     match name {
-        "push" | "uploads create" => PUSH_ABOUT,
+        "push" => PUSH_SHORTCUT_ABOUT,
+        "artifacts create" => PUSH_ABOUT,
         "uploads delete" => DELETE_ABOUT,
-        "claim" => CLAIM_ABOUT,
+        "claim" | "artifacts claim" => CLAIM_ABOUT,
+        "artifacts" => "An artifact is a file published to a link. `krowk push` and `krowk claim`\nare the short forms of `create` and `claim`; `uploads` is an older name.",
         "login" | "auth login" => LOGIN_ABOUT,
         "logout" => "Takes the key that resolves here (what `krowk whoami` shows) off this machine.",
         "auth" => "Manage the API key — your krowk account.",
@@ -919,7 +952,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     // a heading of their own would push the overview past one screen.
     #[cfg(feature = "harness")]
     ("Agent", &["connect", "disconnect", "status", "sessions", "sync", "devices"]),
-    ("Publish", &["push", "runs", "uploads", "claim"]),
+    ("Publish", &["push", "runs", "artifacts", "claim"]),
     ("Account", &["login", "logout", "whoami", "workspaces", "auth"]),
     (
         "Other",
@@ -989,9 +1022,13 @@ mod tests {
     fn find_resolves_groups_leaves_and_arguments() {
         let c = catalog("dev");
         let words = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
-        assert_eq!(c.find(&words("uploads attach")).unwrap().name, "uploads attach");
-        assert_eq!(c.find(&words("uploads")).unwrap().subcommands.len(), 5);
+        assert_eq!(c.find(&words("artifacts attach")).unwrap().name, "artifacts attach");
+        assert_eq!(c.find(&words("artifacts")).unwrap().subcommands.len(), 6);
         assert_eq!(c.find(&words("push shot.png")).unwrap().name, "push");
-        assert!(c.find(&words("uploads bogus")).is_none());
+        assert!(c.find(&words("artifacts bogus")).is_none());
+        // The older name is not in the catalog; `canonical` puts it back.
+        assert!(c.find(&words("uploads")).is_none());
+        assert_eq!(c.find(&canonical(&words("uploads attach"))).unwrap().name, "artifacts attach");
+        assert_eq!(canonical(&words("push uploads")), words("push uploads"));
     }
 }

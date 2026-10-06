@@ -116,6 +116,7 @@ fn after_the_command_ran(err: &Error) -> Error {
 /// Runs one invocation and returns the process exit code.
 pub fn run(args: &[String], io: &mut Io) -> i32 {
     let (f, positionals, parsed) = flags::parse(args);
+    let positionals = catalog::canonical(&positionals);
     let jq_given = f.given.contains("jq");
 
     // Resolved before anything is reported, the parse error included; --jq
@@ -257,11 +258,12 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
     let rest = |n: usize| &p[n.min(p.len())..];
     match words.as_slice() {
         ["push", ..] => agent::upload(ctx, rest(1)),
-        ["uploads", "create", ..] => agent::upload(ctx, rest(2)),
-        ["uploads", "list", ..] => agent::uploads_list(ctx),
-        ["uploads", "show", ..] => agent::uploads_show(ctx, rest(2)),
-        ["uploads", "attach", ..] => agent::uploads_attach(ctx, rest(2)),
-        ["uploads", "delete", ..] => agent::uploads_delete(ctx, rest(2)),
+        ["artifacts", "create", ..] => agent::upload(ctx, rest(2)),
+        ["artifacts", "list", ..] => agent::uploads_list(ctx),
+        ["artifacts", "show", ..] => agent::uploads_show(ctx, rest(2)),
+        ["artifacts", "attach", ..] => agent::uploads_attach(ctx, rest(2)),
+        ["artifacts", "delete", ..] => agent::uploads_delete(ctx, rest(2)),
+        ["artifacts", "claim", ..] => agent::claim(ctx, rest(2)),
         ["runs", "start", ..] => agent::runs_start(ctx),
         ["runs", "list", ..] => agent::runs_list(ctx),
         ["runs", "show", ..] => agent::runs_show(ctx, rest(2)),
@@ -379,7 +381,13 @@ fn unknown_command(p: &[String]) -> Error {
     let c = catalog::catalog(VERSION);
     let typed = clip(p, 2).join(" ");
     let Some(group) = c.commands.iter().find(|cmd| cmd.name == p[0] && !cmd.subcommands.is_empty()) else {
-        return match suggest::closest(&p[0], c.commands.iter().map(|cmd| cmd.name.as_str())) {
+        let near = suggest::closest(&p[0], c.commands.iter().map(|cmd| cmd.name.as_str()).chain(aliases())).map(canonical_name);
+        // A subcommand the guessed group has rides along: `artifacts list`.
+        let near = near.map(|n| match (c.find(std::slice::from_ref(&n)), p.get(1)) {
+            (Some(g), Some(sub)) if g.subcommands.iter().any(|s| &s.name == sub) => format!("{n} {sub}"),
+            _ => n,
+        });
+        return match near {
             Some(near) => fail("unknown_command", format!("`{typed}` is not a krowk command — did you mean `krowk {near}`?")),
             None => fail("unknown_command", format!("`{typed}` is not a krowk command — run `krowk --help`")),
         };
@@ -404,6 +412,16 @@ fn either(words: &[&str]) -> String {
         [one] => (*one).to_string(),
         [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
     }
+}
+
+/// The older names commands still answer to, offered as guesses too.
+fn aliases<'a>() -> impl Iterator<Item = &'a str> {
+    catalog::ALIASES.iter().map(|(old, _)| *old)
+}
+
+/// A guess named the way help names it now.
+fn canonical_name(name: &str) -> String {
+    catalog::ALIASES.iter().find(|(old, _)| *old == name).map_or(name, |(_, now)| *now).to_string()
 }
 
 /// Where the flags of what was typed are explained: the command's own help,
@@ -441,6 +459,8 @@ fn clip(s: &[String], n: usize) -> &[String] {
 
 fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
     let c = catalog::catalog(VERSION);
+    // `krowk help uploads` is the help of what `uploads` now is.
+    let topic = &catalog::canonical(topic);
     // Help is read, by a person or an agent, so it is the page unless JSON was
     // asked for by name: piped, the whole catalog would bury the overview.
     let asked_for_json = ctx.f.json || ctx.filter.is_some() || ctx.f.format == "json";
@@ -473,7 +493,8 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
     let Some(page) = page else {
         let names = c.commands.iter().map(|cmd| cmd.name.as_str()).chain(help::TOPICS.iter().map(|(n, _)| *n));
         let typed = clip(topic, 2).join(" ");
-        return Err(match suggest::closest(&topic[0], names) {
+        let near = suggest::closest(&topic[0], names.chain(aliases())).map(canonical_name);
+        return Err(match near {
             Some(near) => fail("unknown_command", format!("`{typed}` is not a krowk command or help topic — did you mean `krowk help {near}`?")),
             None => fail("unknown_command", format!("`{typed}` is not a krowk command or help topic — run `krowk help`")),
         });

@@ -1,9 +1,9 @@
 # Every slug-taking command against slugs that were never minted.
 @registry
 @env KROWK_TOKEN=krowk_sk_test
-krowk uploads show art_000000000000000000000000
-krowk uploads delete art_000000000000000000000000
-krowk uploads attach art_000000000000000000000000 --run run_000000000000000000000000
+krowk artifacts show art_000000000000000000000000
+krowk artifacts delete art_000000000000000000000000
+krowk artifacts attach art_000000000000000000000000 --run run_000000000000000000000000
 krowk runs show run_000000000000000000000000
 krowk runs finish run_000000000000000000000000
 @file a.txt hello

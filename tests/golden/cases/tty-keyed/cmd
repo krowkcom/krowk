@@ -2,7 +2,7 @@
 @env KROWK_TOKEN=krowk_sk_test
 @file a.txt hello
 @tty krowk push a.txt --title "a run"
-@tty krowk uploads list
+@tty krowk artifacts list
 @tty krowk runs list
 @tty krowk auth verify
 @tty krowk workspaces

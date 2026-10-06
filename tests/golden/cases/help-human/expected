@@ -16,7 +16,7 @@ tty:
 \e[1mPublish\e[0m
   push          Upload files, get a link for each
   runs          Group uploads under a run
-  uploads       List, show, attach or delete uploads
+  artifacts     Create, list, show, attach, delete or claim artifacts
   claim         Keep an anonymous upload past expiry
 
 \e[1mAccount\e[0m
@@ -60,7 +60,7 @@ Examples
 Publish
   push          Upload files, get a link for each
   runs          Group uploads under a run
-  uploads       List, show, attach or delete uploads
+  artifacts     Create, list, show, attach, delete or claim artifacts
   claim         Keep an anonymous upload past expiry
 
 Account
@@ -96,11 +96,12 @@ Publish
   runs list         List the workspace's runs, newest first
   runs show         Read one run back, with its metadata
   runs finish       Close a run
-  uploads create    Upload files: the long form of `krowk push`
-  uploads list      List uploads, newest first: a run's, or the workspace's
-  uploads show      Read one artifact back
-  uploads attach    Put an upload under a run afterwards
-  uploads delete    Take an upload down — immediate, cannot be undone
+  artifacts create  Upload files: the long form of `krowk push`
+  artifacts list    List artifacts, newest first: a run's, or the workspace's
+  artifacts show    Read one artifact back
+  artifacts attach  Put an artifact under a run afterwards
+  artifacts delete  Take an artifact down — immediate, cannot be undone
+  artifacts claim   The long form of `krowk claim`
   claim             Keep an anonymous upload past expiry
 
 Account
@@ -184,6 +185,8 @@ krowk push — Upload files, get a link for each
 
 Usage
   krowk push <file...> [flags]
+
+The short form of `krowk artifacts create`.
 
 Run metadata — the pull request, the links, the references, the session — is
 recorded on a run, and a run belongs to a workspace, so it needs an API key.

@@ -1,0 +1,98 @@
+$ krowk uploads create a.txt --quiet
+stdout:
+{
+  "artifacts": [
+    {
+      "slug": "<art_1>",
+      "state": "ready",
+      "filename": "a.txt",
+      "content_type": "text/plain",
+      "byte_size": 5,
+      "checksum": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "region": "weur",
+      "visibility": "public",
+      "url": "http://<registry>/a/<art_1>",
+      "file_url": "http://<registry>/_storage/weur/<ws_1>/<art_1>/a.txt",
+      "markdown": "[a.txt](http://<registry>/a/<art_1>)",
+      "paste": {
+        "markdown": "**a.txt** · [View preview ↗](http://<registry>/a/<art_1>) · expires <date>",
+        "url": "http://<registry>/a/<art_1>",
+        "destinations": {
+          "_default": "markdown",
+          "asana": "url",
+          "basecamp": "url",
+          "github": "markdown",
+          "gitlab": "markdown",
+          "linear": "markdown",
+          "notion": "markdown",
+          "slack": "url"
+        }
+      },
+      "expires_at": "<time>",
+      "created_at": "<time>",
+      "metadata": null,
+      "claim_token": "<claim_1>"
+    }
+  ]
+}
+exit: 0
+
+$ krowk uploads show <art_2>
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "not_found",
+    "fix": "no such artifact or run in this workspace — check the slug, and that the key matches the workspace it was uploaded to",
+    "message": "No such record.",
+    "retryable": false,
+    "status": 404
+  }
+}
+exit: 2
+
+$ krowk uploads
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "unknown_command",
+    "fix": "the artifacts command needs a subcommand: create, list, show, attach, delete or claim; run `krowk help artifacts`",
+    "retryable": false
+  }
+}
+exit: 1
+
+$ krowk help uploads --format human
+stdout:
+krowk artifacts — Create, list, show, attach, delete or claim artifacts
+
+An artifact is a file published to a link. `krowk push` and `krowk claim`
+are the short forms of `create` and `claim`; `uploads` is an older name.
+
+Commands (krowk artifacts …)
+  create <file...> [flags]    Upload files: the long form of `krowk push`
+  list [flags]                List artifacts, newest first: a run's, or the
+                              workspace's
+  show <artifact>             Read one artifact back
+  attach <art> --run <run>    Put an artifact under a run afterwards
+  delete <art> [token]        Take an artifact down — immediate, cannot be
+                              undone
+  claim <art> <token> [--run]
+                              The long form of `krowk claim`
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk uplods list
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "unknown_command",
+    "fix": "`uplods list` is not a krowk command — did you mean `krowk artifacts list`?",
+    "retryable": false
+  }
+}
+exit: 1
+

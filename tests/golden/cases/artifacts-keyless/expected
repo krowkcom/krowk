@@ -1,4 +1,4 @@
-$ krowk uploads create a.txt --quiet
+$ krowk artifacts create a.txt --quiet
 stdout:
 {
   "artifacts": [
@@ -37,7 +37,7 @@ stdout:
 }
 exit: 0
 
-$ krowk uploads list
+$ krowk artifacts list
 stderr:
 {
   "ok": false,
@@ -51,7 +51,7 @@ stderr:
 }
 exit: 3
 
-$ krowk uploads show <art_2>
+$ krowk artifacts show <art_2>
 stderr:
 {
   "ok": false,
@@ -65,13 +65,13 @@ stderr:
 }
 exit: 2
 
-$ krowk uploads delete <art_2>
+$ krowk artifacts delete <art_2>
 stderr:
 {
   "ok": false,
   "error": {
     "error": "missing_claim",
-    "fix": "taking down an anonymous upload needs the claim token it came back with: `krowk uploads delete <art_2> krowk_claim_...` — with an API key, the key is authority enough",
+    "fix": "taking down an anonymous upload needs the claim token it came back with: `krowk artifacts delete <art_2> krowk_claim_...` — with an API key, the key is authority enough",
     "retryable": false
   }
 }

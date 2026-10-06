@@ -1,10 +1,10 @@
 krowk bogus
-krowk uploads bogus
+krowk artifacts bogus
 krowk runs
 krowk auth
 krowk config
 krowk pussh a.txt
-krowk uploads lsit
+krowk artifacts lsit
 krowk help pussh
 @tty krowk runs
 krowk login extra --format human

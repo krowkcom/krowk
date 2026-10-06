@@ -107,7 +107,7 @@ stdout:
 }
 exit: 0
 
-$ krowk uploads show {ART}
+$ krowk artifacts show {ART}
 stdout:
 {
   "ok": true,
@@ -178,19 +178,19 @@ stdout:
 }
 exit: 0
 
-$ krowk uploads show {ART} --format human
+$ krowk artifacts show {ART} --format human
 stdout:
 a.txt  5 B  ready
   http://<registry>/a/<art_1>
   run <run_2>
 exit: 0
 
-$ krowk uploads show {ART} --format markdown
+$ krowk artifacts show {ART} --format markdown
 stdout:
 **a.txt** · [View preview ↗](http://<registry>/a/<art_1>)
 exit: 0
 
-$ krowk uploads attach {ART} --run {RUN}
+$ krowk artifacts attach {ART} --run {RUN}
 stdout:
 {
   "ok": true,
@@ -262,7 +262,7 @@ stdout:
 }
 exit: 0
 
-$ krowk uploads attach {ART} --run {RUN}
+$ krowk artifacts attach {ART} --run {RUN}
 stdout:
 {
   "ok": true,
@@ -351,7 +351,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "what it made",
-      "cmd": "krowk uploads list --run <run_1>",
+      "cmd": "krowk artifacts list --run <run_1>",
       "description": "a run holds the metadata; its artifacts and their links are listed separately"
     },
     {
@@ -573,7 +573,7 @@ stdout:
 }
 exit: 0
 
-$ krowk uploads list --limit 1
+$ krowk artifacts list --limit 1
 stdout:
 {
   "ok": true,
@@ -625,14 +625,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "next page",
-      "cmd": "krowk uploads list --limit 1 --before <art_3>",
+      "cmd": "krowk artifacts list --limit 1 --before <art_3>",
       "description": "this page came back full, so any older rows are behind that cursor"
     }
   ]
 }
 exit: 0
 
-$ krowk uploads list --limit 1 --before {NEXT}
+$ krowk artifacts list --limit 1 --before {NEXT}
 stdout:
 {
   "ok": true,
@@ -684,14 +684,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "next page",
-      "cmd": "krowk uploads list --limit 1 --before <art_2>",
+      "cmd": "krowk artifacts list --limit 1 --before <art_2>",
       "description": "this page came back full, so any older rows are behind that cursor"
     }
   ]
 }
 exit: 0
 
-$ krowk uploads list --run {RUN}
+$ krowk artifacts list --run {RUN}
 stdout:
 {
   "ok": true,
@@ -838,7 +838,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "what it made",
-      "cmd": "krowk uploads list --run <run_1>",
+      "cmd": "krowk artifacts list --run <run_1>",
       "description": "a run holds the metadata; its artifacts and their links are listed separately"
     }
   ]
@@ -863,7 +863,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "what it made",
-      "cmd": "krowk uploads list --run <run_1>",
+      "cmd": "krowk artifacts list --run <run_1>",
       "description": "a run holds the metadata; its artifacts and their links are listed separately"
     }
   ]
@@ -879,7 +879,7 @@ stdout:
   vcs.change.title the work
 exit: 0
 
-$ krowk uploads delete {ART}
+$ krowk artifacts delete {ART}
 stdout:
 {
   "ok": true,
@@ -891,7 +891,7 @@ stdout:
 }
 exit: 0
 
-$ krowk uploads delete {ART}
+$ krowk artifacts delete {ART}
 stdout:
 {
   "ok": true,
@@ -903,7 +903,7 @@ stdout:
 }
 exit: 0
 
-$ krowk uploads show {ART}
+$ krowk artifacts show {ART}
 stderr:
 {
   "ok": false,
@@ -917,25 +917,25 @@ stderr:
 }
 exit: 8
 
-$ krowk uploads attach
+$ krowk artifacts attach
 stderr:
 {
   "ok": false,
   "error": {
     "error": "no_artifact",
-    "fix": "pass the artifact: `krowk uploads attach art_... --run run_...`",
+    "fix": "pass the artifact: `krowk artifacts attach art_... --run run_...`",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk uploads attach {ART}
+$ krowk artifacts attach {ART}
 stderr:
 {
   "ok": false,
   "error": {
     "error": "no_run",
-    "fix": "pass the run to attach it to: `krowk uploads attach <art_1> --run run_...`",
+    "fix": "pass the run to attach it to: `krowk artifacts attach <art_1> --run run_...`",
     "retryable": false
   }
 }

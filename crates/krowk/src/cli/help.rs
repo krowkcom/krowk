@@ -352,7 +352,7 @@ pub fn command_help(cmd: &Command, globals: &[Flag], colour: bool) -> String {
         out += &format!("\n{about}\n");
     }
     if !cmd.subcommands.is_empty() {
-        // Each under the group's name, `krowk uploads` read as said.
+        // Each under the group's name, `krowk artifacts` read as said.
         heading(&mut out, &format!("Commands (krowk {} …)", cmd.name), colour);
         let prefix = format!("krowk {} ", cmd.name);
         let width = cmd.subcommands.iter().map(|s| s.usage.len() - prefix.len() + 2).max().unwrap_or(0).min(28);

@@ -1,0 +1,9 @@
+# `uploads` is the older name of `artifacts`: no help lists it, but every
+# command under it still runs, and its help is the help of `artifacts`.
+@registry
+@file a.txt hello
+krowk uploads create a.txt --quiet
+krowk uploads show art_000000000000000000000000
+krowk uploads
+krowk help uploads --format human
+krowk uplods list

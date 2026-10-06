@@ -5,12 +5,12 @@ exit: 0
 
 $ krowk help --jq '[.commands[].name] | @csv'
 stdout:
-"push","uploads","runs","claim","login","logout","whoami","auth","workspaces","config","doctor","sessions","pricing","upgrade","help"
+"push","artifacts","runs","claim","login","logout","whoami","auth","workspaces","config","doctor","sessions","pricing","upgrade","help"
 exit: 0
 
 $ krowk help --jq '[.commands[].name] | @tsv'
 stdout:
-push	uploads	runs	claim	login	logout	whoami	auth	workspaces	config	doctor	sessions	pricing	upgrade	help
+push	artifacts	runs	claim	login	logout	whoami	auth	workspaces	config	doctor	sessions	pricing	upgrade	help
 exit: 0
 
 $ krowk help --jq '[.global_flags[] | [.name, .type]] | .[] | @csv'
@@ -67,7 +67,7 @@ exit: 0
 
 $ krowk help --jq '[.commands[] | select(.subcommands) | .name]'
 stdout:
-["uploads","runs","auth","workspaces","config","sessions","pricing"]
+["artifacts","runs","auth","workspaces","config","sessions","pricing"]
 exit: 0
 
 $ krowk help --jq '.commands[0].name | ascii_upcase'
@@ -87,7 +87,7 @@ exit: 0
 
 $ krowk help --jq '[limit(2; .commands[].name)]'
 stdout:
-["push","uploads"]
+["push","artifacts"]
 exit: 0
 
 $ krowk help --jq '.commands[0] | has("usage")'

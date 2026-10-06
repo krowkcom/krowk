@@ -496,7 +496,7 @@ pub fn list(p: &Page, l: &Listing, f: Format, quiet: bool, colour: bool, now: &j
             let crumbs = if p.next.is_empty() {
                 Vec::new()
             } else {
-                vec![crumb("next page", next_page_cmd("krowk uploads list", l, &p.next), NEXT_PAGE)]
+                vec![crumb("next page", next_page_cmd("krowk artifacts list", l, &p.next), NEXT_PAGE)]
             };
             ok(p, count(p.artifacts.len(), "artifact"), crumbs)
         }
@@ -530,7 +530,7 @@ fn human_list(p: &Page, l: &Listing, colour: bool, now: &jiff::Zoned) -> String 
         lines.push(line);
     }
     if !p.next.is_empty() {
-        lines.push(crumb_line("More", &next_page_cmd("krowk uploads list", l, &p.next), colour));
+        lines.push(crumb_line("More", &next_page_cmd("krowk artifacts list", l, &p.next), colour));
     }
     lines.join("\n")
 }
@@ -565,7 +565,7 @@ pub fn claimed(a: &Artifact, f: Format, quiet: bool, colour: bool, now: &jiff::Z
 fn attach_crumb(a: &Artifact) -> Breadcrumb {
     crumb(
         "group under a run",
-        format!("krowk uploads attach {} --run <run>", a.slug),
+        format!("krowk artifacts attach {} --run <run>", a.slug),
         "a claimed upload belongs to a workspace but to no run, and a run is where the pull request, commit and \
          session are recorded — `krowk runs start` opens one, and its slug goes in place of <run>",
     )
@@ -759,7 +759,7 @@ pub fn run(r: &Run, f: Format, quiet: bool, colour: bool) -> String {
 fn run_crumbs(r: &Run, with_push: bool) -> Vec<Breadcrumb> {
     let artifacts = crumb(
         "what it made",
-        format!("krowk uploads list --run {}", r.slug),
+        format!("krowk artifacts list --run {}", r.slug),
         "a run holds the metadata; its artifacts and their links are listed separately",
     );
     if r.status == STATUS_FINISHED {

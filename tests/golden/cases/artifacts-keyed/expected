@@ -1,4 +1,4 @@
-$ krowk uploads create a.txt b.txt
+$ krowk artifacts create a.txt b.txt
 stdout:
 {
   "ok": true,
@@ -121,7 +121,7 @@ stdout:
 }
 exit: 0
 
-$ krowk uploads list
+$ krowk artifacts list
 stdout:
 {
   "ok": true,
@@ -209,7 +209,7 @@ stdout:
 }
 exit: 0
 
-$ krowk uploads list --limit 1
+$ krowk artifacts list --limit 1
 stdout:
 {
   "ok": true,
@@ -260,27 +260,27 @@ stdout:
   "breadcrumbs": [
     {
       "action": "next page",
-      "cmd": "krowk uploads list --limit 1 --before <art_2>",
+      "cmd": "krowk artifacts list --limit 1 --before <art_2>",
       "description": "this page came back full, so any older rows are behind that cursor"
     }
   ]
 }
 exit: 0
 
-$ krowk uploads list --format human
+$ krowk artifacts list --format human
 stdout:
 b.txt  5 B  http://<registry>/a/<art_2>
 a.txt  5 B  http://<registry>/a/<art_1>
 exit: 0
 
-$ krowk uploads list --format markdown
+$ krowk artifacts list --format markdown
 stdout:
 **b.txt** · [View preview ↗](http://<registry>/a/<art_2>)
 
 **a.txt** · [View preview ↗](http://<registry>/a/<art_1>)
 exit: 0
 
-$ krowk uploads list --format url
+$ krowk artifacts list --format url
 stdout:
 http://<registry>/a/<art_2>
 http://<registry>/a/<art_1>

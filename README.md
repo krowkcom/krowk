@@ -77,7 +77,7 @@ Each link shows a card with the repo, commit, branch, PR, session and agent, all
 | Command | What it does |
 | --- | --- |
 | `krowk push <file...>` | Upload files and print a link for each |
-| `krowk runs` / `uploads` | Group, list, attach and delete uploads |
+| `krowk runs` / `artifacts` | Group runs; list, show, attach and delete artifacts (`push` is `artifacts create`, short) |
 | `krowk login` / `whoami` | Sign in to a workspace (`--token` for CI) |
 | `krowk config set workspace <ws>` | Pin a repository to a workspace |
 

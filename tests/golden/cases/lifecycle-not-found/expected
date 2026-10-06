@@ -1,4 +1,4 @@
-$ krowk uploads show <art_1>
+$ krowk artifacts show <art_1>
 stderr:
 {
   "ok": false,
@@ -12,7 +12,7 @@ stderr:
 }
 exit: 2
 
-$ krowk uploads delete <art_1>
+$ krowk artifacts delete <art_1>
 stderr:
 {
   "ok": false,
@@ -26,7 +26,7 @@ stderr:
 }
 exit: 2
 
-$ krowk uploads attach <art_1> --run <run_1>
+$ krowk artifacts attach <art_1> --run <run_1>
 stderr:
 {
   "ok": false,

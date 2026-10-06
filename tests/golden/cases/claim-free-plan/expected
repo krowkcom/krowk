@@ -128,7 +128,7 @@ stdout:
     },
     {
       "action": "group under a run",
-      "cmd": "krowk uploads attach <art_1> --run <run>",
+      "cmd": "krowk artifacts attach <art_1> --run <run>",
       "description": "a claimed upload belongs to a workspace but to no run, and a run is where the pull request, commit and session are recorded — `krowk runs start` opens one, and its slug goes in place of <run>"
     }
   ]

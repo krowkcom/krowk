@@ -1,6 +1,6 @@
 krowk push --help
 krowk runs start --help
 krowk sessions import --help
-krowk uploads --help
+krowk artifacts --help
 krowk push --help --json
-krowk uploads --help --json
+krowk artifacts --help --json

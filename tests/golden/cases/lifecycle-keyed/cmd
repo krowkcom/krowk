@@ -8,11 +8,11 @@ krowk runs start --title "the work"
 @let RUN .data.slug
 krowk push a.txt
 @let ART .data.artifacts[0].slug
-krowk uploads show {ART}
-krowk uploads show {ART} --format human
-krowk uploads show {ART} --format markdown
-krowk uploads attach {ART} --run {RUN}
-krowk uploads attach {ART} --run {RUN}
+krowk artifacts show {ART}
+krowk artifacts show {ART} --format human
+krowk artifacts show {ART} --format markdown
+krowk artifacts attach {ART} --run {RUN}
+krowk artifacts attach {ART} --run {RUN}
 krowk runs show {RUN}
 krowk runs show {RUN} --format human
 krowk push b.txt --run {RUN}
@@ -20,15 +20,15 @@ krowk push b.txt --run {registry}/r/{RUN}
 krowk runs list --limit 1
 @let RUNNEXT .data.next
 krowk runs list --limit 1 --before {RUNNEXT}
-krowk uploads list --limit 1
+krowk artifacts list --limit 1
 @let NEXT .data.next
-krowk uploads list --limit 1 --before {NEXT}
-krowk uploads list --run {RUN}
+krowk artifacts list --limit 1 --before {NEXT}
+krowk artifacts list --run {RUN}
 krowk runs finish {RUN}
 krowk runs finish {RUN}
 krowk runs show {RUN} --format human
-krowk uploads delete {ART}
-krowk uploads delete {ART}
-krowk uploads show {ART}
-krowk uploads attach
-krowk uploads attach {ART}
+krowk artifacts delete {ART}
+krowk artifacts delete {ART}
+krowk artifacts show {ART}
+krowk artifacts attach
+krowk artifacts attach {ART}
