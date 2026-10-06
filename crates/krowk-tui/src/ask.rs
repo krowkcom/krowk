@@ -85,9 +85,11 @@ impl Asking {
                 self.text[self.at].pop();
             }
             KeyCode::Enter => return self.enter(),
-            // Space and a number pick — until the person has started their
-            // own answer, which they are then part of.
-            KeyCode::Char(' ') if multi && !typing && self.text[self.at].is_empty() => self.toggle(cur),
+            // Where several may be picked, space toggles the row under the
+            // cursor, beside whatever the person wrote. Where one is, space
+            // and a number pick — until the person has started their own
+            // answer, which they are then part of.
+            KeyCode::Char(' ') if multi && !typing => self.toggle(cur),
             KeyCode::Char(' ') if !typing && self.text[self.at].is_empty() => return self.enter(),
             KeyCode::Char(c) if !typing && self.text[self.at].is_empty() && c.is_ascii_digit() && (1..=own).contains(&(c as usize - '0' as usize)) => {
                 let i = c as usize - '1' as usize;
@@ -357,7 +359,10 @@ mod tests {
         for c in "fuzz".chars() {
             a.key(key(KeyCode::Char(c)));
         }
-        assert!(text(&a.rows(80, None, 1)).contains("[x] 1. unit"));
+        a.key(key(KeyCode::Up));
+        a.key(key(KeyCode::Char(' ')));
+        assert!(text(&a.rows(80, None, 1)).contains("[x] 1. unit") && text(&a.rows(80, None, 1)).contains("[x] 3. bench"), "toggled beside the note");
+        a.key(key(KeyCode::Char(' ')));
         assert_eq!(
             a.key(key(KeyCode::Enter)),
             Some(Done::Answered(vec![
