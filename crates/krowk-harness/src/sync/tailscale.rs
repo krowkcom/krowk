@@ -220,7 +220,11 @@ fn answers(port: u16) -> bool {
 /// error, so the reason reaches the person rather than "none found".
 fn app_store(containers: &Path) -> Result<Vec<LocalApi>, String> {
     let mut found: Vec<(std::time::SystemTime, u16, String)> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(containers) else { return Ok(Vec::new()) };
+    let entries = match std::fs::read_dir(containers) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{} could not be read: {e}", containers.display())),
+    };
     for c in entries.flatten() {
         if !c.file_name().to_str().is_some_and(|n| n.ends_with("io.tailscale.ipn.macos")) {
             continue;
@@ -556,9 +560,11 @@ mod tests {
         assert_eq!(discover(&sockets, Some(&containers), &macsys), LocalApi::Tcp { port: port(&standalone), token: "feedface".into() });
 
         // The App Store app running wins, by its newest file.
-        std::fs::write(app.join(format!("sameuserproof-{}-0lder", port(&older))), "").unwrap();
-        std::thread::sleep(Duration::from_millis(20));
-        std::fs::write(app.join(format!("sameuserproof-{}-2ae2ec9e0aa2005784f1", port(&store))), "").unwrap();
+        // Timestamps set, not slept for: a filesystem with one-second ones
+        // would tie them.
+        let at = |secs| std::time::UNIX_EPOCH + Duration::from_secs(secs);
+        std::fs::File::create(app.join(format!("sameuserproof-{}-0lder", port(&older)))).unwrap().set_modified(at(1_000)).unwrap();
+        std::fs::File::create(app.join(format!("sameuserproof-{}-2ae2ec9e0aa2005784f1", port(&store)))).unwrap().set_modified(at(2_000)).unwrap();
         assert_eq!(discover(&sockets, Some(&containers), &macsys), LocalApi::Tcp { port: port(&store), token: "2ae2ec9e0aa2005784f1".into() });
 
         // Every app quit: the error says which port went unanswered.
