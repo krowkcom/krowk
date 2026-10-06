@@ -200,8 +200,10 @@ app's sameuserproof file: the App Store app's group container, or
   KROWK_TAILSCALE_LOCALAPI=http://127.0.0.1:<port>
     with KROWK_TAILSCALE_LOCALAPI_TOKEN=<token>
   KROWK_TAILSCALE_LOCALAPI=/path/to/sameuserproof-<port>-<token>
+    or /Library/Tailscale/sameuserproof-<port>, which holds the token
 
-The socket wins over the LocalAPI. Only 127.0.0.1 is taken.";
+The socket wins over the LocalAPI. krowk dials 127.0.0.1 and nowhere else
+(localhost is taken as a name for it).";
 
 fn run_flag(usage: &str) -> Flag {
     flag("run", STRING, format!("{usage}. Its slug, or a link carrying it"))

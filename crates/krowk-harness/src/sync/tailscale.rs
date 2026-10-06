@@ -93,7 +93,8 @@ fn localapi_override(v: &str, token: &str) -> Result<LocalApi, String> {
     let Some((scheme, rest)) = v.split_once("://") else {
         return proof_file(Path::new(v));
     };
-    let bad = || format!("KROWK_TAILSCALE_LOCALAPI must be http://127.0.0.1:<port> or the path of a sameuserproof file, not {v}");
+    // The value is not echoed: a URL can carry the token in its userinfo.
+    let bad = || "KROWK_TAILSCALE_LOCALAPI must be http://127.0.0.1:<port> or the path of a sameuserproof file".to_string();
     let (host, port) = rest.trim_end_matches('/').rsplit_once(':').ok_or_else(bad)?;
     let port: u16 = port.parse().ok().filter(|p| *p != 0).ok_or_else(bad)?;
     if scheme != "http" || !matches!(host, "127.0.0.1" | "localhost") {
@@ -142,7 +143,7 @@ fn proof_file(path: &Path) -> Result<LocalApi, String> {
             }
             Ok(LocalApi::Tcp { port, token: token.into() })
         }
-        None => Err(format!("KROWK_TAILSCALE_LOCALAPI names a file in {dir} that is not a sameuserproof file (sameuserproof-<port>-<token>)")),
+        None => Err(format!("KROWK_TAILSCALE_LOCALAPI names a file in {dir} that is not a sameuserproof file (sameuserproof-<port>-<token>, or sameuserproof-<port> holding the token)")),
     }
 }
 
@@ -167,35 +168,65 @@ fn discover(sockets: &[PathBuf], containers: Option<&Path>, macsys: &Path) -> Lo
     if let Some(s) = sockets.iter().find(|s| std::os::unix::net::UnixStream::connect(s).is_ok()) {
         return LocalApi::Unix(s.clone());
     }
-    if let Some(api) = containers.and_then(app_store) {
-        return api;
+    let containers_shown = containers.map(|c| c.display().to_string()).unwrap_or_else(|| "~/Library/Group Containers".into());
+    let mut found = Vec::new();
+    let mut notes = Vec::new();
+    match containers.map(app_store) {
+        Some(Ok(apis)) => found.extend(apis),
+        Some(Err(e)) => notes.push(e),
+        None => {}
     }
-    let mut why = format!(
-        "no tailscaled answers at {}, and no Tailscale app's LocalAPI is in {} or {}",
-        sockets.iter().map(|s| s.display().to_string()).collect::<Vec<_>>().join(" or "),
-        containers.map(|c| c.display().to_string()).unwrap_or_else(|| "~/Library/Group Containers".into()),
-        macsys.display()
-    );
     match std::fs::read_link(macsys.join("ipnport")) {
         Ok(port) => match proof_file(&macsys.join(format!("sameuserproof-{}", port.display()))) {
-            Ok(api) => return api,
-            Err(e) => why = e,
+            Ok(api) => found.push(api),
+            Err(e) => notes.push(e),
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => why = format!("{why} ({}: {e})", macsys.join("ipnport").display()),
+        Err(e) => notes.push(format!("{}: {e}", macsys.join("ipnport").display())),
+    }
+    // The apps' files outlive them as a socket does its daemon, and the App
+    // Store app deletes its old ones only when it next starts: a port is
+    // taken only if something answers on it, so a stale file does not hide
+    // the other app running.
+    let mut dead = Vec::new();
+    for api in found {
+        if let LocalApi::Tcp { port, .. } = &api {
+            if answers(*port) {
+                return api;
+            }
+            dead.push(port.to_string());
+        }
+    }
+    let sockets_shown = sockets.iter().map(|s| s.display().to_string()).collect::<Vec<_>>().join(" or ");
+    let mut why = if dead.is_empty() {
+        format!("no tailscaled answers at {sockets_shown}, and no Tailscale app's LocalAPI is in {containers_shown} or {}", macsys.display())
+    } else {
+        format!("no tailscaled answers at {sockets_shown}, and nothing answers on 127.0.0.1:{}, the port the Tailscale app's files in {containers_shown} or {} name: is the app running?", dead.join(" or "), macsys.display())
+    };
+    for n in notes {
+        why = format!("{why} ({n})");
     }
     LocalApi::NotFound(why)
 }
 
-/// The App Store app's port and token, from the newest sameuserproof file
-/// in its group container; the extension deletes older ones as it starts.
-fn app_store(containers: &Path) -> Option<LocalApi> {
+/// Whether anything listens on 127.0.0.1 at `port`: refused at once when
+/// nothing does.
+fn answers(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(500)).is_ok()
+}
+
+/// The App Store app's ports and tokens, from the sameuserproof files in
+/// its group container, newest first. A container krowk may not read is an
+/// error, so the reason reaches the person rather than "none found".
+fn app_store(containers: &Path) -> Result<Vec<LocalApi>, String> {
     let mut found: Vec<(std::time::SystemTime, u16, String)> = Vec::new();
-    for c in std::fs::read_dir(containers).ok()?.flatten() {
+    let Ok(entries) = std::fs::read_dir(containers) else { return Ok(Vec::new()) };
+    for c in entries.flatten() {
         if !c.file_name().to_str().is_some_and(|n| n.ends_with("io.tailscale.ipn.macos")) {
             continue;
         }
-        for f in std::fs::read_dir(c.path()).into_iter().flatten().flatten() {
+        let files = std::fs::read_dir(c.path()).map_err(|e| format!("the Tailscale app's group container in {} could not be read: {e}", containers.display()))?;
+        for f in files.flatten() {
             let Some(name) = f.file_name().to_str().map(str::to_string) else { continue };
             if let Some((port, Some(token))) = parse_proof_name(&name) {
                 let at = f.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
@@ -204,7 +235,16 @@ fn app_store(containers: &Path) -> Option<LocalApi> {
         }
     }
     found.sort_by_key(|f| std::cmp::Reverse(f.0));
-    found.into_iter().next().map(|(_, port, token)| LocalApi::Tcp { port, token })
+    Ok(found.into_iter().map(|(_, port, token)| LocalApi::Tcp { port, token }).collect())
+}
+
+/// An address tailscale hands a node — `100.64.0.0/10` or
+/// `fd7a:115c:a1e0::/48` — or loopback, which reaches no one else.
+pub fn is_tailnet(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || (v4.octets()[0] == 100 && v4.octets()[1] & 0xc0 == 64),
+        IpAddr::V6(v6) => v6.is_loopback() || v6.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+    }
 }
 
 /// tailscaled writes `null` for a list it has nothing in.
@@ -422,6 +462,19 @@ mod tests {
         assert!(e.contains("403"), "{e}");
     }
 
+    /// Only an address tailscale hands out, or loopback, is a tailnet
+    /// address: a LocalAPI anyone could stand in for cannot widen the
+    /// listener to every network.
+    #[test]
+    fn only_tailnet_and_loopback_addresses_are_listened_on() {
+        for ok in ["100.64.0.1", "100.127.255.254", "fd7a:115c:a1e0::1", "127.0.0.1", "::1"] {
+            assert!(is_tailnet(&ok.parse().unwrap()), "{ok}");
+        }
+        for bad in ["0.0.0.0", "::", "100.63.255.255", "100.128.0.1", "192.168.1.2", "fd7a:115c:a1e1::1"] {
+            assert!(!is_tailnet(&bad.parse().unwrap()), "{bad}");
+        }
+    }
+
     /// The token is a password: debug output leaves it out.
     #[test]
     fn the_token_stays_out_of_debug_output() {
@@ -479,16 +532,39 @@ mod tests {
             assert!(e.contains(option), "{option}: {e}");
         }
 
-        std::os::unix::fs::symlink("41113", macsys.join("ipnport")).unwrap();
-        std::fs::write(macsys.join("sameuserproof-41113"), "feedface\n").unwrap();
-        assert_eq!(discover(&sockets, Some(&containers), &macsys), LocalApi::Tcp { port: 41113, token: "feedface".into() });
+        // Each app's port is a live listener: a port nothing answers on is
+        // a stale file, and is passed over.
+        let live = || std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let (standalone, store, older) = (live(), live(), live());
+        let port = |l: &std::net::TcpListener| l.local_addr().unwrap().port();
+        let gone = {
+            let l = live();
+            port(&l)
+        };
 
+        std::os::unix::fs::symlink(port(&standalone).to_string(), macsys.join("ipnport")).unwrap();
+        std::fs::write(macsys.join(format!("sameuserproof-{}", port(&standalone))), "feedface\n").unwrap();
+        assert_eq!(discover(&sockets, Some(&containers), &macsys), LocalApi::Tcp { port: port(&standalone), token: "feedface".into() });
+
+        // The App Store app's leftover file, from before it quit, does not
+        // hide the standalone app running.
         let app = containers.join("W5364U7YZB.group.io.tailscale.ipn.macos");
         std::fs::create_dir_all(&app).unwrap();
         std::fs::create_dir_all(containers.join("other.app")).unwrap();
         std::fs::write(containers.join("other.app/sameuserproof-1-dead"), "").unwrap();
-        std::fs::write(app.join("sameuserproof-41112-2ae2ec9e0aa2005784f1"), "").unwrap();
-        assert_eq!(discover(&sockets, Some(&containers), &macsys), LocalApi::Tcp { port: 41112, token: "2ae2ec9e0aa2005784f1".into() });
+        std::fs::write(app.join(format!("sameuserproof-{gone}-0ld")), "").unwrap();
+        assert_eq!(discover(&sockets, Some(&containers), &macsys), LocalApi::Tcp { port: port(&standalone), token: "feedface".into() });
+
+        // The App Store app running wins, by its newest file.
+        std::fs::write(app.join(format!("sameuserproof-{}-0lder", port(&older))), "").unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(app.join(format!("sameuserproof-{}-2ae2ec9e0aa2005784f1", port(&store))), "").unwrap();
+        assert_eq!(discover(&sockets, Some(&containers), &macsys), LocalApi::Tcp { port: port(&store), token: "2ae2ec9e0aa2005784f1".into() });
+
+        // Every app quit: the error says which port went unanswered.
+        drop((standalone, store, older));
+        let LocalApi::NotFound(why) = discover(&sockets, Some(&containers), &macsys) else { panic!("an app's port answered with every app quit") };
+        assert!(why.contains(&gone.to_string()) && why.contains("is the app running?"), "{why}");
 
         let live = root.join("live.sock");
         let _l = std::os::unix::net::UnixListener::bind(&live).unwrap();

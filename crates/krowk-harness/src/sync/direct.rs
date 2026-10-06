@@ -77,7 +77,12 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
     if !status.running() {
         return Err(format!("tailscale is {}", if status.backend_state.is_empty() { "not running" } else { &status.backend_state }));
     }
-    let ip = status.me.tailscale_ips.iter().find(|i| i.is_ipv4()).or(status.me.tailscale_ips.first()).copied().ok_or("tailscale gives this machine no tailnet address")?;
+    // Only a tailnet address is listened on, whatever the LocalAPI says: on
+    // macOS it is a port on 127.0.0.1 that anyone may bind once the app
+    // quits, and an answer of 0.0.0.0 would put plain ws:// on every
+    // network, past KROWK_DIRECT_LAN.
+    let ips: Vec<IpAddr> = status.me.tailscale_ips.iter().copied().filter(tailscale::is_tailnet).collect();
+    let ip = ips.iter().find(|i| i.is_ipv4()).or(ips.first()).copied().ok_or("tailscale gives this machine no tailnet address")?;
     let whois = if c.same_user {
         if status.me.user_id == 0 {
             return Err("tailscale names no user for this machine, so the same-user check cannot pass".into());
