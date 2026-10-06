@@ -2,7 +2,7 @@
   "name": "@krowk/mcp",
   "version": "0.0.0-unpublished",
   "mcpName": "io.github.krowkcom/krowk",
-  "description": "MCP server that publishes agent output — screenshots, logs, diffs — from any agent to krowk permalinks, over stdio.",
+  "description": "Publishing from Krowk, the coding agent harness, for any MCP client: an MCP server that turns an agent's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
   "keywords": [
     "krowk",
     "mcp",

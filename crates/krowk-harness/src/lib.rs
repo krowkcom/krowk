@@ -24,6 +24,8 @@
 //!   context, model and tools, fanned out in parallel; `agents` — the agent
 //!   definitions they run, krowk's and Claude Code's.
 //! - `budget` — what a session may spend, checked before every model call.
+//! - `paste_guard` — refuses a `gh` post whose body carries a bare krowk
+//!   card link, on every backend and in every mode.
 //! - `permissions` — Claude-Code-compatible modes, rules and approvals:
 //!   the one evaluator every call is judged by, native or a backend's.
 //! - `compat` — the instructions (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules`)
@@ -79,6 +81,7 @@ pub mod mcp;
 pub mod native;
 pub mod oauth;
 pub mod openai;
+pub mod paste_guard;
 pub mod permissions;
 pub mod project;
 /// Declared in `krowk-client`, which every client links without the

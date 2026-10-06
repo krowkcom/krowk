@@ -1,0 +1,5 @@
+@hook-bash "gh pr comment 12 --body 'see https://krowk.com/a/art_0123456789abcdefghijklmn'"
+@hook-bash "gh pr comment 12 --body '**Cart** · [View preview ↗](https://krowk.com/a/art_0123456789abcdefghijklmn)'"
+{"method":"item/started","params":{"item":{"type":"agentMessage","id":"msg-p","text":""},"threadId":"{{THREAD}}","turnId":"{{TURN}}","startedAtMs":1}}
+{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg-p","text":"Posted the block."},"threadId":"{{THREAD}}","turnId":"{{TURN}}","completedAtMs":2}}
+{"method":"turn/completed","params":{"threadId":"{{THREAD}}","turn":{"id":"{{TURN}}","items":[],"status":"completed","error":null}}}

@@ -96,6 +96,7 @@ release-check: ## Validate the release layout, the npm launchers and the install
 	bash -n scripts/dist.sh
 	node --check npm/krowk/bin/krowk.js
 	node --check npm/mcp/bin/krowk-mcp.js
+	node scripts/descriptions_check.mjs
 	# The installer downloads what this file produces, so it belongs to the
 	# release pipeline rather than to `check`: it needs python3,
 	# which a plain test run has no business requiring.

@@ -639,6 +639,12 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
         Ok(d) => d,
         Err(e) => return e,
     };
+    // The shape of a paste, not a permission: held in every mode.
+    if let crate::permissions::Access::Bash(command) = &call.access
+        && let Some(why) = crate::paste_guard::refusal(command, env.cwd)
+    {
+        return (why, true);
+    }
     let pre = hooks.run(hooks::Event::PreToolUse, Some(&claude), json!({"tool_name": claude, "tool_input": tool_input})).await;
     if let Some(why) = pre.block {
         return (format!("{name} was not run: a PreToolUse hook blocked it: {why}"), true);
