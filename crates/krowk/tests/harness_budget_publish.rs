@@ -222,7 +222,7 @@ fn r_evid_1_publish_pushes_a_screenshot_tagged_with_the_session_under_its_run() 
     assert!(said.contains(&format!("Grouped under run {run}")), "{said}");
 
     // The artifact carries the session, and belongs to the session's run.
-    let shown: Value = serde_json::from_slice(&b.krowk(&["uploads", "show", &slug, "--json"]).stdout).unwrap();
+    let shown: Value = serde_json::from_slice(&b.krowk(&["artifacts", "show", &slug, "--json"]).stdout).unwrap();
     let artifact = &shown["data"]["artifacts"][0];
     assert_eq!(artifact["metadata"]["krowk.session"], session.as_str(), "{shown}");
     assert_eq!(artifact["metadata"]["krowk.caption"], "the fixed page");
@@ -243,7 +243,7 @@ fn r_evid_1_publish_pushes_a_screenshot_tagged_with_the_session_under_its_run() 
     let (said, _) = tool_result(&m);
     assert!(said.contains(&format!("Grouped under run {run}")), "{said}");
     assert_eq!(b.log(&session).iter().filter(|e| e["type"] == "run.opened").count(), 1);
-    let listed: Value = serde_json::from_slice(&b.krowk(&["uploads", "list", "--run", &run, "--json"]).stdout).unwrap();
+    let listed: Value = serde_json::from_slice(&b.krowk(&["artifacts", "list", "--run", &run, "--json"]).stdout).unwrap();
     assert_eq!(listed["data"]["artifacts"].as_array().map(Vec::len), Some(2), "{listed}");
 }
 

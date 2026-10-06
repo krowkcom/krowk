@@ -7,7 +7,7 @@ tty:
 **a.txt** · [View preview ↗](http://<registry>/a/<art_1>)
 exit: 0
 
-$ @tty krowk uploads list
+$ @tty krowk artifacts list
 tty:
 a.txt  5 B  http://<registry>/a/<art_1>
 exit: 0

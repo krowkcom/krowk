@@ -116,6 +116,8 @@ fn after_the_command_ran(err: &Error) -> Error {
 /// Runs one invocation and returns the process exit code.
 pub fn run(args: &[String], io: &mut Io) -> i32 {
     let (f, positionals, parsed) = flags::parse(args);
+    let typed = positionals;
+    let positionals = command_words(&f, &typed);
     let jq_given = f.given.contains("jq");
 
     // Resolved before anything is reported, the parse error included; --jq
@@ -181,7 +183,7 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     }
     // `-p` is a mode rather than a command: its arguments are the prompt.
     #[cfg(feature = "harness")]
-    if f.print && !f.help {
+    if prompting(&f) {
         let mut ctx = Ctx { io, f, format, colour, filter };
         return match prompt::run(&mut ctx, &positionals) {
             Ok(()) => exit::OK,
@@ -233,7 +235,7 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
         let topic = if positionals.first().is_some_and(|p| p == "help") { &positionals[1..] } else { &positionals[..] };
         show_help(&mut ctx, topic)
     } else {
-        reject_misplaced_sessions_flags(&ctx.f, &positionals).and_then(|()| dispatch(&mut ctx, &positionals))
+        reject_misplaced_sessions_flags(&ctx.f, &positionals).and_then(|()| dispatch(&mut ctx, &positionals, &typed))
     };
     match result {
         Ok(()) => {
@@ -252,16 +254,37 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     }
 }
 
-fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
+/// The words as the router reads them: an older name for a command put back
+/// as the one it now is — except under -p, where the words are the prompt,
+/// which reaches the model as typed.
+fn command_words(f: &Flags, typed: &[String]) -> Vec<String> {
+    if prompting(f) { typed.to_vec() } else { catalog::canonical(typed) }
+}
+
+/// Whether this is `krowk -p`, whose words are a prompt rather than a command.
+fn prompting(f: &Flags) -> bool {
+    #[cfg(feature = "harness")]
+    return f.print && !f.help;
+    #[cfg(not(feature = "harness"))]
+    {
+        let _ = f;
+        false
+    }
+}
+
+/// `p` is what was typed with any older command name put back as the one it
+/// now is; `typed` is as typed, for quoting back.
+fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> {
     let words: Vec<&str> = p.iter().map(String::as_str).collect();
     let rest = |n: usize| &p[n.min(p.len())..];
     match words.as_slice() {
         ["push", ..] => agent::upload(ctx, rest(1)),
-        ["uploads", "create", ..] => agent::upload(ctx, rest(2)),
-        ["uploads", "list", ..] => agent::uploads_list(ctx),
-        ["uploads", "show", ..] => agent::uploads_show(ctx, rest(2)),
-        ["uploads", "attach", ..] => agent::uploads_attach(ctx, rest(2)),
-        ["uploads", "delete", ..] => agent::uploads_delete(ctx, rest(2)),
+        ["artifacts", "create", ..] => agent::upload(ctx, rest(2)),
+        ["artifacts", "list", ..] => agent::uploads_list(ctx),
+        ["artifacts", "show", ..] => agent::uploads_show(ctx, rest(2)),
+        ["artifacts", "attach", ..] => agent::uploads_attach(ctx, rest(2)),
+        ["artifacts", "delete", ..] => agent::uploads_delete(ctx, rest(2)),
+        ["artifacts", "claim", ..] => agent::claim(ctx, rest(2)),
         ["runs", "start", ..] => agent::runs_start(ctx),
         ["runs", "list", ..] => agent::runs_list(ctx),
         ["runs", "show", ..] => agent::runs_show(ctx, rest(2)),
@@ -369,17 +392,23 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(feature = "harness")]
         ["devices", "remove", ..] => devices::remove(ctx, rest(2)),
         _ if missing(p) => Err(not_in_build(p)),
-        _ => Err(unknown_command(p)),
+        _ => Err(unknown_command(p, typed)),
     }
 }
 
 /// A command krowk does not have, with the nearest one it does when the
 /// words look like a typo of it.
-fn unknown_command(p: &[String]) -> Error {
+fn unknown_command(p: &[String], typed: &[String]) -> Error {
     let c = catalog::catalog(VERSION);
-    let typed = clip(p, 2).join(" ");
+    let typed = clip(typed, 2).join(" ");
     let Some(group) = c.commands.iter().find(|cmd| cmd.name == p[0] && !cmd.subcommands.is_empty()) else {
-        return match suggest::closest(&p[0], c.commands.iter().map(|cmd| cmd.name.as_str())) {
+        let near = suggest::closest(&p[0], c.commands.iter().map(|cmd| cmd.name.as_str()).chain(aliases())).map(canonical_name);
+        // A subcommand the guessed group has rides along: `artifacts list`.
+        let near = near.map(|n| match (c.find(std::slice::from_ref(&n)), p.get(1)) {
+            (Some(g), Some(sub)) if g.subcommands.iter().any(|s| &s.name == sub) => format!("{n} {sub}"),
+            _ => n,
+        });
+        return match near {
             Some(near) => fail("unknown_command", format!("`{typed}` is not a krowk command — did you mean `krowk {near}`?")),
             None => fail("unknown_command", format!("`{typed}` is not a krowk command — run `krowk --help`")),
         };
@@ -404,6 +433,16 @@ fn either(words: &[&str]) -> String {
         [one] => (*one).to_string(),
         [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
     }
+}
+
+/// The older names commands still answer to, offered as guesses too.
+fn aliases<'a>() -> impl Iterator<Item = &'a str> {
+    catalog::ALIASES.iter().map(|(old, _)| *old)
+}
+
+/// A guess named the way help names it now.
+fn canonical_name(name: &str) -> String {
+    catalog::ALIASES.iter().find(|(old, _)| *old == name).map_or(name, |(_, now)| *now).to_string()
 }
 
 /// Where the flags of what was typed are explained: the command's own help,
@@ -441,6 +480,8 @@ fn clip(s: &[String], n: usize) -> &[String] {
 
 fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
     let c = catalog::catalog(VERSION);
+    // `krowk help uploads` is the help of what `uploads` now is.
+    let (typed, topic) = (topic, &catalog::canonical(topic));
     // Help is read, by a person or an agent, so it is the page unless JSON was
     // asked for by name: piped, the whole catalog would bury the overview.
     let asked_for_json = ctx.f.json || ctx.filter.is_some() || ctx.f.format == "json";
@@ -472,8 +513,9 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
     };
     let Some(page) = page else {
         let names = c.commands.iter().map(|cmd| cmd.name.as_str()).chain(help::TOPICS.iter().map(|(n, _)| *n));
-        let typed = clip(topic, 2).join(" ");
-        return Err(match suggest::closest(&topic[0], names) {
+        let typed = clip(typed, 2).join(" ");
+        let near = suggest::closest(&topic[0], names.chain(aliases())).map(canonical_name);
+        return Err(match near {
             Some(near) => fail("unknown_command", format!("`{typed}` is not a krowk command or help topic — did you mean `krowk help {near}`?")),
             None => fail("unknown_command", format!("`{typed}` is not a krowk command or help topic — run `krowk help`")),
         });
@@ -649,4 +691,30 @@ pub(crate) fn interactive(ctx: &Ctx) -> bool {
 
 fn in_ci(ctx: &Ctx) -> bool {
     krowk_api::truthy(&ctx.env("CI")) || !ctx.env("GITHUB_ACTIONS").is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(line: &str) -> Vec<String> {
+        line.split(' ').map(String::from).collect()
+    }
+
+    #[test]
+    fn an_older_command_name_is_routed_as_the_new_one_but_a_prompt_is_left_as_typed() {
+        let (f, typed, _) = flags::parse(&words("uploads list"));
+        assert_eq!(command_words(&f, &typed), words("artifacts list"));
+        #[cfg(feature = "harness")]
+        {
+            let (f, typed, _) = flags::parse(&words("-p uploads are broken"));
+            assert_eq!(command_words(&f, &typed), words("uploads are broken"));
+        }
+    }
+
+    #[test]
+    fn an_unknown_subcommand_is_quoted_as_typed() {
+        let e = unknown_command(&words("artifacts bogus"), &words("uploads bogus"));
+        assert!(e.fix().starts_with("`uploads bogus` is not a krowk command"), "{}", e.fix());
+    }
 }

@@ -1,0 +1,10 @@
+@registry
+@env KROWK_TOKEN=krowk_sk_test
+@file a.txt hello
+@file b.txt world
+krowk artifacts create a.txt b.txt
+krowk artifacts list
+krowk artifacts list --limit 1
+krowk artifacts list --format human
+krowk artifacts list --format markdown
+krowk artifacts list --format url

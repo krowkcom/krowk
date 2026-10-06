@@ -21,6 +21,6 @@ krowk runs start --title claimed
 krowk claim {ART2} {TOKEN2} --run {RUN}
 @tty krowk claim {ART2} {TOKEN2}
 @unenv KROWK_TOKEN
-krowk uploads delete {ART3} krowk_claim_0000000000000000000000000000000000000000000000000000000000000000
-krowk uploads delete {ART3} {TOKEN3}
-krowk uploads delete {ART3} {TOKEN3}
+krowk artifacts delete {ART3} krowk_claim_0000000000000000000000000000000000000000000000000000000000000000
+krowk artifacts delete {ART3} {TOKEN3}
+krowk artifacts delete {ART3} {TOKEN3}

@@ -24,7 +24,7 @@ Agent
 Publish
   push          Upload files, get a link for each
   runs          Group uploads under a run
-  uploads       List, show, attach or delete uploads
+  artifacts     Create, list, show, attach, delete or claim artifacts
   claim         Keep an anonymous upload past expiry
 
 Account
@@ -172,12 +172,12 @@ stdout:
       ]
     },
     {
-      "name": "uploads",
-      "summary": "List, show, attach or delete uploads",
+      "name": "artifacts",
+      "summary": "Create, list, show, attach, delete or claim artifacts",
       "subcommands": [
         {
           "name": "create",
-          "usage": "krowk uploads create <file...> [flags]",
+          "usage": "krowk artifacts create <file...> [flags]",
           "summary": "Upload files: the long form of `krowk push`",
           "args": [
             {
@@ -288,8 +288,8 @@ stdout:
         },
         {
           "name": "list",
-          "usage": "krowk uploads list [flags]",
-          "summary": "List uploads, newest first: a run's, or the workspace's",
+          "usage": "krowk artifacts list [flags]",
+          "summary": "List artifacts, newest first: a run's, or the workspace's",
           "flags": [
             {
               "name": "limit",
@@ -313,7 +313,7 @@ stdout:
         },
         {
           "name": "show",
-          "usage": "krowk uploads show <artifact>",
+          "usage": "krowk artifacts show <artifact>",
           "summary": "Read one artifact back",
           "args": [
             {
@@ -325,8 +325,8 @@ stdout:
         },
         {
           "name": "attach",
-          "usage": "krowk uploads attach <art> --run <run>",
-          "summary": "Put an upload under a run afterwards",
+          "usage": "krowk artifacts attach <art> --run <run>",
+          "summary": "Put an artifact under a run afterwards",
           "args": [
             {
               "name": "artifact",
@@ -345,8 +345,8 @@ stdout:
         },
         {
           "name": "delete",
-          "usage": "krowk uploads delete <art> [token]",
-          "summary": "Take an upload down — immediate, cannot be undone",
+          "usage": "krowk artifacts delete <art> [token]",
+          "summary": "Take an artifact down — immediate, cannot be undone",
           "args": [
             {
               "name": "artifact",
@@ -357,6 +357,31 @@ stdout:
               "name": "claim-token",
               "summary": "The claim token an anonymous upload came back with, when there is no key to authorise the takedown",
               "required": false
+            }
+          ]
+        },
+        {
+          "name": "claim",
+          "usage": "krowk artifacts claim <art> <token> [--run]",
+          "summary": "The long form of `krowk claim`",
+          "args": [
+            {
+              "name": "artifact",
+              "summary": "The artifact slug, or a link carrying it — the card page or the CDN URL",
+              "required": true
+            },
+            {
+              "name": "claim-token",
+              "summary": "The token the anonymous upload came back with",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "run",
+              "type": "string",
+              "default": "",
+              "usage": "The run to group it under while claiming — a claimed upload has none otherwise. Its slug, or a link carrying it"
             }
           ]
         }
@@ -876,7 +901,7 @@ stdout:
       "args": [
         {
           "name": "command",
-          "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
+          "summary": "The command or topic to describe, e.g. `artifacts attach` or `exit-codes`",
           "required": false
         }
       ],
@@ -1533,7 +1558,7 @@ Agent
 Publish
   push          Upload files, get a link for each
   runs          Group uploads under a run
-  uploads       List, show, attach or delete uploads
+  artifacts     Create, list, show, attach, delete or claim artifacts
   claim         Keep an anonymous upload past expiry
 
 Account
@@ -1695,12 +1720,12 @@ tty:
       ]
     },
     {
-      "name": "uploads",
-      "summary": "List, show, attach or delete uploads",
+      "name": "artifacts",
+      "summary": "Create, list, show, attach, delete or claim artifacts",
       "subcommands": [
         {
           "name": "create",
-          "usage": "krowk uploads create <file...> [flags]",
+          "usage": "krowk artifacts create <file...> [flags]",
           "summary": "Upload files: the long form of `krowk push`",
           "args": [
             {
@@ -1811,8 +1836,8 @@ tty:
         },
         {
           "name": "list",
-          "usage": "krowk uploads list [flags]",
-          "summary": "List uploads, newest first: a run's, or the workspace's",
+          "usage": "krowk artifacts list [flags]",
+          "summary": "List artifacts, newest first: a run's, or the workspace's",
           "flags": [
             {
               "name": "limit",
@@ -1836,7 +1861,7 @@ tty:
         },
         {
           "name": "show",
-          "usage": "krowk uploads show <artifact>",
+          "usage": "krowk artifacts show <artifact>",
           "summary": "Read one artifact back",
           "args": [
             {
@@ -1848,8 +1873,8 @@ tty:
         },
         {
           "name": "attach",
-          "usage": "krowk uploads attach <art> --run <run>",
-          "summary": "Put an upload under a run afterwards",
+          "usage": "krowk artifacts attach <art> --run <run>",
+          "summary": "Put an artifact under a run afterwards",
           "args": [
             {
               "name": "artifact",
@@ -1868,8 +1893,8 @@ tty:
         },
         {
           "name": "delete",
-          "usage": "krowk uploads delete <art> [token]",
-          "summary": "Take an upload down — immediate, cannot be undone",
+          "usage": "krowk artifacts delete <art> [token]",
+          "summary": "Take an artifact down — immediate, cannot be undone",
           "args": [
             {
               "name": "artifact",
@@ -1880,6 +1905,31 @@ tty:
               "name": "claim-token",
               "summary": "The claim token an anonymous upload came back with, when there is no key to authorise the takedown",
               "required": false
+            }
+          ]
+        },
+        {
+          "name": "claim",
+          "usage": "krowk artifacts claim <art> <token> [--run]",
+          "summary": "The long form of `krowk claim`",
+          "args": [
+            {
+              "name": "artifact",
+              "summary": "The artifact slug, or a link carrying it — the card page or the CDN URL",
+              "required": true
+            },
+            {
+              "name": "claim-token",
+              "summary": "The token the anonymous upload came back with",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "run",
+              "type": "string",
+              "default": "",
+              "usage": "The run to group it under while claiming — a claimed upload has none otherwise. Its slug, or a link carrying it"
             }
           ]
         }
@@ -2399,7 +2449,7 @@ tty:
       "args": [
         {
           "name": "command",
-          "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
+          "summary": "The command or topic to describe, e.g. `artifacts attach` or `exit-codes`",
           "required": false
         }
       ],

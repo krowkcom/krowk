@@ -33,13 +33,13 @@ fn wire_shape_matches_the_registrys_routes() {
     let pushed = krowk.ok(&["push", &file], true);
     let art = pushed["data"]["artifacts"][0]["slug"].as_str().unwrap().to_string();
     let run = pushed["data"]["run"]["slug"].as_str().unwrap().to_string();
-    krowk.ok(&["uploads", "list"], true);
-    krowk.ok(&["uploads", "show", &art], true);
+    krowk.ok(&["artifacts", "list"], true);
+    krowk.ok(&["artifacts", "show", &art], true);
     krowk.ok(&["runs", "list"], true);
     krowk.ok(&["runs", "show", &run], true);
     // A run's artifacts are a collection of the run, not a filter on the
     // listing above — so --run is a different endpoint, not a query parameter.
-    krowk.ok(&["uploads", "list", &format!("--run={run}")], true);
+    krowk.ok(&["artifacts", "list", &format!("--run={run}")], true);
     krowk.run(&["doctor"], true);
 
     // Claiming needs an anonymous artifact to claim.
@@ -47,9 +47,9 @@ fn wire_shape_matches_the_registrys_routes() {
     let anon = &anonymous["data"]["artifacts"][0];
     let (slug, token) = (anon["slug"].as_str().unwrap().to_string(), anon["claim_token"].as_str().unwrap().to_string());
     krowk.ok(&["claim", &slug, &token], true);
-    krowk.ok(&["uploads", "attach", &slug, &format!("--run={run}")], true);
+    krowk.ok(&["artifacts", "attach", &slug, &format!("--run={run}")], true);
     // Taking it down again: a claimed artifact answers to the key that holds it.
-    krowk.ok(&["uploads", "delete", &slug], true);
+    krowk.ok(&["artifacts", "delete", &slug], true);
 
     // A browser login, approved by the proxy the instant it is opened so the
     // poll happens once. --no-browser: a test must not reach for the desktop.

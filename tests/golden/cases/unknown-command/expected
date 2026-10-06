@@ -10,13 +10,13 @@ stderr:
 }
 exit: 1
 
-$ krowk uploads bogus
+$ krowk artifacts bogus
 stderr:
 {
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`uploads bogus` is not a krowk command; the uploads command takes create, list, show, attach or delete; run `krowk help uploads`",
+    "fix": "`artifacts bogus` is not a krowk command; the artifacts command takes create, list, show, attach, delete or claim; run `krowk help artifacts`",
     "retryable": false
   }
 }
@@ -70,13 +70,13 @@ stderr:
 }
 exit: 1
 
-$ krowk uploads lsit
+$ krowk artifacts lsit
 stderr:
 {
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`uploads lsit` is not a krowk command — did you mean `krowk uploads list`?",
+    "fix": "`artifacts lsit` is not a krowk command — did you mean `krowk artifacts list`?",
     "retryable": false
   }
 }

@@ -284,16 +284,16 @@ pub(crate) fn uploads_list(ctx: &mut Ctx) -> Result<(), Error> {
 }
 
 pub(crate) fn uploads_show(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
-    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass the artifact: `krowk uploads show art_...`")?;
+    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass the artifact: `krowk artifacts show art_...`")?;
     let artifact = new_client(ctx)?.show_artifact(&slug)?;
     let rendered = output::artifact(&artifact, ctx.format, ctx.f.quiet, ctx.colour, &now());
     ctx.emit(&rendered)
 }
 
 pub(crate) fn uploads_attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
-    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass the artifact: `krowk uploads attach art_... --run run_...`")?;
+    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass the artifact: `krowk artifacts attach art_... --run run_...`")?;
     if ctx.f.run.trim().is_empty() {
-        return Err(fail("no_run", format!("pass the run to attach it to: `krowk uploads attach {slug} --run run_...`")));
+        return Err(fail("no_run", format!("pass the run to attach it to: `krowk artifacts attach {slug} --run run_...`")));
     }
     run_flag(ctx)?;
     let artifact = new_client(ctx)?.attach_run(&slug, &ctx.f.run)?;
@@ -305,7 +305,7 @@ pub(crate) fn uploads_attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error
 /// is reached for when a secret was published by accident. A key speaks for
 /// its workspace; a claim token for the one anonymous upload it came with.
 pub(crate) fn uploads_delete(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
-    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass the artifact: `krowk uploads delete art_...`")?;
+    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass the artifact: `krowk artifacts delete art_...`")?;
     let token = args.get(1).map(|t| t.trim().to_string()).unwrap_or_default();
     // A second word that is not a token would withhold the key and turn an
     // authorised takedown into an unauthorised one; it is not quoted back,
@@ -329,7 +329,7 @@ pub(crate) fn uploads_delete(ctx: &mut Ctx, args: &[String]) -> Result<(), Error
         return Err(fail(
             "missing_claim",
             format!(
-                "taking down an anonymous upload needs the claim token it came back with: `krowk uploads delete {slug} krowk_claim_...` — with an API key, the key is authority enough"
+                "taking down an anonymous upload needs the claim token it came back with: `krowk artifacts delete {slug} krowk_claim_...` — with an API key, the key is authority enough"
             ),
         ));
     }
@@ -395,7 +395,7 @@ pub(crate) fn claim(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         artifact = client.attach_run(&artifact.slug, &ctx.f.run).map_err(|mut e| {
             e.body.insert("claimed".into(), json!(artifact.slug));
             let retry = format!(
-                "the upload is claimed and kept, only the run is not attached — retry `krowk uploads attach {} --run <run>` with a run this workspace holds",
+                "the upload is claimed and kept, only the run is not attached — retry `krowk artifacts attach {} --run <run>` with a run this workspace holds",
                 artifact.slug
             );
             let fix = match e.fix() {

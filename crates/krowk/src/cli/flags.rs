@@ -197,7 +197,7 @@ fn unknown_flag(arg: &str, name: &str, positionals: &[String]) -> String {
     let typed = arg.split_once('=').map_or(arg, |(flag, _)| flag);
     let c = catalog::catalog("");
     // Before any command is typed, any flag might be the one meant.
-    let candidates = match c.find(positionals) {
+    let candidates = match c.find(&catalog::canonical(positionals)) {
         Some(cmd) => cmd.flags.into_iter().chain(c.global_flags.iter().cloned()).collect(),
         None => c.all_flags(),
     };

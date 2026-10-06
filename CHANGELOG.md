@@ -133,6 +133,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **Uploads are now `krowk artifacts`, matching the API and the JSON.**
+  `krowk artifacts create | list | show | attach | delete | claim` is the
+  full set, named as `/v1/artifacts` and `data.artifacts` already were.
+  `krowk push` is the short form of `artifacts create`, and `krowk claim`
+  of `artifacts claim`; both stay and work as before. `krowk uploads …`
+  still runs every command it did, and `krowk help uploads` shows the
+  artifacts help, but help no longer lists it. Breadcrumbs and error fixes
+  now name `krowk artifacts …`, so an agent that copies them gets the new
+  spelling.
 - **krowk's messages read like sentences, and failures say what to try.**
   An error leads with what went wrong in bold, puts the command that fixes
   it on a `Try:` line of its own, and ends with its code. It no longer drops

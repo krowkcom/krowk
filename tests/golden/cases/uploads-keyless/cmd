@@ -1,6 +1,0 @@
-@registry
-@file a.txt hello
-krowk uploads create a.txt --quiet
-krowk uploads list
-krowk uploads show art_000000000000000000000000
-krowk uploads delete art_000000000000000000000000

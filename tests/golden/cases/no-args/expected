@@ -16,7 +16,7 @@ Examples
 Publish
   push          Upload files, get a link for each
   runs          Group uploads under a run
-  uploads       List, show, attach or delete uploads
+  artifacts     Create, list, show, attach, delete or claim artifacts
   claim         Keep an anonymous upload past expiry
 
 Account

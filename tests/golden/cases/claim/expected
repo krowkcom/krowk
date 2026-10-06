@@ -279,7 +279,7 @@ stdout:
     },
     {
       "action": "group under a run",
-      "cmd": "krowk uploads attach <art_1> --run <run>",
+      "cmd": "krowk artifacts attach <art_1> --run <run>",
       "description": "a claimed upload belongs to a workspace but to no run, and a run is where the pull request, commit and session are recorded — `krowk runs start` opens one, and its slug goes in place of <run>"
     }
   ]
@@ -346,7 +346,7 @@ stdout:
     },
     {
       "action": "group under a run",
-      "cmd": "krowk uploads attach <art_1> --run <run>",
+      "cmd": "krowk artifacts attach <art_1> --run <run>",
       "description": "a claimed upload belongs to a workspace but to no run, and a run is where the pull request, commit and session are recorded — `krowk runs start` opens one, and its slug goes in place of <run>"
     }
   ]
@@ -472,7 +472,7 @@ tty:
 \e[2m  5 B · run <run_1> · kept for good\e[0m
 exit: 0
 
-$ krowk uploads delete {ART3} <claim_4>
+$ krowk artifacts delete {ART3} <claim_4>
 stderr:
 {
   "ok": false,
@@ -486,7 +486,7 @@ stderr:
 }
 exit: 2
 
-$ krowk uploads delete {ART3} {TOKEN3}
+$ krowk artifacts delete {ART3} {TOKEN3}
 stdout:
 {
   "ok": true,
@@ -498,7 +498,7 @@ stdout:
 }
 exit: 0
 
-$ krowk uploads delete {ART3} {TOKEN3}
+$ krowk artifacts delete {ART3} {TOKEN3}
 stdout:
 {
   "ok": true,
