@@ -192,7 +192,13 @@ fn plain_copy(from: &Path, to: &Path) -> Result<(), String> {
     if !meta.is_file() {
         return Err("it is not a regular file".into());
     }
-    let mut dst = std::fs::OpenOptions::new().write(true).create_new(true).open(to).map_err(|e| e.to_string())?;
+    // Made with the source's mode, not the umask's: a 0600 `.env` must never
+    // sit readable by others while its contents are written.
+    let mut create = std::fs::OpenOptions::new();
+    create.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut create, std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777);
+    let mut dst = create.open(to).map_err(|e| e.to_string())?;
     let done = std::io::copy(&mut src, &mut dst).and_then(|_| meta.modified()).and_then(|m| dst.set_modified(m)).and_then(|()| dst.set_permissions(meta.permissions()));
     if let Err(e) = done {
         drop(dst);
