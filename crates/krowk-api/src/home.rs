@@ -11,6 +11,7 @@
 //! sessions/          krowk.db and each session's log
 //! cache/             the models.dev listing, the update check
 //! readiness/         where a vendor is asked whether it is signed in
+//! no-hooks/          empty: where krowk's own git looks for hooks
 //! ```
 //!
 //! The home is `0700` and made on first need. One that is a symlink, or
@@ -31,6 +32,8 @@ pub const SESSIONS: &str = "sessions";
 pub const CACHE: &str = "cache";
 pub const READINESS: &str = "readiness";
 pub const LEDGER: &str = "ledger";
+/// Kept empty: what `crate::git` points `core.hooksPath` at.
+pub const NO_HOOKS: &str = "no-hooks";
 /// Marks a home whose old-layout check is done (`migrate::note_old`).
 pub const CHECKED: &str = ".old-layout-checked";
 

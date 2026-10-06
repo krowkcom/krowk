@@ -26,12 +26,8 @@ pub struct Pr {
 /// The branch checked out in `dir`: none outside a repository or on a
 /// detached head.
 pub fn branch(dir: &Path) -> String {
-    Command::new("git")
-        .args(["-c", "core.fsmonitor=false", "--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
+    krowk_api::git::query(dir)
+        .and_then(|mut c| c.args(["rev-parse", "--abbrev-ref", "HEAD"]).stderr(Stdio::null()).output())
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())

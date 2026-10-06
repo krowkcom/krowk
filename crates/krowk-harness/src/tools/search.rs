@@ -75,31 +75,26 @@ fn walk(root: &Path, deadline: Instant) -> Walk {
     w
 }
 
-/// git, run so that nothing in the repository's config runs with it:
-/// `core.fsmonitor` names a command git executes on `ls-files` and
-/// `check-ignore`, and a repository is a directory the model may have been
-/// handed. No optional locks either: a search never writes the index.
-fn git(root: &Path) -> std::process::Command {
-    let mut c = std::process::Command::new("git");
-    c.args(["-c", "core.fsmonitor=false", "--no-optional-locks"]).current_dir(root).stdin(std::process::Stdio::null());
-    c
+/// git, run so that neither its fsmonitor (which `ls-files` and
+/// `check-ignore` would execute) nor a hook runs with it: a repository is a
+/// directory the model may have been handed. No optional locks either: a
+/// search never writes the index (`krowk_api::git`).
+fn git(root: &Path) -> std::io::Result<std::process::Command> {
+    krowk_api::git::query(root)
 }
 
 /// Whether git ignores `root` itself, or a directory it is in.
 fn ignored(root: &Path) -> bool {
     git(root)
-        .arg("check-ignore")
-        .arg("-q")
-        .arg("--")
-        .arg(root)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .and_then(|mut c| {
+            c.arg("check-ignore").arg("-q").arg("--").arg(root).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status()
+        })
         .is_ok_and(|s| s.success())
 }
 
 fn git_files(root: &Path) -> Option<Walk> {
     let out = git(root)
+        .ok()?
         .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
         .stderr(std::process::Stdio::null())
         .output()

@@ -154,6 +154,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **krowk's own git calls now run with repository hooks, fsmonitor and
+  commit signing turned off.** The git krowk runs itself — the branch on
+  the status line, the commit a synced session is at, the files a search
+  lists — looks for hooks in an empty directory in krowk's home
+  (`~/.krowk/no-hooks`), runs no `core.fsmonitor` command and signs
+  nothing. Filters such as git-lfs still run, as a checkout needs them.
+  Git the agent runs through its bash tool is unchanged.
 - **Uploads are now `krowk artifacts`, matching the API and the JSON.**
   `krowk artifacts create | list | show | attach | delete | claim` is the
   full set, named as `/v1/artifacts` and `data.artifacts` already were.
