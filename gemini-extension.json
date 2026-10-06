@@ -1,7 +1,7 @@
 {
   "name": "krowk",
   "version": "0.12.1",
-  "description": "Publishing from Krowk, the coding agent harness, for Gemini CLI: the krowk MCP server turns a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp and show inline in GitHub and Linear.",
+  "description": "Publishing from Krowk, the coding agent harness, for Gemini CLI: the krowk MCP server turns a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {
     "krowk": {

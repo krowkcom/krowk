@@ -5,14 +5,15 @@
 import { readFileSync } from "node:fs";
 
 const limits = [
-  ["server.json", 100],
-  ["gemini-extension.json", 250],
-  ["npm/mcp/package.json", 250],
-  [".claude-plugin/plugin.json", 250],
+  ["server.json", (m) => m.description, 100],
+  ["gemini-extension.json", (m) => m.description, 250],
+  ["npm/mcp/package.json", (m) => m.description, 250],
+  [".claude-plugin/plugin.json", (m) => m.description, 250],
+  [".claude-plugin/marketplace.json", (m) => m.plugins?.[0]?.description, 250],
 ];
 let failed = false;
-for (const [file, max] of limits) {
-  const { description } = JSON.parse(readFileSync(file, "utf8"));
+for (const [file, read, max] of limits) {
+  const description = read(JSON.parse(readFileSync(file, "utf8")));
   // Code points, as JSON Schema's maxLength counts them.
   const length = typeof description === "string" ? [...description].length : 0;
   if (length === 0 || length > max) {

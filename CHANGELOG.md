@@ -106,8 +106,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   uploader. Each now says that it's Krowk's publishing, for Gemini CLI or
   for any MCP client: screenshots, recordings, diffs and logs as links. With
   the Claude Code plugin's, they no longer say links unfurl in GitHub and
-  Linear, which don't unfurl links. Those links unfurl in Slack and Basecamp
-  and show inline in GitHub and Linear. The `server.json` here was over the
+  Linear, which don't unfurl links. Those links unfurl in Slack and Basecamp;
+  in GitHub and Linear, images show inline. The `server.json` here was over the
   MCP registry's 100-character description limit and didn't validate against
   its schema; it's within it now. `make release-check` and the release
   workflow now hold it to that limit, and the other descriptions to one line.
