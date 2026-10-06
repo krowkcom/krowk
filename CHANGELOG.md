@@ -39,12 +39,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   submodules inside submodules too, at the commits the worktree records.
   One you have initialised in your main checkout is copied from there,
   with no download; its `origin` stays its own URL. One you haven't is
-  cloned from its URL. A submodule that can't be initialised stays empty,
-  and the subagent's first prompt says which and what git said. URLs from
-  `.gitmodules` that would run a command (`ext::`) or copy a repository from
-  a local path are refused. The agent can edit files in a submodule but
-  not commit in it. Removing the worktree removes its submodules' git
-  data too.
+  cloned from its URL, with no terminal to prompt on and a 2-minute limit.
+  A submodule that can't be initialised stays empty, and the subagent's
+  first prompt says which and what git said. URLs from `.gitmodules` that
+  would run a command (`ext::`) or copy a repository from a local path are
+  refused. Your repository's config is not changed, so a submodule you
+  deinitialised stays that way in your checkout. The agent can edit files
+  in a submodule but not commit in it. An edit or a new file in any
+  submodule, at any depth, keeps the worktree; an unchanged one is removed
+  with its submodules' git data.
 
 - **An agent can commit inside a worktree krowk made for it.** When a
   sandboxed session runs in a worktree under

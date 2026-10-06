@@ -171,7 +171,21 @@ const SUBMODULE_DEPTH: usize = 8;
 ///   clone has no alternates, so a `gc` on either side cannot take objects
 ///   the other needs. If that clone lacks the commit, it is fetched from
 ///   the submodule's own URL.
-/// - **From its URL** otherwise, as `git submodule update --init` would.
+/// - **From its URL** otherwise, as `git submodule update --init` would,
+///   in a session of its own with no terminal (ssh's host-key and
+///   passphrase prompts open `/dev/tty`, which `GIT_TERMINAL_PROMPT` does
+///   not cover) and stopped after `SUBMODULE_TIMEOUT`.
+///
+/// The repository's config is shared with the main checkout, so a
+/// submodule of the worktree's own is not `git submodule init`ed there:
+/// that would write `submodule.<name>.url` and `.active` for the main
+/// checkout too, bring back one the person deinitialised, outlive the
+/// worktree, and race a creation beside it on `config.lock`. Its URL (the
+/// config's when the person set one, else `.gitmodules`'s, a relative one
+/// resolved against the repository's `origin`) and `active` are given to
+/// the one `submodule update` instead. A submodule's own submodules are
+/// `init`ed: their config is the submodule's, in the worktree's admin
+/// directory.
 ///
 /// Its git directory lands in the worktree's admin directory
 /// (`<common>/worktrees/<name>/modules/`), which the sandbox binds
@@ -188,7 +202,38 @@ const SUBMODULE_DEPTH: usize = 8;
 fn submodules(p: &Prepare<'_>) -> Option<String> {
     let mut failed = Vec::new();
     init_submodules(&p.worktree.path, &p.worktree.main, "", 0, &mut failed);
-    (!failed.is_empty()).then(|| format!("these submodules could not be initialised and are empty directories here:\n{}", failed.join("\n")))
+    (!failed.is_empty()).then(|| failure_note(&failed))
+}
+
+/// The note for the submodules in `failed`: at most `MAX_NOTED` of them,
+/// each entry cut to `MAX_NOTE_LINE`.
+fn failure_note(failed: &[String]) -> String {
+    let more = failed.len().saturating_sub(MAX_NOTED);
+    let mut lines: Vec<String> = failed.iter().take(MAX_NOTED).map(|l| bounded(l, MAX_NOTE_LINE)).collect();
+    if more > 0 {
+        lines.push(format!("- and {more} more"));
+    }
+    format!("these submodules could not be initialised and are empty directories here:\n{}", lines.join("\n"))
+}
+
+/// How many failed submodules a note names, and how long each one's
+/// entry may be: a repository with hundreds must not fill the prompt.
+const MAX_NOTED: usize = 20;
+const MAX_NOTE_LINE: usize = 300;
+
+/// How long one submodule may take to come from its URL.
+const SUBMODULE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// `text` cut to `max` bytes at a character boundary, marked when cut.
+fn bounded(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
 }
 
 /// Initialises the submodules of the checkout `dir`, whose counterpart in
@@ -209,7 +254,7 @@ fn init_submodules(dir: &Path, main: &Path, prefix: &str, depth: usize, failed: 
     };
     for (name, path) in listed {
         let shown = format!("{prefix}{path}");
-        match init_submodule(dir, &main.join(&path), &name, &path) {
+        match init_submodule(dir, &main.join(&path), &name, &path, depth == 0) {
             Ok(()) => init_submodules(&dir.join(&path), &main.join(&path), &format!("{shown}/"), depth + 1, failed),
             Err(e) => failed.push(format!("- {shown}: {}", last_lines(&e.to_string()))),
         }
@@ -244,37 +289,99 @@ fn listed_submodules(dir: &Path) -> Result<Vec<(String, String)>, Error> {
 
 /// The submodule `name` at `path` in `dir`, initialised and checked out:
 /// from `main`, its counterpart in the main checkout, when that is
-/// initialised, else from its URL (see `submodules`).
-fn init_submodule(dir: &Path, main: &Path, name: &str, path: &str) -> Result<(), Error> {
-    read(git(dir)?.args(["submodule", "init", "--quiet", "--", path]), "submodule init")?;
+/// initialised, else from its URL (see `submodules`). `top` for one of
+/// the worktree's own, whose config is shared with the main checkout and
+/// so is not written.
+fn init_submodule(dir: &Path, main: &Path, name: &str, path: &str, top: bool) -> Result<(), Error> {
     let url_key = format!("submodule.{name}.url");
+    let url = if top {
+        top_url(dir, name)?
+    } else {
+        read(git(dir)?.args(["submodule", "init", "--quiet", "--", path]), "submodule init")?;
+        read(query(dir)?.args(["config", "--get", &url_key]), "config")?
+    };
+    let active = (format!("submodule.{name}.active"), "true");
     if let Some(local) = own_git_dir(main) {
-        let cloned = update(dir, path, &[(&url_key, local.as_os_str()), ("protocol.file.allow", "always".as_ref())]);
-        let url = read(query(dir)?.args(["config", "--get", &url_key]), "config");
+        let cloned = update(dir, path, &[(&url_key, local.as_os_str()), (&active.0, active.1.as_ref()), ("protocol.file.allow", "always".as_ref())], false);
         // Only a repository of its own: an empty directory would be the
         // worktree's, and its config the person's.
-        if let (Some(own), Ok(url)) = (own_git_dir(&dir.join(path)), url) {
+        if let Some(own) = own_git_dir(&dir.join(path)) {
             read(git(dir)?.arg("config").arg("--file").arg(own.join("config")).args(["remote.origin.url", &url]), "config")?;
         }
         if cloned.is_ok() {
             return Ok(());
         }
     }
-    update(dir, path, &[("protocol.file.allow", "user".as_ref())])
+    update(dir, path, &[(&url_key, url.as_ref()), (&active.0, active.1.as_ref()), ("protocol.file.allow", "user".as_ref())], true)
+}
+
+/// The URL of the worktree's own submodule `name`, as `submodule init`
+/// would record it: the config's when set, else `.gitmodules`'s, resolved
+/// against `origin` when relative.
+fn top_url(dir: &Path, name: &str) -> Result<String, Error> {
+    let key = format!("submodule.{name}.url");
+    if let Ok(url) = read(query(dir)?.args(["config", "--get", &key]), "config") {
+        return Ok(url);
+    }
+    let listed = read(query(dir)?.args(["config", "--no-includes", "--file"]).arg(dir.join(".gitmodules")).args(["--get", &key]), "config")?;
+    if !listed.starts_with("./") && !listed.starts_with("../") {
+        return Ok(listed);
+    }
+    // No origin: relative to the superproject's own directory, as git
+    // does.
+    let base = read(query(dir)?.args(["config", "--get", "remote.origin.url"]), "config").unwrap_or_else(|_| dir.to_string_lossy().into_owned());
+    Ok(resolve_url(&base, &listed))
+}
+
+/// `url`, starting `./` or `../`, resolved against `base` as git resolves a
+/// submodule's: each `../` drops one component of `base`, the host part of
+/// an scp-like `host:path` kept.
+fn resolve_url(base: &str, url: &str) -> String {
+    let mut base = base.trim_end_matches('/').to_string();
+    let mut rest = url;
+    let mut sep = "/";
+    loop {
+        if let Some(r) = rest.strip_prefix("./") {
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("../") {
+            rest = r;
+            match base.rfind(['/', ':']) {
+                Some(i) => {
+                    sep = if base[i..].starts_with(':') { ":" } else { "/" };
+                    base.truncate(i);
+                }
+                None => base.clear(),
+            }
+        } else {
+            break;
+        }
+    }
+    format!("{base}{sep}{rest}")
 }
 
 /// `git submodule update --checkout` of `path` in `dir`, `ext::` refused,
 /// with `config` on top, passed as `GIT_CONFIG_KEY_<n>` so a submodule's
 /// name needs no quoting. No credential prompt: nobody is at the terminal
-/// for it, and it would draw over krowk's.
-fn update(dir: &Path, path: &str, config: &[(&str, &std::ffi::OsStr)]) -> Result<(), Error> {
+/// for it, and it would draw over krowk's. `remote` for one that may reach
+/// the network: with no terminal, and stopped after `SUBMODULE_TIMEOUT`.
+fn update(dir: &Path, path: &str, config: &[(&str, &std::ffi::OsStr)], remote: bool) -> Result<(), Error> {
     let mut c = git(dir)?;
     let config: Vec<(&str, &std::ffi::OsStr)> = std::iter::once(("protocol.ext.allow", "never".as_ref())).chain(config.iter().copied()).collect();
     for (i, (key, value)) in config.iter().enumerate() {
         c.env(format!("GIT_CONFIG_KEY_{i}"), key).env(format!("GIT_CONFIG_VALUE_{i}"), value);
     }
     c.env("GIT_CONFIG_COUNT", config.len().to_string()).env("GIT_TERMINAL_PROMPT", "0");
-    read(c.args(["submodule", "update", "--quiet", "--checkout", "--", path]), "submodule update").map(drop)
+    c.args(["submodule", "update", "--quiet", "--checkout", "--", path]);
+    if !remote {
+        return read(&mut c, "submodule update").map(drop);
+    }
+    let within = crate::readiness::Probe { dir: dir.to_path_buf(), within: SUBMODULE_TIMEOUT };
+    match crate::readiness::output_detached(&mut c, &within) {
+        Ok(Some(out)) if out.status.success() => Ok(()),
+        Ok(Some(out)) => Err(Error::Failed(format!("git submodule update: {}", String::from_utf8_lossy(&out.stderr).trim()))),
+        Ok(None) => Err(Error::Failed(format!("git submodule update: stopped after {} s", SUBMODULE_TIMEOUT.as_secs()))),
+        Err(e) => Err(Error::Failed(format!("git submodule update: {e}"))),
+    }
 }
 
 /// The git directory of the repository whose top is `dir`: none when `dir`
@@ -438,11 +545,52 @@ pub fn finish(wt: &Worktree) -> Result<Finished, Error> {
 /// The worktree's HEAD, and its `git status --porcelain`: every untracked
 /// file and submodule change counted whatever the repository's config
 /// says (`status.showUntrackedFiles=no` would hide a new file, and the
-/// removal would take it).
+/// removal would take it). With submodules, each checked-out one's own
+/// status too, at any depth (`submodule_changes`).
 fn changes(wt: &Worktree) -> Result<(String, String), Error> {
     let head = read(query(&wt.path)?.args(["rev-parse", "HEAD"]), "rev-parse HEAD")?;
-    let status = read(query(&wt.path)?.args(["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]), "status")?;
+    let mut status = read(query(&wt.path)?.args(["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]), "status")?;
+    if has_submodules(&wt.path) {
+        status.push_str(&submodule_changes(&wt.path, "", 0)?);
+    }
     Ok((head, status))
+}
+
+/// Whether the worktree at `path` may have submodules checked out: what
+/// `remove` needs a `--force` for, and `changes` looks into.
+fn has_submodules(path: &Path) -> bool {
+    path.join(".gitmodules").symlink_metadata().is_ok()
+}
+
+/// The status of every submodule checked out in `dir`, and of theirs, each
+/// judged in itself with the same flags as the worktree: git's own status
+/// passes neither flag down, so a submodule's `status.showUntrackedFiles=no`
+/// would hide a new file in it, and its `.gitmodules`'
+/// `submodule.<name>.ignore=all` an edit in a submodule of its own, and the
+/// forced removal would take them. Each line is prefixed with the
+/// submodule's path. A path that is a symlink is not followed, it shows in
+/// its superproject's status; nesting past `SUBMODULE_DEPTH` is an error,
+/// so the worktree is kept.
+fn submodule_changes(dir: &Path, prefix: &str, depth: usize) -> Result<String, Error> {
+    if depth > SUBMODULE_DEPTH {
+        return Err(Error::Failed(format!("{prefix}: submodules nested more than {SUBMODULE_DEPTH} deep")));
+    }
+    let mut links: Vec<String> = gitlinks(&read(query(dir)?.args(["ls-files", "--stage", "-z"]), "ls-files")?).into_iter().collect();
+    links.sort();
+    let mut out = String::new();
+    for path in links {
+        let sub = dir.join(&path);
+        if sub.symlink_metadata().map_or(true, |m| !m.is_dir()) || own_git_dir(&sub).is_none() {
+            continue;
+        }
+        let shown = format!("{prefix}{path}/");
+        let status = read(query(&sub)?.args(["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]), "status")?;
+        for line in status.lines() {
+            out.push_str(&format!("{shown}: {line}\n"));
+        }
+        out.push_str(&submodule_changes(&sub, &shown, depth + 1)?);
+    }
+    Ok(out)
 }
 
 /// The worktree and its branch gone, under the caller's `lock`. `force`
@@ -454,7 +602,7 @@ fn remove(wt: &Worktree, force: bool) -> Result<(), Error> {
     c.args(["-c", "status.showUntrackedFiles=normal", "worktree", "remove"]);
     if force {
         c.args(["--force", "--force"]);
-    } else if wt.path.join(".gitmodules").exists() {
+    } else if has_submodules(&wt.path) {
         // git refuses to remove a worktree with submodules checked out
         // without one `--force`, which also skips its own clean check:
         // `finish` has judged it unchanged, submodules included, under
@@ -823,6 +971,10 @@ mod tests {
             git_ok(dir, &["commit", "-q", "-m", path]);
         };
         add(&mid, &inner, "inner");
+        // Hides `inner` from `mid`'s own status: a change in it must still
+        // keep the worktree.
+        git_ok(&mid, &["config", "--file", ".gitmodules", "submodule.inner.ignore", "all"]);
+        git_ok(&mid, &["commit", "-q", "-am", "ignore inner"]);
         add(&main, &mid, "mid");
         git_ok(&main, &["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "-q"]);
         (base, main, root)
@@ -842,9 +994,11 @@ mod tests {
         let url = git_ok(&main, &["config", "--get", "submodule.mid.url"]);
         std::fs::rename(base.join("mid"), base.join("mid-gone")).unwrap();
         std::fs::rename(base.join("inner"), base.join("inner-gone")).unwrap();
+        let config = std::fs::read(main.join(".git/config")).unwrap();
         let w = create(&main, &root, "s1").unwrap();
         assert!(std::fs::read_dir(w.path.join("mid")).unwrap().next().is_none(), "git worktree add leaves it empty");
         assert_eq!(prepare(&Prepare { worktree: &w }), Vec::<String>::new());
+        assert_eq!(std::fs::read(main.join(".git/config")).unwrap(), config, "the shared config is not written");
         assert_eq!(std::fs::read_to_string(w.path.join("mid/f")).unwrap(), "mid\n");
         assert_eq!(std::fs::read_to_string(w.path.join("mid/inner/f")).unwrap(), "inner\n");
         let status = git_ok(&w.path, &["submodule", "status", "--recursive"]);
@@ -864,11 +1018,23 @@ mod tests {
         assert_eq!(git_ok(&main, &["worktree", "list", "--porcelain"]).lines().filter(|l| l.starts_with("worktree ")).count(), 1);
         assert_eq!(git_ok(&main, &["branch", "--list", "krowk/*"]), "");
 
-        // A submodule edited in the worktree is a change: it is kept.
+        assert_eq!(std::fs::read(main.join(".git/config")).unwrap(), config);
+
+        // An edit in `inner`, which `mid`'s `.gitmodules` ignores, is a
+        // change: the worktree is kept, not force-removed.
         let w = create(&main, &root, "s2").unwrap();
         prepare(&Prepare { worktree: &w });
         std::fs::write(w.path.join("mid/inner/f"), "changed\n").unwrap();
         assert_eq!(finish(&w).unwrap(), Finished::Kept { commits: 0, dirty: true });
+        assert_eq!(std::fs::read_to_string(w.path.join("mid/inner/f")).unwrap(), "changed\n");
+        // So is a new file in `mid`, whose own config hides untracked files.
+        let w = create(&main, &root, "s3").unwrap();
+        prepare(&Prepare { worktree: &w });
+        git_ok(&w.path.join("mid"), &["config", "status.showUntrackedFiles", "no"]);
+        std::fs::write(w.path.join("mid/new.txt"), "new\n").unwrap();
+        assert_eq!(finish(&w).unwrap(), Finished::Kept { commits: 0, dirty: true });
+        assert!(w.path.join("mid/new.txt").is_file());
+        assert_eq!(std::fs::read(main.join(".git/config")).unwrap(), config);
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -919,8 +1085,10 @@ mod tests {
         // `mid` not initialised in the main checkout, its source a local
         // path that exists.
         git_ok(&main, &["submodule", "deinit", "-q", "-f", "mid"]);
+        let config = std::fs::read(main.join(".git/config")).unwrap();
         let w = create(&main, &root, "s1").unwrap();
         let notes = prepare(&Prepare { worktree: &w });
+        assert_eq!(std::fs::read(main.join(".git/config")).unwrap(), config, "the deinitialised submodule is not brought back");
         assert_eq!(notes.len(), 1, "{notes:?}");
         let note = &notes[0];
         assert!(note.contains("- evil: git submodule update:") && note.contains("transport 'ext' not allowed"), "{note}");
@@ -933,6 +1101,27 @@ mod tests {
         assert_eq!(first_prompt(&[], "Fix the build."), "Fix the build.");
         assert_eq!(finish(&w).unwrap(), Finished::Removed);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A note names at most twenty submodules, each in at most 300 bytes.
+    #[test]
+    fn wt15_the_note_is_bounded() {
+        let failed: Vec<String> = (0..25).map(|i| format!("- s{i}: {}", "é".repeat(400))).collect();
+        let note = failure_note(&failed);
+        let lines: Vec<&str> = note.lines().collect();
+        assert_eq!(lines.len(), 1 + 20 + 1, "{note}");
+        assert!(lines[1..21].iter().all(|l| l.len() <= MAX_NOTE_LINE + "…".len() && l.ends_with('…')));
+        assert_eq!(lines[21], "- and 5 more");
+        assert_eq!(failure_note(&["- a: no".into()]), "these submodules could not be initialised and are empty directories here:\n- a: no");
+    }
+
+    /// Relative submodule URLs, as `git submodule init` resolves them.
+    #[test]
+    fn wt15_a_relative_url_is_resolved_against_origin() {
+        assert_eq!(resolve_url("https://h/org/repo.git", "../lib.git"), "https://h/org/lib.git");
+        assert_eq!(resolve_url("https://h/org/repo/", "./lib"), "https://h/org/repo/lib");
+        assert_eq!(resolve_url("git@h:org/repo", "../../other/lib"), "git@h:other/lib");
+        assert_eq!(resolve_url("git@h:org/repo", "../lib"), "git@h:org/lib");
     }
 
     #[test]
