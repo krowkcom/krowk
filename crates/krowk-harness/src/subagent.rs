@@ -405,7 +405,11 @@ impl Subagents {
         // repository's own `worktrees`, and the fences a sandbox keeps.
         let policy = self.0.parent.gate.policy().clone();
         let runtime = crate::slots::runtime_dir(&|k| std::env::var(k).unwrap_or_default());
-        let made = tokio::task::spawn_blocking(move || {
+        // Set when the parent's turn is interrupted while the worktree is
+        // made and readied: its setup command stops, and it is discarded.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = stop.clone();
+        let mut made = tokio::task::spawn_blocking(move || {
             let w = crate::worktree::create(&cwd, &root, &child)?;
             let (port, missing) = match crate::worktree::setup::port_slot(runtime) {
                 Ok(Some(slot)) => (Some(slot), None),
@@ -422,15 +426,24 @@ impl Subagents {
                 sandbox: sandbox.as_ref(),
                 port_base,
                 builds: Some(&builds),
+                cancel: Some(&stopping),
             };
             let mut notes: Vec<String> = missing.into_iter().collect();
-            notes.extend(crate::worktree::prepare(&prepare));
+            notes.extend(crate::worktree::prepare_or_discard(&prepare)?);
             Ok((Isolated { worktree: w, port, port_base }, notes))
-        })
-        .await;
+        });
+        let mut cancel = self.0.parent.cancel.clone();
+        let made = tokio::select! {
+            made = &mut made => made,
+            _ = crate::engine::cancelled(&mut cancel) => {
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                made.await
+            }
+        };
         match made {
             Ok(Ok(made)) => Ok(made),
             Ok(Err(crate::worktree::Error::NotARepository)) => Err(NEEDS_A_REPOSITORY.into()),
+            Ok(Err(crate::worktree::Error::Interrupted)) => Err("not run: the turn was interrupted".into()),
             Ok(Err(e)) => Err(format!("the subagent's worktree could not be made: {e}")),
             Err(e) => Err(format!("the subagent's worktree could not be made: {e}")),
         }

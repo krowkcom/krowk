@@ -1069,22 +1069,14 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
             // process inside the namespace is pid 1, whose environ the
             // command can read.
             c.args(args).env_clear().envs(crate::sandbox::env());
-            // Nothing krowk inherited reaches the sandbox open: every
-            // descriptor past stdio is closed when bubblewrap starts.
-            // SAFETY: close_range(2) with CLOSE_RANGE_CLOEXEC only marks
-            // descriptors, allocates nothing, and is async-signal-safe;
-            // run after the child's stdio is in place.
+            // Nothing krowk inherited reaches the sandbox open
+            // (`sandbox::cloexec_past_stdio`), but the info pipe.
+            // SAFETY: what runs between fork and exec is async-signal-safe
+            // and allocates nothing; run after the child's stdio is in place.
             #[cfg(target_os = "linux")]
             unsafe {
                 c.pre_exec(move || {
-                    const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
-                    if libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, libc::c_uint::MAX, CLOSE_RANGE_CLOEXEC) != 0 {
-                        // Before Linux 5.11: one by one, up to the limit.
-                        let max = libc::sysconf(libc::_SC_OPEN_MAX).clamp(1024, 1 << 20) as libc::c_int;
-                        for fd in 3..max {
-                            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
-                        }
-                    }
+                    crate::sandbox::cloexec_past_stdio();
                     // `--info-fd 3`: the one descriptor bubblewrap keeps,
                     // and closes before the command starts.
                     let ok = if info_w == 3 { libc::fcntl(3, libc::F_SETFD, 0) } else { libc::dup2(info_w, 3) };

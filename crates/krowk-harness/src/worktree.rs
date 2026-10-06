@@ -99,6 +99,8 @@ pub enum Error {
     NotARepository,
     /// git, or the file system, said no: what it said.
     Failed(String),
+    /// The turn it was for was interrupted while it was readied: it is gone.
+    Interrupted,
 }
 
 impl std::fmt::Display for Error {
@@ -106,6 +108,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::NotARepository => f.write_str("not in a git repository"),
             Error::Failed(why) => f.write_str(why),
+            Error::Interrupted => f.write_str("interrupted"),
         }
     }
 }
@@ -154,13 +157,17 @@ pub struct Prepare<'a> {
     pub port_base: Option<u16>,
     /// The build slots a heavy setup command waits for.
     pub builds: Option<&'a crate::builds::Builds>,
+    /// Set when the turn the worktree is for is interrupted: the setup
+    /// command, or its wait for a build slot, stops, and no later step
+    /// starts (`prepare_or_discard`).
+    pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 impl<'a> Prepare<'a> {
     /// The steps' inputs for `worktree` with `config` alone: an untrusted
     /// repository, no sandbox, no port slot, no build slots.
     pub fn new(worktree: &'a Worktree, config: &'a WorktreesConfig) -> Prepare<'a> {
-        Prepare { worktree, config, project: None, trusted: false, sandbox: None, port_base: None, builds: None }
+        Prepare { worktree, config, project: None, trusted: false, sandbox: None, port_base: None, builds: None, cancel: None }
     }
 }
 
@@ -179,6 +186,26 @@ pub const STEPS: &[(&str, Step)] = &[("submodules", submodules), ("seed", seed::
 /// the async runtime.
 pub fn prepare(p: &Prepare<'_>) -> Vec<String> {
     STEPS.iter().filter_map(|(_, step)| step(p)).collect()
+}
+
+/// `prepare`, unless the turn is interrupted (`Prepare::cancel`) before
+/// or while it runs: then the worktree, never worked in, is removed with
+/// its branch whatever the steps left in it, and `Error::Interrupted`.
+pub fn prepare_or_discard(p: &Prepare<'_>) -> Result<Vec<String>, Error> {
+    let cancelled = || p.cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
+    let notes = if cancelled() { Vec::new() } else { prepare(p) };
+    if !cancelled() {
+        return Ok(notes);
+    }
+    discard(p.worktree)?;
+    Err(Error::Interrupted)
+}
+
+/// A worktree no agent worked in, removed with its branch, under the lock.
+pub fn discard(wt: &Worktree) -> Result<(), Error> {
+    let _held = lock(&wt.common)?;
+    let _ = read(git(&wt.main)?.args(["worktree", "unlock"]).arg(&wt.path), "worktree unlock");
+    remove(wt, true)
 }
 
 /// The first prompt of the agent that works in a prepared worktree: the

@@ -1050,6 +1050,31 @@ pub fn bash(plan: &Plan, command: &str, env: &[(String, String)]) -> Result<(Pat
     Ok((bwrap.to_path_buf(), args))
 }
 
+/// Marks every descriptor past stdio close-on-exec: called in a child
+/// between fork and exec, after its stdio is in place, so nothing krowk
+/// holds open without `O_CLOEXEC` — a descriptor a library opened, one
+/// another thread is about to mark — reaches a sandboxed command. The bash
+/// tool and the worktree setup command (`worktree::setup`) both start
+/// bubblewrap through it.
+///
+/// Only `close_range(2)` with `CLOSE_RANGE_CLOEXEC`, else `fcntl(2)` on each
+/// descriptor up to the limit (before Linux 5.11): async-signal-safe, and
+/// nothing allocated.
+#[cfg(target_os = "linux")]
+pub(crate) fn cloexec_past_stdio() {
+    const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
+    // SAFETY: both calls only change descriptor flags; neither touches
+    // memory.
+    unsafe {
+        if libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, libc::c_uint::MAX, CLOSE_RANGE_CLOEXEC) != 0 {
+            let max = libc::sysconf(libc::_SC_OPEN_MAX).clamp(1024, 1 << 20) as libc::c_int;
+            for fd in 3..max {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            }
+        }
+    }
+}
+
 /// Whether krowk runs inside a container, which is a sandbox of its own:
 /// Docker's and Podman's markers, which only the container's root writes.
 pub fn in_container() -> bool {

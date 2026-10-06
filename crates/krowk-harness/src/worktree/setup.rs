@@ -30,6 +30,10 @@
 //!   once the command is over — and so once nothing it started is left
 //!   to plant a link there (the sandbox's pid namespace is gone) — and
 //!   never through a link. Kept to its last `LOG_CAP` bytes.
+//! - **An interrupt stops it**: the turn that asked for the worktree
+//!   being interrupted (`Prepare::cancel`) stops the command and all it
+//!   started, or its wait for a build slot, and the caller discards the
+//!   worktree (`super::prepare_or_discard`).
 //! - **A failure stops nothing**: a non-zero exit, or `setupTimeout`
 //!   (600 s by default) passing, which stops it and all it started, puts
 //!   a note at the top of the agent's first prompt with the exit code or
@@ -88,6 +92,9 @@ pub fn sandbox(policy: &crate::permissions::Policy, worktree: &Path) -> Option<c
 
 /// The setup step (see the module docs).
 pub(super) fn setup(p: &Prepare<'_>) -> Option<String> {
+    if p.cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+        return None;
+    }
     let mut notes = Vec::new();
     let own = p.project.filter(|w| w.setup().is_some());
     let (config, from) = match own {
@@ -111,6 +118,8 @@ enum Ended {
     Exited(i32),
     Signal(i32),
     TimedOut,
+    /// The turn it was for was interrupted: stopped.
+    Interrupted,
     NotStarted(String),
 }
 
@@ -132,6 +141,7 @@ fn run_setup(p: &Prepare<'_>, command: &str, from: &str, timeout: Duration) -> O
     env.extend(p.port_base.map(|b| ("KROWK_PORT_BASE".to_string(), b.to_string())));
     // A heavy command waits for a build slot as the bash tool's would,
     // within its own time.
+    let stopped = || p.cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
     let mut ended = None;
     let builds = p.builds.filter(|_| crate::builds::heavy(command));
     env.extend(builds.and_then(|b| b.jobs.clone()).map(|n| ("CARGO_BUILD_JOBS".to_string(), n)));
@@ -141,6 +151,10 @@ fn run_setup(p: &Prepare<'_>, command: &str, from: &str, timeout: Duration) -> O
                 Ok(Some(slot)) => break Some(slot),
                 // A pool that cannot be had runs it anyway, as bash does.
                 Err(_) => break None,
+                Ok(None) if stopped() => {
+                    ended = Some(Ended::Interrupted);
+                    break None;
+                }
                 Ok(None) if Instant::now() >= deadline => {
                     ended = Some(Ended::TimedOut);
                     break None;
@@ -152,13 +166,14 @@ fn run_setup(p: &Prepare<'_>, command: &str, from: &str, timeout: Duration) -> O
     };
     let (ended, output, removed) = match ended {
         Some(e) => (e, b"(it was still waiting for a build slot)\n".to_vec(), Vec::new()),
-        None => run_in(plan, command, &wt.path, &env, deadline),
+        None => run_in(plan, command, &wt.path, &env, deadline, &stopped),
     };
     let how = match &ended {
         Ended::Exited(0) => None,
         Ended::Exited(code) => Some(format!("exited with code {code}")),
         Ended::Signal(n) => Some(format!("was killed by signal {n}")),
         Ended::TimedOut => Some(format!("timed out after {} s and was stopped", timeout.as_secs())),
+        Ended::Interrupted => Some("was stopped: the turn was interrupted".to_string()),
         Ended::NotStarted(why) => Some(format!("could not be started: {why}")),
     };
     let text = String::from_utf8_lossy(&output);
@@ -194,10 +209,10 @@ fn tail(text: &str) -> String {
 }
 
 /// Runs `command` in `dir` — in `plan`'s sandbox, or as it is when there is
-/// none — until it ends or `deadline` passes, with stdout and stderr on one
-/// pipe in the order they were written. How it ended, the end of its
-/// output, and what the sandbox removed after it.
-fn run_in(plan: Option<&crate::sandbox::Plan>, command: &str, dir: &Path, env: &[(String, String)], deadline: Instant) -> (Ended, Vec<u8>, Vec<PathBuf>) {
+/// none — until it ends, `deadline` passes or `stopped` says so, with
+/// stdout and stderr on one pipe in the order they were written. How it
+/// ended, the end of its output, and what the sandbox removed after it.
+fn run_in(plan: Option<&crate::sandbox::Plan>, command: &str, dir: &Path, env: &[(String, String)], deadline: Instant, stopped: &dyn Fn() -> bool) -> (Ended, Vec<u8>, Vec<PathBuf>) {
     let not_started = |e: String| (Ended::NotStarted(e), Vec::new(), Vec::new());
     let mut cmd = match plan.filter(|p| p.kernel).map(|p| crate::sandbox::bash(p, command, env)) {
         None => {
@@ -223,12 +238,21 @@ fn run_in(plan: Option<&crate::sandbox::Plan>, command: &str, dir: &Path, env: &
     };
     cmd.current_dir(dir).stdin(std::process::Stdio::null());
     // No terminal: an install that would ask on `/dev/tty` fails rather
-    // than draw over krowk's. Its session is its group, stopped whole.
+    // than draw over krowk's. Its session is its group, stopped whole. And
+    // nothing krowk holds open reaches it, as for the bash tool.
     #[cfg(unix)]
-    // SAFETY: setsid is async-signal-safe and touches no memory of the
-    // parent's; it runs in the child between fork and exec.
+    // SAFETY: setsid and `cloexec_past_stdio` are async-signal-safe and
+    // touch no memory of the parent's; they run in the child between fork
+    // and exec, after its stdio is in place.
     unsafe {
-        std::os::unix::process::CommandExt::pre_exec(&mut cmd, || if libc::setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+        std::os::unix::process::CommandExt::pre_exec(&mut cmd, || {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            #[cfg(target_os = "linux")]
+            crate::sandbox::cloexec_past_stdio();
+            Ok(())
+        });
     }
     let child = cmd.spawn();
     // The command's copies of the write end go with it, so the pipe closes
@@ -276,6 +300,10 @@ fn run_in(plan: Option<&crate::sandbox::Plan>, command: &str, dir: &Path, env: &
             Ok(None) if Instant::now() >= deadline => {
                 crate::readiness::stop(&mut child);
                 break Ended::TimedOut;
+            }
+            Ok(None) if stopped() => {
+                crate::readiness::stop(&mut child);
+                break Ended::Interrupted;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
             Err(e) => {
@@ -468,6 +496,76 @@ mod tests {
         assert!(prompt.starts_with("Note from krowk, which prepared this worktree: the worktree's setup command (`echo started; sleep 5`, from krowk's config.json) timed out after 1 s"), "{prompt}");
         assert!(prompt.contains("```\nstarted\n```"), "{prompt}");
         assert!(std::fs::read_to_string(log_of(&w)).unwrap().ends_with("(timed out after 1 s and was stopped)\n"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A descriptor krowk holds open without `O_CLOEXEC` does not reach the
+    /// setup command, sandboxed or not: it cannot write through it to a
+    /// file outside the worktree.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wt8_an_inherited_descriptor_does_not_reach_the_setup_command() {
+        use std::os::fd::AsRawFd;
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let d = scratch("fds");
+        let (_, main, root) = repo_in(&d, "fds");
+        let w = create(&main, &root, "s1").unwrap();
+        let outside = d.join("outside.txt");
+        let file = std::fs::File::create(&outside).unwrap();
+        // SAFETY: dup(2) of a descriptor this test owns; the copy has no
+        // FD_CLOEXEC, as one a library opened might not.
+        let fd = unsafe { libc::dup(file.as_raw_fd()) };
+        assert!(fd > 2);
+        let user = setup_config(&format!("echo leaked >&{fd}; ls /proc/self/fd"), None);
+        let plan = sandbox(&crate::permissions::Policy::default(), &w.path);
+        for plan in [plan.as_ref(), None] {
+            prepare(&Prepare { sandbox: plan, trusted: true, ..Prepare::new(&w, &user) });
+            let log = std::fs::read_to_string(log_of(&w)).unwrap();
+            assert!(log.contains("Bad file descriptor"), "{log}");
+        }
+        // SAFETY: the descriptor dup'd above, closed once.
+        unsafe { libc::close(fd) };
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "", "nothing was written through it");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Interrupted while its setup command runs: the command stops at
+    /// once, and the worktree is gone with its branch.
+    #[test]
+    fn wt8_an_interrupt_stops_the_setup_and_discards_the_worktree() {
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let d = scratch("interrupt");
+        let (_, main, root) = repo_in(&d, "interrupt");
+        let w = create(&main, &root, "s1").unwrap();
+        let user = setup_config("touch started; sleep 30", None);
+        let plan = sandbox(&crate::permissions::Policy::default(), &w.path);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let started = Instant::now();
+        let r = std::thread::scope(|s| {
+            s.spawn(|| {
+                while !w.path.join("started").exists() && started.elapsed() < Duration::from_secs(10) {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+            super::super::prepare_or_discard(&Prepare { sandbox: plan.as_ref(), trusted: true, cancel: Some(&cancel), ..Prepare::new(&w, &user) })
+        });
+        assert_eq!(r, Err(super::super::Error::Interrupted));
+        assert!(started.elapsed() < Duration::from_secs(5), "stopped promptly: {:?}", started.elapsed());
+        assert!(!w.path.exists());
+        assert_eq!(git_ok(&main, &["branch", "--list", "krowk/*"]), "");
+        assert!(!git_ok(&main, &["worktree", "list"]).contains(&w.hex));
+        // Not interrupted: readied as ever.
+        let w = create(&main, &root, "s2").unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        assert_eq!(super::super::prepare_or_discard(&Prepare { cancel: Some(&cancel), ..Prepare::new(&w, &WorktreesConfig::default()) }), Ok(Vec::new()));
+        assert!(w.path.exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 
