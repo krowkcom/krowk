@@ -23,7 +23,7 @@
 #   a JSON line        printed, with {{SESSION}}, {{MODEL}} and {{CWD}} filled in
 #   @ask <request>     sent as a control_request; waits for krowk's answer
 #   @tool_result <id>  a tool_result for <id> built from the last answer: the
-#                      denial's message, or the MCP result's text
+#                      denial's message, a hook's deny reason, or the MCP result's text
 #   @await-interrupt   waits for krowk's interrupt, and acknowledges it
 #   @sleep <seconds>   waits
 #   @exit <code>       exits mid-turn, as a crashed process would
@@ -208,8 +208,13 @@ ask() {
 tool_result() {
   local id="$1" text="" err=false re
   re='"behavior":"deny","message":"(([^"\\]|\\.)*)"'
+  hook='"permissionDecision":"deny","permissionDecisionReason":"(([^"\\]|\\.)*)"'
   if [[ $ANSWER =~ $re ]]; then
     text="${BASH_REMATCH[1]}"
+    err=true
+  elif [[ $ANSWER =~ $hook ]]; then
+    # As Claude Code words a PreToolUse hook's deny to the model.
+    text="PreToolUse:Bash hook error: ${BASH_REMATCH[1]}"
     err=true
   else
     re='"content":\[\{"type":"text","text":"(([^"\\]|\\.)*)"\}\]'

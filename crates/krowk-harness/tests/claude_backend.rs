@@ -248,6 +248,27 @@ fn r_back_1_a_session_runs_on_one_claude_process_calls_krowks_tool_and_is_denied
 }
 
 #[test]
+fn a_gh_post_with_a_bare_card_link_is_denied_by_krowks_hook_in_every_mode() {
+    for mode in [PermissionMode::Default, PermissionMode::BypassPermissions, PermissionMode::Unhinged] {
+        let home = Home::new("paste-guard");
+        let dir = home.signed_in("cfg");
+        let host = home.host(vec![("claude", home.instance(&dir, Some("paste_guard.jsonl")))], trust::allow_all());
+        let lines = rt().block_on(async {
+            let (lines, r) = run(&host, prompt(None, "post the result", "claude/sonnet", mode)).await;
+            assert_eq!(r.unwrap().unwrap().result, "Posted the krowk block.", "{mode:?}");
+            host.shutdown().await;
+            lines
+        });
+        let results: Vec<(bool, String)> = completed(&lines).into_iter().filter_map(|i| if let Item::ToolResult { is_error, output, .. } = i { Some((is_error, output)) } else { None }).collect();
+        let [(true, refused), (false, _)] = results.as_slice() else { panic!("{mode:?}: the bare link is refused, the block is not: {results:?}") };
+        assert!(refused.contains("bare krowk card link") && refused.contains("krowk block"), "{mode:?}: the model reads why: {refused}");
+        let fake = home.fake_log();
+        let init = fake.lines().find(|l| l.starts_with("in ") && l.contains(r#""subtype":"initialize""#)).unwrap();
+        assert!(init.contains(r#""hooks":{"PreToolUse":[{"matcher":"Bash","hookCallbackIds":["krowk_paste_guard"]}]}"#), "registered on every process: {init}");
+    }
+}
+
+#[test]
 fn r_compat_1_a_slash_skill_claude_code_does_not_have_reaches_it_loaded_ahead_of_the_prompt() {
     let home = Home::new("slash-skill");
     let dir = home.signed_in("cfg");

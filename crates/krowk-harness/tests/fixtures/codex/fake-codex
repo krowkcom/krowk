@@ -24,6 +24,11 @@
 #                        where each turn/start is appended) is not there
 #   FAKE_CODEX_MCP       the `mcp_servers` table config/read reports, as JSON
 #
+# A `-c hooks.PreToolUse=…` naming `__paste-guard` is listed by hooks/list
+# with the command it gives (FAKE_CODEX_HOOK_COMMAND: another, as a
+# look-alike would be), untrusted until config/value/write trusts it (a
+# marker in CODEX_HOME), as Codex keeps a hook's trust in its config.
+#
 # The marker `fake-login` holds the account: `chatgpt <email>` or `apiKey`.
 # A scenario is turns separated by lines holding `---`; each turn/start
 # plays the next turn (counted in CODEX_HOME, so across processes). Each
@@ -40,6 +45,9 @@
 #   @exit-once <code>  the same, the first time only (a marker in CODEX_HOME)
 #   @grandchild        starts a background `sleep`, as a command Codex ran
 #                      would, and logs its pid
+#   @hook-bash <json>  runs the paste guard hook krowk passed on a shell call
+#                      of that command (a JSON string), as Codex would, and
+#                      logs its answer
 # The turn ends with the scenario's own turn/completed line.
 
 set -u
@@ -47,6 +55,7 @@ LOG="${FAKE_CODEX_LOG:-/dev/null}"
 HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 log() { printf '%s\n' "$*" >>"$LOG"; }
 log "argv $*"
+ARGV="$*"
 log "home ${CODEX_HOME:-<unset>}"
 log "pid $$"
 log "env OPENAI_API_KEY=${OPENAI_API_KEY:-<unset>} ROUTER_KEY=${ROUTER_KEY:-<unset>}"
@@ -260,6 +269,17 @@ play_turn() {
       sleep 300 </dev/null >/dev/null 2>&1 &
       log "grandchild $!"
       ;;
+    "@hook-bash "*)
+      # As Codex runs a PreToolUse hook on its shell tool: the command the
+      # `-c hooks.PreToolUse=…` names, Claude Code's JSON on stdin.
+      re='command="([^"]*__paste-guard)"'
+      if [[ $ARGV =~ $re ]]; then
+        hook="${BASH_REMATCH[1]}"
+        log "hook-answer $(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":%s},"cwd":"%s"}' "${line#@hook-bash }" "$CWD" | sh -c "$hook")"
+      else
+        log "hook-answer <no hook>"
+      fi
+      ;;
     *) say "$(fill "$line")" ;;
     esac
   done <"$file"
@@ -287,6 +307,25 @@ while IFS= read -r line <&3; do
     mcp="${FAKE_CODEX_MCP:-}"
     [ -n "$mcp" ] || mcp='{}'
     say "{\"id\":$id,\"result\":{\"config\":{\"model\":\"gpt-5.5\",\"mcp_servers\":$mcp},\"origins\":{}}}"
+    ;;
+  hooks/list)
+    hooks='[]'
+    case "$ARGV" in
+    *'hooks.PreToolUse='*__paste-guard*)
+      trust=untrusted
+      [ -f "$HOME_DIR/fake-hook-trusted" ] && trust=trusted
+      re='command="([^"]*__paste-guard)"'
+      [[ $ARGV =~ $re ]] && hook="${BASH_REMATCH[1]}"
+      hook="${FAKE_CODEX_HOOK_COMMAND:-$hook}"
+      hooks='[{"key":"/<session-flags>/config.toml:pre_tool_use:0:0","eventName":"preToolUse","handlerType":"command","command":"'"$hook"'","async":false,"matcher":"^Bash$","timeoutSec":600,"statusMessage":null,"additionalContextLimit":null,"sourcePath":"/<session-flags>/config.toml","source":"sessionFlags","pluginId":null,"displayOrder":0,"enabled":true,"isManaged":false,"currentHash":"sha256:fake-paste-guard","trustStatus":"'$trust'"}]'
+      ;;
+    esac
+    say "{\"id\":$id,\"result\":{\"data\":[{\"cwd\":\"$CWD\",\"hooks\":$hooks,\"warnings\":[],\"errors\":[]}]}}"
+    ;;
+  config/value/write)
+    log "config-write $line"
+    : >"$HOME_DIR/fake-hook-trusted"
+    say "{\"id\":$id,\"result\":{\"status\":\"ok\",\"version\":\"sha256:fake\",\"filePath\":\"$HOME_DIR/config.toml\",\"overriddenMetadata\":null}}"
     ;;
   thread/start | thread/resume)
     m="$(field "$line" model)"

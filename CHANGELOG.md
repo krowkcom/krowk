@@ -11,6 +11,26 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A bare krowk link no longer lands in a pull request or an issue.** On
+  GitHub a bare `krowk.com/a/…` link doesn't unfurl. It shows up as a blue
+  link that says nothing about the file. When an agent running in krowk
+  calls `gh pr create|edit|comment` or `gh issue create|edit|comment` with
+  one in the body, krowk refuses that one call and tells the agent to paste
+  the krowk block instead, and where to get it (`paste.markdown` from
+  `krowk uploads show <link> --json`). The agent rewrites the body and posts
+  again without you stepping in. The body is checked whether it is given
+  inline, through a heredoc, or with `--body-file` when the file can be
+  read. A card link inside a krowk block is fine, and nothing else is
+  touched: other `gh` commands, bodies without a card link, and posts to
+  Slack or Basecamp, where a bare link unfurls. This isn't a permission
+  rule, so it holds in every mode, `bypassPermissions` and `unhinged`
+  included, on krowk's own models, Claude Code and Codex alike. On Codex,
+  krowk passes the check as a hook, and the first time, has Codex record it
+  as trusted in its `config.toml` (a `hooks.state` entry for that one
+  command), because Codex runs only trusted hooks. krowk's Codex accounts
+  share your `~/.codex/config.toml`, so that is where the entry lands. On
+  Windows, Codex sessions don't have the check yet. A code span or fenced
+  block that quotes a card link is left alone.
 - **Paste a screenshot into the prompt.** Ctrl-V (or Alt-V, where the
   terminal keeps Ctrl-V for itself) puts the clipboard's image in the prompt
   as `[Image #1]`, and the model sees it with the text. Dragging an image

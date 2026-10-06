@@ -224,7 +224,7 @@ fn remember(call: &Call) -> Vec<String> {
 /// A word as the shell would need it written to read back as one word:
 /// `rm 'a b'` is remembered as that, never as `rm a b`, which removes two
 /// other files.
-fn quote(w: &str) -> String {
+pub(crate) fn quote(w: &str) -> String {
     if !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%^".contains(c)) {
         return w.to_string();
     }
