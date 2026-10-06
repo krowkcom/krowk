@@ -1,7 +1,8 @@
 # Bare `krowk` in the full build opens the TUI only when a person is at a
 # terminal: stdin and stdout both a TTY. Everywhere else it prints exactly
-# what it printed before the TUI existed. These were recorded from the full
-# build of the commit before it, so any difference is a behaviour change.
+# what it printed before the TUI existed — except that bare `krowk` piped
+# prints the overview rather than the catalog, which takes --json. Any other
+# difference is a behaviour change.
 krowk
 krowk --json
 krowk --format human

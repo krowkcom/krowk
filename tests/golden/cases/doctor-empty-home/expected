@@ -35,21 +35,22 @@ exit: 0
 
 $ krowk doctor --format human
 stdout:
-version         0.0.0-golden
-runtime         <runtime>
-api             http://127.0.0.1:9/v1
-registry        custom (KROWK_API_URL)
-api_status      unreachable — network_unreachable — <transport error>
-authenticated   false
-token_source    none
-key             none — uploads will be anonymous
-workspace       none — uploads will be anonymous
-runs_available  false
-credentials     <scratch>/home/.krowk/credentials.json
-config          global <scratch>/home/.krowk/config.json (absent)
-store           {"name":"store","status":"pass","message":"healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"}
-pricing         {"name":"pricing","status":"warn","message":"no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build","hint":"run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"}
-providers       {"name":"providers","status":"skip","message":"this build runs no model"}
-context         {}
+Version         0.0.0-golden
+Runtime         <runtime>
+API             http://127.0.0.1:9/v1
+Registry        custom (KROWK_API_URL)
+API status      unreachable — network_unreachable — <transport error>
+Signed in       no
+Key from        none
+Key             none — uploads will be anonymous
+Workspace       none — uploads will be anonymous
+Runs            no
+Credentials     <scratch>/home/.krowk/credentials.json
+Config          global <scratch>/home/.krowk/config.json (absent)
+
+✓ Store         healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)
+! Pricing       no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build
+                Run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day.
+- Providers     this build runs no model
 exit: 0
 

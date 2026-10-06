@@ -561,7 +561,7 @@ static PLAIN: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
         // Which language and toolchain built the binary is the one line of
         // doctor output the port is expected to change.
         (r#""runtime": "[^"]*""#, r#""runtime": "<runtime>""#),
-        (r"(?m)^runtime +\S.*$", "runtime         <runtime>"),
+        (r"(?m)^Runtime +\S.*$", "Runtime         <runtime>"),
         // A transport failure's wording is the HTTP library's, not krowk's:
         // the error code beside it is the behavior, the detail is not.
         (r#"(Get|Post|Put|Patch|Delete|Head) \\?"http[^"\\]*\\?": [^"\n]*"#, "<transport error>"),

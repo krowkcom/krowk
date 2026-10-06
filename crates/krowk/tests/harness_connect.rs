@@ -228,7 +228,7 @@ fn disconnecting_your_own_claude_login_says_so_and_is_refused_without_a_terminal
     std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
     let out = b.krowk(&["connect", "anthropic", "--method", "subscription", "--format", "human"], &[]);
     let said = String::from_utf8_lossy(&out.stdout);
-    assert!(said.contains("signed in already") && said.contains("another account:  krowk connect anthropic --method subscription --name <new>") && !said.contains("disconnect"), "{said}");
+    assert!(said.contains("signed in already") && said.contains("Another account: krowk connect anthropic --method subscription --name <new>") && !said.contains("disconnect"), "{said}");
 
     let out = b.krowk(&["disconnect", "claude"], &[]);
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
@@ -376,7 +376,7 @@ fn connect_at_a_terminal_walks_vendor_method_and_account() {
     t.write(b"team\r");
     let exit = t.wait(wait).expect("krowk connect finished");
     assert!(exit.success(), "{}", t.text());
-    assert!(t.text().contains("Connected claude:team") && t.text().contains("try it:"), "{}", t.text());
+    assert!(t.text().contains("Connected claude:team") && t.text().contains("Try it:"), "{}", t.text());
     assert!(b.data().join("accounts/claude-team/fake-login").exists());
 }
 

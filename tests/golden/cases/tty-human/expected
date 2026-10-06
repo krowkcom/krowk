@@ -2,9 +2,9 @@ $ @tty krowk push a.txt
 tty:
 <spinner>\e[32m✓\e[0m Uploaded a.txt → http://<registry>/a/<art_1>
 \e[2m  5 B · expires tomorrow\e[0m
-\e[2m  keep it:\e[0m  krowk claim <art_1> <claim_1>
+\e[2m  Keep it:\e[0m \e[36mkrowk claim <art_1> <claim_1>\e[0m
 
-\e[2m  paste this:\e[0m
+\e[2m  Paste this:\e[0m
 **a.txt** · [View preview ↗](http://<registry>/a/<art_1>) · expires <date>
 exit: 0
 
@@ -14,10 +14,10 @@ tty:
   a.txt     http://<registry>/a/<art_2>
   shot.png  http://<registry>/a/<art_3>
 \e[2m  18 B · expires tomorrow\e[0m
-\e[2m  keep it:\e[0m  krowk claim <art_2> <claim_2>
-\e[2m  keep it:\e[0m  krowk claim <art_3> <claim_3>
+\e[2m  Keep it:\e[0m \e[36mkrowk claim <art_2> <claim_2>\e[0m
+\e[2m  Keep it:\e[0m \e[36mkrowk claim <art_3> <claim_3>\e[0m
 
-\e[2m  paste this:\e[0m
+\e[2m  Paste this:\e[0m
 **a.txt** · [View preview ↗](http://<registry>/a/<art_2>) · expires <date>
 
 [![shot.png](http://<registry>/_storage/weur/<ws_1>/<art_3>/shot.png)](http://<registry>/a/<art_3>)
@@ -95,41 +95,42 @@ exit: 0
 
 $ @tty krowk push missing.txt
 tty:
-\e[31m✗\e[0m Cannot read `missing.txt`.
-\e[2m  (file_unreadable)\e[0m
+\e[31m✗\e[0m \e[1mCannot read `missing.txt`.\e[0m
 \e[2m  Paths resolve from the current directory.\e[0m
+\e[2m  Code: file_unreadable\e[0m
 exit: 1
 
 $ @tty krowk bogus
 tty:
-\e[31m✗\e[0m `bogus` is not a krowk command.
-\e[2m  (unknown_command)\e[0m
-\e[2m  try:\e[0m  krowk --help
+\e[31m✗\e[0m \e[1m`bogus` is not a krowk command.\e[0m
+\e[2m  Try:\e[0m \e[36mkrowk --help\e[0m
+\e[2m  Code: unknown_command\e[0m
 exit: 1
 
 $ @tty krowk doctor
 tty:
-version         0.0.0-golden
-runtime         <runtime>
-api             http://<registry>/v1
-registry        custom (KROWK_API_URL)
-api_status      reachable (krowk-registry, v1)
-authenticated   false
-token_source    none
-key             none — uploads will be anonymous
-workspace       none — uploads will be anonymous
-runs_available  false
-credentials     <scratch>/home/.krowk/credentials.json
-config          global <scratch>/home/.krowk/config.json (absent)
-store           {"name":"store","status":"pass","message":"healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"}
-pricing         {"name":"pricing","status":"warn","message":"no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build","hint":"run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"}
-providers       {"name":"providers","status":"skip","message":"this build runs no model"}
-context         {}
+Version         0.0.0-golden
+Runtime         <runtime>
+API             http://<registry>/v1
+Registry        custom (KROWK_API_URL)
+API status      reachable (krowk-registry, v1)
+Signed in       no
+Key from        none
+Key             none — uploads will be anonymous
+Workspace       none — uploads will be anonymous
+Runs            no
+Credentials     <scratch>/home/.krowk/credentials.json
+Config          global <scratch>/home/.krowk/config.json (absent)
+
+\e[32m✓\e[0m Store         healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)
+\e[33m!\e[0m Pricing       no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build
+\e[2m                Run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day.\e[0m
+\e[2m-\e[0m Providers     this build runs no model
 exit: 0
 
 $ @tty krowk config show
 tty:
-\e[2mnothing set — uploads use the stored default key\e[0m
-  global    <scratch>/home/.krowk/config.json
+\e[2mNothing set — uploads use the stored default key.\e[0m
+  Global    <scratch>/home/.krowk/config.json
 exit: 0
 

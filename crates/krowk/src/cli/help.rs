@@ -60,32 +60,52 @@ const FLAGS: &[(&str, &str)] = &[
     ("-h, --help · -v, --version", ""),
 ];
 
+/// What a first command looks like: the one thing each build is for, then
+/// the shape of a scripted call.
+#[cfg(feature = "harness")]
+const EXAMPLES: &[(&str, &str)] = &[
+    ("krowk connect anthropic", "Connect a model to run the agent on"),
+    ("krowk push shot.png", "Upload a screenshot and get a link to paste"),
+    ("krowk sessions --json", "Every agent session on this machine, as data"),
+];
+#[cfg(not(feature = "harness"))]
+const EXAMPLES: &[(&str, &str)] = &[
+    ("krowk push shot.png", "Upload a screenshot and get a link to paste"),
+    ("krowk push shot.png --json", "The same, as JSON for a script or an agent"),
+    ("krowk login", "Add a key, so uploads keep and group under runs"),
+];
+
 const MORE: &[(&str, &str)] = &[
     ("krowk help <command>", "A command's own flags"),
     ("krowk help --all", "Every command and subcommand"),
-    ("krowk help topics", "flags, exit codes, environment, workspaces, links"),
+    ("krowk help topics", "Flags, exit codes, environment, workspaces, links"),
+    ("krowk help agents", "For AI agents and scripts: the output contract"),
 ];
 
 const ALL_MORE: &[(&str, &str)] = &[
     ("krowk help <command>", "A command's own flags and explanation"),
-    ("krowk help topics", "flags, exit codes, environment, workspaces, links"),
+    ("krowk help topics", "Flags, exit codes, environment, workspaces, links"),
+    ("krowk help agents", "For AI agents and scripts: the output contract"),
     ("krowk help --json", "The whole surface as data, for tooling"),
 ];
 
 /// `krowk help`: what krowk is, how to start, and one line per command; with
 /// `all`, one line per command and subcommand instead.
-pub fn help(c: &Catalog, all: bool) -> String {
+pub fn help(c: &Catalog, all: bool, colour: bool) -> String {
     let mut out = if all {
-        "krowk — every command and subcommand\n".to_string()
+        format!("{}\n", bold(colour, "krowk — every command and subcommand"))
     } else {
-        format!("{}  krowk — {}\n{}  version {}\n\nUSAGE\n", MARK[0], c.summary, MARK[1], c.version)
+        format!("{}  {} {}\n{}  {}\n", MARK[0], bold(colour, "Krowk"), c.version, MARK[1], c.summary)
     };
     if !all {
+        heading(&mut out, "Usage", colour);
         rows(&mut out, "  ", 27, USAGE);
+        heading(&mut out, "Examples", colour);
+        rows(&mut out, "  ", 27, EXAMPLES);
     }
     let leaves = c.leaves();
     for (title, names) in GROUPS {
-        heading(&mut out, title);
+        heading(&mut out, title, colour);
         for name in *names {
             if all {
                 for leaf in leaves.iter().filter(|l| l.name.split(' ').next() == Some(name)) {
@@ -97,7 +117,7 @@ pub fn help(c: &Catalog, all: bool) -> String {
         }
     }
     if !all {
-        out += "\nFLAGS\n";
+        heading(&mut out, "Flags", colour);
         rows(&mut out, "  ", 27, FLAGS);
     }
     out.push('\n');
@@ -109,6 +129,7 @@ pub fn help(c: &Catalog, all: bool) -> String {
 /// What belongs to no one command. `workspaces` is the command's own help,
 /// which carries it; the rest are written here.
 pub const TOPICS: &[(&str, &str)] = &[
+    ("agents", "Driving krowk from an AI agent or a script"),
     ("flags", "The flags every command takes"),
     ("exit-codes", "What each exit code means"),
     ("environment", "Environment variables, and where files live"),
@@ -117,29 +138,90 @@ pub const TOPICS: &[(&str, &str)] = &[
 ];
 
 /// `krowk help topics`.
-pub fn topics() -> String {
-    let mut out = "TOPICS\n".to_string();
+pub fn topics(colour: bool) -> String {
+    let mut out = format!("{}\n", bold(colour, "Topics"));
     rows(&mut out, "  ", 13, TOPICS);
     out + "\nkrowk help <topic>"
 }
 
-const EXIT_CODES: &str = "  0  it worked
-  1  the command was wrong, or krowk failed on its own — also anything
-     unclassified
-  2  not found — no such artifact or run in this workspace, or no such endpoint
-  3  refused for want of credentials — no key, a key the registry rejects, a
+const EXIT_CODES: &str = "  0  It worked.
+  1  The command was wrong, or krowk failed on its own — also anything
+     unclassified.
+  2  Not found — no such artifact or run in this workspace, or no such
+     endpoint.
+  3  Refused for want of credentials — no key, a key the registry rejects, a
      browser login somebody denied or that nothing on CI could approve, or no
      claim token where that is the only authority (a claim token the registry
-     does not recognise is 2, since it answers that as no such record)
-  4  refused by the registry on the request or the state of things — retrying
-     unchanged answers the same; also a session over its `sessions budget`
-  5  rate limited — wait and retry
-  6  the bytes did not move — the registry or object storage could not be
-     reached
-  7  the registry failed on its side, or answered something unreadable — or a
-     login page krowk will not open, which is the same news
-  8  gone — the artifact expired or was taken down, or a browser login lapsed
-     before anybody approved it; no retry brings any of them back";
+     does not recognise is 2, since it answers that as no such record).
+  4  Refused by the registry on the request or the state of things — retrying
+     unchanged answers the same; also a session over its `sessions budget`.
+  5  Rate limited — wait and retry.
+  6  The bytes did not move — the registry or object storage could not be
+     reached.
+  7  The registry failed on its side, or answered something unreadable — or a
+     login page krowk will not open, which is the same news.
+  8  Gone — the artifact expired or was taken down, or a browser login lapsed
+     before anybody approved it; no retry brings any of them back.";
+
+/// `krowk help agents`: what an agent needs to drive krowk without reading
+/// every page — how a result comes back, how a failure does, and which
+/// command answers which question. Written for a model's context window.
+fn agents(colour: bool) -> String {
+    let mut out = String::from(AGENTS_OUTPUT);
+    heading(&mut out, "Exit codes", colour);
+    out += AGENTS_EXIT;
+    heading(&mut out, "Tasks", colour);
+    rows(&mut out, "  ", 33, AGENT_TASKS);
+    heading(&mut out, "Discover more", colour);
+    rows(&mut out, "  ", 33, AGENT_DISCOVER);
+    out.pop();
+    out
+}
+
+const AGENTS_OUTPUT: &str = "\
+When stdout is not a terminal, commands answer with one JSON envelope — on
+stdout when they worked, on stderr when they failed (`krowk help --json`
+marks the few that print something else `no_json`). --json asks for it on a
+terminal too, --quiet drops the envelope for the bare record, and --jq
+filters it with no jq binary needed. Nothing waits on a prompt when piped,
+under --json or in CI: a question krowk would ask fails with a fix instead.
+
+  {\"ok\": true, \"data\": {…}, \"summary\": \"…\", \"breadcrumbs\": [{…}]}
+  {\"ok\": false, \"error\": {\"error\": \"<code>\", \"fix\": \"…\", \"retryable\": false}}
+  breadcrumb: {\"action\": \"…\", \"cmd\": \"krowk …\", \"description\": \"…\"}
+
+Report `summary`. A breadcrumb's `cmd` is a command left to run, and its
+`description` says what it does; fill in any <placeholder> first. On a
+failure, `fix` says what to change, and `retryable` whether running the same
+command again can help. An upload also carries `paste.markdown` and
+`paste.url`: the forms to put in a pull request or a chat.
+";
+
+const AGENTS_EXIT: &str = "  0 ok · 1 the command was wrong · 2 not found · 3 credentials · 4 refused
+  5 rate limited · 6 unreachable · 7 registry failed · 8 gone
+  Retry on 5 and 6; change the command on 1, 2 and 4. `krowk help exit-codes`
+  says more.
+";
+
+const AGENT_TASKS: &[(&str, &str)] = &[
+    ("krowk push <file> --json", "Publish a file; paste its .paste.markdown"),
+    ("krowk runs start --title \"…\"", "Open a run for several pushes (needs a key)"),
+    ("krowk push <file> --run <run>", "Add a file to that run"),
+    ("krowk whoami", "Which key and workspace are in use"),
+    #[cfg(feature = "harness")]
+    ("krowk -p \"<prompt>\" --output-format json", "Run one prompt headless; the result as JSON"),
+    #[cfg(feature = "harness")]
+    ("krowk status", "Which models are connected and ready"),
+    #[cfg(feature = "sessions")]
+    ("krowk sessions", "Agent sessions on this machine, newest first"),
+    ("krowk doctor", "What is wrong with the setup"),
+];
+
+const AGENT_DISCOVER: &[(&str, &str)] = &[
+    ("krowk help --json", "Every command, argument and flag, as data"),
+    ("krowk help <command> --json", "One command's arguments and flags"),
+    ("krowk help <command>", "The same, with what the command is for"),
+];
 
 const LINKS: &str = "\
 Wherever an artifact or a run is named — a positional, or --run — a link that
@@ -148,42 +230,52 @@ else krowk printed. A link carrying no slug of the kind the command wants, or
 two different ones, is refused before anything is sent.";
 
 /// A topic's page, or None for a name that is not one.
-pub fn topic(name: &str, c: &Catalog, files: &Files) -> Option<String> {
+pub fn topic(name: &str, c: &Catalog, files: &Files, colour: bool) -> Option<String> {
     let (_, summary) = TOPICS.iter().find(|(n, _)| *n == name)?;
-    let mut out = format!("krowk help {name} — {}\n\n", summary);
+    let mut out = format!("{}\n", bold(colour, &format!("krowk help {name} — {summary}")));
     match name {
+        "agents" => out += &format!("\n{}\n", agents(colour)),
         "flags" => {
-            out += "GLOBAL FLAGS\n";
+            heading(&mut out, "Global flags", colour);
             flag_rows(&mut out, 0, &c.global_flags[..catalog::CORE_FLAGS]);
             #[cfg(feature = "harness")]
             {
-                out += "\nAGENT FLAGS (krowk, krowk -p)\n";
+                heading(&mut out, "Agent flags (krowk, krowk -p)", colour);
                 flag_rows(&mut out, 0, &c.global_flags[catalog::CORE_FLAGS..]);
             }
         }
-        "exit-codes" => out += &format!("EXIT CODES\n{EXIT_CODES}\n"),
+        "exit-codes" => {
+            heading(&mut out, "Exit codes", colour);
+            out += &format!("{EXIT_CODES}\n");
+        }
         "environment" => {
-            out += "ENVIRONMENT\n";
+            heading(&mut out, "Environment", colour);
             for e in &c.environment {
                 let why = if e.default.is_empty() { e.usage.to_string() } else { format!("{} (default {})", e.usage, e.default) };
                 row(&mut out, "  ", 23, e.name, &why);
             }
             out += &format!(
-                "\nWhich registry: --dev, then KROWK_API_URL, then KROWK_DEV, then the default.\n\nFILES\n  Credentials live in {} (0600).\n  Everything else krowk keeps is beside them: ~/.krowk, or KROWK_HOME.\n  Config lives in {}, and per repository in\n  <git-root>/.krowk/config.json.\n",
-                files.credentials, files.config,
+                "\nWhich registry: --dev, then KROWK_API_URL, then KROWK_DEV, then the default.\n\n{}\n  Credentials live in {} (0600).\n  Everything else krowk keeps is beside them: ~/.krowk, or KROWK_HOME.\n  Config lives in {}, and per repository in\n  <git-root>/.krowk/config.json.\n",
+                bold(colour, "Files"),
+                files.credentials,
+                files.config,
             );
         }
-        "links" => out += &format!("{LINKS}\n"),
+        "links" => out += &format!("\n{LINKS}\n"),
         _ => return None,
     }
     out.pop();
     Some(out)
 }
 
-fn heading(out: &mut String, title: &str) {
+fn heading(out: &mut String, title: &str, colour: bool) {
     out.push('\n');
-    out.push_str(title);
+    out.push_str(&bold(colour, title));
     out.push('\n');
+}
+
+fn bold(colour: bool, s: &str) -> String {
+    crate::output::paint(colour, crate::output::BOLD, s)
 }
 
 /// Rows of a label and what it says, the text starting `width` columns in.
@@ -243,12 +335,12 @@ fn flag_rows(out: &mut String, width: usize, flags: &[Flag]) {
 }
 
 /// One command's own help: the catalog read back as text.
-pub fn command_help(cmd: &Command, globals: &[Flag]) -> String {
+pub fn command_help(cmd: &Command, globals: &[Flag], colour: bool) -> String {
     // The title and the `about` are held under 80 columns by the tests below;
     // only a usage runs long enough to need wrapping.
-    let mut out = format!("krowk {} — {}\n", cmd.name, cmd.summary);
+    let mut out = format!("{}\n", bold(colour, &format!("krowk {} — {}", cmd.name, cmd.summary)));
     if !cmd.usage.is_empty() {
-        out += "\nUSAGE\n";
+        heading(&mut out, "Usage", colour);
         wrap(&mut out, "  ", 6, cmd.usage);
     }
     let about = catalog::about(&cmd.name);
@@ -257,7 +349,7 @@ pub fn command_help(cmd: &Command, globals: &[Flag]) -> String {
     }
     if !cmd.subcommands.is_empty() {
         // Each under the group's name, `krowk uploads` read as said.
-        out += &format!("\nCOMMANDS (krowk {} …)\n", cmd.name);
+        heading(&mut out, &format!("Commands (krowk {} …)", cmd.name), colour);
         let prefix = format!("krowk {} ", cmd.name);
         let width = cmd.subcommands.iter().map(|s| s.usage.len() - prefix.len() + 2).max().unwrap_or(0).min(28);
         for s in &cmd.subcommands {
@@ -267,13 +359,13 @@ pub fn command_help(cmd: &Command, globals: &[Flag]) -> String {
     let labels: Vec<String> = cmd.args.iter().map(arg_label).collect();
     let width = labels.iter().map(|l| l.len() + 2).chain(cmd.flags.iter().map(|f| flag_label(f).chars().count() + 2)).max().unwrap_or(0).min(28);
     if !cmd.args.is_empty() {
-        out += "\nARGUMENTS\n";
+        heading(&mut out, "Arguments", colour);
         for (label, a) in labels.iter().zip(&cmd.args) {
             row(&mut out, "  ", width, label, a.summary);
         }
     }
     if !cmd.flags.is_empty() {
-        out += "\nFLAGS\n";
+        heading(&mut out, "Flags", colour);
         flag_rows(&mut out, width, &cmd.flags);
     }
     // Every command takes them, so they are named here and explained once.
@@ -281,7 +373,7 @@ pub fn command_help(cmd: &Command, globals: &[Flag]) -> String {
     for f in globals.iter().filter(|f| f.aliases.is_empty()) {
         out += &format!(" --{}", f.name);
     }
-    out + " — `help flags`"
+    out + " — see `help flags`"
 }
 
 fn arg_label(a: &super::catalog::Arg) -> String {
@@ -316,15 +408,15 @@ mod tests {
 
     #[test]
     fn the_overview_fits_on_one_screen() {
-        let page = help(&catalog::catalog("0.11.0-rc.1"), false);
-        assert!(page.lines().count() <= 45, "{} lines:\n{page}", page.lines().count());
+        let page = help(&catalog::catalog("0.11.0-rc.1"), false, false);
+        assert!(page.lines().count() <= 52, "{} lines:\n{page}", page.lines().count());
         fits(&page);
     }
 
     #[test]
     fn help_all_lists_every_command_the_build_has_on_one_line_each() {
         let c = catalog::catalog("dev");
-        let page = help(&c, true);
+        let page = help(&c, true, false);
         fits(&page);
         for leaf in c.leaves() {
             let built = cfg!(feature = "sessions") || !matches!(leaf.name.split(' ').next(), Some("sessions" | "pricing"));
@@ -339,15 +431,15 @@ mod tests {
         let files = Files { credentials: "/home/me/.config/krowk/credentials.json", config: "/home/me/.config/krowk/config.json" };
         let globals = &c.global_flags[..catalog::CORE_FLAGS];
         for (name, _) in TOPICS {
-            let page = topic(name, &c, &files).or_else(|| c.find(&[name.to_string()]).map(|cmd| command_help(&cmd, globals)));
+            let page = topic(name, &c, &files, false).or_else(|| c.find(&[name.to_string()]).map(|cmd| command_help(&cmd, globals, false)));
             fits(&page.unwrap_or_else(|| panic!("no page for {name}")));
         }
-        fits(&topics());
+        fits(&topics(false));
         fits(&greeting("0.11.0-rc.1"));
         assert!(greeting("dev").contains(&c.summary[1..]));
         // Every command's own page, a group's and a leaf's, as `krowk help` prints it.
         for cmd in c.commands.iter().chain(&c.leaves()) {
-            let page = command_help(cmd, globals);
+            let page = command_help(cmd, globals, false);
             assert!(page.contains("--jq"), "{page}");
             fits(&page);
         }

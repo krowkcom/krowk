@@ -16,6 +16,7 @@
 //! Codex's, asked of `codex app-server`'s `account/read`, or `codex login
 //! status` (R-BACK-3).
 
+use crate::output::fix::capitalised;
 use super::{auth, Ctx};
 use crate::output::Format;
 use krowk_api::{fail, Error};
@@ -225,32 +226,27 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
     // status`'s — a power user asks for them, nobody needs them to go on.
     let colour = ctx.colour;
     let dim = |s: &str| crate::output::paint(colour, crate::output::DIM, s);
-    let mut lines = vec![format!("{} {} {instance}", crate::output::paint(colour, crate::output::GREEN, "✓"), capitalised(verb))];
+    let mut lines = vec![crate::output::success(colour, &format!("{} {instance}", capitalised(verb)))];
     let krowk_harness::connect::Summary { facts, notes, signed_in_already } = done.summary(verb == "added");
     let another = signed_in_already.then(|| {
         let (vendor, method) = krowk_harness::instances::kind_connect(kind.tag()).unwrap_or_default();
         format!("krowk connect {vendor} --method {method} --name <new>")
     });
-    lines.push(dim(&format!("  {}", facts.join(" · "))));
-    lines.extend(notes.iter().map(|n| dim(&format!("  ! {n}"))));
+    lines.push(dim(&format!("  {}", capitalised(&facts.join(" · ")))));
+    lines.extend(notes.iter().map(|n| format!("  {}", crate::output::warning(colour, n))));
     let try_it = match &done.default_model {
         Some(_) => "krowk".to_string(),
         None => format!("krowk --model {instance}/{}", connect::default_model(kind.tag()).unwrap_or("<model>")),
     };
     // A stored $VAR that is unset cannot run anything yet.
     if !matches!(&r.stored, krowk_harness::keys::Stored::Env(_) if r.api_key.is_empty()) {
-        lines.push(crate::output::crumb_line("try it", &try_it, colour));
+        lines.push(crate::output::crumb_line("Try it", &try_it, colour));
     }
     if let Some(cmd) = another {
-        lines.push(crate::output::crumb_line("another account", &cmd, colour));
+        lines.push(crate::output::crumb_line("Another account", &cmd, colour));
     }
     let _ = writeln!(ctx.io.stdout, "{}", lines.join("\n"));
     Ok(())
-}
-
-fn capitalised(s: &str) -> String {
-    let mut c = s.chars();
-    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// `krowk disconnect [instance] [--remove]`: signs an instance out the way
@@ -375,8 +371,8 @@ pub(super) fn rename(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let colour = ctx.colour;
     let dim = |s: &str| crate::output::paint(colour, crate::output::DIM, s);
-    let mut lines = vec![format!("{} Renamed {} to {}", crate::output::paint(colour, crate::output::GREEN, "✓"), done.from, done.to)];
-    lines.extend(done.notes().iter().map(|n| dim(&format!("  {n}"))));
+    let mut lines = vec![crate::output::success(colour, &format!("Renamed {} to {}", done.from, done.to))];
+    lines.extend(done.notes().iter().map(|n| dim(&format!("  {}", capitalised(n)))));
     let _ = writeln!(ctx.io.stdout, "{}", lines.join("\n"));
     Ok(())
 }

@@ -411,12 +411,11 @@ pub fn claim_crumb(a: &Artifact) -> Breadcrumb {
 }
 
 fn human_result(r: &UploadResult, quiet: bool, colour: bool, now: &jiff::Zoned) -> String {
-    let tick = paint(colour, GREEN, "✓");
     let mut lines = Vec::new();
     if let [a] = r.artifacts.as_slice() {
-        lines.push(format!("{tick} Uploaded {} → {}", a.filename, card_for(a)));
+        lines.push(success(colour, &format!("Uploaded {} → {}", a.filename, card_for(a))));
     } else {
-        lines.push(format!("{tick} Uploaded {} files", r.artifacts.len()));
+        lines.push(success(colour, &format!("Uploaded {} files", r.artifacts.len())));
         let width = r.artifacts.iter().map(|a| a.filename.len()).max().unwrap_or(0);
         for a in &r.artifacts {
             lines.push(format!("  {:<width$}  {}", a.filename, card_for(a)));
@@ -444,25 +443,25 @@ fn human_result(r: &UploadResult, quiet: bool, colour: bool, now: &jiff::Zoned) 
     }
     lines.push(paint(colour, DIM, &format!("  {}", facts.join(" · "))));
     for note in &r.notes {
-        lines.push(paint(colour, DIM, &format!("  ! {note}")));
+        lines.push(format!("  {}", warning(colour, note)));
     }
     // The claim command is the one breadcrumb worth printing to a person: the
     // token is shown exactly once, by this response.
     for a in r.artifacts.iter().filter(|a| !quiet && !a.claim_token.is_empty()) {
-        lines.push(crumb_line("keep it", &claim_crumb(a).cmd, colour));
+        lines.push(crumb_line("Keep it", &claim_crumb(a).cmd, colour));
     }
     // The block goes last, so whoever copies the final thing shown copies it.
     let block = markdown_result(r);
     if !quiet && !block.is_empty() {
-        lines.extend([String::new(), paint(colour, DIM, "  paste this:"), block]);
+        lines.extend([String::new(), paint(colour, DIM, "  Paste this:"), block]);
     }
     lines.join("\n")
 }
 
-/// A breadcrumb for a person: the label dimmed, the command not, because the
-/// command is what gets selected and pasted.
+/// A breadcrumb for a person: the label dimmed and the command in cyan,
+/// because the command is what gets selected and pasted.
 pub fn crumb_line(label: &str, cmd: &str, colour: bool) -> String {
-    format!("{}  {cmd}", paint(colour, DIM, &format!("  {label}:")))
+    format!("{} {}", paint(colour, DIM, &format!("  {label}:")), paint(colour, CYAN, cmd))
 }
 
 /// What scoped a page, so the next page's command is the same query.
@@ -510,7 +509,7 @@ fn count(n: usize, noun: &str) -> String {
 
 fn human_list(p: &Page, l: &Listing, colour: bool, now: &jiff::Zoned) -> String {
     if p.artifacts.is_empty() {
-        return paint(colour, DIM, "no artifacts");
+        return paint(colour, DIM, "No artifacts.");
     }
     let name_w = p.artifacts.iter().map(|a| a.filename.len()).max().unwrap_or(0);
     let size_w = p.artifacts.iter().map(|a| human_bytes(a.byte_size).len()).max().unwrap_or(0);
@@ -531,7 +530,7 @@ fn human_list(p: &Page, l: &Listing, colour: bool, now: &jiff::Zoned) -> String 
         lines.push(line);
     }
     if !p.next.is_empty() {
-        lines.push(paint(colour, DIM, &format!("more: {}", next_page_cmd("krowk uploads list", l, &p.next))));
+        lines.push(crumb_line("More", &next_page_cmd("krowk uploads list", l, &p.next), colour));
     }
     lines.join("\n")
 }
@@ -552,7 +551,7 @@ pub fn claimed(a: &Artifact, f: Format, quiet: bool, colour: bool, now: &jiff::Z
     if f == Format::Human {
         let mut said = human_claimed(a, colour);
         if !quiet && a.run_slug().is_empty() {
-            said += &format!("\n{}", crumb_line("group it", &attach_crumb(a).cmd, colour));
+            said += &format!("\n{}", crumb_line("Group it", &attach_crumb(a).cmd, colour));
         }
         return said;
     }
@@ -589,12 +588,12 @@ pub fn key(k: &Key, f: Format, quiet: bool, colour: bool) -> String {
         );
     }
     let workspace = if k.workspace_name.is_empty() { k.workspace.clone() } else { format!("{} ({})", k.workspace_name, k.workspace) };
-    let mut lines = vec![format!("{} key valid  {}", paint(colour, GREEN, "✓"), k.key_id), format!("  {:<11} {workspace}", "workspace")];
+    let mut lines = vec![success(colour, &format!("Key {} is valid", k.key_id)), format!("  {:<11} {workspace}", "Workspace")];
     if !k.name.is_empty() {
-        lines.push(format!("  {:<11} {}", "name", k.name));
+        lines.push(format!("  {:<11} {}", "Name", k.name));
     }
     if !k.expires_at.is_empty() {
-        lines.push(format!("  {:<11} {}", "expires", k.expires_at));
+        lines.push(format!("  {:<11} {}", "Expires", k.expires_at));
     }
     lines.join("\n")
 }
@@ -646,19 +645,19 @@ pub fn stored_key(l: &Login, f: Format, quiet: bool, colour: bool) -> String {
         }
         return ok(l, summary, vec![next]);
     }
-    let tick = paint(colour, GREEN, "✓");
     let mut lines = if l.confirmed {
-        vec![format!("{tick} key {} stored in {}", l.key_id, l.path), format!("  uploads land in {}", l.workspace)]
+        vec![success(colour, &format!("Stored key {} in {}", l.key_id, l.path)), format!("  Uploads land in {}", l.workspace)]
     } else {
         vec![
-            format!("{tick} token stored in {}", l.path),
-            format!("  {} — {}; run `krowk whoami` once the registry is reachable", paint(colour, DIM, "unconfirmed"), l.reason),
+            success(colour, &format!("Stored the token in {}", l.path)),
+            format!("  {}", warning(colour, &format!("Not confirmed yet — {}", l.reason))),
+            crumb_line("Check it once the registry is reachable", "krowk whoami", colour),
         ]
     };
     if l.shadowed {
         lines.push(format!(
             "  {}",
-            paint(colour, DIM, "! KROWK_TOKEN is set and wins over this file, so uploads use that key instead — unset it to use the one just stored")
+            warning(colour, "KROWK_TOKEN is set and wins over this file, so uploads use that key instead — unset it to use the one just stored")
         ));
     }
     lines.join("\n")
@@ -680,9 +679,9 @@ pub fn authorizing(a: &Authorization, f: Format, colour: bool) -> String {
     let head = if a.opened { "Your browser is opening — confirm the code there" } else { "Open this page and confirm the code" };
     [
         head.to_string(),
-        format!("  {}  {}", paint(colour, DIM, "code"), a.code),
-        format!("  {}  {}", paint(colour, DIM, "page"), a.page),
-        paint(colour, DIM, "  waiting for approval, Ctrl-C to stop"),
+        format!("  {}  {}", paint(colour, DIM, "Code"), paint(colour, BOLD, &a.code)),
+        format!("  {}  {}", paint(colour, DIM, "Page"), a.page),
+        paint(colour, DIM, "  Waiting for approval… (Ctrl-C to stop)"),
         String::new(),
     ]
     .join("\n")
@@ -695,10 +694,8 @@ fn human_claimed(a: &Artifact, colour: bool) -> String {
     }
     facts.push("kept for good".into());
     format!(
-        "{} Claimed {} → {}\n{}",
-        paint(colour, GREEN, "✓"),
-        a.filename,
-        card_for(a),
+        "{}\n{}",
+        success(colour, &format!("Claimed {} → {}", a.filename, card_for(a))),
         paint(colour, DIM, &format!("  {}", facts.join(" · ")))
     )
 }
@@ -734,9 +731,9 @@ pub fn removed(slug: &str, f: Format, quiet: bool, colour: bool) -> String {
         return if quiet { encode(&data) } else { ok(data, format!("{slug} taken down"), Vec::new()) };
     }
     format!(
-        "{} Took {slug} down\n{}",
-        paint(colour, GREEN, "✓"),
-        paint(colour, DIM, "  the bytes are gone for good, and the link now says so")
+        "{}\n{}",
+        success(colour, &format!("Took {slug} down")),
+        paint(colour, DIM, "  The bytes are gone for good, and the link now says so.")
     )
 }
 
@@ -744,13 +741,15 @@ pub const STATUS_FINISHED: &str = "finished";
 
 /// A run, for `runs start` and `runs finish`: what just happened to it.
 pub fn run(r: &Run, f: Format, quiet: bool, colour: bool) -> String {
-    let tick = paint(colour, GREEN, "✓");
     match f {
-        Format::Human | Format::Markdown => match r.status.as_str() {
-            STATUS_FINISHED => format!("{tick} Finished run {}", r.slug),
-            "open" => format!("{tick} Started run {}", r.slug),
-            s => format!("{tick} Run {} is {s}", r.slug),
-        },
+        Format::Human | Format::Markdown => success(
+            colour,
+            &match r.status.as_str() {
+                STATUS_FINISHED => format!("Finished run {}", r.slug),
+                "open" => format!("Started run {}", r.slug),
+                s => format!("Run {} is {s}", r.slug),
+            },
+        ),
         _ if quiet => encode(r),
         _ => ok(r, format!("run {} is {}", r.slug, r.status), run_crumbs(r, true)),
     }
@@ -793,7 +792,7 @@ pub fn run_list(p: &RunPage, l: &Listing, f: Format, quiet: bool, colour: bool) 
         return ok(p, count(p.runs.len(), "run"), crumbs);
     }
     if p.runs.is_empty() {
-        return paint(colour, DIM, "no runs");
+        return paint(colour, DIM, "No runs.");
     }
     let slug_w = p.runs.iter().map(|r| r.slug.len()).max().unwrap_or(0);
     let status_w = p.runs.iter().map(|r| r.status.len()).max().unwrap_or(0);
@@ -810,7 +809,7 @@ pub fn run_list(p: &RunPage, l: &Listing, f: Format, quiet: bool, colour: bool) 
         })
         .collect();
     if !p.next.is_empty() {
-        lines.push(paint(colour, DIM, &format!("more: {}", next_page_cmd("krowk runs list", &l, &p.next))));
+        lines.push(crumb_line("More", &next_page_cmd("krowk runs list", &l, &p.next), colour));
     }
     lines.join("\n")
 }
@@ -825,10 +824,10 @@ pub fn run_detail(r: &Run, f: Format, quiet: bool, colour: bool) -> String {
     }
     let mut lines = vec![format!("{}  {}", r.slug, paint(colour, DIM, &r.status))];
     if !r.started_at.is_empty() {
-        lines.push(format!("  {:<13} {}", "started", r.started_at));
+        lines.push(format!("  {:<13} {}", "Started", r.started_at));
     }
     if !r.finished_at.is_empty() {
-        lines.push(format!("  {:<13} {}", "finished", r.finished_at));
+        lines.push(format!("  {:<13} {}", "Finished", r.finished_at));
     }
     // Metadata is whatever the caller recorded, printed as it arrived; sorted
     // so the same run always prints the same way.
@@ -896,8 +895,8 @@ fn clip_label(s: &str) -> String {
 }
 
 /// A failure. JSON hands back the body as it is; a person gets the fix as a
-/// sentence, the code as a dim aside, and each command it names on a line of
-/// its own.
+/// headline, what else it says under it, each command it names on a line of
+/// its own, and the code last, for a search or a bug report.
 pub fn error(err: &Error, f: Format, quiet: bool, colour: bool) -> String {
     let mut body = err.body.clone();
     if err.status != 0 {
@@ -908,14 +907,8 @@ pub fn error(err: &Error, f: Format, quiet: bool, colour: bool) -> String {
     }
     let code = body.get("error").and_then(Value::as_str).unwrap_or_default().to_string();
     let said = fix::fix_lines(body.get("fix").and_then(Value::as_str).unwrap_or_default());
-    let mut head = format!("{} {}", paint(colour, RED, "✗"), said.first().map_or(code.as_str(), |l| l.say.as_str()));
-    if err.status != 0 {
-        head += &paint(colour, DIM, &format!("  (HTTP {})", err.status));
-    }
-    let mut lines = vec![head];
-    if !said.is_empty() {
-        lines.push(paint(colour, DIM, &format!("  ({code})")));
-    }
+    let head = said.first().map_or(code.as_str(), |l| l.say.as_str());
+    let mut lines = vec![format!("{} {}", paint(colour, RED, "✗"), paint(colour, BOLD, head))];
     for (k, v) in &body {
         if matches!(k.as_str(), "error" | "fix" | "retryable" | "status") {
             continue;
@@ -924,25 +917,29 @@ pub fn error(err: &Error, f: Format, quiet: bool, colour: bool) -> String {
             let mut names: Vec<&String> = fields.keys().collect();
             names.sort();
             for name in names {
-                lines.push(paint(colour, DIM, &format!("  {name}: {}", join_values(&fields[name]))));
+                lines.push(paint(colour, DIM, &format!("  {}: {}", fix::capitalised(name), join_values(&fields[name]))));
             }
             continue;
         }
-        lines.push(paint(colour, DIM, &format!("  {k}: {}", plain_value(v))));
+        lines.push(paint(colour, DIM, &format!("  {}: {}", fix::capitalised(k), plain_value(v))));
     }
     for (i, line) in said.iter().enumerate() {
-        if i > 0 {
-            lines.push(paint(colour, DIM, &format!("  {}", line.say)));
+        if i > 0 && !line.say.is_empty() {
+            lines.push(format!("  {}", line.say));
+        }
+        if !line.cmd.is_empty() {
+            lines.push(crumb_line("Try", &line.cmd, colour));
         }
         if !line.then.is_empty() {
             lines.push(paint(colour, DIM, &format!("  {}", line.then)));
         }
-        if !line.cmd.is_empty() {
-            lines.push(crumb_line("try", &line.cmd, colour));
-        }
     }
     if body.get("retryable") == Some(&Value::Bool(true)) {
-        lines.push(paint(colour, DIM, "  retryable: yes"));
+        lines.push(paint(colour, DIM, "  This may pass if retried."));
+    }
+    if !said.is_empty() {
+        let status = if err.status != 0 { format!(" · HTTP {}", err.status) } else { String::new() };
+        lines.push(paint(colour, DIM, &format!("  Code: {code}{status}")));
     }
     lines.join("\n")
 }
@@ -961,12 +958,32 @@ fn join_values(v: &Value) -> String {
     }
 }
 
+pub(crate) const BOLD: &str = "1";
 pub(crate) const DIM: &str = "2";
 pub(crate) const GREEN: &str = "32";
 const RED: &str = "31";
+pub(crate) const YELLOW: &str = "33";
+const CYAN: &str = "36";
 
 pub fn paint(colour: bool, code: &str, s: &str) -> String {
     if colour { format!("\x1b[{code}m{s}\x1b[0m") } else { s.to_string() }
+}
+
+/// Whether a stream gets colour: a terminal, unless NO_COLOR is set
+/// (no-color.org) or the terminal says it cannot show any.
+pub fn colour_for(tty: bool, env: &dyn Fn(&str) -> String) -> bool {
+    tty && env("NO_COLOR").is_empty() && env("TERM") != "dumb"
+}
+
+/// Something that worked: a green tick, then what happened.
+pub fn success(colour: bool, said: &str) -> String {
+    format!("{} {said}", paint(colour, GREEN, "✓"))
+}
+
+/// Something worth knowing that stopped nothing: a yellow bang, then the
+/// sentence, capitalised.
+pub fn warning(colour: bool, said: &str) -> String {
+    format!("{} {}", paint(colour, YELLOW, "!"), fix::capitalised(said))
 }
 
 #[cfg(test)]
@@ -1012,7 +1029,7 @@ mod tests {
         let e = fail("not_authenticated", "no key to verify — run `krowk login --token krowk_sk_...`, or upload anonymously");
         assert_eq!(
             error(&e, Format::Human, false, false),
-            "✗ No key to verify.\n  (not_authenticated)\n  try:  krowk login --token krowk_sk_..."
+            "✗ No key to verify.\n  Try: krowk login --token krowk_sk_...\n  Or upload anonymously.\n  Code: not_authenticated"
         );
         let json: Value = serde_json::from_str(&error(&e, Format::Json, false, false)).unwrap();
         assert_eq!((json["ok"].as_bool(), json["error"]["error"].as_str()), (Some(false), Some("not_authenticated")));

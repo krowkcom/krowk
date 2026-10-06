@@ -4,7 +4,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "bad_flag",
-    "fix": "flag provided but not defined: -nope — run `krowk --help`",
+    "fix": "unknown flag --nope; run `krowk help push`",
     "retryable": false
   }
 }
@@ -16,7 +16,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "bad_flag",
-    "fix": "flag provided but not defined: -nope — run `krowk --help`",
+    "fix": "unknown flag --nope; run `krowk --help`",
     "retryable": false
   }
 }
@@ -28,7 +28,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "bad_flag",
-    "fix": "invalid value \"notanumber\" for flag -limit: parse error — run `krowk --help`",
+    "fix": "--limit takes a whole number, not \"notanumber\"; run `krowk help sessions`",
     "retryable": false
   }
 }

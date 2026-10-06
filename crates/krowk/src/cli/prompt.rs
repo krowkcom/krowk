@@ -83,7 +83,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     let (sandbox, permission_mode) = sandbox_and_mode(&ctx.f.sandbox, ctx.f.daemon, flag_mode.is_some() || settings_chose, permission_mode, runs_native, &here)?;
     permissions.sandbox = sandbox;
     for n in notices {
-        let _ = writeln!(ctx.io.stderr, "! {n}");
+        ctx.warn(&n);
     }
     let cfg = HostConfig {
         sessions_dir,
@@ -108,7 +108,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     if let Some(id) = &outcome.session_id
         && let Err(e) = sessions::project_native(ctx.io.env, id)
     {
-        let _ = writeln!(ctx.io.stderr, "! the session is saved, but krowk.db was not updated: {} — `krowk sessions sync` retries", e.fix());
+        ctx.warn(&format!("the session is saved, but krowk.db was not updated: {} — `krowk sessions sync` retries", e.fix()));
     }
     if let Some(e) = outcome.error {
         return Err(engine_error(&e.code, &e.message, e.status));
@@ -439,7 +439,7 @@ pub(super) fn ask_trust(store: &trust::Store, root: &std::path::Path, vendor: &s
     }
     if let Err(e) = store.trust(root) {
         use std::io::Write as _;
-        let _ = writeln!(std::io::stderr(), "! trusted for this run, but not remembered: {e}");
+        let _ = writeln!(std::io::stderr(), "! Trusted for this run, but not remembered: {e}");
     }
     true
 }

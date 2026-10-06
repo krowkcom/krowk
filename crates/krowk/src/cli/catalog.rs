@@ -279,11 +279,11 @@ fn global_flag() -> Flag {
 }
 
 #[cfg(feature = "harness")]
-const SUMMARY: &str = "a coding agent harness: one session, any machine, model or agent";
+const SUMMARY: &str = "A coding agent harness: one session, any machine, model or agent";
 // The lean build has no agent: publishing is all it does, so that is all it
 // says it is.
 #[cfg(not(feature = "harness"))]
-const SUMMARY: &str = "permalinks for agent output";
+const SUMMARY: &str = "Permalinks for agent output";
 
 pub fn catalog(version: &str) -> Catalog {
     let file = Arg { repeated: true, ..arg("file", "Path to upload", true) };
@@ -917,11 +917,11 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     // devices carry a session from one machine to the next, so they sit here:
     // a heading of their own would push the overview past one screen.
     #[cfg(feature = "harness")]
-    ("AGENT", &["connect", "disconnect", "status", "sessions", "sync", "devices"]),
-    ("PUBLISH", &["push", "runs", "uploads", "claim"]),
-    ("ACCOUNT", &["login", "logout", "whoami", "workspaces", "auth"]),
+    ("Agent", &["connect", "disconnect", "status", "sessions", "sync", "devices"]),
+    ("Publish", &["push", "runs", "uploads", "claim"]),
+    ("Account", &["login", "logout", "whoami", "workspaces", "auth"]),
     (
-        "OTHER",
+        "Other",
         &[
             #[cfg(feature = "harness")]
             "providers",

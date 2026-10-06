@@ -1,5 +1,5 @@
 # The full build's overview leads with the agent: bare `krowk`, `-p`, the
-# AGENT group and --model / --resume. Its `--all` lists connect, disconnect,
+# Agent group and --model / --resume. Its `--all` lists connect, disconnect,
 # status and providers besides.
 krowk help --format human
 krowk help --all --format human

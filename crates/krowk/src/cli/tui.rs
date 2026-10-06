@@ -167,7 +167,7 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
     // since is read again on the way out.
     for id in outcome.left.iter().chain(&outcome.session_id).filter(|_| !synced) {
         if let Err(e) = projector.project(ctx.io.env, id) {
-            let _ = writeln!(ctx.io.stderr, "! session {id} is saved, but krowk.db was not updated: {} — `krowk sessions sync` retries", e.fix());
+            ctx.warn(&format!("session {id} is saved, but krowk.db was not updated: {} — `krowk sessions sync` retries", e.fix()));
         }
     }
     // Left without waiting for a turn (a second Ctrl-C, SIGTERM or SIGHUP):

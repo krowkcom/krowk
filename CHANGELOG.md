@@ -101,6 +101,26 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **krowk's messages read like sentences, and failures say what to try.**
+  An error leads with what went wrong in bold, puts the command that fixes
+  it on a `Try:` line of its own, and ends with its code. It no longer drops
+  the alternative a fix offers ("…, or upload anonymously"). A mistyped
+  command, subcommand, flag or help topic gets a "did you mean". Flag errors
+  are plain English (`unknown flag --nope`, `--limit takes a whole number`)
+  rather than Go's `flag provided but not defined: -nope`, and point at the
+  command's own help. Bare `krowk runs` names the subcommands it takes
+  instead of calling `runs` unknown. Successes, warnings (a yellow `!`),
+  labels and empty lists are capitalised, and `krowk doctor` shows a
+  checklist instead of raw JSON. Colour follows `NO_COLOR` and `TERM=dumb`,
+  and an error is coloured only when stderr is a terminal. The JSON
+  envelopes are unchanged except for the `fix` wording.
+- **`krowk --help` is the readable page even when piped.** An agent running
+  `krowk --help` used to get the whole command catalog as about 50 KB of JSON.
+  It now gets the overview, which has an Examples section and points to the
+  new `krowk help agents` page. That page explains the JSON envelope,
+  breadcrumbs, exit codes and which command answers which task.
+  `krowk help --json`, or `--jq`, still prints the catalog. Help headings
+  are in title case and bold on a terminal.
 - **What you say in a session is shown in markdown, as answers are.**
   `` `code` `` is in the code colour, `**bold**` is bold, and links, lists,
   quotes and fenced blocks look as they do in an answer, all on the band of

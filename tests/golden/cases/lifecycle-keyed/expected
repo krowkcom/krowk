@@ -366,7 +366,7 @@ exit: 0
 $ krowk runs show {RUN} --format human
 stdout:
 <run_1>  open
-  started       <time>
+  Started       <time>
   krowk.client  krowk-cli/0.0.0-golden
   vcs.change.title the work
 exit: 0
@@ -873,8 +873,8 @@ exit: 0
 $ krowk runs show {RUN} --format human
 stdout:
 <run_1>  finished
-  started       <time>
-  finished      <time>
+  Started       <time>
+  Finished      <time>
   krowk.client  krowk-cli/0.0.0-golden
   vcs.change.title the work
 exit: 0

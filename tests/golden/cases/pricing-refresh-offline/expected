@@ -19,7 +19,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`pricing` is not a krowk command — run `krowk --help`",
+    "fix": "the pricing command needs a subcommand: refresh; run `krowk help pricing`",
     "retryable": false
   }
 }
@@ -31,7 +31,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`pricing bogus` is not a krowk command — run `krowk --help`",
+    "fix": "`pricing bogus` is not a krowk command; the pricing command takes refresh; run `krowk help pricing`",
     "retryable": false
   }
 }

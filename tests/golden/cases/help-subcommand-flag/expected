@@ -1,5 +1,133 @@
 $ krowk push --help
 stdout:
+krowk push — Upload files, get a link for each
+
+Usage
+  krowk push <file...> [flags]
+
+Run metadata — the pull request, the links, the references, the session — is
+recorded on a run, and a run belongs to a workspace, so it needs an API key.
+Without one an upload still works: it lands anonymously, expires within a
+day, and comes back with a claim token that `krowk claim` spends to move it
+into a workspace — where a paid plan keeps it and a free one gives it another
+day.
+
+Arguments
+  <file...>                Path to upload
+
+Flags
+  --run <string>           Attach to an existing run instead of opening one. Its
+                           slug, or a link carrying it
+  --caption <string>       What this file shows, recorded on the artifact as
+                           `krowk.caption` and used wherever it is pasted.
+                           Repeat to caption several files, in the order they
+                           are given
+  --destination <string>   Print what this tool wants pasted into it: the krowk
+                           block for github, linear and the like, the bare link
+                           for the ones that unfurl it themselves, like slack. A
+                           tool krowk has not been told about gets the block
+  --private                Upload where only this workspace can read it. The
+                           image still embeds — the byte URL is the capability —
+                           but the card opens only for a signed-in member, reads
+                           as not found to everyone else, and unfurls nowhere.
+                           Needs an API key
+  --pull-request <string>  Pull request the work belongs to
+  --link <string>          Link this work is about — the issue, the spec, the
+                           discussion. An absolute http(s) URL, repeatable up to
+                           20, recorded on the run as `krowk.links`; label or
+                           classify each with --link-title and --link-rel
+  --link-title <string>    What to call the --link before it, instead of its
+                           URL. One line
+  --link-rel <string>      What the --link before it is: tracks, fixes, spec,
+                           discussion, source, supersedes — or a word of your
+                           own
+  --reference <string>     Related identifier that is not a URL, e.g. a ticket
+                           key — repeat for more than one. A URL is a --link
+  --session <string>       Override the detected agent session ID
+  --title <string>         Title for the work this push belongs to, recorded on
+                           the run. What a pasted link says is the artifact's
+                           --caption
+  --repo <string>          Override the detected repository
+  --commit <string>        Override the detected commit
+  --agent <string>         Override the detected agent
+  --metadata <string>      Extra key=value metadata, repeatable: on push it
+                           lands on each artifact, on `runs start` on the run.
+                           Your value wins over a detected one. Metadata is
+                           public
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk runs start --help
+stdout:
+krowk runs start — Open a run to group uploads under
+
+Usage
+  krowk runs start [flags]
+
+Flags
+  --pull-request <string>  Pull request the work belongs to
+  --link <string>          Link this work is about — the issue, the spec, the
+                           discussion. An absolute http(s) URL, repeatable up to
+                           20, recorded on the run as `krowk.links`; label or
+                           classify each with --link-title and --link-rel
+  --link-title <string>    What to call the --link before it, instead of its
+                           URL. One line
+  --link-rel <string>      What the --link before it is: tracks, fixes, spec,
+                           discussion, source, supersedes — or a word of your
+                           own
+  --reference <string>     Related identifier that is not a URL, e.g. a ticket
+                           key — repeat for more than one. A URL is a --link
+  --session <string>       Override the detected agent session ID
+  --title <string>         Title for the work this push belongs to, recorded on
+                           the run. What a pasted link says is the artifact's
+                           --caption
+  --repo <string>          Override the detected repository
+  --commit <string>        Override the detected commit
+  --agent <string>         Override the detected agent
+  --metadata <string>      Extra key=value metadata, repeatable: on push it
+                           lands on each artifact, on `runs start` on the run.
+                           Your value wins over a detected one. Metadata is
+                           public
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk sessions import --help
+stdout:
+krowk sessions import — Import this machine's agent transcripts
+
+Usage
+  krowk sessions import --from <provider|all> [--dry-run] [--limit N]
+
+Flags
+  --from <string>            Which transcripts to read: claude, cursor,
+                             opencode, ledger (provider usage ledgers), or all.
+                             Required
+  --dry-run                  Count what would be imported and write nothing
+  --limit <int> (default 0)  Read at most this many transcripts per source (0 is
+                             all)
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk uploads --help
+stdout:
+krowk uploads — List, show, attach or delete uploads
+
+Commands (krowk uploads …)
+  create <file...> [flags]  Upload files: the long form of `krowk push`
+  list [flags]              List uploads, newest first: a run's, or the
+                            workspace's
+  show <artifact>           Read one artifact back
+  attach <art> --run <run>  Put an upload under a run afterwards
+  delete <art> [token]      Take an upload down — immediate, cannot be undone
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk push --help --json
+stdout:
 {
   "name": "push",
   "usage": "krowk push <file...> [flags]",
@@ -113,118 +241,7 @@ stdout:
 }
 exit: 0
 
-$ krowk runs start --help
-stdout:
-{
-  "name": "runs start",
-  "usage": "krowk runs start [flags]",
-  "summary": "Open a run to group uploads under",
-  "flags": [
-    {
-      "name": "pull-request",
-      "type": "string",
-      "default": "",
-      "usage": "Pull request the work belongs to"
-    },
-    {
-      "name": "link",
-      "type": "string",
-      "default": "",
-      "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`; label or classify each with --link-title and --link-rel",
-      "repeatable": true
-    },
-    {
-      "name": "link-title",
-      "type": "string",
-      "default": "",
-      "usage": "What to call the --link before it, instead of its URL. One line",
-      "repeatable": true
-    },
-    {
-      "name": "link-rel",
-      "type": "string",
-      "default": "",
-      "usage": "What the --link before it is: tracks, fixes, spec, discussion, source, supersedes — or a word of your own",
-      "repeatable": true
-    },
-    {
-      "name": "reference",
-      "type": "string",
-      "default": "",
-      "usage": "Related identifier that is not a URL, e.g. a ticket key — repeat for more than one. A URL is a --link",
-      "repeatable": true
-    },
-    {
-      "name": "session",
-      "type": "string",
-      "default": "",
-      "usage": "Override the detected agent session ID"
-    },
-    {
-      "name": "title",
-      "type": "string",
-      "default": "",
-      "usage": "Title for the work this push belongs to, recorded on the run. What a pasted link says is the artifact's --caption"
-    },
-    {
-      "name": "repo",
-      "type": "string",
-      "default": "",
-      "usage": "Override the detected repository"
-    },
-    {
-      "name": "commit",
-      "type": "string",
-      "default": "",
-      "usage": "Override the detected commit"
-    },
-    {
-      "name": "agent",
-      "type": "string",
-      "default": "",
-      "usage": "Override the detected agent"
-    },
-    {
-      "name": "metadata",
-      "type": "string",
-      "default": "",
-      "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
-      "repeatable": true
-    }
-  ]
-}
-exit: 0
-
-$ krowk sessions import --help
-stdout:
-{
-  "name": "sessions import",
-  "usage": "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
-  "summary": "Import this machine's agent transcripts",
-  "flags": [
-    {
-      "name": "from",
-      "type": "string",
-      "default": "",
-      "usage": "Which transcripts to read: claude, cursor, opencode, ledger (provider usage ledgers), or all. Required"
-    },
-    {
-      "name": "dry-run",
-      "type": "bool",
-      "default": "false",
-      "usage": "Count what would be imported and write nothing"
-    },
-    {
-      "name": "limit",
-      "type": "int",
-      "default": "0",
-      "usage": "Read at most this many transcripts per source (0 is all)"
-    }
-  ]
-}
-exit: 0
-
-$ krowk uploads --help
+$ krowk uploads --help --json
 stdout:
 {
   "name": "uploads",

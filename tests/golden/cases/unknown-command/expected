@@ -4,7 +4,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`bogus` is not a krowk command — run `krowk --help`",
+    "fix": "`bogus` is not a krowk command — run `krowk --help` for the list",
     "retryable": false
   }
 }
@@ -16,7 +16,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`uploads bogus` is not a krowk command — run `krowk --help`",
+    "fix": "`uploads bogus` is not a krowk command; the uploads command takes create, list, show, attach or delete; run `krowk help uploads`",
     "retryable": false
   }
 }
@@ -28,7 +28,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`runs` is not a krowk command — run `krowk --help`",
+    "fix": "the runs command needs a subcommand: start, list, show or finish; run `krowk help runs`",
     "retryable": false
   }
 }
@@ -40,7 +40,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`auth` is not a krowk command — run `krowk --help`",
+    "fix": "the auth command needs a subcommand: login, logout, token or verify; run `krowk help auth`",
     "retryable": false
   }
 }
@@ -52,7 +52,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`config` is not a krowk command — run `krowk --help`",
+    "fix": "the config command needs a subcommand: show, set or unset; run `krowk help config`",
     "retryable": false
   }
 }

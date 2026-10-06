@@ -2,3 +2,5 @@ krowk push --help
 krowk runs start --help
 krowk sessions import --help
 krowk uploads --help
+krowk push --help --json
+krowk uploads --help --json

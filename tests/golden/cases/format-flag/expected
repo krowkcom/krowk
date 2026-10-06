@@ -179,9 +179,9 @@ $ krowk push a.txt --format human
 stdout:
 ✓ Uploaded a.txt → http://<registry>/a/<art_4>
   5 B · expires tomorrow
-  keep it:  krowk claim <art_4> <claim_4>
+  Keep it: krowk claim <art_4> <claim_4>
 
-  paste this:
+  Paste this:
 **a.txt** · [View preview ↗](http://<registry>/a/<art_4>) · expires <date>
 exit: 0
 

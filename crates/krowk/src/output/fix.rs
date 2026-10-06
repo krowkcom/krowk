@@ -17,9 +17,10 @@ pub fn fix_lines(fix: &str) -> Vec<FixLine> {
 
 /// One clause: what to know, what follows from it after an em dash, and the
 /// backticked krowk command in it, when it has one — in which case the words
-/// that only introduced the command ("run", "try", a trailing colon) go.
+/// that only introduced the command ("run", "try", a trailing colon) go, and
+/// what follows it is kept when it is another way out (", or …", ", then …").
 fn fix_line(clause: &str) -> FixLine {
-    static DANGLING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:\s+(?:run|try|use|with))?\s*[,:—]?\s*$").unwrap());
+    static DANGLING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:(?:^|\s+)(?:run|try|use|with))?\s*[,:—]?\s*$").unwrap());
     static COMMAND: LazyLock<Regex> = LazyLock::new(|| Regex::new("`(krowk [^`]+)`").unwrap());
     let cmd = COMMAND.captures(clause).map(|c| c[1].to_string()).unwrap_or_default();
     let trimmed = clause.trim();
@@ -31,18 +32,28 @@ fn fix_line(clause: &str) -> FixLine {
         let quoted = format!("`{cmd}`");
         let s = say.trim();
         say = DANGLING.replace_all(s.strip_suffix(quoted.as_str()).unwrap_or(s), "").into_owned();
-        then.clear();
+        let after = clause.split_once(quoted.as_str()).map_or("", |(_, rest)| rest);
+        then = match after.strip_prefix(", ").filter(|t| t.starts_with("or ") || t.starts_with("then ")) {
+            Some(t) => t.to_string(),
+            None => String::new(),
+        };
     }
     FixLine { say: sentence(&say), then: sentence(&then), cmd }
 }
 
-/// Capitalised and closed with a full stop, unless it already ends in one.
-pub fn sentence(s: &str) -> String {
-    let s = s.trim();
+/// The first letter in upper case, the rest as it was.
+pub fn capitalised(s: &str) -> String {
     let mut chars = s.chars();
     let Some(first) = chars.next() else { return String::new() };
-    let mut out: String = if first.is_lowercase() { first.to_uppercase().collect() } else { first.to_string() };
-    out.push_str(chars.as_str());
+    first.to_uppercase().chain(chars).collect()
+}
+
+/// Capitalised and closed with a full stop, unless it already ends in one.
+pub fn sentence(s: &str) -> String {
+    let mut out = capitalised(s.trim());
+    if out.is_empty() {
+        return out;
+    }
     if !out.ends_with(['.', '!', '?']) {
         out.push('.');
     }
@@ -59,6 +70,9 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].say, "No key to verify.");
         assert_eq!(lines[0].cmd, "krowk login --token krowk_sk_...");
+        assert_eq!(lines[0].then, "Or upload anonymously.");
+        let alone = fix_lines("unknown flag --nope; run `krowk help push`");
+        assert_eq!((alone[1].say.as_str(), alone[1].cmd.as_str()), ("", "krowk help push"));
         let two = fix_lines("first thing; then run `krowk runs finish run_x`");
         assert_eq!((two[0].say.as_str(), two[1].say.as_str(), two[1].cmd.as_str()), ("First thing.", "Then.", "krowk runs finish run_x"));
     }

@@ -1,3 +1,4 @@
 krowk --help
 krowk help
 krowk -h
+krowk --help --json
