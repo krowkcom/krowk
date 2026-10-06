@@ -186,11 +186,16 @@ pub fn paste_guard_command(exe: &Path) -> String {
 pub fn with_paste_guard(mut args: Vec<String>, command: &str) -> Vec<String> {
     // A JSON string is a TOML basic string, escapes and all.
     let entry = format!("{{matcher=\"^Bash$\",hooks=[{{type=\"command\",command={}}}]}}", Value::String(command.into()));
-    let own = args.iter().position(|a| a.trim_start_matches("--config=").starts_with("hooks.PreToolUse=") && a.trim_end().ends_with(']'));
+    // Only a one-line inline array without comments is added to: anything
+    // else gets a `-c` of its own, so Codex always starts, the guard on.
+    let own = args.iter().position(|a| {
+        let value = a.trim_start_matches("--config=").strip_prefix("hooks.PreToolUse=").map(str::trim);
+        value.is_some_and(|v| v.starts_with('[') && v.ends_with(']') && !v.contains(['#', '\n']))
+    });
     match own {
         Some(i) => {
-            let list = args[i].trim_end().strip_suffix(']').unwrap_or_default().to_string();
-            let sep = if list.trim_end().ends_with('[') { "" } else { "," };
+            let list = args[i].trim_end().strip_suffix(']').unwrap_or_default().trim_end().to_string();
+            let sep = if list.ends_with('[') || list.ends_with(',') { "" } else { "," };
             args[i] = format!("{list}{sep}{entry}]");
         }
         None => args.extend(["-c".to_string(), format!("hooks.PreToolUse=[{entry}]")]),
@@ -1373,6 +1378,11 @@ mod tests {
         let merged = with_paste_guard(vec!["-c".into(), own.into()], &command);
         assert_eq!(merged, ["-c".to_string(), format!("{},{entry}]", own.strip_suffix(']').unwrap())]);
         assert_eq!(with_paste_guard(vec!["-c".into(), "hooks.PreToolUse=[]".into()], &command), ["-c".to_string(), format!("hooks.PreToolUse=[{entry}]")]);
+        let trailing = "hooks.PreToolUse=[{matcher=\"x\",hooks=[]}, ]";
+        assert_eq!(with_paste_guard(vec!["-c".into(), trailing.into()], &command)[1], format!("hooks.PreToolUse=[{{matcher=\"x\",hooks=[]}},{entry}]"), "TOML's trailing comma");
+        // What cannot be added to safely keeps its own `-c`, and Codex starts.
+        let commented = "hooks.PreToolUse=[{matcher=\"x\",hooks=[]}, # mine\n]";
+        assert_eq!(with_paste_guard(vec!["-c".into(), commented.into()], &command), ["-c", commented, "-c", &format!("hooks.PreToolUse=[{entry}]")]);
         for m in [PermissionMode::Default, PermissionMode::Plan, PermissionMode::AcceptEdits] {
             assert_eq!(policy(m), Policy { approval: "on-request", sandbox: "read-only" }, "every edit and command beyond reading is asked about");
         }

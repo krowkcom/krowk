@@ -21,7 +21,8 @@
 
 use crate::permissions::rules;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 
 /// The argument Codex's hook runs krowk with: `krowk __paste-guard`, the
 /// hook's input on stdin, its answer on stdout.
@@ -81,21 +82,27 @@ pub fn hook_main(stdin: &str) -> String {
 /// The arguments after `gh [--repo R] pr|issue create|edit|comment`, each
 /// with whether the shell computes it, when `c` is such a call.
 fn gh_post(c: &rules::Simple) -> Option<Vec<(String, bool)>> {
-    let words = &c.words;
-    let at = words.iter().position(|w| !is_assignment(w) && !matches!(w.as_str(), "env" | "command" | "exec" | "nohup" | "time"))?;
+    let words: Vec<&str> = c.words.iter().map(String::as_str).collect();
+    let at = words.iter().position(|w| !is_assignment(w) && !matches!(*w, "env" | "command" | "exec" | "nohup" | "time"))?;
+    let args = post_args(&words, at)?;
+    Some(c.words.iter().cloned().zip(c.dynamic.iter().copied()).skip(args).collect())
+}
+
+/// Where the arguments start when `words[at]` begins a gh post.
+fn post_args(words: &[&str], at: usize) -> Option<usize> {
     if words[at].rsplit('/').next() != Some("gh") {
         return None;
     }
     let mut noun = at + 1;
     while let Some(w) = words.get(noun) {
-        match w.as_str() {
+        match *w {
             "-R" | "--repo" => noun += 2,
             w if w.starts_with("--repo=") => noun += 1,
             _ => break,
         }
     }
-    let posts = matches!(words.get(noun)?.as_str(), "pr" | "issue") && matches!(words.get(noun + 1)?.as_str(), "create" | "edit" | "comment");
-    posts.then(|| words.iter().zip(&c.dynamic).skip(noun + 2).map(|(w, d)| (w.clone(), *d)).collect())
+    let posts = matches!(*words.get(noun)?, "pr" | "issue") && matches!(*words.get(noun + 1)?, "create" | "edit" | "comment");
+    posts.then_some(noun + 2)
 }
 
 fn is_assignment(word: &str) -> bool {
@@ -108,7 +115,7 @@ fn is_assignment(word: &str) -> bool {
 /// other `--body-file` is the heredoc the command writes it from, else the
 /// file, when it can be read.
 fn bodies_of(args: &[(String, bool)], heredocs: &[Heredoc], cwd: &Path) -> Vec<String> {
-    let feeding = || heredocs.iter().filter(|h| h.feeds_gh()).map(|h| h.body.clone());
+    let feeding = || heredocs.iter().filter(|h| h.feeds_gh_post()).map(|h| h.body.clone());
     let mut out = Vec::new();
     for (flag, value, computed) in body_flags(args) {
         match flag {
@@ -116,7 +123,7 @@ fn bodies_of(args: &[(String, bool)], heredocs: &[Heredoc], cwd: &Path) -> Vec<S
             "--body" => out.push(value),
             _ if matches!(value.as_str(), "-" | "/dev/stdin") => out.extend(feeding()),
             _ => {
-                let written: Vec<String> = heredocs.iter().filter(|h| h.writes(&value)).map(|h| h.body.clone()).collect();
+                let written: Vec<String> = heredocs.iter().filter(|h| h.writes(&value, cwd)).map(|h| h.body.clone()).collect();
                 if written.is_empty() {
                     out.extend(read_body(&cwd.join(&value)));
                 }
@@ -161,24 +168,37 @@ fn read_body(path: &Path) -> Option<String> {
     std::fs::read(path).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
-/// One heredoc: the line that opened it, and its body.
+/// One heredoc: the command line it was opened on, continuation lines
+/// joined, up to the line that opened it; and its body.
 struct Heredoc {
     opener: String,
     body: String,
 }
 
 impl Heredoc {
-    /// Opened on a gh call's lines: the `$(cat <<'EOF'` of a `--body`, or
-    /// the `<<EOF` of a `--body-file -`.
-    fn feeds_gh(&self) -> bool {
-        ["gh ", "--body", " -b ", " -F "].iter().any(|k| self.opener.contains(k))
+    /// Opened on a gh post's own command line: the `$(cat <<'EOF'` of a
+    /// `--body`, or the `<<EOF` of a `--body-file -`.
+    fn feeds_gh_post(&self) -> bool {
+        let words: Vec<&str> = self.opener.split_whitespace().collect();
+        (0..words.len()).any(|at| post_args(&words, at).is_some())
     }
 
-    /// Opened by a redirection into `path`, or a `tee` of it.
-    fn writes(&self, path: &str) -> bool {
-        let names = |rest: &str| rest.trim_start().strip_prefix(path).is_some_and(|after| after.is_empty() || after.starts_with(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '<')));
+    /// Opened by a redirection into `path`, or a `tee` of it, however
+    /// either is spelled: quoted, or by `./`.
+    fn writes(&self, path: &str, cwd: &Path) -> bool {
+        let wanted = normal(&cwd.join(path));
+        let names = |rest: &str| {
+            let target = rest.trim_start().split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '<' | '>')).next().unwrap_or_default();
+            let target = target.trim_matches(|c| c == '\'' || c == '"');
+            !target.is_empty() && normal(&cwd.join(target)) == wanted
+        };
         self.opener.split('>').skip(1).any(names) || self.opener.split("tee ").skip(1).any(names)
     }
+}
+
+/// A path without its `.` components.
+fn normal(path: &Path) -> PathBuf {
+    path.components().filter(|c| *c != Component::CurDir).collect()
 }
 
 /// The command with every heredoc's body taken out, and the heredocs.
@@ -187,17 +207,30 @@ impl Heredoc {
 /// shift in a quoted body — and is left where it is.
 fn heredocs(command: &str) -> (String, Vec<Heredoc>) {
     let lines: Vec<&str> = command.split('\n').collect();
-    let (mut rest, mut docs) = (Vec::new(), Vec::new());
+    // Where each line stands, as it is and with `<<-`'s leading tabs off,
+    // so finding a delimiter's line is a lookup, not a scan.
+    let mut exact: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut tabbed: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (n, l) in lines.iter().enumerate() {
+        exact.entry(l).or_default().push(n);
+        tabbed.entry(l.trim_start_matches('\t')).or_default().push(n);
+    }
+    let (mut rest, mut docs, mut logical) = (Vec::new(), Vec::new(), String::new());
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
+        if !rest.last().is_some_and(|l: &&str| l.ends_with('\\')) {
+            logical.clear();
+        }
+        logical.push_str(line);
+        logical.push(' ');
         rest.push(line);
         i += 1;
         for (delimiter, tabs) in markers(line) {
-            let closes = |l: &&str| (if tabs { l.trim_start_matches('\t') } else { l }) == delimiter;
-            let Some(n) = lines[i..].iter().position(closes) else { continue };
-            docs.push(Heredoc { opener: line.to_string(), body: lines[i..i + n].join("\n") });
-            i += n + 1;
+            let at = (if tabs { &tabbed } else { &exact }).get(delimiter.as_str()).and_then(|ns| ns.get(ns.partition_point(|&n| n < i)));
+            let Some(&close) = at else { continue };
+            docs.push(Heredoc { opener: logical.clone(), body: lines[i..close].join("\n") });
+            i = close + 1;
         }
     }
     (rest.join("\n"), docs)
@@ -415,6 +448,33 @@ mod tests {
         assert!(!refused(&notes), "a heredoc for another file is not the comment");
         let multi = format!("gh pr create --title T \\\n  --body \"$(cat <<'EOF'\nShot: {CARD}\nEOF\n)\"");
         assert!(refused(&multi), "the body flag on a continuation line still opens it");
+    }
+
+    #[test]
+    fn a_heredoc_for_another_command_is_not_the_body() {
+        let commit = format!("git commit -F - <<'EOF'\nfix: see {CARD}\nEOF\ngh pr create --title T --body \"$(cat <<'EOF'\n{}\nEOF\n)\"", block("Fix", CARD));
+        assert!(!refused(&commit), "the commit message is not the pull request's body");
+    }
+
+    #[test]
+    fn a_body_file_is_matched_however_its_path_is_spelled() {
+        let dir = std::env::temp_dir().join(format!("krowk-paste-guard-spelling-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("body.md"), format!("see {CARD}\n")).unwrap();
+        let ok = block("Cart", CARD);
+        for (to, from) in [("\"body.md\"", "body.md"), ("./body.md", "body.md"), ("body.md", "./body.md"), ("'body.md'", "body.md")] {
+            let cmd = format!("cat > {to} <<'EOF'\n{ok}\nEOF\ngh pr comment 1 -F {from}");
+            assert!(refusal(&cmd, &dir).is_none(), "{cmd}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn many_unclosed_shifts_are_judged_quickly() {
+        let body = "a <<b\n".repeat(30_000);
+        let started = std::time::Instant::now();
+        assert!(!refused(&format!("gh pr comment 1 --body '{body}'")));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
     }
 
     #[test]
