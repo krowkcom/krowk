@@ -1482,6 +1482,10 @@ stdout:
       "default": "~/.krowk"
     },
     {
+      "name": "NO_COLOR",
+      "usage": "Set to anything — no colour, even on a terminal (no-color.org); TERM=dumb does the same"
+    },
+    {
       "name": "KROWK_TUI_HOST",
       "usage": "local — the TUI runs its sessions in its own process, not the host daemon"
     }
@@ -2999,6 +3003,10 @@ tty:
       "name": "KROWK_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
       "default": "~/.krowk"
+    },
+    {
+      "name": "NO_COLOR",
+      "usage": "Set to anything — no colour, even on a terminal (no-color.org); TERM=dumb does the same"
     },
     {
       "name": "KROWK_TUI_HOST",

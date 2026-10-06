@@ -78,9 +78,10 @@ fn human(report: &Map<String, Value>, colour: bool) -> String {
         let mark = match text("status") {
             "pass" => paint(colour, crate::output::GREEN, "✓"),
             "skip" => paint(colour, DIM, "-"),
-            _ => paint(colour, crate::output::YELLOW, "!"),
+            "warn" => paint(colour, crate::output::YELLOW, "!"),
+            _ => paint(colour, crate::output::RED, "✗"),
         };
-        lines.push(format!("{mark} {label:<13} {}", text("message")));
+        lines.push(format!("{mark} {label:<13} {}", crate::output::fix::capitalised(text("message"))));
         if !text("hint").is_empty() && text("status") != "pass" {
             lines.push(paint(colour, DIM, &format!("  {:<13} {}", "", crate::output::fix::sentence(text("hint")))));
         }

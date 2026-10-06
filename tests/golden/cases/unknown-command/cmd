@@ -3,3 +3,7 @@ krowk uploads bogus
 krowk runs
 krowk auth
 krowk config
+krowk pussh a.txt
+krowk uploads lsit
+krowk help pussh
+@tty krowk runs

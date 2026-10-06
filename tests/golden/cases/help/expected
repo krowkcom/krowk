@@ -998,6 +998,10 @@ stdout:
       "name": "KROWK_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
       "default": "~/.krowk"
+    },
+    {
+      "name": "NO_COLOR",
+      "usage": "Set to anything — no colour, even on a terminal (no-color.org); TERM=dumb does the same"
     }
   ]
 }

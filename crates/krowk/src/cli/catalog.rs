@@ -478,6 +478,7 @@ pub fn catalog(version: &str) -> Catalog {
             EnvVar { name: "KROWK_AGENT", usage: "Agent name to report", default: "" },
             EnvVar { name: "KROWK_NO_UPDATE_CHECK", usage: "1/true/yes/on — never check for or mention new releases", default: "" },
             EnvVar { name: "KROWK_HOME", usage: "Where krowk keeps its files, an absolute path", default: "~/.krowk" },
+            EnvVar { name: "NO_COLOR", usage: "Set to anything — no colour, even on a terminal (no-color.org); TERM=dumb does the same", default: "" },
             #[cfg(feature = "harness")]
             EnvVar { name: "KROWK_TUI_HOST", usage: "local — the TUI runs its sessions in its own process, not the host daemon", default: "" },
         ],

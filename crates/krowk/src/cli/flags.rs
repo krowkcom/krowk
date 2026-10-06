@@ -162,11 +162,7 @@ pub fn parse(args: &[String]) -> (Flags, Vec<String>, Result<(), String>) {
                 None => (body, None),
             };
             let Some(spec) = lookup(&known, name) else {
-                let names = known.iter().map(|f| f.name);
-                return Err(match super::suggest::closest(name, names) {
-                    Some(near) => format!("unknown flag --{name}; did you mean --{near}?"),
-                    None => format!("unknown flag --{name}"),
-                });
+                return Err(unknown_flag(arg, name, &positionals));
             };
             let value = if spec.kind == catalog::BOOL {
                 inline.unwrap_or_else(|| "true".into())
@@ -193,6 +189,19 @@ pub fn parse(args: &[String]) -> (Flags, Vec<String>, Result<(), String>) {
         Ok(())
     })();
     (f, positionals, result)
+}
+
+/// A flag nobody defined, as it was typed, and the nearest one the command
+/// typed so far takes (the global flags with it), when one is near.
+fn unknown_flag(arg: &str, name: &str, positionals: &[String]) -> String {
+    let typed = arg.split_once('=').map_or(arg, |(flag, _)| flag);
+    let c = catalog::catalog("");
+    let own = c.find(positionals).map(|cmd| cmd.flags).unwrap_or_default();
+    let names = own.iter().chain(&c.global_flags).map(|f| f.name);
+    match super::suggest::closest(name, names) {
+        Some(near) => format!("unknown flag {typed}; did you mean --{near}?"),
+        None => format!("unknown flag {typed}"),
+    }
 }
 
 fn lookup<'a>(known: &'a [Flag], name: &str) -> Option<&'a Flag> {
@@ -413,6 +422,9 @@ mod tests {
     fn mistakes_are_named() {
         assert_eq!(run("push --nope").2.unwrap_err(), "unknown flag --nope");
         assert_eq!(run("push --pirvate").2.unwrap_err(), "unknown flag --pirvate; did you mean --private?");
+        assert_eq!(run("-x").2.unwrap_err(), "unknown flag -x");
+        // Only a flag the command takes is offered: `runs list` has no --title.
+        assert_eq!(run("runs list --titel").2.unwrap_err(), "unknown flag --titel");
         assert_eq!(run("push --run").2.unwrap_err(), "--run needs a value");
         assert!(run("sessions --limit x").2.unwrap_err().contains("-limit"));
         assert!(run("push --private=maybe").2.is_err());

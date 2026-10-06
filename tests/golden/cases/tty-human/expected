@@ -122,10 +122,10 @@ Runs            no
 Credentials     <scratch>/home/.krowk/credentials.json
 Config          global <scratch>/home/.krowk/config.json (absent)
 
-\e[32m✓\e[0m Store         healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)
-\e[33m!\e[0m Pricing       no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build
+\e[32m✓\e[0m Store         Healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)
+\e[33m!\e[0m Pricing       No price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build
 \e[2m                Run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day.\e[0m
-\e[2m-\e[0m Providers     this build runs no model
+\e[2m-\e[0m Providers     This build runs no model
 exit: 0
 
 $ @tty krowk config show

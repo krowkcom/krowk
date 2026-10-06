@@ -907,8 +907,10 @@ pub fn error(err: &Error, f: Format, quiet: bool, colour: bool) -> String {
     }
     let code = body.get("error").and_then(Value::as_str).unwrap_or_default().to_string();
     let said = fix::fix_lines(body.get("fix").and_then(Value::as_str).unwrap_or_default());
-    let head = said.first().map_or(code.as_str(), |l| l.say.as_str());
-    let mut lines = vec![format!("{} {}", paint(colour, RED, "✗"), paint(colour, BOLD, head))];
+    // A fix that opens on its command has no sentence before it: the code,
+    // said as words, stands in.
+    let head = said.first().map(|l| l.say.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| fix::sentence(&code.replace('_', " ")));
+    let mut lines = vec![format!("{} {}", paint(colour, RED, "✗"), paint(colour, BOLD, &head))];
     for (k, v) in &body {
         if matches!(k.as_str(), "error" | "fix" | "retryable" | "status") {
             continue;
@@ -937,10 +939,8 @@ pub fn error(err: &Error, f: Format, quiet: bool, colour: bool) -> String {
     if body.get("retryable") == Some(&Value::Bool(true)) {
         lines.push(paint(colour, DIM, "  This may pass if retried."));
     }
-    if !said.is_empty() {
-        let status = if err.status != 0 { format!(" · HTTP {}", err.status) } else { String::new() };
-        lines.push(paint(colour, DIM, &format!("  Code: {code}{status}")));
-    }
+    let status = if err.status != 0 { format!(" · HTTP {}", err.status) } else { String::new() };
+    lines.push(paint(colour, DIM, &format!("  Code: {code}{status}")));
     lines.join("\n")
 }
 
@@ -961,7 +961,7 @@ fn join_values(v: &Value) -> String {
 pub(crate) const BOLD: &str = "1";
 pub(crate) const DIM: &str = "2";
 pub(crate) const GREEN: &str = "32";
-const RED: &str = "31";
+pub(crate) const RED: &str = "31";
 pub(crate) const YELLOW: &str = "33";
 const CYAN: &str = "36";
 
@@ -1006,6 +1006,15 @@ mod tests {
     }
 
     #[test]
+    fn colour_is_for_a_terminal_that_wants_it() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map_or(String::new(), |(_, v)| v.to_string());
+        assert!(colour_for(true, &env(&[("TERM", "xterm")])));
+        assert!(!colour_for(false, &env(&[])));
+        assert!(!colour_for(true, &env(&[("NO_COLOR", "1")])));
+        assert!(!colour_for(true, &env(&[("TERM", "dumb")])));
+    }
+
+    #[test]
     fn format_resolution_refuses_a_misspelling_even_under_json() {
         assert_eq!(resolve_format("", false, true).unwrap(), Format::Human);
         assert_eq!(resolve_format("", false, false).unwrap(), Format::Json);
@@ -1032,6 +1041,12 @@ mod tests {
             "✗ No key to verify.\n  Try: krowk login --token krowk_sk_...\n  Or upload anonymously.\n  Code: not_authenticated"
         );
         let json: Value = serde_json::from_str(&error(&e, Format::Json, false, false)).unwrap();
+        // No sentence before the command: the code stands in, and a status
+        // is said even with no fix at all.
+        let lead = fail("not_authenticated", "run `krowk login`, or upload anonymously");
+        assert!(error(&lead, Format::Human, false, false).starts_with("✗ Not authenticated.\n  Try: krowk login\n  Or upload anonymously."));
+        let bare = Error { status: 502, ..fail("internal_server_error", "") };
+        assert_eq!(error(&bare, Format::Human, false, false), "✗ Internal server error.\n  Code: internal_server_error · HTTP 502");
         assert_eq!((json["ok"].as_bool(), json["error"]["error"].as_str()), (Some(false), Some("not_authenticated")));
     }
 }

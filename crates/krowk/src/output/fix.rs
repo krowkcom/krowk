@@ -30,8 +30,10 @@ fn fix_line(clause: &str) -> FixLine {
     };
     if !cmd.is_empty() {
         let quoted = format!("`{cmd}`");
-        let s = say.trim();
-        say = DANGLING.replace_all(s.strip_suffix(quoted.as_str()).unwrap_or(s), "").into_owned();
+        // The headline is what comes before the command; the command gets a
+        // line of its own, and what follows it is `then` below.
+        let s = say.split_once(quoted.as_str()).map_or(say.as_str(), |(before, _)| before).trim();
+        say = DANGLING.replace_all(s, "").into_owned();
         let after = clause.split_once(quoted.as_str()).map_or("", |(_, rest)| rest);
         then = match after.strip_prefix(", ").filter(|t| t.starts_with("or ") || t.starts_with("then ")) {
             Some(t) => t.to_string(),
@@ -71,6 +73,10 @@ mod tests {
         assert_eq!(lines[0].say, "No key to verify.");
         assert_eq!(lines[0].cmd, "krowk login --token krowk_sk_...");
         assert_eq!(lines[0].then, "Or upload anonymously.");
+        let mid = fix_lines("-p needs a prompt: `krowk -p \"hi\"`, or pipe one in");
+        assert_eq!((mid[0].say.as_str(), mid[0].then.as_str()), ("-p needs a prompt.", "Or pipe one in."));
+        let lead = fix_lines("run `krowk login`, or upload anonymously");
+        assert_eq!((lead[0].say.as_str(), lead[0].cmd.as_str()), ("", "krowk login"));
         let alone = fix_lines("unknown flag --nope; run `krowk help push`");
         assert_eq!((alone[1].say.as_str(), alone[1].cmd.as_str()), ("", "krowk help push"));
         let two = fix_lines("first thing; then run `krowk runs finish run_x`");

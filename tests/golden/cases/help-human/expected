@@ -250,11 +250,13 @@ stdout:
 krowk help agents — Driving krowk from an AI agent or a script
 
 When stdout is not a terminal, commands answer with one JSON envelope — on
-stdout when they worked, on stderr when they failed (`krowk help --json`
-marks the few that print something else `no_json`). --json asks for it on a
-terminal too, --quiet drops the envelope for the bare record, and --jq
-filters it with no jq binary needed. Nothing waits on a prompt when piped,
-under --json or in CI: a question krowk would ask fails with a fix instead.
+stdout when they worked, on stderr when they failed. Help and --version are
+text unless --json is given, and `krowk help --json` marks the other
+commands that print text `no_json`. --json asks for the envelope on a
+terminal too, --quiet drops it for the bare record, and --jq filters it with
+no jq binary needed. Pickers and confirmations are skipped when piped, under
+--json or in CI, failing with a fix instead; a browser login still waits for
+someone to approve it, and pairing a device needs a person at a terminal.
 
   {"ok": true, "data": {…}, "summary": "…", "breadcrumbs": [{…}]}
   {"ok": false, "error": {"error": "<code>", "fix": "…", "retryable": false}}
@@ -263,8 +265,9 @@ under --json or in CI: a question krowk would ask fails with a fix instead.
 Report `summary`. A breadcrumb's `cmd` is a command left to run, and its
 `description` says what it does; fill in any <placeholder> first. On a
 failure, `fix` says what to change, and `retryable` whether running the same
-command again can help. An upload also carries `paste.markdown` and
-`paste.url`: the forms to put in a pull request or a chat.
+command again can help. An upload's envelope also carries `paste.markdown`
+and `paste.url`, the forms to put in a pull request or a chat; under --quiet
+each artifact carries its own `paste`.
 
 Exit codes
   0 ok · 1 the command was wrong · 2 not found · 3 credentials · 4 refused

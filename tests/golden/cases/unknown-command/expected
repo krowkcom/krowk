@@ -58,3 +58,46 @@ stderr:
 }
 exit: 1
 
+$ krowk pussh a.txt
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "unknown_command",
+    "fix": "`pussh a.txt` is not a krowk command — did you mean `krowk push`?",
+    "retryable": false
+  }
+}
+exit: 1
+
+$ krowk uploads lsit
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "unknown_command",
+    "fix": "`uploads lsit` is not a krowk command — did you mean `krowk uploads list`?",
+    "retryable": false
+  }
+}
+exit: 1
+
+$ krowk help pussh
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "unknown_command",
+    "fix": "`pussh` is not a krowk command or help topic — did you mean `krowk help push`?",
+    "retryable": false
+  }
+}
+exit: 1
+
+$ @tty krowk runs
+tty:
+\e[31m✗\e[0m \e[1mThe runs command needs a subcommand: start, list, show or finish.\e[0m
+\e[2m  Try:\e[0m \e[36mkrowk help runs\e[0m
+\e[2m  Code: unknown_command\e[0m
+exit: 1
+
