@@ -48,13 +48,16 @@ fn no_hooks() -> std::io::Result<PathBuf> {
 }
 
 /// `<home>/no-hooks` when it is krowk's own and empty. Else — no home, a
-/// home on a read-only disk, one with something in its `no-hooks` — a
-/// directory this process made itself under `tmp`, `0700` and under a new
-/// name, so nothing can be waiting in it; another when that one has
-/// filled. Never a path krowk did not make: `/dev/null` is a directory
-/// anyone may create on a Windows drive.
+/// home on a read-only disk, one with something in its `no-hooks` — the
+/// same held to `tmp/krowk-no-hooks-<uid>`, one name per user so processes
+/// without a home share it rather than leave one each. When that is
+/// refused too (another user's, something in it), a directory this
+/// process made itself under a new name, so nothing can be waiting in it;
+/// another when that one has filled. Never a path krowk did not make:
+/// `/dev/null` is a directory anyone may create on a Windows drive.
 fn pick(home: Option<&Path>, tmp: &Path, fresh: &mut Option<PathBuf>) -> std::io::Result<PathBuf> {
-    if let Some(d) = home.map(|h| h.join(crate::home::NO_HOOKS)).filter(|d| empty(d)) {
+    let shared = tmp.join(format!("krowk-no-hooks-{}", user()));
+    if let Some(d) = home.map(|h| h.join(crate::home::NO_HOOKS)).into_iter().chain([shared]).find(|d| empty(d)) {
         return Ok(d);
     }
     if let Some(d) = fresh.as_ref().filter(|d| empty(d)) {
@@ -63,6 +66,19 @@ fn pick(home: Option<&Path>, tmp: &Path, fresh: &mut Option<PathBuf>) -> std::io
     let d = made(tmp)?;
     *fresh = Some(d.clone());
     Ok(d)
+}
+
+/// Who the shared fallback is named for: the uid, or on Windows the
+/// account name (its temp directory is the user's own already).
+#[cfg(unix)]
+fn user() -> String {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    unsafe { libc::getuid() }.to_string()
+}
+
+#[cfg(not(unix))]
+fn user() -> String {
+    crate::home::process_env("USERNAME")
 }
 
 /// Whether `d` is a directory of krowk's own (made when missing) with
@@ -119,7 +135,15 @@ mod tests {
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let id = ["-c", "user.name=t", "-c", "user.email=t@t"];
-        let plain = Command::new("git").args(id).args(["commit", "-q", "--allow-empty", "-m", "plain"]).current_dir(&d).status().unwrap();
+        // The person's own config could move the hooks or want a signature.
+        let plain = Command::new("git")
+            .args(id)
+            .args(["-c", "core.hooksPath=.git/hooks", "-c", "commit.gpgSign=false", "commit", "-q", "--allow-empty", "-m", "plain"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .current_dir(&d)
+            .status()
+            .unwrap();
         assert!(plain.success() && marker.exists(), "the hooks would run");
         std::fs::remove_file(&marker).unwrap();
 
@@ -150,9 +174,13 @@ mod tests {
         assert_eq!(std::fs::metadata(&own).unwrap().permissions().mode() & 0o777, 0o700);
 
         std::fs::write(own.join("post-checkout"), "#!/bin/sh\n").unwrap();
-        let first = pick(Some(&home), &tmp, &mut fresh).unwrap();
-        assert!(first.starts_with(&tmp), "{}", first.display());
-        assert_eq!(std::fs::metadata(&first).unwrap().permissions().mode() & 0o777, 0o700);
+        let shared = pick(Some(&home), &tmp, &mut fresh).unwrap();
+        assert_eq!(shared, tmp.join(format!("krowk-no-hooks-{}", user())));
+        assert_eq!(std::fs::metadata(&shared).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(pick(None, &tmp, &mut fresh).unwrap(), shared, "the same one, while empty");
+        std::fs::write(shared.join("pre-commit"), "#!/bin/sh\n").unwrap();
+        let first = pick(None, &tmp, &mut fresh).unwrap();
+        assert!(first != shared && first.starts_with(&tmp), "{}", first.display());
         assert_eq!(pick(None, &tmp, &mut fresh).unwrap(), first, "the same one, while empty");
         std::fs::write(first.join("pre-commit"), "#!/bin/sh\n").unwrap();
         let second = pick(None, &tmp, &mut fresh).unwrap();
