@@ -15,9 +15,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `subagent` tool `isolation: "worktree"`, or put `isolation: worktree` in
   an agent definition's frontmatter as in Claude Code's agent files (the
   call's value wins), and the subagent runs in a new worktree of your
-  repository at its `HEAD`, on a branch `krowk/<8 hex>`, under
+  repository, on a branch `krowk/<8 hex>`, under
   `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`).
-  Subagents started together no longer overwrite each other's files. When
+  Subagents started together no longer overwrite each other's files. The
+  worktree starts from your files as they are, uncommitted changes
+  included: modified, new and deleted files (not ignored ones) are put in
+  one commit, `krowk: working state for <hex>`, on top of your `HEAD`, and
+  the branch starts there; with nothing uncommitted it starts at `HEAD`.
+  Your index, `HEAD` and files are not touched. When
   it finishes having changed nothing, the worktree and its branch are
   removed. When it changed something, both are kept, and the summary the
   parent agent gets ends with

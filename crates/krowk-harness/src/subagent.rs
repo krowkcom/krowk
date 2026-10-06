@@ -36,7 +36,8 @@
 //!   the call or in the definition, the call's winning): the child works in
 //!   a new git worktree of the parent's repository on a `krowk/<hex>`
 //!   branch (`crate::worktree`), so parallel children that edit do not
-//!   overwrite each other. One it left unchanged is removed when it ends;
+//!   overwrite each other. It starts from the parent's files, uncommitted
+//!   changes included, so a child started mid-edit sees the edit. One it left unchanged is removed when it ends;
 //!   a changed one is kept, and its summary says where.
 
 use crate::agents::AgentDef;

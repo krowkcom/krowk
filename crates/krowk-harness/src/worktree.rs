@@ -14,7 +14,15 @@
 //!   the canonical common git directory, `<hex>` 8 random hex digits. The
 //!   branch is `krowk/<hex>`, which is what the sandbox lets a commit move
 //!   (`crate::sandbox::managed_worktree`).
-//! - **Base**: the HEAD commit of the directory it is made from.
+//! - **Base** (WT14): the working state of the directory it is made from,
+//!   so a child started mid-edit sees the parent's edits. A clean checkout
+//!   gives its HEAD. Otherwise a commit on top of HEAD of what `git add -A`
+//!   would stage — modified, new and deleted files, `.gitignore` respected —
+//!   built in a fresh index file of krowk's, so the parent's index, HEAD and
+//!   files are never touched. `add -A` runs the repository's clean filters
+//!   (git-lfs's, say), as `git status` does: their commands come from
+//!   config, which is the person's own. Every later judgement of the
+//!   worktree (unchanged, commits ahead) is against that commit.
 //! - **One at a time per repository**: `git worktree add` and the like
 //!   write files in the common directory (`config`, `worktrees/`), and two
 //!   at once fail on its `config.lock`. So every change here holds `lock`:
@@ -45,7 +53,8 @@ pub struct Worktree {
     pub path: PathBuf,
     /// The 8 hex digits its directory and branch are named by.
     pub hex: String,
-    /// The commit it was made at.
+    /// The commit it was made at: the parent's HEAD, or a commit on top of
+    /// it holding the parent's uncommitted changes (`working_state`).
     pub base: String,
     /// The repository's common git directory, canonical.
     pub common: PathBuf,
@@ -126,15 +135,15 @@ pub fn prepare(p: &Prepare<'_>) {
     }
 }
 
-/// A new worktree of the repository `cwd` is in, at its HEAD, under
-/// `root`, locked for `owner` (the session that will work in it).
-/// Blocking: off the async runtime.
+/// A new worktree of the repository `cwd` is in, at its working state
+/// (`working_state`), under `root`, locked for `owner` (the session that
+/// will work in it). Blocking: off the async runtime.
 pub fn create(cwd: &Path, root: &Path, owner: &str) -> Result<Worktree, Error> {
     let common = match read(query(cwd)?.args(["rev-parse", "--path-format=absolute", "--git-common-dir"]), "rev-parse") {
         Ok(c) if !c.is_empty() => PathBuf::from(c).canonicalize().map_err(|e| Error::Failed(format!("the repository's git directory: {e}")))?,
         _ => return Err(Error::NotARepository),
     };
-    let base = read(query(cwd)?.args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]), "rev-parse HEAD")
+    let head = read(query(cwd)?.args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]), "rev-parse HEAD")
         .ok()
         .filter(|b| !b.is_empty())
         .ok_or_else(|| Error::Failed("the repository has no commit yet to start a worktree from".into()))?;
@@ -142,8 +151,15 @@ pub fn create(cwd: &Path, root: &Path, owner: &str) -> Result<Worktree, Error> {
     let repo_id = repo_id(&common);
     let dir = root.join(&repo_id);
     std::fs::create_dir_all(&dir).map_err(|e| Error::Failed(format!("create {}: {e}", dir.display())))?;
+    // Hashing the files is the slow part: done before the lock, so
+    // creations at once in one repository do not queue behind it.
+    let tree = working_state(cwd, &head, &dir)?;
     let _held = lock(&common)?;
     let (hex, path) = std::iter::repeat_with(random_hex).map(|h| (h.clone(), dir.join(h))).take(16).find(|(_, p)| !p.exists()).ok_or_else(|| Error::Failed(format!("no free name for a worktree in {}", dir.display())))?;
+    let base = match tree {
+        Some(tree) => commit_state(cwd, &tree, &head, &hex)?,
+        None => head,
+    };
     let wt = Worktree { path, hex, base, common, main, repo_id };
     read(git(cwd)?.args(["worktree", "add", "--quiet", "--no-track", "-b"]).arg(wt.branch()).arg(&wt.path).arg(&wt.base), "worktree add")?;
     if let Err(e) = read(git(&wt.main)?.args(["worktree", "lock", "--reason"]).arg(format!("{LOCK_REASON}{owner}")).arg(&wt.path), "worktree lock") {
@@ -151,6 +167,52 @@ pub fn create(cwd: &Path, root: &Path, owner: &str) -> Result<Worktree, Error> {
         return Err(e);
     }
     Ok(wt)
+}
+
+/// The tree of `cwd`'s working state when it differs from `head`'s: none
+/// for a clean checkout. `git status` judges clean, held to every
+/// untracked file whatever `status.showUntrackedFiles` says; changes it
+/// shows that a tree cannot hold (a submodule's own edits) give `head`'s
+/// tree, so none as well. The tree is built in a new index file in
+/// `scratch`, read from `head`, never the repository's own index.
+fn working_state(cwd: &Path, head: &str, scratch: &Path) -> Result<Option<String>, Error> {
+    let status = read(query(cwd)?.args(["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]), "status")?;
+    if status.is_empty() {
+        return Ok(None);
+    }
+    let index = Scratch(std::path::absolute(scratch.join(format!(".index-{}", random_hex()))).map_err(|e| Error::Failed(format!("the index for the working state: {e}")))?);
+    let staged = || git(cwd).map(|mut c| {
+        c.env("GIT_INDEX_FILE", &index.0);
+        c
+    });
+    read(staged()?.args(["read-tree", head]), "read-tree")?;
+    // `:/` is the whole tree, from wherever in it `cwd` is.
+    read(staged()?.args(["add", "--all", "--", ":/"]), "add")?;
+    let tree = read(staged()?.arg("write-tree"), "write-tree")?;
+    let head_tree = read(query(cwd)?.args(["rev-parse", &format!("{head}^{{tree}}")]), "rev-parse")?;
+    Ok((tree != head_tree).then_some(tree))
+}
+
+/// The commit of the working state `tree` on top of `head`, for the
+/// worktree `hex`. The person's identity when git has one, krowk's when it
+/// has none: it is krowk's commit, and a person without `user.email` set
+/// must still get a worktree.
+fn commit_state(cwd: &Path, tree: &str, head: &str, hex: &str) -> Result<String, Error> {
+    let message = format!("krowk: working state for {hex}");
+    let commit = |identity: &[&str]| read(git(cwd)?.args(identity).args(["commit-tree", tree, "-p", head, "-m", &message]), "commit-tree");
+    commit(&[]).or_else(|_| commit(&["-c", "user.name=krowk", "-c", "user.email=krowk@localhost"]))
+}
+
+/// A scratch index file, gone with its lock file when dropped.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        let mut lock = self.0.clone().into_os_string();
+        lock.push(".lock");
+        let _ = std::fs::remove_file(lock);
+    }
 }
 
 /// When the agent is done: unchanged (HEAD still the base, `git status`
@@ -412,6 +474,87 @@ mod tests {
         assert!(finish(&w).is_err());
         std::fs::rename(w.path.with_extension("moved"), &w.path).unwrap();
         assert!(!git_ok(&main, &["worktree", "list", "--porcelain"]).contains(&format!("locked {LOCK_REASON}s5")), "unlocked though its status could not be read");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A parent mid-edit: the worktree starts from its files, a modified, a
+    /// new, a deleted and a staged one, from a subdirectory and with
+    /// untracked files hidden by config, and is clean there. The parent's
+    /// index, HEAD, diffs and untracked files are as they were, and a child
+    /// that changes nothing is still removed.
+    #[test]
+    fn wt14_a_worktree_starts_from_the_parents_uncommitted_changes() {
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let (base, main, root) = repo("state");
+        std::fs::create_dir_all(main.join("sub")).unwrap();
+        for f in ["b.txt", "c.txt", "sub/d.txt"] {
+            std::fs::write(main.join(f), format!("{f}\n")).unwrap();
+        }
+        git_ok(&main, &["add", "."]);
+        git_ok(&main, &["commit", "-q", "-m", "two"]);
+        git_ok(&main, &["config", "status.showUntrackedFiles", "no"]);
+        std::fs::write(main.join(".git/info/exclude"), "*.log\n").unwrap();
+        std::fs::write(main.join("a.txt"), "modified\n").unwrap();
+        std::fs::write(main.join("new.txt"), "new\n").unwrap();
+        std::fs::remove_file(main.join("c.txt")).unwrap();
+        std::fs::write(main.join("b.txt"), "staged\n").unwrap();
+        git_ok(&main, &["add", "b.txt"]);
+        std::fs::write(main.join("build.log"), "ignored\n").unwrap();
+        let parent = |main: &Path| ["diff", "diff --cached", "rev-parse HEAD", "ls-files --others --exclude-standard"].map(|a| git_ok(main, &a.split(' ').collect::<Vec<_>>()));
+        let before = parent(&main);
+        let index = std::fs::read(main.join(".git/index")).unwrap();
+        let index_mtime = std::fs::metadata(main.join(".git/index")).unwrap().modified().unwrap();
+
+        let w = create(&main.join("sub"), &root, "s1").unwrap();
+        assert_eq!(std::fs::read(main.join(".git/index")).unwrap(), index, "the parent's index is not rewritten");
+        assert_eq!(std::fs::metadata(main.join(".git/index")).unwrap().modified().unwrap(), index_mtime);
+        assert_eq!(parent(&main), before, "the parent's diffs, HEAD and untracked files are as they were");
+        assert_eq!(std::fs::read_to_string(w.path.join("a.txt")).unwrap(), "modified\n");
+        assert_eq!(std::fs::read_to_string(w.path.join("b.txt")).unwrap(), "staged\n");
+        assert_eq!(std::fs::read_to_string(w.path.join("new.txt")).unwrap(), "new\n");
+        assert!(w.path.join("sub/d.txt").is_file());
+        assert!(!w.path.join("c.txt").exists(), "a deleted file is deleted there too");
+        assert!(!w.path.join("build.log").exists(), "an ignored file is not carried");
+        assert_eq!(git_ok(&w.path, &["status", "--porcelain", "--untracked-files=normal"]), "");
+        let head = &before[2];
+        assert_ne!(&w.base, head);
+        assert_eq!(&git_ok(&main, &["rev-parse", &format!("{}^", w.base)]), head, "one commit on top of HEAD");
+        assert_eq!(git_ok(&main, &["log", "-1", "--format=%s", &w.base]), format!("krowk: working state for {}", w.hex));
+        assert_eq!(git_ok(&w.path, &["rev-parse", "HEAD"]), w.base);
+        assert!(std::fs::read_dir(root.join(&w.repo_id)).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with(".index")), "the scratch index is gone");
+        assert_eq!(finish(&w).unwrap(), Finished::Removed, "unchanged from the working state");
+        assert!(!w.path.exists());
+
+        // An edit is counted from the working state, not from HEAD.
+        let w = create(&main, &root, "s2").unwrap();
+        std::fs::write(w.path.join("a.txt"), "the child's\n").unwrap();
+        assert_eq!(finish(&w).unwrap(), Finished::Kept { commits: 0, dirty: true });
+        assert_eq!(parent(&main), before);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A clean parent, or one whose only change is ignored: the branch
+    /// starts at HEAD, with no commit of krowk's.
+    #[test]
+    fn wt14_a_clean_parent_gives_a_branch_at_head() {
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let (base, main, root) = repo("clean");
+        let head = git_ok(&main, &["rev-parse", "HEAD"]);
+        let w = create(&main, &root, "s1").unwrap();
+        assert_eq!(w.base, head);
+        assert_eq!(git_ok(&w.path, &["rev-parse", "HEAD"]), head);
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
+        std::fs::write(main.join(".git/info/exclude"), "*.log\n").unwrap();
+        std::fs::write(main.join("build.log"), "ignored\n").unwrap();
+        let w = create(&main, &root, "s2").unwrap();
+        assert_eq!(w.base, head);
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
         let _ = std::fs::remove_dir_all(&base);
     }
 
