@@ -11,6 +11,26 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A bare krowk link no longer lands in a pull request or an issue.** On
+  GitHub a bare `krowk.com/a/…` link doesn't unfurl. It shows up as a blue
+  link that says nothing about the file. When an agent running in krowk
+  calls `gh pr create|edit|comment` or `gh issue create|edit|comment` with
+  one in the body, krowk refuses that one call and tells the agent to paste
+  the krowk block instead, and where to get it (`paste.markdown` from
+  `krowk uploads show <link> --json`). The agent rewrites the body and posts
+  again without you stepping in. The body is checked whether it is given
+  inline, through a heredoc, or with `--body-file` when the file can be
+  read. A card link inside a krowk block is fine, and nothing else is
+  touched: other `gh` commands, bodies without a card link, and posts to
+  Slack or Basecamp, where a bare link unfurls. This isn't a permission
+  rule, so it holds in every mode, `bypassPermissions` and `unhinged`
+  included, on krowk's own models, Claude Code and Codex alike. On Codex,
+  krowk passes the check as a hook, and the first time, has Codex record it
+  as trusted in its `config.toml` (a `hooks.state` entry for that one
+  command), because Codex runs only trusted hooks. krowk's Codex accounts
+  share your `~/.codex/config.toml`, so that is where the entry lands. On
+  Windows, Codex sessions don't have the check yet. A code span or fenced
+  block that quotes a card link is left alone.
 - **Paste a screenshot into the prompt.** Ctrl-V (or Alt-V, where the
   terminal keeps Ctrl-V for itself) puts the clipboard's image in the prompt
   as `[Image #1]`, and the model sees it with the text. Dragging an image
@@ -115,6 +135,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
   isn't running: it is Stopped); the session goes by the relay`, and the
   session goes by the relay. `KROWK_RELAY_TICKET_KEYS` still names the keys
   by hand, and wins over the fetched ones, for a stand-in registry.
+- **The Gemini extension, the MCP registry entry and `@krowk/mcp` describe
+  Krowk as a coding agent harness.** They used to describe a permalink
+  uploader. Each now says that it's Krowk's publishing, for Gemini CLI or
+  for any MCP client, and what it turns into links. With
+  the Claude Code plugin's, they no longer say links unfurl in GitHub and
+  Linear, which don't unfurl links. Those links unfurl in Slack and Basecamp;
+  in GitHub and Linear, images show inline. The `server.json` here was over the
+  MCP registry's 100-character description limit and didn't validate against
+  its schema; it's within it now. `make release-check` and the release
+  workflow now hold it to that limit, and the other descriptions to one line.
+- **What you say in a session is shown in markdown, as answers are.**
+  `` `code` `` is in the code colour, `**bold**` is bold, and links, lists,
+  quotes and fenced blocks look as they do in an answer, all on the band of
+  your prompt. Ctrl-Y still copies the prompt as you typed it.
 - **Reading your synced sessions is signed by this machine's device key.**
   `krowk sync sessions`, attaching, `--resume` and the host now sign the
   calls that list a session, show it and list its chunks, as they already

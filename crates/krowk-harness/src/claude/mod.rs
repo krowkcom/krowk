@@ -25,8 +25,9 @@
 //!
 //! | subtype | direction | what krowk does |
 //! |---|---|---|
-//! | `initialize` | krowk → claude | first, on every process; its answer lists the `models`, which is how in-place model switching is detected |
+//! | `initialize` | krowk → claude | first, on every process, registering the paste guard as a `PreToolUse` hook on `Bash`; its answer lists the `models`, which is how in-place model switching is detected |
 //! | `can_use_tool` | claude → krowk | judged by krowk's permission evaluator (`crate::permissions`), asking the person when a client is attached |
+//! | `hook_callback` | claude → krowk | the paste guard (`crate::paste_guard`): a `gh` post carrying a bare krowk card link is denied, whatever the mode and the person's allow rules |
 //! | `mcp_message` | claude → krowk | a JSON-RPC message for the `krowk` MCP server, answered by `crate::bridge` |
 //! | `interrupt` | krowk → claude | a `Command::Interrupt`; the turn ends at the next `result` and the process lives on |
 //! | `set_model` | krowk → claude | a turn on another model of the same instance, when `initialize` listed models; otherwise a new process on `--resume` |
@@ -671,6 +672,16 @@ async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Re
     say(EngineEvent::Unprompted { reason });
 }
 
+/// The paste guard's callback id (`crate::paste_guard`).
+const PASTE_GUARD: &str = "krowk_paste_guard";
+
+/// The hooks `initialize` registers: the paste guard, before every Bash
+/// call. A hook runs ahead of Claude Code's own permission decision, so it
+/// sees the calls an allow rule in settings lets through without asking.
+fn hooks() -> Value {
+    json!({"PreToolUse": [{"matcher": "Bash", "hookCallbackIds": [PASTE_GUARD]}]})
+}
+
 /// What a control request is answered with: the turn it arrived in.
 struct Answers {
     session_id: String,
@@ -736,7 +747,8 @@ impl Answers {
                 };
                 success(json!({"mcp_response": bridge::handle(req.get("message").unwrap_or(&Value::Null), &env).await}))
             }
-            // No hooks are registered, so none should be called back.
+            "hook_callback" if req.get("callback_id").and_then(Value::as_str) == Some(PASTE_GUARD) => success(crate::paste_guard::pre_tool_use(req.get("input").unwrap_or(&Value::Null))),
+            // The paste guard is the only hook registered.
             "hook_callback" => success(json!({})),
             other => json!({"type": "control_response", "response": {"subtype": "error", "request_id": request_id, "error": format!("krowk does not answer the control request {other:?}")}}),
         }
@@ -941,7 +953,7 @@ impl Proc {
             backlog: VecDeque::new(),
             origins: false,
         };
-        let init = p.request(json!({"subtype": "initialize", "hooks": null}), ask, INITIALIZE_TIMEOUT).await?;
+        let init = p.request(json!({"subtype": "initialize", "hooks": hooks()}), ask, INITIALIZE_TIMEOUT).await?;
         p.set_model = init.get("models").is_some_and(Value::is_array);
         Ok(p)
     }
