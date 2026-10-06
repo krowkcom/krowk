@@ -101,6 +101,23 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **`krowk hosts` lists your machines that host, with no Tailscale tag.**
+  It used to list only tailnet machines tagged `tag:krowk-host`, which took
+  an edit to the tailnet policy in the Tailscale admin console. Now it lists
+  every machine on your device list that hosts a synced session — from the
+  registry's sessions, so it needs this machine's sync keys — with whether
+  it hosts one now (online) and whether this machine's Tailscale reaches it
+  directly. A host names its own tailnet node, sealed, in each session it
+  hosts, so a session hosted by an older krowk shows its host as reachable
+  only once a newer one hosts it again. Machines that aren't yours, and
+  yours that host nothing, aren't listed. `tag:krowk-host` is no longer
+  read, and `krowk hosts --json` rows now carry `device`, `os`,
+  `thisMachine`, `direct` and `sessions`, with `online` meaning hosting now.
+- **The same-user check refuses to run on a tagged machine.** Tailscale
+  names every tagged machine of a tailnet as one shared user,
+  `tagged-devices`, so on a tagged host `KROWK_TAILSCALE_SAME_USER=1` would
+  have let in any tagged machine and turned away your own. It now says so
+  and offers no direct path; untag the machine, or leave the check off.
 - **What you say in a session is shown in markdown, as answers are.**
   `` `code` `` is in the code colour, `**bold**` is bold, and links, lists,
   quotes and fenced blocks look as they do in an answer, all on the band of

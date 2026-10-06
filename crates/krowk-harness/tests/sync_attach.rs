@@ -301,6 +301,7 @@ impl World {
             ttl,
             keep,
             direct: None,
+            tailnet: None,
         };
         self.run_bridge(o, daemon)
     }
@@ -323,6 +324,7 @@ impl World {
             ttl: host::LEASE_TTL,
             keep: host::KEEP,
             direct: Some(direct::Config { socket: ts.socket.clone().into(), roster: krowk_harness::relay::Roster::parse(&roster).unwrap(), same_user, lan: false, stop: Some(stop) }),
+            tailnet: krowk_harness::sync::tailscale::status(&ts.socket.clone().into()).ok().and_then(|s| s.tailnet()),
         };
         self.run_bridge(o, daemon)
     }
@@ -1206,8 +1208,8 @@ async fn r_off_2_a_new_stream_after_a_long_cut_loses_nothing() {
 }
 
 /// A stand-in `tailscaled`: its LocalAPI on a unix socket, answering
-/// `status` with this machine on 127.0.0.1 as tailnet user 1 and a peer
-/// tagged `tag:krowk-host`, and `whois` with whichever user `whois` holds.
+/// `status` with this machine on 127.0.0.1 as tailnet user 1 and a peer,
+/// and `whois` with whichever user `whois` holds.
 struct FakeTailscale {
     socket: PathBuf,
     whois: Arc<std::sync::atomic::AtomicU64>,
@@ -1232,7 +1234,7 @@ impl FakeTailscale {
                 let req = String::from_utf8_lossy(&raw).to_string();
                 let body = if req.starts_with("GET /localapi/v0/status") {
                     serde_json::json!({"BackendState": "Running", "Self": {"HostName": "a", "DNSName": "localhost.", "TailscaleIPs": ["127.0.0.1"], "Addrs": [], "UserID": 1, "Online": true},
-                        "Peer": {"k": {"HostName": "b", "DNSName": "b.tail.ts.net.", "TailscaleIPs": ["100.64.0.2"], "Online": true, "Tags": ["tag:krowk-host"]}}}).to_string()
+                        "Peer": {"k": {"HostName": "b", "DNSName": "b.tail.ts.net.", "TailscaleIPs": ["100.64.0.2"], "Online": true}}}).to_string()
                 } else if req.starts_with("GET /localapi/v0/whois?addr=127.0.0.1:") {
                     serde_json::json!({"Node": {"User": w.load(Ordering::SeqCst)}, "UserProfile": {"ID": w.load(Ordering::SeqCst), "LoginName": "someone@example.com"}}).to_string()
                 } else {
@@ -1270,8 +1272,8 @@ async fn ack_rtt(v: &mut viewer::Viewer, session: &str, frames: &mut Vec<Instant
 /// R-NET-1, R-NET-2: A reads its tailnet address from tailscaled, listens
 /// there and names it to B inside the welcome, sealed — the relay never
 /// sees the address — and B moves onto it, after which B's live frames no
-/// longer cross the relay. `krowk hosts`' reading of the peers (R-NET-4)
-/// rides the same fake LocalAPI.
+/// longer cross the relay. A names itself and its tailnet node in the
+/// sealed index, for `krowk hosts` (R-NET-4).
 #[tokio::test]
 async fn r_net_2_the_session_moves_to_the_direct_path_and_live_frames_leave_the_relay() {
     let w = World::new("direct");
@@ -1282,8 +1284,19 @@ async fn r_net_2_the_session_moves_to_the_direct_path_and_live_frames_leave_the_
     let (_stop, _cp, _bridge) = w.bridge_direct(&a, &session, w.daemon().await, &ts, true, kill_rx);
     w.synced(&session).await;
 
-    let status = krowk_harness::sync::tailscale::status(&ts.socket.clone().into()).unwrap();
-    assert_eq!(status.hosts().iter().map(|h| h.host_name.as_str()).collect::<Vec<_>>(), ["b"], "R-NET-4");
+    // R-NET-4: A names itself in the sealed index, with its tailnet node,
+    // which is how `krowk hosts` finds it with no tag on it.
+    let (api, id, keys, chain) = (w.client(), session.clone(), w.keys(), w.chain());
+    let index = tokio::task::spawn_blocking(move || {
+        let s = api.show_sync_session(&id).unwrap();
+        let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld).unwrap();
+        krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index).unwrap()
+    })
+    .await
+    .unwrap();
+    let kept = index.host.expect("R-NET-4: the index names its host");
+    assert_eq!(kept.device, a.key.id().to_string());
+    assert_eq!(kept.tailnet.map(|t| (t.name, t.dns_name)), Some(("a".to_string(), "localhost".to_string())));
 
     let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
     let mut frames = Vec::new();

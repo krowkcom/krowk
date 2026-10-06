@@ -69,6 +69,21 @@ impl Drop for Listening {
     }
 }
 
+/// The tailnet user the same-user check holds a connection's far end to:
+/// this node's, when a person owns it. Tailscale owns a tagged node by its
+/// tags, and `whois` names every tagged node of a tailnet as one shared
+/// user, `tagged-devices` — so on a tagged host the check would admit any
+/// tagged machine and turn away the person's own. It is refused there.
+pub fn same_user(status: &tailscale::Status) -> Result<u64, String> {
+    if let Some(tags) = status.me.tags.as_ref().filter(|t| !t.is_empty()) {
+        return Err(format!("Tailscale owns this machine by its tags ({}), not by a person, so the same-user check cannot hold — remove them, or leave KROWK_TAILSCALE_SAME_USER unset", tags.join(", ")));
+    }
+    if status.me.user_id == 0 {
+        return Err("Tailscale names no user for this machine, so the same-user check cannot pass".into());
+    }
+    Ok(status.me.user_id)
+}
+
 /// Reads this node from tailscaled and listens on its tailnet address (and
 /// LAN address), on one port. Errors say why there is no direct path; the
 /// session then goes by the relay alone.
@@ -83,14 +98,7 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
     // network, past KROWK_DIRECT_LAN.
     let ips: Vec<IpAddr> = status.me.tailscale_ips.iter().copied().filter(tailscale::is_tailnet).collect();
     let ip = ips.iter().find(|i| i.is_ipv4()).or(ips.first()).copied().ok_or("tailscale gives this machine no tailnet address")?;
-    let whois = if c.same_user {
-        if status.me.user_id == 0 {
-            return Err("tailscale names no user for this machine, so the same-user check cannot pass".into());
-        }
-        Some(SameUser { socket: c.socket.clone(), user: status.me.user_id })
-    } else {
-        None
-    };
+    let whois = if c.same_user { Some(SameUser { socket: c.socket.clone(), user: same_user(&status)? }) } else { None };
     let first = TcpListener::bind((ip, 0)).map_err(|e| format!("the tailnet address {ip} could not be listened on: {e}"))?;
     let port = first.local_addr().map_err(|e| e.to_string())?.port();
     let url = |ip: IpAddr| match ip {
@@ -129,4 +137,22 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
         }
     });
     Ok(Listening { dial, candidates, stop })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R-NET-3: the same-user check holds a far end to this node's person,
+    /// and is refused on a tagged node, which `whois` names as the
+    /// tailnet's shared `tagged-devices` user, never a person.
+    #[test]
+    fn r_net_3_the_same_user_check_is_refused_on_a_tagged_host() {
+        let status = |me: serde_json::Value| -> tailscale::Status { serde_json::from_value(serde_json::json!({"BackendState": "Running", "Self": me})).unwrap() };
+        assert_eq!(same_user(&status(serde_json::json!({"UserID": 7}))), Ok(7));
+        assert_eq!(same_user(&status(serde_json::json!({"UserID": 7, "Tags": []}))), Ok(7));
+        let tagged = same_user(&status(serde_json::json!({"UserID": 478457612062579_u64, "Tags": ["tag:ops"]}))).unwrap_err();
+        assert!(tagged.contains("tag:ops") && tagged.contains("KROWK_TAILSCALE_SAME_USER"), "{tagged}");
+        assert!(same_user(&status(serde_json::json!({}))).is_err());
+    }
 }

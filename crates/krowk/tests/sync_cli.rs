@@ -2,7 +2,9 @@
 //! machines in one test: A hosts a session it made with `krowk -p`, B
 //! attaches it and answers A's approvals and interrupts its turn by typing
 //! slash commands on stdin (todo 22a). And `sync host` for a session A does
-//! not have fails at once, saying so, rather than hanging (todo 22b).
+//! not have fails at once, saying so, rather than hanging (todo 22b). And
+//! `krowk hosts` listing the machines that host, with no Tailscale tag
+//! (ticket 43).
 //! Against the stand-in registry, the reference relay and a mock model.
 
 #![cfg(all(feature = "harness", unix))]
@@ -122,6 +124,9 @@ impl World {
             ("KROWK_API_URL".into(), self.api.clone()),
             ("KROWK_TOKEN".into(), device_list::key(TOKEN, name)),
             ("KROWK_RELAY_URL".into(), self.relay.clone()),
+            // No tailscaled unless a test fakes one: never the one this
+            // machine may run.
+            ("KROWK_TAILSCALE_SOCKET".into(), run.join("no-tailscaled.sock").display().to_string()),
             ("ANTHROPIC_API_KEY".into(), "sk-test".into()),
             ("ANTHROPIC_BASE_URL".into(), self.mock.clone()),
         ];
@@ -454,4 +459,69 @@ fn sync_host_takes_the_id_an_older_store_listed_a_session_under() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!err.contains("no session"), "the store's id names the log: {err}");
     assert!(!out.status.success() && err.contains("device list"), "it got as far as the registry: {err}");
+}
+
+/// A tailscaled on a unix socket in `dir` answering `status` with `status`.
+fn tailscaled(dir: &std::path::Path, status: serde_json::Value) -> PathBuf {
+    let socket = dir.join("ts.sock");
+    let l = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        for mut c in l.incoming().flatten() {
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                match std::io::Read::read(&mut c, &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => raw.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = write!(c, "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{status}");
+        }
+    });
+    socket
+}
+
+fn on_tailscale(m: &mut Machine, status: serde_json::Value) {
+    let socket = tailscaled(&m.run, status);
+    m.env.retain(|(k, _)| k != "KROWK_TAILSCALE_SOCKET");
+    m.env.push(("KROWK_TAILSCALE_SOCKET".into(), socket.display().to_string()));
+}
+
+/// Ticket 43: on a tailnet with no tags and no policy, `krowk hosts` on B
+/// lists A — the machine of B's person that hosts a synced session — by
+/// its device list name, online, and reachable directly over the node A
+/// kept in the session's sealed index. A peer on the tailnet that is not
+/// on the device list, and B itself, which hosts nothing, are not listed.
+/// With Tailscale down on B, A is listed still, not direct.
+#[test]
+fn r_net_4_hosts_lists_your_machines_that_host_with_no_tailscale_tags() {
+    let w = World::new("hosts");
+    let mut a = w.machine("a");
+    let mut b = w.machine("b");
+    on_tailscale(&mut a, serde_json::json!({"BackendState": "Running", "Self": {"HostName": "a-box", "DNSName": "a-box.tail1.ts.net.", "TailscaleIPs": ["100.64.0.1"], "UserID": 1, "Online": true}, "Peer": {}}));
+    let (_host, _session) = hosted(&w, &a);
+    let peers = serde_json::json!({
+        "k1": {"HostName": "a-box", "DNSName": "a-box.tail1.ts.net.", "TailscaleIPs": ["100.64.0.1"], "UserID": 1, "Online": true},
+        "k2": {"HostName": "stranger", "DNSName": "stranger.tail1.ts.net.", "TailscaleIPs": ["100.64.0.9"], "UserID": 2, "Online": true}});
+    let b_plain = b.env.clone();
+    on_tailscale(&mut b, serde_json::json!({"BackendState": "Running", "Self": {"HostName": "b-box", "DNSName": "b-box.tail1.ts.net.", "TailscaleIPs": ["100.64.0.3"], "UserID": 1, "Online": true}, "Peer": peers}));
+
+    let out = b.command(&["hosts", "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let hosts = v["hosts"].as_array().unwrap();
+    assert_eq!(hosts.len(), 1, "A alone: {v}");
+    let h = &hosts[0];
+    assert_eq!((h["name"].as_str(), h["online"].as_bool(), h["direct"].as_bool(), h["thisMachine"].as_bool(), h["sessions"].as_u64()), (Some("a"), Some(true), Some(true), Some(false), Some(1)), "{h}");
+    assert_eq!(h["dnsName"], "a-box.tail1.ts.net");
+
+    let human = b.command(&["hosts", "--format", "human"]).output().unwrap();
+    let human = String::from_utf8_lossy(&human.stdout);
+    assert_eq!(human.trim(), "a  online  reachable directly  1 session", "{human}");
+
+    b.env = b_plain;
+    let out = b.command(&["hosts", "--json"]).output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["tailscale"], false);
+    assert_eq!((v["hosts"][0]["name"].as_str(), v["hosts"][0]["direct"].as_bool()), (Some("a"), Some(false)), "{v}");
 }

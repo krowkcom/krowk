@@ -29,9 +29,6 @@ const MACOS_SOCKETS: [&str; 2] = ["/var/run/tailscaled.socket", SOCKET];
 /// that ends a search.
 const OPTIONS: &str = "start Tailscale, name tailscaled's socket in KROWK_TAILSCALE_SOCKET, or name the macOS app's LocalAPI in KROWK_TAILSCALE_LOCALAPI (http://127.0.0.1:<port> with KROWK_TAILSCALE_LOCALAPI_TOKEN, or the path of its sameuserproof file)";
 
-/// The tag a machine carries to be listed by `krowk hosts` (R-NET-4).
-pub const HOST_TAG: &str = "tag:krowk-host";
-
 /// Where tailscaled's LocalAPI answers.
 #[derive(Clone, PartialEq, Eq)]
 pub enum LocalApi {
@@ -307,12 +304,37 @@ impl Status {
         out
     }
 
-    /// Peers tagged `tag:krowk-host`, by name.
-    pub fn hosts(&self) -> Vec<Node> {
-        let mut out: Vec<Node> = self.peer.iter().flatten().map(|(_, n)| n).filter(|n| n.tags.iter().flatten().any(|t| t == HOST_TAG)).cloned().collect();
-        out.sort_by(|a, b| a.host_name.cmp(&b.host_name));
-        out
+    /// This node, as a host keeps it in a session's sealed index: none
+    /// unless Tailscale is up and gives it a tailnet address.
+    pub fn tailnet(&self) -> Option<Tailnet> {
+        let ips: Vec<IpAddr> = self.me.tailscale_ips.iter().copied().filter(is_tailnet).collect();
+        (self.running() && !ips.is_empty()).then(|| Tailnet { name: self.me.host_name.clone(), dns_name: self.magic_dns().unwrap_or_default(), ips })
     }
+
+    /// The peer `node` names: by its MagicDNS name, which names its tailnet
+    /// too, when both have one; else by a tailnet address, which another
+    /// tailnet may give out as well.
+    pub fn peer_for(&self, node: &Tailnet) -> Option<&Node> {
+        let mut peers = self.peer.iter().flatten().map(|(_, n)| n);
+        if node.dns_name.is_empty() {
+            peers.find(|p| p.dns_name.is_empty() && p.tailscale_ips.iter().any(|ip| node.ips.contains(ip)))
+        } else {
+            peers.find(|p| p.dns_name.trim_end_matches('.').eq_ignore_ascii_case(&node.dns_name))
+        }
+    }
+}
+
+/// A machine's tailnet node, as its host keeps it in a session's sealed
+/// index for `krowk hosts` to find on the tailnet.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tailnet {
+    /// Tailscale's name for it.
+    pub name: String,
+    /// Its MagicDNS name, without the root's dot; empty without MagicDNS.
+    #[serde(default)]
+    pub dns_name: String,
+    pub ips: Vec<IpAddr>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -405,18 +427,26 @@ mod tests {
         "Peer":{"k1":{"HostName":"b","DNSName":"b.tail1.ts.net.","TailscaleIPs":["100.64.0.2"],"Online":false,"Tags":["tag:krowk-host"]},"k2":{"HostName":"phone","Tags":null,"Addrs":null,"TailscaleIPs":null}}}"#;
 
     /// R-NET-1, R-NET-4: the status as tailscaled writes it gives this
-    /// node's tailnet address, its MagicDNS name and its LAN address, and
-    /// the peers tagged `tag:krowk-host`.
+    /// node's tailnet address, its MagicDNS name and its LAN address; this
+    /// node as a host keeps it; and a peer found again from what a host
+    /// kept, with no tag on it.
     #[test]
-    fn r_net_1_status_reads_the_addresses_and_r_net_4_the_tagged_hosts() {
+    fn r_net_1_status_reads_the_addresses_and_r_net_4_finds_a_kept_node_among_the_peers() {
         let s: Status = serde_json::from_str(STATUS).unwrap();
         assert!(s.running());
         assert_eq!(s.me.tailscale_ips[0], "100.64.0.1".parse::<IpAddr>().unwrap());
         assert_eq!(s.magic_dns().as_deref(), Some("a.tail1.ts.net"));
         assert_eq!(s.lan(), vec!["192.168.1.147".parse::<IpAddr>().unwrap()]);
-        let hosts = s.hosts();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].host_name, "b");
+        let me = s.tailnet().unwrap();
+        assert_eq!((me.name.as_str(), me.dns_name.as_str()), ("a", "a.tail1.ts.net"));
+        assert_eq!(me.ips, ["100.64.0.1".parse::<IpAddr>().unwrap()], "fd7a::1 is no tailnet address");
+
+        let b = |dns: &str, ip: &str| Tailnet { name: "b".into(), dns_name: dns.into(), ips: vec![ip.parse().unwrap()] };
+        assert_eq!(s.peer_for(&b("B.tail1.ts.net", "100.64.9.9")).map(|p| p.host_name.as_str()), Some("b"), "by MagicDNS name, which outlives an address");
+        assert!(s.peer_for(&b("b.tail2.ts.net", "100.64.0.2")).is_none(), "the same address on another tailnet is another machine");
+        assert!(s.peer_for(&b("", "100.64.0.2")).is_none(), "a peer with a MagicDNS name is not matched by address alone");
+        let down: Status = serde_json::from_str(&STATUS.replace("Running", "Stopped")).unwrap();
+        assert!(down.tailnet().is_none(), "nothing kept while Tailscale is down");
     }
 
     /// A stand-in for the macOS app's LocalAPI: 127.0.0.1 on a port, and
