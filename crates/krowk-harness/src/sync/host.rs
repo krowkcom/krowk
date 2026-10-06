@@ -677,7 +677,10 @@ impl Hosting {
         // until it is back (`join_direct`).
         if self.dws.is_none() { self.unreached.direct_down(); }
         let same_user = self.o.direct.as_ref().is_some_and(|c| c.same_user);
-        for d in self.unreached.due(Instant::now()) {
+        // Nor while the relay link is down: a viewer that left meanwhile
+        // is known only once the relay's replay leaves it out.
+        let due = if self.ws.is_some() { self.unreached.due(Instant::now()) } else { Vec::new() };
+        for d in due {
             eprintln!("{}", super::direct::unreached_line(&self.o.session, &d, &self.candidates, same_user));
         }
         self.deny_late().await;

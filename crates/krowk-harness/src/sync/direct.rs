@@ -213,13 +213,17 @@ impl Unreached {
         self.down = true;
     }
 
-    /// The host's link to its own listener is back: each viewer's wait
-    /// starts again from now.
+    /// The host's link to its own listener is back. A viewer that raced
+    /// while it was down found no host there and backed off, up to
+    /// `viewer::REPROBE_MAX`, so each waiting viewer's wait starts again
+    /// past that.
     pub fn direct_up(&mut self, now: Instant) {
-        self.down = false;
-        for (_, t) in self.since.values_mut() {
-            *t = now;
+        if self.down {
+            for (_, t) in self.since.values_mut() {
+                *t = (*t).max(now + super::viewer::REPROBE_MAX);
+            }
         }
+        self.down = false;
     }
 
     /// The devices that have stayed on the relay past `UNREACHED_AFTER`,
@@ -228,7 +232,7 @@ impl Unreached {
         if self.down {
             return Vec::new();
         }
-        let mut due: Vec<DeviceId> = self.since.values().filter(|(_, t)| now.duration_since(*t) >= UNREACHED_AFTER).map(|(d, _)| *d).collect();
+        let mut due: Vec<DeviceId> = self.since.values().filter(|(_, t)| now.saturating_duration_since(*t) >= UNREACHED_AFTER).map(|(d, _)| *d).collect();
         due.sort_by_key(|d| d.to_string());
         due.dedup_by(|a, b| a.0 == b.0);
         for d in &due {
@@ -299,19 +303,23 @@ mod tests {
 
     /// R-NET-2: nothing is said while the host's own link to its listener
     /// is down — viewers that reach it then stay on the relay too — and
-    /// the wait starts again when it is back; a relay link lost forgets
-    /// who was there, for the relay's replay to say again.
+    /// once it is back the wait starts again past the viewer's longest
+    /// backoff; a relay link lost forgets who was there, for the relay's
+    /// replay to say again.
     #[test]
     fn r_net_2_nothing_is_said_while_the_listener_is_down_or_after_the_relay_is_lost() {
         let t0 = Instant::now();
         let mut u = Unreached::default();
         u.relay_joined(1, device(1), t0);
         assert!(u.due(t0 + UNREACHED_AFTER).is_empty(), "down from the start");
-        u.direct_up(t0 + UNREACHED_AFTER);
-        assert!(u.due(t0 + UNREACHED_AFTER * 2 - Duration::from_millis(1)).is_empty(), "the wait starts again");
-        u.direct_down();
-        assert!(u.due(t0 + UNREACHED_AFTER * 3).is_empty());
-        u.direct_up(t0 + UNREACHED_AFTER * 3);
+        let up = t0 + UNREACHED_AFTER;
+        u.direct_up(up);
+        let named = up + crate::sync::viewer::REPROBE_MAX + UNREACHED_AFTER;
+        assert!(u.due(named - Duration::from_millis(1)).is_empty(), "past the viewer's backoff first");
+        assert_eq!(u.due(named), [device(1)], "then named");
+
+        let mut u = listening(t0);
+        u.relay_joined(1, device(2), t0);
         u.relay_lost();
         assert!(u.due(t0 + UNREACHED_AFTER * 5).is_empty(), "a viewer that left while the relay was away is not named");
     }
