@@ -11,6 +11,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A host says why a viewer stays on the relay.** When a viewer offered
+  the direct path never reaches it — a firewall on the host, or a tailnet
+  access policy that doesn't allow the port, drops the connection before
+  krowk sees it — `krowk sync host` now says so once per device, 30 seconds
+  after the viewer joined:
+  `krowk: session …: device 0123abcd stays on the relay — nothing it sent
+  reached this machine's direct addresses (100.64.0.1:51915, …); if it is on
+  this tailnet, a firewall here or the tailnet's access policy may be
+  refusing the port`. A viewer that reached the direct path once and fell
+  back is never named. The session goes on by the relay, as before.
 - **A bare krowk link no longer lands in a pull request or an issue.** On
   GitHub a bare `krowk.com/a/…` link doesn't unfurl. It shows up as a blue
   link that says nothing about the file. When an agent running in krowk
