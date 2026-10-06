@@ -275,6 +275,7 @@ pub fn tool_kind(name: &str) -> &str {
         "Edit" => "search_replace",
         "TodoWrite" => "todo_write",
         "Skill" => "skill",
+        "AskUserQuestion" => "ask_user",
         other => other,
     }
 }
@@ -292,6 +293,11 @@ pub fn tool_title(name: &str, input: &serde_json::Value) -> (String, String) {
         "glob" => ("Find".into(), s("pattern")),
         "todo_write" => ("Plan".into(), String::new()),
         "subagent" => ("Agent".into(), s("description")),
+        "ask_user" => {
+            let qs = input.get("questions").and_then(|q| q.as_array()).map(Vec::as_slice).unwrap_or_default();
+            let q = |q: &serde_json::Value| q.get("question").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            ("Ask".into(), if qs.len() == 1 { first_line(q(&qs[0])) } else { format!("{} questions", qs.len()) })
+        }
         "skill" => labelled("Skill".into(), Some(s("name")).filter(|n| !n.is_empty()).unwrap_or_else(|| s("skill"))),
         "str_replace" => ("Edit".into(), s("path")),
         "search_replace" => ("Edit".into(), s("file_path")),
@@ -695,6 +701,9 @@ mod tests {
         assert_eq!(tool_title("shell", &json!({"command": "ls", "cwd": "/r"})), ("Run".into(), "ls".into()));
         assert_eq!(tool_title("Grep", &json!({"pattern": "fn test"})), ("Search".into(), "fn test".into()));
         assert_eq!(tool_title("TodoWrite", &json!({"todos": []})), ("Plan".into(), String::new()));
+        let q = |t: &str| json!({"question": t, "options": []});
+        assert_eq!(tool_title("AskUserQuestion", &json!({"questions": [q("Which database?\nreally")]})), ("Ask".into(), "Which database?".into()));
+        assert_eq!(tool_title("ask_user", &json!({"questions": [q("a?"), q("b?")]})), ("Ask".into(), "2 questions".into()));
         assert_eq!(tool_title("skill", &json!({"name": "basecamp"})), ("Skill:".into(), "basecamp".into()));
         assert_eq!(tool_title("Skill", &json!({"skill": "basecamp"})), ("Skill:".into(), "basecamp".into()));
         assert_eq!(tool_title("ListAgents", &json!({})), ("List Agents".into(), String::new()));

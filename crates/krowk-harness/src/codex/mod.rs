@@ -26,6 +26,7 @@
 //! | `item/*`, `thread/tokenUsage/updated` | codex → krowk | translated into krowk's events by `stream` (R-BACK-5) |
 //! | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, … | codex → krowk | judged by krowk's permission evaluator (`crate::permissions`), as `Bash(<command>)` and `Edit(<files>)` |
 //! | `item/tool/call` | codex → krowk | a call of krowk's own tools, answered by `crate::bridge` |
+//! | `item/tool/requestUserInput` | codex → krowk | the model's questions, asked of the person (`crate::ask`) and answered by question id |
 //!
 //! **The mode.** Every mode but `bypassPermissions` and `unhinged` runs Codex in its
 //! `read-only` sandbox with approvals `on-request` and krowk as the
@@ -59,7 +60,7 @@ use crate::catalog::ModelInfo;
 use crate::engine::{cancelled, BoxFuture, Engine, EngineError, EngineEvent, Events, Steer, TurnContext, TurnEnd};
 use crate::instances::{Backend, Resolved};
 use crate::permissions::{self, Access, Call, Gate, Verdict};
-use crate::protocol::{Billing, Effort, Item, ItemKind, LimitState, LimitStatus, ModelRef, PermissionMode, WireApi};
+use crate::protocol::{Billing, Effort, Item, ItemKind, LimitState, LimitStatus, ModelRef, PermissionMode, Question, QuestionOption, WireApi};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -618,6 +619,45 @@ impl Answers {
         r.map_err(|e| if e.starts_with("krowk declined") { e } else { format!("krowk declined it: {e}") })
     }
 
+    /// `item/tool/requestUserInput`, asked of the person: each question's
+    /// answers by its id — the option picked, or what the person wrote,
+    /// or both, the writing as Codex's own `user_note:`. Nobody to ask, a
+    /// decline or an interrupt is said to the model as every question's
+    /// answer, so it goes on knowing why.
+    async fn ask_user(&self, params: &Value, asking: Asking<'_>) -> Value {
+        let questions: Vec<Question> = params
+            .get("questions")
+            .and_then(Value::as_array)
+            .map(|qs| {
+                qs.iter()
+                    .map(|q| Question {
+                        id: str_of(q, "id").to_string(),
+                        header: str_of(q, "header").to_string(),
+                        question: str_of(q, "question").to_string(),
+                        options: q.get("options").and_then(Value::as_array).map(|os| os.iter().map(|o| QuestionOption { label: str_of(o, "label").to_string(), description: str_of(o, "description").to_string() }).collect()).unwrap_or_default(),
+                        multi_select: false,
+                        secret: q.get("isSecret").and_then(Value::as_bool).unwrap_or(false),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let answered = match asking {
+            Some((events, cancel)) if !questions.is_empty() => self.gate.ask("request_user_input", params, questions.clone(), events, cancel).await,
+            _ => Err(permissions::NOBODY_TO_ASK.into()),
+        };
+        let answers: serde_json::Map<String, Value> = questions
+            .iter()
+            .map(|q| {
+                let said: Vec<String> = match &answered {
+                    Ok(answers) => answers.iter().find(|a| a.id == q.id).map(|a| a.picked.iter().cloned().chain(a.text.as_ref().map(|t| if a.picked.is_empty() { t.clone() } else { format!("user_note: {t}") })).collect()).unwrap_or_default(),
+                    Err(why) => vec![why.clone()],
+                };
+                (q.id.clone(), json!({ "answers": said }))
+            })
+            .collect();
+        json!({ "answers": answers })
+    }
+
     /// The answer to one of Codex's requests: a result, or a JSON-RPC error.
     async fn answer(&self, method: &str, params: &Value, t: &mut Translator, asking: Asking<'_>) -> Result<Value, (i64, String)> {
         let item = str_of(params, "itemId").to_string();
@@ -647,14 +687,7 @@ impl Answers {
             // More sandbox for the rest of the turn: none is granted — what
             // needs it is asked about call by call.
             "item/permissions/requestApproval" => Ok(json!({"permissions": {}, "scope": "turn"})),
-            "item/tool/requestUserInput" => {
-                let answers: serde_json::Map<String, Value> = params
-                    .get("questions")
-                    .and_then(Value::as_array)
-                    .map(|qs| qs.iter().map(|q| (str_of(q, "id").to_string(), json!({"answers": ["krowk is running this turn without a person to ask: decide, say what you assumed, and carry on."]}))).collect())
-                    .unwrap_or_default();
-                Ok(json!({ "answers": answers }))
-            }
+            "item/tool/requestUserInput" => Ok(self.ask_user(params, asking).await),
             "mcpServer/elicitation/request" => Ok(json!({"action": "decline"})),
             "item/tool/call" => Ok(self.tool_call(params, asking).await),
             // The requests of Codex's first protocol, for a Codex that
@@ -1532,6 +1565,32 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn codexs_questions_are_the_persons_to_answer_by_id_with_what_they_wrote_as_a_note() {
+        use crate::protocol::{ApprovalDecision, QuestionAnswer};
+        let approvals = permissions::Approvals::default();
+        let gate = Gate::new(permissions::Policy::modes_only(Path::new("/repo")), PermissionMode::Default, Default::default(), Some(approvals.clone()), None, "s-1", "t-1");
+        let ask = Answers { session_id: "s-1".into(), turn_id: "t-1".into(), model: ModelRef { instance: "codex:team".into(), model: "gpt-5.5".into() }, cwd: PathBuf::from("/repo"), krowk_version: "test".into(), gate, evidence: None };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (_c, cancel) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            while let Some(ev) = rx.recv().await {
+                if let EngineEvent::Approval(req) = ev {
+                    assert_eq!((req.questions[0].id.as_str(), req.questions[0].options.len(), req.questions[1].secret), ("db", 2, true), "{req:?}");
+                    let answers = vec![QuestionAnswer { id: "db".into(), picked: vec!["Postgres".into()], text: Some("on 16".into()) }, QuestionAnswer { id: "key".into(), picked: vec![], text: Some("s3cret".into()) }];
+                    approvals.answer("s-1", &req.request_id, ApprovalDecision::Allow, answers).unwrap();
+                }
+            }
+        });
+        let params = json!({"itemId": "i", "questions": [
+            {"id": "db", "header": "DB", "question": "Which?", "isOther": true, "options": [{"label": "Postgres", "description": "d"}, {"label": "SQLite", "description": "e"}]},
+            {"id": "key", "header": "Key", "question": "Token?", "isSecret": true, "options": null},
+            {"id": "skip", "header": "", "question": "Skipped?", "options": [{"label": "a", "description": ""}]},
+        ]});
+        let got = ask.answer("item/tool/requestUserInput", &params, &mut Translator::default(), Some((&tx, &cancel))).await.unwrap();
+        assert_eq!(got, json!({"answers": {"db": {"answers": ["Postgres", "user_note: on 16"]}, "key": {"answers": ["s3cret"]}, "skip": {"answers": []}}}));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn r_back_3_codex_requests_are_answered_and_krowks_tools_run_through_the_bridge() {
         let ask = Answers {
             session_id: "s-1".into(),
@@ -1554,7 +1613,7 @@ mod tests {
         assert_eq!(ask.answer("item/permissions/requestApproval", &json!({"itemId": "p1"}), &mut t, None).await.unwrap(), json!({"permissions": {}, "scope": "turn"}));
         assert_eq!(ask.answer("mcpServer/elicitation/request", &json!({}), &mut t, None).await.unwrap()["action"], "decline");
         let q = ask.answer("item/tool/requestUserInput", &json!({"questions": [{"id": "q1", "header": "h", "question": "which?"}]}), &mut t, None).await.unwrap();
-        assert!(q["answers"]["q1"]["answers"][0].as_str().unwrap().contains("decide"));
+        assert!(q["answers"]["q1"]["answers"][0].as_str().unwrap().contains("Decide"), "nobody to ask: the model is told to decide");
         assert_eq!(ask.answer("execCommandApproval", &json!({}), &mut t, None).await.unwrap()["decision"], "denied");
         // publish is offered too, and judged as the native one is.
         let refused = ask.answer("item/tool/call", &json!({"namespace": "krowk", "tool": "publish", "arguments": {"files": ["a.png"]}}), &mut t, None).await.unwrap();

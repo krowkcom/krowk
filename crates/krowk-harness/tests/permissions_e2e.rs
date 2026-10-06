@@ -312,6 +312,53 @@ fn r_perm_2_an_asked_call_is_an_approval_request_a_client_answers_over_the_proto
 }
 
 #[test]
+fn ask_user_is_offered_where_a_person_answers_and_the_model_reads_their_answers() {
+    use krowk_harness::protocol::QuestionAnswer;
+    let question = json!({"questions": [{"question": "Which database?", "header": "DB", "options": [{"label": "Postgres"}, {"label": "SQLite"}]}]});
+    let m = mock::serve(one_tool("ask_user", question));
+    let h = Home::new("ask-user", &m.url);
+    let host = h.host(Config { approvals: true, ..Config::default() });
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let lines = rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        // Plan mode: a question changes nothing, so it is asked there too.
+        let turn = host.execute(prompt("pick a database", PermissionMode::Plan), tx);
+        let client = async {
+            let mut lines = Vec::new();
+            while let Some(l) = rx.recv().await {
+                if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
+                    let answers = vec![QuestionAnswer { id: req.questions[0].id.clone(), picked: vec!["Postgres".into()], text: None }];
+                    let (itx, _) = tokio::sync::mpsc::channel(1);
+                    host.execute(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers }, itx).await.unwrap();
+                }
+                let done = matches!(l, StreamLine::Live(LiveEvent::Result(_)));
+                lines.push(l);
+                if done {
+                    break;
+                }
+            }
+            lines
+        };
+        let (r, lines) = tokio::join!(turn, client);
+        assert_eq!(r.unwrap().unwrap().result, "Done.");
+        lines
+    });
+    let req = lines.iter().find_map(|l| if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = l { Some(r.clone()) } else { None }).expect("the questions went out");
+    assert_eq!((req.tool.as_str(), req.questions[0].header.as_str(), req.questions[0].options.len()), ("ask_user", "DB", 2));
+    let offered = m.seen.lock().unwrap()[0].body["tools"].as_array().unwrap().iter().any(|t| t["name"] == "ask_user");
+    assert!(offered, "offered where a person answers");
+    assert_eq!(tool_result_sent(&m), r#"User has answered your questions: "Which database?"="Postgres". You can now continue with the user's answers in mind."#);
+
+    // Headless: not offered, and a call of it anyway is told nobody is here.
+    let m = mock::serve(one_tool("ask_user", json!({"questions": [{"question": "x?", "options": []}]})));
+    let h = Home::new("ask-user-headless", &m.url);
+    let (lines, _) = run(&h.host(Config::default()), prompt("pick", PermissionMode::Default));
+    assert!(!lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::ApprovalRequested(_)))));
+    assert!(!m.seen.lock().unwrap()[0].body["tools"].as_array().unwrap().iter().any(|t| t["name"] == "ask_user"), "not offered headless");
+    assert!(tool_result_sent(&m).contains("no tool named \"ask_user\""));
+}
+
+#[test]
 fn r_perm_2_headless_never_waits_on_an_ask_and_says_what_would_allow_it() {
     let m = mock::serve(one_tool("bash", json!({"command": "npm test"})));
     let h = Home::new("headless", &m.url);
