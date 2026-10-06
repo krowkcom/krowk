@@ -104,7 +104,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **The Gemini extension, the MCP registry entry and `@krowk/mcp` describe
   Krowk as a coding agent harness.** They used to describe a permalink
   uploader. Each now says that it's Krowk's publishing, for Gemini CLI or
-  for any MCP client: screenshots, recordings, diffs and logs as links. With
+  for any MCP client, and what it turns into links. With
   the Claude Code plugin's, they no longer say links unfurl in GitHub and
   Linear, which don't unfurl links. Those links unfurl in Slack and Basecamp;
   in GitHub and Linear, images show inline. The `server.json` here was over the
