@@ -553,7 +553,7 @@ async fn wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is
     // there: each one planted is gone after the call, which says so.
     let victim = r.base.join("victim");
     std::fs::write(&victim, "mine\n").unwrap();
-    for at in [c.join("worktrees/abcd1234/logs/HEAD"), c.join("logs/refs/heads/krowk/abcd1234"), c.join("refs/heads/krowk/evil")] {
+    for at in [c.join("worktrees/abcd1234/logs/HEAD"), c.join("logs/refs/heads/krowk/abcd1234"), c.join("refs/heads/krowk/evil"), c.join("objects/ee"), c.join("objects/pack/evil.pack")] {
         let (out, err) = bash(&r.wt, &scope, &format!("rm -f '{0}' && ln -s '{1}' '{0}'", at.display(), victim.display())).await;
         assert!(err && out.contains("the sandbox removed") && std::fs::symlink_metadata(&at).is_err(), "{}: {out}", at.display());
     }

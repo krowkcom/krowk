@@ -46,12 +46,13 @@
 //! renamed, but its parent directory can), and a `refs/replace/<commit>`
 //! changes what `main` shows and checks out in the main checkout without
 //! moving it. Only the `krowk/` reflogs are writable, not all of
-//! `logs`, and the writable git directories but `objects` are swept of
-//! anything that is not a regular file or a directory before and after
-//! every call (`sweep`): git outside the sandbox appends to a reflog in
-//! place, so a reflog a command replaced with a symlink to `~/.bashrc`
-//! would have the person's next commit write a line the agent chose
-//! there. So a command can make no tag, and no branch outside
+//! `logs`, and the writable git directories are swept of anything that
+//! is not a regular file or a directory before and after every call
+//! (`sweep`; `objects` only at its top and in `pack` and `info`, where a
+//! linked directory would take the objects git writes): git outside the
+//! sandbox appends to a reflog in place, so a reflog a command replaced
+//! with a symlink to `~/.bashrc` would have the person's next commit write
+//! a line the agent chose there. So a command can make no tag, and no branch outside
 //! `krowk/`. `packed-refs` stays read-only for the second reason: a line
 //! appended to it is a ref, and git never rewrites it in place anyway (it
 //! writes `packed-refs.lock` beside it, in the read-only common directory).
@@ -215,8 +216,9 @@ pub struct Plan {
     /// The writable ones of `git` that git outside the sandbox later
     /// writes through — a reflog it appends to, a ref, the worktree's
     /// admin directory — swept of anything but regular files and
-    /// directories before and after each call (`sweep`).
-    pub swept: Vec<PathBuf>,
+    /// directories before and after each call (`sweep`): each directory,
+    /// and whether all of it (`true`) or only what is in it.
+    pub swept: Vec<(PathBuf, bool)>,
     /// The person's `user.name` and `user.email` as git resolves them in a
     /// krowk worktree, handed to its commands as `GIT_AUTHOR_*` and
     /// `GIT_COMMITTER_*`: the config that names them is in the hidden home.
@@ -314,8 +316,8 @@ impl Plan {
             // A link a call left there (one that crashed, or ran before
             // the sweep after it) goes before this one binds anything.
             swept = w.swept();
-            for d in &swept {
-                sweep(d, &mut Vec::new());
+            for (d, deep) in &swept {
+                sweep(d, *deep, &mut Vec::new());
             }
             git = w.binds();
             read_only.extend(w.read_only(&writable[0], home));
@@ -472,7 +474,7 @@ impl Plan {
 /// clone, a copy) has an inode the workspace did not have, and goes.
 pub struct Unfenced {
     missing: Vec<PathBuf>,
-    swept: Vec<PathBuf>,
+    swept: Vec<(PathBuf, bool)>,
     writable: Vec<PathBuf>,
     home: Option<PathBuf>,
     repos: Vec<(u64, u64)>,
@@ -503,8 +505,8 @@ impl Unfenced {
     /// Removes what appeared and says so; empty when nothing did.
     pub fn appeared(&mut self) -> Vec<PathBuf> {
         let mut out = Vec::new();
-        for d in std::mem::take(&mut self.swept) {
-            sweep(&d, &mut out);
+        for (d, deep) in std::mem::take(&mut self.swept) {
+            sweep(&d, deep, &mut out);
         }
         let mut gone = std::mem::take(&mut self.missing);
         if let Ok(now) = self.walk.lock().unwrap_or_else(|e| e.into_inner()).repositories(&std::mem::take(&mut self.writable), self.home.as_deref()) {
@@ -790,12 +792,15 @@ impl ManagedWorktree {
         out
     }
 
-    /// The writable directories `swept` keeps to regular files and
-    /// directories: all of `binds`' but `objects`.
-    fn swept(&self) -> Vec<PathBuf> {
+    /// The writable directories `sweep` keeps to regular files and
+    /// directories, and whether all of each: `binds`' whole, but of
+    /// `objects` (thousands of files) only its top — the fan-out
+    /// directories git writes new objects into — `pack` and `info`.
+    fn swept(&self) -> Vec<(PathBuf, bool)> {
         let c = &self.common;
-        let mut out: Vec<PathBuf> = ["refs/heads/krowk", "logs/refs/heads/krowk"].iter().map(|d| c.join(d)).collect();
-        out.push(self.admin.clone());
+        let mut out: Vec<(PathBuf, bool)> = ["refs/heads/krowk", "logs/refs/heads/krowk"].iter().map(|d| (c.join(d), true)).collect();
+        out.push((self.admin.clone(), true));
+        out.extend(["objects", "objects/pack", "objects/info"].iter().map(|d| (c.join(d), false)));
         out
     }
 
@@ -835,14 +840,14 @@ fn own_dir(base: &Path, rel: &str) -> Option<PathBuf> {
     Some(d)
 }
 
-/// Removes from `dir`, recursively and following no link, everything
-/// that is not a regular file or a directory — a symlink, a FIFO, a
-/// socket — and names it in `out`. git outside the sandbox writes
+/// Removes from `dir`, recursively when `deep` and following no link,
+/// everything that is not a regular file or a directory — a symlink, a
+/// FIFO, a socket — and names it in `out`. git outside the sandbox writes
 /// through what is in a krowk worktree's writable git directories (it
 /// appends to a reflog in place), so a link a command left there would
 /// have it write wherever the link leads. Bounded, as the workspace
 /// search is.
-fn sweep(dir: &Path, out: &mut Vec<PathBuf>) {
+fn sweep(dir: &Path, deep: bool, out: &mut Vec<PathBuf>) {
     let mut stack = vec![dir.to_path_buf()];
     let mut seen = 0usize;
     while let Some(d) = stack.pop() {
@@ -855,7 +860,11 @@ fn sweep(dir: &Path, out: &mut Vec<PathBuf>) {
                 return;
             }
             match e.file_type() {
-                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(t) if t.is_dir() => {
+                    if deep {
+                        stack.push(e.path());
+                    }
+                }
                 Ok(t) if t.is_file() => {}
                 _ => {
                     if std::fs::remove_file(e.path()).is_ok() {
