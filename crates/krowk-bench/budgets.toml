@@ -418,7 +418,13 @@ unit = "tokens"
 # as this bench runs, nothing changes (1,472). The unit test
 # `r_tool_3_the_mcp_meta_tools_fit_the_context_budget_however_many_tools_the_servers_have`
 # and the end-to-end test with fifty MCP tools hold that case to this number.
-max = 1625
+# `ask_user` (questions for the person, with options to pick) is 169 tokens,
+# about as small as a list of questions of options can be written: 1,641 with
+# no MCP servers (gpt; claude 1,606, grok 1,619), 1,769 with them, so this is
+# raised to 1,800. It is offered only where a person can answer, so `krowk -p`,
+# which this bench runs, does not carry it and measures 1,472 still; the unit
+# tests hold every preset with it.
+max = 1800
 runs = 1
 status = "enforced"
 

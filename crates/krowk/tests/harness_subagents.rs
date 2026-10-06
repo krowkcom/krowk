@@ -803,7 +803,7 @@ fn r_sub_2_a_subagents_approval_request_is_answered_under_its_own_session() {
                         assert!(shown.contains("subagent “run a command”: allow"), "{shown}");
                         asked = Some(req.clone());
                         let (itx, _irx) = tokio::sync::mpsc::channel(1);
-                        host.execute(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: krowk_harness::protocol::ApprovalDecision::Allow }, itx).await.unwrap();
+                        host.execute(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: krowk_harness::protocol::ApprovalDecision::Allow, answers: Vec::new() }, itx).await.unwrap();
                     }
                 }
                 r = &mut exec => break r.unwrap().unwrap(),

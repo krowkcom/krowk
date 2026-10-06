@@ -563,22 +563,26 @@ fn claude_input(name: &str, input: &serde_json::Value) -> serde_json::Value {
 }
 
 /// Whether the turn offers the tool `name`: a subagent only what its
-/// definition allows, never `subagent`; a session `subagent` only when it
-/// may start subagents.
+/// definition allows, never `subagent` or `ask_user`; a session `subagent`
+/// only when it may start subagents, and `ask_user` only when a person can
+/// answer.
 fn offers(ctx: &TurnContext, name: &str) -> bool {
     match (&ctx.agent, name) {
+        // Only the session asks the person, and only when one can answer.
+        (Some(_), crate::ask::ASK_USER) => false,
+        (None, crate::ask::ASK_USER) => ctx.gate.can_ask(),
         (Some(run), n) => run.allows(n, ctx.preset.edit.name()),
         (None, SUBAGENT) => ctx.subagents.is_some(),
         (None, _) => true,
     }
 }
 
-/// The session's own tools — `todo_write` and `subagent` — as the
+/// The session's own tools — `todo_write`, `subagent` and `ask_user` — as the
 /// evaluator judges them: no mode governs them (a todo list is the
 /// session's own; a subagent is held to these same rules), but a deny rule,
 /// an ask rule or a hook's `ask` on Claude Code's name for them —
 /// `TodoWrite`, `Task` or `Task(<agent>)` — does, and hooks see them under
-/// those names. A subagent's agent is judged as the definition it resolves
+/// those names (`AskUserQuestion` for `ask_user`). A subagent's agent is judged as the definition it resolves
 /// to — the name as the definition spells it — so no spelling of a denied
 /// agent slips past its rule; a name no definition has is refused here,
 /// before hooks or rules see it. `None` for any other tool.
@@ -586,6 +590,7 @@ fn session_tool(ctx: &TurnContext, name: &str, input: &serde_json::Value) -> Opt
     let call = |tool: &str, subject: Option<String>| crate::permissions::Call { tool: tool.into(), access: crate::permissions::Access::Session, subject };
     match name {
         crate::todo::TODO_WRITE => Some(Ok(SessionCall { call: call("TodoWrite", None), asked: None, hook_input: input.clone() })),
+        crate::ask::ASK_USER => Some(Ok(SessionCall { call: call("AskUserQuestion", None), asked: None, hook_input: input.clone() })),
         SUBAGENT => {
             let asked = input.get("agent").and_then(|a| a.as_str()).map(str::trim).filter(|a| !a.is_empty());
             let resolved = match &ctx.subagents {
@@ -664,18 +669,7 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
         Err(why) => return (why, true),
     };
     let (mut output, is_error) = match own {
-        Some(_) if name == SUBAGENT => match &ctx.subagents {
-            Some(s) => s.run(call_id, input, events).await,
-            None => (format!("{name} is not available in this session"), true),
-        },
-        Some(_) => match crate::todo::parse(input) {
-            Ok(todos) => {
-                let said = crate::todo::summary(&todos);
-                let _ = events.send(EngineEvent::Todos { todos }).await;
-                (said, false)
-            }
-            Err(e) => (e, true),
-        },
+        Some(_) => run_own(ctx, events, call_id, name, input).await,
         // Searching starts the servers, each a command: plan mode runs none.
         None if name == crate::mcp::SEARCH && ctx.permission_mode == crate::protocol::PermissionMode::Plan => {
             (format!("{name} was not run: it starts the MCP servers, and plan mode runs no commands — search for MCP tools once the plan is approved"), true)
@@ -693,6 +687,32 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
         output.push_str(&format!("\n\n(a hook adds: {c})"));
     }
     (output, is_error)
+}
+
+/// A session tool's call, once allowed: `subagent`, `ask_user` or
+/// `todo_write`.
+async fn run_own(ctx: &TurnContext, events: &Events, call_id: &str, name: &str, input: &serde_json::Value) -> (String, bool) {
+    match name {
+        SUBAGENT => match &ctx.subagents {
+            Some(s) => s.run(call_id, input, events).await,
+            None => (format!("{name} is not available in this session"), true),
+        },
+        crate::ask::ASK_USER => match crate::ask::parse(input) {
+            Ok(questions) => match ctx.gate.ask(name, input, questions.clone(), events, &ctx.cancel).await {
+                Ok(answers) => crate::ask::reply(&questions, &answers).map_or_else(|e| (e, true), |r| (r, false)),
+                Err(e) => (e, true),
+            },
+            Err(e) => (e, true),
+        },
+        _ => match crate::todo::parse(input) {
+            Ok(todos) => {
+                let said = crate::todo::summary(&todos);
+                let _ = events.send(EngineEvent::Todos { todos }).await;
+                (said, false)
+            }
+            Err(e) => (e, true),
+        },
+    }
 }
 
 /// The call as permissions and hooks judge it — its rule, its name under
@@ -745,14 +765,16 @@ mod tests {
 
     /// The ceiling for a toolset whose `apply_patch` is a freeform grammar
     /// tool: the JSON budget plus the grammar (about 125 tokens) with
-    /// headroom. Ticket 10 measured 1,617 with a long working directory.
-    const FREEFORM_CONTEXT_TOKENS: u64 = 1650;
+    /// headroom. Ticket 10 measured 1,617 with a long working directory;
+    /// `ask_user` brings it to 1,766.
+    const FREEFORM_CONTEXT_TOKENS: u64 = 1825;
 
     /// The ceiling with no MCP servers, which is what the bench measures:
     /// `context.tokens` in budgets.toml was raised to 1,625 for the two MCP
     /// meta-tools (ticket 25), and this keeps the core toolset held to the
-    /// 1,500 it had before, so that headroom is MCP's alone.
-    const BASE_CONTEXT_TOKENS: u64 = 1500;
+    /// 1,500 it had before, so that headroom is MCP's alone. `ask_user`
+    /// raised both by 175 (1,641 for gpt, its largest).
+    const BASE_CONTEXT_TOKENS: u64 = 1675;
 
     fn freeform_or(ts: &Toolset) -> bool {
         tools::definitions(ts).iter().any(|d| d.grammar.is_some())

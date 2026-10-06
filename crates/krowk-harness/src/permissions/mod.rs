@@ -41,13 +41,17 @@
 //! TUI today, a phone through the daemon later (R-PERM-2). A host no
 //! client answers for — `krowk -p` — never waits: the call is refused, and
 //! the result says what to allow or which mode to rerun in.
+//!
+//! The same frame carries the agent's **questions** (`Gate::ask`): which
+//! way to go, with options to pick from. Those are asked in every mode, and
+//! answered by `approve` with the person's answers.
 
 pub mod rules;
 pub mod settings;
 
 use crate::engine::{EngineEvent, Events};
 use crate::hooks;
-use crate::protocol::{ApprovalDecision, ApprovalRequest, PermissionMode};
+use crate::protocol::{ApprovalDecision, ApprovalRequest, PermissionMode, Question, QuestionAnswer};
 use crate::tools::{Hidden, Reach, Scope};
 pub use rules::{Access, Call, Kind, Rule};
 use serde_json::Value;
@@ -238,15 +242,19 @@ pub struct Approvals(Arc<Mutex<HashMap<String, Waiting>>>);
 
 struct Waiting {
     session_id: String,
-    answer: oneshot::Sender<ApprovalDecision>,
+    answer: oneshot::Sender<Reply>,
 }
+
+/// How a request was answered: the decision, and for questions what the
+/// person answered.
+type Reply = (ApprovalDecision, Vec<QuestionAnswer>);
 
 impl Approvals {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Waiting>> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn wait(&self, id: &str, session_id: &str) -> oneshot::Receiver<ApprovalDecision> {
+    fn wait(&self, id: &str, session_id: &str) -> oneshot::Receiver<Reply> {
         let (tx, rx) = oneshot::channel();
         self.lock().insert(id.to_string(), Waiting { session_id: session_id.to_string(), answer: tx });
         rx
@@ -256,28 +264,24 @@ impl Approvals {
         self.lock().remove(id);
     }
 
-    /// Answers the request `id` of `session_id`.
-    pub fn answer(&self, session_id: &str, id: &str, decision: ApprovalDecision) -> Result<(), String> {
+    /// Answers the request `id` of `session_id`: with `answers` when it
+    /// asked questions.
+    pub fn answer(&self, session_id: &str, id: &str, decision: ApprovalDecision, answers: Vec<QuestionAnswer>) -> Result<(), String> {
         let mut map = self.lock();
         match map.get(id) {
             Some(w) if w.session_id == session_id => {}
             _ => return Err(format!("session {session_id} has no approval request {id} waiting — it was answered, or its turn is over")),
         }
         let w = map.remove(id).expect("checked above");
-        w.answer.send(decision).map_err(|_| format!("the request {id} is no longer waiting"))
+        w.answer.send((decision, answers)).map_err(|_| format!("the request {id} is no longer waiting"))
     }
 
     /// Answers every request of `session_id` still waiting with `deny`:
     /// nobody is left to answer them (the daemon's last client of the
-    /// session went away).
+    /// session went away). Dropped unanswered, which a call reads as a
+    /// deny and a question as nobody here to answer it.
     pub fn deny_session(&self, session_id: &str) {
-        let mut map = self.lock();
-        let ids: Vec<String> = map.iter().filter(|(_, w)| w.session_id == session_id).map(|(id, _)| id.clone()).collect();
-        for id in ids {
-            if let Some(w) = map.remove(&id) {
-                let _ = w.answer.send(ApprovalDecision::Deny);
-            }
-        }
+        self.lock().retain(|_, w| w.session_id != session_id);
     }
 
     /// Drops whatever a session's finished turn left waiting.
@@ -285,6 +289,14 @@ impl Approvals {
         self.lock().retain(|_, w| w.session_id != session_id);
     }
 }
+
+/// What the model reads when it asks a question nobody is here to answer.
+pub const NOBODY_TO_ASK: &str = "nobody is here to answer: this session cannot ask. Decide, say what you assumed, and carry on.";
+
+/// What the model reads when its questions are declined: by the person,
+/// or for them when nobody came to answer in time (a synced turn left
+/// alone), which the decline does not tell apart.
+pub const DECLINED: &str = "no answer came: the person declined, or was not there. Carry on with your best judgment, or ask something else.";
 
 /// Grants a person gave for the rest of a session.
 pub type SessionGrants = Arc<Mutex<Vec<Rule>>>;
@@ -511,11 +523,12 @@ impl Gate {
             summary: what.clone(),
             reason: reason.clone(),
             remember: remember.clone(),
+            questions: Vec::new(),
         };
         let _ = events.send(EngineEvent::Approval(req)).await;
         let mut cancel = cancel.clone();
         let decision = tokio::select! {
-            d = answer => d.unwrap_or(ApprovalDecision::Deny),
+            d = answer => d.map_or(ApprovalDecision::Deny, |(d, _)| d),
             _ = crate::engine::cancelled(&mut cancel) => ApprovalDecision::Deny,
         };
         approvals.forget(&request_id);
@@ -545,6 +558,53 @@ impl Gate {
             ApprovalDecision::Deny => return Err(format!("the person declined {what}. Do not try another way around it; ask what they would like instead.")),
         }
         Ok(Opens { outside: true, fences: true })
+    }
+
+    /// Whether a person can be asked: a client that answers is attached.
+    pub fn can_ask(&self) -> bool {
+        self.0.approvals.is_some()
+    }
+
+    /// Asks the person `questions` for the call `tool` made with `input`,
+    /// and waits for their answers. Asked in every mode — it is the agent
+    /// asking which way to go, not a call to allow. The refusal the model
+    /// reads when nobody can answer, the person declines, or the turn is
+    /// interrupted.
+    pub async fn ask(&self, tool: &str, input: &Value, questions: Vec<Question>, events: &Events, cancel: &watch::Receiver<bool>) -> Result<Vec<QuestionAnswer>, String> {
+        let Some(approvals) = &self.0.approvals else { return Err(NOBODY_TO_ASK.into()) };
+        let request_id = krowk_store::new_id();
+        let answer = approvals.wait(&request_id, &self.0.session_id);
+        let summary = match questions.as_slice() {
+            [q] => q.question.clone(),
+            qs => format!("{} questions", qs.len()),
+        };
+        let req = ApprovalRequest {
+            session_id: self.0.session_id.clone(),
+            turn_id: self.0.turn_id.clone(),
+            request_id: request_id.clone(),
+            tool: tool.to_string(),
+            input: input.clone(),
+            summary,
+            reason: String::new(),
+            remember: Vec::new(),
+            questions,
+        };
+        let _ = events.send(EngineEvent::Approval(req)).await;
+        let mut cancel = cancel.clone();
+        // None: nobody is left to answer (`deny_session`).
+        let reply = tokio::select! {
+            r = answer => r.ok(),
+            _ = crate::engine::cancelled(&mut cancel) => Some((ApprovalDecision::Deny, Vec::new())),
+        };
+        approvals.forget(&request_id);
+        let decision = reply.as_ref().map_or(ApprovalDecision::Deny, |(d, _)| *d);
+        let _ = events.send(EngineEvent::ApprovalResolved { request_id, decision }).await;
+        match reply {
+            _ if *cancel.borrow() => Err("the turn was interrupted before the person answered".into()),
+            None => Err(NOBODY_TO_ASK.into()),
+            Some((ApprovalDecision::Deny, _)) => Err(DECLINED.into()),
+            Some((_, answers)) => Ok(answers),
+        }
     }
 
     /// The refusal for a call that would be asked about when nobody can

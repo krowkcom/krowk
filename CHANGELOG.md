@@ -31,6 +31,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
   share your `~/.codex/config.toml`, so that is where the entry lands. On
   Windows, Codex sessions don't have the check yet. A code span or fenced
   block that quotes a card link is left alone.
+- **The agent can ask you which way to go.** When a choice is yours, the
+  agent asks up to four questions with options to pick from, and you answer
+  over the prompt: a number or Enter picks, Space toggles where several may
+  be picked, Tab moves between questions, and typing gives your own answer
+  instead. Esc declines and the agent carries on with its best judgment.
+  The native agent gets an `ask_user` tool for this. Claude Code's
+  `AskUserQuestion` and Codex's questions, which krowk used to refuse, now
+  reach you the same way, in plan mode too. Questions are only asked where
+  someone can answer: `krowk -p` doesn't offer the tool, and a backend that
+  asks anyway is told to decide and say what it assumed. For protocol
+  clients, an `approval.requested` frame can carry `questions`, and
+  `approve` answers them with `answers`.
 - **Paste a screenshot into the prompt.** Ctrl-V (or Alt-V, where the
   terminal keeps Ctrl-V for itself) puts the clipboard's image in the prompt
   as `[Image #1]`, and the model sees it with the text. Dragging an image
@@ -150,6 +162,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
   breadcrumbs, exit codes and which command answers which task.
   `krowk help --json`, or `--jq`, still prints the catalog. Help headings
   are in title case and bold on a terminal.
+- **A synced session goes direct over Tailscale with no setup.** With
+  Tailscale running on both machines, `krowk sync host` offers the direct
+  path by itself: it fetches the registry's relay ticket public keys
+  (`GET /v1/relay/ticket_keys`) at every hosting, so a viewer's session
+  moves off the relay with no `KROWK_RELAY_TICKET_KEYS` file to write, and
+  a key the registry rotates in reaches the next session without a
+  reinstall. It keeps them in `~/.krowk/cache/` for a day, used only when
+  the registry can't be reached. Admission is unchanged: only the
+  registry's ticket and the device's signed challenge get in, and being on
+  the tailnet admits nobody. When there is no direct path, the host says
+  why in one line on stderr, such as `krowk: no direct path (Tailscale
+  isn't running: it is Stopped); the session goes by the relay`, and the
+  session goes by the relay. `KROWK_RELAY_TICKET_KEYS` still names the keys
+  by hand, and wins over the fetched ones, for a stand-in registry.
 - **The Gemini extension, the MCP registry entry and `@krowk/mcp` describe
   Krowk as a coding agent harness.** They used to describe a permalink
   uploader. Each now says that it's Krowk's publishing, for Gemini CLI or

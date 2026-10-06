@@ -1329,6 +1329,57 @@
         "limited"
       ]
     },
+    "Question": {
+      "description": "A question the agent asks the person, with the options it suggests. The\nperson picks one (or several, with `multiSelect`) or writes their own.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "What its answer names.",
+          "type": "string"
+        },
+        "header": {
+          "description": "A short label for it, e.g. `Database`; may be empty.",
+          "type": "string"
+        },
+        "question": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QuestionOption"
+          }
+        },
+        "multiSelect": {
+          "description": "More than one option may be picked.",
+          "type": "boolean"
+        },
+        "secret": {
+          "description": "What the person writes is a secret, and is not shown as typed.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "question"
+      ]
+    },
+    "QuestionOption": {
+      "description": "One option a question offers.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "description": "What picking it means.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ]
+    },
     "ApprovalRequest": {
       "description": "A tool call waiting for a person's say (R-PERM-2): sent to every client\nof the session as `approval.requested`, and answered by one of them with\n`approve`. It waits until answered or the turn is interrupted; a host\nwith no client that answers never sends one, and refuses the call.",
       "type": "object",
@@ -1363,6 +1414,13 @@
           "type": "array",
           "items": {
             "type": "string"
+          }
+        },
+        "questions": {
+          "description": "Not a call to allow but questions for the person, each with options\nto pick from — the agent asking which way to go. `approve` answers\nthem with `allow` and its `answers`, or declines with `deny`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Question"
           }
         }
       },

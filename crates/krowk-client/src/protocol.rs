@@ -388,6 +388,55 @@ pub struct ApprovalRequest {
     /// this call can only be allowed once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remember: Vec<String>,
+    /// Not a call to allow but questions for the person, each with options
+    /// to pick from — the agent asking which way to go. `approve` answers
+    /// them with `allow` and its `answers`, or declines with `deny`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<Question>,
+}
+
+/// A question the agent asks the person, with the options it suggests. The
+/// person picks one (or several, with `multiSelect`) or writes their own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Question {
+    /// What its answer names.
+    pub id: String,
+    /// A short label for it, e.g. `Database`; may be empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub header: String,
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<QuestionOption>,
+    /// More than one option may be picked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi_select: bool,
+    /// What the person writes is a secret, and is not shown as typed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
+}
+
+/// One option a question offers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionOption {
+    pub label: String,
+    /// What picking it means.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+/// The person's answer to one question: the labels of the options picked,
+/// and what they wrote, if anything. Neither means they left it unanswered.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionAnswer {
+    /// The question's `id`.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub picked: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// What a client asks of the engine. `prompt`, `interrupt`, `steer`,
@@ -435,8 +484,15 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<ImageInput>,
     },
-    /// Answer an `approval.requested`.
-    Approve { session_id: String, request_id: String, decision: ApprovalDecision },
+    /// Answer an `approval.requested`: for one with `questions`, `allow`
+    /// with the person's `answers`.
+    Approve {
+        session_id: String,
+        request_id: String,
+        decision: ApprovalDecision,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        answers: Vec<QuestionAnswer>,
+    },
     /// Continue the session on another model, instance or engine
     /// (R-SWITCH-4): checked now — the instance, its key or login, its
     /// binary — and refused with the fix when it cannot run, the session
