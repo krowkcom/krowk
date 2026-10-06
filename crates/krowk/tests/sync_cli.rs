@@ -490,7 +490,8 @@ fn path_until(view: &mut Running, want: &str) -> serde_json::Value {
 
 /// Ticket 42: with Tailscale up and no krowk variable set, the host fetches
 /// the registry's ticket keys itself, keeps them, and B's session moves to
-/// the direct path.
+/// the direct path. It fetches at every hosting: keys kept from before — a
+/// key since rotated out — give way to what the registry publishes now.
 #[test]
 fn r_net_1_sync_host_goes_direct_with_the_ticket_keys_the_registry_publishes() {
     let w = World::new("direct-keys");
@@ -500,6 +501,10 @@ fn r_net_1_sync_host_goes_direct_with_the_ticket_keys_the_registry_publishes() {
     a.env.retain(|(k, _)| k != "KROWK_TAILSCALE_SOCKET");
     a.env.push(("KROWK_TAILSCALE_SOCKET".into(), socket.display().to_string()));
     assert!(!a.env.iter().any(|(k, _)| k == "KROWK_RELAY_TICKET_KEYS"));
+    let kept = a.home.join(".krowk/cache/relay-ticket-keys.json");
+    std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    std::fs::write(&kept, serde_json::json!({"registry": w.api, "fetchedMs": now, "ticketKeys": {e2e::hex(&krowk_devregistry::TICKET_KID): "ab".repeat(32)}}).to_string()).unwrap();
 
     let (host, session) = hosted(&w, &a);
     let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
@@ -507,13 +512,14 @@ fn r_net_1_sync_host_goes_direct_with_the_ticket_keys_the_registry_publishes() {
     assert!(moved["via"].as_str().unwrap_or_default().starts_with("ws://127.0.0.1:"), "{moved}");
     assert!(!host.stderr().iter().any(|l| l.contains("no direct path")), "A offered a direct path");
 
-    let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(a.home.join(".krowk/cache/relay-ticket-keys.json")).unwrap()).unwrap();
+    let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(&kept).unwrap()).unwrap();
     assert_eq!(kept["registry"], w.api.as_str());
     assert_eq!(kept["ticketKeys"][e2e::hex(&krowk_devregistry::TICKET_KID)], e2e::hex(&krowk_devregistry::ticket_public_key()));
 }
 
 /// Ticket 42: with Tailscale stopped, the host says in one line that there
-/// is no direct path and why, and the session goes by the relay.
+/// is no direct path and why, and the session goes by the relay; it asks
+/// the registry for no keys it cannot use.
 #[test]
 fn r_net_1_with_tailscale_stopped_the_host_says_why_in_one_line_and_goes_by_the_relay() {
     let w = World::new("direct-stopped");
@@ -530,7 +536,8 @@ fn r_net_1_with_tailscale_stopped_the_host_says_why_in_one_line_and_goes_by_the_
     view.until("the turn's end", is("result"));
     let said: Vec<_> = host.stderr().into_iter().filter(|l| l.contains("direct path")).collect();
     assert_eq!(said.len(), 1, "{said:?}");
-    assert!(said[0].contains("Tailscale isn't running"), "{said:?}");
+    assert!(said[0].contains("Tailscale isn't running: it is Stopped"), "{said:?}");
+    assert!(!a.home.join(".krowk/cache/relay-ticket-keys.json").exists(), "no keys fetched");
 }
 
 /// Ticket 42: `KROWK_RELAY_TICKET_KEYS` still wins over the registry's
@@ -557,5 +564,7 @@ fn r_net_1_krowk_relay_ticket_keys_overrides_the_published_keys() {
     view.until("the turn's end", is("result"));
     assert!(!view.seen.iter().any(|l| l.contains("direct over")), "B joined under keys A does not hold: {:?}", view.seen);
     assert!(!a.home.join(".krowk/cache/relay-ticket-keys.json").exists(), "the registry's keys were not fetched");
-    assert!(!host.stderr().iter().any(|l| l.contains("no direct path")), "A listened, under the named keys");
+    let said = host.stderr();
+    assert!(!said.iter().any(|l| l.contains("no direct path")), "A listened, under the named keys: {said:?}");
+    assert!(said.iter().any(|l| l.contains("bad_ticket")), "B raced the direct path and its ticket was refused there: {said:?}");
 }

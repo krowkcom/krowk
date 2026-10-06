@@ -603,10 +603,10 @@ impl Client {
     /// The registry's relay ticket public keys (`GET /v1/relay/ticket_keys`),
     /// `{"ticketKeys": {"<kid>": "<key>"}}` as `krowk relay serve
     /// --ticket-keys` reads them: what a host's direct listener checks a
-    /// viewer's ticket with. Keyless, since they are public, and tried once:
-    /// a host without them goes by the relay.
+    /// viewer's ticket with. Keyless, since they are public, tried once and
+    /// given five seconds: a host without them goes by the relay.
     pub fn relay_ticket_keys(&self) -> Result<Value, Error> {
-        Ok(self.keyless().call("GET", "/relay/ticket_keys", None, 1, None)?.0)
+        Ok(self.keyless_within(std::time::Duration::from_secs(5)).call("GET", "/relay/ticket_keys", None, 1, None)?.0)
     }
 
     pub fn release_lease(&self, id: &str, token: &str) -> Result<(), Error> {

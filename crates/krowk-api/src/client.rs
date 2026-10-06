@@ -117,6 +117,12 @@ pub struct Client {
 impl Client {
     /// A client against `base_url` (the public registry when empty).
     pub fn new(base_url: &str, token: &str) -> Client {
+        Client::within(base_url, token, Duration::from_secs(300), Duration::from_secs(30))
+    }
+
+    /// `new`, each call given up after `global` and its connection after
+    /// `connect`.
+    fn within(base_url: &str, token: &str, global: Duration, connect: Duration) -> Client {
         let base_url = if base_url.is_empty() { crate::DEFAULT_BASE_URL } else { base_url }.trim_end_matches('/').to_string();
         let proxy = proxy_for(&base_url);
         let guard = Guard { base: base_url.clone(), proxy: proxy.as_ref().map(|p| (p.host().to_string(), p.port())) };
@@ -124,8 +130,8 @@ impl Client {
             .http_status_as_error(false)
             // Redirects are judged here, hop by hop, never followed blind.
             .max_redirects(0)
-            .timeout_global(Some(Duration::from_secs(300)))
-            .timeout_connect(Some(Duration::from_secs(30)))
+            .timeout_global(Some(global))
+            .timeout_connect(Some(connect))
             .proxy(proxy)
             .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
             .user_agent(format!("krowk-cli/{}", option_env!("KROWK_VERSION").unwrap_or("dev")))
@@ -168,6 +174,12 @@ impl Client {
 
     pub(crate) fn keyless(&self) -> Client {
         Client { sleep: self.sleep, ..Client::new(&self.base_url, "") }
+    }
+
+    /// `keyless`, every call given up after `limit`: for a call its caller
+    /// can do without, which must not hold it up.
+    pub(crate) fn keyless_within(&self, limit: Duration) -> Client {
+        Client { sleep: self.sleep, ..Client::within(&self.base_url, "", limit, limit) }
     }
 
     /// Reads back the key the client holds. A key the registry will not take

@@ -104,16 +104,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **A synced session goes direct over Tailscale with no setup.** With
   Tailscale running on both machines, `krowk sync host` offers the direct
   path by itself: it fetches the registry's relay ticket public keys
-  (`GET /v1/relay/ticket_keys`) at every hosting and keeps them in
-  `~/.krowk/cache/`, so a viewer's session moves off the relay with no
-  `KROWK_RELAY_TICKET_KEYS` file to write, and a key the registry rotates
-  in reaches the next session without a reinstall. Admission is unchanged:
-  only the registry's ticket and the device's signed challenge get in, and
-  being on the tailnet admits nobody. When there is no direct path, the
-  host says why in one line on stderr ("Tailscale isn't running", no
-  tailnet address, keys it could not fetch) and the session goes by the
-  relay. `KROWK_RELAY_TICKET_KEYS` still names the keys by hand, and wins
-  over the fetched ones, for a stand-in registry.
+  (`GET /v1/relay/ticket_keys`) at every hosting, so a viewer's session
+  moves off the relay with no `KROWK_RELAY_TICKET_KEYS` file to write, and
+  a key the registry rotates in reaches the next session without a
+  reinstall. It keeps them in `~/.krowk/cache/` for a day, used only when
+  the registry can't be reached. Admission is unchanged: only the
+  registry's ticket and the device's signed challenge get in, and being on
+  the tailnet admits nobody. When there is no direct path, the host says
+  why in one line on stderr, such as `krowk: no direct path (Tailscale
+  isn't running: it is Stopped); the session goes by the relay`, and the
+  session goes by the relay. `KROWK_RELAY_TICKET_KEYS` still names the keys
+  by hand, and wins over the fetched ones, for a stand-in registry.
 - **Reading your synced sessions is signed by this machine's device key.**
   `krowk sync sessions`, attaching, `--resume` and the host now sign the
   calls that list a session, show it and list its chunks, as they already
