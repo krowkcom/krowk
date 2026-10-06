@@ -257,15 +257,10 @@ fn first(values: &[String]) -> String {
 
 /// One git query. A repository's config names commands git runs on its
 /// own — `core.fsmonitor` on `status` above all — and the repository may be
-/// one a model was handed, so none is run and no lock is taken: the rule
-/// the harness's search tools keep.
+/// one a model was handed, so none is run and no lock is taken
+/// (`krowk_api::git`).
 fn git_cmd(dir: Option<&Path>) -> Command {
-    let mut c = Command::new("git");
-    c.args(["-c", "core.fsmonitor=false", "--no-optional-locks"]).stdin(std::process::Stdio::null());
-    if let Some(d) = dir {
-        c.current_dir(d);
-    }
-    c
+    krowk_api::git::query(dir.unwrap_or(Path::new(".")))
 }
 
 fn git(dir: Option<&Path>, args: &[&str]) -> String {

@@ -80,9 +80,7 @@ fn walk(root: &Path, deadline: Instant) -> Walk {
 /// `check-ignore`, and a repository is a directory the model may have been
 /// handed. No optional locks either: a search never writes the index.
 fn git(root: &Path) -> std::process::Command {
-    let mut c = std::process::Command::new("git");
-    c.args(["-c", "core.fsmonitor=false", "--no-optional-locks"]).current_dir(root).stdin(std::process::Stdio::null());
-    c
+    krowk_api::git::query(root)
 }
 
 /// Whether git ignores `root` itself, or a directory it is in.

@@ -5,6 +5,7 @@
 pub mod client;
 pub mod creds;
 pub mod error;
+pub mod git;
 pub mod home;
 pub mod migrate;
 pub mod slug;

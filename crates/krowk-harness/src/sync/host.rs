@@ -385,7 +385,7 @@ fn under_session_settings(c: Command, mode: PermissionMode) -> Command {
 }
 
 fn worktree(cwd: &str) -> Option<String> {
-    let out = std::process::Command::new("git").args(["-C", cwd, "rev-parse", "HEAD"]).output().ok()?;
+    let out = krowk_api::git::query(std::path::Path::new(cwd)).args(["rev-parse", "HEAD"]).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
