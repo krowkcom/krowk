@@ -115,3 +115,10 @@ stderr:
   Code: unexpected_argument
 exit: 1
 
+$ krowk pussh --format human
+stderr:
+✗ `pussh` is not a krowk command.
+  Try: krowk push
+  Code: unknown_command
+exit: 1
+

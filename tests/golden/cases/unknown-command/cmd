@@ -9,3 +9,4 @@ krowk help pussh
 @tty krowk runs
 krowk login extra --format human
 krowk logout extra --format human
+krowk pussh --format human

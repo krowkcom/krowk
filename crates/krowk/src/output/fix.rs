@@ -23,7 +23,7 @@ pub fn fix_lines(fix: &str) -> Vec<FixLine> {
 /// command with more said around it leaves the sentence whole, and a clause
 /// the command opens is about the command, so offers nothing to try.
 fn fix_line(clause: &str) -> FixLine {
-    static DANGLING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:(?:^|\s+)(?:run|try|use|with))?\s*[,:—]?\s*$").unwrap());
+    static DANGLING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:(?:^|\s+)(?:run|try|use|with|pass|did you mean))?\s*[,:—]?\s*$").unwrap());
     static COMMAND: LazyLock<Regex> = LazyLock::new(|| Regex::new("`(krowk [^`]+)`").unwrap());
     let trimmed = clause.trim();
     let (say, then) = trimmed.split_once(" — ").unwrap_or((trimmed, ""));
@@ -37,7 +37,7 @@ fn fix_line(clause: &str) -> FixLine {
     }
     let lead = DANGLING.replace_all(before.trim(), "").into_owned();
     let tail = after.strip_prefix(", ").filter(|t| t.starts_with("or ") || t.starts_with("then "));
-    let bare = after.trim_matches(|c: char| c == '.' || c.is_whitespace()).is_empty();
+    let bare = after.trim_matches(|c: char| c == '.' || c == '?' || c.is_whitespace()).is_empty();
     match (in_say, bare || tail.is_some()) {
         (true, true) => FixLine { say: sentence(&lead), then: sentence(tail.unwrap_or(then)), cmd },
         (false, true) if lead.is_empty() => FixLine { say: sentence(say), then: sentence(tail.unwrap_or("")), cmd },
@@ -89,6 +89,10 @@ mod tests {
         // More said after the command than a way out: the sentence stays whole.
         let more = fix_lines("no default — run `krowk workspaces use <name>` to point it at a key, or `krowk login`");
         assert_eq!((more[0].say.as_str(), more[0].cmd.as_str()), ("No default.", "krowk workspaces use <name>"));
+        let guess = fix_lines("`pussh` is not a krowk command — did you mean `krowk push`?");
+        assert_eq!((guess[0].then.as_str(), guess[0].cmd.as_str()), ("", "krowk push"));
+        let ci = fix_lines("needs a person — pass `krowk login --token krowk_sk_...`, or add --no-browser");
+        assert_eq!((ci[0].then.as_str(), ci[0].cmd.as_str()), ("Or add --no-browser.", "krowk login --token krowk_sk_..."));
         assert_eq!(more[0].then, "Run `krowk workspaces use <name>` to point it at a key, or `krowk login`.");
     }
 }
