@@ -731,7 +731,7 @@ impl Answers {
         let Some((events, cancel)) = asking else { return Err(permissions::NOBODY_TO_ASK.into()) };
         let questions = crate::ask::parse(input)?;
         let answers = self.gate.ask("AskUserQuestion", input, questions.clone(), events, cancel).await?;
-        let said: serde_json::Map<String, Value> = questions.iter().filter_map(|q| answers.iter().find(|a| a.id == q.id).and_then(crate::ask::said).map(|a| (q.question.clone(), Value::String(a)))).collect();
+        let said: serde_json::Map<String, Value> = questions.iter().filter_map(|q| answers.iter().find(|a| a.id == q.id).and_then(crate::ask::said).map(|a| (q.id.clone(), Value::String(a)))).collect();
         if said.is_empty() {
             return Err(permissions::DECLINED.into());
         }
