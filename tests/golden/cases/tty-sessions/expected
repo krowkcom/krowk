@@ -101,6 +101,7 @@ $ @tty krowk sessions rebuild
 tty:
 \e[31m✗\e[0m \e[1mRebuilding deletes <scratch>/home/.krowk/sessions/krowk.db and re-imports every transcript.\e[0m
 \e[2m  Try:\e[0m \e[36mkrowk sessions rebuild --yes\e[0m
+\e[2m  Run `krowk sessions rebuild --yes` to confirm when nobody is at a terminal to ask.\e[0m
 \e[2m  Code: confirmation_required\e[0m
 exit: 1
 

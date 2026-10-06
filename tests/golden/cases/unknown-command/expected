@@ -4,7 +4,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`bogus` is not a krowk command — run `krowk --help` for the list",
+    "fix": "`bogus` is not a krowk command — run `krowk --help`",
     "retryable": false
   }
 }
@@ -99,5 +99,19 @@ tty:
 \e[31m✗\e[0m \e[1mThe runs command needs a subcommand: start, list, show or finish.\e[0m
 \e[2m  Try:\e[0m \e[36mkrowk help runs\e[0m
 \e[2m  Code: unknown_command\e[0m
+exit: 1
+
+$ krowk login extra --format human
+stderr:
+✗ `krowk login` takes no arguments, and got `extra`.
+  The key goes behind --token.
+  Code: unexpected_argument
+exit: 1
+
+$ krowk logout extra --format human
+stderr:
+✗ `krowk logout` takes no arguments, and got `extra`.
+  Nothing was removed.
+  Code: unexpected_argument
 exit: 1
 

@@ -249,7 +249,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`bogus` is not a krowk command or help topic — run `krowk help` for the list",
+    "fix": "`bogus` is not a krowk command or help topic — run `krowk help`",
     "retryable": false
   }
 }

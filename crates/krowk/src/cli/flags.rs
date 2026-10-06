@@ -196,8 +196,12 @@ pub fn parse(args: &[String]) -> (Flags, Vec<String>, Result<(), String>) {
 fn unknown_flag(arg: &str, name: &str, positionals: &[String]) -> String {
     let typed = arg.split_once('=').map_or(arg, |(flag, _)| flag);
     let c = catalog::catalog("");
-    let own = c.find(positionals).map(|cmd| cmd.flags).unwrap_or_default();
-    let names = own.iter().chain(&c.global_flags).map(|f| f.name);
+    // Before any command is typed, any flag might be the one meant.
+    let candidates = match c.find(positionals) {
+        Some(cmd) => cmd.flags.into_iter().chain(c.global_flags.iter().cloned()).collect(),
+        None => c.all_flags(),
+    };
+    let names = candidates.iter().map(|f| f.name);
     match super::suggest::closest(name, names) {
         Some(near) => format!("unknown flag {typed}; did you mean --{near}?"),
         None => format!("unknown flag {typed}"),
@@ -423,6 +427,7 @@ mod tests {
         assert_eq!(run("push --nope").2.unwrap_err(), "unknown flag --nope");
         assert_eq!(run("push --pirvate").2.unwrap_err(), "unknown flag --pirvate; did you mean --private?");
         assert_eq!(run("-x").2.unwrap_err(), "unknown flag -x");
+        assert_eq!(run("--pirvate push").2.unwrap_err(), "unknown flag --pirvate; did you mean --private?");
         // Only a flag the command takes is offered: `runs list` has no --title.
         assert_eq!(run("runs list --titel").2.unwrap_err(), "unknown flag --titel");
         assert_eq!(run("push --run").2.unwrap_err(), "--run needs a value");

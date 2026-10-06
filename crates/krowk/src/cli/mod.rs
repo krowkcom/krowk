@@ -381,7 +381,7 @@ fn unknown_command(p: &[String]) -> Error {
     let Some(group) = c.commands.iter().find(|cmd| cmd.name == p[0] && !cmd.subcommands.is_empty()) else {
         return match suggest::closest(&p[0], c.commands.iter().map(|cmd| cmd.name.as_str())) {
             Some(near) => fail("unknown_command", format!("`{typed}` is not a krowk command — did you mean `krowk {near}`?")),
-            None => fail("unknown_command", format!("`{typed}` is not a krowk command — run `krowk --help` for the list")),
+            None => fail("unknown_command", format!("`{typed}` is not a krowk command — run `krowk --help`")),
         };
     };
     // A group alone, or with a subcommand it lacks: name the ones it has.
@@ -475,7 +475,7 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
         let typed = clip(topic, 2).join(" ");
         return Err(match suggest::closest(&topic[0], names) {
             Some(near) => fail("unknown_command", format!("`{typed}` is not a krowk command or help topic — did you mean `krowk help {near}`?")),
-            None => fail("unknown_command", format!("`{typed}` is not a krowk command or help topic — run `krowk help` for the list")),
+            None => fail("unknown_command", format!("`{typed}` is not a krowk command or help topic — run `krowk help`")),
         });
     };
     // A topic is prose, so its JSON is the prose as one string.

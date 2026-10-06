@@ -180,13 +180,14 @@ fn agents(colour: bool) -> String {
 
 const AGENTS_OUTPUT: &str = "\
 When stdout is not a terminal, commands answer with one JSON envelope — on
-stdout when they worked, on stderr when they failed. Help and --version are
-text unless --json is given, and `krowk help --json` marks the other
-commands that print text `no_json`. --json asks for the envelope on a
-terminal too, --quiet drops it for the bare record, and --jq filters it with
-no jq binary needed. Pickers and confirmations are skipped when piped, under
---json or in CI, failing with a fix instead; a browser login still waits for
-someone to approve it, and pairing a device needs a person at a terminal.
+stdout when they worked, on stderr when they failed. Help is text unless
+--json is given, --version is always text, and `krowk help --json` marks
+the other commands that print text `no_json`. --json asks for the envelope
+on a terminal too, --quiet drops it for the bare record, and --jq filters
+it with no jq binary needed. Pickers are skipped when piped, under --json
+or in CI, failing with a fix instead. A browser login waits for someone to
+approve it, and a command that changes your keys asks a person at the
+terminal, refusing without one.
 
   {\"ok\": true, \"data\": {…}, \"summary\": \"…\", \"breadcrumbs\": [{…}]}
   {\"ok\": false, \"error\": {\"error\": \"<code>\", \"fix\": \"…\", \"retryable\": false}}
