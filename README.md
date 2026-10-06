@@ -100,7 +100,7 @@ It outputs `urls`, `markdown` (ready to post as a PR comment), `run-slug` and `j
 - [`skills/krowk/SKILL.md`](skills/krowk/SKILL.md) teaches another agent how to use krowk. The installer adds it to `~/.claude/skills`.
 - In Claude Code, `/plugin marketplace add krowkcom/krowk` and then `/plugin install krowk@krowk` add the skill and the MCP server together. When krowk drives Claude Code itself, the plugin's server stays off and krowk's own tools are used.
 - Output is JSON when piped. `krowk help --json` describes every command, and `--jq` filters the output without needing jq installed: `URL=$(krowk push shot.png --jq '.data.artifacts[0].url')`.
-- `krowk-mcp` serves the same features over MCP stdio: `claude mcp add krowk -- krowk-mcp`.
+- `krowk-mcp` serves the same features over MCP stdio, for any other MCP client, or for Claude Code without the plugin: `claude mcp add krowk -- krowk-mcp`.
 - Exit codes: `0` ok · `1` bad command · `2` not found · `3` needs credentials · `4` refused · `5` rate limited · `6` transfer failed · `7` server error · `8` gone.
 
 ## Configuration
