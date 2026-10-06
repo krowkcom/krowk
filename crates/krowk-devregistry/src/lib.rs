@@ -258,6 +258,8 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         (_, ["v1", "sessions"]) if get => sync::signed(a, req, |a, req, _| sync::list_sessions(a, req)),
         (_, ["v1", "sessions", id]) if get => sync::signed(a, req, |a, req, _| sync::show_session(a, req, id)),
         ("PUT" | "PATCH", ["v1", "sessions", id]) => sync::signed(a, req, |a, req, by| sync::put_session(a, req, id, by)),
+        // Keyless: the ticket public keys are public, as the registry's are.
+        (_, ["v1", "relay", "ticket_keys"]) if get => sync::ticket_keys(),
         (_, ["v1", "sessions", id, "relay_ticket"]) if get => sync::signed(a, req, |a, req, by| sync::viewer_ticket(a, req, id, by)),
         ("POST", ["v1", "sessions", id, "lease"]) => sync::signed(a, req, |a, req, by| sync::acquire_lease(a, req, id, by)),
         ("PUT" | "PATCH", ["v1", "sessions", id, "lease"]) => sync::signed(a, req, |a, req, by| sync::renew_lease(a, req, id, by)),

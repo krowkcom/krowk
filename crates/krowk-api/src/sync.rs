@@ -600,6 +600,15 @@ impl Client {
         Ok(self.call_as_device("GET", &format!("/sessions/{}/relay_ticket?device={}&env={}", slug_path(id), slug_path(device), slug_path(env)), None, ATTEMPTS, None)?.0)
     }
 
+    /// The registry's relay ticket public keys (`GET /v1/relay/ticket_keys`),
+    /// `{"ticketKeys": {"<kid>": "<key>"}}` as `krowk relay serve
+    /// --ticket-keys` reads them: what a host's direct listener checks a
+    /// viewer's ticket with. Keyless, since they are public, tried once and
+    /// given five seconds: a host without them goes by the relay.
+    pub fn relay_ticket_keys(&self) -> Result<Value, Error> {
+        Ok(self.keyless_within(std::time::Duration::from_secs(5)).call("GET", "/relay/ticket_keys", None, 1, None)?.0)
+    }
+
     pub fn release_lease(&self, id: &str, token: &str) -> Result<(), Error> {
         let url = format!("{}/sessions/{}/lease", self.base_url, slug_path(id));
         self.request_signed("DELETE", &url, Some(json!({ "lease": { "token": token } })), ATTEMPTS, None, Some(self.device_signer()?)).map(|_| ())

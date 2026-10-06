@@ -31,8 +31,8 @@ Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a
 ## The agent
 
 - **Inline, not full-screen.** The agent draws at the bottom of your terminal and leaves everything else in your normal scrollback, so output can be scrolled, copied and searched, including over SSH and in tmux.
-- **Tools.** It can read, write, edit, run bash, grep, glob and publish. It also keeps a todo list and runs subagents in parallel, each with its own context and a cheaper model.
-- **Compatible with Claude Code.** It uses the same permission modes, `allow`/`ask`/`deny` rules and settings files. It reads `AGENTS.md`, `CLAUDE.md` and `.cursor/rules`, and loads Claude-format skills, hooks and `.claude/agents` without changes. It adds an `unhinged` mode that never asks.
+- **Tools.** It can read, write, edit, run bash, grep, glob and publish. It also keeps a todo list, runs subagents in parallel, each with its own context and a cheaper model, and asks you with options to pick from when a choice is yours.
+- **Compatible with Claude Code.** It uses the same permission modes, `allow`/`ask`/`deny` rules and settings files. It reads `AGENTS.md`, `CLAUDE.md` and `.cursor/rules`, and loads Claude-format skills, hooks and `.claude/agents` without changes. It adds an `unhinged` mode that never asks for permission.
 - **Multiple accounts.** You can connect several accounts per provider and rename them in `/connect`. A second account is added with `--name work`.
 - **Cost limits.** `--max-usd` and `--max-tokens` stop a session before it goes over a limit, subagents included.
 

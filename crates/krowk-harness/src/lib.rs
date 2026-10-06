@@ -54,6 +54,7 @@
 
 pub mod agents;
 pub mod anthropic;
+pub mod ask;
 pub mod bridge;
 pub mod budget;
 pub mod catalog;
