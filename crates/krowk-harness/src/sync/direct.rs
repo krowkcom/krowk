@@ -70,10 +70,10 @@ impl Drop for Listening {
 }
 
 /// This node as tailscaled reads it, when Tailscale answers and is up;
-/// otherwise why there is no direct path, starting "Tailscale isn't
-/// running".
+/// otherwise why there is no direct path: "Tailscale isn't running" for a
+/// node that answered as down, else what asking it gave, as said.
 pub fn running(socket: &tailscale::LocalApi) -> Result<tailscale::Status, String> {
-    let status = tailscale::status(socket).map_err(|e| format!("Tailscale isn't running: {e}"))?;
+    let status = tailscale::status(socket).map_err(|e| format!("Tailscale: {e}"))?;
     if !status.running() {
         return Err(if status.backend_state.is_empty() { "Tailscale isn't running".into() } else { format!("Tailscale isn't running: it is {}", status.backend_state) });
     }

@@ -104,8 +104,11 @@ fn relay_for(asked: &str, base_url: &str) -> String {
 /// network.
 fn direct(ctx: &mut Ctx, api: &Client) -> Result<Option<krowk_harness::sync::direct::Config>, Error> {
     let socket = krowk_harness::sync::tailscale::socket(ctx.io.env);
+    // A named file that does not read is a mistake said at once, Tailscale
+    // up or not.
+    let named = named_ticket_keys(ctx)?;
     let roster = match krowk_harness::sync::direct::running(&socket) {
-        Ok(_) => ticket_keys(ctx, api)?,
+        Ok(_) => named.map_or_else(|| fetched_ticket_keys(ctx, api), Ok),
         Err(why) => Err(why),
     };
     let roster = match roster {
@@ -127,21 +130,25 @@ const TICKET_KEYS_CACHE: &str = "relay-ticket-keys.json";
 /// longer than this after the last fetch that listed it.
 const TICKET_KEYS_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// The keys a direct listener trusts, or why there are none.
-/// `KROWK_RELAY_TICKET_KEYS` names a file of them (the one `krowk relay
-/// serve --ticket-keys` reads), for a stand-in registry, and a file that
-/// does not read is an error. Otherwise they are the registry's own, from
-/// `GET /v1/relay/ticket_keys`, fetched at every hosting — so a rotation's
-/// next key, published before the registry signs with it, reaches the next
-/// session with nothing reinstalled — and kept (`kept_keys`).
-fn ticket_keys(ctx: &Ctx, api: &Client) -> Result<Result<krowk_harness::relay::Roster, String>, Error> {
-    use krowk_harness::relay::Roster;
+/// The keys `KROWK_RELAY_TICKET_KEYS` names a file of (the one `krowk relay
+/// serve --ticket-keys` reads), for a stand-in registry: they win over the
+/// registry's. None when it is unset; a file that does not read is an error.
+fn named_ticket_keys(ctx: &Ctx) -> Result<Option<krowk_harness::relay::Roster>, Error> {
     let named = ctx.env("KROWK_RELAY_TICKET_KEYS");
     let named = named.trim();
-    if !named.is_empty() {
-        let text = std::fs::read_to_string(named).map_err(|e| fail("bad_ticket_keys", format!("KROWK_RELAY_TICKET_KEYS names {named}, which could not be read: {e}")))?;
-        return Roster::parse(&text).map(Ok).map_err(|e| fail("bad_ticket_keys", e));
+    if named.is_empty() {
+        return Ok(None);
     }
+    let text = std::fs::read_to_string(named).map_err(|e| fail("bad_ticket_keys", format!("KROWK_RELAY_TICKET_KEYS names {named}, which could not be read: {e}")))?;
+    krowk_harness::relay::Roster::parse(&text).map(Some).map_err(|e| fail("bad_ticket_keys", e))
+}
+
+/// The registry's own ticket keys, from `GET /v1/relay/ticket_keys`, or
+/// why there are none: fetched at every hosting — so a rotation's next
+/// key, published before the registry signs with it, reaches the next
+/// session with nothing reinstalled — and kept (`kept_keys`).
+fn fetched_ticket_keys(ctx: &Ctx, api: &Client) -> Result<krowk_harness::relay::Roster, String> {
+    use krowk_harness::relay::Roster;
     let cache = krowk_api::home::dir(ctx.io.env).ok().map(|h| h.join(krowk_api::home::CACHE).join(TICKET_KEYS_CACHE));
     let now = jiff::Timestamp::now().as_millisecond();
     let v = match api.relay_ticket_keys() {
@@ -149,14 +156,11 @@ fn ticket_keys(ctx: &Ctx, api: &Client) -> Result<Result<krowk_harness::relay::R
         Err(e) => {
             let why = format!("the registry's relay ticket keys could not be fetched: {}", e.code());
             let kept = if unreachable(&e) { cache.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|text| kept_keys(&text, &api.base_url, now)) } else { None };
-            return Ok(kept.ok_or(why));
+            return kept.ok_or(why);
         }
     };
     let keys = json!({"registry": api.base_url, "fetchedMs": now, "ticketKeys": v["ticketKeys"]});
-    let roster = match Roster::parse(&keys.to_string()) {
-        Ok(roster) => roster,
-        Err(e) => return Ok(Err(format!("the registry's relay ticket keys do not read: {e}"))),
-    };
+    let roster = Roster::parse(&keys.to_string()).map_err(|e| format!("the registry's relay ticket keys do not read: {e}"))?;
     // By rename, so a host starting beside another never reads half a file.
     if let Some(path) = cache.filter(|p| p.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok())) {
         let tmp = path.with_file_name(format!(".{TICKET_KEYS_CACHE}.{}", std::process::id()));
@@ -164,7 +168,7 @@ fn ticket_keys(ctx: &Ctx, api: &Client) -> Result<Result<krowk_harness::relay::R
             let _ = std::fs::remove_file(&tmp);
         }
     }
-    Ok(Ok(roster))
+    Ok(roster)
 }
 
 /// Whether a failed fetch leaves the kept keys standing: only when the
@@ -172,7 +176,7 @@ fn ticket_keys(ctx: &Ctx, api: &Client) -> Result<Result<krowk_harness::relay::R
 /// answered, 429, a 5xx), never when it answered what it meant — a 404
 /// from a registry that publishes none, or `relay_tickets_unconfigured`.
 fn unreachable(e: &Error) -> bool {
-    (e.status == 0 || e.retryable()) && e.code() != "relay_tickets_unconfigured"
+    (e.status == 0 || e.status == 429 || e.status >= 500) && e.code() != "relay_tickets_unconfigured"
 }
 
 /// The keys kept in `text`: read back only for the registry they were
@@ -400,5 +404,8 @@ mod tests {
         assert!(unreachable(&e(429, "rate_limited")));
         assert!(!unreachable(&e(503, "relay_tickets_unconfigured")), "the registry says it has none");
         assert!(!unreachable(&e(404, "no_such_endpoint")), "a registry that publishes none");
+        let mut marked = e(409, "conflict");
+        marked.body.insert("retryable".into(), serde_json::json!(true));
+        assert!(!unreachable(&marked), "by the status, whatever the body says");
     }
 }
