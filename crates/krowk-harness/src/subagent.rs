@@ -410,7 +410,7 @@ impl Subagents {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping = stop.clone();
         let mut made = tokio::task::spawn_blocking(move || {
-            let w = crate::worktree::create(&cwd, &root, &child)?;
+            let (w, held) = crate::worktree::create_held(&cwd, &root, &child)?;
             let (port, missing) = match crate::worktree::setup::port_slot(runtime) {
                 Ok(Some(slot)) => (Some(slot), None),
                 Ok(None) => (None, Some("every port slot is held, so KROWK_PORT_BASE is not set here".to_string())),
@@ -430,7 +430,7 @@ impl Subagents {
             };
             let mut notes: Vec<String> = missing.into_iter().collect();
             notes.extend(crate::worktree::prepare_or_discard(&prepare)?);
-            Ok((Isolated { worktree: w, port, port_base }, notes))
+            Ok((Isolated { worktree: w, port, port_base, held }, notes))
         });
         let mut cancel = self.0.parent.cancel.clone();
         let made = tokio::select! {
@@ -465,11 +465,14 @@ fn answer(result: Result<crate::protocol::RunResult, crate::engine::EngineError>
     }
 }
 
-/// A child's worktree, and the port slot it holds until it is finished.
+/// A child's worktree, and the port slot it holds until it is finished,
+/// held live (`crate::worktree::manage::Held`) as long: `krowk worktrees`
+/// lists it as live, and will not remove it.
 struct Isolated {
     worktree: crate::worktree::Worktree,
     port: Option<crate::slots::Slot>,
     port_base: Option<u16>,
+    held: crate::worktree::manage::Held,
 }
 
 impl Isolated {
@@ -480,13 +483,14 @@ impl Isolated {
 }
 
 /// A child's worktree, finished when the child is (`crate::worktree::finish`):
-/// what its parent is told of it, when it is kept. Its port slot is let go
-/// once it is.
+/// what its parent is told of it, when it is kept. Its port slot, and its
+/// hold on it, are let go once it is.
 async fn finish(i: Isolated) -> Option<String> {
-    let Isolated { worktree: w, port, .. } = i;
+    let Isolated { worktree: w, port, held, .. } = i;
     let path = w.path.clone();
     let finished = tokio::task::spawn_blocking(move || crate::worktree::finish(&w).map(|f| f.note(&w))).await;
     drop(port);
+    drop(held);
     match finished {
         Ok(Ok(note)) => note,
         Ok(Err(e)) => Some(format!("Worktree: {} was left as it is: {e}", path.display())),

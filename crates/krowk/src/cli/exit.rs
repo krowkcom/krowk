@@ -40,6 +40,12 @@ fn client(code: &str) -> Option<i32> {
         "bad_pairing_code" => USAGE,
         #[cfg(feature = "harness")]
         "no_pairing" => NOT_FOUND,
+        // `krowk worktrees remove`: nothing by that name, or one it will
+        // not remove as things stand (worktrees WT9).
+        #[cfg(feature = "harness")]
+        "no_such_worktree" => NOT_FOUND,
+        #[cfg(feature = "harness")]
+        "worktree_live" | "worktree_has_changes" => REFUSED,
         "authorization_expired" => GONE,
         _ => return None,
     })

@@ -839,6 +839,12 @@ impl Shared {
             Some(opened) => opened,
             None => {
                 let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &krowk_store::new_id(), &self.cfg.cwd, &self.cfg.krowk_version, None, None).await.map_err(log_failure)?;
+                // WT9: what kept worktrees left behind, cleared at most
+                // once a day, on a thread of its own the session never
+                // waits for.
+                if let Some(root) = &self.cfg.agents.worktrees {
+                    crate::worktree::manage::prune_daily(root.clone());
+                }
                 here.register(&log.session_id)?;
                 let _ = out.send(StreamLine::Log(root.clone())).await;
                 (log, vec![root])

@@ -535,6 +535,8 @@ pub fn catalog(version: &str) -> Catalog {
     c.commands.push(sync_command());
     #[cfg(feature = "harness")]
     c.commands.push(devices_command());
+    #[cfg(feature = "harness")]
+    c.commands.push(worktrees_command());
     #[cfg(all(feature = "harness", unix))]
     if let Some(sessions) = c.commands.iter_mut().find(|c| c.name == "sessions") {
         sessions.subcommands.extend(vintage_commands());
@@ -631,6 +633,24 @@ fn devices_command() -> Command {
             cmd("remove", "krowk devices remove NAME", "Take a device off your list and rotate your key"),
         ],
         ..cmd("devices", "", "The machines that sync this workspace's sessions")
+    }
+}
+
+/// `krowk worktrees`: the git worktrees krowk made for agents (worktrees
+/// WT9).
+#[cfg(feature = "harness")]
+fn worktrees_command() -> Command {
+    Command {
+        subcommands: vec![
+            cmd("list", "krowk worktrees list", "Each one: branch, commits ahead, changes, session, age"),
+            Command {
+                args: vec![arg("worktree", "Its 8 hex digits, its branch krowk/<hex>, or its directory", true)],
+                flags: vec![flag("force", BOOL, "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>")],
+                ..cmd("remove", "krowk worktrees remove <hex|path> [--force]", "Remove one, its branch kept; not while its session runs")
+            },
+            cmd("prune", "krowk worktrees prune", "Clear what deleted worktrees left, and old snapshots"),
+        ],
+        ..cmd("worktrees", "", "The git worktrees krowk made for agents, across repositories")
     }
 }
 
@@ -964,6 +984,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
         &[
             #[cfg(feature = "harness")]
             "providers",
+            #[cfg(feature = "harness")]
+            "worktrees",
             #[cfg(all(feature = "harness", unix))]
             "host",
             #[cfg(all(feature = "harness", unix))]

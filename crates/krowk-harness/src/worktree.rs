@@ -40,11 +40,18 @@
 //!   repository's setup command, in the sandbox (`setup`). A step that
 //!   falls short leaves a note, and the notes open the agent's first
 //!   prompt (`first_prompt`).
+//! - **Recorded, and held while in use** (WT9, `manage`): its base, its
+//!   session and when it was made in `<root>/<repo-id>/<hex>.json`, the
+//!   repository's common directory in `<root>/<repo-id>/common`, and
+//!   `<hex>.live` locked by the process whose session works in it
+//!   (`create_held`), so `krowk worktrees` can list, remove and prune
+//!   kept ones safely.
 //! - **A port slot** (`setup::port_slot`) is held by whoever uses the
 //!   worktree, for as long as they do: `KROWK_PORT_BASE` for the setup
 //!   command and the agent's commands.
 
 pub mod include;
+pub mod manage;
 pub mod seed;
 pub mod setup;
 
@@ -471,8 +478,16 @@ fn last_lines(text: &str) -> String {
 
 /// A new worktree of the repository `cwd` is in, at its working state
 /// (`working_state`), under `root`, locked for `owner` (the session that
-/// will work in it). Blocking: off the async runtime.
+/// will work in it). Blocking: off the async runtime. Nobody holds it live
+/// (`manage::Held`): what a session works in comes from `create_held`.
 pub fn create(cwd: &Path, root: &Path, owner: &str) -> Result<Worktree, Error> {
+    create_held(cwd, root, owner).map(|(wt, _)| wt)
+}
+
+/// `create`, held live for `owner` (`manage::hold`) from before the
+/// repository's lock is let go, so no `krowk worktrees remove` finds it
+/// unheld in between; recorded (`manage::Record`) for listing it later.
+pub fn create_held(cwd: &Path, root: &Path, owner: &str) -> Result<(Worktree, manage::Held), Error> {
     let common = match read(query(cwd)?.args(["rev-parse", "--path-format=absolute", "--git-common-dir"]), "rev-parse") {
         Ok(c) if !c.is_empty() => PathBuf::from(c).canonicalize().map_err(|e| Error::Failed(format!("the repository's git directory: {e}")))?,
         _ => return Err(Error::NotARepository),
@@ -485,6 +500,7 @@ pub fn create(cwd: &Path, root: &Path, owner: &str) -> Result<Worktree, Error> {
     let repo_id = repo_id(&common);
     let dir = root.join(&repo_id);
     std::fs::create_dir_all(&dir).map_err(|e| Error::Failed(format!("create {}: {e}", dir.display())))?;
+    manage::note_common(&dir, &common);
     // Hashing the files is the slow part: done before the lock, so
     // creations at once in one repository do not queue behind it.
     let tree = working_state(cwd, &head, &dir)?;
@@ -496,11 +512,14 @@ pub fn create(cwd: &Path, root: &Path, owner: &str) -> Result<Worktree, Error> {
     };
     let wt = Worktree { path, hex, base, common, main, repo_id };
     read(git(cwd)?.args(["worktree", "add", "--quiet", "--no-track", "-b"]).arg(wt.branch()).arg(&wt.path).arg(&wt.base), "worktree add")?;
-    if let Err(e) = read(git(&wt.main)?.args(["worktree", "lock", "--reason"]).arg(format!("{LOCK_REASON}{owner}")).arg(&wt.path), "worktree lock") {
-        let _ = remove(&wt, true);
-        return Err(e);
+    let locked = read(git(&wt.main)?.args(["worktree", "lock", "--reason"]).arg(format!("{LOCK_REASON}{owner}")).arg(&wt.path), "worktree lock");
+    match locked.and_then(|_| manage::write_record(&wt, owner)).and_then(|()| manage::hold(&wt)) {
+        Ok(held) => Ok((wt, held)),
+        Err(e) => {
+            let _ = remove(&wt, true);
+            Err(e)
+        }
     }
-    Ok(wt)
 }
 
 /// The tree of `cwd`'s working state when it differs from `head`'s: none
@@ -679,6 +698,7 @@ fn remove(wt: &Worktree, force: bool) -> Result<(), Error> {
         c.arg("--force");
     }
     read(c.arg(&wt.path), "worktree remove")?;
+    manage::forget(wt.repo_dir(), &wt.hex);
     read(git(&wt.main)?.args(["branch", "--quiet", "-D"]).arg(wt.branch()), "branch -D").map(drop)
 }
 

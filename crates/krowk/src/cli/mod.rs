@@ -41,6 +41,8 @@ mod synced;
 mod tui;
 mod upgrade;
 mod workspace;
+#[cfg(feature = "harness")]
+mod worktrees;
 
 use crate::output::{self, jq, Format};
 use flags::Flags;
@@ -386,6 +388,12 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(all(feature = "harness", unix))]
         ["sync", "attach", ..] => synced::attach(ctx, rest(2)),
         #[cfg(feature = "harness")]
+        ["worktrees"] | ["worktrees", "list", ..] => worktrees::list(ctx),
+        #[cfg(feature = "harness")]
+        ["worktrees", "remove", ..] => worktrees::remove(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["worktrees", "prune", ..] => worktrees::prune(ctx),
+        #[cfg(feature = "harness")]
         ["devices"] | ["devices", "list", ..] => devices::list(ctx),
         #[cfg(feature = "harness")]
         ["devices", "add", ..] => pairing::add(ctx, rest(2)),
@@ -630,8 +638,8 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         if f.given.contains("start-over") && !words.starts_with(&["sync", "init"]) {
             return Err(fail("bad_flag", "`--start-over` is only a flag of `krowk sync init`"));
         }
-        if f.given.contains("force") && !words.starts_with(&["host", "stop"]) {
-            return Err(fail("bad_flag", "`--force` is only a flag of `krowk host stop`"));
+        if f.given.contains("force") && !words.starts_with(&["host", "stop"]) && !words.starts_with(&["worktrees", "remove"]) {
+            return Err(fail("bad_flag", "`--force` is only a flag of `krowk host stop` and `krowk worktrees remove`"));
         }
         let owners = [("device", "`krowk providers add` (`krowk connect` takes --method device)", add), ("method", "`krowk connect`", connect), ("default", "`krowk connect`", connect), ("key-stdin", "`krowk connect`", connect), ("key-ref", "`krowk connect`", connect), ("remove", "`krowk disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`krowk disconnect`", words.first() == Some(&"disconnect"))];
         for (name, owner, allowed) in owners {

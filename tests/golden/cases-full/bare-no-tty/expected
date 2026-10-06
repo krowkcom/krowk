@@ -35,6 +35,7 @@ Account
 
 Other
   providers     Low-level instance config (add, list, rename, remove)
+  worktrees     The git worktrees krowk made for agents, across repositories
   host          The daemon sessions run in, which outlives the terminal
   config        Show or set configuration
   doctor        Check this machine's setup
@@ -1342,6 +1343,42 @@ stdout:
           "summary": "Take a device off your list and rotate your key"
         }
       ]
+    },
+    {
+      "name": "worktrees",
+      "summary": "The git worktrees krowk made for agents, across repositories",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk worktrees list",
+          "summary": "Each one: branch, commits ahead, changes, session, age"
+        },
+        {
+          "name": "remove",
+          "usage": "krowk worktrees remove <hex|path> [--force]",
+          "summary": "Remove one, its branch kept; not while its session runs",
+          "args": [
+            {
+              "name": "worktree",
+              "summary": "Its 8 hex digits, its branch krowk/<hex>, or its directory",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>"
+            }
+          ]
+        },
+        {
+          "name": "prune",
+          "usage": "krowk worktrees prune",
+          "summary": "Clear what deleted worktrees left, and old snapshots"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -1569,6 +1606,7 @@ Account
 
 Other
   providers     Low-level instance config (add, list, rename, remove)
+  worktrees     The git worktrees krowk made for agents, across repositories
   host          The daemon sessions run in, which outlives the terminal
   config        Show or set configuration
   doctor        Check this machine's setup
@@ -2888,6 +2926,42 @@ tty:
           "name": "remove",
           "usage": "krowk devices remove NAME",
           "summary": "Take a device off your list and rotate your key"
+        }
+      ]
+    },
+    {
+      "name": "worktrees",
+      "summary": "The git worktrees krowk made for agents, across repositories",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk worktrees list",
+          "summary": "Each one: branch, commits ahead, changes, session, age"
+        },
+        {
+          "name": "remove",
+          "usage": "krowk worktrees remove <hex|path> [--force]",
+          "summary": "Remove one, its branch kept; not while its session runs",
+          "args": [
+            {
+              "name": "worktree",
+              "summary": "Its 8 hex digits, its branch krowk/<hex>, or its directory",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>"
+            }
+          ]
+        },
+        {
+          "name": "prune",
+          "usage": "krowk worktrees prune",
+          "summary": "Clear what deleted worktrees left, and old snapshots"
         }
       ]
     }

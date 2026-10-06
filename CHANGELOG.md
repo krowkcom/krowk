@@ -98,6 +98,24 @@ the versions are the `v*` tags a release is cut from. Entries land under
   says so, with the exit code or "timed out" and the last 50 lines of
   output.
 
+- **`krowk worktrees` lists, removes and prunes the worktrees krowk
+  kept.** `krowk worktrees` shows every one, across repositories: its
+  path, repository, branch, base commit, commits ahead of the base,
+  whether it has uncommitted changes, the session that made it, its age,
+  and whether that session is still running (`--json` for scripts).
+  `krowk worktrees remove <hex|path>` removes one, and keeps its branch.
+  It refuses while a running session uses it, and refuses one with
+  uncommitted changes or commits ahead of its base unless you add
+  `--force`. A forced removal first saves the uncommitted changes, new
+  files included, as `refs/krowk/snapshots/<hex>`, and prints the two
+  commands that bring the worktree back. `krowk worktrees prune` clears
+  what deleting a worktree directory by hand leaves in git, deletes
+  worktree directories git no longer knows, and deletes snapshots older
+  than 30 days. It also runs by itself in the background, at most once a
+  day, when a session starts. Worktrees made by an earlier krowk are
+  listed too, with their base shown as unknown, so removing one of them
+  needs `--force`.
+
 - **An agent can commit inside a worktree krowk made for it.** When a
   sandboxed session runs in a worktree under
   `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`) on
