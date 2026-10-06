@@ -7,3 +7,4 @@ krowk uploads show art_000000000000000000000000
 krowk uploads
 krowk help uploads --format human
 krowk uplods list
+krowk help uploads bogus --format human

@@ -481,7 +481,7 @@ fn clip(s: &[String], n: usize) -> &[String] {
 fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
     let c = catalog::catalog(VERSION);
     // `krowk help uploads` is the help of what `uploads` now is.
-    let topic = &catalog::canonical(topic);
+    let (typed, topic) = (topic, &catalog::canonical(topic));
     // Help is read, by a person or an agent, so it is the page unless JSON was
     // asked for by name: piped, the whole catalog would bury the overview.
     let asked_for_json = ctx.f.json || ctx.filter.is_some() || ctx.f.format == "json";
@@ -513,7 +513,7 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
     };
     let Some(page) = page else {
         let names = c.commands.iter().map(|cmd| cmd.name.as_str()).chain(help::TOPICS.iter().map(|(n, _)| *n));
-        let typed = clip(topic, 2).join(" ");
+        let typed = clip(typed, 2).join(" ");
         let near = suggest::closest(&topic[0], names.chain(aliases())).map(canonical_name);
         return Err(match near {
             Some(near) => fail("unknown_command", format!("`{typed}` is not a krowk command or help topic — did you mean `krowk help {near}`?")),

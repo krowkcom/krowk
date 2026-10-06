@@ -96,3 +96,10 @@ stderr:
 }
 exit: 1
 
+$ krowk help uploads bogus --format human
+stderr:
+✗ `uploads bogus` is not a krowk command or help topic.
+  Try: krowk help artifacts
+  Code: unknown_command
+exit: 1
+
