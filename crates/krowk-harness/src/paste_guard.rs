@@ -168,18 +168,19 @@ fn read_body(path: &Path) -> Option<String> {
     std::fs::read(path).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
-/// One heredoc: the command line it was opened on, continuation lines
-/// joined, up to the line that opened it; and its body.
+/// One heredoc: the command it was opened in — the part of its command
+/// line, continuation lines joined, between the `;`, `&&`, `||` or `&` on
+/// either side of its `<<` — and its body.
 struct Heredoc {
     opener: String,
     body: String,
 }
 
 impl Heredoc {
-    /// Opened on a gh post's own command line: the `$(cat <<'EOF'` of a
-    /// `--body`, or the `<<EOF` of a `--body-file -`.
+    /// Opened in a gh post: the `$(cat <<'EOF'` of a `--body`, or the
+    /// `<<EOF` of a `--body-file -`, piped to it or not.
     fn feeds_gh_post(&self) -> bool {
-        let words: Vec<&str> = self.opener.split_whitespace().collect();
+        let words: Vec<&str> = self.opener.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '{' | '}' | '|')).filter(|w| !w.is_empty()).collect();
         (0..words.len()).any(|at| post_args(&words, at).is_some())
     }
 
@@ -188,7 +189,8 @@ impl Heredoc {
     fn writes(&self, path: &str, cwd: &Path) -> bool {
         let wanted = normal(&cwd.join(path));
         let names = |rest: &str| {
-            let target = rest.trim_start().split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '<' | '>')).next().unwrap_or_default();
+            let mut words = rest.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '<' | '>')).filter(|w| !w.is_empty());
+            let target = words.find(|w| !w.starts_with('-')).unwrap_or_default();
             let target = target.trim_matches(|c| c == '\'' || c == '"');
             !target.is_empty() && normal(&cwd.join(target)) == wanted
         };
@@ -222,29 +224,32 @@ fn heredocs(command: &str) -> (String, Vec<Heredoc>) {
         if !rest.last().is_some_and(|l: &&str| l.ends_with('\\')) {
             logical.clear();
         }
+        let offset = logical.len();
         logical.push_str(line);
         logical.push(' ');
         rest.push(line);
         i += 1;
-        for (delimiter, tabs) in markers(line) {
-            let at = (if tabs { &tabbed } else { &exact }).get(delimiter.as_str()).and_then(|ns| ns.get(ns.partition_point(|&n| n < i)));
-            let Some(&close) = at else { continue };
-            docs.push(Heredoc { opener: logical.clone(), body: lines[i..close].join("\n") });
+        for (delimiter, tabs, at) in markers(line) {
+            let found = (if tabs { &tabbed } else { &exact }).get(delimiter.as_str()).and_then(|ns| ns.get(ns.partition_point(|&n| n < i)));
+            let Some(&close) = found else { continue };
+            docs.push(Heredoc { opener: command_around(&logical, offset + at).to_string(), body: lines[i..close].join("\n") });
             i = close + 1;
         }
     }
     (rest.join("\n"), docs)
 }
 
-/// The heredoc delimiters a line opens, in order, and whether each is
-/// `<<-` (its closing line may be indented with tabs).
-fn markers(line: &str) -> Vec<(String, bool)> {
+/// The heredoc delimiters a line opens, in order: each with whether it is
+/// `<<-` (its closing line may be indented with tabs), and where its `<<`
+/// is.
+fn markers(line: &str) -> Vec<(String, bool, usize)> {
     let mut out = Vec::new();
-    let mut s = line;
-    while let Some(at) = s.find("<<") {
-        let mut after = &s[at + 2..];
+    let mut from = 0;
+    while let Some(found) = line[from..].find("<<") {
+        let at = from + found;
+        let mut after = &line[at + 2..];
         if after.starts_with('<') {
-            s = after.trim_start_matches('<');
+            from = line.len() - after.trim_start_matches('<').len();
             continue;
         }
         let tabs = after.starts_with('-');
@@ -252,11 +257,43 @@ fn markers(line: &str) -> Vec<(String, bool)> {
         let end = after.find(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | ')' | '<' | '>')).unwrap_or(after.len());
         let delimiter: String = after[..end].chars().filter(|c| !matches!(c, '\'' | '"' | '\\')).collect();
         if !delimiter.is_empty() {
-            out.push((delimiter, tabs));
+            out.push((delimiter, tabs, at));
         }
-        s = &after[end..];
+        from = line.len() - after[end..].len();
     }
     out
+}
+
+/// The command of `line` that `at` is in: cut at the `;`, `&&`, `||` and
+/// `&` outside quotes on either side of it. A pipe does not cut: what is
+/// piped into a command feeds it.
+fn command_around(line: &str, at: usize) -> &str {
+    let (mut start, mut end) = (0, line.len());
+    let (mut quote, mut escaped) = (None, false);
+    let bytes = line.as_bytes();
+    for (i, c) in line.char_indices() {
+        let separator = match (quote, c) {
+            _ if escaped => false,
+            (None, ';') => true,
+            (None, '&') => !matches!(bytes.get(i.wrapping_sub(1)), Some(b'>' | b'<')) && bytes.get(i + 1) != Some(&b'>'),
+            (None, '|') => bytes.get(i + 1) == Some(&b'|') || (i > 0 && bytes[i - 1] == b'|'),
+            _ => false,
+        };
+        match (quote, c) {
+            _ if escaped => escaped = false,
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (q, '\\') if q != Some('\'') => escaped = true,
+            _ => {}
+        }
+        if separator && i < at {
+            start = i + 1;
+        } else if separator && i >= at {
+            end = i;
+            break;
+        }
+    }
+    &line[start..end]
 }
 
 /// The first card link in `text` that is not the target of a krowk block
@@ -454,6 +491,31 @@ mod tests {
     fn a_heredoc_for_another_command_is_not_the_body() {
         let commit = format!("git commit -F - <<'EOF'\nfix: see {CARD}\nEOF\ngh pr create --title T --body \"$(cat <<'EOF'\n{}\nEOF\n)\"", block("Fix", CARD));
         assert!(!refused(&commit), "the commit message is not the pull request's body");
+    }
+
+    #[test]
+    fn a_heredoc_is_judged_by_the_command_it_feeds() {
+        let ok = block("Fix", CARD);
+        // gh glued to what comes before it is still the gh post.
+        for lead in ["cd x&&", "(", "cd x;"] {
+            let cmd = format!("{lead}gh pr comment 1 --body \"$(cat <<'EOF'\nsee {CARD}\nEOF\n)\"{}", if lead == "(" { ")" } else { "" });
+            assert!(refused(&cmd), "{cmd}");
+        }
+        // A heredoc for another command on the gh post's line is not its body.
+        assert!(!refused(&format!("gh pr comment 1 --body \"Deployed $(date)\" && cat > notes.md <<'EOF'\nartifact {CARD}\nEOF")));
+        assert!(!refused(&format!("gh pr comment 1 --body \"$(date)\" && git commit -F - <<'EOF'\nfix {CARD}\nEOF")));
+        assert!(!refused(&format!("cat <<A > a.md && gh pr comment 1 -F - <<B\n{CARD}\nA\n{ok}\nB")));
+        // Piped into gh, it is.
+        assert!(refused(&format!("cat <<EOF | gh issue comment 3 -F -\nsee {CARD}\nEOF")));
+        // A redirection's `&` does not cut the command.
+        assert!(refused(&format!("gh pr comment 1 2>&1 --body \"$(cat <<'EOF'\nsee {CARD}\nEOF\n)\"")));
+        // Nor does a `;` inside the quoted body.
+        assert!(refused(&format!("gh pr comment 1 --body \"Done; see $(cat <<'EOF'\n{CARD}\nEOF\n)\"")));
+    }
+
+    #[test]
+    fn a_tee_with_options_names_its_file() {
+        assert!(refused(&format!("cat <<EOF | tee -a out.md\n{CARD}\nEOF\ngh pr comment 1 -F out.md")));
     }
 
     #[test]

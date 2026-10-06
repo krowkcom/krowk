@@ -186,11 +186,13 @@ pub fn paste_guard_command(exe: &Path) -> String {
 pub fn with_paste_guard(mut args: Vec<String>, command: &str) -> Vec<String> {
     // A JSON string is a TOML basic string, escapes and all.
     let entry = format!("{{matcher=\"^Bash$\",hooks=[{{type=\"command\",command={}}}]}}", Value::String(command.into()));
-    // Only a one-line inline array without comments is added to: anything
-    // else gets a `-c` of its own, so Codex always starts, the guard on.
-    let own = args.iter().position(|a| {
-        let value = a.trim_start_matches("--config=").strip_prefix("hooks.PreToolUse=").map(str::trim);
-        value.is_some_and(|v| v.starts_with('[') && v.ends_with(']') && !v.contains(['#', '\n']))
+    // Codex keeps the last one. Only a one-line inline array without
+    // comments is added to: anything else gets a `-c` of its own after it,
+    // so Codex always starts, the guard on.
+    let last = args.iter().rposition(|a| a.trim_start_matches("--config=").starts_with("hooks.PreToolUse="));
+    let own = last.filter(|&i| {
+        let v = args[i].trim_start_matches("--config=").trim_start_matches("hooks.PreToolUse=").trim();
+        v.starts_with('[') && v.ends_with(']') && !v.contains(['#', '\n'])
     });
     match own {
         Some(i) => {
@@ -1383,6 +1385,11 @@ mod tests {
         // What cannot be added to safely keeps its own `-c`, and Codex starts.
         let commented = "hooks.PreToolUse=[{matcher=\"x\",hooks=[]}, # mine\n]";
         assert_eq!(with_paste_guard(vec!["-c".into(), commented.into()], &command), ["-c", commented, "-c", &format!("hooks.PreToolUse=[{entry}]")]);
+        // Of two, the guard joins the last, which is the one Codex keeps.
+        let twice = with_paste_guard(vec!["-c".into(), "hooks.PreToolUse=[]".into(), "-c".into(), "hooks.PreToolUse=[]".into()], &command);
+        assert_eq!(twice[1..], ["hooks.PreToolUse=[]".to_string(), "-c".into(), format!("hooks.PreToolUse=[{entry}]")]);
+        let then_commented = with_paste_guard(vec!["-c".into(), "hooks.PreToolUse=[]".into(), "-c".into(), commented.into()], &command);
+        assert_eq!(then_commented.last().unwrap(), &format!("hooks.PreToolUse=[{entry}]"));
         for m in [PermissionMode::Default, PermissionMode::Plan, PermissionMode::AcceptEdits] {
             assert_eq!(policy(m), Policy { approval: "on-request", sandbox: "read-only" }, "every edit and command beyond reading is asked about");
         }
