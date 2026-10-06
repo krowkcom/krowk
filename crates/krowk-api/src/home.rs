@@ -15,7 +15,9 @@
 //!
 //! The home is `0700` and made on first need. One that is a symlink, or
 //! belongs to another user, is refused rather than used: whoever controls
-//! where it leads controls krowk's keys. XDG variables are not read.
+//! where it leads controls krowk's keys. XDG variables are not read for
+//! it; the one directory krowk keeps outside it, the worktrees it makes for
+//! agents, is under `XDG_DATA_HOME` (`worktrees_root`).
 
 use crate::creds::Env;
 use crate::error::{fail, Error};
@@ -85,6 +87,23 @@ fn user_home(env: Env, windows: bool) -> Option<PathBuf> {
 pub fn fenced(env: Env) -> Vec<PathBuf> {
     let homes = [resolve(env).ok(), user_home(env, cfg!(windows)).map(|u| u.join(".krowk"))];
     homes.into_iter().flatten().flat_map(|h| siblings(&h)).collect()
+}
+
+/// Where krowk makes the git worktrees its agents work in (worktrees WT3):
+/// `$XDG_DATA_HOME/krowk/worktrees` when `XDG_DATA_HOME` is absolute, else
+/// `.local/share/krowk/worktrees` in the user's home; none without either.
+/// Outside krowk's home on purpose: the home is fenced from the file tools
+/// and hidden in the sandbox, and an agent must edit the files in its
+/// worktree. Being under it is not what makes a directory krowk's — the
+/// environment names it — so the sandbox checks the worktree itself too
+/// (`krowk_harness::sandbox::managed_worktree`).
+pub fn worktrees_root(env: Env) -> Option<PathBuf> {
+    let xdg = env("XDG_DATA_HOME");
+    let data = match Path::new(&xdg).is_absolute() {
+        true => lexical(Path::new(&xdg)),
+        false => user_home(env, cfg!(windows))?.join(".local/share"),
+    };
+    Some(data.join("krowk/worktrees"))
 }
 
 /// A home, its staging directory and its migration lock.
@@ -280,6 +299,16 @@ mod tests {
         for p in ["/k", "/k.migrating", "/k.migrate.lock", "/h/.krowk", "/h/.krowk.migrating", "/h/.krowk.migrate.lock"] {
             assert!(fenced.contains(&PathBuf::from(p)), "{p} in {fenced:?}");
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn worktrees_live_under_the_data_dir_outside_the_home() {
+        assert_eq!(worktrees_root(&env(&[("HOME", "/h")])), Some(PathBuf::from("/h/.local/share/krowk/worktrees")));
+        assert_eq!(worktrees_root(&env(&[("HOME", "/h"), ("XDG_DATA_HOME", "/d/x/..")])), Some(PathBuf::from("/d/krowk/worktrees")));
+        assert_eq!(worktrees_root(&env(&[("HOME", "/h"), ("XDG_DATA_HOME", "rel")])), Some(PathBuf::from("/h/.local/share/krowk/worktrees")), "a relative XDG_DATA_HOME is ignored");
+        assert_eq!(worktrees_root(&env(&[("HOME", "/h"), ("KROWK_HOME", "/k")])), Some(PathBuf::from("/h/.local/share/krowk/worktrees")), "not under KROWK_HOME");
+        assert_eq!(worktrees_root(&env(&[])), None);
     }
 
     // Windows sets USERPROFILE and no HOME; elsewhere only HOME counts.

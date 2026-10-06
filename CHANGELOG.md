@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **An agent can commit inside a worktree krowk made for it.** Groundwork
+  for running agents in their own worktrees: no command creates one yet.
+  When a sandboxed session runs in a worktree under
+  `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`) on
+  a `krowk/…` branch, `git add` and `git commit` now work there, and the
+  commit shows up in your main checkout. The repository's config, hooks,
+  `HEAD`, the branch your main checkout is on and your other worktrees stay
+  read-only to it. One gap: a branch stored only in `packed-refs` can still
+  be rewritten from inside. Every other repository, your own linked
+  worktrees included, keeps `.git` read-only as before.
+
 - **A host says why a viewer stays on the relay.** When a viewer offered
   the direct path never reaches it — a firewall on the host, or a tailnet
   access policy that doesn't allow the port, drops the connection before
