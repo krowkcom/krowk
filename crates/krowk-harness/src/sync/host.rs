@@ -81,6 +81,10 @@ pub struct Options {
     /// Direct paths, offered beside the relay (R-NET-1); None for the
     /// relay alone.
     pub direct: Option<super::direct::Config>,
+    /// This machine's tailnet node, kept in the session's sealed index so
+    /// `krowk hosts` finds it on the tailnet (R-NET-4); None when Tailscale
+    /// is down.
+    pub tailnet: Option<super::tailscale::Tailnet>,
 }
 
 /// The lease as the bridge holds it: the token only the holder has, its
@@ -104,7 +108,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
         // written under (`store::open_session_key`).
         Ok(s) => {
             let keys = store::open_session_key(&s, id, &o.keys, &o.chain, session_record::Signer::Listed)?;
-            let index = store::open_index(&keys, id, &s.sealed_index)?;
+            let index = Index { host: Some(hosted_on(o)), ..store::open_index(&keys, id, &s.sealed_index)? };
             (keys, s.wrapped_key, index)
         }
         // Published only when the registry has no session under the id; a
@@ -115,7 +119,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
             let sealed_key = e2e::seal_session_keys(&keys, &raw, &o.keys, o.chain.generation()).map_err(|e| e.to_string())?;
             let signature = session_record::sign(&raw, &sealed_key, session_record::SEAL_USER, o.keys.newest(), &o.signing).map_err(|e| e.to_string())?;
             let wrapped = e2e::hex(&sealed_key);
-            let index = Index { title: o.title.clone(), cwd: o.cwd.clone(), ..Index::default() };
+            let index = Index { title: o.title.clone(), cwd: o.cwd.clone(), host: Some(hosted_on(o)), ..Index::default() };
             let sealed = e2e::hex(&e2e::seal_session_index(keys.current(), &raw, &serde_json::to_vec(&index).expect("json")));
             o.api.put_sync_session(id, &wrapped, Some((&e2e::hex(&signature), &o.device.to_string())), Some(&sealed), None).map_err(|e| e.to_string())?;
             (keys, wrapped, index)
@@ -129,6 +133,12 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
     let (keys, wrapped) = rotate_if_behind(o, keys, wrapped, &index, &lease.token)?;
     let writer = Writer::take_up(o.api.clone(), keys.clone(), id, wrapped, index, lease.fence)?;
     Ok((keys, writer, Held { token: lease.token, fence: lease.fence, ticket: lease.relay_ticket }))
+}
+
+/// This machine as the index names its host: what the index is next
+/// written with, so `krowk hosts` lists the session under it.
+fn hosted_on(o: &Options) -> store::HostedOn {
+    store::HostedOn { device: o.device.to_string(), tailnet: o.tailnet.clone() }
 }
 
 /// A session sealed under an older user key generation than the device
@@ -1046,7 +1056,7 @@ mod tests {
     /// `d` on the stand-in registry at `url`, hosting `session`.
     fn options(url: &str, d: &Dev, keys: UserKeys, chain: Chain, session: &str) -> Options {
         let api = Arc::new(client(url, d));
-        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), ttl: LEASE_TTL, keep: KEEP, direct: None }
+        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None }
     }
 
     fn registry() -> (krowk_devregistry::Running, String) {
