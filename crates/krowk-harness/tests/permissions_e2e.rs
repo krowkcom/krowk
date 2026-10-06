@@ -175,6 +175,39 @@ fn r_perm_1_a_hook_that_blocks_still_blocks_under_unhinged() {
     assert!(!h.repo().join("ran.txt").exists(), "a hook is the person's own program, not a rule: its block stands");
 }
 
+/// A `gh` post, through a shell function standing in for `gh`: it leaves
+/// `posted.txt` behind when it runs.
+fn gh_comment(body: &str) -> String {
+    format!("gh() {{ echo \"$@\" > posted.txt; }}; gh pr comment 12 --body '{body}'")
+}
+
+#[test]
+fn a_gh_post_with_a_bare_card_link_is_refused_in_every_mode_and_the_krowk_block_runs() {
+    let card = "https://krowk.com/a/art_0123456789abcdefghijklmn";
+    let bare = gh_comment(&format!("Fixed, see {card}"));
+    let block = gh_comment(&format!("Fixed:\n\n**Cart after** · [View preview ↗]({card})"));
+    for mode in [PermissionMode::Default, PermissionMode::AcceptEdits, PermissionMode::BypassPermissions, PermissionMode::Unhinged] {
+        let m = mock::serve(one_tool("bash", json!({"command": bare})));
+        let h = Home::new("paste-guard", &m.url);
+        // Every command allowed: the refusal is no permission rule.
+        let host = h.host(Config { user: Some(json!({"permissions": {"allow": ["Bash"]}})), ..Config::default() });
+        let (_, r) = run(&host, prompt("post the result", mode));
+        assert_eq!(r.result, "Done.", "{mode:?}");
+        let sent = tool_result_sent(&m);
+        assert!(sent.contains("bare krowk card link") && sent.contains("krowk block") && sent.contains(card), "{mode:?}: {sent}");
+        assert!(!h.repo().join("posted.txt").exists(), "{mode:?}: the post ran");
+        if !mode.asks_nothing() {
+            continue;
+        }
+        let m = mock::serve(one_tool("bash", json!({"command": block})));
+        let h = Home::new("paste-guard-block", &m.url);
+        let host = h.host(Config { user: Some(json!({"permissions": {"allow": ["Bash"]}})), ..Config::default() });
+        let (_, r) = run(&host, prompt("post the result", mode));
+        assert_eq!(r.result, "Done.", "{mode:?}");
+        assert!(h.repo().join("posted.txt").exists(), "{mode:?}: the block was refused: {}", tool_result_sent(&m));
+    }
+}
+
 #[test]
 fn r_compat_1_a_pretooluse_hook_exiting_2_blocks_the_tool_and_the_model_reads_why() {
     let m = mock::serve(one_tool("bash", json!({"command": "touch ran.txt"})));
