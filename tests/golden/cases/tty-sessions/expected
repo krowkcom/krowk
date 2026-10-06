@@ -1,7 +1,6 @@
 $ @tty krowk sessions
 tty:
-no sessions — run `krowk sessions import --from all`
-[no newline at end]
+No sessions yet — `krowk sessions import --from all` brings in the ones your agents keep.
 exit: 0
 
 $ krowk sessions import --from all --quiet
@@ -86,22 +85,23 @@ exit: 0
 
 $ @tty krowk sessions
 tty:
-\e[31m✗\e[0m Nothing was selected and nothing was changed.
-\e[2m  (selection_cancelled)\e[0m
+\e[31m✗\e[0m \e[1mNothing was selected and nothing was changed.\e[0m
+\e[2m  Code: selection_cancelled\e[0m
 exit: 1
 
 $ @tty krowk sessions show <uuid_1>
 tty:
-\e[31m✗\e[0m Store: "<uuid_1>" is ambiguous (2 sessions):
+\e[31m✗\e[0m \e[1mStore: "<uuid_1>" is ambiguous (2 sessions):
   <uuid_2>  claude
-  <uuid_3>  cursor.
-\e[2m  (ambiguous_session)\e[0m
+  <uuid_3>  cursor.\e[0m
+\e[2m  Code: ambiguous_session\e[0m
 exit: 1
 
 $ @tty krowk sessions rebuild
 tty:
-\e[31m✗\e[0m Rebuilding deletes <scratch>/home/.krowk/sessions/krowk.db and re-imports every transcript.
-\e[2m  (confirmation_required)\e[0m
-\e[2m  try:\e[0m  krowk sessions rebuild --yes
+\e[31m✗\e[0m \e[1mRebuilding deletes <scratch>/home/.krowk/sessions/krowk.db and re-imports every transcript.\e[0m
+\e[2m  Try:\e[0m \e[36mkrowk sessions rebuild --yes\e[0m
+\e[2m  Run `krowk sessions rebuild --yes` to confirm when nobody is at a terminal to ask.\e[0m
+\e[2m  Code: confirmation_required\e[0m
 exit: 1
 

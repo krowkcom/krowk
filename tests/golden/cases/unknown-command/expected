@@ -16,7 +16,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`uploads bogus` is not a krowk command — run `krowk --help`",
+    "fix": "`uploads bogus` is not a krowk command; the uploads command takes create, list, show, attach or delete; run `krowk help uploads`",
     "retryable": false
   }
 }
@@ -28,7 +28,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`runs` is not a krowk command — run `krowk --help`",
+    "fix": "the runs command needs a subcommand: start, list, show or finish; run `krowk help runs`",
     "retryable": false
   }
 }
@@ -40,7 +40,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`auth` is not a krowk command — run `krowk --help`",
+    "fix": "the auth command needs a subcommand: login, logout, token or verify; run `krowk help auth`",
     "retryable": false
   }
 }
@@ -52,9 +52,73 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`config` is not a krowk command — run `krowk --help`",
+    "fix": "the config command needs a subcommand: show, set or unset; run `krowk help config`",
     "retryable": false
   }
 }
+exit: 1
+
+$ krowk pussh a.txt
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "unknown_command",
+    "fix": "`pussh a.txt` is not a krowk command — did you mean `krowk push`?",
+    "retryable": false
+  }
+}
+exit: 1
+
+$ krowk uploads lsit
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "unknown_command",
+    "fix": "`uploads lsit` is not a krowk command — did you mean `krowk uploads list`?",
+    "retryable": false
+  }
+}
+exit: 1
+
+$ krowk help pussh
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "unknown_command",
+    "fix": "`pussh` is not a krowk command or help topic — did you mean `krowk help push`?",
+    "retryable": false
+  }
+}
+exit: 1
+
+$ @tty krowk runs
+tty:
+\e[31m✗\e[0m \e[1mThe runs command needs a subcommand: start, list, show or finish.\e[0m
+\e[2m  Try:\e[0m \e[36mkrowk help runs\e[0m
+\e[2m  Code: unknown_command\e[0m
+exit: 1
+
+$ krowk login extra --format human
+stderr:
+✗ `krowk login` takes no arguments, and got `extra`.
+  The key goes behind --token.
+  Code: unexpected_argument
+exit: 1
+
+$ krowk logout extra --format human
+stderr:
+✗ `krowk logout` takes no arguments, and got `extra`.
+  Nothing was removed.
+  Code: unexpected_argument
+exit: 1
+
+$ krowk pussh --format human
+stderr:
+✗ `pussh` is not a krowk command.
+  Try: krowk push
+  Code: unknown_command
 exit: 1
 

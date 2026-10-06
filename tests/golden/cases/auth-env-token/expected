@@ -1,8 +1,8 @@
 $ krowk auth verify --format human
 stdout:
-✓ key valid  <key_1>
-  workspace   Local workspace (<ws_1>)
-  name        local
+✓ Key <key_1> is valid
+  Workspace   Local workspace (<ws_1>)
+  Name        local
 exit: 0
 
 $ krowk auth token --format human

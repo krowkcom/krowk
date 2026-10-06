@@ -1,28 +1,28 @@
 $ krowk push --format human
 stderr:
 ✗ Pass at least one path.
-  (no_file)
-  try:  krowk push screenshot.png
+  Try: krowk push screenshot.png
+  Code: no_file
 exit: 1
 
 $ krowk push --format markdown
 stderr:
 ✗ Pass at least one path.
-  (no_file)
-  try:  krowk push screenshot.png
+  Try: krowk push screenshot.png
+  Code: no_file
 exit: 1
 
 $ krowk push --format url
 stderr:
 ✗ Pass at least one path.
-  (no_file)
-  try:  krowk push screenshot.png
+  Try: krowk push screenshot.png
+  Code: no_file
 exit: 1
 
 $ krowk bogus --format human
 stderr:
 ✗ `bogus` is not a krowk command.
-  (unknown_command)
-  try:  krowk --help
+  Try: krowk --help
+  Code: unknown_command
 exit: 1
 

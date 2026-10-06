@@ -1,14 +1,19 @@
 $ krowk help --format human
 stdout:
-█  █  krowk — a coding agent harness: one session, any machine, model or agent
-█▀▀▄  version 0.0.0-golden
+█  █  Krowk 0.0.0-golden
+█▀▀▄  A coding agent harness: one session, any machine, model or agent
 
-USAGE
+Usage
   krowk                      Open the agent here
   krowk -p "…"               One prompt, headless
   krowk <command> [flags]
 
-AGENT
+Examples
+  krowk connect anthropic    Connect a model to run the agent on
+  krowk push shot.png        Upload a screenshot and get a link to paste
+  krowk sessions --json      Every agent session on this machine, as data
+
+Agent
   connect       Connect a model: Claude, ChatGPT, SuperGrok or an API key
   disconnect    Sign a connected model out
   status        What's connected, and whether each is ready
@@ -16,19 +21,19 @@ AGENT
   sync          Sync sessions between your machines, end-to-end encrypted
   devices       The machines that sync this workspace's sessions
 
-PUBLISH
+Publish
   push          Upload files, get a link for each
   runs          Group uploads under a run
   uploads       List, show, attach or delete uploads
   claim         Keep an anonymous upload past expiry
 
-ACCOUNT
+Account
   login         Sign in to your krowk account
   logout        Remove this machine's key
   whoami        Show the key and its workspace
   workspaces    Switch between stored keys
 
-OTHER
+Other
   providers     Low-level instance config (add, list, rename, remove)
   host          The daemon sessions run in, which outlives the terminal
   config        Show or set configuration
@@ -36,7 +41,7 @@ OTHER
   pricing       Refresh model prices
   upgrade       Upgrade krowk
 
-FLAGS
+Flags
   --model <instance/model>   Which model (e.g. claude/sonnet)
   --resume [id]              Continue a session
   --json · --jq <expr>       Output as JSON, or filter it
@@ -44,14 +49,15 @@ FLAGS
 
 krowk help <command>  A command's own flags
 krowk help --all      Every command and subcommand
-krowk help topics     flags, exit codes, environment, workspaces, links
+krowk help topics     Flags, exit codes, environment, workspaces, links
+krowk help agents     For AI agents and scripts: the output contract
 exit: 0
 
 $ krowk help --all --format human
 stdout:
 krowk — every command and subcommand
 
-AGENT
+Agent
   connect           Connect a model: Claude, ChatGPT, SuperGrok or an API key
   disconnect        Sign a connected model out
   status            What's connected, and whether each is ready
@@ -77,7 +83,7 @@ AGENT
   devices add       Show a code that adds a new machine to your devices
   devices remove    Take a device off your list and rotate your key
 
-PUBLISH
+Publish
   push              Upload files, get a link for each
   runs start        Open a run to group uploads under
   runs list         List the workspace's runs, newest first
@@ -90,7 +96,7 @@ PUBLISH
   uploads delete    Take an upload down — immediate, cannot be undone
   claim             Keep an anonymous upload past expiry
 
-ACCOUNT
+Account
   login             Sign in to your krowk account
   logout            Remove this machine's key
   whoami            Show the key and its workspace
@@ -101,7 +107,7 @@ ACCOUNT
   auth token        Print the stored token
   auth verify       The long form of `krowk whoami`
 
-OTHER
+Other
   providers add     Add an instance, or sign one in
   providers list    List every instance, and whether it is ready
   providers remove  Remove an instance's definition, and forget its login
@@ -122,7 +128,8 @@ OTHER
   help              This, a command's help, or a topic
 
 krowk help <command>  A command's own flags and explanation
-krowk help topics     flags, exit codes, environment, workspaces, links
+krowk help topics     Flags, exit codes, environment, workspaces, links
+krowk help agents     For AI agents and scripts: the output contract
 krowk help --json     The whole surface as data, for tooling
 exit: 0
 
@@ -130,7 +137,7 @@ $ krowk help flags --format human
 stdout:
 krowk help flags — The flags every command takes
 
-GLOBAL FLAGS
+Global flags
   --workspace <string>  Use this workspace's stored key for this one command —
                         outranks KROWK_WORKSPACE and every config file
   --dev                 Talk to a local registry at http://localhost:8787/v1
@@ -145,7 +152,7 @@ GLOBAL FLAGS
   --help, -h            Show the help
   --version, -v         Print the version
 
-AGENT FLAGS (krowk, krowk -p)
+Agent flags (krowk, krowk -p)
   --print, -p                 Run the prompt given as the arguments (or on
                               stdin) headless: krowk's own agent answers it,
                               then exits

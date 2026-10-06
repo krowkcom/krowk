@@ -181,9 +181,9 @@ exit: 0
 
 $ krowk config show --format human
 stdout:
-nothing set — uploads use the stored default key
-  global    <scratch>/home/.krowk/config.json
-  repo      <scratch>/work/.krowk/config.json
+Nothing set — uploads use the stored default key.
+  Global    <scratch>/home/.krowk/config.json
+  Repo      <scratch>/work/.krowk/config.json
 exit: 0
 
 $ krowk config set bogus_key 1

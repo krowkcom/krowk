@@ -155,14 +155,14 @@ pub fn parse(args: &[String]) -> (Flags, Vec<String>, Result<(), String>) {
                 continue;
             };
             if body.starts_with('-') || body.starts_with('=') {
-                return Err(format!("bad flag syntax: {arg}"));
+                return Err(format!("`{arg}` is not a flag krowk can read"));
             }
             let (name, inline) = match body.split_once('=') {
                 Some((n, v)) => (n, Some(v.to_string())),
                 None => (body, None),
             };
             let Some(spec) = lookup(&known, name) else {
-                return Err(format!("flag provided but not defined: -{name}"));
+                return Err(unknown_flag(arg, name, &positionals));
             };
             let value = if spec.kind == catalog::BOOL {
                 inline.unwrap_or_else(|| "true".into())
@@ -181,7 +181,7 @@ pub fn parse(args: &[String]) -> (Flags, Vec<String>, Result<(), String>) {
                     f.given.insert(spec.name.to_string());
                     continue;
                 }
-                return Err(format!("flag needs an argument: -{name}"));
+                return Err(format!("--{name} needs a value"));
             };
             f.set(spec, &value)?;
             f.given.insert(spec.name.to_string());
@@ -189,6 +189,23 @@ pub fn parse(args: &[String]) -> (Flags, Vec<String>, Result<(), String>) {
         Ok(())
     })();
     (f, positionals, result)
+}
+
+/// A flag nobody defined, as it was typed, and the nearest one the command
+/// typed so far takes (the global flags with it), when one is near.
+fn unknown_flag(arg: &str, name: &str, positionals: &[String]) -> String {
+    let typed = arg.split_once('=').map_or(arg, |(flag, _)| flag);
+    let c = catalog::catalog("");
+    // Before any command is typed, any flag might be the one meant.
+    let candidates = match c.find(positionals) {
+        Some(cmd) => cmd.flags.into_iter().chain(c.global_flags.iter().cloned()).collect(),
+        None => c.all_flags(),
+    };
+    let names = candidates.iter().map(|f| f.name);
+    match super::suggest::closest(name, names) {
+        Some(near) => format!("unknown flag {typed}; did you mean --{near}?"),
+        None => format!("unknown flag {typed}"),
+    }
 }
 
 fn lookup<'a>(known: &'a [Flag], name: &str) -> Option<&'a Flag> {
@@ -229,7 +246,7 @@ fn parse_bool(name: &str, v: &str) -> Result<bool, String> {
     match v {
         "1" | "t" | "T" | "true" | "TRUE" | "True" => Ok(true),
         "0" | "f" | "F" | "false" | "FALSE" | "False" => Ok(false),
-        _ => Err(format!("invalid boolean value {v:?} for -{name}: parse error")),
+        _ => Err(format!("--{name} takes true or false, not {v:?}")),
     }
 }
 
@@ -241,7 +258,7 @@ impl Flags {
             "run" => text(&mut self.run),
             "before" => text(&mut self.before),
             "limit" => {
-                self.limit = parse_int(v).ok_or_else(|| format!("invalid value {v:?} for flag -limit: parse error"))?;
+                self.limit = parse_int(v).ok_or_else(|| format!("--limit takes a whole number, not {v:?}"))?;
             }
             "pull-request" => text(&mut self.pull_request),
             "link" => self.links.push(Link { url: v.into(), ..Link::default() }),
@@ -353,12 +370,12 @@ impl Flags {
     fn describe_link(&mut self, name: &str, v: &str) -> Result<(), String> {
         let Some(at) = self.links.len().checked_sub(1) else {
             return Err(format!(
-                "invalid value {v:?} for flag -{name}: --{name} describes the --link before it, and none was given yet: write --link <url> --{name} {v:?}"
+                "--{name} describes the --link before it, and none was given yet — write --link <url> --{name} {v:?}"
             ));
         };
         if !self.described.insert((name.to_string(), at)) {
             return Err(format!(
-                "invalid value {v:?} for flag -{name}: --{name} was given twice for the same --link ({}): each link takes one, after the --link it belongs to",
+                "--{name} was given twice for the same --link ({}) — each link takes one, after the --link it belongs to",
                 self.links[at].url
             ));
         }
@@ -407,8 +424,13 @@ mod tests {
 
     #[test]
     fn mistakes_are_named() {
-        assert_eq!(run("push --nope").2.unwrap_err(), "flag provided but not defined: -nope");
-        assert_eq!(run("push --run").2.unwrap_err(), "flag needs an argument: -run");
+        assert_eq!(run("push --nope").2.unwrap_err(), "unknown flag --nope");
+        assert_eq!(run("push --pirvate").2.unwrap_err(), "unknown flag --pirvate; did you mean --private?");
+        assert_eq!(run("-x").2.unwrap_err(), "unknown flag -x");
+        assert_eq!(run("--pirvate push").2.unwrap_err(), "unknown flag --pirvate; did you mean --private?");
+        // Only a flag the command takes is offered: `runs list` has no --title.
+        assert_eq!(run("runs list --titel").2.unwrap_err(), "unknown flag --titel");
+        assert_eq!(run("push --run").2.unwrap_err(), "--run needs a value");
         assert!(run("sessions --limit x").2.unwrap_err().contains("-limit"));
         assert!(run("push --private=maybe").2.is_err());
         let (_, pos, ok) = run("push -- --not-a-flag");

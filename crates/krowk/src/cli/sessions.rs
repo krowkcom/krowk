@@ -252,7 +252,9 @@ pub fn list(ctx: &mut Ctx) -> Result<(), Error> {
     }
     let table = human_sessions_list(&rows, &priced, ctx.colour, now);
     let _ = write!(ctx.io.stdout, "{table}");
-    if !rows.is_empty() {
+    if rows.is_empty() {
+        let _ = writeln!(ctx.io.stdout);
+    } else {
         let _ = writeln!(ctx.io.stdout);
         let note = cost_footnote(&bases, priced.iter().any(|p| p.total().is_none()));
         if !note.is_empty() {
@@ -594,7 +596,7 @@ fn short_id(id: &str) -> String {
 
 fn human_sessions_list(rows: &[SessionRow], priced: &[Priced], colour: bool, now: i64) -> String {
     if rows.is_empty() {
-        return "no sessions — run `krowk sessions import --from all`".into();
+        return "No sessions yet — `krowk sessions import --from all` brings in the ones your agents keep.".into();
     }
     const MAX_TITLE: usize = 60;
     const MAX_SOURCE: usize = 40;
@@ -1246,7 +1248,7 @@ pub fn sync(ctx: &mut Ctx) -> Result<(), Error> {
     // refresh's own timeout.
     let p = sync_prices(ctx.io.env, ctx.f.no_network);
     if !p.warning.is_empty() && ctx.format == Format::Human {
-        let _ = writeln!(ctx.io.stderr, "! {}", p.warning);
+        ctx.warn(&p.warning);
     }
     let sources = all_sources();
     import_into(ctx, Some(&conn), &store_path, &sources, true, ImportReport { pricing: Some(p), ..ImportReport::default() })
@@ -1429,7 +1431,7 @@ fn emit_import_report(ctx: &mut Ctx, report: &ImportReport) -> Result<(), Error>
         }
     }
     if !report.unpriced_models.is_empty() {
-        out += &format!("! no price for {} — their costs show as —; `krowk pricing refresh` may know them\n", report.unpriced_models.join(", "));
+        out += &format!("! No price for {} — their costs show as —; `krowk pricing refresh` may know them\n", report.unpriced_models.join(", "));
     }
     if let Some(l) = &report.ledger {
         out += &format!("reconciled {} ledger rows a transcript saw, {} only the provider saw", l.observed, l.unobserved);

@@ -284,11 +284,11 @@ fn global_flag() -> Flag {
 }
 
 #[cfg(feature = "harness")]
-const SUMMARY: &str = "a coding agent harness: one session, any machine, model or agent";
+const SUMMARY: &str = "A coding agent harness: one session, any machine, model or agent";
 // The lean build has no agent: publishing is all it does, so that is all it
 // says it is.
 #[cfg(not(feature = "harness"))]
-const SUMMARY: &str = "permalinks for agent output";
+const SUMMARY: &str = "Permalinks for agent output";
 
 pub fn catalog(version: &str) -> Catalog {
     let file = Arg { repeated: true, ..arg("file", "Path to upload", true) };
@@ -483,6 +483,7 @@ pub fn catalog(version: &str) -> Catalog {
             EnvVar { name: "KROWK_AGENT", usage: "Agent name to report", default: "" },
             EnvVar { name: "KROWK_NO_UPDATE_CHECK", usage: "1/true/yes/on — never check for or mention new releases", default: "" },
             EnvVar { name: "KROWK_HOME", usage: "Where krowk keeps its files, an absolute path", default: "~/.krowk" },
+            EnvVar { name: "NO_COLOR", usage: "Set to anything — no colour, even on a terminal (no-color.org); TERM=dumb does the same", default: "" },
             #[cfg(feature = "harness")]
             EnvVar { name: "KROWK_TUI_HOST", usage: "local — the TUI runs its sessions in its own process, not the host daemon", default: "" },
         ],
@@ -922,11 +923,11 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     // devices carry a session from one machine to the next, so they sit here:
     // a heading of their own would push the overview past one screen.
     #[cfg(feature = "harness")]
-    ("AGENT", &["connect", "disconnect", "status", "sessions", "sync", "devices"]),
-    ("PUBLISH", &["push", "runs", "uploads", "claim"]),
-    ("ACCOUNT", &["login", "logout", "whoami", "workspaces", "auth"]),
+    ("Agent", &["connect", "disconnect", "status", "sessions", "sync", "devices"]),
+    ("Publish", &["push", "runs", "uploads", "claim"]),
+    ("Account", &["login", "logout", "whoami", "workspaces", "auth"]),
     (
-        "OTHER",
+        "Other",
         &[
             #[cfg(feature = "harness")]
             "providers",

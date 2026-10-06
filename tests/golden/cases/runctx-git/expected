@@ -38,7 +38,7 @@ tty:
 <spinner>\e[32m✓\e[0m Uploaded a.txt → http://<registry>/a/<art_1>
 \e[2m  5 B · run <run_1>\e[0m
 
-\e[2m  paste this:\e[0m
+\e[2m  Paste this:\e[0m
 **a.txt** · [View preview ↗](http://<registry>/a/<art_1>)
 exit: 0
 

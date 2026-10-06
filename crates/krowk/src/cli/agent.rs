@@ -259,7 +259,7 @@ pub(crate) fn upload(ctx: &mut Ctx, files: &[String]) -> Result<(), Error> {
 
     let warning = output::unfurl_warning(&result, ctx.format, &ctx.f.destination);
     if !warning.is_empty() {
-        let _ = writeln!(ctx.io.stderr, "! {warning}");
+        ctx.warn(&warning);
     }
     let rendered = if ctx.f.destination.is_empty() {
         output::upload(&result, ctx.format, ctx.f.quiet, ctx.colour, &now())

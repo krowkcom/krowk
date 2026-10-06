@@ -102,8 +102,8 @@ exit: 1
 
 $ krowk workspaces --format human
 stdout:
-stored keys
+Stored keys
   Local workspace — <ws_1> <key_1>  (default)
-uploads from here land in <ws_1> — stored default
+Uploads from here land in <ws_1> (stored default)
 exit: 0
 

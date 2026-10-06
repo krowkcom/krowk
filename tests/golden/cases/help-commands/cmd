@@ -11,3 +11,6 @@ krowk help pricing
 krowk help upgrade
 krowk help help
 krowk help bogus
+krowk help push --json
+krowk help uploads --json
+krowk help sessions --json

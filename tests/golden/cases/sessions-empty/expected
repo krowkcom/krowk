@@ -11,8 +11,7 @@ exit: 0
 
 $ krowk sessions --format human
 stdout:
-no sessions — run `krowk sessions import --from all`
-[no newline at end]
+No sessions yet — `krowk sessions import --from all` brings in the ones your agents keep.
 exit: 0
 
 $ krowk sessions show nope

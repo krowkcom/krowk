@@ -254,7 +254,7 @@ stderr:
 ✗ Store: "<uuid_4>" is ambiguous (2 sessions):
   <uuid_9>  claude
   <uuid_3>  cursor.
-  (ambiguous_session)
+  Code: ambiguous_session
 exit: 1
 
 $ krowk sessions show <uuid_4> --format markdown
@@ -262,7 +262,7 @@ stderr:
 ✗ Store: "<uuid_4>" is ambiguous (2 sessions):
   <uuid_9>  claude
   <uuid_3>  cursor.
-  (ambiguous_session)
+  Code: ambiguous_session
 exit: 1
 
 $ krowk sessions show 22222222

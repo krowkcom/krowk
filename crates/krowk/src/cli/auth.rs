@@ -155,7 +155,8 @@ pub(super) fn browser_login(ctx: &mut Ctx, action: krowk_api::LoginAction) -> Re
     let opened = !ctx.f.no_browser && !headless(ctx) && open_browser(&page);
     // stderr: the code and the page are what a person needs during the
     // command, while stdout stays the one document a program parses.
-    let notice = output::authorizing(&Authorization { code: auth.code.clone(), page, opened }, ctx.format, ctx.colour);
+    let colour = output::colour_for(ctx.io.err_tty, ctx.io.env);
+    let notice = output::authorizing(&Authorization { code: auth.code.clone(), page, opened }, ctx.format, colour);
     let _ = write!(ctx.io.stderr, "{notice}");
 
     let deadline = Instant::now() + window(&auth.expires_at);

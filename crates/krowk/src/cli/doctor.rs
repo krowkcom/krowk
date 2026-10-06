@@ -36,18 +36,62 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> Result<(), krowk_api::Error> {
     if ctx.format != Format::Human {
         return ctx.emit(&crate::output::encode(&report));
     }
-    let keys = ["version", "runtime", "api", "registry", "api_status", "authenticated", "token_source", "key", "workspace", "runs_available", "credentials", "config"];
-    for k in keys {
-        let v = match &report[k] {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        let _ = writeln!(ctx.io.stdout, "{k:<15} {v}");
-    }
-    for k in ["store", "pricing", "providers", "context"] {
-        let _ = writeln!(ctx.io.stdout, "{k:<15} {}", report[k]);
-    }
+    let text = human(&report, ctx.colour);
+    let _ = writeln!(ctx.io.stdout, "{text}");
     Ok(())
+}
+
+/// The report for a person: the facts as a table, then each check with a
+/// mark for how it went and, when it did not pass, what fixes it.
+fn human(report: &Map<String, Value>, colour: bool) -> String {
+    use crate::output::{paint, DIM};
+    const FACTS: [(&str, &str); 12] = [
+        ("version", "Version"),
+        ("runtime", "Runtime"),
+        ("api", "API"),
+        ("registry", "Registry"),
+        ("api_status", "API status"),
+        ("authenticated", "Signed in"),
+        ("token_source", "Key from"),
+        ("key", "Key"),
+        ("workspace", "Workspace"),
+        ("runs_available", "Runs"),
+        ("credentials", "Credentials"),
+        ("config", "Config"),
+    ];
+    let mut lines: Vec<String> = FACTS
+        .iter()
+        .map(|(k, label)| {
+            let v = match &report[*k] {
+                Value::String(s) => s.clone(),
+                Value::Bool(true) => "yes".into(),
+                Value::Bool(false) => "no".into(),
+                other => other.to_string(),
+            };
+            format!("{label:<15} {v}")
+        })
+        .collect();
+    lines.push(String::new());
+    for (k, label) in [("store", "Store"), ("pricing", "Pricing"), ("providers", "Providers")] {
+        let check = &report[k];
+        let text = |key: &str| check.get(key).and_then(Value::as_str).unwrap_or_default();
+        let mark = match text("status") {
+            "pass" => paint(colour, crate::output::GREEN, "✓"),
+            "skip" => paint(colour, DIM, "-"),
+            "warn" => paint(colour, crate::output::YELLOW, "!"),
+            _ => paint(colour, crate::output::RED, "✗"),
+        };
+        lines.push(format!("{mark} {label:<13} {}", crate::output::fix::capitalised(text("message"))));
+        if !text("hint").is_empty() && text("status") != "pass" {
+            lines.push(paint(colour, DIM, &format!("  {:<13} {}", "", crate::output::fix::sentence(text("hint")))));
+        }
+    }
+    if let Some(Value::Object(context)) = report.get("context").filter(|c| c.as_object().is_some_and(|m| !m.is_empty())) {
+        let said: Vec<String> = context.iter().map(|(k, v)| format!("{k}={}", v.as_str().map_or_else(|| v.to_string(), str::to_string))).collect();
+        lines.push(String::new());
+        lines.push(format!("{:<15} {}", "Detected", said.join(" · ")));
+    }
+    lines.join("\n")
 }
 
 #[cfg(feature = "sessions")]

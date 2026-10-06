@@ -3,7 +3,7 @@ tty:
 <spinner>\e[32m✓\e[0m Uploaded a.txt → http://<registry>/a/<art_1>
 \e[2m  5 B · run <run_1> · a run\e[0m
 
-\e[2m  paste this:\e[0m
+\e[2m  Paste this:\e[0m
 **a.txt** · [View preview ↗](http://<registry>/a/<art_1>)
 exit: 0
 
@@ -19,13 +19,14 @@ exit: 0
 
 $ @tty krowk auth verify
 tty:
-\e[32m✓\e[0m key valid  <key_1>
-  workspace   Local workspace (<ws_1>)
-  name        local
+\e[32m✓\e[0m Key <key_1> is valid
+  Workspace   Local workspace (<ws_1>)
+  Name        local
 exit: 0
 
 $ @tty krowk workspaces
 tty:
-no keys stored — `krowk login` adds one; until then uploads are anonymous and expire
+No keys stored yet. Until there is one, uploads are anonymous and expire.
+\e[2m  Add one:\e[0m \e[36mkrowk login\e[0m
 exit: 0
 

@@ -52,7 +52,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "bad_flag",
-    "fix": "flag needs an argument: -run — run `krowk --help`",
+    "fix": "--run needs a value; run `krowk help push`",
     "retryable": false
   }
 }

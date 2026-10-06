@@ -26,6 +26,7 @@ mod relay;
 mod providers;
 #[cfg(feature = "sessions")]
 mod sessions;
+mod suggest;
 #[cfg(feature = "harness")]
 mod status;
 #[cfg(feature = "harness")]
@@ -80,6 +81,12 @@ impl Ctx<'_, '_> {
         (self.io.env)(key)
     }
 
+    /// A warning on stderr, painted when stderr is a terminal that wants it.
+    pub fn warn(&mut self, said: &str) {
+        let colour = output::colour_for(self.io.err_tty, self.io.env);
+        let _ = writeln!(self.io.stderr, "{}", output::warning(colour, said));
+    }
+
     /// Where a rendered result reaches the caller, and the one place --jq gets
     /// to touch it, so a filter applies to every result or none.
     pub fn emit(&mut self, rendered: &str) -> Result<(), Error> {
@@ -117,16 +124,19 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
         Ok(format) => format,
         Err(e) => return report(io, &e, Format::Json, f.quiet, false, None),
     };
-    let colour = io.tty;
+    // Each stream is painted only when it is a terminal that wants paint, so a
+    // failure on a terminal is red even while stdout is piped.
+    let colour = output::colour_for(io.tty, io.env);
+    let err_colour = output::colour_for(io.err_tty, io.env);
     // A bare `--resume` opens the session picker in the TUI; anywhere else
     // it is the missing value it always was.
     #[cfg(feature = "harness")]
     let parsed = parsed.and_then(|()| match f.resume_pick && !tui::wanted(io, &f, format, &positionals, jq_given) {
-        true => Err("flag needs an argument: -resume".to_string()),
+        true => Err("--resume needs a value".to_string()),
         false => Ok(()),
     });
     if let Err(why) = parsed {
-        return report(io, &fail("bad_flag", format!("{why} — run `krowk --help`")), format, f.quiet, colour, None);
+        return report(io, &fail("bad_flag", format!("{why}; run `{}`", help_for(&positionals))), format, f.quiet, err_colour, None);
     }
 
     // Compiled before the command runs, so a typo is refused before anything
@@ -149,10 +159,10 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     }
     let filter = match filter {
         Ok(filter) => filter,
-        Err(e) => return report(io, &e, format, f.quiet, colour, None),
+        Err(e) => return report(io, &e, format, f.quiet, err_colour, None),
     };
     if let Err(e) = filter_has_something_to_read(filter.is_some(), &f, &positionals) {
-        return report(io, &e, format, f.quiet, colour, None);
+        return report(io, &e, format, f.quiet, err_colour, None);
     }
 
     if f.version {
@@ -167,7 +177,7 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     if let Err(e) = krowk_api::home::dir(io.env)
         && e.code() != "no_home"
     {
-        return report(io, &e, format, f.quiet, colour, None);
+        return report(io, &e, format, f.quiet, err_colour, None);
     }
     // `-p` is a mode rather than a command: its arguments are the prompt.
     #[cfg(feature = "harness")]
@@ -177,7 +187,7 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
             Ok(()) => exit::OK,
             Err(e) => {
                 let quiet = ctx.f.quiet;
-                report(ctx.io, &e, format, quiet, colour, None)
+                report(ctx.io, &e, format, quiet, err_colour, None)
             }
         };
     }
@@ -191,7 +201,7 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
                 Ok(()) => exit::OK,
                 Err(e) => {
                     let quiet = ctx.f.quiet;
-                    report(ctx.io, &e, format, quiet, colour, None)
+                    report(ctx.io, &e, format, quiet, err_colour, None)
                 }
             };
         }
@@ -209,7 +219,7 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
             Ok(()) => exit::OK,
             Err(e) => {
                 let quiet = ctx.f.quiet;
-                report(ctx.io, &e, format, quiet, colour, None)
+                report(ctx.io, &e, format, quiet, err_colour, None)
             }
         };
     }
@@ -235,9 +245,9 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
             exit::OK
         }
         Err(e) => {
-            let (quiet, colour, err_tty) = (ctx.f.quiet, ctx.colour, ctx.io.err_tty);
+            let (quiet, err_tty) = (ctx.f.quiet, ctx.io.err_tty);
             let filter = ctx.filter.take();
-            report(ctx.io, &e, format, quiet, colour, filter.as_ref().map(|f| (f, err_tty)))
+            report(ctx.io, &e, format, quiet, err_colour, filter.as_ref().map(|f| (f, err_tty)))
         }
     }
 }
@@ -359,7 +369,50 @@ fn dispatch(ctx: &mut Ctx, p: &[String]) -> Result<(), Error> {
         #[cfg(feature = "harness")]
         ["devices", "remove", ..] => devices::remove(ctx, rest(2)),
         _ if missing(p) => Err(not_in_build(p)),
-        _ => Err(fail("unknown_command", format!("`{}` is not a krowk command — run `krowk --help`", clip(p, 2).join(" ")))),
+        _ => Err(unknown_command(p)),
+    }
+}
+
+/// A command krowk does not have, with the nearest one it does when the
+/// words look like a typo of it.
+fn unknown_command(p: &[String]) -> Error {
+    let c = catalog::catalog(VERSION);
+    let typed = clip(p, 2).join(" ");
+    let Some(group) = c.commands.iter().find(|cmd| cmd.name == p[0] && !cmd.subcommands.is_empty()) else {
+        return match suggest::closest(&p[0], c.commands.iter().map(|cmd| cmd.name.as_str())) {
+            Some(near) => fail("unknown_command", format!("`{typed}` is not a krowk command — did you mean `krowk {near}`?")),
+            None => fail("unknown_command", format!("`{typed}` is not a krowk command — run `krowk --help`")),
+        };
+    };
+    // A group alone, or with a subcommand it lacks: name the ones it has.
+    let subs: Vec<&str> = group.subcommands.iter().map(|s| s.name.as_str()).collect();
+    let near = p.get(1).and_then(|w| suggest::closest(w, subs.iter().copied()));
+    match (p.get(1), near) {
+        (Some(_), Some(near)) => fail("unknown_command", format!("`{typed}` is not a krowk command — did you mean `krowk {} {near}`?", group.name)),
+        (Some(_), None) => fail(
+            "unknown_command",
+            format!("`{typed}` is not a krowk command; the {} command takes {}; run `krowk help {}`", group.name, either(&subs), group.name),
+        ),
+        (None, _) => fail("unknown_command", format!("the {} command needs a subcommand: {}; run `krowk help {}`", group.name, either(&subs), group.name)),
+    }
+}
+
+/// "a, b or c".
+fn either(words: &[&str]) -> String {
+    match words {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
+/// Where the flags of what was typed are explained: the command's own help,
+/// or the overview when no command was named.
+fn help_for(p: &[String]) -> String {
+    let c = catalog::catalog(VERSION);
+    match c.find(p).or_else(|| c.find(clip(p, 1))) {
+        Some(cmd) => format!("krowk help {}", cmd.name),
+        None => "krowk --help".into(),
     }
 }
 
@@ -388,12 +441,15 @@ fn clip(s: &[String], n: usize) -> &[String] {
 
 fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
     let c = catalog::catalog(VERSION);
-    let human = ctx.format != Format::Json;
+    // Help is read, by a person or an agent, so it is the page unless JSON was
+    // asked for by name: piped, the whole catalog would bury the overview.
+    let asked_for_json = ctx.f.json || ctx.filter.is_some() || ctx.f.format == "json";
+    let human = ctx.format != Format::Json || !asked_for_json;
     if topic.is_empty() {
         if !human {
             return ctx.emit(&output::encode(&c));
         }
-        let text = help::help(&c, ctx.f.all);
+        let text = help::help(&c, ctx.f.all, ctx.colour);
         let _ = writeln!(ctx.io.stdout, "{text}");
         return Ok(());
     }
@@ -404,21 +460,23 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
         if !human {
             return ctx.emit(&output::encode(&cmd));
         }
-        let _ = writeln!(ctx.io.stdout, "{}", help::command_help(&cmd, &c.global_flags[..catalog::CORE_FLAGS]));
+        let _ = writeln!(ctx.io.stdout, "{}", help::command_help(&cmd, &c.global_flags[..catalog::CORE_FLAGS], ctx.colour));
         return Ok(());
     }
     let (credentials, config) = (krowk_api::creds::credentials_text(), crate::config::global_text());
     let files = help::Files { credentials: &credentials, config: &config };
     let page = match topic[0].as_str() {
-        "topics" if topic.len() == 1 => Some(help::topics()),
-        name if topic.len() == 1 => help::topic(name, &c, &files),
+        "topics" if topic.len() == 1 => Some(help::topics(ctx.colour)),
+        name if topic.len() == 1 => help::topic(name, &c, &files, ctx.colour),
         _ => None,
     };
     let Some(page) = page else {
-        return Err(fail(
-            "unknown_command",
-            format!("`{}` is not a krowk command or help topic — run `krowk help` for the list", clip(topic, 2).join(" ")),
-        ));
+        let names = c.commands.iter().map(|cmd| cmd.name.as_str()).chain(help::TOPICS.iter().map(|(n, _)| *n));
+        let typed = clip(topic, 2).join(" ");
+        return Err(match suggest::closest(&topic[0], names) {
+            Some(near) => fail("unknown_command", format!("`{typed}` is not a krowk command or help topic — did you mean `krowk help {near}`?")),
+            None => fail("unknown_command", format!("`{typed}` is not a krowk command or help topic — run `krowk help`")),
+        });
     };
     // A topic is prose, so its JSON is the prose as one string.
     if !human {

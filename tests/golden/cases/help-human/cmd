@@ -1,5 +1,5 @@
 # The human help, as a person reads it: the overview, every command, the
-# topics, one topic and one command's own page. Held under 45 lines and 80
+# topics, one topic and one command's own page. Held under 52 lines and 80
 # columns by a unit test in crates/krowk/src/cli/help.rs; this build has no
 # agent, so no AGENT group and no -p, --model or --resume.
 @tty krowk --help
@@ -10,3 +10,4 @@ krowk help exit-codes --format human
 krowk help exit-codes --json
 krowk help push --format human
 krowk help exit codes --format human
+krowk help agents --format human

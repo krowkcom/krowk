@@ -114,7 +114,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
             let running = s.sessions.iter().filter(|x| x.running).count();
             let _ = writeln!(out, "running  pid {}, krowk {}, up {}", s.pid, s.krowk_version, uptime(s.uptime_ms));
             if s.krowk_version != super::VERSION {
-                let _ = writeln!(out, "! it runs krowk {}, and this is {} — `kill {}` once its sessions are done, and the next krowk starts this one", s.krowk_version, super::VERSION, s.pid);
+                let _ = writeln!(out, "! It runs krowk {}, and this is {} — `kill {}` once its sessions are done, and the next krowk starts this one", s.krowk_version, super::VERSION, s.pid);
             }
             let _ = writeln!(out, "socket   {}", s.socket);
             if let Some(ws) = &s.websocket {

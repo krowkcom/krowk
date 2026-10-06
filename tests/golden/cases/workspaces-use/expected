@@ -302,17 +302,17 @@ exit: 0
 
 $ krowk workspaces --format human
 stdout:
-stored keys
+Stored keys
   Local workspace — <ws_1> <key_1>  (default)
   Local workspace — <ws_2> <key_2>
-uploads from here land in <ws_2> — repo config
+Uploads from here land in <ws_2> (repo config)
 exit: 0
 
 $ @tty krowk workspaces
 tty:
-stored keys
+Stored keys
   Local workspace — <ws_1> <key_1>  \e[2m(default)\e[0m
   Local workspace — <ws_2> <key_2>
-uploads from here land in <ws_2> — repo config
+Uploads from here land in <ws_2> \e[2m(repo config)\e[0m
 exit: 0
 

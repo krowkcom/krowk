@@ -1,6 +1,6 @@
 //! The stored keys, the configuration layers, and what each write did.
 
-use super::{crumb, encode, ok, paint, Breadcrumb, Format, DIM, GREEN};
+use super::{crumb, crumb_line, encode, ok, paint, success, warning, Breadcrumb, Format, DIM};
 use krowk_api::creds::WorkspaceKey;
 use serde::Serialize;
 use serde_json::json;
@@ -25,24 +25,27 @@ pub fn workspace_list(ws: &Workspaces, f: Format, quiet: bool, colour: bool) -> 
         return if quiet { encode(ws) } else { ok(ws, summary(ws), crumbs(ws)) };
     }
     if ws.stored.is_empty() {
-        return "no keys stored — `krowk login` adds one; until then uploads are anonymous and expire".into();
+        return format!(
+            "No keys stored yet. Until there is one, uploads are anonymous and expire.\n{}",
+            crumb_line("Add one", "krowk login", colour)
+        );
     }
-    let mut lines = vec!["stored keys".to_string()];
+    let mut lines = vec!["Stored keys".to_string()];
     for k in &ws.stored {
         let mark = if k.default { format!("  {}", paint(colour, DIM, "(default)")) } else { String::new() };
         let name = if k.workspace_name.is_empty() { k.name.clone() } else { format!("{} — {}", k.workspace_name, k.name) };
         lines.push(format!("  {name:<40} {}{mark}", k.key_id));
     }
     if !ws.resolved.is_empty() && ws.key_missing {
-        lines.push(format!(
-            "{} resolves here ({}) — but no key is stored for it, so every upload fails until `krowk login`",
-            ws.resolved, ws.source
+        lines.push(warning(
+            colour,
+            &format!("{} resolves here ({}), but no key is stored for it, so every upload fails until `krowk login`", ws.resolved, ws.source),
         ));
     } else if !ws.resolved.is_empty() {
-        lines.push(format!("uploads from here land in {} — {}", ws.resolved, ws.source));
+        lines.push(format!("Uploads from here land in {} {}", ws.resolved, paint(colour, DIM, &format!("({})", ws.source))));
     }
     if ws.shadowed {
-        lines.push(paint(colour, DIM, "! KROWK_TOKEN is set and wins over every stored key — uploads use that key instead"));
+        lines.push(warning(colour, "KROWK_TOKEN is set and wins over every stored key — uploads use that key instead"));
     }
     lines.join("\n")
 }
@@ -107,7 +110,7 @@ pub fn default_workspace(name: &str, path: &str, f: Format, quiet: bool, colour:
             )],
         );
     }
-    format!("{} default workspace is now {name}", paint(colour, GREEN, "✓"))
+    success(colour, &format!("Default workspace is now {name}"))
 }
 
 /// The effective configuration and which layer set each value.
@@ -144,13 +147,13 @@ pub fn config_show(v: &ConfigView, f: Format, quiet: bool, colour: bool) -> Stri
         );
     }
     let mut lines = vec![if v.workspace.is_empty() {
-        paint(colour, DIM, "nothing set — uploads use the stored default key")
+        paint(colour, DIM, "Nothing set — uploads use the stored default key.")
     } else {
-        format!("{:<11} {}  {}", "workspace", v.workspace, paint(colour, DIM, &format!("({source})")))
+        format!("{:<11} {}  {}", "Workspace", v.workspace, paint(colour, DIM, &format!("({source})")))
     }];
-    lines.push(format!("  {:<9} {}", "global", v.global_path));
+    lines.push(format!("  {:<9} {}", "Global", v.global_path));
     if !v.repo_path.is_empty() {
-        lines.push(format!("  {:<9} {}", "repo", v.repo_path));
+        lines.push(format!("  {:<9} {}", "Repo", v.repo_path));
     }
     lines.join("\n")
 }
@@ -177,5 +180,5 @@ pub fn config_wrote(key: &str, value: &str, path: &str, f: Format, quiet: bool, 
             )],
         );
     }
-    format!("{} {said}", paint(colour, GREEN, "✓"))
+    success(colour, &said)
 }

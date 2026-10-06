@@ -1,5 +1,262 @@
 $ krowk help push
 stdout:
+krowk push — Upload files, get a link for each
+
+Usage
+  krowk push <file...> [flags]
+
+Run metadata — the pull request, the links, the references, the session — is
+recorded on a run, and a run belongs to a workspace, so it needs an API key.
+Without one an upload still works: it lands anonymously, expires within a
+day, and comes back with a claim token that `krowk claim` spends to move it
+into a workspace — where a paid plan keeps it and a free one gives it another
+day.
+
+Arguments
+  <file...>                Path to upload
+
+Flags
+  --run <string>           Attach to an existing run instead of opening one. Its
+                           slug, or a link carrying it
+  --caption <string>       What this file shows, recorded on the artifact as
+                           `krowk.caption` and used wherever it is pasted.
+                           Repeat to caption several files, in the order they
+                           are given
+  --destination <string>   Print what this tool wants pasted into it: the krowk
+                           block for github, linear and the like, the bare link
+                           for the ones that unfurl it themselves, like slack. A
+                           tool krowk has not been told about gets the block
+  --private                Upload where only this workspace can read it. The
+                           image still embeds — the byte URL is the capability —
+                           but the card opens only for a signed-in member, reads
+                           as not found to everyone else, and unfurls nowhere.
+                           Needs an API key
+  --pull-request <string>  Pull request the work belongs to
+  --link <string>          Link this work is about — the issue, the spec, the
+                           discussion. An absolute http(s) URL, repeatable up to
+                           20, recorded on the run as `krowk.links`; label or
+                           classify each with --link-title and --link-rel
+  --link-title <string>    What to call the --link before it, instead of its
+                           URL. One line
+  --link-rel <string>      What the --link before it is: tracks, fixes, spec,
+                           discussion, source, supersedes — or a word of your
+                           own
+  --reference <string>     Related identifier that is not a URL, e.g. a ticket
+                           key — repeat for more than one. A URL is a --link
+  --session <string>       Override the detected agent session ID
+  --title <string>         Title for the work this push belongs to, recorded on
+                           the run. What a pasted link says is the artifact's
+                           --caption
+  --repo <string>          Override the detected repository
+  --commit <string>        Override the detected commit
+  --agent <string>         Override the detected agent
+  --metadata <string>      Extra key=value metadata, repeatable: on push it
+                           lands on each artifact, on `runs start` on the run.
+                           Your value wins over a detected one. Metadata is
+                           public
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk help uploads
+stdout:
+krowk uploads — List, show, attach or delete uploads
+
+Commands (krowk uploads …)
+  create <file...> [flags]  Upload files: the long form of `krowk push`
+  list [flags]              List uploads, newest first: a run's, or the
+                            workspace's
+  show <artifact>           Read one artifact back
+  attach <art> --run <run>  Put an upload under a run afterwards
+  delete <art> [token]      Take an upload down — immediate, cannot be undone
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk help runs
+stdout:
+krowk runs — Group uploads under a run
+
+Commands (krowk runs …)
+  start [flags]            Open a run to group uploads under
+  list [--limit --before]  List the workspace's runs, newest first
+  show <run>               Read one run back, with its metadata
+  finish <run>             Close a run
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk help claim
+stdout:
+krowk claim — Keep an anonymous upload past expiry
+
+Usage
+  krowk claim <artifact> <token> [--run]
+
+Moves an anonymous upload into this key's workspace, spending the claim token
+it came back with: `krowk help push`.
+
+Arguments
+  <artifact>      The artifact slug, or a link carrying it — the card page or
+                  the CDN URL
+  <claim-token>   The token the anonymous upload came back with
+
+Flags
+  --run <string>  The run to group it under while claiming — a claimed upload
+                  has none otherwise. Its slug, or a link carrying it
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk help auth
+stdout:
+krowk auth — Long forms of login, logout and whoami
+
+Manage the API key — your krowk account.
+
+Commands (krowk auth …)
+  login [--token <token>] [--no-browser]
+                              The long form of `krowk login`
+  logout                      The long form of `krowk logout`
+  token                       Print the stored token
+  verify                      The long form of `krowk whoami`
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk help workspaces
+stdout:
+krowk workspaces — Switch between stored keys
+
+The stored keys, one per workspace. A key belongs to one workspace, and the
+credentials file holds one key per workspace: logging in against a second
+workspace adds a key rather than replacing the first. Which key a command uses
+is decided in order by --workspace, KROWK_WORKSPACE, the repository's
+.krowk/config.json, the global config, and finally whichever key logged in
+last. `krowk config set workspace <name>` pins a repository to a workspace, so
+every command run inside it — by anyone, agent or person — lands there
+without saying so. Where the files live: `krowk help environment`.
+
+Commands (krowk workspaces …)
+  [list]           List the stored keys, and which workspace resolves here
+  use <workspace>  Make a stored key the machine-wide default
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk help config
+stdout:
+krowk config — Show or set configuration
+
+Pins a repository, or the machine, to a workspace: `krowk help workspaces`.
+
+Commands (krowk config …)
+  show                        The effective configuration, and which layer set
+                              each value
+  set <key> <value> [--global]
+                              Write one value into the repo config, or the
+                              global one
+  unset <key> [--global]      Remove one value from the repo config, or the
+                              global one
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk help doctor
+stdout:
+krowk doctor — Check this machine's setup
+
+Usage
+  krowk doctor
+
+Checks the local setup, and that the registry answers.
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk help sessions
+stdout:
+krowk sessions — List and read agent sessions on this machine
+
+Usage
+  krowk sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]
+
+Lists every agent thread on this machine, newest first.
+
+Commands (krowk sessions …)
+  show <id> [--thinking]      Read one session back, with its turns, messages
+                              and parts
+  import --from <provider|all> [--dry-run] [--limit N]
+                              Import this machine's agent transcripts
+  rebuild [--yes]             Delete the local store and re-import every
+                              transcript
+  budget <id> [--max-usd N] [--max-tokens N]
+                              Check a session against a spend limit
+  sync [--no-network]         Import what changed since the last import, refresh
+                              prices
+
+Flags
+  --harness <string>          Only sessions from this harness, e.g. claude
+  --worktree <string>         Only sessions in this worktree, by path
+  --limit <int> (default 50)  List at most this many sessions (default 50)
+  --all                       List every session, ignoring --limit
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk help pricing
+stdout:
+krowk pricing — Refresh model prices
+
+Commands (krowk pricing …)
+  refresh  Refresh the models.dev price cache
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk help upgrade
+stdout:
+krowk upgrade — Upgrade krowk
+
+Usage
+  krowk upgrade
+
+Upgrades krowk to the latest release.
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk help help
+stdout:
+krowk help — This, a command's help, or a topic
+
+Usage
+  krowk help [command|topic] [--all]
+
+Arguments
+  [command]  The command or topic to describe, e.g. `uploads attach` or
+             `exit-codes`
+
+Flags
+  --all      List every command and subcommand
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+
+$ krowk help bogus
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "unknown_command",
+    "fix": "`bogus` is not a krowk command or help topic — run `krowk help`",
+    "retryable": false
+  }
+}
+exit: 1
+
+$ krowk help push --json
+stdout:
 {
   "name": "push",
   "usage": "krowk push <file...> [flags]",
@@ -113,7 +370,7 @@ stdout:
 }
 exit: 0
 
-$ krowk help uploads
+$ krowk help uploads --json
 stdout:
 {
   "name": "uploads",
@@ -308,308 +565,7 @@ stdout:
 }
 exit: 0
 
-$ krowk help runs
-stdout:
-{
-  "name": "runs",
-  "summary": "Group uploads under a run",
-  "subcommands": [
-    {
-      "name": "start",
-      "usage": "krowk runs start [flags]",
-      "summary": "Open a run to group uploads under",
-      "flags": [
-        {
-          "name": "pull-request",
-          "type": "string",
-          "default": "",
-          "usage": "Pull request the work belongs to"
-        },
-        {
-          "name": "link",
-          "type": "string",
-          "default": "",
-          "usage": "Link this work is about — the issue, the spec, the discussion. An absolute http(s) URL, repeatable up to 20, recorded on the run as `krowk.links`; label or classify each with --link-title and --link-rel",
-          "repeatable": true
-        },
-        {
-          "name": "link-title",
-          "type": "string",
-          "default": "",
-          "usage": "What to call the --link before it, instead of its URL. One line",
-          "repeatable": true
-        },
-        {
-          "name": "link-rel",
-          "type": "string",
-          "default": "",
-          "usage": "What the --link before it is: tracks, fixes, spec, discussion, source, supersedes — or a word of your own",
-          "repeatable": true
-        },
-        {
-          "name": "reference",
-          "type": "string",
-          "default": "",
-          "usage": "Related identifier that is not a URL, e.g. a ticket key — repeat for more than one. A URL is a --link",
-          "repeatable": true
-        },
-        {
-          "name": "session",
-          "type": "string",
-          "default": "",
-          "usage": "Override the detected agent session ID"
-        },
-        {
-          "name": "title",
-          "type": "string",
-          "default": "",
-          "usage": "Title for the work this push belongs to, recorded on the run. What a pasted link says is the artifact's --caption"
-        },
-        {
-          "name": "repo",
-          "type": "string",
-          "default": "",
-          "usage": "Override the detected repository"
-        },
-        {
-          "name": "commit",
-          "type": "string",
-          "default": "",
-          "usage": "Override the detected commit"
-        },
-        {
-          "name": "agent",
-          "type": "string",
-          "default": "",
-          "usage": "Override the detected agent"
-        },
-        {
-          "name": "metadata",
-          "type": "string",
-          "default": "",
-          "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
-          "repeatable": true
-        }
-      ]
-    },
-    {
-      "name": "list",
-      "usage": "krowk runs list [--limit --before]",
-      "summary": "List the workspace's runs, newest first",
-      "flags": [
-        {
-          "name": "limit",
-          "type": "int",
-          "default": "50",
-          "usage": "Rows per page (1–100)"
-        },
-        {
-          "name": "before",
-          "type": "string",
-          "default": "",
-          "usage": "Start after this row — the `next` of the last page"
-        }
-      ]
-    },
-    {
-      "name": "show",
-      "usage": "krowk runs show <run>",
-      "summary": "Read one run back, with its metadata",
-      "args": [
-        {
-          "name": "run",
-          "summary": "The run slug, or a link carrying it",
-          "required": true
-        }
-      ]
-    },
-    {
-      "name": "finish",
-      "usage": "krowk runs finish <run>",
-      "summary": "Close a run",
-      "args": [
-        {
-          "name": "run",
-          "summary": "The run slug, or a link carrying it",
-          "required": true
-        }
-      ]
-    }
-  ]
-}
-exit: 0
-
-$ krowk help claim
-stdout:
-{
-  "name": "claim",
-  "usage": "krowk claim <artifact> <token> [--run]",
-  "summary": "Keep an anonymous upload past expiry",
-  "args": [
-    {
-      "name": "artifact",
-      "summary": "The artifact slug, or a link carrying it — the card page or the CDN URL",
-      "required": true
-    },
-    {
-      "name": "claim-token",
-      "summary": "The token the anonymous upload came back with",
-      "required": true
-    }
-  ],
-  "flags": [
-    {
-      "name": "run",
-      "type": "string",
-      "default": "",
-      "usage": "The run to group it under while claiming — a claimed upload has none otherwise. Its slug, or a link carrying it"
-    }
-  ]
-}
-exit: 0
-
-$ krowk help auth
-stdout:
-{
-  "name": "auth",
-  "summary": "Long forms of login, logout and whoami",
-  "subcommands": [
-    {
-      "name": "login",
-      "usage": "krowk auth login [--token <token>] [--no-browser]",
-      "summary": "The long form of `krowk login`",
-      "flags": [
-        {
-          "name": "token",
-          "type": "string",
-          "default": "",
-          "usage": "Check and store this key instead of asking the browser — how CI logs in, and it opens nothing. E.g. krowk_sk_..."
-        },
-        {
-          "name": "no-browser",
-          "type": "bool",
-          "default": "false",
-          "usage": "Print the code and the page instead of opening a browser — the default over SSH, or with no display"
-        }
-      ]
-    },
-    {
-      "name": "logout",
-      "usage": "krowk auth logout",
-      "summary": "The long form of `krowk logout`"
-    },
-    {
-      "name": "token",
-      "usage": "krowk auth token",
-      "summary": "Print the stored token",
-      "no_json": true
-    },
-    {
-      "name": "verify",
-      "usage": "krowk auth verify",
-      "summary": "The long form of `krowk whoami`"
-    }
-  ]
-}
-exit: 0
-
-$ krowk help workspaces
-stdout:
-{
-  "name": "workspaces",
-  "summary": "Switch between stored keys",
-  "subcommands": [
-    {
-      "name": "list",
-      "usage": "krowk workspaces [list]",
-      "summary": "List the stored keys, and which workspace resolves here"
-    },
-    {
-      "name": "use",
-      "usage": "krowk workspaces use <workspace>",
-      "summary": "Make a stored key the machine-wide default",
-      "args": [
-        {
-          "name": "workspace",
-          "summary": "A workspace `krowk workspaces` lists, e.g. <ws_1> — a person at a terminal may omit it and pick from a list instead",
-          "required": true
-        }
-      ]
-    }
-  ]
-}
-exit: 0
-
-$ krowk help config
-stdout:
-{
-  "name": "config",
-  "summary": "Show or set configuration",
-  "subcommands": [
-    {
-      "name": "show",
-      "usage": "krowk config show",
-      "summary": "The effective configuration, and which layer set each value"
-    },
-    {
-      "name": "set",
-      "usage": "krowk config set <key> <value> [--global]",
-      "summary": "Write one value into the repo config, or the global one",
-      "args": [
-        {
-          "name": "key",
-          "summary": "A configuration key, e.g. `workspace`",
-          "required": true
-        },
-        {
-          "name": "value",
-          "summary": "What to set it to, e.g. <ws_1> — for `workspace`, a person at a terminal may omit it and pick from the stored keys instead",
-          "required": true
-        }
-      ],
-      "flags": [
-        {
-          "name": "global",
-          "type": "bool",
-          "default": "false",
-          "usage": "Write the machine-wide config instead of the repository's"
-        }
-      ]
-    },
-    {
-      "name": "unset",
-      "usage": "krowk config unset <key> [--global]",
-      "summary": "Remove one value from the repo config, or the global one",
-      "args": [
-        {
-          "name": "key",
-          "summary": "A configuration key, e.g. `workspace`",
-          "required": true
-        }
-      ],
-      "flags": [
-        {
-          "name": "global",
-          "type": "bool",
-          "default": "false",
-          "usage": "Write the machine-wide config instead of the repository's"
-        }
-      ]
-    }
-  ]
-}
-exit: 0
-
-$ krowk help doctor
-stdout:
-{
-  "name": "doctor",
-  "usage": "krowk doctor",
-  "summary": "Check this machine's setup"
-}
-exit: 0
-
-$ krowk help sessions
+$ krowk help sessions --json
 stdout:
 {
   "name": "sessions",
@@ -742,64 +698,4 @@ stdout:
   ]
 }
 exit: 0
-
-$ krowk help pricing
-stdout:
-{
-  "name": "pricing",
-  "summary": "Refresh model prices",
-  "subcommands": [
-    {
-      "name": "refresh",
-      "usage": "krowk pricing refresh",
-      "summary": "Refresh the models.dev price cache"
-    }
-  ]
-}
-exit: 0
-
-$ krowk help upgrade
-stdout:
-{
-  "name": "upgrade",
-  "usage": "krowk upgrade",
-  "summary": "Upgrade krowk"
-}
-exit: 0
-
-$ krowk help help
-stdout:
-{
-  "name": "help",
-  "usage": "krowk help [command|topic] [--all]",
-  "summary": "This, a command's help, or a topic",
-  "args": [
-    {
-      "name": "command",
-      "summary": "The command or topic to describe, e.g. `uploads attach` or `exit-codes`",
-      "required": false
-    }
-  ],
-  "flags": [
-    {
-      "name": "all",
-      "type": "bool",
-      "default": "false",
-      "usage": "List every command and subcommand"
-    }
-  ]
-}
-exit: 0
-
-$ krowk help bogus
-stderr:
-{
-  "ok": false,
-  "error": {
-    "error": "unknown_command",
-    "fix": "`bogus` is not a krowk command or help topic — run `krowk help` for the list",
-    "retryable": false
-  }
-}
-exit: 1
 
