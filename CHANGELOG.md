@@ -19,8 +19,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`).
   Subagents started together no longer overwrite each other's files. The
   worktree starts from your files as they are, uncommitted changes
-  included: modified, new and deleted files (not ignored ones) are put in
-  one commit, `krowk: working state for <hex>`, on top of your `HEAD`, and
+  included: modified, new and deleted files, and what you staged (ignored
+  files only if you force-added them, nested repositories never), are put
+  in one commit, `krowk: working state for <hex>`, on top of your `HEAD`, and
   the branch starts there; with nothing uncommitted it starts at `HEAD`.
   Your index, `HEAD` and files are not touched. When
   it finishes having changed nothing, the worktree and its branch are

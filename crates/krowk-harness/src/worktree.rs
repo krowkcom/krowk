@@ -170,27 +170,68 @@ pub fn create(cwd: &Path, root: &Path, owner: &str) -> Result<Worktree, Error> {
 }
 
 /// The tree of `cwd`'s working state when it differs from `head`'s: none
-/// for a clean checkout. `git status` judges clean, held to every
-/// untracked file whatever `status.showUntrackedFiles` says; changes it
-/// shows that a tree cannot hold (a submodule's own edits) give `head`'s
-/// tree, so none as well. The tree is built in a new index file in
-/// `scratch`, read from `head`, never the repository's own index.
+/// for a clean checkout, or a bare repository's directory. `git status`
+/// judges clean, held to every untracked file whatever
+/// `status.showUntrackedFiles` says; changes it shows that a tree cannot
+/// hold (a submodule's own edits) give `head`'s tree, so none as well.
+///
+/// The tree is built in a scratch index in `scratch`, never the
+/// repository's own: a copy of it, so what the person staged beyond what
+/// `add --all` finds (a file force-added past `.gitignore`, an
+/// intent-to-add, a skip-worktree entry) is kept, and its stat cache spares
+/// hashing every file again. git replaces an index by rename, so the copy
+/// is one whole index; it keeps the original's mtime, which git's
+/// racy-clean check judges entries against. A repository with no index
+/// yet starts from `head`'s tree. A new repository nested in the checkout
+/// (`vendor/foo/` with its own `.git`) is not carried: `add --all` would
+/// record it as a commit the worktree cannot check out, an empty directory.
 fn working_state(cwd: &Path, head: &str, scratch: &Path) -> Result<Option<String>, Error> {
-    let status = read(query(cwd)?.args(["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]), "status")?;
+    let top = match read(query(cwd)?.args(["rev-parse", "--show-toplevel"]), "rev-parse") {
+        Ok(t) if !t.is_empty() => PathBuf::from(t),
+        _ => return Ok(None),
+    };
+    let status = read(query(&top)?.args(["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]), "status")?;
     if status.is_empty() {
         return Ok(None);
     }
     let index = Scratch(std::path::absolute(scratch.join(format!(".index-{}", random_hex()))).map_err(|e| Error::Failed(format!("the index for the working state: {e}")))?);
-    let staged = || git(cwd).map(|mut c| {
-        c.env("GIT_INDEX_FILE", &index.0);
+    // Split or not, the scratch index is written whole: no shared index
+    // file of krowk's is left in the repository's git directory.
+    let staged = || git(&top).map(|mut c| {
+        c.env("GIT_INDEX_FILE", &index.0).args(["-c", "core.splitIndex=false"]);
         c
     });
-    read(staged()?.args(["read-tree", head]), "read-tree")?;
-    // `:/` is the whole tree, from wherever in it `cwd` is.
+    let own = PathBuf::from(read(query(&top)?.args(["rev-parse", "--path-format=absolute", "--git-path", "index"]), "rev-parse")?);
+    match copy_index(&own, &index.0) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => drop(read(staged()?.args(["read-tree", head]), "read-tree")?),
+        Err(e) => return Err(Error::Failed(format!("copy {}: {e}", own.display()))),
+    }
+    let mut known = gitlinks(&read(staged()?.args(["ls-files", "--stage", "-z"]), "ls-files")?);
+    known.extend(gitlinks(&read(query(&top)?.args(["ls-tree", "-r", "-z", "--full-tree", head]), "ls-tree")?));
     read(staged()?.args(["add", "--all", "--", ":/"]), "add")?;
+    let nested: Vec<String> = gitlinks(&read(staged()?.args(["ls-files", "--stage", "-z"]), "ls-files")?).into_iter().filter(|p| !known.contains(p)).collect();
+    if !nested.is_empty() {
+        read(staged()?.args(["update-index", "--force-remove", "--"]).args(&nested), "update-index")?;
+    }
     let tree = read(staged()?.arg("write-tree"), "write-tree")?;
-    let head_tree = read(query(cwd)?.args(["rev-parse", &format!("{head}^{{tree}}")]), "rev-parse")?;
+    let head_tree = read(query(&top)?.args(["rev-parse", &format!("{head}^{{tree}}")]), "rev-parse")?;
     Ok((tree != head_tree).then_some(tree))
+}
+
+/// `from`, the repository's index, copied to `to` with its mtime.
+fn copy_index(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut src = std::fs::File::open(from)?;
+    let modified = src.metadata()?.modified()?;
+    let mut dst = std::fs::OpenOptions::new().write(true).create_new(true).open(to)?;
+    std::io::copy(&mut src, &mut dst)?;
+    dst.set_modified(modified)
+}
+
+/// The paths of the gitlinks (mode 160000) in `ls-files --stage -z` or
+/// `ls-tree -r -z` output: both start an entry with its mode.
+fn gitlinks(listing: &str) -> std::collections::HashSet<String> {
+    listing.split('\0').filter_map(|e| e.split_once('\t')).filter(|(meta, _)| meta.starts_with("160000 ")).map(|(_, p)| p.to_string()).collect()
 }
 
 /// The commit of the working state `tree` on top of `head`, for the
@@ -503,6 +544,15 @@ mod tests {
         std::fs::write(main.join("b.txt"), "staged\n").unwrap();
         git_ok(&main, &["add", "b.txt"]);
         std::fs::write(main.join("build.log"), "ignored\n").unwrap();
+        // Force-added past .gitignore, and a repository of its own nested in
+        // the checkout, never registered as a submodule.
+        std::fs::write(main.join("forced.log"), "forced\n").unwrap();
+        git_ok(&main, &["add", "-f", "forced.log"]);
+        std::fs::create_dir_all(main.join("vendor/foo")).unwrap();
+        git_ok(&main.join("vendor/foo"), &["init", "-q"]);
+        std::fs::write(main.join("vendor/foo/x.txt"), "x\n").unwrap();
+        git_ok(&main.join("vendor/foo"), &["add", "x.txt"]);
+        git_ok(&main.join("vendor/foo"), &["commit", "-q", "-m", "x"]);
         let parent = |main: &Path| ["diff", "diff --cached", "rev-parse HEAD", "ls-files --others --exclude-standard"].map(|a| git_ok(main, &a.split(' ').collect::<Vec<_>>()));
         let before = parent(&main);
         let index = std::fs::read(main.join(".git/index")).unwrap();
@@ -518,6 +568,8 @@ mod tests {
         assert!(w.path.join("sub/d.txt").is_file());
         assert!(!w.path.join("c.txt").exists(), "a deleted file is deleted there too");
         assert!(!w.path.join("build.log").exists(), "an ignored file is not carried");
+        assert_eq!(std::fs::read_to_string(w.path.join("forced.log")).unwrap(), "forced\n", "a force-added one is");
+        assert_eq!(git_ok(&main, &["ls-tree", "-r", &w.base, "vendor"]), "", "a nested repository is no gitlink");
         assert_eq!(git_ok(&w.path, &["status", "--porcelain", "--untracked-files=normal"]), "");
         let head = &before[2];
         assert_ne!(&w.base, head);
@@ -536,8 +588,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// A clean parent, or one whose only change is ignored: the branch
-    /// starts at HEAD, with no commit of krowk's.
+    /// A clean parent, one whose only change is ignored, or one with no
+    /// index at all: the branch starts at HEAD, with no commit of krowk's.
     #[test]
     fn wt14_a_clean_parent_gives_a_branch_at_head() {
         if !has_git() {
@@ -554,6 +606,13 @@ mod tests {
         std::fs::write(main.join("build.log"), "ignored\n").unwrap();
         let w = create(&main, &root, "s2").unwrap();
         assert_eq!(w.base, head);
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
+        // No index to copy: the scratch index starts from HEAD, and the
+        // same files give HEAD again.
+        std::fs::remove_file(main.join(".git/index")).unwrap();
+        let w = create(&main, &root, "s3").unwrap();
+        assert_eq!(w.base, head);
+        assert!(!main.join(".git/index").exists(), "no index made for the parent");
         assert_eq!(finish(&w).unwrap(), Finished::Removed);
         let _ = std::fs::remove_dir_all(&base);
     }
