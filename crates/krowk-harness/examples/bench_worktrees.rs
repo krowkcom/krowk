@@ -259,9 +259,10 @@ fn set_first_line(file: &Path, line: &str) -> Result<(), String> {
     std::fs::write(file, format!("{line}\n{rest}")).map_err(|e| format!("{}: {e}", file.display()))
 }
 
-/// What git printed in `repo`, or what it said when it failed.
+/// What git printed in `repo`, or what it said when it failed: through
+/// `krowk_api::git`, as every git krowk runs is.
 fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git").arg("-C").arg(repo).args(args).output().map_err(|e| format!("git: {e}"))?;
+    let out = krowk_api::git::command(repo).and_then(|mut c| c.args(args).output()).map_err(|e| format!("git: {e}"))?;
     if !out.status.success() {
         return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
     }
