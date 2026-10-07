@@ -660,31 +660,51 @@ fn create_as(cwd: &Path, root: &Path, owner: &str, config: Option<&WorktreesConf
         None => head,
     };
     let wt = Worktree { path, hex, base, common, main, repo_id };
-    let snapshot = match config {
-        Some(config) if seed::method(&dir, &wt.common) == seed::Method::Snapshot => template::snapshot(&repo_lock, &wt, config).unwrap_or_else(|e| {
-            seed::log(&dir, &wt.hex, &format!("not made as a snapshot of the template, so checked out: {e}"));
-            None
-        }),
-        _ => None,
-    };
-    let made = match snapshot {
-        Some(seeded) => Made::Snapshot { seeded },
-        None => {
-            read(git(cwd)?.args(["worktree", "add", "--quiet", "--no-track", "-b"]).arg(wt.branch()).arg(&wt.path).arg(&wt.base), "worktree add")?;
-            Made::Checkout
+    let (mut repo_lock, taken) = match config {
+        Some(config) if seed::method(&dir, &wt.common) == seed::Method::Snapshot => {
+            let (held, taken) = template::snapshot(repo_lock, &wt, config)?;
+            (held, taken.unwrap_or_else(|e| {
+                seed::log(&dir, &wt.hex, &format!("not made as a snapshot of the template, so checked out: {e}"));
+                None
+            }))
         }
+        _ => (repo_lock, None),
     };
-    let locked = read(git(&wt.main)?.args(["worktree", "lock", "--reason"]).arg(format!("{LOCK_REASON}{owner}")).arg(&wt.path), "worktree lock");
-    match locked.and_then(|_| manage::write_record(&wt, owner)).and_then(|()| manage::hold(&wt)) {
-        Ok(held) => {
-            disk::record(cwd, &wt.base, &dir);
-            Ok((wt, held, made))
-        }
-        Err(e) => {
-            let _ = remove(&wt, true);
-            Err(e)
+    if let Some(taken) = taken {
+        let held = register(&wt, owner)?;
+        // What is left is the worktree's own, and it is held: many
+        // creations at once do not queue on the lock for it (WT16.1).
+        drop(repo_lock);
+        let settled = template::settle(&wt, &taken);
+        match settled {
+            Ok(()) => {
+                disk::record(cwd, &wt.base, &dir);
+                return Ok((wt, held, Made::Snapshot { seeded: taken.seeded }));
+            }
+            Err(e) => {
+                seed::log(&dir, &wt.hex, &format!("not made as a snapshot of the template, so checked out: {e}"));
+                drop(held);
+                repo_lock = lock(&wt.common)?;
+                template::take_back(&wt, &taken.scratch);
+                manage::forget(&dir, &wt.hex);
+            }
         }
     }
+    read(git(cwd)?.args(["worktree", "add", "--quiet", "--no-track", "-b"]).arg(wt.branch()).arg(&wt.path).arg(&wt.base), "worktree add")?;
+    let held = register(&wt, owner)?;
+    drop(repo_lock);
+    disk::record(cwd, &wt.base, &dir);
+    Ok((wt, held, Made::Checkout))
+}
+
+/// The worktree just added, locked for `owner` with git, recorded and held
+/// live, under the caller's lock, so no `krowk worktrees remove` finds it
+/// unheld once the lock is let go. An error has removed it.
+fn register(wt: &Worktree, owner: &str) -> Result<manage::Held, Error> {
+    let locked = read(git(&wt.main)?.args(["worktree", "lock", "--reason"]).arg(format!("{LOCK_REASON}{owner}")).arg(&wt.path), "worktree lock");
+    locked.and_then(|_| manage::write_record(wt, owner)).and_then(|()| manage::hold(wt)).inspect_err(|_| {
+        let _ = remove(wt, true);
+    })
 }
 
 /// The tree of `cwd`'s working state when it differs from `head`'s: none
