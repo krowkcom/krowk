@@ -16,6 +16,8 @@
 //! - `<hex>.json` (`Record`): its base commit — with WT14 a commit of the
 //!   parent's working state, which nothing can work out later — the session
 //!   that works in it, and when it was made.
+//! - `size`: the size of the last worktree made, which the next one is
+//!   expected to be (`super::disk`, WT12).
 //! - `<hex>.live`: locked (`File::try_lock`) by the process whose session
 //!   works in it for as long as it does (`Held`). git's own lock,
 //!   `krowk:<session>`, says whose it is but not whether they are alive; the

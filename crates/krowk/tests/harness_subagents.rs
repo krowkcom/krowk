@@ -1166,3 +1166,62 @@ fn wt3_a_repositorys_anchored_deny_holds_inside_the_worktree() {
     assert!(out.starts_with("CHILD-SAW error=true") && out.contains("Edit(/blocked/**)"), "{out}");
     assert!(!out.contains("Worktree:"), "nothing written, nothing kept: {out}");
 }
+
+/// The parent starts one subagent, which answers at once.
+fn one_subagent(body: &Value, _: usize) -> mock::Reply {
+    if is_child(body) {
+        return mock::Reply::sse(&mock::text_stream("done."));
+    }
+    if answered(body) {
+        return mock::Reply::sse(&mock::fixture("turn2_answer.sse"));
+    }
+    mock::Reply::sse(&tool_calls(&[("toolu_1", "subagent", json!({"description": "one", "prompt": "TASK-1"}))]))
+}
+
+/// WT12: with every agent slot of the machine held — here by the test, as
+/// another krowk would — a subagent says so on its call and waits, starting
+/// once the slot is let go.
+#[test]
+fn wt12_a_subagent_waits_for_an_agent_slot_another_process_holds() {
+    let m = mock::serve(one_subagent);
+    let b = Sandbox::new("agent-slot", &m.url);
+    let pool = krowk_harness::slots::Pool::new(b.root.join("run"), krowk_harness::subagent::AGENT_SLOTS, 1);
+    let mut held = Some(pool.try_take().unwrap().expect("the one slot"));
+    let mut registry = Registry::resolve(&InstancesConfig::default(), &b.env());
+    registry.agents = Some(pool);
+    let host = Host::new(HostConfig { registry, ..b.host() });
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut waited = false;
+    let result = rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
+        let cmd = Command::Prompt { session_id: None, text: "one subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let exec = host.execute(cmd, tx);
+        tokio::pin!(exec);
+        // The slot is let go a while after the wait is said, the turn
+        // running all the while.
+        let release = tokio::time::sleep(Duration::from_secs(3600));
+        tokio::pin!(release);
+        loop {
+            tokio::select! {
+                Some(line) = rx.recv() => {
+                    if let StreamLine::Live(LiveEvent::ItemDelta { delta: krowk_harness::protocol::Delta::Text { text }, .. }) = &line
+                        && text.contains("waiting for an agent slot (1 in use)")
+                    {
+                        waited = true;
+                        release.as_mut().reset(tokio::time::Instant::now() + Duration::from_millis(600));
+                    }
+                }
+                () = &mut release, if held.is_some() => {
+                    assert!(!m.seen.lock().unwrap().iter().any(|s| is_child(&s.body)), "the child started while every slot was held");
+                    held = None;
+                }
+                r = &mut exec => break r,
+            }
+        }
+    });
+    let result = result.unwrap().unwrap();
+    assert_eq!(result.status, TurnStatus::Completed, "{:?}", result.error);
+    assert!(waited && held.is_none(), "the wait was said on the call");
+    assert!(m.seen.lock().unwrap().iter().any(|s| is_child(&s.body)), "it ran once the slot was free");
+}

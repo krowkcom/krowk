@@ -228,24 +228,59 @@ mod tests {
     #[test]
     fn holder() {
         let Ok(runtime) = std::env::var("KROWK_TEST_SLOT_HOLDER") else { return };
-        let _slot = Pool::new(PathBuf::from(runtime), "build-slots", 1).try_take().unwrap().expect("the slot is free");
+        let (name, size) = std::env::var("KROWK_TEST_SLOT_POOL").ok().and_then(|p| Some((p.split_once(':')?.0.to_string(), p.split_once(':')?.1.parse().ok()?))).unwrap_or(("build-slots".into(), 1));
+        let _slot = Pool::new(PathBuf::from(runtime), &name, size).try_take().unwrap().expect("the slot is free");
         println!("\nslot-held");
         std::thread::sleep(Duration::from_secs(60));
     }
 
-    #[test]
-    fn a_slot_held_by_a_killed_process_is_free_at_once() {
+    /// Another process, holding a slot of the pool `name` of `size` in
+    /// `runtime` until killed.
+    fn other_process(runtime: &Path, name: &str, size: usize) -> std::process::Child {
         use std::io::BufRead;
-        let d = dir("killed");
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "slots::tests::holder", "--nocapture", "--test-threads=1"])
-            .env("KROWK_TEST_SLOT_HOLDER", &d)
+            .env("KROWK_TEST_SLOT_HOLDER", runtime)
+            .env("KROWK_TEST_SLOT_POOL", format!("{name}:{size}"))
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
         let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
         assert!(lines.any(|l| l.is_ok_and(|l| l.trim() == "slot-held")), "the holder never took the slot");
+        child
+    }
+
+    /// WT12, `subagents.maxHost = 2`: three agents across two processes —
+    /// one in the other, two here — and two run; the third waits until one
+    /// ends, here by its process being killed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn wt12_three_agents_across_two_processes_two_run_and_the_third_waits() {
+        let d = dir("agents");
+        let pool = Pool::new(d.clone(), "agent-slots", 2);
+        let mut child = other_process(&d, "agent-slots", 2);
+        let _second = pool.try_take().unwrap().expect("the second agent runs beside the other process's");
+        assert!(pool.try_take().unwrap().is_none(), "the third finds both held");
+        let ender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            child.kill().unwrap();
+            child.wait().unwrap();
+        });
+        let said = std::sync::Mutex::new(Vec::new());
+        let (third, waited) = pool.take(|n| {
+            said.lock().unwrap().push(n);
+            async {}
+        }).await.unwrap();
+        ender.join().unwrap();
+        assert_eq!((third.index(), said.into_inner().unwrap()), (0, vec![2]), "the other process's slot, after a wait said once");
+        assert!(waited >= Duration::from_millis(400), "{waited:?}");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn a_slot_held_by_a_killed_process_is_free_at_once() {
+        let d = dir("killed");
+        let mut child = other_process(&d, "build-slots", 1);
         let pool = Pool::new(d.clone(), "build-slots", 1);
         assert!(pool.try_take().unwrap().is_none(), "another process holds it");
         child.kill().unwrap();

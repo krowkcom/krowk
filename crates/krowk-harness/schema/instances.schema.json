@@ -533,6 +533,15 @@
           "format": "uint",
           "minimum": 0
         },
+        "maxHost": {
+          "description": "Agents every krowk on the machine runs at once — subagents and\n`--worktree` sessions, each holding one of the `agent-slots` for\nits life; twice the cores or twice the GiB of memory, whichever is\nfewer, kept to 4 … 64, when absent.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
         "model": {
           "description": "The model a subagent runs on when its definition names none:\n`<instance>/<model>`, a model id, `inherit` or an alias (`haiku`);\nthe catalog's cheaper tier below the parent's model when absent.",
           "type": [

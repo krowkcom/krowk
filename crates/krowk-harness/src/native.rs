@@ -669,7 +669,7 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
         Err(why) => return (why, true),
     };
     let (mut output, is_error) = match own {
-        Some(_) => run_own(ctx, events, call_id, name, input).await,
+        Some(_) => run_own(ctx, events, (call_id, item_id), name, input).await,
         // Searching starts the servers, each a command: plan mode runs none.
         None if name == crate::mcp::SEARCH && ctx.permission_mode == crate::protocol::PermissionMode::Plan => {
             (format!("{name} was not run: it starts the MCP servers, and plan mode runs no commands — search for MCP tools once the plan is approved"), true)
@@ -692,10 +692,10 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
 
 /// A session tool's call, once allowed: `subagent`, `ask_user` or
 /// `todo_write`.
-async fn run_own(ctx: &TurnContext, events: &Events, call_id: &str, name: &str, input: &serde_json::Value) -> (String, bool) {
+async fn run_own(ctx: &TurnContext, events: &Events, (call_id, item_id): (&str, &str), name: &str, input: &serde_json::Value) -> (String, bool) {
     match name {
         SUBAGENT => match &ctx.subagents {
-            Some(s) => s.run(call_id, input, events).await,
+            Some(s) => s.run(call_id, item_id, input, events).await,
             None => (format!("{name} is not available in this session"), true),
         },
         crate::ask::ASK_USER => match crate::ask::parse(input) {

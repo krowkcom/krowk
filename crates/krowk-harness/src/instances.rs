@@ -113,6 +113,12 @@ pub struct SubagentsConfig {
     /// Subagents one turn runs at once; 4 when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_parallel: Option<usize>,
+    /// Agents every krowk on the machine runs at once — subagents and
+    /// `--worktree` sessions, each holding one of the `agent-slots` for
+    /// its life; twice the cores or twice the GiB of memory, whichever is
+    /// fewer, kept to 4 … 64, when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_host: Option<usize>,
     /// The model a subagent runs on when its definition names none:
     /// `<instance>/<model>`, a model id, `inherit` or an alias (`haiku`);
     /// the catalog's cheaper tier below the parent's model when absent.
@@ -122,12 +128,18 @@ pub struct SubagentsConfig {
 
 impl SubagentsConfig {
     pub fn is_empty(&self) -> bool {
-        self.max_parallel.is_none() && self.model.is_none()
+        self.max_parallel.is_none() && self.max_host.is_none() && self.model.is_none()
     }
 
     /// Subagents at once: the config's, at least one.
     pub fn max_parallel(&self) -> usize {
         self.max_parallel.unwrap_or(crate::subagent::MAX_PARALLEL).max(1)
+    }
+
+    /// Agents at once on the machine: the config's, else
+    /// `crate::subagent::max_host`'s for this one.
+    pub fn max_host(&self) -> usize {
+        self.max_host.unwrap_or_else(crate::subagent::max_host).max(1)
     }
 }
 
@@ -585,6 +597,9 @@ pub struct Registry {
     /// The build slots heavy commands take, in the runtime directory the
     /// environment names.
     pub builds: crate::builds::Builds,
+    /// The machine's agent slots (`subagents.maxHost`) every subagent and
+    /// `--worktree` session holds one of; none, and nothing waits.
+    pub agents: Option<crate::slots::Pool>,
     pub rollover: Rollover,
     /// Config's `rolloverOrder`, as written.
     pub rollover_order: Vec<String>,
@@ -613,6 +628,7 @@ impl Registry {
             subagents: cfg.subagents.clone(),
             worktrees: cfg.worktrees.clone(),
             builds: crate::builds::Builds::resolve(&cfg.builds, env),
+            agents: Some(crate::slots::Pool::new(crate::slots::runtime_dir(env), crate::subagent::AGENT_SLOTS, cfg.subagents.max_host())),
             rollover: cfg.rollover.unwrap_or_default(),
             rollover_order: cfg.rollover_order.clone(),
             renamed: cfg.renamed.clone(),
@@ -1118,6 +1134,9 @@ pub fn from_config_json(raw: &serde_json::Value) -> Result<InstancesConfig, Stri
         if cfg.subagents.max_parallel == Some(0) {
             return Err("\"subagents\": maxParallel must be at least 1".into());
         }
+        if cfg.subagents.max_host == Some(0) {
+            return Err("\"subagents\": maxHost must be at least 1".into());
+        }
     }
     if let Some(v) = raw.get("worktrees") {
         cfg.worktrees = WorktreesConfig::parse(v)?;
@@ -1395,6 +1414,11 @@ mod tests {
         assert_eq!((cfg.subagents.max_parallel(), cfg.subagents.model.as_deref()), (2, Some("inherit")));
         assert_eq!(from_config_json(&serde_json::json!({})).unwrap().subagents.max_parallel(), crate::subagent::MAX_PARALLEL);
         assert!(from_config_json(&serde_json::json!({"subagents": {"maxParallel": 0}})).unwrap_err().contains("at least 1"));
+        assert_eq!(from_config_json(&serde_json::json!({"subagents": {"maxHost": 2}})).unwrap().subagents.max_host(), 2);
+        let default = from_config_json(&serde_json::json!({})).unwrap().subagents.max_host();
+        assert!((4..=64).contains(&default), "{default}");
+        let err = from_config_json(&serde_json::json!({"subagents": {"maxHost": 0}})).unwrap_err();
+        assert!(err.contains("maxHost") && err.contains("at least 1"), "{err}");
         assert!(from_config_json(&serde_json::json!({"subagents": {"maxParalel": 2}})).unwrap_err().contains("subagents"), "a typo is named");
     }
 

@@ -70,7 +70,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // its worktree is trusted as the repository it was made from.
     let trust_as = own_worktree::TrustAs::default();
     let resumed = match (&resume, &session_cwd) {
-        (Some(id), Some(dir)) => own_worktree::resumed(ctx, id, dir)?,
+        (Some(id), Some(dir)) => own_worktree::resumed(ctx, &registry, id, dir)?,
         _ => None,
     };
     if let Some(r) = &resumed {

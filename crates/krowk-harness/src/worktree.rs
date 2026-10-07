@@ -57,11 +57,15 @@
 //!   repository's size and with its build output already there; else a
 //!   checkout, seeded where clones are cheap. A snapshot that fails is
 //!   taken back, and that creation is a checkout.
+//! - **Refused when the disk is low** (WT12, `disk`): its file system must
+//!   have 4 GiB free beyond twice the size it is expected to be, or
+//!   nothing is made.
 //! - **A port slot** (`setup::port_slot`) is held by whoever uses the
 //!   worktree, for as long as they do: `KROWK_PORT_BASE` for the setup
 //!   command and the agent's commands.
 
 pub mod apply;
+pub mod disk;
 pub mod include;
 pub mod manage;
 pub mod seed;
@@ -259,6 +263,9 @@ pub struct InUse {
     pub port: Option<crate::slots::Slot>,
     pub port_base: Option<u16>,
     pub held: manage::Held,
+    /// The machine's agent slot a `--worktree` session holds for its life
+    /// (WT12), set by whoever took it; a subagent holds its own beside.
+    pub agent: Option<crate::slots::Slot>,
 }
 
 impl InUse {
@@ -271,7 +278,7 @@ impl InUse {
             Err(e) => (None, Some(format!("no port slot could be taken ({e}), so KROWK_PORT_BASE is not set here"))),
         };
         let port_base = port.as_ref().map(setup::port_base);
-        (InUse { worktree, port, port_base, held }, missing)
+        (InUse { worktree, port, port_base, held, agent: None }, missing)
     }
 
     /// What the agent's commands get in their environment: its port base.
@@ -639,6 +646,8 @@ fn create_as(cwd: &Path, root: &Path, owner: &str, config: Option<&WorktreesConf
     let main = main_checkout(cwd, &common)?;
     let repo_id = repo_id(&common);
     let dir = root.join(&repo_id);
+    // Room for it first (WT12): a creation refused makes nothing.
+    disk::admit(cwd, &head, &dir)?;
     std::fs::create_dir_all(&dir).map_err(|e| Error::Failed(format!("create {}: {e}", dir.display())))?;
     manage::note_common(&dir, &common);
     // Hashing the files is the slow part: done before the lock, so
@@ -667,7 +676,10 @@ fn create_as(cwd: &Path, root: &Path, owner: &str, config: Option<&WorktreesConf
     };
     let locked = read(git(&wt.main)?.args(["worktree", "lock", "--reason"]).arg(format!("{LOCK_REASON}{owner}")).arg(&wt.path), "worktree lock");
     match locked.and_then(|_| manage::write_record(&wt, owner)).and_then(|()| manage::hold(&wt)) {
-        Ok(held) => Ok((wt, held, made)),
+        Ok(held) => {
+            disk::record(cwd, &wt.base, &dir);
+            Ok((wt, held, made))
+        }
         Err(e) => {
             let _ = remove(&wt, true);
             Err(e)

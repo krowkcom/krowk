@@ -217,6 +217,26 @@ the versions are the `v*` tags a release is cut from. Entries land under
   yourself, or raise `builds.slots`, to change it. Your own value is
   passed on in the sandbox too. This applies to krowk's own agent;
   Claude Code and Codex run their own shells.
+
+- **Agents take turns across every krowk on the machine, and worktrees
+  wait for disk.** `subagents.maxParallel` limits one turn, so ten
+  sessions each starting four subagents started forty at once. Now every
+  subagent, and every `--worktree` session, holds one of a fixed number of
+  agent slots that every krowk on the machine shares, for as long as it
+  runs. When all are held, a subagent shows
+  `waiting for an agent slot (N in use)` and starts when one frees up;
+  interrupting the turn stops the wait. A `--worktree` session prints the
+  same line before it starts, and Ctrl-C stops it. A krowk that is killed
+  or crashes frees its slot at once. Sessions without `--worktree` never
+  wait. The default is twice your cores or twice your memory in GiB,
+  whichever is fewer, between 4 and 64; set
+  `"subagents": {"maxHost": 8}` in `~/.krowk/config.json` to change it (0 is
+  refused). Before making a worktree, krowk also checks that its disk will
+  have 4 GiB free beyond twice the size the worktree is expected to be
+  (the last one krowk made of that repository, else your tracked files).
+  When it would not, nothing is made, and the session or subagent fails
+  with `not enough disk for a worktree: <free> free, <needed> needed`,
+  pointing at `krowk worktrees prune` and `krowk worktrees remove`.
 - **A host says why a viewer stays on the relay.** When a viewer offered
   the direct path never reaches it — a firewall on the host, or a tailnet
   access policy that doesn't allow the port, drops the connection before

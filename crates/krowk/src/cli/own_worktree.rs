@@ -25,8 +25,12 @@
 //!   repository a person trusted, never a worktree of it in krowk's data
 //!   directory.
 //!
-//! WT12 will make a `--worktree` session take one of the machine's agent
-//! slots as well: `open`, and `resumed`, are where it is taken.
+//! - **Within the machine's cap** (WT12): the session holds one of the
+//!   machine's agent slots (`subagents.maxHost`, shared with every
+//!   subagent of every krowk) for its life, taken before its worktree is
+//!   made or held again. When every one is held it waits, saying
+//!   `waiting for an agent slot (N in use)` on stderr; Ctrl-C ends the
+//!   wait. A session without `--worktree` takes none and never waits.
 
 use super::{prompt, Ctx};
 use krowk_api::{fail, Error};
@@ -49,21 +53,48 @@ fn root(ctx: &Ctx) -> Result<PathBuf, Error> {
 /// `session`, readied by the prepare steps: it, held, and the notes for the
 /// session's first prompt. `permissions` and `registry` are the session's:
 /// whether the repository is trusted, its own `worktrees`, the person's.
-pub(super) fn open(ctx: &Ctx, cwd: &Path, permissions: &permissions::Config, registry: &Registry, session: &str) -> Result<(InUse, Vec<String>), Error> {
+pub(super) fn open(ctx: &mut Ctx, cwd: &Path, permissions: &permissions::Config, registry: &Registry, session: &str) -> Result<(InUse, Vec<String>), Error> {
     let root = root(ctx)?;
+    let agent = agent_slot(ctx, registry);
     let policy = permissions::Policy::load(permissions, cwd).map_err(prompt::bad_settings)?;
     let runtime = krowk_harness::slots::runtime_dir(ctx.io.env);
     let readying = worktree::Readying { policy: &policy, config: &registry.worktrees, builds: Some(&registry.builds), cancel: None, runtime };
-    worktree::open(cwd, &root, session, &readying).map_err(|e| match e {
+    let (mut in_use, notes) = worktree::open(cwd, &root, session, &readying).map_err(|e| match e {
         worktree::Error::NotARepository => fail("not_a_repository", NEEDS_A_REPOSITORY),
         e => fail("worktree_failed", format!("the session's worktree could not be made: {e}")),
-    })
+    })?;
+    in_use.agent = agent;
+    Ok((in_use, notes))
+}
+
+/// One of the machine's agent slots, waited for as long as it takes:
+/// tried every `slots::RETRY`, the wait said once on stderr. None when the
+/// registry has no pool, or the runtime directory is refused — said, and
+/// the session runs anyway: the cap is for the machine's sake.
+fn agent_slot(ctx: &mut Ctx, registry: &Registry) -> Option<krowk_harness::slots::Slot> {
+    let pool = registry.agents.as_ref()?;
+    let mut said = false;
+    loop {
+        match pool.try_take() {
+            Ok(Some(slot)) => return Some(slot),
+            Ok(None) if !said => {
+                said = true;
+                let _ = write!(ctx.io.stderr, "{}", krowk_harness::subagent::waiting_line(pool.size()));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                ctx.warn(&format!("the session runs without an agent slot: {e}"));
+                return None;
+            }
+        }
+        std::thread::sleep(krowk_harness::slots::RETRY);
+    }
 }
 
 /// The krowk worktree the session `session` ran in, `dir`, held again for
 /// it to go on there: none when `dir` is not one of krowk's worktrees.
 /// Refused when it is gone, or another live session holds it.
-pub(super) fn resumed(ctx: &mut Ctx, session: &str, dir: &Path) -> Result<Option<InUse>, Error> {
+pub(super) fn resumed(ctx: &mut Ctx, registry: &Registry, session: &str, dir: &Path) -> Result<Option<InUse>, Error> {
     let Ok(root) = root(ctx) else { return Ok(None) };
     let real = root.canonicalize().unwrap_or_else(|_| root.clone());
     if dir == root || dir == real || !(dir.starts_with(&root) || dir.starts_with(&real)) {
@@ -76,11 +107,13 @@ pub(super) fn resumed(ctx: &mut Ctx, session: &str, dir: &Path) -> Result<Option
         ));
     }
     let Some(wt) = manage::find(&root, &dir.display().to_string()).ok().and_then(|l| l.worktree()) else { return Ok(None) };
+    let agent = agent_slot(ctx, registry);
     let held = manage::hold_again(&wt).map_err(|e| fail("worktree_failed", format!("the worktree {} could not be held for the session: {e}", wt.path.display())))?;
     let Some(held) = held else {
         return Err(fail("worktree_live", format!("another krowk session works in {} now — resume this one once it has ended", wt.path.display())));
     };
-    let (in_use, missing) = InUse::new(wt, held, krowk_harness::slots::runtime_dir(ctx.io.env));
+    let (mut in_use, missing) = InUse::new(wt, held, krowk_harness::slots::runtime_dir(ctx.io.env));
+    in_use.agent = agent;
     if let Some(why) = missing {
         ctx.warn(&why);
     }

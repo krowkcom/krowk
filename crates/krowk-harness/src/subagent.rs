@@ -25,6 +25,13 @@
 //!   are the same inside a subagent: an allowlist narrows, it never grants.
 //! - **In parallel**: the subagent calls of one response run at once, up to
 //!   `subagents.maxParallel` (4 by default) at a time (R-SUB-2).
+//! - **Within the machine's cap**: each subagent holds one of the
+//!   `agent-slots` (`crate::slots`) for its life, shared by every krowk on
+//!   the machine with the `--worktree` sessions, `subagents.maxHost` of
+//!   them (`max_host` by default); one that finds none says `waiting for
+//!   an agent slot (N in use)` on its call, and waits until one is let go
+//!   or the parent is interrupted. Plain sessions take none, so a person
+//!   never waits to start one.
 //! - **Interruptible one by one**: each child's turn is a running turn of
 //!   the host, so `interrupt` with the child's session id stops that child
 //!   alone, and its call is answered with what it had; interrupting the
@@ -67,6 +74,62 @@ pub const DESCRIPTION: &str = "Start a subagent with a fresh context for one tas
 
 /// Subagents at once, per parent turn, when the config does not say.
 pub const MAX_PARALLEL: usize = 4;
+
+/// The pool of the machine's agent slots (`subagents.maxHost`).
+pub const AGENT_SLOTS: &str = "agent-slots";
+
+/// Agents at once on the machine when the config does not say: twice the
+/// cores or twice the GiB of memory, whichever is fewer — an agent's
+/// builds want cores, its language servers memory — kept to 4 … 64. Twice
+/// the cores alone when the memory cannot be read.
+pub fn max_host() -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let memory = memory_bytes().map_or(usize::MAX, |b| usize::try_from(b / (1 << 30)).unwrap_or(usize::MAX));
+    (cores * 2).min(memory.saturating_mul(2)).clamp(4, 64)
+}
+
+/// The machine's memory, in bytes, when it can be read.
+#[cfg(unix)]
+fn memory_bytes() -> Option<u64> {
+    // SAFETY: sysconf has no preconditions; -1 is its failure.
+    let (pages, size) = unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGESIZE)) };
+    (pages > 0 && size > 0).then(|| pages as u64 * size as u64)
+}
+
+#[cfg(windows)]
+fn memory_bytes() -> Option<u64> {
+    // Filled by the call; only the total is read.
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct MemoryStatusEx {
+        length: u32,
+        load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(status: *mut MemoryStatusEx) -> i32;
+    }
+    let mut status = MemoryStatusEx { length: std::mem::size_of::<MemoryStatusEx>() as u32, load: 0, total_phys: 0, avail_phys: 0, total_page_file: 0, avail_page_file: 0, total_virtual: 0, avail_virtual: 0, avail_extended_virtual: 0 };
+    // SAFETY: `status` is a MEMORYSTATUSEX with its length set, as the call asks.
+    (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status.total_phys)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn memory_bytes() -> Option<u64> {
+    None
+}
+
+/// What a subagent waiting for an agent slot says on its call.
+pub fn waiting_line(in_use: usize) -> String {
+    format!("waiting for an agent slot ({in_use} in use)\n")
+}
 
 /// Start a subagent.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -301,7 +364,8 @@ impl Subagents {
     }
 
     /// One `subagent` call: the child's final summary, or why there is none.
-    pub async fn run(&self, call_id: &str, input: &Value, events: &Events) -> (String, bool) {
+    /// `item_id` is the call's result, where a wait for an agent slot is said.
+    pub async fn run(&self, call_id: &str, item_id: &str, input: &Value, events: &Events) -> (String, bool) {
         let input = match SubagentInput::deserialize(input) {
             Ok(i) => i,
             Err(e) => return (format!("invalid input for subagent: {e}"), true),
@@ -364,6 +428,20 @@ impl Subagents {
                 Err(_) => return ("not run: the turn is ending".into(), true),
             },
             _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true),
+        };
+        // Then one of the machine's agent slots, held until it ends. One
+        // that cannot be had — the runtime directory refused — runs it
+        // anyway: the cap is for the machine's sake, as the build slots are.
+        let waiting = |in_use: usize| async move {
+            let delta = crate::protocol::Delta::Text { text: waiting_line(in_use) };
+            let _ = events.send(crate::engine::EngineEvent::ItemDelta { item_id: item_id.into(), delta }).await;
+        };
+        let _slot = match &registry.agents {
+            Some(pool) => tokio::select! {
+                taken = pool.take(waiting) => taken.ok().map(|(slot, _)| slot),
+                _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true),
+            },
+            None => None,
         };
         // Its session id is chosen now: a worktree is locked in its name
         // before the session exists, and the session records it as its
