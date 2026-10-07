@@ -5,11 +5,15 @@
 //! terminal's own scrollback moves the whole screen, footer and all, so a
 //! footer that stays put needs the scrolling done here.
 //!
-//! - **Scrolled here.** The mouse wheel (button reporting, SGR encoded:
-//!   Shift-drag still selects in most terminals) and PgUp/PgDn move the
-//!   conversation above the live region; lines that arrive meanwhile leave
-//!   the view where it is, and a dim row at its bottom says how much is
-//!   below. Sending a prompt goes back to the bottom.
+//! - **Scrolled here.** The mouse wheel (button reporting, SGR encoded) and
+//!   PgUp/PgDn move the conversation above the live region; lines that
+//!   arrive meanwhile leave the view where it is, and a dim row at its bottom
+//!   says how much is below. Sending a prompt goes back to the bottom.
+//! - **Selected here.** With the mouse reported, the terminal selects
+//!   nothing itself (but on Shift-drag in most), so a drag over the
+//!   conversation selects it here, shown reversed, and is copied when the
+//!   button is let go; a line the screen wrapped copies as one. As Grok
+//!   Build's fullscreen does.
 //! - **One write per frame, inside synchronized output**, as inline.
 //!   Moves are absolute: nothing is in a scrollback a resize could move.
 //! - **Wrapped here.** A line wider than the screen is wrapped a grapheme at
@@ -21,20 +25,22 @@
 
 use crate::term::{Back, FrameBuf, AUTOWRAP_OFF, AUTOWRAP_ON, SYNC_BEGIN, SYNC_END, TITLE_RESTORE};
 use ratatui::layout::{Rect, Size};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// The alternate screen (with the cursor saved), the mouse's buttons and
-/// wheel reported in SGR's encoding, and the keyboard protocol's level
+/// The alternate screen (with the cursor saved), the mouse's buttons, wheel
+/// and drags reported in SGR's encoding (1002: motion only with a button
+/// down — every move, 1003, would wake the loop for nothing), and the
+/// keyboard protocol's level
 /// pushed again (`term::KEYS_PUSH`): kitty and Ghostty keep a stack for each
 /// screen, and shift-enter would be enter here. Bare, not bracketed by
 /// DECSC/DECRC: xterm saves one cursor for both, and 1049 restores it on the
 /// way out. And all of it given back.
-pub const ENTER: &[u8] = b"\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[>1u";
-pub const LEAVE: &[u8] = b"\x1b[<u\x1b[?1006l\x1b[?1000l\x1b[?1049l";
+pub const ENTER: &[u8] = b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[>1u";
+pub const LEAVE: &[u8] = b"\x1b[<u\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l";
 /// The cursor's blink off, and the terminal's own cursor back (see `term`).
 const BLINK_OFF: &[u8] = b"\x1b[?12l";
 const CURSOR_DEFAULT: &[u8] = b"\x1b[0 q";
@@ -63,6 +69,15 @@ pub struct Full<W: Write> {
     lines: Vec<Line<'static>>,
     /// `lines` wrapped to the screen's width.
     rows: Vec<Line<'static>>,
+    /// For each of `rows`, whether it goes on the line above it: the screen
+    /// wrapped it there.
+    joined: Vec<bool>,
+    /// The first of `rows` on screen, and how many are, in the last frame.
+    top: usize,
+    shown: usize,
+    /// What is selected with the mouse: from the row and column pressed on
+    /// to where it was dragged, and whether the button is still down.
+    selection: Option<Selection>,
     /// Rows scrolled up from the bottom; none follows what arrives.
     scroll: usize,
     /// Rows the conversation had in the last frame: a page.
@@ -85,7 +100,7 @@ impl<W: Write> Full<W> {
         buf.clone().write_all(ENTER)?;
         TAKEN.store(true, Ordering::SeqCst);
         let terminal = Terminal::with_options(Back::fullscreen(&buf, size), TerminalOptions { viewport: Viewport::Fullscreen })?;
-        Ok(Full { terminal, buf, out, size, lines: Vec::new(), rows: Vec::new(), scroll: 0, view: size.height, caret: None, frames: 0, pad: 0, steady: false, taken: true })
+        Ok(Full { terminal, buf, out, size, lines: Vec::new(), rows: Vec::new(), joined: Vec::new(), top: 0, shown: 0, selection: None, scroll: 0, view: size.height, caret: None, frames: 0, pad: 0, steady: false, taken: true })
     }
 
     pub fn size(&self) -> Size {
@@ -106,6 +121,73 @@ impl<W: Write> Full<W> {
     /// Back to the bottom, following what arrives.
     pub fn follow(&mut self) {
         self.scroll = 0;
+    }
+
+    /// The row of `rows` at screen row `y`, if the conversation is there.
+    fn at(&self, y: u16) -> Option<usize> {
+        (usize::from(y) < self.shown).then(|| self.top + usize::from(y))
+    }
+
+    /// The left button pressed at (`x`, `y`): a selection starts there if it
+    /// is on the conversation; any other one goes. True when it is.
+    pub fn press(&mut self, x: u16, y: u16) -> bool {
+        let had = self.selection.take().is_some();
+        let Some(row) = self.at(y) else { return had };
+        self.selection = Some(Selection { from: (row, x), to: (row, x), held: true });
+        true
+    }
+
+    /// Dragged to (`x`, `y`): the selection follows, and the conversation
+    /// scrolls under it at the top or bottom row. True when it moved.
+    pub fn drag(&mut self, x: u16, y: u16) -> bool {
+        if !self.selection.is_some_and(|s| s.held) || self.shown == 0 {
+            return false;
+        }
+        let last = self.shown as u16 - 1;
+        if y == 0 {
+            self.scroll(1);
+        } else if y >= last {
+            self.scroll(-1);
+        }
+        let row = self.top + usize::from(y.min(last));
+        if let Some(s) = self.selection.as_mut() {
+            s.to = (row, x);
+        }
+        true
+    }
+
+    /// The button let go at (`x`, `y`): what is selected, as text to copy;
+    /// none for a click that selected nothing, which leaves no selection.
+    pub fn release(&mut self, x: u16, y: u16) -> Option<String> {
+        self.drag(x, y);
+        let s = self.selection.as_mut().filter(|s| s.held)?;
+        s.held = false;
+        if s.from == s.to {
+            self.selection = None;
+            return None;
+        }
+        let s = *s;
+        Some(self.selected_text(s))
+    }
+
+    /// The text from `s`'s first cell to its last, a row the screen wrapped
+    /// joined to the one above, a line's trailing blanks dropped.
+    fn selected_text(&self, s: Selection) -> String {
+        let ((r0, c0), (r1, c1)) = s.ordered();
+        let mut text = String::new();
+        for row in r0..=r1.min(self.rows.len().saturating_sub(1)) {
+            if row > r0 && !self.joined[row] {
+                let kept = text.trim_end_matches(' ').len();
+                text.truncate(kept);
+                text.push('\n');
+            }
+            let from = if row == r0 { c0 } else { 0 };
+            let to = if row == r1 { c1.saturating_add(1) } else { u16::MAX };
+            text.push_str(&cells(&self.rows[row], from, to));
+        }
+        let kept = text.trim_end_matches(' ').len();
+        text.truncate(kept);
+        text
     }
 
     pub fn clipboard(&mut self, text: &str) -> io::Result<()> {
@@ -142,6 +224,8 @@ impl<W: Write> Full<W> {
         let shown = if self.scroll > 0 { view.saturating_sub(1) } else { view };
         let end = self.rows.len() - self.scroll;
         let start = end.saturating_sub(shown);
+        (self.top, self.shown) = (start, end - start);
+        let selected = self.selection.map(Selection::ordered);
         let pad = if width > 2 * self.pad + 10 { self.pad } else { 0 };
         let inner = width - 2 * pad;
         let below = (self.scroll > 0 && view > 0).then(|| Line::from(Span::styled(format!("↓ {} more below · PgDn", self.scroll), crate::look::dim())));
@@ -152,6 +236,13 @@ impl<W: Write> Full<W> {
             let b = f.buffer_mut();
             for (y, row) in conversation.iter().enumerate() {
                 band(b, row, y as u16, 0, width);
+                if let Some(((r0, c0), (r1, c1))) = selected
+                    && (r0..=r1).contains(&(start + y))
+                {
+                    let from = if start + y == r0 { c0.min(width) } else { 0 };
+                    let to = if start + y == r1 { c1.saturating_add(1).min(width) } else { width };
+                    b.set_style(Rect::new(from, y as u16, to.saturating_sub(from), 1), Style::new().add_modifier(Modifier::REVERSED));
+                }
             }
             if let Some(line) = &below {
                 b.set_line(pad, self.view - 1, line, inner);
@@ -183,6 +274,7 @@ impl<W: Write> Full<W> {
         if self.scroll > 0 {
             self.scroll += rows.len();
         }
+        self.joined.extend((0..rows.len()).map(|i| i > 0));
         self.rows.extend(rows);
         self.lines.push(line);
     }
@@ -196,7 +288,14 @@ impl<W: Write> Full<W> {
 
     fn relayout(&mut self, size: Size) -> io::Result<()> {
         if size.width != self.size.width {
-            self.rows = self.lines.iter().flat_map(|l| wrap(l, size.width)).collect();
+            // Rows are numbered afresh: what was selected is not there.
+            self.selection = None;
+            (self.rows, self.joined) = (Vec::new(), Vec::new());
+            for line in &self.lines {
+                let rows = wrap(line, size.width);
+                self.joined.extend((0..rows.len()).map(|i| i > 0));
+                self.rows.extend(rows);
+            }
         }
         self.size = size;
         self.terminal.backend_mut().set_size(size);
@@ -209,6 +308,8 @@ impl<W: Write> Full<W> {
     pub fn wipe(&mut self) -> io::Result<()> {
         self.lines.clear();
         self.rows.clear();
+        self.joined.clear();
+        self.selection = None;
         self.scroll = 0;
         self.terminal.clear()?;
         self.caret = None;
@@ -278,6 +379,39 @@ impl<W: Write> Full<W> {
     pub fn into_inner(self) -> W {
         self.out
     }
+}
+
+/// A mouse selection over the conversation's rows: (row, column) pressed
+/// on, and dragged to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Selection {
+    from: (usize, u16),
+    to: (usize, u16),
+    held: bool,
+}
+
+impl Selection {
+    /// Its first cell and its last, in reading order.
+    fn ordered(self) -> ((usize, u16), (usize, u16)) {
+        if self.from <= self.to { (self.from, self.to) } else { (self.to, self.from) }
+    }
+}
+
+/// The text of `row`'s cells from column `from` up to `to`, a link's target
+/// left out: a grapheme is in it when it starts there.
+fn cells(row: &Line<'_>, from: u16, to: u16) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    let (from, to) = (usize::from(from), usize::from(to));
+    let mut col = 0usize;
+    let mut text = String::new();
+    for g in row.spans.iter().flat_map(|s| s.content.graphemes(true)) {
+        if (from..to).contains(&col) {
+            text.push_str(&crate::look::untagged(g));
+        }
+        col += g.width().min(2);
+    }
+    text
 }
 
 /// A conversation row at `y`: a band (`Line::style`'s background) across
@@ -439,6 +573,31 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_over_the_conversation_selects_it_and_letting_go_copies_it_whole() {
+        let size = Size { width: 10, height: 8 };
+        let mut t = Full::new(Vec::new(), size).unwrap();
+        // "0123456789abc" wraps to two rows; a link's target never copies.
+        let mut fence = crate::look::Markdown::default();
+        let link = crate::look::markdown_line("[docs](https://krowk.com/d)", &mut fence);
+        t.frame(&[Line::from("one   "), Line::from("0123456789abc"), link], &footer(), (4, 0)).unwrap();
+        assert!(!t.press(3, 6), "the footer is no conversation");
+        assert!(t.press(1, 0));
+        assert!(t.drag(3, 3));
+        t.frame(&[], &footer(), (4, 0)).unwrap();
+        let out = String::from_utf8_lossy(&t.out).into_owned();
+        assert!(out.contains("\x1b[0;7mne"), "shown reversed: {out:?}");
+        assert_eq!(t.release(3, 3).as_deref(), Some("ne\n0123456789abc\ndocs"), "the wrapped line as one, the trailing blanks dropped");
+        assert!(!t.drag(5, 3), "let go: nothing follows the mouse");
+        // A click selects nothing, and takes the selection away.
+        assert!(t.press(2, 1));
+        assert_eq!(t.release(2, 1), None);
+        assert_eq!(t.selection, None);
+        // Dragged upwards, it reads in order all the same.
+        t.press(3, 1);
+        assert_eq!(t.release(1, 0).as_deref(), Some("ne\n0123"));
+    }
+
+    #[test]
     fn a_short_conversation_is_at_the_top_and_the_footer_at_the_bottom() {
         let size = Size { width: 30, height: 8 };
         let mut t = Full::new(Vec::new(), size).unwrap();
@@ -446,7 +605,7 @@ mod tests {
         let s = screen(&t.out, size);
         assert_eq!((s[0].as_str(), s[1].as_str(), s[2].as_str(), s[6].as_str()), ("line 0", "line 1", "", "› hi"));
         let out = String::from_utf8_lossy(&t.out).into_owned();
-        assert!(out.starts_with("\x1b[?2026h\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[>1u"), "{out:?}");
+        assert!(out.starts_with("\x1b[?2026h\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[>1u"), "{out:?}");
         assert!(out.ends_with("\x1b[?2026l"), "one synchronized write: {out:?}");
     }
 

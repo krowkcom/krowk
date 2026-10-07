@@ -2000,7 +2000,11 @@ fn wt6_the_tui_starts_in_a_worktree_of_its_own_and_names_it_when_kept() {
 /// The wheel, as a terminal reporting buttons in SGR's encoding sends it,
 /// typed into the pane as bytes: up (64) or down (65) at column 10, row 5.
 fn wheel(tm: &Tmux, up: bool) {
-    let seq = format!("\x1b[<{};10;5M", if up { 64 } else { 65 });
+    mouse(tm, &format!("\x1b[<{};10;5M", if up { 64 } else { 65 }));
+}
+
+/// A mouse report typed into the pane as bytes.
+fn mouse(tm: &Tmux, seq: &str) {
     let hex: Vec<String> = seq.bytes().map(|b| format!("{b:02x}")).collect();
     let mut args = vec!["send-keys", "-t", "t", "-H"];
     args.extend(hex.iter().map(String::as_str));
@@ -2015,7 +2019,7 @@ fn bottom(screen: &str, n: usize) -> Vec<String> {
 
 /// Fullscreen: the conversation scrolls with PgUp/PgDn and the wheel while
 /// the prompt and the status line stay on the bottom rows; Enter goes back
-/// to the bottom; leaving gives the shell's screen back with every line of
+/// to the bottom; a drag selects and copies; leaving gives the shell's screen back with every line of
 /// the conversation printed on it once.
 #[test]
 fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conversation_scrolls() {
@@ -2049,6 +2053,17 @@ fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conve
     tm.keys(&["again", "Enter"]);
     assert!(tm.wait_gone("more below", Duration::from_secs(5)).is_some(), "sending stayed scrolled up:\n{}", tm.screen());
     assert!(tm.wait_still(|s| s.matches("tokens").count() >= 1 && !s.contains("to interrupt"), Duration::from_secs(60)).is_some(), "{}", tm.screen());
+    // A drag from the start of one line to the eleventh column of the next
+    // (SGR's columns and rows count from 1) copies them, through OSC 52,
+    // which tmux keeps as a paste buffer.
+    tm.tmux(&["set-option", "-g", "set-clipboard", "on"]);
+    let y = tm.screen().lines().position(|l| l.starts_with("line 00110")).expect("line 00110 on screen") + 1;
+    mouse(&tm, &format!("\x1b[<0;1;{y}M"));
+    mouse(&tm, &format!("\x1b[<32;6;{y}M"));
+    mouse(&tm, &format!("\x1b[<32;11;{}M", y + 1));
+    mouse(&tm, &format!("\x1b[<0;11;{}m", y + 1));
+    assert!(tm.wait_for("copied the selection (2 lines)", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    assert_eq!(tm.tmux(&["show-buffer"]), "line 00110: the quick brown fox jumps over the lazy dog again\nline 00111:");
     // The pane kept once krowk is gone, to read what it left.
     tm.tmux(&["set-option", "-t", "t", "remain-on-exit", "on"]);
     tm.keys(&["C-d", "C-d"]);
@@ -2100,10 +2115,10 @@ fn fullscreen_takes_the_alternate_screen_and_gives_everything_back() {
     let st = t.wait(Duration::from_secs(10)).expect("krowk exits on Ctrl-D");
     assert!(st.success(), "{st}");
     let out = t.text();
-    for (seq, n) in [("\x1b[?1049h", 1), ("\x1b[?1049l", 1), ("\x1b[?1000h", 1), ("\x1b[?1000l", 1), ("\x1b[>1u", 2), ("\x1b[<u", 2)] {
+    for (seq, n) in [("\x1b[?1049h", 1), ("\x1b[?1049l", 1), ("\x1b[?1000h", 1), ("\x1b[?1000l", 1), ("\x1b[?1002h", 1), ("\x1b[?1002l", 1), ("\x1b[>1u", 2), ("\x1b[<u", 2)] {
         assert_eq!(out.matches(seq).count(), n, "{seq:?}: {out:?}");
     }
-    assert!(!out.contains("\x1b[?1003h") && !out.contains("\x1b[?1002h"), "no motion reported: {out:?}");
+    assert!(!out.contains("\x1b[?1003h"), "no motion reported without a button down: {out:?}");
     assert!(out.find("\x1b[?1049l").unwrap() < out.rfind("Directory").unwrap(), "the header printed again on the shell's screen: {out:?}");
     assert!(out.ends_with("\x1b[?2004l\x1b[?25h"), "bracketed paste off and the cursor back, last: {out:?}");
 }

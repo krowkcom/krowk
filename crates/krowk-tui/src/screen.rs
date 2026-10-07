@@ -116,6 +116,30 @@ impl<W: Write> Screen<W> {
         }
     }
 
+    /// The left button pressed, dragged and let go over the conversation
+    /// (fullscreen's selection); true when the screen changed. `release`
+    /// gives what was selected, to copy.
+    pub fn press(&mut self, x: u16, y: u16) -> bool {
+        match self {
+            Screen::Full(t) => t.press(x, y),
+            Screen::Inline(_) => false,
+        }
+    }
+
+    pub fn drag(&mut self, x: u16, y: u16) -> bool {
+        match self {
+            Screen::Full(t) => t.drag(x, y),
+            Screen::Inline(_) => false,
+        }
+    }
+
+    pub fn release(&mut self, x: u16, y: u16) -> Option<String> {
+        match self {
+            Screen::Full(t) => t.release(x, y),
+            Screen::Inline(_) => None,
+        }
+    }
+
     /// Back to the bottom of the conversation.
     pub fn follow(&mut self) {
         if let Screen::Full(t) = self {

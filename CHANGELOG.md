@@ -16,11 +16,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
   the bottom rows while you scroll the conversation with the mouse wheel or
   PgUp/PgDn, so you can read back without losing the prompt. Sending a
   prompt jumps back to the bottom, and a resize rewraps the conversation.
-  When you leave, the conversation is printed into your normal scrollback
-  as before. Because krowk now reads the mouse wheel, select text with
-  Shift-drag (Option-drag in iTerm2). To keep the old inline mode, which
-  draws at the bottom of the normal screen and streams into scrollback, set
-  `"tui": {"screen": "inline"}` in `~/.krowk/config.json`.
+  Dragging over the conversation selects it and copies it when you let go,
+  a wrapped line as one line. When you leave, the conversation is printed
+  into your normal scrollback as before. Inside Zellij krowk stays inline.
+  To keep the old inline mode everywhere, which draws at the bottom of the
+  normal screen and streams into scrollback, set
+  `"tui": {"screen": "inline"}` in `~/.krowk/config.json` (`"fullscreen"`
+  forces fullscreen, and `"auto"` is the default).
+
+### Fixed
+
+- **"copied … (N lines)" shows as soon as you copy.** After Ctrl-Y picked
+  something to copy, the confirmation only appeared after the next key.
 
 ## [0.13.0] - 2026-10-07
 

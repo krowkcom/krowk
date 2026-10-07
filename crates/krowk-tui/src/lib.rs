@@ -303,7 +303,7 @@ async fn session(opts: Options) -> Outcome {
     let _ = stdout.write_all(term::KEYS_PUSH);
     let (w, h) = crossterm::terminal::size().unwrap_or((80, 24));
     let size = Size { width: w.max(1), height: h.max(1) };
-    let fullscreen = opts.settings.screen == settings::Screen::Fullscreen;
+    let fullscreen = opts.settings.screen.fullscreen(&|k| std::env::var(k).unwrap_or_default());
     let top = open_top(&mut stdout, size, fullscreen);
 
     let sessions_dir = opts.host.sessions_dir.clone();
@@ -1228,6 +1228,21 @@ impl<'h> Ui<'h> {
         {
             self.resize(app, term, w, h)?;
         }
+        // Before the view: the flash it leaves is in this frame, not the
+        // next one, which an idle TUI may not draw for a while.
+        if let Some((what, text)) = app.copy.take() {
+            // As written, tabs and all, but no escape or bidi control
+            // reaches the place it is pasted.
+            // The joiner that makes one emoji of several is kept too.
+            let text: String = text.chars().filter(|&c| matches!(c, '\n' | '\t' | '\u{200D}') || (!c.is_control() && !card::is_bidi(c))).collect();
+            app.flash = Some(if text.len() > clipboard::MAX {
+                format!("{what} is too long to copy ({} KB)", text.len() / 1024)
+            } else {
+                term.clipboard(&text)?;
+                clipboard::system(&text);
+                format!("copied {what} ({} lines)", text.lines().count())
+            });
+        }
         // Scrollback's lines first: what they let go of (held tool blocks)
         // is then not in the live region too.
         let lines = app.take_pending();
@@ -1249,19 +1264,6 @@ impl<'h> Ui<'h> {
         }
         if std::mem::take(&mut app.wipe) {
             term.wipe()?;
-        }
-        if let Some((what, text)) = app.copy.take() {
-            // As written, tabs and all, but no escape or bidi control
-            // reaches the place it is pasted.
-            // The joiner that makes one emoji of several is kept too.
-            let text: String = text.chars().filter(|&c| matches!(c, '\n' | '\t' | '\u{200D}') || (!c.is_control() && !card::is_bidi(c))).collect();
-            app.flash = Some(if text.len() > clipboard::MAX {
-                format!("{what} is too long to copy ({} KB)", text.len() / 1024)
-            } else {
-                term.clipboard(&text)?;
-                clipboard::system(&text);
-                format!("copied {what} ({} lines)", text.lines().count())
-            });
         }
         term.steady(app.running())?;
         term.frame(&lines, &rows, caret)
@@ -1641,17 +1643,7 @@ impl<'h> Ui<'h> {
                 term.scroll(if k.code == KeyCode::PageUp { page } else { -page });
                 app.touch();
             }
-            Event::Mouse(m) => {
-                use crossterm::event::MouseEventKind;
-                let by = match m.kind {
-                    MouseEventKind::ScrollUp => full::WHEEL,
-                    MouseEventKind::ScrollDown => -full::WHEEL,
-                    _ => 0,
-                };
-                if by != 0 && term.scroll(by) {
-                    app.touch();
-                }
-            }
+            Event::Mouse(m) => self.on_mouse(app, term, m),
             Event::Key(k) if k.kind != KeyEventKind::Release => {
                 // Enter sends, or answers: either way, back to what is new.
                 if k.code == KeyCode::Enter {
@@ -1699,6 +1691,28 @@ impl<'h> Ui<'h> {
             _ => {}
         }
         Ok(false)
+    }
+
+    /// Fullscreen's mouse: the wheel scrolls the conversation, a drag over it
+    /// selects, and letting go copies what was selected.
+    fn on_mouse<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, m: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let changed = match m.kind {
+            MouseEventKind::ScrollUp => term.scroll(full::WHEEL),
+            MouseEventKind::ScrollDown => term.scroll(-full::WHEEL),
+            MouseEventKind::Down(MouseButton::Left) => term.press(m.column, m.row),
+            MouseEventKind::Drag(MouseButton::Left) => term.drag(m.column, m.row),
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(text) = term.release(m.column, m.row) {
+                    app.copy = Some(("the selection".into(), text));
+                }
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            app.touch();
+        }
     }
 
     /// The terminal changed size: where the cursor is now is asked, with
