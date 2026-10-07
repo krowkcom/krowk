@@ -149,19 +149,16 @@ impl<W: Write> Full<W> {
         true
     }
 
-    /// Dragged to (`x`, `y`): the selection follows, and the conversation
-    /// scrolls under it at the top or bottom row. True when it moved.
+    /// Dragged to (`x`, `y`): the selection follows, held to the
+    /// conversation's rows. Nothing scrolls by itself — a drag along the
+    /// top row would scroll at every move — but the wheel turned while the
+    /// button is down does, and the selection goes on from where it began.
+    /// True when it moved.
     pub fn drag(&mut self, x: u16, y: u16) -> bool {
         if !self.selection.is_some_and(|s| s.held) || self.shown == 0 {
             return false;
         }
-        let last = self.shown as u16 - 1;
-        if y == 0 {
-            self.scroll(1);
-        } else if y >= last {
-            self.scroll(-1);
-        }
-        let row = self.top + usize::from(y.min(last));
+        let row = self.top + usize::from(y).min(self.shown - 1);
         if let Some(s) = self.selection.as_mut() {
             s.to = (row, x);
         }
@@ -629,17 +626,25 @@ mod tests {
     }
 
     #[test]
-    fn a_drag_held_at_the_top_row_selects_what_scrolls_under_it() {
+    fn a_drag_scrolls_nothing_and_the_wheel_under_it_selects_further() {
         let size = Size { width: 30, height: 8 };
         let mut t = Full::new(Vec::new(), size).unwrap();
         t.frame(&lines(20), &footer(), (4, 0)).unwrap();
-        // Rows 14 to 19 on screen; pressed on "line 16", held at the top
-        // for three drags before a frame is drawn.
+        // Rows 14 to 19 on screen; pressed on "line 16", dragged along the
+        // top row: nothing scrolls.
         assert!(t.press(0, 2));
-        for _ in 0..3 {
-            t.drag(0, 0);
+        for x in 0..6 {
+            t.drag(x, 0);
         }
-        assert_eq!(t.release(0, 0).as_deref(), Some("line 11\nline 12\nline 13\nline 14\nline 15\nl"));
+        assert_eq!(t.scroll, 0);
+        // The wheel turned with the button down, before any frame: the
+        // selection goes on up from where the mouse is.
+        t.scroll(3);
+        assert_eq!(t.release(0, 0).as_deref(), Some("line 12\nline 13\nline 14\nline 15\nl"));
+        // Past the conversation, into the footer: held to its last row.
+        t.frame(&[], &footer(), (4, 0)).unwrap();
+        assert!(t.press(0, 0));
+        assert_eq!(t.release(2, 7).as_deref().map(|s| s.lines().last().unwrap().to_string()), Some("lin".into()));
     }
 
     #[test]
