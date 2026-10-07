@@ -9,6 +9,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-07
+
 ### Added
 
 - **A subagent can work in a git worktree of its own.** Give the
@@ -1633,7 +1635,10 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/krowkcom/krowk/compare/v0.12.1...v0.13.0
+[0.12.1]: https://github.com/krowkcom/krowk/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/krowkcom/krowk/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/krowkcom/krowk/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/krowkcom/krowk/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/krowkcom/krowk/compare/v0.10.0...v0.11.0
