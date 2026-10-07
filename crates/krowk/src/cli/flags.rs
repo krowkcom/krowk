@@ -60,6 +60,10 @@ pub struct Flags {
     /// `--resume` with no value: pick the session from a list.
     #[cfg(feature = "harness")]
     pub resume_pick: bool,
+    /// `--worktree` anywhere but `krowk sessions`, whose `--worktree <path>`
+    /// is `worktree`: start the session in a worktree of its own (WT6).
+    #[cfg(feature = "harness")]
+    pub own_worktree: bool,
     #[cfg(feature = "harness")]
     pub permission_mode: String,
     /// `--sandbox`: the OS sandbox profile a `-p` run's tools run in, or `off`.
@@ -81,6 +85,9 @@ pub struct Flags {
     /// written to (0600) instead of the screen.
     #[cfg(feature = "harness")]
     pub save: String,
+    /// `worktrees apply`: the checkout a worktree's changes go to.
+    #[cfg(feature = "harness")]
+    pub to: String,
     /// `sync init`: replace a device list the person already has.
     #[cfg(feature = "harness")]
     pub start_over: bool,
@@ -164,7 +171,11 @@ pub fn parse(args: &[String]) -> (Flags, Vec<String>, Result<(), String>) {
             let Some(spec) = lookup(&known, name) else {
                 return Err(unknown_flag(arg, name, &positionals));
             };
-            let value = if spec.kind == catalog::BOOL {
+            // `--worktree` is two flags: after `sessions` it takes the path
+            // the listing is filtered by, and anywhere else it is the switch
+            // that starts a session in a worktree of its own.
+            let filter = spec.name == "worktree" && positionals.first().is_some_and(|p| p == "sessions");
+            let value = if spec.kind == catalog::BOOL && !filter {
                 inline.unwrap_or_else(|| "true".into())
             } else if let Some(v) = inline {
                 v
@@ -183,6 +194,12 @@ pub fn parse(args: &[String]) -> (Flags, Vec<String>, Result<(), String>) {
                 }
                 return Err(format!("--{name} needs a value"));
             };
+            #[cfg(feature = "harness")]
+            if spec.name == "worktree" && !filter {
+                f.own_worktree = parse_bool(name, &value)?;
+                f.given.insert(spec.name.to_string());
+                continue;
+            }
             f.set(spec, &value)?;
             f.given.insert(spec.name.to_string());
         }
@@ -299,6 +316,8 @@ impl Flags {
             "name" => text(&mut self.name),
             #[cfg(feature = "harness")]
             "save" => text(&mut self.save),
+            #[cfg(feature = "harness")]
+            "to" => text(&mut self.to),
             #[cfg(feature = "harness")]
             "api-key-env" => text(&mut self.api_key_env),
             #[cfg(feature = "harness")]
@@ -419,6 +438,23 @@ mod tests {
     fn limits_read_the_way_go_reads_an_int() {
         for (v, want) in [("10", Some(10)), ("-3", Some(-3)), ("0x10", Some(16)), ("010", Some(8)), ("0o17", Some(15)), ("0b101", Some(5)), ("0x_1_0", Some(16)), ("1_0", Some(10)), ("1__0", None), ("10_", None), ("_1", None), ("", None), ("x", None), ("0x", None)] {
             assert_eq!(parse_int(v), want, "{v}");
+        }
+    }
+
+    /// `--worktree` takes a path after `sessions`, and is a switch anywhere
+    /// else, so `-p --worktree` never swallows the prompt.
+    #[test]
+    fn worktree_filters_sessions_and_is_a_switch_elsewhere() {
+        let (f, pos, ok) = run("sessions --worktree /src/app --limit 3");
+        assert!(ok.is_ok());
+        assert_eq!((f.worktree.as_str(), pos), ("/src/app", vec!["sessions".to_string()]));
+        #[cfg(feature = "harness")]
+        {
+            let (f, pos, ok) = run("-p --worktree fix the build");
+            assert!(ok.is_ok() && f.own_worktree && f.worktree.is_empty());
+            assert_eq!(pos, ["fix", "the", "build"]);
+            let (f, _, ok) = run("--worktree=false");
+            assert!(ok.is_ok() && !f.own_worktree && f.given.contains("worktree"));
         }
     }
 

@@ -24,7 +24,8 @@
 //!   `todo_write` and the stale-list reminder.
 //! - `subagent` — the `subagent` tool: child sessions with their own
 //!   context, model and tools, fanned out in parallel; `agents` — the agent
-//!   definitions they run, krowk's and Claude Code's.
+//!   definitions they run, krowk's and Claude Code's; `worktree` — the git
+//!   worktree an agent can run in, made, readied and removed.
 //! - `budget` — what a session may spend, checked before every model call.
 //! - `paste_guard` — refuses a `gh` post whose body carries a bare krowk
 //!   card link, on every backend and in every mode.
@@ -109,3 +110,4 @@ pub mod trust;
 // `krowk sessions` runs.
 #[cfg(unix)]
 pub mod vintage;
+pub mod worktree;

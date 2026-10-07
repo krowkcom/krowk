@@ -11,6 +11,189 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A subagent can work in a git worktree of its own.** Give the
+  `subagent` tool `isolation: "worktree"`, or put `isolation: worktree` in
+  an agent definition's frontmatter as in Claude Code's agent files (the
+  call's value wins), and the subagent runs in a new worktree of your
+  repository, on a branch `krowk/<8 hex>`, under
+  `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`).
+  Subagents started together no longer overwrite each other's files. The
+  worktree starts from your files as they are, uncommitted changes
+  included: modified, new and deleted files, and what you staged (ignored
+  files only if you force-added them, nested repositories never), are put
+  in one commit, `krowk: working state for <hex>`, on top of your `HEAD`, and
+  the branch starts there; with nothing uncommitted it starts at `HEAD`.
+  Your index, `HEAD` and files are not touched. When
+  it finishes having changed nothing, the worktree and its branch are
+  removed. When it changed something, its changes are applied to your
+  working tree (see below). Outside a git repository the call fails
+  with `isolation: worktree needs a git repository`. Without the field, or
+  with `"none"`, a subagent runs in your directory as before. Your
+  repository's git hooks do not run when the worktree is made.
+
+- **A subagent's work in its worktree comes back to your working tree.**
+  When a subagent with `isolation: "worktree"` finishes having changed
+  something, krowk applies its commits and uncommitted changes, new,
+  deleted and binary files included, to the working tree the parent
+  agent works in, as uncommitted changes: your index and `HEAD` are not
+  touched. The worktree and its branch are then removed, its final state
+  kept as `refs/krowk/snapshots/<hex>` for 30 days, and the summary the
+  parent gets ends with `Changes applied to your working tree: <files>`.
+  Subagents finishing at once apply one after another. When a file
+  doesn't apply cleanly (you, or a sibling, changed the same lines),
+  nothing of it is applied, the worktree and branch are kept, and the
+  summary ends with `Changes not applied (conflicts in <files>).
+  Worktree: <path>, branch krowk/<hex>`. A subagent that changed a
+  submodule is kept the same way, as krowk doesn't apply submodule
+  changes. So is one that changed files inside a `.git`, `.claude`,
+  `.codex` or `.krowk` directory, which the file tools only change with
+  your say: its summary ends with `Changes not applied (they touch
+  protected files: <files>)`, the worktree and branch, and the
+  `krowk worktrees apply <hex>` you run to apply them.
+  `krowk worktrees apply <hex|path> [--to <dir>]` does the same for any
+  kept worktree, protected files included, into your repository's main
+  checkout by default: it is how you bring a `--worktree` session's work
+  home. It refuses (exit 4) while that session is still running, or when
+  a file conflicts, and refuses (exit 1) a `--to` that is a checkout of
+  another repository.
+
+- **A subagent's worktree has your submodules checked out.** Before the
+  subagent starts, krowk initialises every submodule of its worktree,
+  submodules inside submodules too, at the commits the worktree records.
+  One you have initialised in your main checkout is copied from there,
+  with no download; its `origin` stays its own URL. One you haven't is
+  cloned from its URL, with no terminal to prompt on and a 2-minute limit.
+  A submodule that can't be initialised stays empty, and the subagent's
+  first prompt says which and what git said. URLs from `.gitmodules` that
+  would run a command (`ext::`) or copy a repository from a local path are
+  refused. Your repository's config is not changed, so a submodule you
+  deinitialised stays that way in your checkout. The agent can edit files
+  in a submodule but not commit in it. An edit or a new file in any
+  submodule, at any depth, keeps the worktree; an unchanged one is removed
+  with its submodules' git data.
+
+- **A subagent's worktree starts with your build output.** On a file
+  system that can clone files without copying their blocks (btrfs, XFS
+  with reflink, APFS on macOS), krowk clones your main checkout's `target`
+  and `node_modules` into a new worktree before the subagent starts, so its
+  first `cargo build` finds nothing to compile and the clone takes almost
+  no disk. `target` is skipped while a build is running in it, and
+  `node_modules` unless the worktree's lockfile (`package-lock.json`,
+  `pnpm-lock.yaml`, `yarn.lock`, `bun.lock` or `bun.lockb`) is the same as
+  your checkout's. Anywhere else, and on Windows, nothing is copied. Choose
+  the directories with `worktrees.seed` in `config.json`, for example
+  `{"worktrees": {"seed": ["target", ".venv"]}}`; `[]` turns it off.
+  What was skipped and why is in `seed.log`, beside the repository's
+  worktrees.
+
+- **Worktrees appear almost instantly on btrfs.** When krowk's worktrees
+  directory is on btrfs, on the same file system as your repository, and
+  the `btrfs` program is installed, a new worktree for a subagent or a
+  `krowk --worktree` session is a snapshot of a copy of your source tree
+  that krowk keeps up to date, with your build output already in it:
+  about a tenth of a second whatever the repository's size, and its first
+  `cargo build` compiles only what differs from your last build. Anywhere
+  else, or if a snapshot fails, the worktree is checked out as before.
+
+- **A subagent's worktree gets the ignored files you list in
+  `.worktreeinclude`.** As in Claude Code, put a `.worktreeinclude` at the
+  top of your main checkout, in `.gitignore` syntax (`.env*`,
+  `config/local.yml`), and every file it matches that git ignores is
+  copied into a new worktree before the subagent starts, with its mode.
+  They are copies, never links, so the agent can't change your real
+  `.env`; on a file system that clones files they cost no disk. Tracked
+  files are never copied over the worktree's, nothing is read through a
+  symlink or written over a file the worktree has, and the
+  `worktrees.seed` directories are left to seeding. A file that can't be
+  copied is skipped and noted in `seed.log`. Without a
+  `.worktreeinclude`, nothing is copied.
+
+- **A subagent's worktree can run your project's setup command first.**
+  Set `worktrees.setup` to a shell command (`npm ci`, a code generator,
+  a database script) and krowk runs it in each new worktree before the
+  subagent starts, so the agent doesn't burn turns finding out the
+  project isn't installed. Put it in `~/.krowk/config.json` for yourself,
+  or in a repository's `.krowk/config.json`, where it runs only once you
+  have trusted the repository (the same question that turns its hooks
+  on); a trusted repository's command is the one that runs. It runs in
+  the sandbox: network on, the worktree writable, your main checkout and
+  your home not, so a cloned repository's install can't touch anything
+  else. On a machine with no sandbox it runs only for a trusted
+  repository. It gets `KROWK_PROJECT_ROOT` (your main checkout),
+  `KROWK_WORKTREE_PATH` and `KROWK_PORT_BASE`: each live worktree holds
+  its own ten ports from 20000 up (20000, 20010, …), and the subagent's
+  own commands see `KROWK_PORT_BASE` too, so dev servers in two worktrees
+  don't collide. A build or install command waits for a build slot as the
+  agent's would. Its output is in `krowk-setup.log` in the worktree's git
+  directory. When it fails, or runs past `worktrees.setupTimeout` (600
+  seconds by default), the subagent starts anyway and its first prompt
+  says so, with the exit code or "timed out" and the last 50 lines of
+  output.
+
+- **`krowk worktrees` lists, removes and prunes the worktrees krowk
+  kept.** `krowk worktrees` shows every one, across repositories: its
+  path, repository, branch, base commit, commits ahead of the base,
+  whether it has uncommitted changes, the session that made it, its age,
+  and whether that session is still running (`--json` for scripts).
+  `krowk worktrees remove <hex|path>` removes one, and keeps its branch.
+  It refuses while a running session uses it, and refuses one with
+  uncommitted changes or commits ahead of its base unless you add
+  `--force`. A forced removal first saves the uncommitted changes, new
+  files included, as `refs/krowk/snapshots/<hex>`, and a `HEAD` its
+  branch doesn't hold (the agent detached it, or switched branch, and
+  committed) as `refs/krowk/snapshots/<hex>-head`, and prints the commands
+  that bring the worktree back. Ignored files, such as build output and
+  the copies `.worktreeinclude` made, don't count as changes and are
+  deleted with it. `krowk worktrees prune` clears git's record of krowk's
+  worktrees whose directory you deleted (only krowk's: your own
+  worktrees' records are left alone, even when their drive isn't
+  mounted), deletes worktree directories git no longer knows when their
+  files match their branch (one with changes is left in place and
+  named), and deletes snapshots older than 30 days. A repository that has
+  moved, or whose drive isn't mounted, is skipped and named. Prune also
+  runs by itself in the background, at most once a day, when a session
+  starts. Worktrees made by an earlier krowk are
+  listed too, with their base shown as unknown, so removing one of them
+  needs `--force`.
+
+- **`krowk --worktree` and `krowk -p --worktree` start a session in a git
+  worktree of its own.** Sessions you start in separate terminals no
+  longer share one checkout. krowk makes the worktree from the repository
+  you are in, your uncommitted changes included, on a branch
+  `krowk/<8 hex>`, readies it as it does a subagent's (submodules, build
+  output, `.worktreeinclude`, `worktrees.setup`), and starts the session
+  there; the TUI's header shows the branch, and the agent's commands get
+  `KROWK_PORT_BASE`. When the session ends having changed nothing, the
+  worktree and its branch are removed. When it changed something, both
+  are kept and krowk says `Worktree kept: <path> (branch krowk/<hex>)` on
+  stderr, with the `krowk worktrees apply <hex>` that brings its changes
+  into your checkout; `-p --output-format json` or `stream-json` names it in the
+  result instead, as `worktree: {path, branch, commits,
+  uncommittedChanges}`. Resuming such a session runs it in its worktree
+  again; if that directory is gone, krowk says so (exit 2) and points to
+  `krowk worktrees`. Outside a git repository `--worktree` is refused
+  (exit 1). It can't be combined with `--resume`, or with `-p --daemon`:
+  the session runs in krowk's own process, which holds the worktree and
+  finishes it on the way out, and the TUI does the same rather than using
+  the host daemon. A worktree is trusted as the repository it was made
+  from. `krowk sessions --worktree <path>` filters the listing as before.
+
+- **An agent can commit inside a worktree krowk made for it.** When a
+  sandboxed session runs in a worktree under
+  `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`) on
+  a `krowk/…` branch, `git add` and `git commit` now work there, and the
+  commit shows up in your main checkout under your own name and email:
+  krowk reads `user.name` and `user.email` for that worktree and passes
+  them in, without exposing your `.gitconfig`. The agent can move only
+  its own `krowk/…` branches. Your other branches, tags, replace refs and
+  `packed-refs` stay read-only, and so do the repository's config, hooks
+  and `HEAD`, and your other worktrees. So `git tag` fails in there. A
+  symlink the agent leaves among those branches, their reflogs or the
+  worktree's git files is removed after the command, and the command
+  fails and says so.
+  Every other repository, your own linked worktrees included, keeps
+  `.git` read-only as before.
+
 - **Builds and test runs take turns across every krowk on the machine.**
   Agents spend most of their time waiting on the model, so one machine
   can run many of them, until several start `cargo test` or
@@ -34,6 +217,37 @@ the versions are the `v*` tags a release is cut from. Entries land under
   yourself, or raise `builds.slots`, to change it. Your own value is
   passed on in the sandbox too. This applies to krowk's own agent;
   Claude Code and Codex run their own shells.
+
+- **Agents take turns across every krowk on the machine, and worktrees
+  wait for disk.** `subagents.maxParallel` limits one turn, so ten
+  sessions each starting four subagents started forty at once. Now every
+  subagent, and every `--worktree` session, holds one of a fixed number of
+  agent slots that every krowk on the machine shares, for as long as it
+  runs. When all are held, a subagent shows
+  `waiting for an agent slot (N in use)` and starts when one frees up;
+  interrupting the turn stops the wait. A `--worktree` session prints the
+  same line before it starts, and Ctrl-C stops it. A krowk that is killed
+  or crashes frees its slot at once. Sessions without `--worktree` never
+  wait, and a `--worktree` session's subagents run on its slot rather
+  than taking more, so a session holding the last slot never waits on
+  its own subagents. The default is twice your cores or twice your memory in GiB,
+  whichever is fewer, between 4 and 64; set
+  `"subagents": {"maxHost": 8}` in `~/.krowk/config.json` to change it (0 is
+  refused). Before making a worktree, krowk also checks that its disk will
+  have 4 GiB free beyond twice the size the worktree is expected to be
+  (the last one krowk made of that repository, else your tracked files).
+  When it would not, nothing is made, and the session or subagent fails
+  with `not enough disk for a worktree: <free> free, <needed> needed`,
+  pointing at `krowk worktrees prune` and `krowk worktrees remove`.
+- **The README covers worktrees, and `scripts/bench-worktrees` measures
+  them.** The README's new Worktrees section sums up `isolation`, applying
+  back, `--worktree`, `.worktreeinclude`, `worktrees.setup`, `builds.slots`,
+  `subagents.maxHost` and `krowk worktrees`. In a checkout of krowk,
+  `scripts/bench-worktrees` makes 20 worktrees of a scratch clone at once,
+  runs `cargo check` in all of them behind the build slots, applies three
+  subagents' changes back (one a conflict), removes everything and prints
+  creation p50/p95, check time, peak memory, slot wait and leftovers. It
+  calls no model.
 - **A host says why a viewer stays on the relay.** When a viewer offered
   the direct path never reaches it — a firewall on the host, or a tailnet
   access policy that doesn't allow the port, drops the connection before
@@ -166,6 +380,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **krowk's own git calls now run with repository hooks, fsmonitor and
+  commit signing turned off.** The git krowk runs itself — the branch on
+  the status line, the commit a synced session is at, the files a search
+  lists — looks for hooks in an empty directory in krowk's home
+  (`~/.krowk/no-hooks`), runs no `core.fsmonitor` command and signs
+  nothing. Filters such as git-lfs still run, as a checkout needs them.
+  Git the agent runs through its bash tool is unchanged.
 - **Uploads are now `krowk artifacts`, matching the API and the JSON.**
   `krowk artifacts create | list | show | attach | delete | claim` is the
   full set, named as `/v1/artifacts` and `data.artifacts` already were.

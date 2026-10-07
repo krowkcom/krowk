@@ -71,6 +71,9 @@ pub struct InstancesConfig {
     /// How subagents run: how many at once, and on which model.
     #[serde(default, skip_serializing_if = "SubagentsConfig::is_empty")]
     pub subagents: SubagentsConfig,
+    /// How krowk readies a worktree it makes for an agent.
+    #[serde(default, skip_serializing_if = "WorktreesConfig::is_empty")]
+    pub worktrees: WorktreesConfig,
     /// How many build and test commands run at once, machine-wide.
     #[serde(default, skip_serializing_if = "crate::builds::BuildsConfig::is_empty")]
     pub builds: crate::builds::BuildsConfig,
@@ -110,6 +113,12 @@ pub struct SubagentsConfig {
     /// Subagents one turn runs at once; 4 when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_parallel: Option<usize>,
+    /// Agents every krowk on the machine runs at once — subagents and
+    /// `--worktree` sessions, each holding one of the `agent-slots` for
+    /// its life; twice the cores or twice the GiB of memory, whichever is
+    /// fewer, kept to 4 … 64, when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_host: Option<usize>,
     /// The model a subagent runs on when its definition names none:
     /// `<instance>/<model>`, a model id, `inherit` or an alias (`haiku`);
     /// the catalog's cheaper tier below the parent's model when absent.
@@ -119,12 +128,75 @@ pub struct SubagentsConfig {
 
 impl SubagentsConfig {
     pub fn is_empty(&self) -> bool {
-        self.max_parallel.is_none() && self.model.is_none()
+        self.max_parallel.is_none() && self.max_host.is_none() && self.model.is_none()
     }
 
     /// Subagents at once: the config's, at least one.
     pub fn max_parallel(&self) -> usize {
         self.max_parallel.unwrap_or(crate::subagent::MAX_PARALLEL).max(1)
+    }
+
+    /// Agents at once on the machine: the config's, else
+    /// `crate::subagent::max_host`'s for this one.
+    pub fn max_host(&self) -> usize {
+        self.max_host.unwrap_or_else(crate::subagent::max_host).max(1)
+    }
+}
+
+/// `worktrees` in config.json: how a worktree krowk makes for an agent is
+/// readied before the agent starts (`crate::worktree::STEPS`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorktreesConfig {
+    /// The main checkout's top-level directories copied into a new
+    /// worktree as copy-on-write clones, where the file system makes one
+    /// nearly free: build output a first build would otherwise redo.
+    /// `["target", "node_modules"]` when absent; `[]` copies none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<Vec<String>>,
+    /// A shell command run in a new worktree before its agent starts —
+    /// install dependencies, generate code — inside the sandbox's
+    /// workspace profile with only the worktree writable
+    /// (`crate::worktree::setup`). A repository's own, in its
+    /// `.krowk/config.json`, runs only once the repository is trusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<String>,
+    /// Seconds `setup` may take before it is stopped; 600 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_timeout: Option<u64>,
+}
+
+impl WorktreesConfig {
+    pub fn is_empty(&self) -> bool {
+        self.seed.is_none() && self.setup.is_none() && self.setup_timeout.is_none()
+    }
+
+    /// The setup command, when there is one that is not blank.
+    pub fn setup(&self) -> Option<&str> {
+        self.setup.as_deref().filter(|s| !s.trim().is_empty())
+    }
+
+    /// How long `setup` may take: the config's, else 600 s.
+    pub fn setup_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.setup_timeout.unwrap_or(crate::worktree::setup::DEFAULT_TIMEOUT))
+    }
+
+    /// The config read from `v`, a config file's `worktrees`, checked:
+    /// what is wrong is said with `"worktrees": ` in front.
+    pub fn parse(v: &serde_json::Value) -> Result<WorktreesConfig, String> {
+        let cfg: WorktreesConfig = serde_json::from_value(v.clone()).map_err(|e| format!("\"worktrees\": {e}"))?;
+        if let Some(bad) = cfg.seed.iter().flatten().find(|n| !crate::worktree::seed::top_level_name(n)) {
+            return Err(format!("\"worktrees\": seed names directories at the repository's top, and {bad:?} is not one"));
+        }
+        if cfg.setup_timeout == Some(0) {
+            return Err("\"worktrees\": setupTimeout must be at least 1 (seconds)".into());
+        }
+        Ok(cfg)
+    }
+
+    /// The directories seeded: the config's, else `DEFAULT_SEED`.
+    pub fn seed(&self) -> Vec<String> {
+        self.seed.clone().unwrap_or_else(|| crate::worktree::seed::DEFAULT_SEED.iter().map(|s| s.to_string()).collect())
     }
 }
 
@@ -521,9 +593,13 @@ pub struct Registry {
     /// Config's `toolset`, already known to name a preset.
     pub toolset: Option<String>,
     pub subagents: SubagentsConfig,
+    pub worktrees: WorktreesConfig,
     /// The build slots heavy commands take, in the runtime directory the
     /// environment names.
     pub builds: crate::builds::Builds,
+    /// The machine's agent slots (`subagents.maxHost`) every subagent and
+    /// `--worktree` session holds one of; none, and nothing waits.
+    pub agents: Option<crate::slots::Pool>,
     pub rollover: Rollover,
     /// Config's `rolloverOrder`, as written.
     pub rollover_order: Vec<String>,
@@ -550,7 +626,9 @@ impl Registry {
             default_model: cfg.default_model.clone(),
             toolset: cfg.toolset.clone(),
             subagents: cfg.subagents.clone(),
+            worktrees: cfg.worktrees.clone(),
             builds: crate::builds::Builds::resolve(&cfg.builds, env),
+            agents: Some(crate::slots::Pool::new(crate::slots::runtime_dir(env), crate::subagent::AGENT_SLOTS, cfg.subagents.max_host())),
             rollover: cfg.rollover.unwrap_or_default(),
             rollover_order: cfg.rollover_order.clone(),
             renamed: cfg.renamed.clone(),
@@ -1056,6 +1134,12 @@ pub fn from_config_json(raw: &serde_json::Value) -> Result<InstancesConfig, Stri
         if cfg.subagents.max_parallel == Some(0) {
             return Err("\"subagents\": maxParallel must be at least 1".into());
         }
+        if cfg.subagents.max_host == Some(0) {
+            return Err("\"subagents\": maxHost must be at least 1".into());
+        }
+    }
+    if let Some(v) = raw.get("worktrees") {
+        cfg.worktrees = WorktreesConfig::parse(v)?;
     }
     if let Some(v) = raw.get("builds") {
         cfg.builds = serde_json::from_value(v.clone()).map_err(|e| format!("\"builds\": {e}"))?;
@@ -1330,7 +1414,39 @@ mod tests {
         assert_eq!((cfg.subagents.max_parallel(), cfg.subagents.model.as_deref()), (2, Some("inherit")));
         assert_eq!(from_config_json(&serde_json::json!({})).unwrap().subagents.max_parallel(), crate::subagent::MAX_PARALLEL);
         assert!(from_config_json(&serde_json::json!({"subagents": {"maxParallel": 0}})).unwrap_err().contains("at least 1"));
+        assert_eq!(from_config_json(&serde_json::json!({"subagents": {"maxHost": 2}})).unwrap().subagents.max_host(), 2);
+        let default = from_config_json(&serde_json::json!({})).unwrap().subagents.max_host();
+        assert!((4..=64).contains(&default), "{default}");
+        let err = from_config_json(&serde_json::json!({"subagents": {"maxHost": 0}})).unwrap_err();
+        assert!(err.contains("maxHost") && err.contains("at least 1"), "{err}");
         assert!(from_config_json(&serde_json::json!({"subagents": {"maxParalel": 2}})).unwrap_err().contains("subagents"), "a typo is named");
+    }
+
+    #[test]
+    fn wt5_worktrees_seed_is_read_and_checked() {
+        assert_eq!(from_config_json(&serde_json::json!({})).unwrap().worktrees.seed(), ["target", "node_modules"]);
+        let cfg = from_config_json(&serde_json::json!({"worktrees": {"seed": ["target", ".venv"]}})).unwrap();
+        assert_eq!(Registry::resolve(&cfg, &env).worktrees.seed(), ["target", ".venv"]);
+        assert_eq!(from_config_json(&serde_json::json!({"worktrees": {"seed": []}})).unwrap().worktrees.seed(), Vec::<String>::new());
+        let typo = from_config_json(&serde_json::json!({"worktrees": {"sead": ["target"]}})).unwrap_err();
+        assert!(typo.contains("\"worktrees\"") && typo.contains("sead"), "a typo is named: {typo}");
+        for bad in ["", ".", "..", ".git", "a/b", "../x", "/abs", "a\\b"] {
+            let e = from_config_json(&serde_json::json!({"worktrees": {"seed": [bad]}})).unwrap_err();
+            assert!(e.contains("\"worktrees\"") && e.contains(&format!("{bad:?}")), "{bad:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn wt8_worktrees_setup_is_read_and_its_timeout_checked() {
+        let cfg = from_config_json(&serde_json::json!({"worktrees": {"setup": "npm ci", "setupTimeout": 30}})).unwrap();
+        assert_eq!((cfg.worktrees.setup(), cfg.worktrees.setup_timeout()), (Some("npm ci"), std::time::Duration::from_secs(30)));
+        let none = from_config_json(&serde_json::json!({"worktrees": {"setup": "  "}})).unwrap();
+        assert_eq!((none.worktrees.setup(), none.worktrees.setup_timeout()), (None, std::time::Duration::from_secs(600)), "blank is none, and 600 s by default");
+        let zero = from_config_json(&serde_json::json!({"worktrees": {"setup": "x", "setupTimeout": 0}})).unwrap_err();
+        assert!(zero.contains("\"worktrees\"") && zero.contains("setupTimeout must be at least 1"), "{zero}");
+        let typo = from_config_json(&serde_json::json!({"worktrees": {"setupTimout": 5}})).unwrap_err();
+        assert!(typo.contains("\"worktrees\"") && typo.contains("setupTimout"), "{typo}");
+        assert!(from_config_json(&serde_json::json!({"worktrees": {"setup": 3}})).unwrap_err().contains("\"worktrees\""));
     }
 
     #[test]

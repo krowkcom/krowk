@@ -35,6 +35,7 @@ Account
 
 Other
   providers     Low-level instance config (add, list, rename, remove)
+  worktrees     The git worktrees krowk made for agents, across repositories
   host          The daemon sessions run in, which outlives the terminal
   config        Show or set configuration
   doctor        Check this machine's setup
@@ -43,7 +44,7 @@ Other
 
 Flags
   --model <instance/model>   Which model (e.g. claude/sonnet)
-  --resume [id]              Continue a session
+  --resume · --worktree      Continue a session, or start one in a worktree
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
 
@@ -113,6 +114,10 @@ Other
   providers list    List every instance, and whether it is ready
   providers remove  Remove an instance's definition, and forget its login
   providers rename  Rename an instance; its login and sessions follow
+  worktrees list    Each one: branch, commits ahead, changes, session, age
+  worktrees remove  Remove one, its branch kept; not while its session runs
+  worktrees apply   Bring one's changes into a checkout, uncommitted
+  worktrees prune   Clear what deleted worktrees left, and old snapshots
   host status       Whether the daemon runs: socket, pid, uptime, sessions
   host attach       Follow a session in the daemon, live, as stream-json
   host stop         Stop the daemon, once no turn runs in it
@@ -167,6 +172,10 @@ Agent flags (krowk, krowk -p)
                               --resume, the session moves there
   --resume <string>           With -p: continue this krowk session — the
                               sessionId a result names, or its krowk.db id
+  --worktree                  With -p, and in the TUI: start the session in a
+                              new git worktree of this repository, on a branch
+                              krowk/<hex> — removed at the end if nothing
+                              changed, kept and named if something did
   --permission-mode <string> (default default)
                               With -p and the agent: default, acceptEdits, plan
                               or bypassPermissions, as in Claude Code, or

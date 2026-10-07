@@ -55,7 +55,7 @@ const FLAGS: &[(&str, &str)] = &[
     #[cfg(feature = "harness")]
     ("--model <instance/model>", "Which model (e.g. claude/sonnet)"),
     #[cfg(feature = "harness")]
-    ("--resume [id]", "Continue a session"),
+    ("--resume · --worktree", "Continue a session, or start one in a worktree"),
     ("--json · --jq <expr>", "Output as JSON, or filter it"),
     ("-h, --help · -v, --version", ""),
 ];

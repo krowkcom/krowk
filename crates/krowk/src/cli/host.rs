@@ -87,6 +87,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
             publisher: Some(publisher.clone()),
             permissions: krowk_harness::permissions::Config { approvals: answers, ..permissions.clone() },
             agents: prompt::agents_config(&env),
+            session: Default::default(),
         })
     });
     server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, ..Default::default() }, factory).map_err(|e| fail("host_failed", e))

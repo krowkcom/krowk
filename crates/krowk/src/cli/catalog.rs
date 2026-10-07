@@ -535,6 +535,8 @@ pub fn catalog(version: &str) -> Catalog {
     c.commands.push(sync_command());
     #[cfg(feature = "harness")]
     c.commands.push(devices_command());
+    #[cfg(feature = "harness")]
+    c.commands.push(worktrees_command());
     #[cfg(all(feature = "harness", unix))]
     if let Some(sessions) = c.commands.iter_mut().find(|c| c.name == "sessions") {
         sessions.subcommands.extend(vintage_commands());
@@ -631,6 +633,29 @@ fn devices_command() -> Command {
             cmd("remove", "krowk devices remove NAME", "Take a device off your list and rotate your key"),
         ],
         ..cmd("devices", "", "The machines that sync this workspace's sessions")
+    }
+}
+
+/// `krowk worktrees`: the git worktrees krowk made for agents (worktrees
+/// WT9).
+#[cfg(feature = "harness")]
+fn worktrees_command() -> Command {
+    Command {
+        subcommands: vec![
+            cmd("list", "krowk worktrees list", "Each one: branch, commits ahead, changes, session, age"),
+            Command {
+                args: vec![arg("worktree", "Its 8 hex digits, its branch krowk/<hex>, or its directory", true)],
+                flags: vec![flag("force", BOOL, "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>")],
+                ..cmd("remove", "krowk worktrees remove <hex|path> [--force]", "Remove one, its branch kept; not while its session runs")
+            },
+            Command {
+                args: vec![arg("worktree", "Its 8 hex digits, its branch krowk/<hex>, or its directory", true)],
+                flags: vec![flag("to", STRING, "The checkout its changes go to (default: the repository's main checkout)")],
+                ..cmd("apply", "krowk worktrees apply <hex|path> [--to DIR]", "Bring one's changes into a checkout, uncommitted")
+            },
+            cmd("prune", "krowk worktrees prune", "Clear what deleted worktrees left, and old snapshots"),
+        ],
+        ..cmd("worktrees", "", "The git worktrees krowk made for agents, across repositories")
     }
 }
 
@@ -786,6 +811,11 @@ fn prompt_flags() -> Vec<Flag> {
         with_default(flag("output-format", STRING, "With -p: text (the answer), json (the result event) or stream-json (every event, one per line)"), "text"),
         flag("model", STRING, "With -p: the model, as <instance>/<model> or a model id on the anthropic instance, e.g. claude-opus-5-5, claude:work/sonnet to run Claude Code, or codex:team/gpt-5.5 to run Codex; with --resume, the session moves there"),
         flag("resume", STRING, "With -p: continue this krowk session — the sessionId a result names, or its krowk.db id"),
+        flag(
+            "worktree",
+            BOOL,
+            "With -p, and in the TUI: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did",
+        ),
         with_default(
             flag(
                 "permission-mode",
@@ -940,6 +970,22 @@ checked by both machines, not by the registry, and this one asks you to
 confirm the new machine by name before anything is added. A wrong code ends
 it: run `add` again for a new one. Needs a Pro workspace.",
         #[cfg(feature = "harness")]
+        "worktrees remove" => "\
+Its branch krowk/<hex> is kept. Forced, uncommitted changes are saved as
+refs/krowk/snapshots/<hex>, and a HEAD off that branch as <hex>-head; the
+answer prints the commands that bring it back. Ignored files (build output,
+.worktreeinclude copies) are not changes: they are deleted with it.",
+        #[cfg(feature = "harness")]
+        "worktrees apply" => "\
+Its commits and uncommitted changes land in the checkout's working tree as
+uncommitted changes, new, deleted and binary files too; the checkout's index
+and HEAD are not touched. Applied, the worktree and its branch are removed,
+its final state kept as refs/krowk/snapshots/<hex> for 30 days. When a file
+does not apply cleanly nothing changes, both are kept, and the files are
+named. A worktree that changed submodules is not applied. The checkout must
+be one of the same repository. Files in .git, .claude, .codex and .krowk
+directories, which a subagent's changes leave to you, are applied.",
+        #[cfg(feature = "harness")]
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle
 minutes (host.idleMinutes in config.json, or KROWK_HOST_IDLE seconds).
@@ -964,6 +1010,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
         &[
             #[cfg(feature = "harness")]
             "providers",
+            #[cfg(feature = "harness")]
+            "worktrees",
             #[cfg(all(feature = "harness", unix))]
             "host",
             #[cfg(all(feature = "harness", unix))]

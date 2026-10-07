@@ -101,6 +101,7 @@ impl Sandbox {
             // The sandbox's own home: the person's real settings stay out.
             permissions: krowk_harness::permissions::Config { home: Some(self.root.join("home")), krowk_dir: Some(self.root.join("home/.krowk")), ..Default::default() },
             agents: krowk_harness::subagent::AgentsConfig::none(),
+            session: Default::default(),
         }
     }
 
@@ -1025,4 +1026,229 @@ fn r_sub_1_a_subagents_file_tools_are_fenced_from_krowks_home_as_its_parents_are
     for s in m.seen.lock().unwrap().iter() {
         assert!(!s.body.to_string().contains(KEY), "the key reached a model: {}", s.body);
     }
+}
+
+/// git in the sandbox's repository, through krowk's own git, with none of
+/// this machine's config: what it prints, trimmed.
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let o = krowk_api::git::command(dir).unwrap().args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+/// Every `tool_result` of the parent's log: the call it answers, its
+/// output and whether it is an error.
+fn parent_results(b: &Sandbox, session: &str) -> Vec<(String, String, bool)> {
+    b.log(session)
+        .into_iter()
+        .filter(|e| e["item"]["kind"] == "toolResult")
+        .map(|e| (e["item"]["callId"].as_str().unwrap_or_default().to_string(), e["item"]["output"].as_str().unwrap().to_string(), e["item"]["isError"].as_bool().unwrap()))
+        .collect()
+}
+
+/// The parent starts two subagents in worktrees in one response: one
+/// writes a file, the other changes nothing.
+fn two_in_worktrees(body: &Value, _: usize) -> mock::Reply {
+    if is_child(body) {
+        if answered(body) || task(body).contains("TASK-NOOP") {
+            return mock::Reply::sse(&mock::text_stream("done."));
+        }
+        return mock::Reply::sse(&mock::tool_use("toolu_w", "write", &json!({"path": "NEW.md", "content": "from the child\n"})));
+    }
+    if answered(body) {
+        return mock::Reply::sse(&mock::fixture("turn2_answer.sse"));
+    }
+    mock::Reply::sse(&tool_calls(&[
+        ("toolu_edit", "subagent", json!({"description": "write a file", "prompt": "TASK-EDIT", "isolation": "worktree"})),
+        ("toolu_noop", "subagent", json!({"description": "do nothing", "prompt": "TASK-NOOP", "isolation": "worktree"})),
+    ]))
+}
+
+/// Worktrees WT3, WT13: each child in its own worktree and branch,
+/// recorded as its directory; the one that changed nothing leaves nothing
+/// behind, the one that wrote a file has it applied to the parent's
+/// working tree, uncommitted, its summary naming it, and its worktree and
+/// branch gone too.
+#[test]
+fn wt3_two_subagents_in_worktrees_each_get_their_own_and_a_changed_ones_work_is_applied() {
+    let m = mock::serve(two_in_worktrees);
+    let b = Sandbox::new("worktrees", &m.url);
+    let repo = b.root.join("repo");
+    std::fs::remove_dir_all(repo.join(".git")).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-q", "-m", "one"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let root = b.root.join("worktrees");
+    let cfg = HostConfig { agents: krowk_harness::subagent::AgentsConfig { worktrees: Some(root.clone()), ..krowk_harness::subagent::AgentsConfig::none() }, ..b.host() };
+    let r = run_in_process(&b, cfg, None, "two subagents in worktrees", PermissionMode::AcceptEdits);
+    assert_eq!(r.status, TurnStatus::Completed, "{:?}", r.error);
+    let cwd = |child: &str| b.log(child).iter().find(|e| e["type"] == "session.started").unwrap()["cwd"].as_str().unwrap().to_string();
+    let children = children_of(&b, &r.session_id);
+    assert_eq!(children.len(), 2);
+    let dirs: Vec<String> = children.iter().map(|c| cwd(c)).collect();
+    assert_ne!(dirs[0], dirs[1], "a directory each");
+    for d in &dirs {
+        assert!(std::path::Path::new(d).starts_with(&root), "under the worktrees root: {d}");
+        assert!(!std::path::Path::new(d).exists(), "removed: {d}");
+    }
+    let results = parent_results(&b, &r.session_id);
+    let (edit, noop) = (results.iter().find(|(c, ..)| c == "toolu_edit").unwrap(), results.iter().find(|(c, ..)| c == "toolu_noop").unwrap());
+    assert!(!noop.2 && noop.1 == "done.", "nothing to say of a removed worktree: {noop:?}");
+    assert_eq!(edit.1.lines().last().unwrap(), "Changes applied to your working tree: NEW.md", "{edit:?}");
+    assert_eq!(std::fs::read_to_string(repo.join("NEW.md")).unwrap(), "from the child\n", "in the parent's checkout");
+    assert_eq!((git(&repo, &["rev-parse", "HEAD"]), git(&repo, &["diff", "--cached"])), (head, String::new()), "uncommitted, unstaged");
+    assert_eq!(git(&repo, &["branch", "--list", "krowk/*"]), "", "both branches are gone");
+    assert_eq!(git(&repo, &["worktree", "list", "--porcelain"]).lines().filter(|l| l.starts_with("worktree ")).count(), 1);
+}
+
+/// Worktrees WT3: outside a git repository a worktree is refused by name
+/// and no subagent starts; `"none"` runs in the parent's directory as
+/// before.
+#[test]
+fn wt3_isolation_outside_a_repository_is_refused_and_none_is_todays() {
+    let m = mock::serve(|body: &Value, _: usize| {
+        if is_child(body) {
+            return mock::Reply::sse(&mock::text_stream("done."));
+        }
+        if answered(body) {
+            return mock::Reply::sse(&mock::fixture("turn2_answer.sse"));
+        }
+        mock::Reply::sse(&tool_calls(&[
+            ("toolu_wt", "subagent", json!({"description": "isolated", "prompt": "TASK-W", "isolation": "worktree"})),
+            ("toolu_none", "subagent", json!({"description": "here", "prompt": "TASK-N", "isolation": "none"})),
+        ]))
+    });
+    // The sandbox's `.git` is an empty directory: no repository to git.
+    let b = Sandbox::new("no-repo", &m.url);
+    let root = b.root.join("worktrees");
+    let cfg = HostConfig { agents: krowk_harness::subagent::AgentsConfig { worktrees: Some(root.clone()), ..krowk_harness::subagent::AgentsConfig::none() }, ..b.host() };
+    let r = run_in_process(&b, cfg, None, "try a worktree", PermissionMode::AcceptEdits);
+    let results = parent_results(&b, &r.session_id);
+    let wt = results.iter().find(|(c, ..)| c == "toolu_wt").unwrap();
+    assert_eq!((wt.1.as_str(), wt.2), ("isolation: worktree needs a git repository", true));
+    let none = results.iter().find(|(c, ..)| c == "toolu_none").unwrap();
+    assert_eq!((none.1.as_str(), none.2), ("done.", false));
+    let children = children_of(&b, &r.session_id);
+    assert_eq!(children.len(), 1, "only the one with no worktree started");
+    let cwd = b.log(&children[0]).iter().find(|e| e["type"] == "session.started").unwrap()["cwd"].as_str().unwrap().to_string();
+    assert_eq!(cwd, b.root.join("repo").display().to_string());
+    assert!(!root.exists());
+}
+
+/// Worktrees WT3: a repository's `/`-anchored deny holds in a subagent's
+/// worktree as it does in the checkout, in bypassPermissions too.
+#[test]
+fn wt3_a_repositorys_anchored_deny_holds_inside_the_worktree() {
+    let m = mock::serve(|body: &Value, _: usize| {
+        if is_child(body) {
+            if let Some((_, out, err)) = results(body).into_iter().next() {
+                return mock::Reply::sse(&mock::text_stream(&format!("CHILD-SAW error={err} {}", out.replace('\n', " "))));
+            }
+            return mock::Reply::sse(&mock::tool_use("toolu_w", "write", &json!({"path": "blocked/x.md", "content": "no\n"})));
+        }
+        if answered(body) {
+            return mock::Reply::sse(&mock::fixture("turn2_answer.sse"));
+        }
+        mock::Reply::sse(&tool_calls(&[("toolu_sub", "subagent", json!({"description": "write blocked", "prompt": "TASK-B", "isolation": "worktree"}))]))
+    });
+    let b = Sandbox::new("worktree-deny", &m.url);
+    let repo = b.root.join("repo");
+    std::fs::remove_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join(".claude")).unwrap();
+    std::fs::write(repo.join(".claude/settings.json"), json!({"permissions": {"deny": ["Edit(/blocked/**)"]}}).to_string()).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["add", "README.md", ".claude/settings.json"]);
+    git(&repo, &["commit", "-q", "-m", "one"]);
+    let cfg = HostConfig { agents: krowk_harness::subagent::AgentsConfig { worktrees: Some(b.root.join("worktrees")), ..krowk_harness::subagent::AgentsConfig::none() }, ..b.host() };
+    let r = run_in_process(&b, cfg, None, "write where the repository forbids", PermissionMode::BypassPermissions);
+    let (out, _) = parent_result(&b, &r.session_id);
+    assert!(out.starts_with("CHILD-SAW error=true") && out.contains("Edit(/blocked/**)"), "{out}");
+    assert!(!out.contains("Worktree:"), "nothing written, nothing kept: {out}");
+}
+
+/// The parent starts one subagent, which answers at once.
+fn one_subagent(body: &Value, _: usize) -> mock::Reply {
+    if is_child(body) {
+        return mock::Reply::sse(&mock::text_stream("done."));
+    }
+    if answered(body) {
+        return mock::Reply::sse(&mock::fixture("turn2_answer.sse"));
+    }
+    mock::Reply::sse(&tool_calls(&[("toolu_1", "subagent", json!({"description": "one", "prompt": "TASK-1"}))]))
+}
+
+/// WT12: with every agent slot of the machine held — here by the test, as
+/// another krowk would — a subagent says so on its call and waits, starting
+/// once the slot is let go.
+#[test]
+fn wt12_a_subagent_waits_for_an_agent_slot_another_process_holds() {
+    let m = mock::serve(one_subagent);
+    let b = Sandbox::new("agent-slot", &m.url);
+    let pool = krowk_harness::slots::Pool::new(b.root.join("run"), krowk_harness::subagent::AGENT_SLOTS, 1);
+    let mut held = Some(pool.try_take().unwrap().expect("the one slot"));
+    let mut registry = Registry::resolve(&InstancesConfig::default(), &b.env());
+    registry.agents = Some(pool);
+    let host = Host::new(HostConfig { registry, ..b.host() });
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut waited = false;
+    let result = rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
+        let cmd = Command::Prompt { session_id: None, text: "one subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let exec = host.execute(cmd, tx);
+        tokio::pin!(exec);
+        // The slot is let go a while after the wait is said, the turn
+        // running all the while.
+        let release = tokio::time::sleep(Duration::from_secs(3600));
+        tokio::pin!(release);
+        loop {
+            tokio::select! {
+                Some(line) = rx.recv() => {
+                    if let StreamLine::Live(LiveEvent::ItemDelta { delta: krowk_harness::protocol::Delta::Text { text }, .. }) = &line
+                        && text.contains("waiting for an agent slot (1 in use)")
+                    {
+                        waited = true;
+                        release.as_mut().reset(tokio::time::Instant::now() + Duration::from_millis(600));
+                    }
+                }
+                () = &mut release, if held.is_some() => {
+                    assert!(!m.seen.lock().unwrap().iter().any(|s| is_child(&s.body)), "the child started while every slot was held");
+                    held = None;
+                }
+                r = &mut exec => break r,
+            }
+        }
+    });
+    let result = result.unwrap().unwrap();
+    assert_eq!(result.status, TurnStatus::Completed, "{:?}", result.error);
+    assert!(waited && held.is_none(), "the wait was said on the call");
+    assert!(m.seen.lock().unwrap().iter().any(|s| is_child(&s.body)), "it ran once the slot was free");
+}
+
+/// WT12: with `maxHost = 1` and its one slot held by the session itself —
+/// a `--worktree` session's — the session's subagent runs on that slot
+/// rather than waiting forever for another, and finishes.
+#[test]
+fn wt12_a_subagent_of_a_session_on_the_last_agent_slot_runs_on_it() {
+    let m = mock::serve(one_subagent);
+    let b = Sandbox::new("own-slot", &m.url);
+    let pool = krowk_harness::slots::Pool::new(b.root.join("run"), krowk_harness::subagent::AGENT_SLOTS, 1);
+    let _session = pool.try_take().unwrap().expect("the session's slot");
+    let mut registry = Registry::resolve(&InstancesConfig::default(), &b.env());
+    registry.agents = Some(pool);
+    let session = krowk_harness::host::SessionSetup { on_agent_slot: true, ..Default::default() };
+    let host = Host::new(HostConfig { registry, session, ..b.host() });
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let result = rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
+        let cmd = Command::Prompt { session_id: None, text: "one subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let drain = async { while rx.recv().await.is_some() {} };
+        let (r, ()) = tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(host.execute(cmd, tx), drain) }).await.expect("the subagent waited for a slot its parent holds");
+        r
+    });
+    let result = result.unwrap().unwrap();
+    assert_eq!(result.status, TurnStatus::Completed, "{:?}", result.error);
+    assert!(m.seen.lock().unwrap().iter().any(|s| is_child(&s.body)), "the subagent ran");
 }

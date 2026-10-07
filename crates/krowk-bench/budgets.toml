@@ -423,7 +423,9 @@ unit = "tokens"
 # no MCP servers (gpt; claude 1,606, grok 1,619), 1,769 with them, so this is
 # raised to 1,800. It is offered only where a person can answer, so `krowk -p`,
 # which this bench runs, does not carry it and measures 1,472 still; the unit
-# tests hold every preset with it.
+# tests hold every preset with it. The `subagent` tool's `isolation` field
+# (worktrees WT3) is 29 more: 1,670 with no MCP servers (gpt), 1,798 with
+# them, and about 1,501 for this bench.
 max = 1800
 runs = 1
 status = "enforced"

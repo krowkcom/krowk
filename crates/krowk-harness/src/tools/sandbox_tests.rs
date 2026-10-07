@@ -57,12 +57,12 @@ fn setup_by(name: &str, profile: Profile, by: By) -> (PathBuf, PathBuf, Scope) {
 }
 
 async fn bash(ws: &Path, scope: &Scope, command: &str) -> (String, bool) {
-    let env = ToolEnv { cwd: ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+    let env = ToolEnv { cwd: ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
     execute(BASH, &json!({ "command": command }), &env, scope.clone()).await
 }
 
 async fn tool(ws: &Path, scope: &Scope, name: &str, input: Value) -> (String, bool) {
-    let env = ToolEnv { cwd: ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+    let env = ToolEnv { cwd: ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
     execute(name, &input, &env, scope.clone()).await
 }
 
@@ -260,7 +260,7 @@ async fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_ses
     // A timeout still kills what the command started, inside its own
     // session and namespace.
     let started = std::time::Instant::now();
-    let env = ToolEnv { cwd: &ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+    let env = ToolEnv { cwd: &ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
     let (out, err) = execute(BASH, &json!({"command": "sleep 7.31 & sleep 7.31", "timeout_ms": 300}), &env, scope.clone()).await;
     assert!(err && out.contains("timed out") && started.elapsed() < Duration::from_secs(3), "{out}");
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -323,4 +323,329 @@ async fn r_perm_3_cargo_runs_in_the_sandbox_and_its_credentials_stay_hidden() {
     let (out, err) = tool(&ws, &scope, READ, json!({ "path": cargo_home.join("credentials.toml") })).await;
     assert!(err && !out.contains("cio-planted-token"), "{out}");
     let _ = std::fs::remove_dir_all(base);
+}
+
+/// git in a test repository, through krowk's own git (hooks off), with
+/// none of this machine's config: what it prints, trimmed.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let o = krowk_api::git::command(dir).unwrap().args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+/// A repository with `main` checked out, in a fake home the sandbox hides,
+/// whose own config names who commits; two worktrees krowk made for agents
+/// under that home's worktrees root (`.local/share/krowk/worktrees/
+/// <repo-id>/<hex>`, branches `krowk/abcd1234` and `krowk/feedbeef`); and
+/// the person's own linked worktree, `own`, beside the repository. The
+/// environment names only the fake home, which has no `.gitconfig`.
+struct Repo {
+    base: PathBuf,
+    home: PathBuf,
+    main: PathBuf,
+    wt: PathBuf,
+    own: PathBuf,
+}
+
+impl Repo {
+    fn new(name: &str) -> Repo {
+        let base = scratch(name);
+        let home = base.join("home");
+        let main = home.join("src/repo");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["config", "user.name", "Wt Four"]);
+        git(&main, &["config", "user.email", "wt4@example.com"]);
+        std::fs::write(main.join("a.txt"), "a\n").unwrap();
+        git(&main, &["add", "-A"]);
+        git(&main, &["commit", "-q", "-m", "first"]);
+        let root = home.join(".local/share/krowk/worktrees/0123456789abcdef");
+        let wt = root.join("abcd1234");
+        git(&main, &["worktree", "add", "-q", "--no-track", "-b", "krowk/abcd1234", &wt.to_string_lossy(), "main"]);
+        git(&main, &["worktree", "add", "-q", "--no-track", "-b", "krowk/feedbeef", &root.join("feedbeef").to_string_lossy(), "main"]);
+        let own = home.join("src/own");
+        git(&main, &["worktree", "add", "-q", "-b", "feature", &own.to_string_lossy(), "main"]);
+        Repo { base, home, main, wt, own }
+    }
+
+    fn env(&self) -> impl Fn(&str) -> Option<std::ffi::OsString> + use<> {
+        let home = self.home.clone();
+        move |k| (k == "HOME").then(|| home.clone().into_os_string())
+    }
+
+    fn plan(&self, ws: &Path) -> Plan {
+        Plan::new_in(Sandbox { profile: Profile::Workspace, by: By::Bubblewrap }, ws, &[], &[], &[], &[], Some(&self.home), &self.env())
+    }
+
+    /// The scope of a sandboxed session in `ws`, wide open otherwise.
+    fn scope(&self, ws: &Path) -> Scope {
+        let mut scope = Scope::within(ws);
+        scope.outside = true;
+        scope.open = true;
+        let plan = self.plan(ws);
+        scope.secrets.extend(plan.hidden.iter().cloned());
+        scope.sandbox = Some(Arc::new(plan));
+        scope
+    }
+}
+
+/// Worktrees WT4: a worktree is krowk's only when it is what krowk makes —
+/// under the root, led to from a real common git directory and back, on a
+/// `krowk/<8 hex>` branch — and every other one keeps today's plan.
+#[test]
+fn wt4_only_a_worktree_krowk_made_is_opened_to_a_commit() {
+    let r = Repo::new("wt4-managed");
+    let root = r.home.join(".local/share/krowk/worktrees");
+    let common = r.main.join(".git");
+    let w = crate::sandbox::managed_worktree(&r.wt, &root).expect("krowk's worktree");
+    assert_eq!((w.common.clone(), w.admin.clone(), w.hex.as_str()), (common.clone(), common.join("worktrees/abcd1234"), "abcd1234"));
+    let plan = r.plan(&r.wt);
+    assert_eq!(plan.git, [(common.clone(), false), (common.join("objects"), true), (common.join("refs/heads/krowk"), true), (common.join("logs/refs/heads/krowk"), true), (common.join("worktrees/abcd1234"), true)]);
+    for p in ["config", "hooks", "info", "HEAD", "packed-refs", "worktrees/own", "worktrees/feedbeef", "refs/heads/krowk/feedbeef", "worktrees/abcd1234/commondir"] {
+        assert!(plan.read_only.contains(&common.join(p)), "{p}: {:?}", plan.read_only);
+    }
+    assert!(!plan.read_only.contains(&common.join("refs/heads/krowk/abcd1234")), "its own branch is its to move");
+    assert_eq!(plan.identity, Some(("Wt Four".into(), "wt4@example.com".into())), "as git resolves it in the worktree");
+    let args = plan.bwrap_args();
+    let at = |x: &str, v: &Path| args.windows(3).position(|w| w[0] == x && w[1] == v.to_string_lossy()).unwrap_or_else(|| panic!("{x} {}", v.display()));
+    assert!(at("--bind", &r.wt) < at("--ro-bind-try", &common) && at("--ro-bind-try", &common) < at("--bind-try", &common.join("refs/heads/krowk")), "the common directory read-only first");
+    assert!(at("--bind-try", &common.join("refs/heads/krowk")) < at("--ro-bind-try", &common.join("refs/heads/krowk/feedbeef")), "the read-only ones win");
+    for v in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_EMAIL"] {
+        assert!(args.windows(2).any(|w| w[0] == "--setenv" && w[1] == v), "{v}");
+    }
+    // No identity named anywhere git looks: none handed in, git's own
+    // error stands.
+    git(&r.main, &["config", "--unset", "user.email"]);
+    assert_eq!(r.plan(&r.wt).identity, None);
+    // The person's own linked worktree, and the main checkout: as today.
+    assert_eq!(crate::sandbox::managed_worktree(&r.own, &root), None);
+    for ws in [&r.own, &r.main] {
+        let plan = r.plan(ws);
+        assert!(plan.git.is_empty() && plan.identity.is_none() && plan.read_only.contains(&ws.join(".git")), "{}", ws.display());
+    }
+    // Not the root's subdirectory, not on a krowk branch, not under the
+    // root the environment names, not with a `.git` leading elsewhere.
+    assert_eq!(crate::sandbox::managed_worktree(&root.join("0123456789abcdef"), &root), None);
+    assert_eq!(crate::sandbox::managed_worktree(&r.wt, &r.base.join("elsewhere")), None);
+    let head = common.join("worktrees/abcd1234/HEAD");
+    for other in ["ref: refs/heads/feature2\n", "ref: refs/heads/krowk/ABCD1234\n", "ref: refs/heads/krowk/abcd12345\n", "ref: refs/heads/krowk/../main\n"] {
+        std::fs::write(&head, other).unwrap();
+        assert_eq!(crate::sandbox::managed_worktree(&r.wt, &root), None, "{other}");
+    }
+    std::fs::write(&head, "ref: refs/heads/krowk/abcd1234\n").unwrap();
+    // A gitdir file leading to an admin directory that does not lead back.
+    let fake = r.base.join("fake/.git/worktrees/abcd1234");
+    std::fs::create_dir_all(&fake).unwrap();
+    for d in ["objects", "refs"] {
+        std::fs::create_dir_all(r.base.join("fake/.git").join(d)).unwrap();
+    }
+    std::fs::write(r.base.join("fake/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(fake.join("HEAD"), "ref: refs/heads/krowk/abcd1234\n").unwrap();
+    std::fs::write(fake.join("commondir"), "../..\n").unwrap();
+    std::fs::write(fake.join("gitdir"), format!("{}\n", r.base.join("other/.git").display())).unwrap();
+    let wt_git = std::fs::read_to_string(r.wt.join(".git")).unwrap();
+    std::fs::write(r.wt.join(".git"), format!("gitdir: {}\n", fake.display())).unwrap();
+    assert_eq!(crate::sandbox::managed_worktree(&r.wt, &root), None);
+    std::fs::write(fake.join("gitdir"), format!("{}\n", r.wt.join(".git").display())).unwrap();
+    assert!(crate::sandbox::managed_worktree(&r.wt, &root).is_some(), "the positive control");
+    std::fs::write(r.wt.join(".git"), wt_git).unwrap();
+    let _ = std::fs::remove_dir_all(&r.base);
+}
+
+/// Worktrees WT4: an agent in a worktree krowk made commits from inside
+/// the sandbox, as the person, and the commit is the repository's.
+#[tokio::test(flavor = "current_thread")]
+async fn wt4_a_sandboxed_agent_commits_in_a_krowk_worktree() {
+    if !enforced("wt4_a_sandboxed_agent_commits_in_a_krowk_worktree") {
+        return;
+    }
+    let r = Repo::new("wt4-commit");
+    let scope = r.scope(&r.wt);
+    let (out, err) = bash(&r.wt, &scope, "echo new > new.txt && git add -A && git commit -q -m x && git status --porcelain").await;
+    assert!(!err, "{out}");
+    assert_eq!(git(&r.main, &["log", "-1", "--format=%s %an <%ae> %cn <%ce>", "krowk/abcd1234"]), "x Wt Four <wt4@example.com> Wt Four <wt4@example.com>");
+    assert_eq!(git(&r.main, &["show", "krowk/abcd1234:new.txt"]), "new");
+    assert_eq!(git(&r.main, &["log", "-1", "--format=%s", "main"]), "first", "main did not move");
+    // A branch of its own under `krowk/` it may make.
+    let (out, err) = bash(&r.wt, &scope, "git branch krowk/abcd1234-2").await;
+    assert!(!err && git(&r.main, &["rev-parse", "krowk/abcd1234-2"]) == git(&r.main, &["rev-parse", "krowk/abcd1234"]), "{out}");
+    let _ = std::fs::remove_dir_all(&r.base);
+}
+
+/// Worktrees WT4: what a commit does not need stays read-only from the
+/// same sandbox — each write tried on its own.
+#[tokio::test(flavor = "current_thread")]
+async fn wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is_on() {
+    if !enforced("wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is_on") {
+        return;
+    }
+    let r = Repo::new("wt4-fences");
+    let scope = r.scope(&r.wt);
+    let c = r.main.join(".git");
+    // A `packed-refs` to append to: a tag, packed.
+    git(&r.main, &["tag", "v0"]);
+    git(&r.main, &["pack-refs"]);
+    assert!(c.join("packed-refs").is_file());
+    // A commit of its own first, so moving `main` to it would be a move.
+    let (out, err) = bash(&r.wt, &scope, "echo b > b.txt && git add -A && git commit -q -m b").await;
+    assert!(!err, "{out}");
+    let main_was = git(&r.main, &["rev-parse", "main"]);
+    let ours = git(&r.main, &["rev-parse", "krowk/abcd1234"]);
+    let read = |p: &Path| std::fs::read(p).ok();
+    let rofs = "Read-only file system";
+
+    let config = read(&c.join("config"));
+    let (out, err) = bash(&r.wt, &scope, &format!("printf '[core]\\n\\thooksPath = /tmp\\n' >> '{}'", c.join("config").display())).await;
+    assert!(err && out.contains(rofs) && read(&c.join("config")) == config, "<common>/config: {out}");
+
+    let (out, err) = bash(&r.wt, &scope, &format!("echo 'touch /tmp/pwned' > '{}'", c.join("hooks/post-commit").display())).await;
+    assert!(err && out.contains(rofs) && !c.join("hooks/post-commit").exists(), "<common>/hooks/post-commit: {out}");
+
+    let (out, err) = bash(&r.wt, &scope, &format!("echo '* filter=evil' > '{}'", c.join("info/attributes").display())).await;
+    assert!(err && out.contains(rofs) && !c.join("info/attributes").exists(), "<common>/info/attributes: {out}");
+
+    let head = read(&c.join("HEAD"));
+    let (out, err) = bash(&r.wt, &scope, &format!("echo 'ref: refs/heads/krowk/abcd1234' > '{}'", c.join("HEAD").display())).await;
+    assert!(err && out.contains(rofs) && read(&c.join("HEAD")) == head, "<common>/HEAD: {out}");
+
+    let (out, err) = bash(&r.wt, &scope, "git update-ref refs/heads/main HEAD").await;
+    assert!(err && git(&r.main, &["rev-parse", "main"]) == main_was && !c.join("refs/heads/main.lock").exists(), "refs/heads/main: {out}");
+    let (out, err) = bash(&r.wt, &scope, &format!("git rev-parse HEAD > '{}'", c.join("refs/heads/main").display())).await;
+    assert!(err && out.contains(rofs) && git(&r.main, &["rev-parse", "main"]) == main_was, "refs/heads/main, written: {out}");
+    // Nor by putting a new `refs/heads` where the old one was.
+    let (out, err) = bash(&r.wt, &scope, &format!("cd '{}' && mv heads old && mkdir heads && git -C '{}' rev-parse HEAD > heads/main", c.join("refs").display(), r.wt.display())).await;
+    assert!(err && c.join("refs/heads/main").is_file() && !c.join("refs/old").exists() && git(&r.main, &["rev-parse", "main"]) == main_was, "refs/heads, renamed: {out}");
+
+    // Nor what `main` shows, by a replacement for its commit.
+    let (out, err) = bash(&r.wt, &scope, &format!("git replace {main_was} HEAD")).await;
+    assert!(err && !c.join("refs/replace").exists(), "git replace: {out}");
+    let (out, err) = bash(&r.wt, &scope, &format!("mkdir -p '{0}/refs/replace' && echo {ours} > '{0}/refs/replace/{main_was}'", c.display())).await;
+    assert!(err && out.contains(rofs) && !c.join("refs/replace").exists(), "refs/replace, written: {out}");
+    let packed = read(&c.join("packed-refs"));
+    let (out, err) = bash(&r.wt, &scope, &format!("echo '{ours} refs/replace/{main_was}' >> '{}'", c.join("packed-refs").display())).await;
+    assert!(err && out.contains(rofs) && read(&c.join("packed-refs")) == packed && git(&r.main, &["log", "-1", "--format=%s", "main"]) == "first", "packed-refs: {out}");
+
+    // A tag is a ref outside `krowk/`: the accepted cost.
+    let (out, err) = bash(&r.wt, &scope, "git tag t").await;
+    assert!(err && !c.join("refs/tags/t").exists(), "git tag: {out}");
+
+    let feedbeef = git(&r.main, &["rev-parse", "krowk/feedbeef"]);
+    let (out, err) = bash(&r.wt, &scope, "git update-ref refs/heads/krowk/feedbeef HEAD").await;
+    assert!(err && git(&r.main, &["rev-parse", "krowk/feedbeef"]) == feedbeef, "another agent's branch: {out}");
+    let (out, err) = bash(&r.wt, &scope, &format!("echo {ours} > '{}'", c.join("refs/heads/krowk/feedbeef").display())).await;
+    assert!(err && out.contains(rofs) && git(&r.main, &["rev-parse", "krowk/feedbeef"]) == feedbeef, "another agent's branch, written: {out}");
+
+    let other = c.join("worktrees/own/HEAD");
+    let other_was = read(&other);
+    let (out, err) = bash(&r.wt, &scope, &format!("echo 'ref: refs/heads/main' > '{}'", other.display())).await;
+    assert!(err && out.contains(rofs) && read(&other) == other_was, "another worktree's admin dir: {out}");
+    let (out, err) = bash(&r.wt, &scope, &format!("touch '{}'", c.join("worktrees/own/config.worktree").display())).await;
+    assert!(err && out.contains(rofs) && !c.join("worktrees/own/config.worktree").exists(), "another worktree's admin dir, a new file: {out}");
+
+    let dot_git = read(&r.wt.join(".git"));
+    let (out, err) = bash(&r.wt, &scope, &format!("echo 'gitdir: {}' > .git", r.base.join("evil").display())).await;
+    assert!(err && out.contains(rofs) && read(&r.wt.join(".git")) == dot_git, "the .git file: {out}");
+
+    let commondir = read(&c.join("worktrees/abcd1234/commondir"));
+    let (out, err) = bash(&r.wt, &scope, &format!("echo '{}' > '{}'", r.base.join("evil").display(), c.join("worktrees/abcd1234/commondir").display())).await;
+    assert!(err && out.contains(rofs) && read(&c.join("worktrees/abcd1234/commondir")) == commondir, "its own commondir: {out}");
+
+    // Not the rest of the reflogs: git outside the sandbox appends to them.
+    let logs_head = read(&c.join("logs/HEAD"));
+    let (out, err) = bash(&r.wt, &scope, &format!("echo x >> '{}'", c.join("logs/HEAD").display())).await;
+    assert!(err && out.contains(rofs) && logs_head.is_some() && read(&c.join("logs/HEAD")) == logs_head, "<common>/logs/HEAD: {out}");
+    // And no link where git outside the sandbox writes through what is
+    // there: each one planted is gone after the call, which says so.
+    let victim = r.base.join("victim");
+    std::fs::write(&victim, "mine\n").unwrap();
+    for at in [c.join("worktrees/abcd1234/logs/HEAD"), c.join("logs/refs/heads/krowk/abcd1234"), c.join("refs/heads/krowk/evil"), c.join("objects/ee"), c.join("objects/pack/evil.pack")] {
+        let (out, err) = bash(&r.wt, &scope, &format!("rm -f '{0}' && ln -s '{1}' '{0}'", at.display(), victim.display())).await;
+        assert!(err && out.contains("the sandbox removed") && std::fs::symlink_metadata(&at).is_err(), "{}: {out}", at.display());
+    }
+    // One a crashed call left is gone before the next binds anything, and
+    // does not stop it.
+    std::os::unix::fs::symlink(&victim, c.join("refs/heads/krowk/left")).unwrap();
+    let (out, err) = bash(&r.wt, &scope, "git log -1 --format=%s").await;
+    assert!(!err && out.starts_with("b") && std::fs::symlink_metadata(c.join("refs/heads/krowk/left")).is_err(), "{out}");
+    git(&r.main, &["commit", "-q", "--allow-empty", "-m", "the person's"]);
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "mine\n");
+
+    // And git still works there after all of it.
+    let (out, err) = bash(&r.wt, &scope, "git commit -q --allow-empty -m c").await;
+    assert!(!err && git(&r.main, &["log", "-1", "--format=%s", "krowk/abcd1234"]) == "c", "{out}");
+    let _ = std::fs::remove_dir_all(&r.base);
+}
+
+/// Worktrees WT4: the person's own linked worktree, outside krowk's root,
+/// keeps a read-only `.git` and its repository out of reach, as before.
+#[tokio::test(flavor = "current_thread")]
+async fn wt4_a_linked_worktree_outside_krowks_root_keeps_todays_fences() {
+    if !enforced("wt4_a_linked_worktree_outside_krowks_root_keeps_todays_fences") {
+        return;
+    }
+    let r = Repo::new("wt4-own");
+    let scope = r.scope(&r.own);
+    let feature = git(&r.main, &["rev-parse", "feature"]);
+    let (out, err) = bash(&r.own, &scope, "echo new > new.txt && git add -A && git -c user.name=a -c user.email=a@b commit -q -m x").await;
+    assert!(err && git(&r.main, &["rev-parse", "feature"]) == feature, "{out}");
+    let dot_git = std::fs::read(r.own.join(".git")).unwrap();
+    let (out, err) = bash(&r.own, &scope, "echo 'gitdir: /x' > .git").await;
+    assert!(err && out.contains("Read-only file system") && std::fs::read(r.own.join(".git")).unwrap() == dot_git, "{out}");
+    let _ = std::fs::remove_dir_all(&r.base);
+}
+
+/// Worktrees WT4: a call that times out, or is interrupted, while a
+/// process it left keeps planting a link where git outside the sandbox
+/// writes through: the sandbox's processes are gone before the sweep, so
+/// the link does not outlive the call.
+#[tokio::test(flavor = "current_thread")]
+async fn wt4_a_link_replanted_by_a_call_that_times_out_or_is_interrupted_is_gone_after_it() {
+    if !enforced("wt4_a_link_replanted_by_a_call_that_times_out_or_is_interrupted_is_gone_after_it") {
+        return;
+    }
+    let r = Repo::new("wt4-replant");
+    let scope = r.scope(&r.wt);
+    let logs_head = r.main.join(".git/worktrees/abcd1234/logs/HEAD");
+    let victim = r.base.join("victim");
+    std::fs::write(&victim, "mine\n").unwrap();
+    // Eight loops, so one is likely mid-`ln` whenever the sweep runs.
+    let command = format!("for i in 1 2 3 4 5 6 7 8; do (while true; do ln -sfn '{}' '{}' 2>/dev/null; done) & done; sleep 30", victim.display(), logs_head.display());
+    let env = ToolEnv { cwd: &r.wt, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
+    let linked = || std::fs::symlink_metadata(&logs_head).is_ok_and(|m| m.file_type().is_symlink());
+    // Timed out: the sweep is done when the call returns.
+    let (out, err) = execute(BASH, &json!({ "command": command, "timeout_ms": 1500 }), &env, scope.clone()).await;
+    assert!(err && out.contains("timed out"), "{out}");
+    assert!(!linked(), "a link outlived the call that timed out");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!linked(), "and nothing planted one since");
+    // Interrupted: the call's future dropped mid-run; the sweep follows
+    // on a thread of its own.
+    let input = json!({ "command": command });
+    let call = execute(BASH, &input, &env, scope.clone());
+    assert!(tokio::time::timeout(Duration::from_millis(1500), call).await.is_err());
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while linked() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!linked(), "a link outlived the interrupted call");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!linked(), "and nothing planted one since");
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "mine\n");
+    let _ = std::fs::remove_dir_all(&r.base);
+}
+
+/// Worktrees WT8: a worktree's `KROWK_PORT_BASE` reaches the agent's
+/// commands, in the sandbox, whose environment is otherwise an allowlist
+/// that keeps every other `KROWK_*` out.
+#[tokio::test(flavor = "current_thread")]
+async fn wt8_the_port_base_reaches_a_sandboxed_command() {
+    if !enforced("wt8_the_port_base_reaches_a_sandboxed_command") {
+        return;
+    }
+    let (base, ws, scope) = setup("wt8-port", Profile::Workspace);
+    let extra = [("KROWK_PORT_BASE".to_string(), "20030".to_string())];
+    let env = ToolEnv { cwd: &ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &extra };
+    let (out, err) = execute(BASH, &json!({ "command": "echo \"base=$KROWK_PORT_BASE\"; env | grep -c '^KROWK_'" }), &env, scope.clone()).await;
+    assert_eq!((out.as_str(), err), ("base=20030\n1\nexit code 0", false));
+    let _ = std::fs::remove_dir_all(&base);
 }

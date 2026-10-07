@@ -12,6 +12,8 @@ publish.workspace = true
 
 [dependencies]
 krowk-harness = { path = "../krowk-harness" }
+# Its one way to run git, linked already through the harness.
+krowk-api = { path = "../krowk-api" }
 # The inline viewport, its diffing buffer and insert_before (R-TUI-1).
 # scrolling-regions: lines go into scrollback through a scroll region
 # rather than by clearing and repainting the viewport, so nothing flickers

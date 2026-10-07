@@ -29,6 +29,10 @@
       "description": "How subagents run: how many at once, and on which model.",
       "$ref": "#/$defs/SubagentsConfig"
     },
+    "worktrees": {
+      "description": "How krowk readies a worktree it makes for an agent.",
+      "$ref": "#/$defs/WorktreesConfig"
+    },
     "builds": {
       "description": "How many build and test commands run at once, machine-wide.",
       "$ref": "#/$defs/BuildsConfig"
@@ -529,12 +533,54 @@
           "format": "uint",
           "minimum": 0
         },
+        "maxHost": {
+          "description": "Agents every krowk on the machine runs at once — subagents and\n`--worktree` sessions, each holding one of the `agent-slots` for\nits life; twice the cores or twice the GiB of memory, whichever is\nfewer, kept to 4 … 64, when absent.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
         "model": {
           "description": "The model a subagent runs on when its definition names none:\n`<instance>/<model>`, a model id, `inherit` or an alias (`haiku`);\nthe catalog's cheaper tier below the parent's model when absent.",
           "type": [
             "string",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorktreesConfig": {
+      "description": "`worktrees` in config.json: how a worktree krowk makes for an agent is\nreadied before the agent starts (`crate::worktree::STEPS`).",
+      "type": "object",
+      "properties": {
+        "seed": {
+          "description": "The main checkout's top-level directories copied into a new\nworktree as copy-on-write clones, where the file system makes one\nnearly free: build output a first build would otherwise redo.\n`[\"target\", \"node_modules\"]` when absent; `[]` copies none.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "setup": {
+          "description": "A shell command run in a new worktree before its agent starts —\ninstall dependencies, generate code — inside the sandbox's\nworkspace profile with only the worktree writable\n(`crate::worktree::setup`). A repository's own, in its\n`.krowk/config.json`, runs only once the repository is trusted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "setupTimeout": {
+          "description": "Seconds `setup` may take before it is stopped; 600 when absent.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
         }
       },
       "additionalProperties": false

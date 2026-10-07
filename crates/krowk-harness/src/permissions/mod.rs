@@ -100,6 +100,9 @@ pub struct Policy {
     pub sandbox: Option<crate::sandbox::Sandbox>,
     /// The turn's workspace search, shared by its calls' sandbox plans.
     pub walk: crate::sandbox::Walk,
+    /// What path rules that are not anchored are written against, when not
+    /// `cwd` (`Places::rules_cwd`).
+    pub rules_cwd: Option<PathBuf>,
 }
 
 impl Policy {
@@ -113,7 +116,7 @@ impl Policy {
         // exist, as they lead (`Scope::secret`).
         let default = cfg.home.as_ref().map(|h| krowk_api::home::lexical(h).join(".krowk"));
         let secrets = cfg.krowk_dir.iter().chain(default.iter()).flat_map(|d| krowk_api::home::siblings(d)).flat_map(|d| [d.canonicalize().ok(), Some(d)]).flatten().collect();
-        Ok(Policy { loaded, cwd: cwd.to_path_buf(), home: cfg.home.clone(), read_dirs: Vec::new(), protected, secrets, sandbox: cfg.sandbox, walk: Default::default() })
+        Ok(Policy { loaded, cwd: cwd.to_path_buf(), home: cfg.home.clone(), read_dirs: Vec::new(), protected, secrets, sandbox: cfg.sandbox, walk: Default::default(), rules_cwd: None })
     }
 
     /// A policy with no settings: the modes alone.
@@ -122,7 +125,32 @@ impl Policy {
     }
 
     fn places(&self) -> rules::Places<'_> {
-        rules::Places { cwd: &self.cwd, home: self.home.as_deref() }
+        rules::Places { cwd: &self.cwd, home: self.home.as_deref(), rules_cwd: self.rules_cwd.as_deref().unwrap_or(&self.cwd) }
+    }
+
+    /// This policy for a worktree of its repository whose top is `top`, the
+    /// working directory of a subagent there (worktrees WT3): the same
+    /// rules, trust, grants and fences, with every rule anchored in the
+    /// repository (`/.env`, a rule of a settings file in it) anchored at
+    /// the same place in the worktree, and the rules written against the
+    /// working directory read against the same place in it too — so a
+    /// repository's `Edit(/.github/workflows/**)` deny holds there as it
+    /// does in the checkout. Whether the repository is trusted stays the
+    /// checkout's decision.
+    pub fn in_worktree(&self, top: &Path) -> Policy {
+        let root = self.loaded.root.clone();
+        let moved = |p: &Path| match p.strip_prefix(&root) {
+            Ok(rest) if root.is_absolute() => top.join(rest),
+            _ => p.to_path_buf(),
+        };
+        let mut p = self.clone();
+        for r in p.loaded.rules.iter_mut().map(|(_, r)| r).chain(p.loaded.ignored_allow.iter_mut()) {
+            r.root = moved(&r.root);
+        }
+        p.rules_cwd = Some(moved(self.rules_cwd.as_deref().unwrap_or(&self.cwd)));
+        p.cwd = top.to_path_buf();
+        p.walk = Default::default();
+        p
     }
 
     /// The deny rules, in Claude Code's spelling: what a Claude Code

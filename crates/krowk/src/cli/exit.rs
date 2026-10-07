@@ -40,6 +40,18 @@ fn client(code: &str) -> Option<i32> {
         "bad_pairing_code" => USAGE,
         #[cfg(feature = "harness")]
         "no_pairing" => NOT_FOUND,
+        // `krowk worktrees remove` and `apply`: nothing by that name, or
+        // one it will not remove or apply as things stand (worktrees WT9,
+        // WT13).
+        #[cfg(feature = "harness")]
+        "no_such_worktree" => NOT_FOUND,
+        #[cfg(feature = "harness")]
+        "worktree_live" | "worktree_has_changes" | "worktree_conflicts" | "worktree_submodules" | "worktree_protected" => REFUSED,
+        #[cfg(feature = "harness")]
+        "worktree_other_repository" => USAGE,
+        // `--resume` of a session whose krowk worktree is gone (WT6).
+        #[cfg(feature = "harness")]
+        "worktree_missing" => NOT_FOUND,
         "authorization_expired" => GONE,
         _ => return None,
     })

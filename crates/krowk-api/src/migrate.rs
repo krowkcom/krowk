@@ -254,6 +254,9 @@ pub fn note_old(home: &Path, env: Env) {
             let (p, name) = (e.path(), e.file_name().to_string_lossy().into_owned());
             match name.as_str() {
                 "krowk.db-wal" | "krowk.db-shm" | "import.lock" => {}
+                // Not old: where krowk keeps worktrees now
+                // (`home::worktrees_root`), outside its home on purpose.
+                "worktrees" if dir == &data => {}
                 "krowk.db" => lines.push(format!("the session index {} is not used — run `krowk sessions rebuild`, then delete it", p.display())),
                 "config.json" | "credentials.json" | "providers" => lines.push(format!("{} is not used — krowk reads {h}; copy what you need across, then delete it", p.display())),
                 "claude" | "codex" => {

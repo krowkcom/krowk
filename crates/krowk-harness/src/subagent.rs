@@ -25,6 +25,16 @@
 //!   are the same inside a subagent: an allowlist narrows, it never grants.
 //! - **In parallel**: the subagent calls of one response run at once, up to
 //!   `subagents.maxParallel` (4 by default) at a time (R-SUB-2).
+//! - **Within the machine's cap**: each subagent holds one of the
+//!   `agent-slots` (`crate::slots`) for its life, shared by every krowk on
+//!   the machine with the `--worktree` sessions, `subagents.maxHost` of
+//!   them (`max_host` by default); one that finds none says `waiting for
+//!   an agent slot (N in use)` on its call, and waits until one is let go
+//!   or the parent is interrupted. Plain sessions take none, so a person
+//!   never waits to start one. The subagents of a session that holds a
+//!   slot (`--worktree`) run on it instead of taking more: the session
+//!   waits on them, and on the last slot they would wait forever.
+//!   Subagents start none of their own, so no deeper level waits either.
 //! - **Interruptible one by one**: each child's turn is a running turn of
 //!   the host, so `interrupt` with the child's session id stops that child
 //!   alone, and its call is answered with what it had; interrupting the
@@ -32,6 +42,16 @@
 //! - **Visible**: every line of a child's stream goes to the parent's
 //!   client under the child's session id, which is how the TUI draws each
 //!   subagent's line (R-SUB-3).
+//! - **In a worktree of its own, when asked** (`isolation: "worktree"`, on
+//!   the call or in the definition, the call's winning): the child works in
+//!   a new git worktree of the parent's repository on a `krowk/<hex>`
+//!   branch (`crate::worktree`), so parallel children that edit do not
+//!   overwrite each other. It starts from the parent's files, uncommitted
+//!   changes included, so a child started mid-edit sees the edit. One it left unchanged is removed when it ends;
+//!   a changed one has its changes applied to the parent's working tree
+//!   as uncommitted changes, and is removed (WT13), the summary ending
+//!   with the files; one whose changes do not apply is kept, and its
+//!   summary names the files that conflict and where it is.
 
 use crate::agents::AgentDef;
 use crate::budget::Budget;
@@ -41,6 +61,7 @@ use crate::evidence::Evidence;
 use crate::host::Shared;
 use crate::instances::{Registry, ALIASES};
 use crate::protocol::{ModelRef, PermissionMode, StreamLine, TurnStatus};
+use crate::worktree::InUse;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -57,6 +78,62 @@ pub const DESCRIPTION: &str = "Start a subagent with a fresh context for one tas
 /// Subagents at once, per parent turn, when the config does not say.
 pub const MAX_PARALLEL: usize = 4;
 
+/// The pool of the machine's agent slots (`subagents.maxHost`).
+pub const AGENT_SLOTS: &str = "agent-slots";
+
+/// Agents at once on the machine when the config does not say: twice the
+/// cores or twice the GiB of memory, whichever is fewer — an agent's
+/// builds want cores, its language servers memory — kept to 4 … 64. Twice
+/// the cores alone when the memory cannot be read.
+pub fn max_host() -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let memory = memory_bytes().map_or(usize::MAX, |b| usize::try_from(b / (1 << 30)).unwrap_or(usize::MAX));
+    (cores * 2).min(memory.saturating_mul(2)).clamp(4, 64)
+}
+
+/// The machine's memory, in bytes, when it can be read.
+#[cfg(unix)]
+fn memory_bytes() -> Option<u64> {
+    // SAFETY: sysconf has no preconditions; -1 is its failure.
+    let (pages, size) = unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGESIZE)) };
+    (pages > 0 && size > 0).then(|| pages as u64 * size as u64)
+}
+
+#[cfg(windows)]
+fn memory_bytes() -> Option<u64> {
+    // Filled by the call; only the total is read.
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct MemoryStatusEx {
+        length: u32,
+        load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(status: *mut MemoryStatusEx) -> i32;
+    }
+    let mut status = MemoryStatusEx { length: std::mem::size_of::<MemoryStatusEx>() as u32, load: 0, total_phys: 0, avail_phys: 0, total_page_file: 0, avail_page_file: 0, total_virtual: 0, avail_virtual: 0, avail_extended_virtual: 0 };
+    // SAFETY: `status` is a MEMORYSTATUSEX with its length set, as the call asks.
+    (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status.total_phys)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn memory_bytes() -> Option<u64> {
+    None
+}
+
+/// What a subagent waiting for an agent slot says on its call.
+pub fn waiting_line(in_use: usize) -> String {
+    format!("waiting for an agent slot ({in_use} in use)\n")
+}
+
 /// Start a subagent.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -68,7 +145,24 @@ pub struct SubagentInput {
     /// An agent definition's name.
     #[serde(default)]
     pub agent: Option<String>,
+    /// worktree: its own git worktree and branch.
+    #[serde(default)]
+    #[schemars(with = "Isolation")]
+    pub isolation: Option<Isolation>,
 }
+
+/// Where a subagent works: the parent's directory, or a git worktree of
+/// its own (`crate::worktree`). Claude Code's agent files spell it the same.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Isolation {
+    #[default]
+    None,
+    Worktree,
+}
+
+/// What a subagent is told when it is asked for a worktree outside one.
+pub const NEEDS_A_REPOSITORY: &str = "isolation: worktree needs a git repository";
 
 /// What a subagent's turn runs with, from its definition.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -123,13 +217,17 @@ pub struct AgentsConfig {
     /// Code's — read after the repository's.
     pub user_dirs: Vec<PathBuf>,
     pub models: Models,
+    /// Where a subagent's worktree is made (`krowk_api::home::worktrees_root`);
+    /// none refuses `isolation: "worktree"`.
+    pub worktrees: Option<PathBuf>,
 }
 
 impl AgentsConfig {
     /// No definitions of the person's, and a catalog that lists nothing:
-    /// subagents run on the parent's model unless told otherwise.
+    /// subagents run on the parent's model unless told otherwise, and in
+    /// no worktree.
     pub fn none() -> AgentsConfig {
-        AgentsConfig { user_dirs: Vec::new(), models: Arc::new(|_| Vec::new()) }
+        AgentsConfig { user_dirs: Vec::new(), models: Arc::new(|_| Vec::new()), worktrees: None }
     }
 }
 
@@ -269,7 +367,8 @@ impl Subagents {
     }
 
     /// One `subagent` call: the child's final summary, or why there is none.
-    pub async fn run(&self, call_id: &str, input: &Value, events: &Events) -> (String, bool) {
+    /// `item_id` is the call's result, where a wait for an agent slot is said.
+    pub async fn run(&self, call_id: &str, item_id: &str, input: &Value, events: &Events) -> (String, bool) {
         let input = match SubagentInput::deserialize(input) {
             Ok(i) => i,
             Err(e) => return (format!("invalid input for subagent: {e}"), true),
@@ -333,7 +432,38 @@ impl Subagents {
             },
             _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true),
         };
-        let result = host.subagent(&self.0, call_id, &input.description, &input.prompt, model, run, events).await;
+        // Then one of the machine's agent slots, held until it ends — or
+        // its parent's, when the parent holds one (`--worktree`): a parent
+        // on the last slot waiting for a child that waits for a slot would
+        // wait forever. So the cap bounds the agents people start, and
+        // `maxParallel` each one's fan-out. One that cannot be had — the
+        // runtime directory refused — runs it anyway: the cap is for the
+        // machine's sake, as the build slots are.
+        let waiting = |in_use: usize| async move {
+            let delta = crate::protocol::Delta::Text { text: waiting_line(in_use) };
+            let _ = events.send(crate::engine::EngineEvent::ItemDelta { item_id: item_id.into(), delta }).await;
+        };
+        let _slot = match &registry.agents {
+            Some(pool) if !host.cfg.session.on_agent_slot => tokio::select! {
+                taken = pool.take(waiting) => taken.ok().map(|(slot, _)| slot),
+                _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true),
+            },
+            _ => None,
+        };
+        // Its session id is chosen now: a worktree is locked in its name
+        // before the session exists, and the session records it as its
+        // directory.
+        let child = krowk_store::new_id();
+        let (worktree, prompt) = match input.isolation.or(def.and_then(|d| d.isolation)).unwrap_or_default() {
+            Isolation::None => (None, input.prompt.clone()),
+            Isolation::Worktree => match self.worktree(&child).await {
+                Ok((w, notes)) => (Some(w), crate::worktree::first_prompt(&notes, &input.prompt)),
+                Err(why) => return (why, true),
+            },
+        };
+        let cwd = worktree.as_ref().map_or_else(|| p.cwd.clone(), |w| w.worktree.path.clone());
+        let env = worktree.as_ref().map(|w| w.env()).unwrap_or_default();
+        let result = host.subagent(&self.0, call_id, &input.description, &prompt, model, run, (&child, &cwd, env), events).await;
         if let Ok(r) = &result {
             let mut spent = self.0.spent.lock().unwrap_or_else(|e| e.into_inner());
             match r.cost_usd {
@@ -341,16 +471,85 @@ impl Subagents {
                 None => spent.1 = true,
             }
         }
-        match result {
-            Ok(r) => match r.status {
-                TurnStatus::Completed if r.result.trim().is_empty() => ("the subagent finished without a summary".into(), false),
-                TurnStatus::Completed => (r.result, false),
-                TurnStatus::Interrupted if r.result.trim().is_empty() => ("the subagent was interrupted before it said anything".into(), true),
-                TurnStatus::Interrupted => (format!("the subagent was interrupted; what it said last:\n{}", r.result), true),
-                TurnStatus::Failed => (format!("the subagent failed: {}", r.error.map(|e| e.message).unwrap_or_default()), true),
+        let (text, failed) = answer(result);
+        match worktree {
+            Some(w) => match finish(w, p.cwd.clone()).await {
+                Some(note) => (format!("{text}\n\n{note}"), failed),
+                None => (text, failed),
             },
-            Err(e) => (format!("the subagent could not start: {}", e.message), true),
+            None => (text, failed),
         }
+    }
+
+    /// A worktree of the parent's repository for the child `child`, readied
+    /// by the prepare steps, with their notes for its first prompt; why
+    /// not, for the model, when there is none.
+    async fn worktree(&self, child: &str) -> Result<(InUse, Vec<String>), String> {
+        let Some(root) = self.0.host.cfg.agents.worktrees.clone() else {
+            return Err("isolation: worktree has nowhere to make worktrees: krowk found no home directory (set HOME or XDG_DATA_HOME)".into());
+        };
+        let registry = self.0.host.registry();
+        let (cwd, child, config, builds) = (self.0.parent.cwd.clone(), child.to_string(), registry.worktrees.clone(), registry.builds.clone());
+        // The parent's settings: whether its repository is trusted, the
+        // repository's own `worktrees`, and the fences a sandbox keeps.
+        let policy = self.0.parent.gate.policy().clone();
+        let runtime = crate::slots::runtime_dir(&|k| std::env::var(k).unwrap_or_default());
+        // Set when the parent's turn is interrupted while the worktree is
+        // made and readied: its setup command stops, and it is discarded.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = stop.clone();
+        let mut made = tokio::task::spawn_blocking(move || {
+            let readying = crate::worktree::Readying { policy: &policy, config: &config, builds: Some(&builds), cancel: Some(&stopping), runtime };
+            crate::worktree::open(&cwd, &root, &child, &readying)
+        });
+        let mut cancel = self.0.parent.cancel.clone();
+        let made = tokio::select! {
+            made = &mut made => made,
+            _ = crate::engine::cancelled(&mut cancel) => {
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                made.await
+            }
+        };
+        match made {
+            Ok(Ok(made)) => Ok(made),
+            Ok(Err(crate::worktree::Error::NotARepository)) => Err(NEEDS_A_REPOSITORY.into()),
+            Ok(Err(crate::worktree::Error::Interrupted)) => Err("not run: the turn was interrupted".into()),
+            Ok(Err(e)) => Err(format!("the subagent's worktree could not be made: {e}")),
+            Err(e) => Err(format!("the subagent's worktree could not be made: {e}")),
+        }
+    }
+}
+
+/// What a child's turn answers its call with: its summary, or why there
+/// is none.
+fn answer(result: Result<crate::protocol::RunResult, crate::engine::EngineError>) -> (String, bool) {
+    match result {
+        Ok(r) => match r.status {
+            TurnStatus::Completed if r.result.trim().is_empty() => ("the subagent finished without a summary".into(), false),
+            TurnStatus::Completed => (r.result, false),
+            TurnStatus::Interrupted if r.result.trim().is_empty() => ("the subagent was interrupted before it said anything".into(), true),
+            TurnStatus::Interrupted => (format!("the subagent was interrupted; what it said last:\n{}", r.result), true),
+            TurnStatus::Failed => (format!("the subagent failed: {}", r.error.map(|e| e.message).unwrap_or_default()), true),
+        },
+        Err(e) => (format!("the subagent could not start: {}", e.message), true),
+    }
+}
+
+/// A child's worktree, finished when the child is, its changes applied to
+/// the parent's working tree, `to` being the parent's directory
+/// (`crate::worktree::finish_into`): what its parent is told of it. Its
+/// port slot, and its hold on it, are let go once it is.
+async fn finish(i: InUse, to: PathBuf) -> Option<String> {
+    let path = i.worktree.path.clone();
+    let finished = tokio::task::spawn_blocking(move || {
+        let w = i.worktree.clone();
+        i.finish_into(&to).map(|a| a.and_then(|a| a.note(&w)))
+    })
+    .await;
+    match finished {
+        Ok(Ok(note)) => note,
+        Ok(Err(e)) => Some(format!("Worktree: {} was left as it is: {e}", path.display())),
+        Err(e) => Some(format!("Worktree: {} was left as it is: {e}", path.display())),
     }
 }
 
@@ -387,7 +586,7 @@ mod tests {
 
     #[test]
     fn r_sub_5_the_definitions_listed_cost_every_call_a_bounded_amount() {
-        let def = |i: usize, description: String| AgentDef { name: format!("agent-{i:02}"), description, model: None, tools: None, instructions: String::new(), path: PathBuf::new(), project: true };
+        let def = |i: usize, description: String| AgentDef { name: format!("agent-{i:02}"), description, model: None, tools: None, isolation: None, instructions: String::new(), path: PathBuf::new(), project: true };
         let long = format!("{}\n\nA second paragraph nobody lists.", "word ".repeat(200));
         let many: Vec<AgentDef> = (0..50).map(|i| def(i, long.clone())).collect();
         let text = describe(&many);

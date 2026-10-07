@@ -75,31 +75,26 @@ fn walk(root: &Path, deadline: Instant) -> Walk {
     w
 }
 
-/// git, run so that nothing in the repository's config runs with it:
-/// `core.fsmonitor` names a command git executes on `ls-files` and
-/// `check-ignore`, and a repository is a directory the model may have been
-/// handed. No optional locks either: a search never writes the index.
-fn git(root: &Path) -> std::process::Command {
-    let mut c = std::process::Command::new("git");
-    c.args(["-c", "core.fsmonitor=false", "--no-optional-locks"]).current_dir(root).stdin(std::process::Stdio::null());
-    c
+/// git, run so that neither its fsmonitor (which `ls-files` and
+/// `check-ignore` would execute) nor a hook runs with it: a repository is a
+/// directory the model may have been handed. No optional locks either: a
+/// search never writes the index (`krowk_api::git`).
+fn git(root: &Path) -> std::io::Result<std::process::Command> {
+    krowk_api::git::query(root)
 }
 
 /// Whether git ignores `root` itself, or a directory it is in.
 fn ignored(root: &Path) -> bool {
     git(root)
-        .arg("check-ignore")
-        .arg("-q")
-        .arg("--")
-        .arg(root)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .and_then(|mut c| {
+            c.arg("check-ignore").arg("-q").arg("--").arg(root).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status()
+        })
         .is_ok_and(|s| s.success())
 }
 
 fn git_files(root: &Path) -> Option<Walk> {
     let out = git(root)
+        .ok()?
         .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
         .stderr(std::process::Stdio::null())
         .output()
@@ -529,7 +524,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn r_tool_1_grep_and_glob_respect_gitignore_and_skip_binaries() {
         let Some(d) = git_repo("search") else { return };
-        let e = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let e = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         let (out, err) = run(GREP, &json!({"pattern": "TODO"}), &e).await;
         assert!(!err, "{out}");
         assert_eq!(out, "src/main.rs:2:    // TODO: say hello\n", "ignored files (root and nested .gitignore) and binaries are not searched");
@@ -568,7 +563,7 @@ mod tests {
         std::fs::write(d.join(".git/HEAD"), "match\n").unwrap();
         std::fs::write(d.join("many.txt"), "match\n".repeat(500)).unwrap();
         std::fs::write(d.join("wide.txt"), format!("match{}\n", "x".repeat(5000))).unwrap();
-        let e = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let e = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         // Not a work tree: an empty .git directory is not a repository.
         let (out, err) = run(GREP, &json!({"pattern": "^match"}), &e).await;
         assert!(!err && !out.contains(".git/HEAD"), "{out}");

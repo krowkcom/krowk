@@ -77,6 +77,30 @@ pub struct HostConfig {
     /// The person's agent definitions and the model listing a subagent's
     /// model is chosen from (R-SUB-1, R-SUB-5).
     pub agents: AgentsConfig,
+    /// What the session this process was started for runs with, when it
+    /// works in a krowk worktree (WT6: `krowk --worktree`, or a session
+    /// resumed in one).
+    pub session: SessionSetup,
+}
+
+/// What a session in a worktree of its own (WT6) runs with. Default:
+/// nothing, as any other session.
+#[derive(Debug, Clone, Default)]
+pub struct SessionSetup {
+    /// The id the host's first new session takes: its worktree is locked
+    /// in that session's name before the session exists.
+    pub id: Option<String>,
+    /// What readying its worktree had to say (`crate::worktree::prepare`):
+    /// the top of that session's first prompt (`worktree::first_prompt`).
+    pub notes: Vec<String>,
+    /// What every session's commands get in their environment beyond
+    /// krowk's own: the worktree's `KROWK_PORT_BASE`.
+    pub env: Vec<(String, String)>,
+    /// Whether this process holds one of the machine's agent slots for its
+    /// sessions, as a `--worktree` session's does (WT12): their subagents
+    /// run on it rather than taking more, so a session holding the last
+    /// slot is never left waiting on a child that waits for one.
+    pub on_agent_slot: bool,
 }
 
 /// What executes commands. Cheap to share: its state is behind one `Arc`,
@@ -360,6 +384,9 @@ struct TurnPlan {
     permission_mode: PermissionMode,
     effort: Option<Effort>,
     cwd: PathBuf,
+    /// What the turn's commands get in their environment beyond krowk's
+    /// own: a worktree's `KROWK_PORT_BASE`.
+    env: Vec<(String, String)>,
     backend_session: Option<String>,
     budget: Budget,
     evidence: Option<Evidence>,
@@ -731,7 +758,7 @@ impl Shared {
     async fn settle(
         self: &Arc<Self>,
         session_id: Option<&str>,
-        (text, images): (String, Vec<images::Decoded>),
+        (mut text, images): (String, Vec<images::Decoded>),
         model: Option<ModelRef>,
         permission_mode: PermissionMode,
         toolset: Option<&str>,
@@ -835,7 +862,23 @@ impl Shared {
         let (log, events) = match opened {
             Some(opened) => opened,
             None => {
-                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &self.cfg.cwd, &self.cfg.krowk_version, None, None).await.map_err(log_failure)?;
+                // WT6: the session a worktree was made for takes the id the
+                // worktree is locked in, once, and its first prompt opens
+                // with what readying the worktree had to say.
+                let id = match &self.cfg.session.id {
+                    Some(id) if !self.cfg.sessions_dir.join(id).exists() => {
+                        text = crate::worktree::first_prompt(&self.cfg.session.notes, &text);
+                        id.clone()
+                    }
+                    _ => krowk_store::new_id(),
+                };
+                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &id, &self.cfg.cwd, &self.cfg.krowk_version, None, None).await.map_err(log_failure)?;
+                // WT9: what kept worktrees left behind, cleared at most
+                // once a day, on a thread of its own the session never
+                // waits for.
+                if let Some(root) = &self.cfg.agents.worktrees {
+                    crate::worktree::manage::prune_daily(root.clone());
+                }
                 here.register(&log.session_id)?;
                 let _ = out.send(StreamLine::Log(root.clone())).await;
                 (log, vec![root])
@@ -879,6 +922,7 @@ impl Shared {
             permission_mode,
             effort,
             cwd,
+            env: self.cfg.session.env.clone(),
             backend_session,
             budget,
             evidence,
@@ -902,10 +946,11 @@ impl Shared {
 
     /// A subagent (R-SUB-1): a child session of the parent turn `spawn`
     /// describes, answering its tool call `call_id` with one turn on
-    /// `model`. Its lines go to the parent's client; its result comes back
-    /// here, for the tool call.
+    /// `model`, as the session `child` in the directory `cwd` — the
+    /// parent's, or a worktree of its own (WT3). Its lines go to the
+    /// parent's client; its result comes back here, for the tool call.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn subagent(self: &Arc<Self>, spawn: &Spawn, call_id: &str, description: &str, prompt: &str, model: ModelRef, run: AgentRun, events: &Events) -> Result<RunResult, EngineError> {
+    pub(crate) async fn subagent(self: &Arc<Self>, spawn: &Spawn, call_id: &str, description: &str, prompt: &str, model: ModelRef, run: AgentRun, (child, cwd, env): (&str, &std::path::Path, Vec<(String, String)>), events: &Events) -> Result<RunResult, EngineError> {
         let instance = self.registry().get(&model.instance).map_err(|e| EngineError::new("no_instance", e))?.clone();
         // A vendor runs its own agents, with its own tools: it could not be
         // held to the allowlist, so a subagent is always krowk's own loop.
@@ -922,7 +967,7 @@ impl Shared {
         key_off_thread(&instance).await?;
         let engine = engine_for(&instance, wire, &self.cfg.credentials, &self.cfg.krowk_version)?;
         let p = &spawn.parent;
-        let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &p.cwd, &self.cfg.krowk_version, Some(&p.session_id), run.name.as_deref()).await.map_err(log_failure)?;
+        let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, child, cwd, &self.cfg.krowk_version, Some(&p.session_id), run.name.as_deref()).await.map_err(log_failure)?;
         let _ = spawn.out.send(StreamLine::Log(root.clone())).await;
         let child = log.session_id.clone();
         let _ = events.send(EngineEvent::SubagentStarted { call_id: call_id.into(), session_id: child.clone(), description: description.into(), agent: run.name.clone(), model: model.clone() }).await;
@@ -930,7 +975,7 @@ impl Shared {
         let producer = crate::evidence::Producer::new(&instance, &model.model);
         let plan = TurnPlan {
             log,
-            past: Past { cwd: Some(p.cwd.clone()), ..Past::default() },
+            past: Past { cwd: Some(cwd.to_path_buf()), ..Past::default() },
             text: prompt.into(),
             images: Vec::new(),
             model,
@@ -941,14 +986,21 @@ impl Shared {
             info,
             permission_mode: p.permission_mode,
             effort: instance.effort,
-            cwd: p.cwd.clone(),
+            cwd: cwd.to_path_buf(),
+            env,
             backend_session: None,
             budget,
             evidence: p.evidence.as_ref().map(|e| e.for_subagent(events.clone(), producer)),
             // The parent's rules, instructions, skills and hooks, and its
             // session's grants: a subagent is judged as its parent would be,
-            // in its parent's mode, and asks under its own session id.
-            policy: p.gate.policy().clone(),
+            // in its parent's mode, and asks under its own session id. In
+            // a worktree of its own, that is its working directory — what
+            // it may edit unasked, and the sandbox's workspace — and the
+            // repository's rules hold there as they do in the checkout.
+            policy: match cwd == p.cwd {
+                true => p.gate.policy().clone(),
+                false => p.gate.policy().in_worktree(cwd),
+            },
             compat: compat::Compat { session_start: None, transcript: self.cfg.sessions_dir.join(&child).join(log::EVENTS_FILE).display().to_string(), ..(*p.compat).clone() },
             grants: p.grants.clone(),
             agent: Some(run),
@@ -1052,6 +1104,7 @@ impl Shared {
             model: model.clone(),
             history,
             cwd: plan.cwd.clone(),
+            env: plan.env.clone(),
             session_dir,
             permission_mode: plan.permission_mode,
             preset: plan.preset,
@@ -1145,6 +1198,7 @@ impl Shared {
             error,
             unread_steers,
             switch_offer: offer,
+            worktree: None,
         };
         if plan.announce {
             let _ = out.send(StreamLine::Live(LiveEvent::Result(result.clone()))).await;

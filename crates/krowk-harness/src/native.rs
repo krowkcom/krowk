@@ -294,7 +294,7 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
             // Response indexes continue from the history's, so a replayed
             // turn and this one never share an index.
             let first_response = req.history.iter().filter_map(|h| h.response).max().map_or(0, |m| m + 1);
-            let tool_env = tools::ToolEnv { cwd: &ctx.cwd, permission_mode: ctx.permission_mode, edit: ctx.preset.edit, evidence: ctx.evidence.as_ref().map(|e| (e, &events)), builds: Some(&ctx.builds), live: None };
+            let tool_env = tools::ToolEnv { cwd: &ctx.cwd, permission_mode: ctx.permission_mode, edit: ctx.preset.edit, evidence: ctx.evidence.as_ref().map(|e| (e, &events)), builds: Some(&ctx.builds), live: None, env: &ctx.env };
             for (made, response) in (first_response..).take(MAX_STEPS).enumerate() {
                 if *ctx.cancel.borrow() {
                     return Ok(TurnEnd::Interrupted);
@@ -669,7 +669,7 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
         Err(why) => return (why, true),
     };
     let (mut output, is_error) = match own {
-        Some(_) => run_own(ctx, events, call_id, name, input).await,
+        Some(_) => run_own(ctx, events, (call_id, item_id), name, input).await,
         // Searching starts the servers, each a command: plan mode runs none.
         None if name == crate::mcp::SEARCH && ctx.permission_mode == crate::protocol::PermissionMode::Plan => {
             (format!("{name} was not run: it starts the MCP servers, and plan mode runs no commands — search for MCP tools once the plan is approved"), true)
@@ -692,10 +692,10 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
 
 /// A session tool's call, once allowed: `subagent`, `ask_user` or
 /// `todo_write`.
-async fn run_own(ctx: &TurnContext, events: &Events, call_id: &str, name: &str, input: &serde_json::Value) -> (String, bool) {
+async fn run_own(ctx: &TurnContext, events: &Events, (call_id, item_id): (&str, &str), name: &str, input: &serde_json::Value) -> (String, bool) {
     match name {
         SUBAGENT => match &ctx.subagents {
-            Some(s) => s.run(call_id, input, events).await,
+            Some(s) => s.run(call_id, item_id, input, events).await,
             None => (format!("{name} is not available in this session"), true),
         },
         crate::ask::ASK_USER => match crate::ask::parse(input) {
@@ -774,7 +774,8 @@ mod tests {
     /// `context.tokens` in budgets.toml was raised to 1,625 for the two MCP
     /// meta-tools (ticket 25), and this keeps the core toolset held to the
     /// 1,500 it had before, so that headroom is MCP's alone. `ask_user`
-    /// raised both by 175 (1,641 for gpt, its largest).
+    /// raised both by 175 (1,641 for gpt, its largest); the `subagent`
+    /// tool's `isolation` field (WT3) takes 29 of what was left (1,670).
     const BASE_CONTEXT_TOKENS: u64 = 1675;
 
     fn freeform_or(ts: &Toolset) -> bool {

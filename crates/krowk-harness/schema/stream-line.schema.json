@@ -1468,6 +1468,35 @@
         "to"
       ]
     },
+    "KeptWorktree": {
+      "description": "A session's own worktree (`krowk --worktree`), kept because the session\nchanged something in it: where it is and its branch, for the person to\nmerge or work in. `krowk worktrees` lists it from then on.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "branch": {
+          "description": "`krowk/<8 hex>`.",
+          "type": "string"
+        },
+        "commits": {
+          "description": "Commits on the branch past the commit it was made at.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "uncommittedChanges": {
+          "description": "Whether it has changes nobody committed, untracked files included.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "branch",
+        "commits",
+        "uncommittedChanges"
+      ]
+    },
     "RunResult": {
       "description": "The outcome of one `prompt`, with what it cost.",
       "type": "object",
@@ -1534,6 +1563,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/SwitchOffer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "worktree": {
+          "description": "The worktree a `krowk -p --worktree` session worked in, kept when\nthe session ended because it changed something: set by the command\nline on the result it prints, after the session's turn. Absent when\nthe worktree was removed, and on every other result.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KeptWorktree"
             },
             {
               "type": "null"

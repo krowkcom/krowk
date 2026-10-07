@@ -2,6 +2,18 @@
 # own, so a `static` lock in a test binary no longer keeps its tests one at a
 # time: the groups and overrides below do.
 
+# A scratch KROWK_HOME for every test (scripts/test_home.sh), so no test
+# makes the developer's own ~/.krowk. Setup scripts are the one way nextest
+# sets a variable for every test process; the Makefile does the doctests.
+experimental = ["setup-scripts"]
+
+[scripts.setup.test-home]
+command = "scripts/test_home.sh"
+
+[[profile.default.scripts]]
+filter = "all()"
+setup = "test-home"
+
 [test-groups]
 # Each drives a real backend or daemon through a shared stand-in and holds a
 # SERIAL lock under cargo test.

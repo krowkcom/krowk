@@ -82,6 +82,7 @@ impl Home {
                     publisher: None,
                     permissions: krowk_harness::permissions::Config { approvals: answers, ..Default::default() },
                     agents: krowk_harness::subagent::AgentsConfig::none(),
+                    session: Default::default(),
                 })
             });
             server::run(server::Options { socket, idle, krowk_version: "test".into(), kick, ..Default::default() }, factory)

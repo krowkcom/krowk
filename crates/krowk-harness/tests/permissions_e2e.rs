@@ -65,6 +65,7 @@ impl Home {
             publisher: None,
             permissions: Config { home: Some(self.root.join("home")), krowk_dir: Some(self.root.join("home/.krowk")), ..permissions },
             agents: krowk_harness::subagent::AgentsConfig::none(),
+            session: Default::default(),
         })
     }
 

@@ -215,6 +215,11 @@ pub struct Call {
 pub struct Places<'a> {
     pub cwd: &'a Path,
     pub home: Option<&'a Path>,
+    /// The working directory a path rule that is not anchored (`src/**`,
+    /// `./x`, a bare name) is written against: `cwd`, but for a subagent in
+    /// a worktree of its own the same place in the worktree as its parent's
+    /// directory in the checkout (`Policy::in_worktree`).
+    pub rules_cwd: &'a Path,
 }
 
 /// Whether `r` matches every unit of `call` (`all`, for allow and ask
@@ -349,7 +354,7 @@ fn anchor<'s>(spec: &'s str, root: &Path, at: &Places<'_>) -> Anchor<'s> {
         Anchor::At(root.to_path_buf(), rest.to_string())
     } else {
         let rest = spec.trim_start_matches("./");
-        if rest.contains('/') { Anchor::At(at.cwd.to_path_buf(), rest.to_string()) } else { Anchor::Name(rest) }
+        if rest.contains('/') { Anchor::At(at.rules_cwd.to_path_buf(), rest.to_string()) } else { Anchor::Name(rest) }
     }
 }
 
@@ -365,7 +370,7 @@ fn normal(spec: &str) -> String {
 /// match would stop holding without a word.
 pub fn check_path_spec(spec: &str) -> Result<(), String> {
     let spec = normal(spec);
-    let glob = match anchor(&spec, Path::new("/"), &Places { cwd: Path::new("/"), home: Some(Path::new("/")) }) {
+    let glob = match anchor(&spec, Path::new("/"), &Places { cwd: Path::new("/"), home: Some(Path::new("/")), rules_cwd: Path::new("/") }) {
         Anchor::At(_, rest) => format!("/{rest}"),
         Anchor::Name(n) => n.to_string(),
         Anchor::Unknown => return Ok(()),
@@ -382,7 +387,7 @@ impl PathPattern {
             Anchor::Unknown => (None, None),
             Anchor::Name(n) => (None, both(n)),
         };
-        PathPattern { anchored, name, cwd: at.cwd.to_path_buf() }
+        PathPattern { anchored, name, cwd: at.rules_cwd.to_path_buf() }
     }
 
     /// Judged as the path is spelled and as it really leads, and — for a
@@ -1300,7 +1305,7 @@ mod tests {
     }
 
     fn bash(t: &str, cmd: &str, all: bool) -> bool {
-        matches(&rule(t), &Call { tool: "Bash".into(), access: Access::Bash(cmd.into()), subject: None }, &Places { cwd: Path::new("/proj/sub"), home: Some(Path::new("/home/me")) }, all)
+        matches(&rule(t), &Call { tool: "Bash".into(), access: Access::Bash(cmd.into()), subject: None }, &Places { cwd: Path::new("/proj/sub"), home: Some(Path::new("/home/me")), rules_cwd: Path::new("/proj/sub") }, all)
     }
 
     #[test]
@@ -1394,7 +1399,7 @@ mod tests {
 
     #[test]
     fn r_perm_1_path_rules_resolve_like_claude_codes() {
-        let at = Places { cwd: Path::new("/proj/sub"), home: Some(Path::new("/home/me")) };
+        let at = Places { cwd: Path::new("/proj/sub"), home: Some(Path::new("/home/me")), rules_cwd: Path::new("/proj/sub") };
         let read = |t: &str, p: &str, all: bool| matches(&rule(t), &Call { tool: "Read".into(), access: Access::Read(vec![PathBuf::from(p)]), subject: None }, &at, all);
         let edit = |t: &str, p: &str| matches(&rule(t), &Call { tool: "Write".into(), access: Access::Edit(vec![PathBuf::from(p)]), subject: None }, &at, true);
         assert!(read("Read(//etc/**)", "/etc/hosts", true) && !read("Read(//etc/**)", "/proj/etc/x", true));
@@ -1414,7 +1419,7 @@ mod tests {
 
     #[test]
     fn r_perm_1_webfetch_and_mcp_rules() {
-        let at = Places { cwd: Path::new("/"), home: None };
+        let at = Places { cwd: Path::new("/"), home: None, rules_cwd: Path::new("/") };
         let fetch = |t: &str, u: &str| matches(&rule(t), &Call { tool: "WebFetch".into(), access: Access::Fetch(u.into()), subject: None }, &at, true);
         assert!(fetch("WebFetch(domain:example.com)", "https://example.com/a") && !fetch("WebFetch(domain:example.com)", "https://evil.example.com.attacker.io/"));
         assert!(fetch("WebFetch(domain:*.example.com)", "https://docs.example.com/") && !fetch("WebFetch(domain:example.com)", "https://docs.example.com/"));
@@ -1587,7 +1592,7 @@ mod tests {
         std::fs::write(d.join("b/config"), "[core]\n\tpager = touch pwned\n").unwrap();
         std::fs::create_dir_all(d.join("b/hooks")).unwrap();
         let d = d.canonicalize().unwrap();
-        let at = Places { cwd: &d, home: None };
+        let at = Places { cwd: &d, home: None, rules_cwd: &d };
         let covered = |cmd: &str| matches(&rule("Bash(git:*)"), &Call { tool: "Bash".into(), access: Access::Bash(cmd.into()), subject: None }, &at, true);
         for cmd in [
             "git -C b log",
@@ -1618,7 +1623,7 @@ mod tests {
         let plain = d.join("nested/inner");
         std::fs::write(plain.join("HEAD"), "x").unwrap();
         std::fs::create_dir_all(plain.join("refs")).unwrap();
-        let inner = Places { cwd: &plain, home: None };
+        let inner = Places { cwd: &plain, home: None, rules_cwd: &plain };
         for cmd in ["git log", "git -C . log"] {
             assert!(!matches(&rule("Bash(git:*)"), &Call { tool: "Bash".into(), access: Access::Bash(cmd.into()), subject: None }, &inner, true), "{cmd}: the bare layout is met before any .git");
         }
@@ -1639,7 +1644,7 @@ mod tests {
     #[test]
     fn r_perm_1_path_rules_anchor_at_directories_with_brackets_and_fold_case_for_deny() {
         let odd = Path::new("/w/a[1]{x}");
-        let at = Places { cwd: odd, home: Some(Path::new("/h/[me]")) };
+        let at = Places { cwd: odd, home: Some(Path::new("/h/[me]")), rules_cwd: odd };
         let r = |t: &str| parse(t, "test", odd).unwrap();
         let hit = |t: &str, p: &str, all: bool| matches(&r(t), &Call { tool: "Read".into(), access: Access::Read(vec![PathBuf::from(p)]), subject: None }, &at, all);
         assert!(hit("Read(/secrets/**)", "/w/a[1]{x}/secrets/k", true), "the root is a directory, not a pattern");

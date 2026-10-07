@@ -17,6 +17,8 @@ mod devices;
 #[cfg(all(feature = "harness", unix))]
 mod host;
 #[cfg(feature = "harness")]
+mod own_worktree;
+#[cfg(feature = "harness")]
 mod pairing;
 #[cfg(feature = "harness")]
 mod prompt;
@@ -41,6 +43,8 @@ mod synced;
 mod tui;
 mod upgrade;
 mod workspace;
+#[cfg(feature = "harness")]
+mod worktrees;
 
 use crate::output::{self, jq, Format};
 use flags::Flags;
@@ -135,6 +139,12 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     #[cfg(feature = "harness")]
     let parsed = parsed.and_then(|()| match f.resume_pick && !tui::wanted(io, &f, format, &positionals, jq_given) {
         true => Err("--resume needs a value".to_string()),
+        false => Ok(()),
+    });
+    // A resumed session runs in the directory it ran in.
+    #[cfg(feature = "harness")]
+    let parsed = parsed.and_then(|()| match f.own_worktree && (f.resume_pick || !f.resume.is_empty()) {
+        true => Err("--worktree starts a new session in a worktree of its own, and --resume continues one in the directory it ran in — drop one of them".to_string()),
         false => Ok(()),
     });
     if let Err(why) = parsed {
@@ -386,6 +396,14 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(all(feature = "harness", unix))]
         ["sync", "attach", ..] => synced::attach(ctx, rest(2)),
         #[cfg(feature = "harness")]
+        ["worktrees"] | ["worktrees", "list", ..] => worktrees::list(ctx),
+        #[cfg(feature = "harness")]
+        ["worktrees", "remove", ..] => worktrees::remove(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["worktrees", "apply", ..] => worktrees::apply(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["worktrees", "prune", ..] => worktrees::prune(ctx),
+        #[cfg(feature = "harness")]
         ["devices"] | ["devices", "list", ..] => devices::list(ctx),
         #[cfg(feature = "harness")]
         ["devices", "add", ..] => pairing::add(ctx, rest(2)),
@@ -571,6 +589,14 @@ const ALL_OWNERS: &str = "`krowk sessions` and `krowk help`";
 #[cfg(not(feature = "sessions"))]
 const ALL_OWNERS: &str = "`krowk help`";
 
+/// Who takes `--worktree`: `sessions`, whose `--worktree <path>` filters
+/// the listing, and in the agent's build a new session, which starts in a
+/// worktree of its own.
+#[cfg(feature = "harness")]
+const WORKTREE_OWNERS: &str = "`krowk sessions` (`--worktree <path>`), `krowk -p` and the TUI";
+#[cfg(not(feature = "harness"))]
+const WORKTREE_OWNERS: &str = "`krowk sessions`";
+
 /// Each sessions flag is refused anywhere it does not belong: a flag that
 /// means nothing where it was typed was misunderstood by whoever typed it.
 fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error> {
@@ -586,7 +612,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         ("dry-run", "`krowk sessions import`", import),
         ("from", "`krowk sessions import`", import),
         ("harness", "`krowk sessions`", list),
-        ("worktree", "`krowk sessions`", list),
+        ("worktree", WORKTREE_OWNERS, list),
         ("all", ALL_OWNERS, list),
         ("thinking", "`krowk sessions show`", show),
         ("older-than", "`krowk sessions archive`", words.starts_with(&["sessions", "archive"])),
@@ -627,11 +653,14 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         if f.given.contains("save") && !kit {
             return Err(fail("bad_flag", "`--save` is only a flag of `krowk sync init` and `krowk sync recovery new`"));
         }
+        if f.given.contains("to") && !words.starts_with(&["worktrees", "apply"]) {
+            return Err(fail("bad_flag", "`--to` is only a flag of `krowk worktrees apply`"));
+        }
         if f.given.contains("start-over") && !words.starts_with(&["sync", "init"]) {
             return Err(fail("bad_flag", "`--start-over` is only a flag of `krowk sync init`"));
         }
-        if f.given.contains("force") && !words.starts_with(&["host", "stop"]) {
-            return Err(fail("bad_flag", "`--force` is only a flag of `krowk host stop`"));
+        if f.given.contains("force") && !words.starts_with(&["host", "stop"]) && !words.starts_with(&["worktrees", "remove"]) {
+            return Err(fail("bad_flag", "`--force` is only a flag of `krowk host stop` and `krowk worktrees remove`"));
         }
         let owners = [("device", "`krowk providers add` (`krowk connect` takes --method device)", add), ("method", "`krowk connect`", connect), ("default", "`krowk connect`", connect), ("key-stdin", "`krowk connect`", connect), ("key-ref", "`krowk connect`", connect), ("remove", "`krowk disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`krowk disconnect`", words.first() == Some(&"disconnect"))];
         for (name, owner, allowed) in owners {

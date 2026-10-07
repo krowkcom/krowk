@@ -35,6 +35,7 @@ Account
 
 Other
   providers     Low-level instance config (add, list, rename, remove)
+  worktrees     The git worktrees krowk made for agents, across repositories
   host          The daemon sessions run in, which outlives the terminal
   config        Show or set configuration
   doctor        Check this machine's setup
@@ -43,7 +44,7 @@ Other
 
 Flags
   --model <instance/model>   Which model (e.g. claude/sonnet)
-  --resume [id]              Continue a session
+  --resume · --worktree      Continue a session, or start one in a worktree
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
 
@@ -1342,6 +1343,62 @@ stdout:
           "summary": "Take a device off your list and rotate your key"
         }
       ]
+    },
+    {
+      "name": "worktrees",
+      "summary": "The git worktrees krowk made for agents, across repositories",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk worktrees list",
+          "summary": "Each one: branch, commits ahead, changes, session, age"
+        },
+        {
+          "name": "remove",
+          "usage": "krowk worktrees remove <hex|path> [--force]",
+          "summary": "Remove one, its branch kept; not while its session runs",
+          "args": [
+            {
+              "name": "worktree",
+              "summary": "Its 8 hex digits, its branch krowk/<hex>, or its directory",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>"
+            }
+          ]
+        },
+        {
+          "name": "apply",
+          "usage": "krowk worktrees apply <hex|path> [--to DIR]",
+          "summary": "Bring one's changes into a checkout, uncommitted",
+          "args": [
+            {
+              "name": "worktree",
+              "summary": "Its 8 hex digits, its branch krowk/<hex>, or its directory",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "to",
+              "type": "string",
+              "default": "",
+              "usage": "The checkout its changes go to (default: the repository's main checkout)"
+            }
+          ]
+        },
+        {
+          "name": "prune",
+          "usage": "krowk worktrees prune",
+          "summary": "Clear what deleted worktrees left, and old snapshots"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -1425,6 +1482,12 @@ stdout:
       "type": "string",
       "default": "",
       "usage": "With -p: continue this krowk session — the sessionId a result names, or its krowk.db id"
+    },
+    {
+      "name": "worktree",
+      "type": "bool",
+      "default": "false",
+      "usage": "With -p, and in the TUI: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did"
     },
     {
       "name": "permission-mode",
@@ -1569,6 +1632,7 @@ Account
 
 Other
   providers     Low-level instance config (add, list, rename, remove)
+  worktrees     The git worktrees krowk made for agents, across repositories
   host          The daemon sessions run in, which outlives the terminal
   config        Show or set configuration
   doctor        Check this machine's setup
@@ -1577,7 +1641,7 @@ Other
 
 Flags
   --model <instance/model>   Which model (e.g. claude/sonnet)
-  --resume [id]              Continue a session
+  --resume · --worktree      Continue a session, or start one in a worktree
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
 
@@ -2890,6 +2954,62 @@ tty:
           "summary": "Take a device off your list and rotate your key"
         }
       ]
+    },
+    {
+      "name": "worktrees",
+      "summary": "The git worktrees krowk made for agents, across repositories",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk worktrees list",
+          "summary": "Each one: branch, commits ahead, changes, session, age"
+        },
+        {
+          "name": "remove",
+          "usage": "krowk worktrees remove <hex|path> [--force]",
+          "summary": "Remove one, its branch kept; not while its session runs",
+          "args": [
+            {
+              "name": "worktree",
+              "summary": "Its 8 hex digits, its branch krowk/<hex>, or its directory",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>"
+            }
+          ]
+        },
+        {
+          "name": "apply",
+          "usage": "krowk worktrees apply <hex|path> [--to DIR]",
+          "summary": "Bring one's changes into a checkout, uncommitted",
+          "args": [
+            {
+              "name": "worktree",
+              "summary": "Its 8 hex digits, its branch krowk/<hex>, or its directory",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "to",
+              "type": "string",
+              "default": "",
+              "usage": "The checkout its changes go to (default: the repository's main checkout)"
+            }
+          ]
+        },
+        {
+          "name": "prune",
+          "usage": "krowk worktrees prune",
+          "summary": "Clear what deleted worktrees left, and old snapshots"
+        }
+      ]
     }
   ],
   "global_flags": [
@@ -2973,6 +3093,12 @@ tty:
       "type": "string",
       "default": "",
       "usage": "With -p: continue this krowk session — the sessionId a result names, or its krowk.db id"
+    },
+    {
+      "name": "worktree",
+      "type": "bool",
+      "default": "false",
+      "usage": "With -p, and in the TUI: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did"
     },
     {
       "name": "permission-mode",

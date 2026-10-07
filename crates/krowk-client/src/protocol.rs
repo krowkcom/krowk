@@ -930,6 +930,27 @@ pub struct RunResult {
     /// `rollover` at `offer`: the instance it could continue on (R-INST-7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch_offer: Option<SwitchOffer>,
+    /// The worktree a `krowk -p --worktree` session worked in, kept when
+    /// the session ended because it changed something: set by the command
+    /// line on the result it prints, after the session's turn. Absent when
+    /// the worktree was removed, and on every other result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<Box<KeptWorktree>>,
+}
+
+/// A session's own worktree (`krowk --worktree`), kept because the session
+/// changed something in it: where it is and its branch, for the person to
+/// merge or work in. `krowk worktrees` lists it from then on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct KeptWorktree {
+    pub path: String,
+    /// `krowk/<8 hex>`.
+    pub branch: String,
+    /// Commits on the branch past the commit it was made at.
+    pub commits: usize,
+    /// Whether it has changes nobody committed, untracked files included.
+    pub uncommitted_changes: bool,
 }
 
 /// One line of `--output-format stream-json`, and of anything else that

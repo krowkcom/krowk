@@ -38,6 +38,28 @@ Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a
 
 In the prompt, `/` lists the commands and `?` shows the keys.
 
+## Worktrees
+
+Agents running at once can each work in a git worktree of their own, on a branch `krowk/<hex>`, so they don't overwrite each other's files.
+
+- **Subagents.** `isolation: "worktree"` on the `subagent` call, or `isolation: worktree` in an agent definition's frontmatter, runs the child in a new worktree started from your files as they are, uncommitted changes included. When it finishes, an unchanged worktree is removed; a changed one is applied back to your working tree (never your index or HEAD) and removed. A conflict, a submodule change or a change to `.git`, `.claude`, `.codex` or `.krowk` keeps it, and the summary names it.
+- **A session of its own.** `krowk --worktree` (or `krowk -p --worktree`) starts the session in a new worktree. On exit an unchanged one is removed and a kept one is named.
+- **Ready to build.** Submodules are initialised from your checkout, `target` and `node_modules` are cloned in where the file system makes that nearly free (`worktrees.seed`), the ignored files your `.worktreeinclude` lists (`.env`, local config) are copied, and `worktrees.setup` runs a command such as `npm ci` in the sandbox. A repository's own setup command runs only once you trust it. On btrfs a worktree is a snapshot, made in tens of milliseconds whatever the repository's size.
+- **The machine's limits.** Build and test commands (`cargo`, `make`, `npm`, `pytest`, …) from every krowk on the machine queue for `builds.slots` slots, a quarter of the cores by default. Subagents and `--worktree` sessions share `subagents.maxHost` agent slots. A worktree is refused when its disk is short of 4 GiB beyond twice its expected size.
+
+| Command | What it does |
+| --- | --- |
+| `krowk worktrees` | List krowk's worktrees: base, commits ahead, uncommitted changes, whose session |
+| `krowk worktrees apply <hex> [--to <dir>]` | Bring a kept worktree's changes into your checkout, uncommitted |
+| `krowk worktrees remove <hex> [--force]` | Remove one; `--force` saves its changes as a ref first, and the branch is kept |
+| `krowk worktrees prune` | Clear what deleted worktrees left, and snapshots over 30 days old (also runs daily) |
+
+```json
+{ "worktrees": { "setup": "npm ci" }, "builds": { "slots": 4 }, "subagents": { "maxHost": 16 } }
+```
+
+`scripts/bench-worktrees` measures all of this on this repository: 20 worktrees made and checked at once, and three subagents applied back.
+
 ## Sessions
 
 The full build keeps a local store of your agent sessions, whether they came from krowk, Claude Code, Cursor or opencode.

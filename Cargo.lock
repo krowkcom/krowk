@@ -1784,6 +1784,7 @@ dependencies = [
  "crossterm",
  "futures-core",
  "image",
+ "krowk-api",
  "krowk-harness",
  "libc",
  "nucleo-matcher",

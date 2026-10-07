@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# WT16: the worktree wave measured on this repository, with no model calls.
+# A scratch clone of the checkout (its HEAD), a scratch worktrees root, both
+# under one directory that is removed on the way out; the checkout's own
+# repository never gets a worktree. The driver, the krowk-harness example
+# bench_worktrees, says what it measures; this prints its table:
+#
+#   method | creation p50 | p95 | check wall time | peak RSS | total slot wait | leftovers
+#
+#   scripts/bench-worktrees [count]     # 20 worktrees by default
+#
+# The scratch directory is made under $BENCH_WORKTREES_DIR, else $TMPDIR,
+# else /tmp. Worktrees are made as template snapshots only on btrfs, so put
+# it on the file system you want measured. Before the worktrees are made,
+# the clone gets one `cargo check` of its own (timed), so its target/ is
+# there to seed them, as a checkout someone works in has one.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+count=${1:-20}
+base=${BENCH_WORKTREES_DIR:-${TMPDIR:-/tmp}}
+mkdir -p "$base"
+scratch=$(mktemp -d "$base/krowk-bench-worktrees.XXXXXX")
+trap 'rm -rf "$scratch"' EXIT
+
+cargo build --quiet --locked -p krowk-harness --example bench_worktrees
+driver=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/debug/examples/bench_worktrees
+
+git clone --quiet . "$scratch/repo"
+started=$(date +%s)
+(cd "$scratch/repo" && env -u CARGO_TARGET_DIR cargo check --quiet --locked --workspace)
+echo "the clone's own cargo check: $(( $(date +%s) - started )) s"
+
+"$driver" "$scratch/repo" "$scratch/worktrees" "$count"

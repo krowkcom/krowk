@@ -230,6 +230,9 @@ pub struct ToolEnv<'a> {
     /// Where a call's live output goes, and the result item it belongs to:
     /// bash says there that it waits for a build slot.
     pub live: Option<(&'a crate::engine::Events, &'a str)>,
+    /// What bash's commands get in their environment beyond krowk's own,
+    /// passed into the sandbox too: a krowk worktree's `KROWK_PORT_BASE`.
+    pub env: &'a [(String, String)],
 }
 
 /// Parses a call's input, or answers why it cannot.
@@ -434,6 +437,18 @@ const MAX_LINKS: usize = 40;
 /// are in.
 const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".krowk"];
 
+/// The fenced directory (`FENCED`) one of `path`'s components names, if
+/// any: what the file tools change only with a person's say, and what
+/// applying a worktree's changes back leaves to a person (WT13). Compared
+/// the way the file system may: case-insensitively (macOS and Windows open
+/// `.Claude` as `.claude`), and with the trailing dots and spaces Windows
+/// drops (`.git.` is `.git`) — on every OS, since a checkout travels
+/// between them.
+pub fn fenced_dir(path: &Path) -> Option<&'static str> {
+    let fold = |c: &std::ffi::OsStr| c.to_string_lossy().trim_end_matches(['.', ' ']).to_ascii_lowercase();
+    path.components().find_map(|c| FENCED.into_iter().find(|d| fold(c.as_os_str()) == *d))
+}
+
 impl Scope {
     /// Only the working directory, nothing opened.
     pub fn within(cwd: &Path) -> Scope {
@@ -478,12 +493,7 @@ impl Scope {
     /// could run any command without the bash permission. Codex keeps
     /// `.git` read-only for the same reason.
     fn fence(&self, p: &Path, real: &Path, root: &Path) -> Option<String> {
-        // Compared the way the file system may: case-insensitively (macOS
-        // and Windows open `.Claude` as `.claude`), and with the trailing
-        // dots and spaces Windows drops (`.git.` is `.git`) — on every OS,
-        // since a checkout travels between them.
-        let fold = |c: &std::ffi::OsStr| c.to_string_lossy().trim_end_matches(['.', ' ']).to_ascii_lowercase();
-        let inside = |q: &Path| q.components().find_map(|c| FENCED.into_iter().find(|d| fold(c.as_os_str()) == *d));
+        let inside = fenced_dir;
         let rel = |q: &Path| {
             let mut bases: Vec<PathBuf> = vec![self.cwd.clone(), root.to_path_buf()];
             bases.extend(self.roots.iter().cloned());
@@ -888,19 +898,116 @@ impl Capture {
 /// Kills the command's whole process group when dropped armed: on a timeout,
 /// and when the turn is interrupted and the call's future is dropped — so
 /// what the command started dies with it, not just the shell.
-struct GroupKill(Option<u32>);
+///
+/// Under bubblewrap the command is not in that group: it runs in a session
+/// of its own, in a pid namespace whose first process (`init`, which
+/// bubblewrap names on `--info-fd`) takes everything in it down when it
+/// dies — asynchronously. So after the group, the sandbox's first process
+/// is killed, and only once it has exited, which it does when the
+/// namespace is empty, is the call's `Unfenced` swept: a sweep beside a command still running
+/// could be undone by it (a link planted again just after). On a timeout
+/// that is awaited; on an interrupt, where nothing awaits a drop, it runs
+/// on a thread of its own.
+struct GroupKill {
+    group: Option<u32>,
+    init: Option<std::sync::mpsc::Receiver<Option<Pidfd>>>,
+    unfenced: Option<crate::sandbox::Unfenced>,
+}
+
+#[cfg(unix)]
+type Pidfd = std::os::fd::OwnedFd;
+#[cfg(not(unix))]
+type Pidfd = ();
+
+/// How long a teardown waits to learn the sandbox's first process, and
+/// then for it to exit.
+#[cfg(target_os = "linux")]
+const SANDBOX_LEARN: Duration = Duration::from_secs(2);
+#[cfg(target_os = "linux")]
+const SANDBOX_EXIT_MS: i32 = 10_000;
+
+impl GroupKill {
+    /// Kills the group, at once: its leader is not reaped until the call's
+    /// child is dropped, after this, so the pid cannot name another's.
+    /// Returns whether it was armed, and disarms it.
+    fn kill_group(&mut self) -> bool {
+        let Some(pid) = self.group.take() else { return false };
+        // SAFETY: kill(2) on the group this call created; a group that
+        // already exited is ESRCH, which is fine.
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+        #[cfg(not(unix))]
+        let _ = pid;
+        true
+    }
+
+    /// Kills the sandbox's first process and waits until it has exited —
+    /// when everything in its namespace has — then sweeps. Blocks.
+    fn settle(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(Ok(Some(init))) = self.init.take().map(|rx| rx.recv_timeout(SANDBOX_LEARN)) {
+            use std::os::fd::AsRawFd;
+            // SAFETY: pidfd_send_signal(2) and poll(2) on a pidfd this call
+            // opened; it is readable once the process has exited.
+            unsafe {
+                libc::syscall(libc::SYS_pidfd_send_signal, init.as_raw_fd(), libc::SIGKILL, std::ptr::null::<libc::siginfo_t>(), 0);
+                let mut p = libc::pollfd { fd: init.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                libc::poll(&mut p, 1, SANDBOX_EXIT_MS);
+            }
+        }
+        drop(self.unfenced.take());
+    }
+}
 
 impl Drop for GroupKill {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.0 {
-            // SAFETY: kill(2) on the group this call created; a group that
-            // already exited is ESRCH, which is fine.
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
+        if self.kill_group() {
+            let mut rest = GroupKill { group: None, init: self.init.take(), unfenced: self.unfenced.take() };
+            std::thread::spawn(move || rest.settle());
         }
     }
+}
+
+/// The sandbox's first process, as bubblewrap writes it on `--info-fd`
+/// (`"child-pid": N`), opened as a pidfd — a process that has exited and
+/// whose pid is reused is not mistaken for it — or none when bubblewrap
+/// exits before it says.
+#[cfg(target_os = "linux")]
+fn sandbox_init(mut info: std::io::PipeReader) -> std::sync::mpsc::Receiver<Option<Pidfd>> {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut text, mut chunk) = (Vec::new(), [0u8; 256]);
+        let pid = loop {
+            if let Some(p) = child_pid(&text) {
+                break Some(p);
+            }
+            match info.read(&mut chunk) {
+                Ok(n) if n > 0 => text.extend_from_slice(&chunk[..n]),
+                _ => break None,
+            }
+        };
+        // SAFETY: pidfd_open(2); the descriptor it returns is owned here.
+        let fd = pid.map(|p| unsafe { libc::syscall(libc::SYS_pidfd_open, p, 0) }).filter(|fd| *fd >= 0).map(|fd| unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) });
+        let _ = tx.send(fd);
+        // Read to the end: bubblewrap writes the rest of its JSON after
+        // the pid, and a pipe closed under it would kill it (SIGPIPE).
+        let _ = std::io::copy(&mut info, &mut std::io::sink());
+    });
+    rx
+}
+
+/// The `child-pid` in bubblewrap's `--info-fd` JSON, once all its digits
+/// have arrived.
+#[cfg(target_os = "linux")]
+fn child_pid(json: &[u8]) -> Option<libc::pid_t> {
+    let text = String::from_utf8_lossy(json);
+    let rest = text.split_once("\"child-pid\"")?.1.trim_start().strip_prefix(':')?.trim_start();
+    let end = rest.find(|c: char| !c.is_ascii_digit())?;
+    rest[..end].parse().ok().filter(|p| *p > 0)
 }
 
 /// A build slot for a heavy command (`crate::builds`), held until the
@@ -934,11 +1041,14 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     if let Some(why) = sandbox.and_then(|p| p.refused.as_ref()) {
         return (format!("the command was not run: {why}"), true);
     }
+    // Where bubblewrap says which process is the sandbox's first.
+    #[cfg(target_os = "linux")]
+    let mut info: Option<(std::io::PipeReader, std::io::PipeWriter)> = None;
     // A build or a test run: its share of the cores, and a build slot
     // before it starts, held until it is done — dropped after the group
     // is killed, since it was taken first.
     let builds = env.builds.filter(|b| b.pool.is_some() && crate::builds::heavy(&i.command));
-    let jobs: Vec<(String, String)> = builds.and_then(|b| b.jobs.clone()).map(|n| ("CARGO_BUILD_JOBS".to_string(), n)).into_iter().collect();
+    let jobs: Vec<(String, String)> = env.env.iter().cloned().chain(builds.and_then(|b| b.jobs.clone()).map(|n| ("CARGO_BUILD_JOBS".to_string(), n))).collect();
     let (_slot, slot_note) = match builds.and_then(|b| b.pool.as_ref()) {
         Some(pool) => build_slot(env, pool).await,
         None => (None, None),
@@ -951,25 +1061,34 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
         }
         Some(Ok((program, args))) => {
             let mut c = tokio::process::Command::new(program);
+            #[cfg(target_os = "linux")]
+            let info_w = match std::io::pipe() {
+                Ok((r, w)) => {
+                    use std::os::fd::AsRawFd;
+                    let fd = w.as_raw_fd();
+                    info = Some((r, w));
+                    c.args(["--info-fd", "3"]);
+                    fd
+                }
+                Err(e) => return (format!("bash could not be started: {e}"), true),
+            };
             // bubblewrap's own environment is the allowlist too: its
             // process inside the namespace is pid 1, whose environ the
             // command can read.
             c.args(args).env_clear().envs(crate::sandbox::env());
-            // Nothing krowk inherited reaches the sandbox open: every
-            // descriptor past stdio is closed when bubblewrap starts.
-            // SAFETY: close_range(2) with CLOSE_RANGE_CLOEXEC only marks
-            // descriptors, allocates nothing, and is async-signal-safe;
-            // run after the child's stdio is in place.
+            // Nothing krowk inherited reaches the sandbox open
+            // (`sandbox::cloexec_past_stdio`), but the info pipe.
+            // SAFETY: what runs between fork and exec is async-signal-safe
+            // and allocates nothing; run after the child's stdio is in place.
             #[cfg(target_os = "linux")]
             unsafe {
-                c.pre_exec(|| {
-                    const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
-                    if libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, libc::c_uint::MAX, CLOSE_RANGE_CLOEXEC) != 0 {
-                        // Before Linux 5.11: one by one, up to the limit.
-                        let max = libc::sysconf(libc::_SC_OPEN_MAX).clamp(1024, 1 << 20) as libc::c_int;
-                        for fd in 3..max {
-                            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
-                        }
+                c.pre_exec(move || {
+                    crate::sandbox::cloexec_past_stdio();
+                    // `--info-fd 3`: the one descriptor bubblewrap keeps,
+                    // and closes before the command starts.
+                    let ok = if info_w == 3 { libc::fcntl(3, libc::F_SETFD, 0) } else { libc::dup2(info_w, 3) };
+                    if ok < 0 {
+                        return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
                 });
@@ -978,7 +1097,7 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
         }
         Some(Err(fix)) => return (format!("the command was not run: {fix}"), true),
     };
-    let mut unfenced = sandbox.filter(|p| p.kernel).map(crate::sandbox::Unfenced::before);
+    let unfenced = sandbox.filter(|p| p.kernel).map(crate::sandbox::Unfenced::before);
     cmd.current_dir(cwd);
     cmd.stdin(std::process::Stdio::null());
     // One pipe for both streams, as a terminal would have it: the model
@@ -1003,10 +1122,17 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
         Ok(c) => c,
         Err(e) => return (format!("bash could not be started: {e}"), true),
     };
-    let mut group = GroupKill(child.id());
     // The command's copies of the write end go with it, so the pipe closes
     // when the shell and what it started are done.
     drop(cmd);
+    #[cfg(target_os = "linux")]
+    let init = info.map(|(r, w)| {
+        drop(w);
+        sandbox_init(r)
+    });
+    #[cfg(not(target_os = "linux"))]
+    let init = None;
+    let mut group = GroupKill { group: child.id(), init, unfenced };
     #[cfg(unix)]
     let (mut so, mut se): (_, Option<tokio::process::ChildStderr>) = {
         let std_out = std::process::ChildStdout::from(std::os::fd::OwnedFd::from(merged));
@@ -1064,8 +1190,10 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     };
     match tokio::time::timeout(timeout, run).await {
         Ok((code, held_open)) => {
-            // Finished: what it left in the background is its business.
-            group.0 = None;
+            // Finished: what it left in the background is its business —
+            // outside the sandbox; inside it, bubblewrap's exit means its
+            // pid namespace, and so all of it, is gone.
+            group.group = None;
             let text = cap.render();
             let mut tail = match code {
                 Some(c) => format!("exit code {c}"),
@@ -1078,7 +1206,7 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
                 tail += &format!("\n{note}");
             }
             let mut body = if text.is_empty() { tail.clone() } else { format!("{}\n{tail}", text.trim_end_matches('\n')) };
-            let appeared = unfenced.as_mut().map(|u| u.appeared()).unwrap_or_default();
+            let appeared = group.unfenced.as_mut().map(|u| u.appeared()).unwrap_or_default();
             if !appeared.is_empty() {
                 let names = appeared.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
                 body += &format!("\nthe sandbox removed {names}, which the command created: git, Claude Code, Codex and krowk run what such a directory names, so none is made from inside the sandbox — ask the person to create it");
@@ -1087,7 +1215,8 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
             (body, code != Some(0))
         }
         Err(_) => {
-            drop(group);
+            group.kill_group();
+            let _ = tokio::task::spawn_blocking(move || group.settle()).await;
             let note = slot_note.map(|n| format!("\n{n}")).unwrap_or_default();
             (format!("the command timed out after {} ms and was killed{note}", timeout.as_millis()), true)
         }
@@ -1157,7 +1286,7 @@ pub(crate) mod tests {
         symlink(&outside, cwd.join("dir-link")).unwrap();
         symlink(outside.join("not-yet.txt"), cwd.join("dangling")).unwrap();
         symlink(cwd.join("a.txt"), cwd.join("inside-link")).unwrap();
-        let env = ToolEnv { cwd: &cwd, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &cwd, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[] };
         let refused = |r: (String, bool)| r.1 && r.0.contains("outside the working directory") && r.0.contains("bypassPermissions");
         let abs = outside.join("new.txt").display().to_string();
         for path in ["../outside/new.txt", abs.as_str(), "dir-link/new.txt", "dangling", "file-link", "sub/../../outside/x", "new/../../x"] {
@@ -1229,7 +1358,7 @@ pub(crate) mod tests {
         let marker = d.join("fsmonitor-ran");
         let config = std::fs::read_to_string(d.join(".git/config")).unwrap();
         std::fs::write(d.join(".git/config"), format!("{config}[core]\n\tfsmonitor = \"touch '{}'; false\"\n", marker.display())).unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[] };
         assert_eq!(run(GREP, &json!({"pattern": "needle"}), &env).await, ("a.txt:1:needle\n".into(), false));
         assert_eq!(run(GLOB, &json!({"pattern": "*.txt"}), &env).await, ("a.txt\n".into(), false));
         assert!(!marker.exists(), "the repository's fsmonitor ran");
@@ -1279,7 +1408,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn r_back_3_codex_config_and_the_instances_home_are_kept_like_git() {
         let d = dir("codex-guard");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[] };
         let fenced = |r: (String, bool), dir: &str| r.1 && r.0.contains(&format!("inside a {dir} directory"));
         assert!(fenced(run(WRITE, &json!({"path": ".codex/config.toml", "content": "x"}), &env).await, ".codex"));
         assert!(fenced(run(WRITE, &json!({"path": "sub/.Codex/rules/x.rules", "content": "x"}), &env).await, ".codex"), "any component, any case");
@@ -1315,7 +1444,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn r_sub_5_krowk_agent_definitions_are_kept_like_git() {
         let d = dir("krowk-guard");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         for path in [".krowk/agents/evil.md", ".KROWK/agents/evil.md", "sub/.krowk./agents/x.md", ".claude/agents/evil.md"] {
             let (out, refused) = run(WRITE, &json!({"path": path, "content": "---\nname: evil\n---\n"}), &env).await;
             assert!(refused && out.contains("inside a ."), "{path}: {out}");
@@ -1334,7 +1463,7 @@ pub(crate) mod tests {
         let f = d.join("locked.txt");
         std::fs::write(&f, "keep\n").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         for (tool, input) in [
             (WRITE, json!({"path": "locked.txt", "content": "gone"})),
             (STR_REPLACE, json!({"path": "locked.txt", "old_str": "keep", "new_str": "gone"})),
@@ -1357,7 +1486,7 @@ pub(crate) mod tests {
     async fn only_the_turns_edit_tool_runs() {
         let d = dir("edit-gate");
         std::fs::write(d.join("a.txt"), "x\n").unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[] };
         let (out, err) = run(STR_REPLACE, &json!({"path": "a.txt", "old_str": "x", "new_str": "y"}), &env).await;
         assert!(err && out.contains("edit files with apply_patch"), "{out}");
         assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "x\n");
@@ -1377,7 +1506,7 @@ pub(crate) mod tests {
         let d = dir("read");
         std::fs::write(d.join("a.txt"), "one\ntwo\nthree\n").unwrap();
         std::fs::write(d.join("bin"), [0u8, 1, 2]).unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         let (out, err) = run(READ, &json!({"path": "a.txt"}), &env).await;
         assert!(!err);
         assert_eq!(out, "     1\tone\n     2\ttwo\n     3\tthree\n");
@@ -1403,7 +1532,7 @@ pub(crate) mod tests {
         assert!(made.success());
         // Bypassed, so the devices outside the working directory are reached
         // at all: what is refused here is what they are, not where.
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         for path in [fifo.display().to_string(), "/dev/zero".into(), "/dev/stdin".into(), d.display().to_string()] {
             let r = tokio::time::timeout(Duration::from_secs(2), run(READ, &json!({ "path": path }), &env)).await.expect("read never blocks");
             assert!(r.1 && r.0.contains("not a regular file"), "{path}: {r:?}");
@@ -1418,9 +1547,9 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn bash_runs_only_when_permissions_are_bypassed_and_is_bounded() {
         let d = dir("bash");
-        let refused = run(BASH, &json!({"command": "echo hi"}), &ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None }).await;
+        let refused = run(BASH, &json!({"command": "echo hi"}), &ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] }).await;
         assert!(refused.1 && refused.0.contains("bypassPermissions"), "{refused:?}");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         assert_eq!(run(BASH, &json!({"command": "echo hi; echo oops >&2"}), &env).await, ("hi\noops\nexit code 0".into(), false));
         // One pipe: stdout and stderr arrive in the order they were written.
         let interleaved = "for i in 1 2 3 4 5 6 7 8; do echo out$i; echo err$i >&2; done";
@@ -1472,7 +1601,7 @@ pub(crate) mod tests {
         std::fs::write(d.join("Makefile"), "slow:\n\tsleep 2\n").unwrap();
         let b = builds(&d, 1);
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None, env: &[] };
         let (first, second) = (ToolEnv { live: Some((&tx, "first")), ..env }, ToolEnv { live: Some((&tx, "second")), ..env });
         let started = std::time::Instant::now();
         let timed = async |env: &ToolEnv<'_>, command: &str| (run(BASH, &json!({ "command": command }), env).await, started.elapsed());
@@ -1512,7 +1641,7 @@ pub(crate) mod tests {
         let d = dir("build-slot-interrupt");
         let b = builds(&d, 1);
         let held = b.pool.as_ref().unwrap().try_take().unwrap().expect("free");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None, env: &[] };
         let input = json!({"command": "touch ran && make --version"});
         let call = run(BASH, &input, &env);
         // Dropped mid-wait, as the loop drops a call when the turn is interrupted.
@@ -1527,7 +1656,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn an_interrupted_bash_call_kills_what_the_command_started() {
         let d = dir("bash-cancel");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
         let input = json!({"command": "sleep 30 & echo $! > grandchild; wait"});
         let call = run(BASH, &input, &env);
         // Dropped mid-run, as the loop drops a call when the turn is interrupted.

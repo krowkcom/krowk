@@ -241,6 +241,7 @@ impl World {
             publisher: None,
             permissions: krowk_harness::permissions::Config { trusted: self.trusted.then(|| Arc::new(|_: &Path| true) as krowk_harness::permissions::settings::Trusted), ..Default::default() },
             agents: krowk_harness::subagent::AgentsConfig::none(),
+            session: Default::default(),
         })
     }
 
