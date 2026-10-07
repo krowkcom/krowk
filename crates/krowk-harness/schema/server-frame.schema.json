@@ -1898,12 +1898,14 @@
           "minimum": 0,
           "default": 0
         },
-        "agents": {
-          "description": "A backend's agents running in the background now, over every\nsession: they run between turns, and go with the daemon. A daemon\nbefore 0.14 does not count them, and says 0.",
-          "type": "integer",
+        "background": {
+          "description": "What runs in the background now, over every session, and goes with\nthe daemon: a backend's agents, and the turns a backend began by\nitself that wait for a `continue`. None from a daemon that does not\ncount them (before 0.14).",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint32",
-          "minimum": 0,
-          "default": 0
+          "minimum": 0
         },
         "sessions": {
           "description": "The sessions it has run since it started, newest first.",

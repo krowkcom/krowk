@@ -14,7 +14,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **An upgrade reaches the host daemon by itself.** The daemon that runs
   your sessions used to stay on the old version until you ran `krowk host
   stop`. Now a newer `krowk` replaces an older daemon when it starts, or
-  before your next prompt, once no turn or background agent runs there.
+  before your next prompt, once nothing runs there: no turn, no background
+  agent, and no turn a backend started by itself.
   Other open `krowk`s reconnect to the new one. A newer daemon is never
   replaced by an older `krowk`, and a daemon run as a service (`krowk host
   enable`) is left for you to restart.

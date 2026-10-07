@@ -1567,7 +1567,7 @@ impl<'h> Ui<'h> {
         let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
         // Between turns a daemon of an older krowk is replaced first, so the
         // prompt runs on this one's (`Link::renew`).
-        let (host, quiet) = (self.host, !app.backend_agents_running());
+        let (host, quiet) = (self.host, !app.backend_agents_running() && !app.unprompted);
         self.turn = Some(Box::pin(async move {
             host.renew(quiet).await;
             host.execute(cmd, tx).await

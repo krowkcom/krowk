@@ -1213,11 +1213,12 @@ pub struct HostStatus {
     /// cursor, since the daemon started.
     #[serde(default)]
     pub caught_up: u64,
-    /// A backend's agents running in the background now, over every
-    /// session: they run between turns, and go with the daemon. A daemon
-    /// before 0.14 does not count them, and says 0.
-    #[serde(default)]
-    pub agents: u32,
+    /// What runs in the background now, over every session, and goes with
+    /// the daemon: a backend's agents, and the turns a backend began by
+    /// itself that wait for a `continue`. None from a daemon that does not
+    /// count them (before 0.14).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<u32>,
     /// The sessions it has run since it started, newest first.
     pub sessions: Vec<HostSession>,
 }

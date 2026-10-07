@@ -647,6 +647,7 @@ fn r_host_1_an_older_daemon_is_replaced_and_a_newer_one_left() {
         assert!(!r.renew().await, "the same krowk's is left");
         let (tx, _rx) = mpsc::channel(1024);
         assert_eq!(r.execute(home.prompt("hi"), tx).await.unwrap().unwrap().status, TurnStatus::Completed);
+        assert_eq!(r.status().await.unwrap().background, Some(0), "it counts what runs in the background");
         let spawn: Box<daemon::Spawn<'static>> = Box::new(|| Err("the daemon runs; none is to be started".into()));
         let older = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "0.12.1".into(), true, spawn).await.unwrap();
         assert!(!older.renew().await, "a newer daemon is never replaced");
