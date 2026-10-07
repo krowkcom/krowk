@@ -291,6 +291,25 @@ type PrFuture = Pin<Box<dyn Future<Output = (String, Option<pr::Pr>)>>>;
 type PasteFuture = Pin<Box<dyn Future<Output = paste::Pasted>>>;
 type PasteJob = Box<dyn FnOnce() -> paste::Pasted + Send>;
 
+/// A daemon of an older krowk replaced as krowk starts, when it can be;
+/// one that cannot be yet is tried again before a prompt. Either way the
+/// person is told.
+#[cfg(unix)]
+async fn renew_at_start(app: &mut App, client: &krowk_harness::daemon::remote::Remote, version: &str) {
+    if client.renew().await
+        && let Some(n) = client.take_note()
+    {
+        app.note(&n);
+        return;
+    }
+    let (pid, theirs) = (client.pid(), client.krowk_version());
+    if krowk_harness::daemon::older(&theirs, version) {
+        app.note(&format!("the host daemon (pid {pid}) runs krowk {theirs}, and this is {version} — it is replaced before a prompt once no turn or background agent runs there (a service: restart it)"));
+    } else if theirs != version {
+        app.note(&format!("the host daemon (pid {pid}) runs krowk {theirs}, and this is {version} — `krowk host stop` once its sessions are done"));
+    }
+}
+
 async fn session(opts: Options) -> Outcome {
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(b"\x1b[?2004h");
@@ -407,17 +426,7 @@ async fn session(opts: Options) -> Outcome {
         #[cfg(unix)]
         (None, Some(d)) => match krowk_harness::daemon::remote::Remote::connect(d.env, started_in.clone(), d.version.clone(), true, d.spawn).await {
             Ok(client) => {
-                // One of an older krowk is replaced now when it can be, and
-                // otherwise before a later prompt.
-                if client.renew().await
-                    && let Some(n) = client.take_note()
-                {
-                    app.note(&n);
-                } else if krowk_harness::daemon::older(&client.krowk_version(), &d.version) {
-                    app.note(&format!("the host daemon (pid {}) runs krowk {}, and this is {} — it is replaced before a prompt once no turn or background agent runs there (a service: restart it)", client.pid(), client.krowk_version(), d.version));
-                } else if client.krowk_version() != d.version {
-                    app.note(&format!("the host daemon (pid {}) runs krowk {}, and this is {} — `krowk host stop` once its sessions are done", client.pid(), client.krowk_version(), d.version));
-                }
+                renew_at_start(&mut app, &client, &d.version).await;
                 // The sessions of this directory still running there, which
                 // `/sessions <id>` follows again.
                 if let Ok(st) = client.status().await {
