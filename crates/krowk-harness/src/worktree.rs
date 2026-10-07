@@ -670,8 +670,8 @@ fn create_as(cwd: &Path, root: &Path, owner: &str, config: Option<&WorktreesConf
         }
         _ => (repo_lock, None),
     };
-    if let Some(taken) = taken {
-        let held = register(&wt, owner)?;
+    if let Some(mut taken) = taken {
+        let held = register(&wt, owner, taken.hold.take())?;
         // What is left is the worktree's own, and it is held: many
         // creations at once do not queue on the lock for it (WT16.1).
         drop(repo_lock);
@@ -684,14 +684,17 @@ fn create_as(cwd: &Path, root: &Path, owner: &str, config: Option<&WorktreesConf
             Err(e) => {
                 seed::log(&dir, &wt.hex, &format!("not made as a snapshot of the template, so checked out: {e}"));
                 drop(held);
-                repo_lock = lock(&wt.common)?;
+                // With no lock (it could not be taken) as well as can be:
+                // no registered, locked worktree is left that nobody holds.
+                let relocked = lock(&wt.common);
                 template::take_back(&wt, &taken.scratch);
                 manage::forget(&dir, &wt.hex);
+                repo_lock = relocked?;
             }
         }
     }
     read(git(cwd)?.args(["worktree", "add", "--quiet", "--no-track", "-b"]).arg(wt.branch()).arg(&wt.path).arg(&wt.base), "worktree add")?;
-    let held = register(&wt, owner)?;
+    let held = register(&wt, owner, None)?;
     drop(repo_lock);
     disk::record(cwd, &wt.base, &dir);
     Ok((wt, held, Made::Checkout))
@@ -699,10 +702,11 @@ fn create_as(cwd: &Path, root: &Path, owner: &str, config: Option<&WorktreesConf
 
 /// The worktree just added, locked for `owner` with git, recorded and held
 /// live, under the caller's lock, so no `krowk worktrees remove` finds it
-/// unheld once the lock is let go. An error has removed it.
-fn register(wt: &Worktree, owner: &str) -> Result<manage::Held, Error> {
+/// unheld once the lock is let go: `held` when it is held already. An
+/// error has removed it.
+fn register(wt: &Worktree, owner: &str, held: Option<manage::Held>) -> Result<manage::Held, Error> {
     let locked = read(git(&wt.main)?.args(["worktree", "lock", "--reason"]).arg(format!("{LOCK_REASON}{owner}")).arg(&wt.path), "worktree lock");
-    locked.and_then(|_| manage::write_record(wt, owner)).and_then(|()| manage::hold(wt)).inspect_err(|_| {
+    locked.and_then(|_| manage::write_record(wt, owner)).and_then(|()| held.map_or_else(|| manage::hold(wt), Ok)).inspect_err(|_| {
         let _ = remove(wt, true);
     })
 }

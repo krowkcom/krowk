@@ -49,7 +49,10 @@
 //!   not, and hold `<repo-id>/template.lock` shared instead, taken under
 //!   the repository's lock, so no ensure for another commit changes the
 //!   template under them: an ensure that changes it holds that lock whole,
-//!   and waits for them. btrfs takes snapshots at once in one transaction,
+//!   and waits for them. The worktree is held live (`manage::hold`) before
+//!   the lock is let go, so a prune meanwhile does not take the snapshot,
+//!   which no record names yet, for an orphan. btrfs takes snapshots at
+//!   once in one transaction,
 //!   so twenty creations do not take twenty transactions in turn. Moving
 //!   the `.git` file and `worktree repair`, which looks at every worktree's,
 //!   take the repository's lock again; the refresh of the index and the
@@ -307,6 +310,9 @@ pub(super) enum FailAt {
 #[cfg(test)]
 thread_local! {
     pub(super) static FAIL_AT: std::cell::Cell<FailAt> = const { std::cell::Cell::new(FailAt::Nowhere) };
+    /// Set by a test: run once the next snapshot is made, the repository's
+    /// lock let go, as another krowk might at that moment.
+    pub(super) static MEANWHILE: std::cell::Cell<Option<fn(&Worktree)>> = const { std::cell::Cell::new(None) };
 }
 
 /// Whether the test set this thread's next snapshot to fail `at` here;
@@ -328,6 +334,9 @@ pub(super) struct Taken {
     index: PathBuf,
     /// The template's index copied beside it, when the copy was made.
     copied: Option<PathBuf>,
+    /// The worktree held live since before the lock was let go, so no
+    /// prune took its directory for an orphan; taken by the caller.
+    pub hold: Option<super::manage::Held>,
 }
 
 /// The new worktree `wt` (its directory not there yet, its branch not
@@ -350,21 +359,25 @@ pub(super) fn snapshot(held: RepoLock, wt: &Worktree, config: &WorktreesConfig) 
         Err(e) => return Ok((held, Err(Error::Failed(format!("the scratch directory: {e}"))))),
     };
     let mut held = Some(held);
-    let made = snapshot_steps(&mut held, wt, &template, &btrfs, &scratch);
+    let mut hold = None;
+    let made = snapshot_steps(&mut held, &mut hold, wt, &template, &btrfs, &scratch);
     let relocked = held.map_or_else(|| lock(&wt.common), Ok);
     // Under the lock taken again; with none (it could not be taken), as
     // well as can be: the registration is not left behind.
     if made.is_err() {
         take_back(wt, &scratch);
+        drop(hold.take());
+        super::manage::forget(dir, &wt.hex);
     }
     let seeded = config.seed().iter().any(|n| seed::top_level_name(n) && wt.path.join(n).symlink_metadata().is_ok_and(|m| m.is_dir()));
-    Ok((relocked?, made.map(|(index, copied)| Some(Taken { seeded, scratch, index, copied }))))
+    Ok((relocked?, made.map(|(index, copied)| Some(Taken { seeded, scratch, index, copied, hold }))))
 }
 
 /// The steps of `snapshot`, in order; the first that fails stops them.
 /// `held` is let go for the snapshot, and is taken again when they
-/// succeed. The worktree's index, and the template's copied beside it.
-fn snapshot_steps(held: &mut Option<RepoLock>, wt: &Worktree, template: &Template, btrfs: &Path, scratch: &Path) -> Result<(PathBuf, Option<PathBuf>), Error> {
+/// succeed; `hold` is the worktree held live from before it is let go.
+/// The worktree's index, and the template's copied beside it.
+fn snapshot_steps(held: &mut Option<RepoLock>, hold: &mut Option<super::manage::Held>, wt: &Worktree, template: &Template, btrfs: &Path, scratch: &Path) -> Result<(PathBuf, Option<PathBuf>), Error> {
     std::fs::create_dir_all(scratch.parent().unwrap_or(scratch)).map_err(|e| Error::Failed(format!("create {}: {e}", scratch.display())))?;
     let t = Paths::new(wt.repo_dir());
     // Taken while the repository's lock is held: no ensure comes between
@@ -373,6 +386,10 @@ fn snapshot_steps(held: &mut Option<RepoLock>, wt: &Worktree, template: &Templat
     // `worktree add` takes an empty directory only, and names git's record
     // of it after its name: the worktree's own.
     read(super::git(&wt.main)?.args(["worktree", "add", "--quiet", "--no-checkout", "--no-track", "-b"]).arg(wt.branch()).arg(scratch).arg(&wt.base), "worktree add")?;
+    // Until the lock is taken again, git knows the worktree only at
+    // `scratch`, and its directory is a snapshot no record names: a prune
+    // would take it for an orphan, unless it is held live.
+    *hold = Some(super::manage::hold(wt)?);
     *held = None;
     let index = PathBuf::from(read(query(scratch)?.args(["rev-parse", "--path-format=absolute", "--git-path", "index"]), "rev-parse")?);
     let out = Command::new(btrfs).args(["subvolume", "snapshot"]).arg(&template.path).arg(&wt.path).stdin(Stdio::null()).output().map_err(|e| Error::Failed(format!("btrfs subvolume snapshot: {e}")))?;
@@ -382,6 +399,10 @@ fn snapshot_steps(held: &mut Option<RepoLock>, wt: &Worktree, template: &Templat
     #[cfg(test)]
     if fails(FailAt::Snapshot) {
         return Err(Error::Failed("failed by the test".into()));
+    }
+    #[cfg(test)]
+    if let Some(meanwhile) = MEANWHILE.with(|m| m.take()) {
+        meanwhile(wt);
     }
     // The template's index holds `base`'s tree with the stat data of the
     // files the snapshot shares, so the refresh hashes almost nothing.
@@ -887,6 +908,36 @@ mod tests {
         drop(held);
         assert_eq!(finish(&w).unwrap(), Finished::Removed);
         assert_eq!(leftovers(&dir, &common, &main), (vec![SCRATCH_DIR.to_string(), TEMPLATE_DIR.to_string()], vec![], String::new()));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (btrfs) A prune while a snapshot is made, the repository's lock let
+    /// go and git knowing the worktree only in `scratch`: the snapshot is
+    /// held live, so not taken for an orphan, nor its registration for one
+    /// whose directory is gone (WT16.1).
+    #[test]
+    fn wt16_a_prune_while_a_snapshot_is_made_leaves_it() {
+        let Some((base, main, common, dir)) = fixture("wt16-prune", None) else { return };
+        let root = dir.parent().unwrap().to_path_buf();
+        let Some((w, held, _)) = snapshot_of(&main, &root, "s0") else {
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        };
+        drop(held);
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
+        fn prune_now(wt: &Worktree) {
+            assert!(wt.path.is_dir(), "the snapshot is there");
+            let done = super::super::manage::prune(wt.repo_dir().parent().unwrap(), SystemTime::now());
+            assert!(done.dirs.is_empty() && done.registrations.is_empty(), "{done:?}");
+        }
+        MEANWHILE.with(|m| m.set(Some(prune_now)));
+        let (w, held, how) = create_fastest(&main, &root, "s1", &WorktreesConfig::default()).unwrap();
+        assert!(MEANWHILE.with(|m| m.get()).is_none(), "the hook ran");
+        assert!(matches!(how, Made::Snapshot { .. }), "{how:?}");
+        assert_eq!(git_ok(&w.path, &["status", "--porcelain", "--untracked-files=normal"]), "");
+        assert_eq!(leftovers(&dir, &common, &main), (vec![w.hex.clone(), SCRATCH_DIR.to_string(), TEMPLATE_DIR.to_string()], vec![w.hex.clone()], format!("+ {}", w.branch())));
+        drop(held);
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
         let _ = std::fs::remove_dir_all(&base);
     }
 
