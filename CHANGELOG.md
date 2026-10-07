@@ -26,6 +26,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **What you said is on a band across the width again**, instead of a
+  background behind each row's text.
+- **A prompt with images is no longer sent to an older host daemon that
+  drops them.** A daemon from before 0.13.0 sent the model `[Image #N]`
+  and no image. Now the prompt comes back to the editor, images and all,
+  with a note to run `krowk host stop`.
 - **"copied … (N lines)" shows as soon as you copy.** After Ctrl-Y picked
   something to copy, the confirmation only appeared after the next key.
 
