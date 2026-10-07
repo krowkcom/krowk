@@ -96,6 +96,11 @@ pub struct SessionSetup {
     /// What every session's commands get in their environment beyond
     /// krowk's own: the worktree's `KROWK_PORT_BASE`.
     pub env: Vec<(String, String)>,
+    /// Whether this process holds one of the machine's agent slots for its
+    /// sessions, as a `--worktree` session's does (WT12): their subagents
+    /// run on it rather than taking more, so a session holding the last
+    /// slot is never left waiting on a child that waits for one.
+    pub on_agent_slot: bool,
 }
 
 /// What executes commands. Cheap to share: its state is behind one `Arc`,

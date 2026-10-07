@@ -228,7 +228,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   interrupting the turn stops the wait. A `--worktree` session prints the
   same line before it starts, and Ctrl-C stops it. A krowk that is killed
   or crashes frees its slot at once. Sessions without `--worktree` never
-  wait. The default is twice your cores or twice your memory in GiB,
+  wait, and a `--worktree` session's subagents run on its slot rather
+  than taking more, so a session holding the last slot never waits on
+  its own subagents. The default is twice your cores or twice your memory in GiB,
   whichever is fewer, between 4 and 64; set
   `"subagents": {"maxHost": 8}` in `~/.krowk/config.json` to change it (0 is
   refused). Before making a worktree, krowk also checks that its disk will

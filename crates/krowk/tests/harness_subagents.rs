@@ -1225,3 +1225,30 @@ fn wt12_a_subagent_waits_for_an_agent_slot_another_process_holds() {
     assert!(waited && held.is_none(), "the wait was said on the call");
     assert!(m.seen.lock().unwrap().iter().any(|s| is_child(&s.body)), "it ran once the slot was free");
 }
+
+/// WT12: with `maxHost = 1` and its one slot held by the session itself —
+/// a `--worktree` session's — the session's subagent runs on that slot
+/// rather than waiting forever for another, and finishes.
+#[test]
+fn wt12_a_subagent_of_a_session_on_the_last_agent_slot_runs_on_it() {
+    let m = mock::serve(one_subagent);
+    let b = Sandbox::new("own-slot", &m.url);
+    let pool = krowk_harness::slots::Pool::new(b.root.join("run"), krowk_harness::subagent::AGENT_SLOTS, 1);
+    let _session = pool.try_take().unwrap().expect("the session's slot");
+    let mut registry = Registry::resolve(&InstancesConfig::default(), &b.env());
+    registry.agents = Some(pool);
+    let session = krowk_harness::host::SessionSetup { on_agent_slot: true, ..Default::default() };
+    let host = Host::new(HostConfig { registry, session, ..b.host() });
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let result = rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
+        let cmd = Command::Prompt { session_id: None, text: "one subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let drain = async { while rx.recv().await.is_some() {} };
+        let (r, ()) = tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(host.execute(cmd, tx), drain) }).await.expect("the subagent waited for a slot its parent holds");
+        r
+    });
+    let result = result.unwrap().unwrap();
+    assert_eq!(result.status, TurnStatus::Completed, "{:?}", result.error);
+    assert!(m.seen.lock().unwrap().iter().any(|s| is_child(&s.body)), "the subagent ran");
+}

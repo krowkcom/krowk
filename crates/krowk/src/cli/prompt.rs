@@ -107,15 +107,15 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // here; the session starts in it.
     let (worktree, session) = match resumed {
         Some(w) => {
-            let env = w.env();
-            (Some(w), SessionSetup { env, ..SessionSetup::default() })
+            let (env, on_agent_slot) = (w.env(), w.agent.is_some());
+            (Some(w), SessionSetup { env, on_agent_slot, ..SessionSetup::default() })
         }
         None if ctx.f.own_worktree => {
             let id = krowk_store::new_id();
             let (w, notes) = own_worktree::open(ctx, &cwd, &permissions, &registry, &id)?;
             trust_as.set(&w.worktree);
-            let env = w.env();
-            (Some(w), SessionSetup { id: Some(id), notes, env })
+            let (env, on_agent_slot) = (w.env(), w.agent.is_some());
+            (Some(w), SessionSetup { id: Some(id), notes, env, on_agent_slot })
         }
         None => (None, SessionSetup::default()),
     };

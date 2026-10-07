@@ -31,7 +31,10 @@
 //!   them (`max_host` by default); one that finds none says `waiting for
 //!   an agent slot (N in use)` on its call, and waits until one is let go
 //!   or the parent is interrupted. Plain sessions take none, so a person
-//!   never waits to start one.
+//!   never waits to start one. The subagents of a session that holds a
+//!   slot (`--worktree`) run on it instead of taking more: the session
+//!   waits on them, and on the last slot they would wait forever.
+//!   Subagents start none of their own, so no deeper level waits either.
 //! - **Interruptible one by one**: each child's turn is a running turn of
 //!   the host, so `interrupt` with the child's session id stops that child
 //!   alone, and its call is answered with what it had; interrupting the
@@ -429,19 +432,23 @@ impl Subagents {
             },
             _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true),
         };
-        // Then one of the machine's agent slots, held until it ends. One
-        // that cannot be had — the runtime directory refused — runs it
-        // anyway: the cap is for the machine's sake, as the build slots are.
+        // Then one of the machine's agent slots, held until it ends — or
+        // its parent's, when the parent holds one (`--worktree`): a parent
+        // on the last slot waiting for a child that waits for a slot would
+        // wait forever. So the cap bounds the agents people start, and
+        // `maxParallel` each one's fan-out. One that cannot be had — the
+        // runtime directory refused — runs it anyway: the cap is for the
+        // machine's sake, as the build slots are.
         let waiting = |in_use: usize| async move {
             let delta = crate::protocol::Delta::Text { text: waiting_line(in_use) };
             let _ = events.send(crate::engine::EngineEvent::ItemDelta { item_id: item_id.into(), delta }).await;
         };
         let _slot = match &registry.agents {
-            Some(pool) => tokio::select! {
+            Some(pool) if !host.cfg.session.on_agent_slot => tokio::select! {
                 taken = pool.take(waiting) => taken.ok().map(|(slot, _)| slot),
                 _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true),
             },
-            None => None,
+            _ => None,
         };
         // Its session id is chosen now: a worktree is locked in its name
         // before the session exists, and the session records it as its

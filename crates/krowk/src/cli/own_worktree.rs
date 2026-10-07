@@ -30,7 +30,9 @@
 //!   subagent of every krowk) for its life, taken before its worktree is
 //!   made or held again. When every one is held it waits, saying
 //!   `waiting for an agent slot (N in use)` on stderr; Ctrl-C ends the
-//!   wait. A session without `--worktree` takes none and never waits.
+//!   wait. Its subagents run on its slot (`SessionSetup::on_agent_slot`)
+//!   rather than waiting for more. A session without `--worktree` takes
+//!   none and never waits.
 
 use super::{prompt, Ctx};
 use krowk_api::{fail, Error};
