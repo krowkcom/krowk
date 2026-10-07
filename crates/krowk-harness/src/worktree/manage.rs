@@ -50,8 +50,8 @@
 //!   the root that git does not list and whose admin directory is gone is
 //!   deleted, when no live session holds it and its files are its
 //!   branch's (`unchanged`) — never through a symlink, and never anything
-//!   else in the repository's directory (the seeding probe and log, a
-//!   WT10 template). Then the `refs/krowk/snapshots/*` whose commit is
+//!   else in the repository's directory (the seeding probe and log, the
+//!   WT10 template, its index and its commit). Then the `refs/krowk/snapshots/*` whose commit is
 //!   over `SNAPSHOT_DAYS` old. `prune_daily` runs it in the background at
 //!   most once a day, when a session starts.
 //!
@@ -988,6 +988,8 @@ mod tests {
         let dir = gone.repo_dir().to_path_buf();
         std::fs::write(dir.join("probe.json"), "{}").unwrap();
         std::fs::create_dir_all(dir.join("template")).unwrap();
+        std::fs::write(dir.join("template.index"), "").unwrap();
+        std::fs::write(dir.join("template.sha"), "").unwrap();
         // A link that looks like a worktree is not followed.
         let outside = base.join("outside");
         std::fs::create_dir_all(&outside).unwrap();
@@ -1006,6 +1008,7 @@ mod tests {
         assert!(read_record(&dir, &gone.hex).is_none() && read_record(&dir, &orphan.hex).is_none());
         assert!(read_record(&dir, &live.hex).is_some() && live.path.is_dir());
         assert!(dir.join("probe.json").is_file() && dir.join("template").is_dir() && dir.join(COMMON_FILE).is_file());
+        assert!(dir.join("template.index").is_file() && dir.join("template.sha").is_file());
         assert!(outside.join("keep").is_file());
         // Their branches are the person's to delete.
         assert_eq!(git_ok(&main, &["branch", "--list", "--format=%(refname:short)", &gone.branch()]), gone.branch());

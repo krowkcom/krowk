@@ -48,6 +48,9 @@
 //!   `<hex>.live` locked by the process whose session works in it
 //!   (`create_held`), so `krowk worktrees` can list, remove and prune
 //!   kept ones safely.
+//! - **A template** (WT10, `template`): on btrfs, a subvolume of the
+//!   repository's source tree at a commit, kept up to date in
+//!   `<root>/<repo-id>/template`, for a worktree to be a snapshot of.
 //! - **A port slot** (`setup::port_slot`) is held by whoever uses the
 //!   worktree, for as long as they do: `KROWK_PORT_BASE` for the setup
 //!   command and the agent's commands.
@@ -57,6 +60,7 @@ pub mod include;
 pub mod manage;
 pub mod seed;
 pub mod setup;
+pub mod template;
 
 use crate::instances::WorktreesConfig;
 use sha2::{Digest, Sha256};
