@@ -116,6 +116,53 @@ impl Remote {
         self.fresh().await?.status().await
     }
 
+    /// A daemon of an older krowk than this one replaced with one of this
+    /// version, when it can go with nothing of it lost: no turn running
+    /// there (the daemon refuses a stop while one does), nothing in the
+    /// background — a backend's agent, a turn it began by itself — and not
+    /// run as a service, whose manager would not start it again. A daemon
+    /// that does not count what runs in the background (before 0.14) is
+    /// replaced only with no other client on it: nobody's is then lost that
+    /// its own idle exit would not lose. The caller knows its own session's
+    /// (`Link::renew`). Its other clients
+    /// reach the next one on their next command, as after `krowk host stop
+    /// --force`. One not replaced is tried again on the next call; one of
+    /// the same or a newer krowk is never touched, so an older krowk still
+    /// open does not replace it in turn. Answers whether it was replaced.
+    pub async fn renew(&self) -> bool {
+        let old = self.current();
+        if old.closed() || !super::older(&old.krowk_version, &self.version) {
+            return false;
+        }
+        match old.status().await {
+            Ok(st) if st.idle_exit_ms.is_some() && st.background.map_or(st.clients <= 1, |n| n == 0) && !st.sessions.iter().any(|s| s.running) => {}
+            _ => return false,
+        }
+        if old.stop(true).await.is_err() {
+            return false;
+        }
+        // Gone once its socket refuses: until then `ensure` would reach it.
+        let Ok(socket) = super::socket(&*self.env) else { return false };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        while tokio::net::UnixStream::connect(&socket).await.is_ok() {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let Ok(next) = super::ensure(&*self.env, &self.cwd, &self.version, self.answers, &*self.spawn).await else { return false };
+        let next = Arc::new(next);
+        forward(&next, &self.watch);
+        // An older krowk's command can start one of its own between the old
+        // daemon's going and this one's start: that is not a replacement.
+        let renewed = !super::older(&next.krowk_version, &self.version);
+        if renewed {
+            *self.note.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("the host daemon ran krowk {}; it was replaced with {} (pid {})", old.krowk_version, next.krowk_version, next.pid));
+        }
+        *self.client.lock().unwrap_or_else(|e| e.into_inner()) = next;
+        renewed
+    }
+
     pub fn reload_later(&self, changed: Option<String>, renamed: Option<(String, String)>) {
         self.current().reload_later(changed, renamed);
     }

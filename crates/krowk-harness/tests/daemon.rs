@@ -64,7 +64,12 @@ impl Home {
 
     /// `serve`, every client let go each time `kick` is notified.
     fn serve_with(&self, idle: Option<Duration>, kick: Option<Arc<tokio::sync::Notify>>) -> std::thread::JoinHandle<Result<(), String>> {
-        let (env, socket) = (self.env(), self.socket());
+        self.serve_as("test", idle, kick)
+    }
+
+    /// `serve_with`, the daemon of krowk `version`.
+    fn serve_as(&self, version: &str, idle: Option<Duration>, kick: Option<Arc<tokio::sync::Notify>>) -> std::thread::JoinHandle<Result<(), String>> {
+        let (env, socket, version) = (self.env(), self.socket(), version.to_string());
         let credentials = self.root.join("home/.krowk/credentials.json");
         let made = self.made.clone();
         let t = std::thread::spawn(move || {
@@ -85,7 +90,7 @@ impl Home {
                     session: Default::default(),
                 })
             });
-            server::run(server::Options { socket, idle, krowk_version: "test".into(), kick, ..Default::default() }, factory)
+            server::run(server::Options { socket, idle, krowk_version: version, kick, ..Default::default() }, factory)
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::os::unix::net::UnixStream::connect(self.socket()).is_err() {
@@ -616,6 +621,73 @@ fn r_host_1_a_remote_client_reconnects_when_its_daemon_goes() {
     for d in started.lock().unwrap().drain(..) {
         d.join().unwrap().unwrap();
     }
+}
+
+/// A daemon of an older krowk is replaced with one of the client's between
+/// turns, and its next prompt runs there; one of a newer krowk is left to
+/// run, so an older krowk still open never replaces it in turn.
+#[test]
+fn r_host_1_an_older_daemon_is_replaced_and_a_newer_one_left() {
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
+    let home = Arc::new(Home::new("renew", &m.url));
+    let old = home.serve_as("0.12.1", Some(Duration::from_millis(300)), None);
+    let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rt = rt();
+    rt.block_on(async {
+        let (h, st) = (home.clone(), started.clone());
+        let spawn: Box<daemon::Spawn<'static>> = Box::new(move || {
+            st.lock().unwrap().push(h.serve_as("0.13.0", Some(Duration::from_millis(300)), None));
+            Ok(None)
+        });
+        let r = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "0.13.0".into(), true, spawn).await.unwrap();
+        assert_eq!(r.krowk_version(), "0.12.1");
+        assert!(r.renew().await, "replaced");
+        assert_eq!(r.krowk_version(), "0.13.0");
+        assert!(r.take_note().is_some_and(|n| n.contains("0.12.1") && n.contains("replaced")));
+        assert!(!r.renew().await, "the same krowk's is left");
+        let (tx, _rx) = mpsc::channel(1024);
+        assert_eq!(r.execute(home.prompt("hi"), tx).await.unwrap().unwrap().status, TurnStatus::Completed);
+        assert_eq!(r.status().await.unwrap().background, Some(0), "it counts what runs in the background");
+        let spawn: Box<daemon::Spawn<'static>> = Box::new(|| Err("the daemon runs; none is to be started".into()));
+        let older = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "0.12.1".into(), true, spawn).await.unwrap();
+        assert!(!older.renew().await, "a newer daemon is never replaced");
+        assert_eq!(older.krowk_version(), "0.13.0");
+    });
+    drop(rt);
+    old.join().unwrap().unwrap();
+    assert_eq!(started.lock().unwrap().len(), 1, "one daemon of this krowk started");
+    for d in started.lock().unwrap().drain(..) {
+        d.join().unwrap().unwrap();
+    }
+}
+
+/// An older daemon running a turn is left to finish it.
+#[test]
+fn r_host_1_an_older_daemon_is_not_replaced_while_a_turn_runs() {
+    let m = slow();
+    let home = Home::new("renew-busy", &m.url);
+    let old = home.serve_as("0.12.1", Some(Duration::from_millis(300)), None);
+    let rt = rt();
+    rt.block_on(async {
+        let busy = home.client().await;
+        let (tx, mut rx) = mpsc::channel(1024);
+        let cmd = home.prompt("hi");
+        let turn = async move { busy.execute(cmd, tx).await };
+        let spawn: Box<daemon::Spawn<'static>> = Box::new(|| Err("none is to be started".into()));
+        let r = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "0.13.0".into(), true, spawn).await.unwrap();
+        let check = async {
+            // Under way once its first frame is out.
+            rx.recv().await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(!r.renew().await, "left to finish its turn");
+            assert_eq!(r.krowk_version(), "0.12.1");
+            while rx.recv().await.is_some() {}
+        };
+        let (done, ()) = tokio::join!(turn, check);
+        assert_eq!(done.unwrap().unwrap().status, TurnStatus::Completed);
+    });
+    drop(rt);
+    old.join().unwrap().unwrap();
 }
 
 /// R-PROTO-1: a prompt that starts a session gets its own lines, bound by
