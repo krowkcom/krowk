@@ -45,6 +45,9 @@ impl Remote {
     fn krowk_version(&self) -> String {
         match *self {}
     }
+    async fn renew(&self) -> bool {
+        match *self {}
+    }
     fn watch(&self) -> broadcast::Receiver<StreamLine> {
         match *self {}
     }
@@ -111,11 +114,22 @@ impl Link {
                 let images = matches!(&cmd, Command::Prompt { images, .. } | Command::Steer { images, .. } if !images.is_empty());
                 let version = client.krowk_version();
                 if images && !reads_images(&version) {
-                    return Err(EngineError::new(HOST_READS_NO_IMAGES, format!("the host daemon runs krowk {version}, which drops a prompt's images — `krowk host stop` once its sessions are done, then send it again")));
+                    return Err(EngineError::new(HOST_READS_NO_IMAGES, format!("the host daemon runs krowk {version}, which drops a prompt's images, and is replaced with this krowk once no turn or background agent runs there — send it again then (a daemon run as a service: restart it)")));
                 }
                 client.execute(cmd, out).await
             }
             Link::Synced { client, .. } => client.execute(cmd, out).await,
+        }
+    }
+
+    /// The daemon replaced with one of this krowk when it is of an older
+    /// one and can go (`Remote::renew`): answers whether it was. `quiet`
+    /// is the caller's word that nothing of its own runs there in the
+    /// background, which the daemon may not know to count.
+    pub async fn renew(&self, quiet: bool) -> bool {
+        match self.remote() {
+            Some(c) if quiet => c.renew().await,
+            _ => false,
         }
     }
 

@@ -23,6 +23,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   normal screen and streams into scrollback, set
   `"tui": {"screen": "inline"}` in `~/.krowk/config.json` (`"fullscreen"`
   forces fullscreen, and `"auto"` is the default).
+- **An upgrade reaches the host daemon by itself.** The daemon that runs
+  your sessions used to stay on the old version until you ran `krowk host
+  stop`. Now a newer `krowk` replaces an older daemon when it starts, or
+  before your next prompt, once nothing runs there: no turn, no background
+  agent, and no turn a backend started by itself.
+  Other open `krowk`s reconnect to the new one. A newer daemon is never
+  replaced by an older `krowk`, and a daemon run as a service (`krowk host
+  enable`) is left for you to restart.
 
 ### Fixed
 
@@ -31,7 +39,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **A prompt with images is no longer sent to an older host daemon that
   drops them.** A daemon from before 0.13.0 sent the model `[Image #N]`
   and no image. Now the prompt comes back to the editor, images and all,
-  with a note to run `krowk host stop`.
+  to send again once the daemon is replaced.
 - **"copied … (N lines)" shows as soon as you copy.** After Ctrl-Y picked
   something to copy, the confirmation only appeared after the next key.
 

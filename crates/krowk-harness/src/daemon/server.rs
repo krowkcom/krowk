@@ -623,6 +623,7 @@ fn status(s: &State) -> HostStatus {
         websocket: s.websocket.as_ref().map(|(a, _)| a.to_string()),
         queued_bytes: s.clients.values().map(|c| c.outbox.bytes() as u64).sum(),
         caught_up: s.caught_up,
+        background: Some(s.hosts.values().map(|h| h.background()).sum()),
         sessions: hubs.into_iter().map(|(id, h)| HostSession { session_id: id.clone(), running: h.running, clients: h.followers.len() as u32 }).collect(),
     }
 }

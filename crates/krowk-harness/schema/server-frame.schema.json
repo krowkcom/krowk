@@ -1898,6 +1898,15 @@
           "minimum": 0,
           "default": 0
         },
+        "background": {
+          "description": "How many sessions have work under way between turns, which goes with\nthe daemon: a backend's agents, a turn a backend began by itself that\nwaits for a `continue`. None from a daemon that does not count them\n(before 0.14).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "sessions": {
           "description": "The sessions it has run since it started, newest first.",
           "type": "array",
