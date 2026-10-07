@@ -218,6 +218,12 @@ impl Host {
         self.shared.watch.subscribe()
     }
 
+    /// How many sessions have work under way between turns — a backend's
+    /// agents, a turn it began by itself — which goes with their process.
+    pub fn background(&self) -> u32 {
+        self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).values().filter(|b| b.engine.busy()).count() as u32
+    }
+
     /// Denies every approval request of these sessions still waiting: the
     /// daemon's, when the last client that could answer them went away.
     pub fn deny_waiting(&self, sessions: &[String]) {
