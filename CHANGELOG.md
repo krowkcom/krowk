@@ -92,8 +92,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `krowk --worktree` session is a snapshot of a copy of your source tree
   that krowk keeps up to date, with your build output already in it:
   about a tenth of a second whatever the repository's size, and its first
-  `cargo build` compiles only what differs from your last build. Anywhere
-  else, or if a snapshot fails, the worktree is checked out as before.
+  `cargo build` compiles only what differs from your last build. Twenty
+  agents starting at once in one repository each get theirs in under half
+  a second, rather than waiting on each other. Anywhere else, or if a
+  snapshot fails, the worktree is checked out as before.
 
 - **A subagent's worktree gets the ignored files you list in
   `.worktreeinclude`.** As in Claude Code, put a `.worktreeinclude` at the
