@@ -1265,6 +1265,9 @@ impl<'h> Ui<'h> {
         if std::mem::take(&mut app.wipe) {
             term.wipe()?;
         }
+        if std::mem::take(&mut app.to_bottom) {
+            term.follow();
+        }
         term.steady(app.running())?;
         term.frame(&lines, &rows, caret)
     }
@@ -1644,13 +1647,7 @@ impl<'h> Ui<'h> {
                 app.touch();
             }
             Event::Mouse(m) => self.on_mouse(app, term, m),
-            Event::Key(k) if k.kind != KeyEventKind::Release => {
-                // Enter sends, or answers: either way, back to what is new.
-                if k.code == KeyCode::Enter {
-                    term.follow();
-                }
-                return Ok(self.on_key(app, legacy(k), quitting).await);
-            }
+            Event::Key(k) if k.kind != KeyEventKind::Release => return Ok(self.on_key(app, legacy(k), quitting).await),
             Event::Paste(s) => {
                 // With `/connect`'s overlay up, a paste is its question's
                 // answer or nothing: a key pasted early, before the question
@@ -2895,6 +2892,7 @@ impl<'h> Ui<'h> {
         let text = app.editor.take().trim_end().to_string();
         app.overlay = Overlay::None;
         app.slash_closed = false;
+        app.to_bottom = true;
         if app.running() {
             app.unsent_steers.push(text);
             self.flush_requests(app).await;

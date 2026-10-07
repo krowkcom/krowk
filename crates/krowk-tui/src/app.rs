@@ -698,6 +698,9 @@ pub struct App {
     /// Set by `/new`; the next frame clears the screen and its scrollback
     /// before it prints what is owed.
     pub wipe: bool,
+    /// Set when a prompt or a steer is sent: fullscreen's conversation goes
+    /// back to the bottom with the next frame.
+    pub to_bottom: bool,
     /// A word under the prompt until the next key: "copied".
     pub flash: Option<String>,
     /// The images pasted into the prompt and not sent yet, by the number
@@ -829,6 +832,7 @@ impl App {
             copy_at: 0,
             left: Vec::new(),
             wipe: false,
+            to_bottom: false,
             flash: None,
             images: Default::default(),
             images_seen: 0,

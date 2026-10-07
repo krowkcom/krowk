@@ -2049,8 +2049,12 @@ fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conve
     assert_eq!(footer(&down), rest);
     wheel(&tm, true);
     assert!(tm.wait_for("more below", Duration::from_secs(5)).is_some(), "the wheel scrolled nothing up:\n{}", tm.screen());
-    // Typing keeps the view; sending goes back to the bottom.
-    tm.keys(&["again", "Enter"]);
+    // Typing keeps the view, and so does a new line; sending goes back to
+    // the bottom.
+    tm.keys(&["again", "M-Enter"]);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(tm.screen().contains("more below"), "a new line went back to the bottom:\n{}", tm.screen());
+    tm.keys(&["BSpace", "Enter"]);
     assert!(tm.wait_gone("more below", Duration::from_secs(5)).is_some(), "sending stayed scrolled up:\n{}", tm.screen());
     assert!(tm.wait_still(|s| s.matches("tokens").count() >= 1 && !s.contains("to interrupt"), Duration::from_secs(60)).is_some(), "{}", tm.screen());
     // A drag from the start of one line to the eleventh column of the next
