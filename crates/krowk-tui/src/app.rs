@@ -1057,23 +1057,21 @@ impl App {
         self.dirty = true;
     }
 
-    /// What the person said, each row on a band as wide as its text and a
-    /// column past it, an empty row of it above and below: from the first
-    /// column, wrapped between words, so a selection of it copies with
-    /// nothing before it (Ctrl-Y copies it as typed). Not padded out: a
-    /// terminal that reflows on a narrowing resize wraps a row's band with
-    /// its text, padding and all, and padding past the new width would
-    /// spill onto a row of its own. A row as wide as its text wraps only
-    /// when its text does. In light markdown, as an answer is (`push_md`),
-    /// all of it on the band. The `[Image #N]` of each image it carried
-    /// (`images`) is in the accent.
+    /// What the person said, on a band across the width, an empty row of
+    /// it above and below: from the first column, wrapped between words,
+    /// so a selection of it copies with nothing before it (Ctrl-Y copies it
+    /// as typed). The band is each row's `Line::style`, which the terminal
+    /// paints to the edge by erasing rather than with spaces, so a
+    /// narrowing resize has no padding to spill onto a row of its own. In
+    /// light markdown, as an answer is (`push_md`), all of it on the band.
+    /// The `[Image #N]` of each image it carried (`images`) is in the accent.
     fn push_said(&mut self, text: &str, images: &[u32]) {
         self.said = text.to_string();
         let width = usize::from(self.width);
         let band = look::said_band();
         let mut md = look::Markdown::default();
-        // A fenced block's row is not left for the terminal to wrap, as an
-        // answer's is: the band ends with its text, so it is broken here.
+        // A row on a band is not left for the terminal to wrap, so a fenced
+        // block's row, which an answer leaves whole, is broken here.
         let rows = clean(&text.replace('\t', "    "))
             .split('\n')
             .flat_map(|l| match look::markdown(l, &mut md) {
@@ -1082,15 +1080,13 @@ impl App {
             })
             .collect::<Vec<_>>();
         for row in std::iter::once(Line::default()).chain(rows).chain([Line::default()]) {
-            let fill = " ".repeat(usize::from(row.width() < width));
-            let mut spans: Vec<Span<'static>> = row
+            let spans: Vec<Span<'static>> = row
                 .spans
                 .into_iter()
                 .filter(|s| !s.content.is_empty())
                 .flat_map(|s| if look::link_target(&s).is_some() { vec![Span::styled(s.content, s.style.patch(band))] } else { with_images(s.content.into_owned(), s.style.patch(band), |n| images.contains(&n)) })
                 .collect();
-            spans.push(Span::styled(fill, band));
-            self.push_line(Line::from(spans));
+            self.push_line(Line::from(spans).style(band));
         }
     }
 
@@ -4749,19 +4745,23 @@ mod tests {
     }
 
     #[test]
-    fn what_the_person_said_is_banded_only_as_wide_as_it_is() {
-        // Padded to the width, a narrowing resize would wrap each row's
-        // band onto a row of its own.
+    fn what_the_person_said_is_on_a_band_across_the_width() {
+        // The band is the line's, for the terminal to paint to the edge:
+        // padded with spaces, a narrowing resize would wrap each row's band
+        // onto a row of its own.
         let mut a = app();
         a.set_width(60);
         a.echo("fix the parser");
         let rows = a.take_pending();
+        assert_eq!(rows.len(), 3, "a row of the band above and below: {:?}", text(&rows));
+        assert!(rows.iter().all(|r| r.style.bg == look::said_band().bg && !blank(r)), "every row on the band: {rows:?}");
         let widths: Vec<usize> = rows.iter().map(|r| r.width()).collect();
-        assert_eq!(widths, [1, 15, 1], "the text and a column past it: {:?}", text(&rows));
-        // Two rows, one short: neither is padded to the other.
-        a.echo(&format!("{}\nok", "word ".repeat(11).trim_end()));
-        let widths: Vec<usize> = a.take_pending().iter().map(|r| r.width()).filter(|w| *w > 0).collect();
-        assert_eq!(widths, [1, 55, 3, 1]);
+        assert_eq!(widths, [0, 14, 0], "no padding of spaces: {:?}", text(&rows));
+        // A long row is broken at the width, as nothing on a band is left
+        // for the terminal to wrap.
+        a.echo(&"word ".repeat(30));
+        let rows = a.take_pending();
+        assert!(rows.iter().skip_while(|r| blank(r)).all(|r| r.width() <= 60 && r.style.bg == look::said_band().bg), "{rows:?}");
     }
 
     #[test]
@@ -4781,7 +4781,7 @@ mod tests {
         a.set_width(20);
         a.echo("```\nlet x = some_function(a, b);\n```");
         let widths: Vec<usize> = a.take_pending().iter().map(|r| r.width()).filter(|w| *w > 0).collect();
-        assert_eq!(widths, [1, 1, 20, 9, 1, 1], "a long row of code broken at the width, its band no wider than its text");
+        assert_eq!(widths, [20, 8], "a long row of code broken at the width");
     }
 
     #[test]

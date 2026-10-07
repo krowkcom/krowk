@@ -1071,7 +1071,7 @@ impl<'h> Ui<'h> {
             Err(e) => e.code == "network_unreachable",
         };
         let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
-        let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image");
+        let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image" || e.code == link::HOST_READS_NO_IMAGES);
         // A `continue` whose turn a prompt already ran is no
         // news.
         if let Err(e) = r

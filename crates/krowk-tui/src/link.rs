@@ -42,6 +42,9 @@ impl Remote {
     async fn execute(&self, _: Command, _: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
         match *self {}
     }
+    fn krowk_version(&self) -> String {
+        match *self {}
+    }
     fn watch(&self) -> broadcast::Receiver<StreamLine> {
         match *self {}
     }
@@ -104,7 +107,14 @@ impl Link {
     pub async fn execute(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
         match self {
             Link::Local(h) => h.execute(cmd, out).await,
-            Link::Remote { client, .. } => client.execute(cmd, out).await,
+            Link::Remote { client, .. } => {
+                let images = matches!(&cmd, Command::Prompt { images, .. } | Command::Steer { images, .. } if !images.is_empty());
+                let version = client.krowk_version();
+                if images && !reads_images(&version) {
+                    return Err(EngineError::new(HOST_READS_NO_IMAGES, format!("the host daemon runs krowk {version}, which drops a prompt's images — `krowk host stop` once its sessions are done, then send it again")));
+                }
+                client.execute(cmd, out).await
+            }
             Link::Synced { client, .. } => client.execute(cmd, out).await,
         }
     }
@@ -134,5 +144,35 @@ impl Link {
     /// its sessions', which outlive this TUI.
     pub async fn shutdown(&self) {
         self.host().shutdown().await;
+    }
+}
+
+/// A prompt the host daemon would lose its images from, refused here: the
+/// prompt goes back, images and all.
+pub const HOST_READS_NO_IMAGES: &str = "host_reads_no_images";
+
+/// Whether a daemon of krowk `version` reads a prompt's images. One before
+/// 0.13.0 takes them as a field it does not know and drops it, and the
+/// model is sent each `[Image #N]` with no image. A version that does not
+/// parse is taken to.
+fn reads_images(version: &str) -> bool {
+    let mut parts = version.split(['.', '-', '+']).map(str::parse::<u32>);
+    match (parts.next(), parts.next()) {
+        (Some(Ok(major)), Some(Ok(minor))) => (major, minor) >= (0, 13),
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reads_images;
+
+    #[test]
+    fn a_daemon_before_0_13_drops_images() {
+        assert!(!reads_images("0.12.1"));
+        assert!(reads_images("0.13.0"));
+        assert!(reads_images("0.13.1-dev"));
+        assert!(reads_images("1.0.0"));
+        assert!(reads_images("dev"), "a version that does not parse is taken to read them");
     }
 }
