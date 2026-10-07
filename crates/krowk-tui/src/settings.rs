@@ -1,9 +1,19 @@
 //! The TUI's part of krowk's config.json, under `"tui"` (R-TUI-2):
 //!
 //! ```json
-//! { "tui": { "contentWidth": "prose", "statusBar": true, "statusItems": ["model", "device", "tasks", "subagents", "help", "branch", "pr", "cost"] } }
+//! { "tui": { "screen": "auto", "contentWidth": "prose", "statusBar": true, "statusItems": ["model", "device", "tasks", "subagents", "help", "branch", "pr", "cost"] } }
 //! ```
 //!
+//! - `screen` — `auto` (the default) is `fullscreen`, but `inline` inside
+//!   Zellij, whose own panes take the mouse and the alternate screen badly
+//!   (as Grok Build decides). `fullscreen` takes the terminal's alternate
+//!   screen: the prompt and the status line stay on the bottom rows while
+//!   the conversation scrolls above them with the mouse wheel or PgUp and
+//!   PgDn, a drag over it selects and copies, and on the way out the
+//!   conversation is printed onto the shell's screen. `inline` draws at the bottom of the normal screen and leaves
+//!   the conversation in the terminal's own scrollback (`term`), for a
+//!   terminal where the alternate screen or the mouse is unwelcome. Read
+//!   when the TUI starts.
 //! - `contentWidth` — `prose` (the default) lays out what is above the
 //!   prompt at most 80 columns wide, however wide the terminal; a narrower
 //!   one still gets all of its width. `prose-wide` is the same at most 120
@@ -143,8 +153,42 @@ impl ContentWidth {
     }
 }
 
+/// Where the TUI draws (`tui.screen`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Screen {
+    /// Fullscreen, but inline inside Zellij.
+    #[default]
+    Auto,
+    /// The alternate screen, the footer pinned (`crate::full`).
+    Fullscreen,
+    /// The normal screen, the conversation in its scrollback (`crate::term`).
+    Inline,
+}
+
+impl Screen {
+    /// Whether the TUI takes the alternate screen, in the environment
+    /// `env` reads.
+    pub fn fullscreen(self, env: &dyn Fn(&str) -> String) -> bool {
+        match self {
+            Screen::Auto => env("ZELLIJ").is_empty(),
+            Screen::Fullscreen => true,
+            Screen::Inline => false,
+        }
+    }
+
+    fn parse(s: &str) -> Option<Screen> {
+        match s {
+            "auto" => Some(Screen::Auto),
+            "fullscreen" => Some(Screen::Fullscreen),
+            "inline" => Some(Screen::Inline),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
+    pub screen: Screen,
     pub content_width: ContentWidth,
     pub status_bar: bool,
     pub status_items: Vec<Item>,
@@ -152,7 +196,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { content_width: ContentWidth::default(), status_bar: true, status_items: Item::ALL.iter().map(|(_, i)| *i).collect() }
+        Settings { screen: Screen::default(), content_width: ContentWidth::default(), status_bar: true, status_items: Item::ALL.iter().map(|(_, i)| *i).collect() }
     }
 }
 
@@ -167,6 +211,13 @@ pub fn from_config(raw: &Value) -> (Settings, Vec<String>) {
         warnings.push("config \"tui\" must be an object — using the defaults".into());
         return (s, warnings);
     };
+    match tui.get("screen") {
+        None => {}
+        Some(v) => match v.as_str().and_then(Screen::parse) {
+            Some(m) => s.screen = m,
+            None => warnings.push(format!("config tui.screen: {v} is not a screen — auto, fullscreen or inline")),
+        },
+    }
     match tui.get("contentWidth") {
         None => {}
         Some(v) => match v.as_str().and_then(ContentWidth::parse) {
@@ -197,8 +248,8 @@ pub fn from_config(raw: &Value) -> (Settings, Vec<String>) {
         Some(_) => warnings.push("config tui.statusItems must be a list of item names".into()),
     }
     for key in tui.keys() {
-        if !matches!(key.as_str(), "contentWidth" | "statusBar" | "statusItems") {
-            warnings.push(format!("config tui.{key} is not a setting — the TUI reads contentWidth, statusBar and statusItems"));
+        if !matches!(key.as_str(), "screen" | "contentWidth" | "statusBar" | "statusItems") {
+            warnings.push(format!("config tui.{key} is not a setting — the TUI reads screen, contentWidth, statusBar and statusItems"));
         }
     }
     (s, warnings)
@@ -353,6 +404,21 @@ mod tests {
         assert_eq!(ContentWidth::FullWidth.step(-1), Some(ContentWidth::ProseWide));
         assert_eq!(ContentWidth::FullWidth.step(1), None, "held →: nothing past full-width");
         assert_eq!(ContentWidth::Prose.step(-1), None);
+    }
+
+    #[test]
+    fn the_screen_is_fullscreen_unless_inline_is_asked_for_or_zellij_runs_it() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string()).unwrap_or_default();
+        assert_eq!(Settings::default().screen, Screen::Auto);
+        assert!(Screen::Auto.fullscreen(&env(&[("TERM", "xterm-256color")])));
+        assert!(!Screen::Auto.fullscreen(&env(&[("ZELLIJ", "0")])), "inline inside Zellij");
+        assert!(Screen::Fullscreen.fullscreen(&env(&[("ZELLIJ", "0")])), "unless fullscreen is asked for");
+        assert_eq!(from_config(&json!({"tui": {"screen": "fullscreen"}})).0.screen, Screen::Fullscreen);
+        let (s, w) = from_config(&json!({"tui": {"screen": "inline"}}));
+        assert!(s.screen == Screen::Inline && w.is_empty(), "{w:?}");
+        let (s, w) = from_config(&json!({"tui": {"screen": "alt"}}));
+        assert_eq!(s.screen, Screen::Auto, "a malformed value leaves the default");
+        assert!(w.len() == 1 && w[0].contains("\"alt\"") && w[0].contains("inline"), "{w:?}");
     }
 
     #[test]

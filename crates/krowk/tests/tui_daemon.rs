@@ -43,6 +43,9 @@ impl Sandbox {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        // The inline renderer, whose scrollback these read.
+        std::fs::create_dir_all(root.join("home/.krowk")).unwrap();
+        std::fs::write(root.join("home/.krowk/config.json"), r#"{"tui": {"screen": "inline"}}"#).unwrap();
         Sandbox { root: root.canonicalize().unwrap() }
     }
 

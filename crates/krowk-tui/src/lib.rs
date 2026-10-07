@@ -1,11 +1,13 @@
-//! The inline TUI that bare `krowk` opens on a terminal: a client of the
+//! The TUI that bare `krowk` opens on a terminal: a client of the
 //! harness's in-process protocol (R-PROTO-1). It sends `Command`s to a
 //! `Host` and draws the `StreamLine`s that come back — the same two types
 //! `krowk -p` speaks, and the daemon's socket clients will — and it reads a
 //! resumed session's history from its log, the protocol's persisted half.
 //! Nothing here reaches into the engine.
 //!
-//! - `term` — the inline viewport and synchronized frames (R-TUI-1).
+//! - `screen` — the terminal drawn on, as `tui.screen` chose it: `full`,
+//!   the alternate screen with the footer pinned (the default), or `term`,
+//!   the inline viewport over the terminal's scrollback (R-TUI-1).
 //! - `app` — what is shown, driven by frames and keys.
 //! - `editor` — the multi-line prompt and its history.
 //! - `look` — glyphs, colours, the spinner and the light markdown.
@@ -39,6 +41,7 @@ pub mod device;
 pub mod pr;
 pub mod presence;
 pub mod editor;
+pub mod full;
 pub mod help;
 pub mod look;
 pub mod net;
@@ -47,6 +50,7 @@ pub mod settings;
 pub mod syntax;
 #[cfg(unix)]
 pub mod synced;
+pub mod screen;
 mod table;
 pub mod term;
 
@@ -107,6 +111,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use screen::Screen;
 use term::Term;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Instant;
@@ -278,6 +283,7 @@ pub fn run(opts: Options) -> Outcome {
 fn restore_terminal() {
     let _ = crossterm::terminal::disable_raw_mode();
     let mut out = std::io::stdout();
+    full::leave_if_taken(&mut out);
     let _ = out.write_all(term::KEYS_POP);
     let _ = out.write_all(b"\x1b[?2004l\x1b[?25h");
     let _ = out.flush();
@@ -316,25 +322,8 @@ async fn session(opts: Options) -> Outcome {
     let _ = stdout.write_all(term::KEYS_PUSH);
     let (w, h) = crossterm::terminal::size().unwrap_or((80, 24));
     let size = Size { width: w.max(1), height: h.max(1) };
-    // Asked once, before anything else reads the terminal. A cursor mid-line
-    // (a prompt without a trailing newline) gets a line of its own.
-    let top = match crossterm::cursor::position() {
-        Ok((0, y)) => Some(y),
-        Ok((_, y)) => {
-            let _ = stdout.write_all(b"\r\n");
-            Some((y + 1).min(size.height - 1))
-        }
-        Err(_) => None,
-    };
-    // A clean window to open on: what the shell left on screen scrolls up
-    // into scrollback — kept, not erased, the way a clear-screen that
-    // scrolls first keeps it — and the session starts on an empty screen.
-    // Where the cursor is unknown nothing is scrolled: a screenful of
-    // blank rows in scrollback is no clean window.
-    let top = match top {
-        Some(top) => clear_by_scrolling(&mut stdout, size, top),
-        None => size.height - 1,
-    };
+    let fullscreen = opts.settings.screen.fullscreen(&|k| std::env::var(k).unwrap_or_default());
+    let top = open_top(&mut stdout, size, fullscreen);
 
     let sessions_dir = opts.host.sessions_dir.clone();
     let pricer: Pricer = opts.host.pricer.clone();
@@ -400,10 +389,8 @@ async fn session(opts: Options) -> Outcome {
     }
 
     let initial_height = app.view(Instant::now().into_std()).0.len() as u16;
-    let mut term = match Term::new(stdout, size, top, initial_height) {
-        Ok(mut t) => {
-            t.reflows = term::reflows_from(&|k| std::env::var(k).unwrap_or_default());
-            t.pad = PAD;
+    let mut term = match open_screen(stdout, size, fullscreen, top, initial_height) {
+        Ok(t) => {
             // Saved only once there is a TUI to put it back on the way out.
             let _ = std::io::stdout().write_all(term::TITLE_SAVE);
             t
@@ -500,7 +487,7 @@ async fn session(opts: Options) -> Outcome {
     ui.rx = None;
     // The screen is left first, so leaving shows at once whatever is still
     // to be let go.
-    let _ = term.finish();
+    let _ = term.leave();
     ui.presence.finish();
     let mut out = term.into_inner();
     if let Some(id) = &app.session_id {
@@ -740,6 +727,45 @@ fn inner(width: u16) -> u16 {
     if width > 2 * PAD + 10 { width - 2 * PAD } else { width.max(1) }
 }
 
+/// The row the TUI opens on. Asked once, before anything else reads the
+/// terminal. A cursor mid-line (a prompt without a trailing newline) gets a
+/// line of its own — where the conversation is printed when fullscreen is
+/// left, too. Then a clean window to open on: what the shell left on screen
+/// scrolls up into scrollback — kept, not erased, the way a clear-screen
+/// that scrolls first keeps it — and the session starts on an empty screen.
+/// Where the cursor is unknown nothing is scrolled: a screenful of blank
+/// rows in scrollback is no clean window. Fullscreen needs none: the
+/// alternate screen is a clean one.
+fn open_top(out: &mut impl Write, size: Size, fullscreen: bool) -> u16 {
+    let top = match crossterm::cursor::position() {
+        Ok((0, y)) => Some(y),
+        Ok((_, y)) => {
+            let _ = out.write_all(b"\r\n");
+            Some((y + 1).min(size.height - 1))
+        }
+        Err(_) => None,
+    };
+    match top {
+        _ if fullscreen => 0,
+        Some(top) => clear_by_scrolling(out, size, top),
+        None => size.height - 1,
+    }
+}
+
+/// The screen `tui.screen` chose: fullscreen, or inline from `top`, at least
+/// `height` rows tall.
+fn open_screen<W: Write>(out: W, size: Size, fullscreen: bool, top: u16, height: u16) -> std::io::Result<Screen<W>> {
+    if fullscreen {
+        let mut t = full::Full::new(out, size)?;
+        t.pad = PAD;
+        return Ok(Screen::Full(t));
+    }
+    let mut t = Term::new(out, size, top, height)?;
+    t.reflows = term::reflows_from(&|k| std::env::var(k).unwrap_or_default());
+    t.pad = PAD;
+    Ok(Screen::Inline(t))
+}
+
 /// Scrolls the rows above `top` off the screen into scrollback, with line
 /// feeds from the bottom row, and leaves the cursor at the top left of the
 /// now empty screen: the row returned.
@@ -917,7 +943,7 @@ impl<'h> Ui<'h> {
         }
     }
 
-    async fn run<W: Write>(&mut self, app: &mut App, term: &mut Term<W>) -> std::io::Result<()> {
+    async fn run<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>) -> std::io::Result<()> {
         self.keys = Some(EventStream::new());
         let mut frames = Frames::default();
         // One probe at start, so a machine that is offline says so before
@@ -986,7 +1012,7 @@ impl<'h> Ui<'h> {
     }
 
     /// The first frame, and what is asked behind it.
-    fn first_frame<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, frames: &mut Frames) -> std::io::Result<()> {
+    fn first_frame<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, frames: &mut Frames) -> std::io::Result<()> {
         self.draw(app, term)?;
         frames.last.replace(Instant::now());
         // A model known at start needs nothing routed; whether anything
@@ -1002,7 +1028,7 @@ impl<'h> Ui<'h> {
 
     /// After whatever woke the loop: a frame for what changed, drawn when
     /// due.
-    fn paint<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, frames: &mut Frames) -> std::io::Result<()> {
+    fn paint<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, frames: &mut Frames) -> std::io::Result<()> {
         if app.take_dirty() && frames.at.is_none() {
             let now = Instant::now();
             frames.at = Some(frames.last.map_or(now, |t| (t + FRAME).max(now)));
@@ -1165,7 +1191,7 @@ impl<'h> Ui<'h> {
     }
 
     /// The loop woke for a deadline: whichever are due are seen to.
-    async fn on_wake<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, due: &Due, frames: &mut Frames, reach: &mut Reach) -> std::io::Result<()> {
+    async fn on_wake<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, due: &Due, frames: &mut Frames, reach: &mut Reach) -> std::io::Result<()> {
         let now = Instant::now();
         self.draw_due(app, term, frames, now)?;
         if due.tick.is_some_and(|t| t <= now) {
@@ -1197,7 +1223,7 @@ impl<'h> Ui<'h> {
     }
 
     /// Draws the frame due by `now`, if one is.
-    fn draw_due<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, frames: &mut Frames, now: Instant) -> std::io::Result<()> {
+    fn draw_due<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, frames: &mut Frames, now: Instant) -> std::io::Result<()> {
         if frames.at.is_some_and(|t| t <= now) {
             frames.at = None;
             self.draw(app, term)?;
@@ -1206,7 +1232,7 @@ impl<'h> Ui<'h> {
         Ok(())
     }
 
-    fn draw<W: Write>(&mut self, app: &mut App, term: &mut Term<W>) -> std::io::Result<()> {
+    fn draw<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>) -> std::io::Result<()> {
         // A vendor's login has the terminal: what is owed waits for it.
         if self.suspended {
             return Ok(());
@@ -1218,6 +1244,21 @@ impl<'h> Ui<'h> {
             && (w.max(1), h.max(1)) != (term.size().width, term.size().height)
         {
             self.resize(app, term, w, h)?;
+        }
+        // Before the view: the flash it leaves is in this frame, not the
+        // next one, which an idle TUI may not draw for a while.
+        if let Some((what, text)) = app.copy.take() {
+            // As written, tabs and all, but no escape or bidi control
+            // reaches the place it is pasted.
+            // The joiner that makes one emoji of several is kept too.
+            let text: String = text.chars().filter(|&c| matches!(c, '\n' | '\t' | '\u{200D}') || (!c.is_control() && !card::is_bidi(c))).collect();
+            app.flash = Some(if text.len() > clipboard::MAX {
+                format!("{what} is too long to copy ({} KB)", text.len() / 1024)
+            } else {
+                term.clipboard(&text)?;
+                clipboard::system(&text);
+                format!("copied {what} ({} lines)", text.lines().count())
+            });
         }
         // Scrollback's lines first: what they let go of (held tool blocks)
         // is then not in the live region too.
@@ -1241,18 +1282,8 @@ impl<'h> Ui<'h> {
         if std::mem::take(&mut app.wipe) {
             term.wipe()?;
         }
-        if let Some((what, text)) = app.copy.take() {
-            // As written, tabs and all, but no escape or bidi control
-            // reaches the place it is pasted.
-            // The joiner that makes one emoji of several is kept too.
-            let text: String = text.chars().filter(|&c| matches!(c, '\n' | '\t' | '\u{200D}') || (!c.is_control() && !card::is_bidi(c))).collect();
-            app.flash = Some(if text.len() > clipboard::MAX {
-                format!("{what} is too long to copy ({} KB)", text.len() / 1024)
-            } else {
-                term.clipboard(&text)?;
-                clipboard::system(&text);
-                format!("copied {what} ({} lines)", text.lines().count())
-            });
+        if std::mem::take(&mut app.to_bottom) {
+            term.follow();
         }
         term.steady(app.running())?;
         term.frame(&lines, &rows, caret)
@@ -1629,9 +1660,16 @@ impl<'h> Ui<'h> {
     }
 
     /// One terminal event. True when it asks for a connectivity probe.
-    async fn on_event<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, ev: Event, quitting: &mut bool) -> std::io::Result<bool> {
+    async fn on_event<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, ev: Event, quitting: &mut bool) -> std::io::Result<bool> {
         match ev {
             Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::Char('z') && k.modifiers.contains(KeyModifiers::CONTROL) => self.suspend(app, term)?,
+            // Fullscreen's conversation scrolls under the pinned footer.
+            Event::Key(k) if k.kind != KeyEventKind::Release && matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) && !term.inline() => {
+                let page = term.page();
+                term.scroll(if k.code == KeyCode::PageUp { page } else { -page });
+                app.touch();
+            }
+            Event::Mouse(m) => self.on_mouse(app, term, m),
             Event::Key(k) if k.kind != KeyEventKind::Release => return Ok(self.on_key(app, legacy(k), quitting).await),
             Event::Paste(s) => {
                 // With `/connect`'s overlay up, a paste is its question's
@@ -1675,13 +1713,40 @@ impl<'h> Ui<'h> {
         Ok(false)
     }
 
+    /// Fullscreen's mouse: the wheel scrolls the conversation, a drag over it
+    /// selects, and letting go copies what was selected.
+    fn on_mouse<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, m: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let changed = match m.kind {
+            MouseEventKind::ScrollUp => term.scroll(full::WHEEL),
+            MouseEventKind::ScrollDown => term.scroll(-full::WHEEL),
+            MouseEventKind::Down(MouseButton::Left) => term.press(m.column, m.row),
+            MouseEventKind::Drag(MouseButton::Left) => term.drag(m.column, m.row),
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(text) = term.release(m.column, m.row) {
+                    app.copy = Some(("the selection".into(), text));
+                }
+                true
+            }
+            _ => false,
+        };
+        if changed {
+            app.touch();
+        }
+    }
+
     /// The terminal changed size: where the cursor is now is asked, with
     /// the key reader stopped so the answer reaches us, and the live region
     /// is rebuilt from there.
-    fn resize<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, w: u16, h: u16) -> std::io::Result<()> {
-        self.keys = None;
-        term.resize(Size { width: w.max(1), height: h.max(1) }, cursor_row())?;
-        self.keys = Some(EventStream::new());
+    fn resize<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, w: u16, h: u16) -> std::io::Result<()> {
+        // Fullscreen asks nothing: the key reader goes on.
+        if term.inline() {
+            self.keys = None;
+        }
+        term.resize(Size { width: w.max(1), height: h.max(1) }, cursor_row)?;
+        if self.keys.is_none() {
+            self.keys = Some(EventStream::new());
+        }
         app.set_width(inner(w));
         Ok(())
     }
@@ -1692,7 +1757,7 @@ impl<'h> Ui<'h> {
     /// SIGCONT the stop returns, and the TUI takes the terminal again and
     /// redraws where the cursor now is. A turn running keeps running: the
     /// engine is in this process, stopped with it.
-    fn suspend<W: Write>(&mut self, app: &mut App, term: &mut Term<W>) -> std::io::Result<()> {
+    fn suspend<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>) -> std::io::Result<()> {
         #[cfg(unix)]
         {
             self.give_up(term)?;
@@ -1711,7 +1776,7 @@ impl<'h> Ui<'h> {
     /// cleared (its top is where the next output lands), raw mode and
     /// bracketed paste off, the key reader stopped so nothing here reads
     /// what the person types next.
-    fn give_up<W: Write>(&mut self, term: &mut Term<W>) -> std::io::Result<()> {
+    fn give_up<W: Write>(&mut self, term: &mut Screen<W>) -> std::io::Result<()> {
         self.keys = None;
         self.presence.pause();
         term.finish()?;
@@ -1721,7 +1786,7 @@ impl<'h> Ui<'h> {
 
     /// And taken back: the live region starts again on the row the cursor
     /// is on now, at the size the window is now.
-    fn take_back<W: Write>(&mut self, app: &mut App, term: &mut Term<W>) -> std::io::Result<()> {
+    fn take_back<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>) -> std::io::Result<()> {
         crossterm::terminal::enable_raw_mode()?;
         let mut out = std::io::stdout();
         let _ = out.write_all(b"\x1b[?2004h");
@@ -1729,7 +1794,7 @@ impl<'h> Ui<'h> {
         let _ = out.write_all(term::TITLE_SAVE);
         let _ = out.flush();
         let (w, h) = crossterm::terminal::size().unwrap_or((term.size().width, term.size().height));
-        term.resume(Size { width: w.max(1), height: h.max(1) }, cursor_row())?;
+        term.resume(Size { width: w.max(1), height: h.max(1) }, cursor_row)?;
         self.keys = Some(EventStream::new());
         app.set_width(inner(w));
         Ok(())
@@ -2450,7 +2515,7 @@ impl<'h> Ui<'h> {
     }
 
     /// One message from the sign-in's thread.
-    fn on_auth<W: Write>(&mut self, app: &mut App, term: &mut Term<W>, m: Option<connect::Msg>) -> std::io::Result<()> {
+    fn on_auth<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, m: Option<connect::Msg>) -> std::io::Result<()> {
         use connect::{Msg, Note};
         app.touch();
         let Some(m) = m else {
@@ -2850,6 +2915,7 @@ impl<'h> Ui<'h> {
         let text = app.editor.take().trim_end().to_string();
         app.overlay = Overlay::None;
         app.slash_closed = false;
+        app.to_bottom = true;
         if app.running() {
             app.unsent_steers.push(text);
             self.flush_requests(app).await;

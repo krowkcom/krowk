@@ -40,6 +40,9 @@ use std::time::{Duration, Instant};
 /// (and ` to interrupt`, not `esc to interrupt`).
 const PROMPT: &str = " help";
 
+/// The streamed answer's last line.
+const DONE: &str = "ZZZZZZ-done";
+
 const COLS: u16 = 100;
 const ROWS: u16 = 30;
 
@@ -239,7 +242,10 @@ pub fn turn_cpu(bin: &Path, home: &Path, window: Duration) -> Outcome {
 /// (one delta every 2 ms) for about four seconds.
 pub fn redraw(bin: &Path, home: &Path) -> Outcome {
     std::fs::create_dir_all(home).ok();
-    let body = mock::text_stream(&mock::numbered_lines(170));
+    // Its last line shares no column with the numbered line it follows:
+    // fullscreen redraws only the cells that changed, and a line scrolled
+    // up a row over one like it arrives in pieces.
+    let body = mock::text_stream(&format!("{}{DONE}\n", mock::numbered_lines(170)));
     let m = provider(move || mock::Reply::paced(body.clone(), Duration::from_millis(2)));
     let mut t = pty::Pty::spawn(tui(bin, home, &m.url, &[]), COLS, ROWS);
     let result = (|| {
@@ -247,7 +253,7 @@ pub fn redraw(bin: &Path, home: &Path) -> Outcome {
         let before = t.frames().len();
         let t0 = Instant::now();
         t.write(b"stream\r");
-        t.wait_for("00170:", Duration::from_secs(30)).ok_or("the stream never finished")?;
+        t.wait_for(DONE, Duration::from_secs(30)).ok_or("the stream never finished")?;
         let secs = t0.elapsed().as_secs_f64();
         let frames = t.frames()[before..].to_vec();
         Ok::<_, String>((pty::peak_fps(&frames), frames.len(), secs))

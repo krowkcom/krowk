@@ -40,6 +40,9 @@ impl Sandbox {
         std::os::unix::fs::symlink(fixture("fake-claude"), &bin).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The inline renderer: the TUI's output here is read as it is sent.
+        std::fs::create_dir_all(root.join("home/.krowk")).unwrap();
+        std::fs::write(root.join("home/.krowk/config.json"), r#"{"tui": {"screen": "inline"}}"#).unwrap();
         Sandbox { root: root.canonicalize().unwrap() }
     }
 
@@ -439,7 +442,7 @@ fn r_sub_3_the_tui_counts_a_background_agent_and_runs_the_turn_claude_code_begin
     // prose's 80 columns.
     let config = b.root.join("home/.krowk/config.json");
     let mut cfg: Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
-    cfg["tui"] = serde_json::json!({"contentWidth": "full-width"});
+    cfg["tui"]["contentWidth"] = "full-width".into();
     std::fs::write(&config, cfg.to_string()).unwrap();
     let trusted = b.root.join("home/.krowk/trusted.json");
     std::fs::create_dir_all(trusted.parent().unwrap()).unwrap();

@@ -30,7 +30,7 @@ Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a
 
 ## The agent
 
-- **Inline, not full-screen.** The agent draws at the bottom of your terminal and leaves everything else in your normal scrollback, so output can be scrolled, copied and searched, including over SSH and in tmux.
+- **A prompt that stays put.** The agent takes the whole terminal, and the prompt and status line stay on the bottom rows while you scroll the conversation with the mouse wheel or PgUp/PgDn, and dragging over it copies. When you leave, the conversation is printed into your normal scrollback. Set `"tui": {"screen": "inline"}` in `~/.krowk/config.json` to draw at the bottom of the terminal instead, with everything in your normal scrollback as it streams, which suits SSH, tmux and phone terminals.
 - **Tools.** It can read, write, edit, run bash, grep, glob and publish. It also keeps a todo list, runs subagents in parallel, each with its own context and a cheaper model, and asks you with options to pick from when a choice is yours.
 - **Compatible with Claude Code.** It uses the same permission modes, `allow`/`ask`/`deny` rules and settings files. It reads `AGENTS.md`, `CLAUDE.md` and `.cursor/rules`, and loads Claude-format skills, hooks and `.claude/agents` without changes. It adds an `unhinged` mode that never asks for permission.
 - **Multiple accounts.** You can connect several accounts per provider and rename them in `/connect`. A second account is added with `--name work`.

@@ -11,6 +11,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
+  takes the terminal's alternate screen. The prompt and status line stay on
+  the bottom rows while you scroll the conversation with the mouse wheel or
+  PgUp/PgDn, so you can read back without losing the prompt. Sending a
+  prompt jumps back to the bottom, and a resize rewraps the conversation.
+  Dragging over the conversation selects it and copies it when you let go,
+  a wrapped line as one line. When you leave, the conversation is printed
+  into your normal scrollback as before. Inside Zellij krowk stays inline.
+  To keep the old inline mode everywhere, which draws at the bottom of the
+  normal screen and streams into scrollback, set
+  `"tui": {"screen": "inline"}` in `~/.krowk/config.json` (`"fullscreen"`
+  forces fullscreen, and `"auto"` is the default).
 - **An upgrade reaches the host daemon by itself.** The daemon that runs
   your sessions used to stay on the old version until you ran `krowk host
   stop`. Now a newer `krowk` replaces an older daemon when it starts, or
@@ -28,6 +40,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   drops them.** A daemon from before 0.13.0 sent the model `[Image #N]`
   and no image. Now the prompt comes back to the editor, images and all,
   to send again once the daemon is replaced.
+- **"copied … (N lines)" shows as soon as you copy.** After Ctrl-Y picked
+  something to copy, the confirmation only appeared after the next key.
 
 ## [0.13.0] - 2026-10-07
 
