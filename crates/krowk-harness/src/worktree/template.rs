@@ -24,7 +24,10 @@
 //!   the commit it holds, nothing is touched.
 //! - **Heavy directories** (`worktrees.seed`) cloned in from the main
 //!   checkout by WT5's rules (`seed::seed_dir`), when the main checkout's
-//!   copy is newer than the template's and git ignores it there.
+//!   copy is newer than the template's and git ignores it there. While
+//!   they are, `<repo-id>/template.seeding` says so: a template it is
+//!   found beside was cut short mid-clone, an old copy set aside or a new
+//!   one half made inside it, and is deleted and made again.
 //!
 //! The caller holds the repository's lock (`super::lock`) throughout, as for
 //! any change to its worktrees. Nothing in it is the agent's: no sandbox
@@ -44,6 +47,8 @@ pub const TEMPLATE_DIR: &str = "template";
 pub const INDEX_FILE: &str = "template.index";
 /// The commit it holds, beside it.
 pub const SHA_FILE: &str = "template.sha";
+/// There while the heavy directories are cloned in, beside it.
+pub const SEEDING_FILE: &str = "template.seeding";
 
 /// A template holding a commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +109,10 @@ fn ensure(path: Option<&OsStr>, repo_dir: &Path, common: &Path, main: &Path, sha
         return Ok(Ensured::Unavailable(Unavailable::OtherFilesystem));
     }
     let t = Paths::new(repo_dir);
-    let held = std::fs::read_to_string(&t.sha).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    // A reseed cut short left the template with what it was cloning: no
+    // commit vouches for it.
+    let cut = t.seeding.symlink_metadata().is_ok();
+    let held = std::fs::read_to_string(&t.sha).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && !cut);
     let there = t.dir.symlink_metadata().is_ok_and(|m| m.is_dir()) && t.index.is_file();
     let ready = Template { path: t.dir.clone(), sha: sha.to_string() };
     match held {
@@ -135,12 +143,13 @@ struct Paths {
     dir: PathBuf,
     index: PathBuf,
     sha: PathBuf,
+    seeding: PathBuf,
 }
 
 impl Paths {
     fn new(repo_dir: &Path) -> Paths {
         let abs = std::path::absolute(repo_dir).unwrap_or_else(|_| repo_dir.to_path_buf());
-        Paths { dir: abs.join(TEMPLATE_DIR), index: abs.join(INDEX_FILE), sha: abs.join(SHA_FILE) }
+        Paths { dir: abs.join(TEMPLATE_DIR), index: abs.join(INDEX_FILE), sha: abs.join(SHA_FILE), seeding: abs.join(SEEDING_FILE) }
     }
 
     /// git on the template: the repository's git directory, the template
@@ -166,8 +175,13 @@ fn create(t: &Paths, btrfs: &Path, common: &Path, sha: &str) -> Result<(), Error
 /// After the files are `sha`'s: the heavy directories brought up to date,
 /// then `sha` recorded, whole or not at all.
 fn finish(t: &Paths, common: &Path, main: &Path, sha: &str, config: &WorktreesConfig) -> Result<(), Error> {
-    for name in config.seed().into_iter().filter(|n| seed::top_level_name(n)) {
-        reseed(t, common, main, &name);
+    let names: Vec<String> = config.seed().into_iter().filter(|n| seed::top_level_name(n)).collect();
+    // No marker, no clone: a crash mid-clone must be found.
+    if !names.is_empty() && std::fs::write(&t.seeding, b"").is_ok() {
+        for name in &names {
+            reseed(t, common, main, name);
+        }
+        remove(&t.seeding)?;
     }
     let part = t.sha.with_file_name(format!(".{SHA_FILE}.{}", random_hex()));
     let written = std::fs::write(&part, format!("{sha}\n")).and_then(|()| std::fs::rename(&part, &t.sha));
@@ -237,6 +251,7 @@ fn newest(dir: &Path) -> Option<SystemTime> {
 fn discard(t: &Paths) {
     let _ = std::fs::remove_file(&t.sha);
     let _ = std::fs::remove_dir_all(&t.dir);
+    let _ = std::fs::remove_file(&t.seeding);
     let _ = std::fs::remove_file(&t.index);
     let _ = std::fs::remove_file(t.index.with_file_name(format!("{INDEX_FILE}.lock")));
 }
@@ -481,6 +496,31 @@ mod tests {
         let t = ready(&dir, &common, &main, &d).unwrap();
         assert_eq!(std::fs::read_to_string(t.path.join("target/debug/deps/next")).unwrap(), "rebuilt\n");
         assert!(std::fs::read_dir(&t.path).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with(".krowk-old")));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (btrfs) A reseed cut short (a crash mid-clone) left its marker, the
+    /// old `target` set aside and a half-made one: the next ensure, even at
+    /// the same commit, makes the template again, clean.
+    #[test]
+    fn wt10_a_reseed_cut_short_is_remade() {
+        let Some((base, main, common, dir)) = fixture("wt10-cut", None) else { return };
+        let head = git_ok(&main, &["rev-parse", "HEAD"]);
+        let Some(t) = ready(&dir, &common, &main, &head) else {
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        };
+        assert!(!dir.join(SEEDING_FILE).exists(), "gone once seeded");
+        std::fs::rename(t.path.join("target"), t.path.join(".krowk-old-target-0badf00d")).unwrap();
+        std::fs::create_dir_all(t.path.join("target/debug")).unwrap();
+        std::fs::write(dir.join(SEEDING_FILE), "").unwrap();
+        let t = ready(&dir, &common, &main, &head).unwrap();
+        let mut names: Vec<String> = std::fs::read_dir(&t.path).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, [".gitignore", "a.txt", "target"]);
+        assert_eq!(std::fs::read_to_string(t.path.join("target/debug/deps/out")).unwrap(), "built\n");
+        assert!(!dir.join(SEEDING_FILE).exists());
+        assert_eq!(std::fs::read_to_string(dir.join(SHA_FILE)).unwrap().trim(), head);
         let _ = std::fs::remove_dir_all(&base);
     }
 
