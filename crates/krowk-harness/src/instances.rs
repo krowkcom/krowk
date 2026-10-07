@@ -71,6 +71,9 @@ pub struct InstancesConfig {
     /// How subagents run: how many at once, and on which model.
     #[serde(default, skip_serializing_if = "SubagentsConfig::is_empty")]
     pub subagents: SubagentsConfig,
+    /// How many build and test commands run at once, machine-wide.
+    #[serde(default, skip_serializing_if = "crate::builds::BuildsConfig::is_empty")]
+    pub builds: crate::builds::BuildsConfig,
     /// What happens when an instance hits its rate or usage limit
     /// (R-INST-7, R-INST-8): `offer` (the default) asks the person whether
     /// to continue on the next instance; `auto` moves there by itself, says
@@ -518,6 +521,9 @@ pub struct Registry {
     /// Config's `toolset`, already known to name a preset.
     pub toolset: Option<String>,
     pub subagents: SubagentsConfig,
+    /// The build slots heavy commands take, in the runtime directory the
+    /// environment names.
+    pub builds: crate::builds::Builds,
     pub rollover: Rollover,
     /// Config's `rolloverOrder`, as written.
     pub rollover_order: Vec<String>,
@@ -544,6 +550,7 @@ impl Registry {
             default_model: cfg.default_model.clone(),
             toolset: cfg.toolset.clone(),
             subagents: cfg.subagents.clone(),
+            builds: crate::builds::Builds::resolve(&cfg.builds, env),
             rollover: cfg.rollover.unwrap_or_default(),
             rollover_order: cfg.rollover_order.clone(),
             renamed: cfg.renamed.clone(),
@@ -1050,6 +1057,12 @@ pub fn from_config_json(raw: &serde_json::Value) -> Result<InstancesConfig, Stri
             return Err("\"subagents\": maxParallel must be at least 1".into());
         }
     }
+    if let Some(v) = raw.get("builds") {
+        cfg.builds = serde_json::from_value(v.clone()).map_err(|e| format!("\"builds\": {e}"))?;
+        if cfg.builds.slots == Some(0) {
+            return Err("\"builds\": slots must be at least 1".into());
+        }
+    }
     if let Some(v) = raw.get("renamed") {
         cfg.renamed = serde_json::from_value(v.clone()).map_err(|e| format!("\"renamed\": {e} — an object of old instance names and the names they became"))?;
     }
@@ -1318,6 +1331,18 @@ mod tests {
         assert_eq!(from_config_json(&serde_json::json!({})).unwrap().subagents.max_parallel(), crate::subagent::MAX_PARALLEL);
         assert!(from_config_json(&serde_json::json!({"subagents": {"maxParallel": 0}})).unwrap_err().contains("at least 1"));
         assert!(from_config_json(&serde_json::json!({"subagents": {"maxParalel": 2}})).unwrap_err().contains("subagents"), "a typo is named");
+    }
+
+    #[test]
+    fn build_slots_are_read_and_zero_or_a_typo_refused() {
+        let cfg = from_config_json(&serde_json::json!({"builds": {"slots": 3}})).unwrap();
+        assert_eq!(cfg.builds.slots, Some(3));
+        assert_eq!(from_config_json(&serde_json::json!({})).unwrap().builds.slots, None);
+        let zero = from_config_json(&serde_json::json!({"builds": {"slots": 0}})).unwrap_err();
+        assert!(zero.contains("builds") && zero.contains("slots must be at least 1"), "{zero}");
+        let typo = from_config_json(&serde_json::json!({"builds": {"slot": 2}})).unwrap_err();
+        assert!(typo.contains("builds") && typo.contains("unknown field `slot`"), "{typo}");
+        assert!(from_config_json(&serde_json::json!({"builds": {"slots": -1}})).unwrap_err().contains("builds"));
     }
 
     #[test]

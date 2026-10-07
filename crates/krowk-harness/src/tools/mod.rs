@@ -224,6 +224,12 @@ pub struct ToolEnv<'a> {
     /// Where `publish` sends files, and the channel a run it opens is
     /// reported on; none when the host publishes nothing.
     pub evidence: Option<(&'a crate::evidence::Evidence, &'a crate::engine::Events)>,
+    /// The build slots a heavy bash command waits for (`crate::builds`);
+    /// none, and it runs at once.
+    pub builds: Option<&'a crate::builds::Builds>,
+    /// Where a call's live output goes, and the result item it belongs to:
+    /// bash says there that it waits for a build slot.
+    pub live: Option<(&'a crate::engine::Events, &'a str)>,
 }
 
 /// Parses a call's input, or answers why it cannot.
@@ -332,7 +338,7 @@ pub async fn execute(name: &str, input: &Value, env: &ToolEnv<'_>, scope: Scope)
             Err(e) => e,
         },
         BASH => match parse_input::<BashInput>(name, input) {
-            Ok(i) => bash(&i, env.cwd, scope.sandbox.as_deref()).await,
+            Ok(i) => bash(&i, env, scope.sandbox.as_deref()).await,
             Err(e) => e,
         },
         // krowk_push's rules keep it in the working directory and away from
@@ -897,8 +903,27 @@ impl Drop for GroupKill {
     }
 }
 
-async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
+/// A build slot for a heavy command (`crate::builds`), held until the
+/// command is done, and what the result says of it: how long it waited, or
+/// why it ran without one. A slot that cannot be had — the runtime
+/// directory refused — runs the command anyway: queuing is for the
+/// machine's sake, and never a reason to keep a build from running.
+async fn build_slot(env: &ToolEnv<'_>, pool: &crate::slots::Pool) -> (Option<crate::slots::Slot>, Option<String>) {
+    let waiting = |in_use: usize| async move {
+        if let Some((events, item_id)) = env.live {
+            let delta = crate::protocol::Delta::Text { text: crate::builds::waiting_line(in_use) };
+            let _ = events.send(crate::engine::EngineEvent::ItemDelta { item_id: item_id.into(), delta }).await;
+        }
+    };
+    match pool.take(waiting).await {
+        Ok((slot, waited)) => (Some(slot), crate::builds::waited_note(waited)),
+        Err(e) => (None, Some(format!("(ran without a build slot: {e})"))),
+    }
+}
+
+async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
     use tokio::io::AsyncReadExt;
+    let cwd = env.cwd;
     let timeout = i.timeout_ms.map_or(BASH_DEFAULT_TIMEOUT, Duration::from_millis).min(BASH_MAX_TIMEOUT);
     // Inside the sandbox when the session has one, or not at all: a plan
     // this machine cannot enforce refuses the command (R-PERM-3). Laid out
@@ -909,10 +934,19 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
     if let Some(why) = sandbox.and_then(|p| p.refused.as_ref()) {
         return (format!("the command was not run: {why}"), true);
     }
-    let mut cmd = match sandbox.filter(|p| p.kernel).map(|p| crate::sandbox::bash(p, &i.command)) {
+    // A build or a test run: its share of the cores, and a build slot
+    // before it starts, held until it is done — dropped after the group
+    // is killed, since it was taken first.
+    let builds = env.builds.filter(|b| b.pool.is_some() && crate::builds::heavy(&i.command));
+    let jobs: Vec<(String, String)> = builds.and_then(|b| b.jobs.clone()).map(|n| ("CARGO_BUILD_JOBS".to_string(), n)).into_iter().collect();
+    let (_slot, slot_note) = match builds.and_then(|b| b.pool.as_ref()) {
+        Some(pool) => build_slot(env, pool).await,
+        None => (None, None),
+    };
+    let mut cmd = match sandbox.filter(|p| p.kernel).map(|p| crate::sandbox::bash(p, &i.command, &jobs)) {
         None => {
             let mut c = tokio::process::Command::new("bash");
-            c.arg("-c").arg(&i.command);
+            c.arg("-c").arg(&i.command).envs(jobs.iter().cloned());
             c
         }
         Some(Ok((program, args))) => {
@@ -1040,6 +1074,9 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
             if held_open {
                 tail += " (a process it started in the background still holds its output; krowk stopped reading when the shell exited)";
             }
+            if let Some(note) = &slot_note {
+                tail += &format!("\n{note}");
+            }
             let mut body = if text.is_empty() { tail.clone() } else { format!("{}\n{tail}", text.trim_end_matches('\n')) };
             let appeared = unfenced.as_mut().map(|u| u.appeared()).unwrap_or_default();
             if !appeared.is_empty() {
@@ -1051,7 +1088,8 @@ async fn bash(i: &BashInput, cwd: &Path, sandbox: Option<&crate::sandbox::Plan>)
         }
         Err(_) => {
             drop(group);
-            (format!("the command timed out after {} ms and was killed", timeout.as_millis()), true)
+            let note = slot_note.map(|n| format!("\n{n}")).unwrap_or_default();
+            (format!("the command timed out after {} ms and was killed{note}", timeout.as_millis()), true)
         }
     }
 }
@@ -1119,7 +1157,7 @@ pub(crate) mod tests {
         symlink(&outside, cwd.join("dir-link")).unwrap();
         symlink(outside.join("not-yet.txt"), cwd.join("dangling")).unwrap();
         symlink(cwd.join("a.txt"), cwd.join("inside-link")).unwrap();
-        let env = ToolEnv { cwd: &cwd, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None };
+        let env = ToolEnv { cwd: &cwd, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None };
         let refused = |r: (String, bool)| r.1 && r.0.contains("outside the working directory") && r.0.contains("bypassPermissions");
         let abs = outside.join("new.txt").display().to_string();
         for path in ["../outside/new.txt", abs.as_str(), "dir-link/new.txt", "dangling", "file-link", "sub/../../outside/x", "new/../../x"] {
@@ -1191,7 +1229,7 @@ pub(crate) mod tests {
         let marker = d.join("fsmonitor-ran");
         let config = std::fs::read_to_string(d.join(".git/config")).unwrap();
         std::fs::write(d.join(".git/config"), format!("{config}[core]\n\tfsmonitor = \"touch '{}'; false\"\n", marker.display())).unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None };
         assert_eq!(run(GREP, &json!({"pattern": "needle"}), &env).await, ("a.txt:1:needle\n".into(), false));
         assert_eq!(run(GLOB, &json!({"pattern": "*.txt"}), &env).await, ("a.txt\n".into(), false));
         assert!(!marker.exists(), "the repository's fsmonitor ran");
@@ -1241,7 +1279,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn r_back_3_codex_config_and_the_instances_home_are_kept_like_git() {
         let d = dir("codex-guard");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None };
         let fenced = |r: (String, bool), dir: &str| r.1 && r.0.contains(&format!("inside a {dir} directory"));
         assert!(fenced(run(WRITE, &json!({"path": ".codex/config.toml", "content": "x"}), &env).await, ".codex"));
         assert!(fenced(run(WRITE, &json!({"path": "sub/.Codex/rules/x.rules", "content": "x"}), &env).await, ".codex"), "any component, any case");
@@ -1277,7 +1315,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn r_sub_5_krowk_agent_definitions_are_kept_like_git() {
         let d = dir("krowk-guard");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::StrReplace, evidence: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
         for path in [".krowk/agents/evil.md", ".KROWK/agents/evil.md", "sub/.krowk./agents/x.md", ".claude/agents/evil.md"] {
             let (out, refused) = run(WRITE, &json!({"path": path, "content": "---\nname: evil\n---\n"}), &env).await;
             assert!(refused && out.contains("inside a ."), "{path}: {out}");
@@ -1296,7 +1334,7 @@ pub(crate) mod tests {
         let f = d.join("locked.txt");
         std::fs::write(&f, "keep\n").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
         for (tool, input) in [
             (WRITE, json!({"path": "locked.txt", "content": "gone"})),
             (STR_REPLACE, json!({"path": "locked.txt", "old_str": "keep", "new_str": "gone"})),
@@ -1319,7 +1357,7 @@ pub(crate) mod tests {
     async fn only_the_turns_edit_tool_runs() {
         let d = dir("edit-gate");
         std::fs::write(d.join("a.txt"), "x\n").unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::ApplyPatch, evidence: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None };
         let (out, err) = run(STR_REPLACE, &json!({"path": "a.txt", "old_str": "x", "new_str": "y"}), &env).await;
         assert!(err && out.contains("edit files with apply_patch"), "{out}");
         assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "x\n");
@@ -1339,7 +1377,7 @@ pub(crate) mod tests {
         let d = dir("read");
         std::fs::write(d.join("a.txt"), "one\ntwo\nthree\n").unwrap();
         std::fs::write(d.join("bin"), [0u8, 1, 2]).unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
         let (out, err) = run(READ, &json!({"path": "a.txt"}), &env).await;
         assert!(!err);
         assert_eq!(out, "     1\tone\n     2\ttwo\n     3\tthree\n");
@@ -1365,7 +1403,7 @@ pub(crate) mod tests {
         assert!(made.success());
         // Bypassed, so the devices outside the working directory are reached
         // at all: what is refused here is what they are, not where.
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
         for path in [fifo.display().to_string(), "/dev/zero".into(), "/dev/stdin".into(), d.display().to_string()] {
             let r = tokio::time::timeout(Duration::from_secs(2), run(READ, &json!({ "path": path }), &env)).await.expect("read never blocks");
             assert!(r.1 && r.0.contains("not a regular file"), "{path}: {r:?}");
@@ -1380,9 +1418,9 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn bash_runs_only_when_permissions_are_bypassed_and_is_bounded() {
         let d = dir("bash");
-        let refused = run(BASH, &json!({"command": "echo hi"}), &ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None }).await;
+        let refused = run(BASH, &json!({"command": "echo hi"}), &ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None }).await;
         assert!(refused.1 && refused.0.contains("bypassPermissions"), "{refused:?}");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
         assert_eq!(run(BASH, &json!({"command": "echo hi; echo oops >&2"}), &env).await, ("hi\noops\nexit code 0".into(), false));
         // One pipe: stdout and stderr arrive in the order they were written.
         let interleaved = "for i in 1 2 3 4 5 6 7 8; do echo out$i; echo err$i >&2; done";
@@ -1417,11 +1455,79 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
 
+    /// The build slots for a test: `slots` of them in a directory of its
+    /// own, never the machine's runtime directory.
+    fn builds(d: &Path, slots: usize) -> crate::builds::Builds {
+        crate::builds::Builds { pool: Some(crate::slots::Pool::new(d.join("run"), crate::builds::POOL, slots)), jobs: Some("3".into()) }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn heavy_commands_wait_for_a_build_slot_and_light_ones_run_beside_them() {
+        let d = dir("build-slots");
+        if !std::process::Command::new("make").arg("--version").output().is_ok_and(|o| o.status.success()) {
+            eprintln!("make is not installed: skipping");
+            return;
+        }
+        std::fs::write(d.join("Makefile"), "slow:\n\tsleep 2\n").unwrap();
+        let b = builds(&d, 1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None };
+        let (first, second) = (ToolEnv { live: Some((&tx, "first")), ..env }, ToolEnv { live: Some((&tx, "second")), ..env });
+        let started = std::time::Instant::now();
+        let timed = async |env: &ToolEnv<'_>, command: &str| (run(BASH, &json!({ "command": command }), env).await, started.elapsed());
+        let ((a, at), (b2, bt), (light, lt)) = tokio::join!(
+            timed(&first, "make -s slow && echo first"),
+            timed(&second, "make -s slow && echo second"),
+            timed(&env, "sleep 0.5 && echo \"jobs=[$CARGO_BUILD_JOBS]\""),
+        );
+        assert!(!a.1 && !b2.1 && !light.1, "{a:?} {b2:?} {light:?}");
+        // One after the other: the second ends a whole build after the first.
+        let (early, late) = if at < bt { (at, bt) } else { (bt, at) };
+        assert!(early >= Duration::from_secs(2) && late >= Duration::from_secs(4), "{early:?} {late:?}");
+        assert!(lt < Duration::from_secs(2), "the light command ran straight away: {lt:?}");
+        // Whatever krowk's own environment holds, and nothing krowk added.
+        let inherited = std::env::var("CARGO_BUILD_JOBS").unwrap_or_default();
+        assert_eq!(light.0, format!("jobs=[{inherited}]\nexit code 0"), "a light command gets no CARGO_BUILD_JOBS of krowk's");
+        let waited = if at < bt { &b2.0 } else { &a.0 };
+        assert!(waited.contains("waited") && waited.contains("for a build slot"), "the result says it waited: {waited}");
+        let said = rx.try_recv().expect("the wait was said live");
+        assert!(rx.try_recv().is_err(), "said once");
+        match said {
+            crate::engine::EngineEvent::ItemDelta { item_id, delta: crate::protocol::Delta::Text { text } } => {
+                assert_eq!(text, "waiting for a build slot (1 in use)\n");
+                assert_eq!(item_id, if at < bt { "second" } else { "first" }, "on the waiting call's own result");
+            }
+            other => panic!("{other:?}"),
+        }
+        // A heavy command gets the cores split between the slots.
+        let (out, _) = run(BASH, &json!({"command": "make --version >/dev/null && echo $CARGO_BUILD_JOBS"}), &env).await;
+        assert_eq!(out, "3\nexit code 0");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_interrupted_wait_for_a_build_slot_runs_nothing() {
+        let d = dir("build-slot-interrupt");
+        let b = builds(&d, 1);
+        let held = b.pool.as_ref().unwrap().try_take().unwrap().expect("free");
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None };
+        let input = json!({"command": "touch ran && make --version"});
+        let call = run(BASH, &input, &env);
+        // Dropped mid-wait, as the loop drops a call when the turn is interrupted.
+        assert!(tokio::time::timeout(Duration::from_millis(700), call).await.is_err(), "it waits while the slot is held");
+        assert!(!d.join("ran").exists(), "nothing ran while it waited");
+        drop(held);
+        assert!(b.pool.as_ref().unwrap().try_take().unwrap().is_some(), "the dropped wait holds nothing");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn an_interrupted_bash_call_kills_what_the_command_started() {
         let d = dir("bash-cancel");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None };
         let input = json!({"command": "sleep 30 & echo $! > grandchild; wait"});
         let call = run(BASH, &input, &env);
         // Dropped mid-run, as the loop drops a call when the turn is interrupted.
