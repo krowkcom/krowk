@@ -239,6 +239,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   When it would not, nothing is made, and the session or subagent fails
   with `not enough disk for a worktree: <free> free, <needed> needed`,
   pointing at `krowk worktrees prune` and `krowk worktrees remove`.
+- **The README covers worktrees, and `scripts/bench-worktrees` measures
+  them.** The README's new Worktrees section sums up `isolation`, applying
+  back, `--worktree`, `.worktreeinclude`, `worktrees.setup`, `builds.slots`,
+  `subagents.maxHost` and `krowk worktrees`. In a checkout of krowk,
+  `scripts/bench-worktrees` makes 20 worktrees of a scratch clone at once,
+  runs `cargo check` in all of them behind the build slots, applies three
+  subagents' changes back (one a conflict), removes everything and prints
+  creation p50/p95, check time, peak memory, slot wait and leftovers. It
+  calls no model.
 - **A host says why a viewer stays on the relay.** When a viewer offered
   the direct path never reaches it — a firewall on the host, or a tailnet
   access policy that doesn't allow the port, drops the connection before
