@@ -118,7 +118,15 @@ fn wt9_list_json_flags_clean_dirty_and_ahead() {
     let r = row(&listed, &ahead.hex);
     assert_eq!((&r["dirty"], &r["ahead"]), (&Value::Bool(false), &Value::from(1)));
     // `list` is the bare command's too, and a person gets a table.
-    assert_eq!(b.json(&["worktrees", "list", "--json"])["data"], listed["data"]);
+    // Each row's age is counted afresh, and a second may pass between the two.
+    let ageless = |v: &Value| {
+        let mut v = v["data"].clone();
+        for r in v["worktrees"].as_array_mut().into_iter().flatten() {
+            r.as_object_mut().map(|o| o.remove("age_seconds"));
+        }
+        v
+    };
+    assert_eq!(ageless(&b.json(&["worktrees", "list", "--json"])), ageless(&listed));
     let human = String::from_utf8(b.krowk(&["worktrees", "--format", "human"]).stdout).unwrap();
     assert!(human.starts_with("WORKTREE") && human.contains(&dirty.hex) && human.ends_with("3 worktrees (0 live)\n"), "{human}");
 }

@@ -454,7 +454,7 @@ mod tests {
             return;
         }
         if let Err(why) = crate::sandbox::enforcer() {
-            assert!(std::env::var_os("CI").is_none(), "CI on Linux must run the sandbox's tests, and {why}");
+            assert!(!cfg!(target_os = "linux") || std::env::var_os("CI").is_none(), "CI on Linux must run the sandbox's tests, and {why}");
             eprintln!("skipped: {why}");
             return;
         }
