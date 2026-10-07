@@ -91,16 +91,17 @@ pub struct Full<W: Write> {
     steady: bool,
     /// Whether this screen holds the alternate screen now.
     taken: bool,
+    /// The alternate screen is to be taken with the next write: kept apart
+    /// from what is queued, which a resize drops.
+    enter: bool,
 }
 
 impl<W: Write> Full<W> {
     /// Takes the alternate screen with the first frame.
     pub fn new(out: W, size: Size) -> io::Result<Full<W>> {
         let buf = FrameBuf::default();
-        buf.clone().write_all(ENTER)?;
-        TAKEN.store(true, Ordering::SeqCst);
         let terminal = Terminal::with_options(Back::fullscreen(&buf, size), TerminalOptions { viewport: Viewport::Fullscreen })?;
-        Ok(Full { terminal, buf, out, size, lines: Vec::new(), rows: Vec::new(), joined: Vec::new(), top: 0, shown: 0, selection: None, scroll: 0, view: size.height, caret: None, frames: 0, pad: 0, steady: false, taken: true })
+        Ok(Full { terminal, buf, out, size, lines: Vec::new(), rows: Vec::new(), joined: Vec::new(), top: 0, shown: 0, selection: None, scroll: 0, view: size.height, caret: None, frames: 0, pad: 0, steady: false, taken: false, enter: true })
     }
 
     pub fn size(&self) -> Size {
@@ -109,8 +110,19 @@ impl<W: Write> Full<W> {
 
     /// Scrolls the conversation `by` rows, up when positive.
     pub fn scroll(&mut self, by: isize) {
-        let most = self.rows.len().saturating_sub(usize::from(self.view.saturating_sub(1)).max(1));
-        self.scroll = self.scroll.saturating_add_signed(by).min(most);
+        self.scroll = self.scroll.saturating_add_signed(by);
+        self.place();
+    }
+
+    /// The scroll held to what there is, and the rows it puts on screen:
+    /// scrolled, the view's last row says what is below it.
+    fn place(&mut self) {
+        let view = usize::from(self.view);
+        self.scroll = self.scroll.min(self.rows.len().saturating_sub(view.saturating_sub(1).max(1)));
+        let shown = if self.scroll > 0 { view.saturating_sub(1) } else { view };
+        let end = self.rows.len() - self.scroll;
+        let start = end.saturating_sub(shown);
+        (self.top, self.shown) = (start, end - start);
     }
 
     /// A page of the conversation, less a row to keep a line in common.
@@ -219,12 +231,8 @@ impl<W: Write> Full<W> {
         let live = (rows.len() as u16).min(height);
         self.view = height - live;
         let view = usize::from(self.view);
-        // Scrolled, the view's last row says what is below it.
-        self.scroll = self.scroll.min(self.rows.len().saturating_sub(view.saturating_sub(1).max(1)));
-        let shown = if self.scroll > 0 { view.saturating_sub(1) } else { view };
-        let end = self.rows.len() - self.scroll;
-        let start = end.saturating_sub(shown);
-        (self.top, self.shown) = (start, end - start);
+        self.place();
+        let (start, end) = (self.top, self.top + self.shown);
         let selected = self.selection.map(Selection::ordered);
         let pad = if width > 2 * self.pad + 10 { self.pad } else { 0 };
         let inner = width - 2 * pad;
@@ -325,6 +333,8 @@ impl<W: Write> Full<W> {
             w.write_all(CURSOR_DEFAULT)?;
         }
         w.write_all(TITLE_RESTORE)?;
+        // Never taken, nothing to leave.
+        self.enter = false;
         if std::mem::take(&mut self.taken) {
             w.write_all(LEAVE)?;
             TAKEN.store(false, Ordering::SeqCst);
@@ -354,24 +364,31 @@ impl<W: Write> Full<W> {
     /// again at the size the window is now, and drawn whole.
     pub fn resume(&mut self, size: Size) -> io::Result<()> {
         self.buf.discard();
-        self.buf.clone().write_all(ENTER)?;
-        TAKEN.store(true, Ordering::SeqCst);
-        self.taken = true;
+        self.enter = true;
         self.relayout(size)?;
         self.flush()
     }
 
+    /// What is queued, as one synchronized write: the alternate screen
+    /// taken first when it is to be, and held taken once it is sent.
     fn flush(&mut self) -> io::Result<()> {
         let body = self.buf.take();
-        if body.is_empty() {
+        if body.is_empty() && !self.enter {
             return Ok(());
         }
-        let mut frame = Vec::with_capacity(body.len() + SYNC_BEGIN.len() + SYNC_END.len());
+        let mut frame = Vec::with_capacity(body.len() + ENTER.len() + SYNC_BEGIN.len() + SYNC_END.len());
         frame.extend_from_slice(SYNC_BEGIN);
+        if self.enter {
+            frame.extend_from_slice(ENTER);
+        }
         frame.extend_from_slice(&body);
         frame.extend_from_slice(SYNC_END);
         self.out.write_all(&frame)?;
         self.out.flush()?;
+        if std::mem::take(&mut self.enter) {
+            self.taken = true;
+            TAKEN.store(true, Ordering::SeqCst);
+        }
         self.frames += 1;
         Ok(())
     }
@@ -595,6 +612,34 @@ mod tests {
         // Dragged upwards, it reads in order all the same.
         t.press(3, 1);
         assert_eq!(t.release(1, 0).as_deref(), Some("ne\n0123"));
+    }
+
+    #[test]
+    fn a_resize_before_the_first_frame_still_takes_the_alternate_screen() {
+        let mut t = Full::new(Vec::new(), Size { width: 30, height: 8 }).unwrap();
+        t.resize(Size { width: 40, height: 10 }).unwrap();
+        t.frame(&lines(1), &footer(), (4, 0)).unwrap();
+        let out = String::from_utf8_lossy(&t.out).into_owned();
+        assert!(out.starts_with("\x1b[?2026h\x1b[?1049h"), "{out:?}");
+        // One never shown leaves nothing it did not take.
+        let mut t = Full::new(Vec::new(), Size { width: 30, height: 8 }).unwrap();
+        t.finish().unwrap();
+        let out = String::from_utf8_lossy(&t.out).into_owned();
+        assert!(!out.contains("\x1b[?1049"), "{out:?}");
+    }
+
+    #[test]
+    fn a_drag_held_at_the_top_row_selects_what_scrolls_under_it() {
+        let size = Size { width: 30, height: 8 };
+        let mut t = Full::new(Vec::new(), size).unwrap();
+        t.frame(&lines(20), &footer(), (4, 0)).unwrap();
+        // Rows 14 to 19 on screen; pressed on "line 16", held at the top
+        // for three drags before a frame is drawn.
+        assert!(t.press(0, 2));
+        for _ in 0..3 {
+            t.drag(0, 0);
+        }
+        assert_eq!(t.release(0, 0).as_deref(), Some("line 11\nline 12\nline 13\nline 14\nline 15\nl"));
     }
 
     #[test]
