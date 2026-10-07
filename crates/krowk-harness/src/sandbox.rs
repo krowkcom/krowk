@@ -1182,7 +1182,7 @@ mod tests {
     #[test]
     fn r_perm_3_a_platform_without_a_sandbox_refuses_with_a_fix() {
         let base = crate::tools::tests::dir("sandbox-none");
-        let e = bash(&plan(Profile::Workspace, &base), "true").unwrap_err();
+        let e = bash(&plan(Profile::Workspace, &base), "true", &[]).unwrap_err();
         assert!(e.contains("not built yet") || e.contains("no sandbox"), "{e}");
     }
 }

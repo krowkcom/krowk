@@ -245,7 +245,14 @@ unit = "bytes"
 # enough for any provider as it is pasted: 585,184 bytes, 13,930,184
 # (13.28 MiB). BMP and TIFF were left out (237,024 bytes more); a
 # clipboard is asked for PNG. Raised 12.50 -> 13.50 MiB, leaving 225,592.
-max = { x86_64-linux = 14_155_776 }
+# Main measured 14,633,608 (13.96 MiB) before the worktrees wave, already
+# 477,832 over 13.50 MiB (ask_user, `krowk artifacts`, the paste guard;
+# bench runs on release only, so no PR caught it). The wave (WT1-WT16: the
+# git helper, build and agent slots, worktree creation, seeding, the btrfs
+# template, apply-back, `krowk worktrees`, `--worktree`; no new crate)
+# adds 388,608: 15,022,216 (14.33 MiB), and 15,028,888 on the release
+# runner. Raised 13.50 -> 14.75 MiB, leaving 437,608.
+max = { x86_64-linux = 15_466_496 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---
