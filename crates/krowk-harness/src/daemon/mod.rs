@@ -212,6 +212,17 @@ pub async fn ensure(env: &dyn Fn(&str) -> String, cwd: &Path, version: &str, ans
     }
 }
 
+/// Whether a daemon of krowk `daemon` is of an older release than `mine`.
+/// Only releases compare: a version with anything past its three numbers
+/// (a golden build's `0.0.0-golden`) is older than nothing.
+pub fn older(daemon: &str, mine: &str) -> bool {
+    let release = |v: &str| -> Option<Vec<u64>> {
+        let n: Vec<u64> = v.split('.').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+        (n.len() == 3).then_some(n)
+    };
+    matches!((release(daemon), release(mine)), (Some(d), Some(m)) if d < m)
+}
+
 /// Starts `program args…` as the daemon: in a session of its own
 /// (`setsid`), so closing the terminal that started it sends it no hangup,
 /// with stdin closed and stdout and stderr appended to `log`.
@@ -452,5 +463,17 @@ mod tests {
         assert!(idle_window(&env(&none), Some(&tiny)).unwrap_err().contains("at least one second"), "not rounded down to never");
         let e = [("KROWK_HOST_IDLE", "soon".to_string())];
         assert!(idle_window(&env(&e), None).unwrap_err().contains("KROWK_HOST_IDLE"));
+    }
+
+    #[test]
+    fn only_an_older_release_is_older() {
+        assert!(older("0.12.1", "0.13.0"));
+        assert!(older("0.13.0", "0.13.1"));
+        assert!(older("0.9.0", "0.10.0"), "by number, not as text");
+        assert!(!older("0.13.0", "0.13.0"));
+        assert!(!older("0.14.0", "0.13.0"), "a newer daemon is never replaced by an older krowk");
+        assert!(!older("0.0.0-golden", "0.13.0"));
+        assert!(!older("0.12.1", "0.0.0-golden"));
+        assert!(!older("", "0.13.0"));
     }
 }

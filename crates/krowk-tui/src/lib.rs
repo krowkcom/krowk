@@ -407,7 +407,15 @@ async fn session(opts: Options) -> Outcome {
         #[cfg(unix)]
         (None, Some(d)) => match krowk_harness::daemon::remote::Remote::connect(d.env, started_in.clone(), d.version.clone(), true, d.spawn).await {
             Ok(client) => {
-                if client.krowk_version() != d.version {
+                // One of an older krowk is replaced now when it can be, and
+                // otherwise before a later prompt.
+                if client.renew().await
+                    && let Some(n) = client.take_note()
+                {
+                    app.note(&n);
+                } else if krowk_harness::daemon::older(&client.krowk_version(), &d.version) {
+                    app.note(&format!("the host daemon (pid {}) runs krowk {}, and this is {} — it is replaced before a prompt once no turn or background agent runs there (a service: restart it)", client.pid(), client.krowk_version(), d.version));
+                } else if client.krowk_version() != d.version {
                     app.note(&format!("the host daemon (pid {}) runs krowk {}, and this is {} — `krowk host stop` once its sessions are done", client.pid(), client.krowk_version(), d.version));
                 }
                 // The sessions of this directory still running there, which
@@ -1548,7 +1556,13 @@ impl<'h> Ui<'h> {
         let (tx, rx) = mpsc::channel(1024);
         let images = app.images_for(&text);
         let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
-        self.turn = Some(Box::pin(self.host.execute(cmd, tx)));
+        // Between turns a daemon of an older krowk is replaced first, so the
+        // prompt runs on this one's (`Link::renew`).
+        let (host, quiet) = (self.host, !app.backend_agents_running());
+        self.turn = Some(Box::pin(async move {
+            host.renew(quiet).await;
+            host.execute(cmd, tx).await
+        }));
         self.rx = Some(rx);
         app.start_turn(std::time::Instant::now());
     }

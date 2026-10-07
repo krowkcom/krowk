@@ -1898,6 +1898,13 @@
           "minimum": 0,
           "default": 0
         },
+        "agents": {
+          "description": "A backend's agents running in the background now, over every\nsession: they run between turns, and go with the daemon. A daemon\nbefore 0.14 does not count them, and says 0.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 0
+        },
         "sessions": {
           "description": "The sessions it has run since it started, newest first.",
           "type": "array",

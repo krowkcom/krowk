@@ -139,6 +139,10 @@ pub(super) struct State {
     generation: u64,
     /// Times a client fell behind, to be caught up from its cursor.
     caught_up: u64,
+    /// How many of a backend's agents run in the background, by session,
+    /// as its last `backend_agents` frame said: kept when the session's hub
+    /// is let go, since they run on with nobody following.
+    agents: HashMap<String, u32>,
     /// The last `line.seq` given out in each session: kept when a session
     /// is let go, so a `seq` is never reused while the daemon runs.
     seqs: HashMap<String, u64>,
@@ -222,6 +226,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         stopping: false,
         generation: 0,
         caught_up: 0,
+        agents: HashMap::new(),
         seqs: HashMap::new(),
         epoch: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64),
         unauthenticated: 0,
@@ -623,6 +628,7 @@ fn status(s: &State) -> HostStatus {
         websocket: s.websocket.as_ref().map(|(a, _)| a.to_string()),
         queued_bytes: s.clients.values().map(|c| c.outbox.bytes() as u64).sum(),
         caught_up: s.caught_up,
+        agents: s.agents.values().sum(),
         sessions: hubs.into_iter().map(|(id, h)| HostSession { session_id: id.clone(), running: h.running, clients: h.followers.len() as u32 }).collect(),
     }
 }
@@ -673,6 +679,7 @@ async fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>,
             };
             let Some(state) = weak.upgrade() else { break };
             let mut s = state.borrow_mut();
+            s.count_agents(&line);
             let session = line.session_id().to_string();
             let Some(followers) = s.hubs.get(&session).map(|h| h.followers.clone()) else { continue };
             let seq = s.next_seq(&session);
@@ -762,6 +769,17 @@ impl State {
     }
 
     /// The session's next `line.seq`.
+    /// A `backend_agents` frame's count kept for `status`.
+    fn count_agents(&mut self, line: &StreamLine) {
+        if let StreamLine::Live(crate::protocol::LiveEvent::BackendAgents { session_id, agents }) = line {
+            if agents.is_empty() {
+                self.agents.remove(session_id);
+            } else {
+                self.agents.insert(session_id.clone(), agents.len() as u32);
+            }
+        }
+    }
+
     fn next_seq(&mut self, session: &str) -> u64 {
         let n = self.seqs.entry(session.to_string()).or_insert(0);
         *n += 1;
@@ -815,6 +833,7 @@ impl State {
     /// encoded once, and queued for every follower: nothing between the
     /// host's stream and the socket writes anywhere (R-LAG-1).
     fn publish(&mut self, root: &str, host: &Rc<Host>, client: u64, cmd: u64, line: StreamLine) {
+        self.count_agents(&line);
         let seq = self.next_seq(root);
         let hub = self.follow(root, host, client);
         let own = line.session_id() == root;

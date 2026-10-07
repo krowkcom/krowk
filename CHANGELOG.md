@@ -9,6 +9,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Changed
+
+- **An upgrade reaches the host daemon by itself.** The daemon that runs
+  your sessions used to stay on the old version until you ran `krowk host
+  stop`. Now a newer `krowk` replaces an older daemon when it starts, or
+  before your next prompt, once no turn or background agent runs there.
+  Other open `krowk`s reconnect to the new one. A newer daemon is never
+  replaced by an older `krowk`, and a daemon run as a service (`krowk host
+  enable`) is left for you to restart.
+
 ### Fixed
 
 - **What you said is on a band across the width again**, instead of a
@@ -16,7 +26,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **A prompt with images is no longer sent to an older host daemon that
   drops them.** A daemon from before 0.13.0 sent the model `[Image #N]`
   and no image. Now the prompt comes back to the editor, images and all,
-  with a note to run `krowk host stop`.
+  to send again once the daemon is replaced.
 
 ## [0.13.0] - 2026-10-07
 
