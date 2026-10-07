@@ -4,9 +4,10 @@
 //!
 //! No model is involved here: `create` makes one, `prepare` readies it,
 //! `finish` removes it when the agent left it as it found it and keeps it
-//! otherwise. The subagent tool calls them around a child's turn
-//! (`isolation: "worktree"`), and a top-level session can call them around
-//! its own.
+//! otherwise; `open` is the first two with what the agent holds while it
+//! works (`InUse`). The subagent tool calls them around a child's turn
+//! (`isolation: "worktree"`), and `krowk --worktree` around a session of
+//! its own (WT6).
 //!
 //! - **Where**: `<root>/<repo-id>/<hex>`, the root being
 //!   `krowk_api::home::worktrees_root` (outside krowk's home, which the
@@ -227,6 +228,88 @@ pub fn first_prompt(notes: &[String], prompt: &str) -> String {
     }
     out.push_str(prompt);
     out
+}
+
+/// A worktree an agent works in, with what its user holds while it does:
+/// the live hold `krowk worktrees` judges it by (`manage::Held`), and a
+/// port slot for its `KROWK_PORT_BASE` (`setup::port_slot`). A subagent's
+/// (WT3) and a session's own (WT6) alike; both are let go by `finish`, or
+/// when it is dropped.
+pub struct InUse {
+    pub worktree: Worktree,
+    pub port: Option<crate::slots::Slot>,
+    pub port_base: Option<u16>,
+    pub held: manage::Held,
+}
+
+impl InUse {
+    /// `worktree`, held, with the lowest free port slot of `runtime`'s
+    /// pool: and the note saying why it has none, when it has none.
+    pub fn new(worktree: Worktree, held: manage::Held, runtime: PathBuf) -> (InUse, Option<String>) {
+        let (port, missing) = match setup::port_slot(runtime) {
+            Ok(Some(slot)) => (Some(slot), None),
+            Ok(None) => (None, Some("every port slot is held, so KROWK_PORT_BASE is not set here".to_string())),
+            Err(e) => (None, Some(format!("no port slot could be taken ({e}), so KROWK_PORT_BASE is not set here"))),
+        };
+        let port_base = port.as_ref().map(setup::port_base);
+        (InUse { worktree, port, port_base, held }, missing)
+    }
+
+    /// What the agent's commands get in their environment: its port base.
+    pub fn env(&self) -> Vec<(String, String)> {
+        self.port_base.map(|b| ("KROWK_PORT_BASE".to_string(), b.to_string())).into_iter().collect()
+    }
+
+    /// `finish`, then its port slot and its hold let go. Blocking.
+    pub fn finish(self) -> Result<Finished, Error> {
+        finish(&self.worktree)
+    }
+}
+
+/// What `open` readies a new worktree with: the settings of the agent that
+/// asked for it (whether its repository is trusted, the repository's own
+/// `worktrees`, the fences a sandbox keeps), the person's `worktrees`
+/// config, the build slots, and where the port slots are.
+pub struct Readying<'a> {
+    pub policy: &'a crate::permissions::Policy,
+    pub config: &'a WorktreesConfig,
+    pub builds: Option<&'a crate::builds::Builds>,
+    /// Set when the turn it is for is interrupted (`Prepare::cancel`).
+    pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
+    /// `crate::slots::runtime_dir`.
+    pub runtime: PathBuf,
+}
+
+/// A new worktree of the repository `cwd` is in, for `owner`
+/// (`create_held`), with a port slot, readied by the prepare steps
+/// (`prepare_or_discard`): it, in use, and the notes for its agent's first
+/// prompt (`first_prompt`). Blocking: off the async runtime.
+pub fn open(cwd: &Path, root: &Path, owner: &str, r: &Readying<'_>) -> Result<(InUse, Vec<String>), Error> {
+    let (w, held) = create_held(cwd, root, owner)?;
+    let (in_use, missing) = InUse::new(w, held, r.runtime.clone());
+    let sandbox = setup::sandbox(r.policy, &in_use.worktree.path);
+    let prepare = Prepare {
+        worktree: &in_use.worktree,
+        config: r.config,
+        project: r.policy.loaded.worktrees.as_ref(),
+        trusted: r.policy.loaded.trusted,
+        sandbox: sandbox.as_ref(),
+        port_base: in_use.port_base,
+        builds: r.builds,
+        cancel: r.cancel,
+    };
+    let mut notes: Vec<String> = missing.into_iter().collect();
+    notes.extend(prepare_or_discard(&prepare)?);
+    Ok((in_use, notes))
+}
+
+/// `wt` as a result names it when `finished` kept it (WT6); none when it
+/// was removed.
+pub fn kept(wt: &Worktree, finished: Finished) -> Option<crate::protocol::KeptWorktree> {
+    match finished {
+        Finished::Removed => None,
+        Finished::Kept { commits, dirty } => Some(crate::protocol::KeptWorktree { path: wt.path.display().to_string(), branch: wt.branch(), commits, uncommitted_changes: dirty }),
+    }
 }
 
 /// How deep `submodules` follows submodules inside submodules: a bound on

@@ -109,6 +109,7 @@ impl Home {
             publisher: None,
             permissions: Default::default(),
             agents: krowk_harness::subagent::AgentsConfig::none(),
+            session: Default::default(),
         })
     }
 

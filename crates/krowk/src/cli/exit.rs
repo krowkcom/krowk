@@ -46,6 +46,9 @@ fn client(code: &str) -> Option<i32> {
         "no_such_worktree" => NOT_FOUND,
         #[cfg(feature = "harness")]
         "worktree_live" | "worktree_has_changes" => REFUSED,
+        // `--resume` of a session whose krowk worktree is gone (WT6).
+        #[cfg(feature = "harness")]
+        "worktree_missing" => NOT_FOUND,
         "authorization_expired" => GONE,
         _ => return None,
     })

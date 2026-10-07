@@ -17,6 +17,8 @@ mod devices;
 #[cfg(all(feature = "harness", unix))]
 mod host;
 #[cfg(feature = "harness")]
+mod own_worktree;
+#[cfg(feature = "harness")]
 mod pairing;
 #[cfg(feature = "harness")]
 mod prompt;
@@ -137,6 +139,12 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     #[cfg(feature = "harness")]
     let parsed = parsed.and_then(|()| match f.resume_pick && !tui::wanted(io, &f, format, &positionals, jq_given) {
         true => Err("--resume needs a value".to_string()),
+        false => Ok(()),
+    });
+    // A resumed session runs in the directory it ran in.
+    #[cfg(feature = "harness")]
+    let parsed = parsed.and_then(|()| match f.own_worktree && (f.resume_pick || !f.resume.is_empty()) {
+        true => Err("--worktree starts a new session in a worktree of its own, and --resume continues one in the directory it ran in — drop one of them".to_string()),
         false => Ok(()),
     });
     if let Err(why) = parsed {
@@ -579,6 +587,14 @@ const ALL_OWNERS: &str = "`krowk sessions` and `krowk help`";
 #[cfg(not(feature = "sessions"))]
 const ALL_OWNERS: &str = "`krowk help`";
 
+/// Who takes `--worktree`: `sessions`, whose `--worktree <path>` filters
+/// the listing, and in the agent's build a new session, which starts in a
+/// worktree of its own.
+#[cfg(feature = "harness")]
+const WORKTREE_OWNERS: &str = "`krowk sessions` (`--worktree <path>`), `krowk -p` and the TUI";
+#[cfg(not(feature = "harness"))]
+const WORKTREE_OWNERS: &str = "`krowk sessions`";
+
 /// Each sessions flag is refused anywhere it does not belong: a flag that
 /// means nothing where it was typed was misunderstood by whoever typed it.
 fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error> {
@@ -594,7 +610,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         ("dry-run", "`krowk sessions import`", import),
         ("from", "`krowk sessions import`", import),
         ("harness", "`krowk sessions`", list),
-        ("worktree", "`krowk sessions`", list),
+        ("worktree", WORKTREE_OWNERS, list),
         ("all", ALL_OWNERS, list),
         ("thinking", "`krowk sessions show`", show),
         ("older-than", "`krowk sessions archive`", words.starts_with(&["sessions", "archive"])),

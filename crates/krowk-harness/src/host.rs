@@ -77,6 +77,25 @@ pub struct HostConfig {
     /// The person's agent definitions and the model listing a subagent's
     /// model is chosen from (R-SUB-1, R-SUB-5).
     pub agents: AgentsConfig,
+    /// What the session this process was started for runs with, when it
+    /// works in a krowk worktree (WT6: `krowk --worktree`, or a session
+    /// resumed in one).
+    pub session: SessionSetup,
+}
+
+/// What a session in a worktree of its own (WT6) runs with. Default:
+/// nothing, as any other session.
+#[derive(Debug, Clone, Default)]
+pub struct SessionSetup {
+    /// The id the host's first new session takes: its worktree is locked
+    /// in that session's name before the session exists.
+    pub id: Option<String>,
+    /// What readying its worktree had to say (`crate::worktree::prepare`):
+    /// the top of that session's first prompt (`worktree::first_prompt`).
+    pub notes: Vec<String>,
+    /// What every session's commands get in their environment beyond
+    /// krowk's own: the worktree's `KROWK_PORT_BASE`.
+    pub env: Vec<(String, String)>,
 }
 
 /// What executes commands. Cheap to share: its state is behind one `Arc`,
@@ -734,7 +753,7 @@ impl Shared {
     async fn settle(
         self: &Arc<Self>,
         session_id: Option<&str>,
-        (text, images): (String, Vec<images::Decoded>),
+        (mut text, images): (String, Vec<images::Decoded>),
         model: Option<ModelRef>,
         permission_mode: PermissionMode,
         toolset: Option<&str>,
@@ -838,7 +857,17 @@ impl Shared {
         let (log, events) = match opened {
             Some(opened) => opened,
             None => {
-                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &krowk_store::new_id(), &self.cfg.cwd, &self.cfg.krowk_version, None, None).await.map_err(log_failure)?;
+                // WT6: the session a worktree was made for takes the id the
+                // worktree is locked in, once, and its first prompt opens
+                // with what readying the worktree had to say.
+                let id = match &self.cfg.session.id {
+                    Some(id) if !self.cfg.sessions_dir.join(id).exists() => {
+                        text = crate::worktree::first_prompt(&self.cfg.session.notes, &text);
+                        id.clone()
+                    }
+                    _ => krowk_store::new_id(),
+                };
+                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &id, &self.cfg.cwd, &self.cfg.krowk_version, None, None).await.map_err(log_failure)?;
                 // WT9: what kept worktrees left behind, cleared at most
                 // once a day, on a thread of its own the session never
                 // waits for.
@@ -888,7 +917,7 @@ impl Shared {
             permission_mode,
             effort,
             cwd,
-            env: Vec::new(),
+            env: self.cfg.session.env.clone(),
             backend_session,
             budget,
             evidence,
@@ -1164,6 +1193,7 @@ impl Shared {
             error,
             unread_steers,
             switch_offer: offer,
+            worktree: None,
         };
         if plan.announce {
             let _ = out.send(StreamLine::Live(LiveEvent::Result(result.clone()))).await;

@@ -44,7 +44,7 @@ Other
 
 Flags
   --model <instance/model>   Which model (e.g. claude/sonnet)
-  --resume [id]              Continue a session
+  --resume · --worktree      Continue a session, or start one in a worktree
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
 
@@ -1464,6 +1464,12 @@ stdout:
       "usage": "With -p: continue this krowk session — the sessionId a result names, or its krowk.db id"
     },
     {
+      "name": "worktree",
+      "type": "bool",
+      "default": "false",
+      "usage": "With -p, and in the TUI: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did"
+    },
+    {
       "name": "permission-mode",
       "type": "string",
       "default": "default",
@@ -1615,7 +1621,7 @@ Other
 
 Flags
   --model <instance/model>   Which model (e.g. claude/sonnet)
-  --resume [id]              Continue a session
+  --resume · --worktree      Continue a session, or start one in a worktree
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
 
@@ -3047,6 +3053,12 @@ tty:
       "type": "string",
       "default": "",
       "usage": "With -p: continue this krowk session — the sessionId a result names, or its krowk.db id"
+    },
+    {
+      "name": "worktree",
+      "type": "bool",
+      "default": "false",
+      "usage": "With -p, and in the TUI: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did"
     },
     {
       "name": "permission-mode",

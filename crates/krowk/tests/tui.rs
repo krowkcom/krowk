@@ -1939,3 +1939,48 @@ fn ctrl_v_pastes_the_clipboards_screenshot_and_backspace_takes_it_whole() {
     let kinds: Vec<&str> = content.as_array().unwrap().iter().map(|c| c["type"].as_str().unwrap()).collect();
     assert_eq!(kinds, ["text", "text", "image"], "only the image still named was sent: {content}");
 }
+
+/// Worktrees WT6: `krowk --worktree` opens the TUI in a new worktree of
+/// the repository, its header naming the branch `krowk/<hex>`; a file the
+/// session makes is made there, not in the checkout, and the worktree is
+/// kept and named on the way out.
+#[test]
+fn wt6_the_tui_starts_in_a_worktree_of_its_own_and_names_it_when_kept() {
+    let git = |dir: &Path, args: &[&str]| {
+        let o = krowk_api::git::command(dir).unwrap().args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    let m = mock::serve(|body: &serde_json::Value, _: usize| {
+        let answered = body["messages"].as_array().and_then(|m| m.last()).and_then(|m| m["content"].as_array()).is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
+        if answered {
+            return mock::Reply::sse(&mock::text_stream("made it."));
+        }
+        mock::Reply::sse(&mock::tool_use("toolu_w", "write", &serde_json::json!({"path": "NEW.md", "content": "from the tui\n"})))
+    });
+    let b = Sandbox::new("worktree");
+    let repo = b.root.join("repo");
+    std::fs::remove_dir_all(repo.join(".git")).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-q", "-m", "one"]);
+    let mut c = b.command(&m.url, &["--worktree", "--permission-mode", "acceptEdits"]);
+    c.env("XDG_DATA_HOME", b.root.join("data")).env("XDG_RUNTIME_DIR", b.root.join("run")).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1");
+    std::fs::create_dir_all(b.root.join("run")).unwrap();
+    let mut t = pty::Pty::spawn(c, 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    let header = t.text();
+    t.write(b"make a file\r");
+    assert!(t.wait_for("tokens", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    let out = t.text();
+    let at = out.find("Worktree kept: ").unwrap_or_else(|| panic!("named on the way out: {out:?}")) + "Worktree kept: ".len();
+    let path = PathBuf::from(out[at..].split(" (branch krowk/").next().unwrap());
+    let hex = path.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(out.contains(&format!("(branch krowk/{hex})")), "{out:?}");
+    assert!(header.contains("Branch") && header.contains(&format!("krowk/{hex}")), "the header names the worktree's branch: {header:?}");
+    assert_eq!(std::fs::read_to_string(path.join("NEW.md")).unwrap(), "from the tui\n");
+    assert!(!repo.join("NEW.md").exists(), "not in the checkout");
+    assert_eq!(git(&repo, &["branch", "--list", "--format=%(refname:short)", "krowk/*"]), format!("krowk/{hex}"));
+}

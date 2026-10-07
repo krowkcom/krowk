@@ -1,13 +1,13 @@
 //! Bare `krowk` on a terminal: the inline TUI (R-PKG-1). The TUI itself is
 //! `krowk-tui`; this is the command line around it — when it opens, the
-//! flags it takes (`--model`, `--permission-mode`, `--toolset`, `--effort`, `--resume [id]`), the
+//! flags it takes (`--model`, `--permission-mode`, `--toolset`, `--effort`, `--resume [id]`, `--worktree`), the
 //! config it reads, and the session it leaves in krowk.db.
 
 use super::flags::Flags;
-use super::{prompt, sessions, Ctx, Io};
+use super::{own_worktree, prompt, sessions, Ctx, Io};
 use crate::output::Format;
 use krowk_api::{fail, Error};
-use krowk_harness::host::HostConfig;
+use krowk_harness::host::{HostConfig, SessionSetup};
 use krowk_harness::instances::{self, Registry};
 use krowk_harness::log;
 use std::sync::Arc;
@@ -83,6 +83,16 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
         _ => None,
     });
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
+    // WT6: a session resumed in a krowk worktree is held there again, and
+    // its worktree is trusted as the repository it was made from.
+    let trust_as = own_worktree::TrustAs::default();
+    let resumed = match (&resume, &session_cwd) {
+        (Some(id), Some(dir)) => own_worktree::resumed(ctx, id, dir)?,
+        _ => None,
+    };
+    if let Some(r) = &resumed {
+        trust_as.set(&r.worktree);
+    }
     let runs_in = session_cwd.clone().unwrap_or_else(|| cwd.clone());
     // A model that needs no vendor asked is known now: `--model` naming
     // its instance, the session's own, a `defaultModel` naming its
@@ -117,9 +127,30 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
     // now, not after the answer was kept.
     krowk_harness::permissions::settings::load(&probe, &runs_in).map_err(prompt::bad_settings)?;
     let widens = krowk_harness::permissions::settings::widens(&probe, &runs_in);
-    let (trust, trusted, trust_ask) = prompt::tui_trust_gate(effective.as_ref(), &registry, &runs_in, super::providers::krowk_dir()?, home, widens);
+    let (trust, trusted, trust_ask) = prompt::tui_trust_gate(effective.as_ref(), &registry, &runs_in, super::providers::krowk_dir()?, home, widens, trust_as.clone());
     let permissions = prompt::permissions_config(ctx, &config, trusted, true);
     let (permission_mode, mode_notices) = prompt::resolve_mode(flag_mode, &permissions, &runs_in)?;
+    // WT6: `--worktree` makes the session's worktree now, from this
+    // directory's repository, with the settings it would have run with
+    // here; the session starts in it, and the header names its branch.
+    let (worktree, session) = match resumed {
+        Some(w) => {
+            let env = w.env();
+            (Some(w), SessionSetup { env, ..SessionSetup::default() })
+        }
+        None if ctx.f.own_worktree && !synced => {
+            let id = krowk_store::new_id();
+            let (w, notes) = own_worktree::open(ctx, &cwd, &permissions, &registry, &id)?;
+            trust_as.set(&w.worktree);
+            let env = w.env();
+            (Some(w), SessionSetup { id: Some(id), notes, env })
+        }
+        None => (None, SessionSetup::default()),
+    };
+    let cwd = match &worktree {
+        Some(w) if ctx.f.own_worktree => w.worktree.path.clone(),
+        _ => cwd,
+    };
     let host = HostConfig {
         sessions_dir,
         cwd,
@@ -132,6 +163,7 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
         publisher: Some(prompt::publisher(ctx)),
         permissions,
         agents: prompt::agents_config(ctx.io.env),
+        session,
     };
     let projector = Projector::default();
     let outcome = krowk_tui::run(krowk_tui::Options {
@@ -157,7 +189,9 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
         },
         version: super::VERSION.into(),
         config: Some(super::providers::config_path()?),
-        daemon: if synced { None } else { daemon(ctx)? },
+        // A session in a worktree of its own runs here, where the worktree
+        // is held, and finished once the TUI closes.
+        daemon: if synced || worktree.is_some() { None } else { daemon(ctx)? },
         project: (!synced).then(|| projector.after_turns()),
         sync,
     });
@@ -169,6 +203,13 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
         if let Err(e) = projector.project(ctx.io.env, id) {
             ctx.warn(&format!("session {id} is saved, but krowk.db was not updated: {} — `krowk sessions sync` retries", e.fix()));
         }
+    }
+    // The session is over, and its turns with it: its worktree is removed
+    // when nothing changed, and named when it is kept.
+    if let Some(w) = worktree {
+        let wt = w.worktree.clone();
+        let finished = w.finish();
+        own_worktree::report(ctx, &wt, &finished);
     }
     // Left without waiting for a turn (a second Ctrl-C, SIGTERM or SIGHUP):
     // recorded above, and exits the way an interrupted command does.

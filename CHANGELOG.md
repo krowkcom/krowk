@@ -124,6 +124,27 @@ the versions are the `v*` tags a release is cut from. Entries land under
   listed too, with their base shown as unknown, so removing one of them
   needs `--force`.
 
+- **`krowk --worktree` and `krowk -p --worktree` start a session in a git
+  worktree of its own.** Sessions you start in separate terminals no
+  longer share one checkout. krowk makes the worktree from the repository
+  you are in, your uncommitted changes included, on a branch
+  `krowk/<8 hex>`, readies it as it does a subagent's (submodules, build
+  output, `.worktreeinclude`, `worktrees.setup`), and starts the session
+  there; the TUI's header shows the branch, and the agent's commands get
+  `KROWK_PORT_BASE`. When the session ends having changed nothing, the
+  worktree and its branch are removed. When it changed something, both
+  are kept and krowk says `Worktree kept: <path> (branch krowk/<hex>)` on
+  stderr; `-p --output-format json` or `stream-json` names it in the
+  result instead, as `worktree: {path, branch, commits,
+  uncommittedChanges}`. Resuming such a session runs it in its worktree
+  again; if that directory is gone, krowk says so (exit 2) and points to
+  `krowk worktrees`. Outside a git repository `--worktree` is refused
+  (exit 1). It can't be combined with `--resume`, or with `-p --daemon`:
+  the session runs in krowk's own process, which holds the worktree and
+  finishes it on the way out, and the TUI does the same rather than using
+  the host daemon. A worktree is trusted as the repository it was made
+  from. `krowk sessions --worktree <path>` filters the listing as before.
+
 - **An agent can commit inside a worktree krowk made for it.** When a
   sandboxed session runs in a worktree under
   `~/.local/share/krowk/worktrees` (or `$XDG_DATA_HOME/krowk/worktrees`) on

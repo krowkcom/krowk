@@ -3,11 +3,11 @@
 //! and the output formats live in `krowk-harness`; this is the command line
 //! around them — flags, the prompt from stdin, the config, the exit code.
 
-use super::{sessions, Ctx};
+use super::{own_worktree, sessions, Ctx};
 use crate::pricing;
 use krowk_api::{fail, Error};
 use krowk_harness::headless::{self, OutputFormat};
-use krowk_harness::host::HostConfig;
+use krowk_harness::host::{HostConfig, SessionSetup};
 use krowk_harness::instances::{self, Registry};
 use krowk_harness::log;
 use krowk_harness::readiness;
@@ -66,15 +66,29 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
             _ => None,
         })
     });
+    // WT6: a session resumed in a krowk worktree is held there again, and
+    // its worktree is trusted as the repository it was made from.
+    let trust_as = own_worktree::TrustAs::default();
+    let resumed = match (&resume, &session_cwd) {
+        (Some(id), Some(dir)) => own_worktree::resumed(ctx, id, dir)?,
+        _ => None,
+    };
+    if let Some(r) = &resumed {
+        trust_as.set(&r.worktree);
+    }
+    if ctx.f.daemon && (ctx.f.own_worktree || resumed.is_some()) {
+        return Err(fail("bad_flag", "a session in a worktree of its own runs in this process, which holds the worktree and finishes it when the run ends, and --daemon runs the turn in the host daemon — drop --daemon"));
+    }
     // A bare --model, or none on a session with no model yet, is routed to
     // an instance ready here now — before the trust prompt, which names the
     // vendor it runs.
     let runs_in = session_cwd.clone().unwrap_or_else(|| cwd.clone());
-    let trusted = flag_trust || store.trusts(&trust::root(&runs_in));
+    let trusted = flag_trust || store.trusts(&trust_as.root(&trust::root(&runs_in)));
     let model = route(ctx, &registry, asked.as_ref(), session_model.as_ref(), &runs_in, trusted)?;
     let runs_native = model.as_ref().or(session_model.as_ref()).and_then(|m| registry.get(&m.instance).ok()).is_some_and(|i| i.backend.is_none());
     let vendor = vendor_of(model.clone().or(session_model).as_ref(), &registry);
-    let mut permissions = permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| flag_trust || store.trusts(root)), false);
+    let as_repo = trust_as.clone();
+    let mut permissions = permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| flag_trust || store.trusts(&as_repo.root(root))), false);
     let (permission_mode, notices) = resolve_mode(flag_mode, &permissions, session_cwd.as_deref().unwrap_or(&cwd))?;
     // A settings file naming any mode chose one, even one krowk reads as
     // default (Claude Code's `auto`): its notice says krowk asks, and so it does.
@@ -85,6 +99,27 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     for n in notices {
         ctx.warn(&n);
     }
+    // WT6: `--worktree` makes the session's worktree now, from this
+    // directory's repository, with the settings it would have run with
+    // here; the session starts in it.
+    let (worktree, session) = match resumed {
+        Some(w) => {
+            let env = w.env();
+            (Some(w), SessionSetup { env, ..SessionSetup::default() })
+        }
+        None if ctx.f.own_worktree => {
+            let id = krowk_store::new_id();
+            let (w, notes) = own_worktree::open(ctx, &cwd, &permissions, &registry, &id)?;
+            trust_as.set(&w.worktree);
+            let env = w.env();
+            (Some(w), SessionSetup { id: Some(id), notes, env })
+        }
+        None => (None, SessionSetup::default()),
+    };
+    let cwd = match &worktree {
+        Some(w) if ctx.f.own_worktree => w.worktree.path.clone(),
+        _ => cwd,
+    };
     let cfg = HostConfig {
         sessions_dir,
         cwd,
@@ -93,14 +128,23 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         pricer: pricer(ctx.io.env),
         catalog: catalog(ctx.io.env),
         credentials: super::providers::credentials_path()?,
-        trust: trust_gate(ctx.f.trust, super::interactive(ctx) && std::io::stdin().is_terminal() && ctx.io.err_tty, super::providers::krowk_dir()?, home, vendor),
+        trust: trust_gate(ctx.f.trust, super::interactive(ctx) && std::io::stdin().is_terminal() && ctx.io.err_tty, super::providers::krowk_dir()?, home, vendor, trust_as),
         publisher: Some(publisher(ctx)),
         permissions,
         agents: agents_config(ctx.io.env),
+        session,
     };
-    let opts = headless::Options { prompt, resume, model, permission_mode, toolset, effort, budget, format };
+    let opts = headless::Options { prompt, resume, model, permission_mode, toolset, effort, budget, format, worktree };
     let outcome = if ctx.f.daemon { on_daemon(ctx, &cfg.cwd.clone(), opts)? } else { headless::run(cfg, opts, ctx.io.stdout) };
     let _ = ctx.io.stdout.flush();
+    // A kept worktree is named: in the result, when one was printed as
+    // JSON, else on stderr.
+    if let Some((wt, finished)) = &outcome.worktree {
+        let named = format != OutputFormat::Text && outcome.result.as_ref().is_some_and(|r| r.worktree.is_some());
+        if !named {
+            own_worktree::report(ctx, wt, finished);
+        }
+    }
 
     // The log is the session; krowk.db is its projection, brought up to date
     // now so the listing has it. A store that cannot take it costs the
@@ -400,9 +444,10 @@ pub(super) fn resolve_resume(ctx: &Ctx, sessions_dir: &std::path::Path, referenc
 /// anything headless is refused. The home directory and `/` are never
 /// offered: only `--trust`, for one run, starts a backend there. Nothing is
 /// spawned until this answers.
-fn trust_gate(flag: bool, ask: bool, dir: std::path::PathBuf, home: Option<std::path::PathBuf>, vendor: &'static str) -> trust::Gate {
+fn trust_gate(flag: bool, ask: bool, dir: std::path::PathBuf, home: Option<std::path::PathBuf>, vendor: &'static str, trust_as: own_worktree::TrustAs) -> trust::Gate {
     let store = trust::Store::new(Some(dir.join(trust::FILE)), home);
     Arc::new(move |root: &std::path::Path| {
+        let root = &trust_as.root(root);
         if flag || store.trusts(root) {
             return Ok(());
         }
@@ -456,19 +501,23 @@ pub(super) fn ask_trust(store: &trust::Store, root: &std::path::Path, vendor: &s
 /// A native session is asked the same question when the repository's own
 /// settings would widen what krowk may do there (allow rules, directories,
 /// hooks): the returned `Trusted` is what the permission rules consult.
-pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, registry: &Registry, cwd: &std::path::Path, dir: std::path::PathBuf, home: Option<std::path::PathBuf>, widens: bool) -> (trust::Gate, permissions::settings::Trusted, krowk_tui::TrustAsk) {
+pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, registry: &Registry, cwd: &std::path::Path, dir: std::path::PathBuf, home: Option<std::path::PathBuf>, widens: bool, trust_as: own_worktree::TrustAs) -> (trust::Gate, permissions::settings::Trusted, krowk_tui::TrustAsk) {
     use std::sync::atomic::{AtomicBool, Ordering};
     let store = trust::Store::new(Some(dir.join(trust::FILE)), home);
     let backend = model.and_then(|m| registry.get(&m.instance).ok()).is_some_and(|i| i.backend.is_some());
-    let asked = trust::root(cwd);
+    // A krowk worktree is asked about as its repository (WT6).
+    let asked = trust_as.root(&trust::root(cwd));
     let vendor = if backend { vendor_of(model, registry) } else { "krowk" };
     // The card is drawn on stderr: with that not a terminal it would be a
     // question nobody sees, answered by the next key.
     let seen = std::io::IsTerminal::is_terminal(&std::io::stderr());
     // Yes now, or later in the TUI, when a routed model lands on a backend.
     let accepted = Arc::new(AtomicBool::new((backend || widens) && seen && !store.trusts(&asked) && store.refuses(&asked).is_none() && ask_trust(&store, &asked, vendor)));
-    let (s2, a2, acc2) = (store.clone(), asked.clone(), accepted.clone());
-    let trusted: permissions::settings::Trusted = Arc::new(move |root: &std::path::Path| s2.trusts(root) || (acc2.load(Ordering::SeqCst) && root == a2));
+    let (s2, a2, acc2, t2) = (store.clone(), asked.clone(), accepted.clone(), trust_as.clone());
+    let trusted: permissions::settings::Trusted = Arc::new(move |root: &std::path::Path| {
+        let root = t2.root(root);
+        s2.trusts(&root) || (acc2.load(Ordering::SeqCst) && root == a2)
+    });
     let (s3, a3, acc3) = (store.clone(), asked.clone(), accepted.clone());
     let (s4, a4, acc4) = (store.clone(), asked.clone(), accepted.clone());
     let ask = krowk_tui::TrustAsk {
@@ -481,7 +530,8 @@ pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, 
         }),
     };
     let gate: trust::Gate = Arc::new(move |root: &std::path::Path| {
-        if store.trusts(root) || (accepted.load(Ordering::SeqCst) && root == asked) {
+        let root = &trust_as.root(root);
+        if store.trusts(root) || (accepted.load(Ordering::SeqCst) && *root == asked) {
             return Ok(());
         }
         if let Some(why) = store.refuses(root) {

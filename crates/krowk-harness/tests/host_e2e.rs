@@ -65,6 +65,7 @@ impl Home {
             publisher: None,
             permissions: Default::default(),
             agents: krowk_harness::subagent::AgentsConfig::none(),
+            session: Default::default(),
         }
     }
 
@@ -88,6 +89,7 @@ impl Home {
             effort: None,
             budget: None,
             format: OutputFormat::StreamJson,
+            worktree: None,
         };
         let outcome = headless::run(self.config(), opts, &mut out);
         assert!(outcome.error.is_none(), "{:?}", outcome.error);
@@ -267,6 +269,7 @@ fn r_tool_2_the_recorded_tools_carry_each_model_familys_edit_tool_and_toolset_ov
         effort: None,
         budget: None,
         format: OutputFormat::Json,
+        worktree: None,
     };
     let outcome = headless::run(home.config(), opts, &mut out);
     let e = outcome.error.expect("refused");

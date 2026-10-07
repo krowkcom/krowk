@@ -261,6 +261,7 @@ impl World {
                     publisher: None,
                     permissions: krowk_harness::permissions::Config { approvals: answers, ..Default::default() },
                     agents: krowk_harness::subagent::AgentsConfig::none(),
+                    session: Default::default(),
                 })
             });
             server::run(server::Options { socket, idle: None, krowk_version: "test".into(), ..Default::default() }, factory)

@@ -101,6 +101,7 @@ impl Sandbox {
             // The sandbox's own home: the person's real settings stay out.
             permissions: krowk_harness::permissions::Config { home: Some(self.root.join("home")), krowk_dir: Some(self.root.join("home/.krowk")), ..Default::default() },
             agents: krowk_harness::subagent::AgentsConfig::none(),
+            session: Default::default(),
         }
     }
 

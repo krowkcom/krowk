@@ -94,6 +94,7 @@ impl Home {
                     publisher: None,
                     permissions: krowk_harness::permissions::Config { approvals: answers, ..Default::default() },
                     agents: krowk_harness::subagent::AgentsConfig::none(),
+                    session: Default::default(),
                 })
             });
             let opts = server::Options { socket, idle: Some(Duration::from_millis(300)), krowk_version: "test".into(), websocket: Some("127.0.0.1:0".parse().unwrap()), heartbeat, caps, lateness: Some(late), ..Default::default() };

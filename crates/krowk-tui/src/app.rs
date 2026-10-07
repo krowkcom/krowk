@@ -4008,6 +4008,7 @@ mod tests {
             error: None,
             unread_steers: Vec::new(),
             switch_offer: None,
+            worktree: None,
         };
         a.on_line(&live(LiveEvent::Result(result.clone())));
         assert_eq!(a.status_bar(), "$1.50", "the result's cost is already in the frame");
@@ -4111,7 +4112,7 @@ mod tests {
         // A price not known is not a price of nothing.
         let mut b = app();
         b.on_line(&live(LiveEvent::Cost { session_id: "s".into(), turn_id: "t".into(), cost_usd: None, turn_cost_usd: None, generated_tokens: 1 }));
-        b.on_line(&live(LiveEvent::Result(RunResult { session_id: "s".into(), turn_id: "t".into(), status: TurnStatus::Completed, is_error: false, result: String::new(), model: ModelRef { instance: "anthropic".into(), model: "claude-x".into() }, usage: Usage::default(), cost_usd: None, duration_ms: 1, num_model_calls: 1, error: None, unread_steers: Vec::new(), switch_offer: None })));
+        b.on_line(&live(LiveEvent::Result(RunResult { session_id: "s".into(), turn_id: "t".into(), status: TurnStatus::Completed, is_error: false, result: String::new(), model: ModelRef { instance: "anthropic".into(), model: "claude-x".into() }, usage: Usage::default(), cost_usd: None, duration_ms: 1, num_model_calls: 1, error: None, unread_steers: Vec::new(), switch_offer: None, worktree: None })));
         assert_eq!(b.status_bar(), "Claude X (anthropic) | ? help\n$—");
     }
 
@@ -4487,6 +4488,7 @@ mod tests {
             error: None,
             unread_steers: Vec::new(),
             switch_offer: Some(offer.clone()),
+            worktree: None,
         };
         a.on_line(&live(LiveEvent::Result(result)));
         let rows = text(&a.view(Instant::now()).0).join("\n");

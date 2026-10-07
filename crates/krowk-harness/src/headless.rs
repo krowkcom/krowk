@@ -51,6 +51,11 @@ pub struct Options {
     /// `--max-usd` and `--max-tokens`: what the session may spend.
     pub budget: Option<crate::protocol::BudgetLimits>,
     pub format: OutputFormat,
+    /// `--worktree` (WT6): the worktree the session works in, finished
+    /// once the run is over (`worktree::InUse::finish`) and before the
+    /// result is printed, so a kept one is named in it
+    /// (`RunResult::worktree`).
+    pub worktree: Option<crate::worktree::InUse>,
 }
 
 /// How the run came out. `result` is set whenever a turn ran, failed or
@@ -59,6 +64,8 @@ pub struct Outcome {
     pub session_id: Option<String>,
     pub result: Option<RunResult>,
     pub error: Option<EngineError>,
+    /// `Options::worktree`, and how finishing it went.
+    pub worktree: Option<(crate::worktree::Worktree, Result<crate::worktree::Finished, crate::worktree::Error>)>,
 }
 
 /// Runs the prompt to its end on a runtime of its own: the rest of krowk is
@@ -66,7 +73,7 @@ pub struct Outcome {
 pub fn run(cfg: HostConfig, opts: Options, stdout: &mut dyn Write) -> Outcome {
     let rt = match runtime() {
         Ok(rt) => rt,
-        Err(e) => return Outcome { session_id: None, result: None, error: Some(e) },
+        Err(e) => return Outcome { session_id: None, result: None, error: Some(e), worktree: None },
     };
     rt.block_on(drive(&Host::new(cfg), opts, stdout))
 }
@@ -83,7 +90,7 @@ fn runtime() -> Result<tokio::runtime::Runtime, EngineError> {
 pub fn run_on_daemon(env: &dyn Fn(&str) -> String, cwd: &std::path::Path, version: &str, spawn: &crate::daemon::Spawn<'_>, opts: Options, stdout: &mut dyn Write) -> Outcome {
     let rt = match runtime() {
         Ok(rt) => rt,
-        Err(e) => return Outcome { session_id: None, result: None, error: Some(e) },
+        Err(e) => return Outcome { session_id: None, result: None, error: Some(e), worktree: None },
     };
     rt.block_on(async {
         // A `-p` client answers no approval request: its turns refuse what
@@ -95,7 +102,7 @@ pub fn run_on_daemon(env: &dyn Fn(&str) -> String, cwd: &std::path::Path, versio
                 }
                 drive(&client, opts, stdout).await
             }
-            Err(e) => Outcome { session_id: None, result: None, error: Some(e) },
+            Err(e) => Outcome { session_id: None, result: None, error: Some(e), worktree: None },
         }
     })
 }
@@ -131,6 +138,7 @@ impl Transport for crate::daemon::client::Client {
 
 async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> Outcome {
     let format = opts.format;
+    let worktree = opts.worktree;
     let (tx, mut rx) = mpsc::channel::<StreamLine>(1024);
     // A resumed session's id is known up front; a new one's arrives with
     // its root event.
@@ -171,6 +179,8 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
                 // the terminal's stderr, never stdout, which a program reads.
                 if let StreamLine::Live(LiveEvent::Notice { text, .. }) = &line {
                     let _ = writeln!(std::io::stderr(), "! {text}");
+                } else if worktree.is_some() && matches!(line, StreamLine::Live(LiveEvent::Result(_))) {
+                    // Printed once the worktree is finished, which it names.
                 } else if format == OutputFormat::StreamJson {
                     let _ = writeln!(stdout, "{}", serde_json::to_string(&line).expect("a stream line serializes"));
                     let _ = stdout.flush();
@@ -210,7 +220,16 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
     // A backend's process is let go before the answer is reported, so its
     // transcript is whole when krowk exits.
     host.shutdown().await;
-    match done.expect("the loop ends only once the command has") {
+    // The session is over: its worktree is finished before the result is
+    // printed, so a kept one is named in it.
+    let worktree = worktree.map(|w| {
+        let wt = w.worktree.clone();
+        let finished = w.finish();
+        (wt, finished)
+    });
+    let kept = worktree.as_ref().and_then(|(wt, f)| f.clone().ok().and_then(|f| crate::worktree::kept(wt, f)));
+    let done = done.expect("the loop ends only once the command has").map(|r| r.map(|result| RunResult { worktree: kept.map(Box::new), ..result }));
+    match done {
         Ok(Some(result)) => {
             match format {
                 OutputFormat::Text => {
@@ -221,12 +240,16 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
                 OutputFormat::Json => {
                     let _ = writeln!(stdout, "{}", serde_json::to_string(&LiveEvent::Result(result.clone())).expect("a result serializes"));
                 }
+                // The result held back for the worktree.
+                OutputFormat::StreamJson if worktree.is_some() => {
+                    let _ = writeln!(stdout, "{}", serde_json::to_string(&StreamLine::Live(LiveEvent::Result(result.clone()))).expect("a result serializes"));
+                }
                 OutputFormat::StreamJson => {}
             }
-            Outcome { session_id: Some(result.session_id.clone()), result: Some(result), error: None }
+            Outcome { session_id: Some(result.session_id.clone()), result: Some(result), error: None, worktree }
         }
-        Ok(None) => Outcome { session_id, result: None, error: None },
-        Err(e) => Outcome { session_id, result: None, error: Some(e) },
+        Ok(None) => Outcome { session_id, result: None, error: None, worktree },
+        Err(e) => Outcome { session_id, result: None, error: Some(e), worktree },
     }
 }
 

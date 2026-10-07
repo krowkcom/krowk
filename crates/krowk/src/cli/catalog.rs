@@ -806,6 +806,11 @@ fn prompt_flags() -> Vec<Flag> {
         with_default(flag("output-format", STRING, "With -p: text (the answer), json (the result event) or stream-json (every event, one per line)"), "text"),
         flag("model", STRING, "With -p: the model, as <instance>/<model> or a model id on the anthropic instance, e.g. claude-opus-5-5, claude:work/sonnet to run Claude Code, or codex:team/gpt-5.5 to run Codex; with --resume, the session moves there"),
         flag("resume", STRING, "With -p: continue this krowk session — the sessionId a result names, or its krowk.db id"),
+        flag(
+            "worktree",
+            BOOL,
+            "With -p, and in the TUI: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did",
+        ),
         with_default(
             flag(
                 "permission-mode",

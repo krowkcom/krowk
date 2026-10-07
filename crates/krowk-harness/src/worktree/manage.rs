@@ -154,6 +154,18 @@ pub fn hold(wt: &Worktree) -> Result<Held, Error> {
     Ok(Held { _file: file })
 }
 
+/// Holds `wt` live again, for a session resumed in it (WT6): none when a
+/// live session holds it already. Not waited for, as `hold` is: that
+/// session may run for days.
+pub fn hold_again(wt: &Worktree) -> Result<Option<Held>, Error> {
+    match claim(wt.repo_dir(), &wt.hex) {
+        Claim::Live => Ok(None),
+        Claim::Free(Some(held)) => Ok(Some(held)),
+        // No `.live` yet: one made before krowk held them.
+        Claim::Free(None) => hold(wt).map(Some),
+    }
+}
+
 /// Whether a live session holds the worktree `hex` of the repository whose
 /// directory is `dir`, asked without waiting: a shared lock, so listings at
 /// once do not take each other for a session.
