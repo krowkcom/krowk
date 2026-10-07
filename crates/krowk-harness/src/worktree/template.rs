@@ -26,12 +26,26 @@
 //!   checkout by WT5's rules (`seed::seed_dir`), when the main checkout's
 //!   copy is newer than the template's and git ignores it there.
 //!
+//! - **Fresh to cargo**: once `target` is cloned in, its files get the main
+//!   checkout's mtimes where their bytes are the same, and a later one
+//!   elsewhere (`seed::set_mtimes`), as a seeded worktree's do; a snapshot
+//!   keeps them. Then the index takes their stat data, a moment after the
+//!   files were written, so git does not take them for racily clean and
+//!   hash them again in every snapshot.
+//! - **A worktree from it** (WT11, `snapshot`): `git worktree add
+//!   --no-checkout` into an empty directory under `<repo-id>/scratch/`, a
+//!   snapshot of the template where the worktree goes, the `.git` file
+//!   moved into it and `git worktree repair`ed, and the template's index
+//!   copied in as the worktree's and refreshed: the snapshot's files have
+//!   another `st_dev`, and only a refresh makes git take them for
+//!   unchanged. A failure at any step takes all of it back.
+//!
 //! The caller holds the repository's lock (`super::lock`) throughout, as for
 //! any change to its worktrees. Nothing in it is the agent's: no sandbox
 //! writes `<root>/<repo-id>`.
 
 use super::seed::{self, Seeded};
-use super::{Error, RepoLock, last_lines, random_hex, read};
+use super::{Error, RepoLock, Worktree, last_lines, query, random_hex, read};
 use crate::instances::WorktreesConfig;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -44,6 +58,13 @@ pub const TEMPLATE_DIR: &str = "template";
 pub const INDEX_FILE: &str = "template.index";
 /// The commit it holds, beside it.
 pub const SHA_FILE: &str = "template.sha";
+/// Where a worktree made from it is registered with git before the
+/// snapshot is there to hold it, beside it: empty between creations.
+pub const SCRATCH_DIR: &str = "scratch";
+
+/// How long the template's index is written after its files: past the
+/// file system clock's tick, so git takes no file for racily clean.
+const TICK: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// A template holding a commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,7 +135,7 @@ fn ensure(path: Option<&OsStr>, repo_dir: &Path, common: &Path, main: &Path, sha
             // template no record vouches for.
             remove(&t.sha)?;
             if t.git(common)?.args(["read-tree", "--no-sparse-checkout", "-m", "-u", &old, sha]).output().is_ok_and(|o| o.status.success()) {
-                return finish(&t, common, main, sha, config).map(|()| Ensured::Ready(ready));
+                return finish(&t, common, main, sha, config, false).map(|()| Ensured::Ready(ready));
             }
             // A file in the way (one the main checkout's build put where
             // the new commit has a tracked one), or a template changed
@@ -123,7 +144,7 @@ fn ensure(path: Option<&OsStr>, repo_dir: &Path, common: &Path, main: &Path, sha
         _ => {}
     }
     discard(&t);
-    let made = create(&t, &btrfs, common, sha).and_then(|()| finish(&t, common, main, sha, config));
+    let made = create(&t, &btrfs, common, sha).and_then(|()| finish(&t, common, main, sha, config, true));
     if made.is_err() {
         discard(&t);
     }
@@ -164,10 +185,21 @@ fn create(t: &Paths, btrfs: &Path, common: &Path, sha: &str) -> Result<(), Error
 }
 
 /// After the files are `sha`'s: the heavy directories brought up to date,
-/// then `sha` recorded, whole or not at all.
-fn finish(t: &Paths, common: &Path, main: &Path, sha: &str, config: &WorktreesConfig) -> Result<(), Error> {
+/// the mtimes matched when `target` was cloned in, the index refreshed
+/// when every file was just written (`made`) or its mtimes were, then
+/// `sha` recorded, whole or not at all.
+fn finish(t: &Paths, common: &Path, main: &Path, sha: &str, config: &WorktreesConfig, made: bool) -> Result<(), Error> {
+    let mut target = false;
     for name in config.seed().into_iter().filter(|n| seed::top_level_name(n)) {
-        reseed(t, common, main, &name);
+        target |= reseed(t, common, main, &name) && name == "target";
+    }
+    if target && let Ok(tracked) = read(t.git(common)?.args(["ls-files", "-z"]), "ls-files") {
+        seed::set_mtimes(&tracked, &t.dir, main);
+    }
+    if made || target {
+        // Only spares each snapshot's refresh the hashing.
+        std::thread::sleep(TICK);
+        let _ = read(t.git(common)?.args(["update-index", "-q", "--refresh"]), "update-index");
     }
     let part = t.sha.with_file_name(format!(".{SHA_FILE}.{}", random_hex()));
     let written = std::fs::write(&part, format!("{sha}\n")).and_then(|()| std::fs::rename(&part, &t.sha));
@@ -182,28 +214,130 @@ fn finish(t: &Paths, common: &Path, main: &Path, sha: &str, config: &WorktreesCo
 /// ignores it in the template: a tracked directory of that name is the
 /// commit's. The old copy is set aside while the new one is cloned, and
 /// put back when it is not. Seeding only saves work: nothing here fails.
-fn reseed(t: &Paths, common: &Path, main: &Path, name: &str) {
+/// Whether it was cloned.
+fn reseed(t: &Paths, common: &Path, main: &Path, name: &str) -> bool {
     let (from, to) = (main.join(name), t.dir.join(name));
-    let Some(theirs) = newest(&from) else { return };
+    let Some(theirs) = newest(&from) else { return false };
     let ours = to.symlink_metadata().ok();
     if ours.as_ref().is_some_and(|m| !m.is_dir()) || (ours.is_some() && newest(&to).is_some_and(|n| n >= theirs)) {
-        return;
+        return false;
     }
     let ignored = t.git(common).is_ok_and(|mut c| c.args(["check-ignore", "-q", "--", &format!("{name}/")]).output().is_ok_and(|o| o.status.success()));
     if !ignored {
-        return;
+        return false;
     }
     let aside = t.dir.join(format!(".krowk-old-{name}-{}", random_hex()));
     if ours.is_some() && std::fs::rename(&to, &aside).is_err() {
-        return;
+        return false;
     }
     match seed::seed_dir(main, &t.dir, name) {
-        Seeded::Copied => drop(std::fs::remove_dir_all(&aside)),
+        Seeded::Copied => {
+            let _ = std::fs::remove_dir_all(&aside);
+            true
+        }
         Seeded::Skipped(_) | Seeded::Failed(_) => {
             if ours.is_some() {
                 let _ = std::fs::rename(&aside, &to);
             }
+            false
         }
+    }
+}
+
+/// Whether a template can be made in `dir`, the repository's directory
+/// under the root, if its files can be cloned there (`seed::cow`): btrfs,
+/// and `btrfs` on PATH.
+pub(super) fn snapshots(dir: &Path) -> bool {
+    on_btrfs(dir) && on_path("btrfs", std::env::var_os("PATH").as_deref()).is_some()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Set by a test: the next snapshot fails once it is made, as any of
+    /// its steps might.
+    pub(super) static FAIL_AFTER_SNAPSHOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The new worktree `wt` (its directory not there yet, its branch not
+/// made) as a snapshot of the template at `wt.base` (see the module
+/// docs): whether it carried the heavy directories `config` names, which
+/// its seed step then leaves alone. None where there is no template, and
+/// nothing made. An error has taken back everything it made: the
+/// snapshot, git's record of the worktree, its branch. `held` is the
+/// repository's lock. Blocking.
+pub(super) fn snapshot(held: &RepoLock, wt: &Worktree, config: &WorktreesConfig) -> Result<Option<bool>, Error> {
+    let dir = wt.repo_dir();
+    let template = match ensure_template(held, dir, &wt.common, &wt.main, &wt.base, config)? {
+        Ensured::Ready(t) => t,
+        Ensured::Unavailable(_) => return Ok(None),
+    };
+    let Some(btrfs) = on_path("btrfs", std::env::var_os("PATH").as_deref()) else { return Ok(None) };
+    let scratch = std::path::absolute(dir.join(SCRATCH_DIR).join(&wt.hex)).map_err(|e| Error::Failed(format!("the scratch directory: {e}")))?;
+    let made = snapshot_steps(wt, &template, &btrfs, &scratch);
+    if made.is_err() {
+        take_back(wt, &scratch);
+    }
+    made.map(|()| Some(config.seed().iter().any(|n| seed::top_level_name(n) && wt.path.join(n).symlink_metadata().is_ok_and(|m| m.is_dir()))))
+}
+
+/// The steps of `snapshot`, in order; the first that fails stops them.
+fn snapshot_steps(wt: &Worktree, template: &Template, btrfs: &Path, scratch: &Path) -> Result<(), Error> {
+    std::fs::create_dir_all(scratch.parent().unwrap_or(scratch)).map_err(|e| Error::Failed(format!("create {}: {e}", scratch.display())))?;
+    // `worktree add` takes an empty directory only, and names git's record
+    // of it after its name: the worktree's own.
+    read(super::git(&wt.main)?.args(["worktree", "add", "--quiet", "--no-checkout", "--no-track", "-b"]).arg(wt.branch()).arg(scratch).arg(&wt.base), "worktree add")?;
+    let out = Command::new(btrfs).args(["subvolume", "snapshot"]).arg(&template.path).arg(&wt.path).stdin(Stdio::null()).output().map_err(|e| Error::Failed(format!("btrfs subvolume snapshot: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::Failed(format!("btrfs subvolume snapshot: {}", last_lines(&String::from_utf8_lossy(&out.stderr)))));
+    }
+    // Moved, as `mv` moves across subvolumes, which `rename` cannot: it is
+    // the one-line file naming the worktree's admin directory.
+    std::fs::copy(scratch.join(".git"), wt.path.join(".git")).and_then(|_| std::fs::remove_file(scratch.join(".git"))).map_err(|e| Error::Failed(format!("move the worktree's .git: {e}")))?;
+    std::fs::remove_dir(scratch).map_err(|e| Error::Failed(format!("remove {}: {e}", scratch.display())))?;
+    read(super::git(&wt.path)?.args(["worktree", "repair"]), "worktree repair")?;
+    // The template's index holds `base`'s tree with the stat data of the
+    // files the snapshot shares, so the refresh hashes almost nothing.
+    // Checked, and read from the commit when it is not that tree.
+    let index = PathBuf::from(read(query(&wt.path)?.args(["rev-parse", "--path-format=absolute", "--git-path", "index"]), "rev-parse")?);
+    let part = index.with_extension(format!("krowk-{}", wt.hex));
+    let copied = super::copy_index(&Paths::new(wt.repo_dir()).index, &part).and_then(|()| std::fs::rename(&part, &index));
+    let _ = std::fs::remove_file(&part);
+    let tree = read(query(&wt.path)?.args(["rev-parse", &format!("{}^{{tree}}", wt.base)]), "rev-parse")?;
+    if copied.is_err() || read(super::git(&wt.path)?.arg("write-tree"), "write-tree").ok().as_deref() != Some(tree.as_str()) {
+        read(super::git(&wt.path)?.args(["read-tree", &wt.base]), "read-tree")?;
+    }
+    let _ = read(super::git(&wt.path)?.args(["update-index", "-q", "--refresh"]), "update-index");
+    // A template a stray file got into would make the worktree look
+    // changed, and keep it.
+    let status = read(query(&wt.path)?.args(["status", "--porcelain", "--untracked-files=normal"]), "status")?;
+    if !status.is_empty() {
+        return Err(Error::Failed(format!("the snapshot differs from {}: {}", wt.base, last_lines(&status))));
+    }
+    #[cfg(test)]
+    if FAIL_AFTER_SNAPSHOT.with(|f| f.replace(false)) {
+        return Err(Error::Failed("failed by the test".into()));
+    }
+    Ok(())
+}
+
+/// What `snapshot_steps` made of `wt`, gone: git's record of it (wherever
+/// its `.git` was), the snapshot, the scratch directory, its branch.
+fn take_back(wt: &Worktree, scratch: &Path) {
+    for at in [wt.path.as_path(), scratch] {
+        if at.join(".git").symlink_metadata().is_ok() && let Ok(mut c) = super::git(&wt.main) {
+            let _ = read(c.args(["worktree", "remove", "--force", "--force"]).arg(at), "worktree remove");
+        }
+    }
+    for at in [wt.path.as_path(), scratch] {
+        if at.symlink_metadata().is_ok() {
+            let _ = std::fs::remove_dir_all(at);
+        }
+        if let Some(admin) = super::manage::registration(&wt.common, at) {
+            let _ = std::fs::remove_dir_all(admin);
+        }
+    }
+    if let Ok(mut c) = super::git(&wt.main) {
+        let _ = read(c.args(["branch", "--quiet", "-D"]).arg(wt.branch()), "branch -D");
     }
 }
 
@@ -291,7 +425,7 @@ fn executable(_: &Path) -> bool {
 #[cfg(all(test, unix))]
 mod tests {
     use super::super::tests::{git_ok, has_git, repo, repo_in};
-    use super::super::{lock, repo_id};
+    use super::super::{Finished, Made, create_fastest, finish, lock, repo_id};
     use super::*;
     use std::collections::BTreeMap;
 
@@ -481,6 +615,153 @@ mod tests {
         let t = ready(&dir, &common, &main, &d).unwrap();
         assert_eq!(std::fs::read_to_string(t.path.join("target/debug/deps/next")).unwrap(), "rebuilt\n");
         assert!(std::fs::read_dir(&t.path).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with(".krowk-old")));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A worktree made the fastest way; None (and a note) where that is
+    /// not a snapshot here.
+    fn snapshot_of(main: &Path, root: &Path, owner: &str) -> Option<(Worktree, super::super::manage::Held, bool)> {
+        match create_fastest(main, root, owner, &WorktreesConfig::default()).unwrap() {
+            (w, held, Made::Snapshot { seeded }) => Some((w, held, seeded)),
+            (w, _, Made::Checkout) => {
+                eprintln!("no snapshots here: skipping");
+                let _ = finish(&w);
+                None
+            }
+        }
+    }
+
+    /// What krowk and git hold of worktrees in `dir` and `common`: the
+    /// entries of `dir` that are not files, the admin directories, the
+    /// `krowk/` branches.
+    fn leftovers(dir: &Path, common: &Path, main: &Path) -> (Vec<String>, Vec<String>, String) {
+        let names = |d: &Path| -> Vec<String> {
+            let mut v: Vec<String> = std::fs::read_dir(d).map(|r| r.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+            v.sort();
+            v
+        };
+        (names(dir), names(&common.join("worktrees")), git_ok(main, &["branch", "--list", "krowk/*"]))
+    }
+
+    /// (btrfs) A worktree made from the template: clean, at its base, with
+    /// the main checkout's `target`; a commit in it is the repository's;
+    /// removed through `finish`, nothing of it is left. From a checkout
+    /// with uncommitted changes too, whose working state the template
+    /// moves to.
+    #[test]
+    fn wt11_a_snapshot_is_a_worktree_like_any_other() {
+        let Some((base, main, common, dir)) = fixture("wt11-snap", None) else { return };
+        let root = dir.parent().unwrap().to_path_buf();
+        let head = git_ok(&main, &["rev-parse", "HEAD"]);
+        let Some((w, held, seeded)) = snapshot_of(&main, &root, "s1") else {
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        };
+        assert!(seeded, "the template carried target");
+        let probe: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(seed::PROBE_FILE)).unwrap()).unwrap();
+        assert_eq!(probe["method"], "snapshot", "chosen once, and remembered");
+        assert_eq!(std::os::unix::fs::MetadataExt::ino(&w.path.metadata().unwrap()), 256, "a subvolume");
+        assert_eq!(git_ok(&w.path, &["status", "--porcelain", "--untracked-files=normal"]), "");
+        assert_eq!((git_ok(&w.path, &["rev-parse", "HEAD"]), w.base.clone()), (head.clone(), head.clone()));
+        assert_eq!(git_ok(&w.path, &["rev-parse", "--abbrev-ref", "HEAD"]), w.branch());
+        assert_eq!(std::fs::read_to_string(w.path.join("target/debug/deps/out")).unwrap(), "built\n");
+        assert_eq!(std::fs::read_dir(dir.join(SCRATCH_DIR)).unwrap().count(), 0, "scratch is empty");
+        assert!(git_ok(&main, &["worktree", "list", "--porcelain"]).contains(&format!("worktree {}\nHEAD {head}\nbranch refs/heads/{}\nlocked krowk:s1", w.path.display(), w.branch())));
+
+        std::fs::write(w.path.join("a.txt"), "changed\n").unwrap();
+        git_ok(&w.path, &["commit", "-q", "-am", "in the worktree"]);
+        let made = git_ok(&w.path, &["rev-parse", "HEAD"]);
+        assert_eq!(git_ok(&main, &["rev-parse", &w.branch()]), made, "seen from the main checkout");
+        assert_eq!(git_ok(&main, &["show", &format!("{made}:a.txt")]), "changed");
+        git_ok(&w.path, &["reset", "-q", "--hard", &head]);
+        drop(held);
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
+        assert!(!w.path.exists());
+        assert_eq!(leftovers(&dir, &common, &main), (vec![SCRATCH_DIR.to_string(), TEMPLATE_DIR.to_string()], vec![], String::new()));
+        assert!(!dir.join(format!("{}.json", w.hex)).exists() && !dir.join(format!("{}.live", w.hex)).exists());
+
+        // Uncommitted changes: the base is their commit, and so is the
+        // template.
+        std::fs::write(main.join("a.txt"), "edited\n").unwrap();
+        std::fs::write(main.join("new.txt"), "new\n").unwrap();
+        let (w, _held, _) = snapshot_of(&main, &root, "s2").unwrap();
+        assert_ne!(w.base, head);
+        assert_eq!(std::fs::read_to_string(dir.join(SHA_FILE)).unwrap().trim(), w.base);
+        assert_eq!(git_ok(&w.path, &["status", "--porcelain", "--untracked-files=normal"]), "");
+        assert_eq!(std::fs::read_to_string(w.path.join("new.txt")).unwrap(), "new\n");
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (btrfs) A worktree of this repository, from a clone of it: the
+    /// first makes the template, the next are snapshots of it, each well
+    /// under a second.
+    #[test]
+    fn wt11_a_worktree_of_this_repository_takes_under_a_second() {
+        let this = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        if !has_git() || !this.join(".git").exists() {
+            eprintln!("not in a checkout of krowk: skipping");
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("krowk-worktree-wt11-this-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let main = base.join("main");
+        git_ok(&base, &["clone", "-q", "--local", this.to_str().unwrap(), main.to_str().unwrap()]);
+        let root = base.join("worktrees");
+        let timed = |owner: &str| {
+            let at = std::time::Instant::now();
+            let made = create_fastest(&main, &root, owner, &WorktreesConfig::default()).unwrap();
+            (made, at.elapsed())
+        };
+        let ((first, _h1, how), took) = timed("s1");
+        eprintln!("the first worktree of this repository ({how:?}, the template made): {took:?}");
+        if how == Made::Checkout {
+            eprintln!("no snapshots here: not measured");
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+        let mut times = Vec::new();
+        for i in 0..3 {
+            let ((w, _h, how), took) = timed(&format!("s{}", i + 2));
+            eprintln!("a snapshot worktree of this repository ({how:?}): {took:?}");
+            assert!(matches!(how, Made::Snapshot { .. }));
+            assert_eq!(git_ok(&w.path, &["status", "--porcelain"]), "");
+            times.push(took);
+        }
+        assert!(times.iter().all(|t| *t < std::time::Duration::from_secs(1)), "{times:?}");
+        drop(first);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (btrfs) A snapshot that fails once it is made: taken back whole, and
+    /// the worktree checked out instead, with no stray directory,
+    /// subvolume, registration or branch.
+    #[test]
+    fn wt11_a_failed_snapshot_falls_back_to_a_checkout() {
+        let Some((base, main, common, dir)) = fixture("wt11-fail", None) else { return };
+        let root = dir.parent().unwrap().to_path_buf();
+        // The template made, and seen to work, first.
+        let Some((w, held, _)) = snapshot_of(&main, &root, "s0") else {
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        };
+        drop(held);
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
+        FAIL_AFTER_SNAPSHOT.with(|f| f.set(true));
+        let (w, held, how) = create_fastest(&main, &root, "s1", &WorktreesConfig::default()).unwrap();
+        assert!(!FAIL_AFTER_SNAPSHOT.with(|f| f.get()), "the hook fired");
+        assert_eq!(how, Made::Checkout);
+        assert_ne!(std::os::unix::fs::MetadataExt::ino(&w.path.metadata().unwrap()), 256, "a directory, not the snapshot");
+        assert!(!w.path.join("target").exists(), "checked out, not yet seeded");
+        assert_eq!(git_ok(&w.path, &["status", "--porcelain", "--untracked-files=normal"]), "");
+        assert_eq!(leftovers(&dir, &common, &main), (vec![w.hex.clone(), SCRATCH_DIR.to_string(), TEMPLATE_DIR.to_string()], vec![w.hex.clone()], format!("+ {}", w.branch())));
+        assert_eq!(std::fs::read_dir(dir.join(SCRATCH_DIR)).unwrap().count(), 0);
+        let log = std::fs::read_to_string(dir.join(seed::LOG_FILE)).unwrap();
+        assert!(log.contains(&format!("{} not made as a snapshot of the template, so checked out: failed by the test", w.hex)), "{log}");
+        drop(held);
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
+        assert_eq!(leftovers(&dir, &common, &main), (vec![SCRATCH_DIR.to_string(), TEMPLATE_DIR.to_string()], vec![], String::new()));
         let _ = std::fs::remove_dir_all(&base);
     }
 

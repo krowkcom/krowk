@@ -75,6 +75,9 @@ pub fn top_level_name(name: &str) -> bool {
 pub(super) fn seed(p: &Prepare<'_>) -> Option<String> {
     let wt = p.worktree;
     let dir = wt.repo_dir();
+    if p.seeded {
+        return None;
+    }
     let names: Vec<String> = p.config.seed().into_iter().filter(|n| top_level_name(n) && real_dir(&wt.main.join(n))).collect();
     if names.is_empty() {
         return None;
@@ -188,29 +191,67 @@ fn clone_command(from: &Path, to: &Path, tree: bool) -> Result<Command, String> 
 /// without copying their blocks. Probed by cloning a 1-byte file, and
 /// remembered in `dir` for `PROBE_TTL`. Blocking.
 pub fn cow(dir: &Path, common: &Path) -> bool {
+    probed(dir, common).cow
+}
+
+/// How a new worktree of a repository is made (WT11), fastest first: a
+/// snapshot of its template (`super::template`), a checkout its build
+/// output is cloned into, a checkout alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Method {
+    Snapshot,
+    Seeded,
+    Plain,
+}
+
+/// The fastest way to make a worktree of the repository whose common git
+/// directory is `common` that this machine allows (`Method`), chosen with
+/// `cow`'s probe and remembered with it. Blocking.
+pub fn method(dir: &Path, common: &Path) -> Method {
+    let p = probed(dir, common);
+    // A probe from before methods were remembered: chosen now, which
+    // costs no clone.
+    p.method.unwrap_or_else(|| choose(dir, p.cow))
+}
+
+/// The method `cow`'s answer allows in `dir`.
+fn choose(dir: &Path, cow: bool) -> Method {
+    match (cow, super::template::snapshots(dir)) {
+        (false, _) => Method::Plain,
+        (true, true) => Method::Snapshot,
+        (true, false) => Method::Seeded,
+    }
+}
+
+/// The remembered probe of `dir`, or a new one, remembered.
+fn probed(dir: &Path, common: &Path) -> Probe {
     let at = dir.join(PROBE_FILE);
     let now = SystemTime::now();
     if let Some(p) = std::fs::read(&at).ok().and_then(|raw| serde_json::from_slice::<Probe>(&raw).ok()) {
         let when = UNIX_EPOCH + Duration::from_secs(p.at);
         // A probe from the future is a clock that moved back: not trusted.
         if now.duration_since(when).is_ok_and(|age| age < PROBE_TTL) {
-            return p.cow;
+            return p;
         }
     }
     let cow = probe(dir, common);
-    let p = Probe { cow, at: now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) };
+    let p = Probe { cow, method: Some(choose(dir, cow)), at: now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) };
     // Whole or not at all: a creation beside this one reads it.
     let tmp = dir.join(format!(".{PROBE_FILE}-{}", random_hex()));
     if std::fs::write(&tmp, serde_json::to_vec(&p).expect("a probe serializes")).is_ok() && std::fs::rename(&tmp, &at).is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    cow
+    p
 }
 
 /// `probe.json`.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Probe {
     cow: bool,
+    /// The method chosen with it; none in a probe from before WT11.
+    #[serde(default)]
+    method: Option<Method>,
     /// When it was probed, in seconds since the epoch.
     at: u64,
 }
@@ -348,10 +389,21 @@ fn lockfiles_match(main: &Path, into: &Path) -> bool {
 /// nothing.
 fn match_mtimes(wt: &Worktree) -> Result<(), String> {
     let e = |e: super::Error| e.to_string();
-    let now = SystemTime::now();
     let tracked = read(query(&wt.path).map_err(e)?.args(["ls-files", "-z"]), "ls-files").map_err(e)?;
+    set_mtimes(&tracked, &wt.path, &wt.main);
+    // Only spares a later status the hashing: one that fails costs that.
+    let _ = read(super::git(&wt.path).map_err(e)?.args(["update-index", "-q", "--refresh"]), "update-index");
+    Ok(())
+}
+
+/// `match_mtimes`' times, for the files `tracked` (`ls-files -z`) of the
+/// tree at `top`, judged against `main`. The template's (WT10) are set the
+/// same way after its `target` is cloned, so a snapshot of it builds
+/// fresh. Its caller refreshes the index.
+pub(super) fn set_mtimes(tracked: &str, top: &Path, main: &Path) {
+    let now = SystemTime::now();
     for path in tracked.split('\0').filter(|p| !p.is_empty()) {
-        let (theirs, ours) = (wt.main.join(path), wt.path.join(path));
+        let (theirs, ours) = (main.join(path), top.join(path));
         let Ok(o) = ours.symlink_metadata() else { continue };
         if !o.is_file() {
             continue;
@@ -367,9 +419,6 @@ fn match_mtimes(wt: &Worktree) -> Result<(), String> {
             let _ = f.set_modified(when);
         }
     }
-    // Only spares a later status the hashing: one that fails costs that.
-    let _ = read(super::git(&wt.path).map_err(e)?.args(["update-index", "-q", "--refresh"]), "update-index");
-    Ok(())
 }
 
 /// Whether the files `a` and `b` hold the same bytes; false when either
@@ -486,6 +535,42 @@ mod tests {
         }
         assert_eq!(git_ok(&w.path, &["status", "--porcelain", "--untracked-files=normal"]), "");
         assert_eq!(finish(&w).unwrap(), Finished::Removed);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (btrfs) A worktree made as a snapshot of the template (WT11) comes
+    /// with `target`, its files' mtimes matched in the template: a build
+    /// there compiles nothing, and the seed step leaves it alone. A file
+    /// the main checkout's build did not see is rebuilt.
+    #[test]
+    fn wt11_a_snapshot_builds_nothing() {
+        let Some((base, main, root)) = built("seed-snapshot") else { return };
+        let config = WorktreesConfig::default();
+        let (w, _held, how) = super::super::create_fastest(&main, &root, "s1", &config).unwrap();
+        if !matches!(how, super::super::Made::Snapshot { seeded: true }) {
+            eprintln!("not a snapshot here ({how:?}): skipping");
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+        assert_eq!(prepare(&Prepare { seeded: true, ..Prepare::new(&w, &config) }), Vec::<String>::new());
+        assert!(!logged(&w).contains(&w.hex), "the seed step did nothing: {}", logged(&w));
+        let out = cargo(&w.path, &["build", "-v"]);
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{said}");
+        assert!(said.contains("Fresh fixture") && !said.contains("Compiling") && !said.contains("Dirty"), "nothing compiled: {said}");
+        assert_eq!(git_ok(&w.path, &["status", "--porcelain", "--untracked-files=normal"]), "");
+        assert_eq!(finish(&w).unwrap(), Finished::Removed);
+
+        // Uncommitted in the main checkout, and not built: the template's
+        // copy of it is newer than the build, so cargo rebuilds.
+        std::fs::write(main.join("src/main.rs"), "fn main() {\n    println!(\"edited\");\n}\n").unwrap();
+        let (w, _held, how) = super::super::create_fastest(&main, &root, "s2", &config).unwrap();
+        assert!(matches!(how, super::super::Made::Snapshot { .. }));
+        let out = cargo(&w.path, &["build", "-v"]);
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success() && said.contains("Compiling fixture"), "rebuilt: {said}");
+        let ran = Command::new(w.path.join("target/debug/fixture")).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), "edited\n");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -650,6 +735,7 @@ mod tests {
         assert!(logged(&w).contains("nothing seeded: this file system cannot clone"), "{}", logged(&w));
         let probe: serde_json::Value = serde_json::from_slice(&std::fs::read(w.repo_dir().join(PROBE_FILE)).unwrap()).unwrap();
         assert_eq!(probe["cow"], false);
+        assert_eq!((probe["method"].as_str(), method(w.repo_dir(), &w.common)), (Some("plain"), Method::Plain), "a checkout, unseeded");
         assert!(std::fs::read_dir(w.repo_dir()).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().contains("probe-")), "the probe's files are gone");
         assert!(std::fs::read_dir(&w.common).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().contains("probe-")));
 

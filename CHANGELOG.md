@@ -86,6 +86,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   What was skipped and why is in `seed.log`, beside the repository's
   worktrees.
 
+- **Worktrees appear almost instantly on btrfs.** When krowk's worktrees
+  directory is on btrfs, on the same file system as your repository, and
+  the `btrfs` program is installed, a new worktree for a subagent or a
+  `krowk --worktree` session is a snapshot of a copy of your source tree
+  that krowk keeps up to date, with your build output already in it:
+  about a tenth of a second whatever the repository's size, and its first
+  `cargo build` compiles only what differs from your last build. Anywhere
+  else, or if a snapshot fails, the worktree is checked out as before.
+
 - **A subagent's worktree gets the ignored files you list in
   `.worktreeinclude`.** As in Claude Code, put a `.worktreeinclude` at the
   top of your main checkout, in `.gitignore` syntax (`.env*`,

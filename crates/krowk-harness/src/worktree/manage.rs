@@ -611,7 +611,7 @@ fn unregister(common: &Path, path: &Path) -> Result<(), Error> {
 
 /// The admin directory in `<common>/worktrees/` whose `gitdir` file names
 /// `path`'s `.git`: real directories only, never through a link.
-fn registration(common: &Path, path: &Path) -> Option<PathBuf> {
+pub(super) fn registration(common: &Path, path: &Path) -> Option<PathBuf> {
     let dir = common.join("worktrees");
     if !dir.symlink_metadata().ok()?.is_dir() {
         return None;

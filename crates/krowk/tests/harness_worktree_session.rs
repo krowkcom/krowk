@@ -89,7 +89,10 @@ impl Sandbox {
     /// The worktree directories under the root, of every repository.
     fn worktree_dirs(&self) -> Vec<PathBuf> {
         let Ok(repos) = std::fs::read_dir(self.worktrees()) else { return Vec::new() };
-        repos.flatten().filter(|r| r.path().is_dir()).flat_map(|r| std::fs::read_dir(r.path()).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect::<Vec<_>>()).collect()
+        // A worktree's is named by 8 hex digits; the template and its
+        // scratch directory beside them stay (WT10, WT11).
+        let hex = |p: &Path| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.len() == 8 && n.bytes().all(|b| b.is_ascii_hexdigit()));
+        repos.flatten().filter(|r| r.path().is_dir()).flat_map(|r| std::fs::read_dir(r.path()).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir() && hex(p)).collect::<Vec<_>>()).collect()
     }
 }
 

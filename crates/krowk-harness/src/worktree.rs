@@ -51,6 +51,12 @@
 //! - **A template** (WT10, `template`): on btrfs, a subvolume of the
 //!   repository's source tree at a commit, kept up to date in
 //!   `<root>/<repo-id>/template`, for a worktree to be a snapshot of.
+//! - **Made the fastest way this machine allows** (WT11, `create_fastest`,
+//!   chosen once per repository with the seed probe, `seed::method`): a
+//!   snapshot of the template, in tens of milliseconds whatever the
+//!   repository's size and with its build output already there; else a
+//!   checkout, seeded where clones are cheap. A snapshot that fails is
+//!   taken back, and that creation is a checkout.
 //! - **A port slot** (`setup::port_slot`) is held by whoever uses the
 //!   worktree, for as long as they do: `KROWK_PORT_BASE` for the setup
 //!   command and the agent's commands.
@@ -179,13 +185,16 @@ pub struct Prepare<'a> {
     /// command, or its wait for a build slot, stops, and no later step
     /// starts (`prepare_or_discard`).
     pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
+    /// The worktree came with the heavy directories, a snapshot of a
+    /// template that had them (WT11): the seed step does nothing.
+    pub seeded: bool,
 }
 
 impl<'a> Prepare<'a> {
     /// The steps' inputs for `worktree` with `config` alone: an untrusted
     /// repository, no sandbox, no port slot, no build slots.
     pub fn new(worktree: &'a Worktree, config: &'a WorktreesConfig) -> Prepare<'a> {
-        Prepare { worktree, config, project: None, trusted: false, sandbox: None, port_base: None, builds: None, cancel: None }
+        Prepare { worktree, config, project: None, trusted: false, sandbox: None, port_base: None, builds: None, cancel: None, seeded: false }
     }
 }
 
@@ -295,12 +304,12 @@ pub struct Readying<'a> {
     pub runtime: PathBuf,
 }
 
-/// A new worktree of the repository `cwd` is in, for `owner`
-/// (`create_held`), with a port slot, readied by the prepare steps
-/// (`prepare_or_discard`): it, in use, and the notes for its agent's first
-/// prompt (`first_prompt`). Blocking: off the async runtime.
+/// A new worktree of the repository `cwd` is in, for `owner`, made the
+/// fastest way (`create_fastest`), with a port slot, readied by the
+/// prepare steps (`prepare_or_discard`): it, in use, and the notes for its
+/// agent's first prompt (`first_prompt`). Blocking: off the async runtime.
 pub fn open(cwd: &Path, root: &Path, owner: &str, r: &Readying<'_>) -> Result<(InUse, Vec<String>), Error> {
-    let (w, held) = create_held(cwd, root, owner)?;
+    let (w, held, made) = create_fastest(cwd, root, owner, r.config)?;
     let (in_use, missing) = InUse::new(w, held, r.runtime.clone());
     let sandbox = setup::sandbox(r.policy, &in_use.worktree.path);
     let prepare = Prepare {
@@ -312,6 +321,7 @@ pub fn open(cwd: &Path, root: &Path, owner: &str, r: &Readying<'_>) -> Result<(I
         port_base: in_use.port_base,
         builds: r.builds,
         cancel: r.cancel,
+        seeded: made == Made::Snapshot { seeded: true },
     };
     let mut notes: Vec<String> = missing.into_iter().collect();
     notes.extend(prepare_or_discard(&prepare)?);
@@ -592,7 +602,32 @@ pub fn create(cwd: &Path, root: &Path, owner: &str) -> Result<Worktree, Error> {
 /// `create`, held live for `owner` (`manage::hold`) from before the
 /// repository's lock is let go, so no `krowk worktrees remove` finds it
 /// unheld in between; recorded (`manage::Record`) for listing it later.
+/// Always a checkout: `create_fastest` may make a snapshot.
 pub fn create_held(cwd: &Path, root: &Path, owner: &str) -> Result<(Worktree, manage::Held), Error> {
+    create_as(cwd, root, owner, None).map(|(wt, held, _)| (wt, held))
+}
+
+/// How a worktree was made (WT11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Made {
+    /// A snapshot of the repository's template (`template::snapshot`):
+    /// `seeded` when it carried a heavy directory `worktrees.seed` names.
+    Snapshot { seeded: bool },
+    /// `git worktree add`'s checkout.
+    Checkout,
+}
+
+/// `create_held`, made the fastest way the repository's `seed::method`
+/// allows: a snapshot of its template, its heavy directories `config`'s,
+/// or else a checkout. A snapshot that fails is taken back whole
+/// (`template::snapshot`), noted in `seed.log`, and this creation is a
+/// checkout. Blocking: off the async runtime.
+pub fn create_fastest(cwd: &Path, root: &Path, owner: &str, config: &WorktreesConfig) -> Result<(Worktree, manage::Held, Made), Error> {
+    create_as(cwd, root, owner, Some(config))
+}
+
+/// `create_fastest`, or with no `config` `create_held`.
+fn create_as(cwd: &Path, root: &Path, owner: &str, config: Option<&WorktreesConfig>) -> Result<(Worktree, manage::Held, Made), Error> {
     let common = match read(query(cwd)?.args(["rev-parse", "--path-format=absolute", "--git-common-dir"]), "rev-parse") {
         Ok(c) if !c.is_empty() => PathBuf::from(c).canonicalize().map_err(|e| Error::Failed(format!("the repository's git directory: {e}")))?,
         _ => return Err(Error::NotARepository),
@@ -609,17 +644,30 @@ pub fn create_held(cwd: &Path, root: &Path, owner: &str) -> Result<(Worktree, ma
     // Hashing the files is the slow part: done before the lock, so
     // creations at once in one repository do not queue behind it.
     let tree = working_state(cwd, &head, &dir)?;
-    let _held = lock(&common)?;
+    let repo_lock = lock(&common)?;
     let (hex, path) = std::iter::repeat_with(random_hex).map(|h| (h.clone(), dir.join(h))).take(16).find(|(_, p)| !p.exists()).ok_or_else(|| Error::Failed(format!("no free name for a worktree in {}", dir.display())))?;
     let base = match tree {
         Some(tree) => commit_state(cwd, &tree, &head, &hex)?,
         None => head,
     };
     let wt = Worktree { path, hex, base, common, main, repo_id };
-    read(git(cwd)?.args(["worktree", "add", "--quiet", "--no-track", "-b"]).arg(wt.branch()).arg(&wt.path).arg(&wt.base), "worktree add")?;
+    let snapshot = match config {
+        Some(config) if seed::method(&dir, &wt.common) == seed::Method::Snapshot => template::snapshot(&repo_lock, &wt, config).unwrap_or_else(|e| {
+            seed::log(&dir, &wt.hex, &format!("not made as a snapshot of the template, so checked out: {e}"));
+            None
+        }),
+        _ => None,
+    };
+    let made = match snapshot {
+        Some(seeded) => Made::Snapshot { seeded },
+        None => {
+            read(git(cwd)?.args(["worktree", "add", "--quiet", "--no-track", "-b"]).arg(wt.branch()).arg(&wt.path).arg(&wt.base), "worktree add")?;
+            Made::Checkout
+        }
+    };
     let locked = read(git(&wt.main)?.args(["worktree", "lock", "--reason"]).arg(format!("{LOCK_REASON}{owner}")).arg(&wt.path), "worktree lock");
     match locked.and_then(|_| manage::write_record(&wt, owner)).and_then(|()| manage::hold(&wt)) {
-        Ok(held) => Ok((wt, held)),
+        Ok(held) => Ok((wt, held, made)),
         Err(e) => {
             let _ = remove(&wt, true);
             Err(e)
