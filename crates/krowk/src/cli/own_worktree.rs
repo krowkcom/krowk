@@ -15,8 +15,9 @@
 //!   outlive both the hold and the finish below.
 //! - **Finished on the way out**, as a subagent's: unchanged, it is removed
 //!   with its branch; otherwise it is kept and named, as
-//!   `Worktree kept: <path> (branch krowk/<hex>)` on stderr, or as the
-//!   `worktree` object of the result `-p` prints as JSON.
+//!   `Worktree kept: <path> (branch krowk/<hex>)` on stderr, with the
+//!   `krowk worktrees apply <hex>` that brings its changes home (WT13), or
+//!   as the `worktree` object of the result `-p` prints as JSON.
 //! - **Resumed where it ran**: a session whose directory is a krowk
 //!   worktree is held there again, and finished the same way. One whose
 //!   directory is gone is refused, naming `krowk worktrees`.
@@ -93,7 +94,7 @@ pub(super) fn report(ctx: &mut Ctx, wt: &Worktree, finished: &Result<Finished, w
     match finished {
         Ok(Finished::Removed) => {}
         Ok(Finished::Kept { .. }) => {
-            let _ = writeln!(ctx.io.stderr, "Worktree kept: {} (branch {})", wt.path.display(), wt.branch());
+            let _ = writeln!(ctx.io.stderr, "{}", worktree::kept_line(wt));
         }
         Err(e) => ctx.warn(&format!("the worktree {} (branch {}) was left as it is: {e} — `krowk worktrees` lists it", wt.path.display(), wt.branch())),
     }

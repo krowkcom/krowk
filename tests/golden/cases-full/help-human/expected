@@ -116,6 +116,7 @@ Other
   providers rename  Rename an instance; its login and sessions follow
   worktrees list    Each one: branch, commits ahead, changes, session, age
   worktrees remove  Remove one, its branch kept; not while its session runs
+  worktrees apply   Bring one's changes into a checkout, uncommitted
   worktrees prune   Clear what deleted worktrees left, and old snapshots
   host status       Whether the daemon runs: socket, pid, uptime, sessions
   host attach       Follow a session in the daemon, live, as stream-json

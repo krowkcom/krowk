@@ -173,3 +173,59 @@ fn wt9_prune_after_rm_rf_leaves_no_worktree_entry() {
     assert!(!git(&b.repo(), &["worktree", "list"]).contains(&w.hex));
     assert_eq!(b.json(&["worktrees", "--json"])["data"]["worktrees"], Value::Array(Vec::new()));
 }
+
+/// `apply` brings a kept worktree's commit and uncommitted change into a
+/// target checkout (`--to`, the person's own worktree here) as uncommitted
+/// changes, then removes it and its branch; while a live session holds
+/// one it refuses with exit 4 and changes nothing; by default it applies
+/// to the main checkout, and a conflict there is refused, naming the file.
+#[test]
+fn wt13_apply_brings_a_kept_worktree_into_a_checkout_and_refuses_while_live() {
+    if !has_git() {
+        return;
+    }
+    let b = Sandbox::new("apply");
+    let w = b.create("s1");
+    std::fs::write(w.path.join("a.txt"), "committed\n").unwrap();
+    git(&w.path, &["commit", "-q", "-am", "child"]);
+    std::fs::write(w.path.join("new.txt"), "uncommitted\n").unwrap();
+    let target = b.root.join("target");
+    git(&b.repo(), &["worktree", "add", "-q", "-b", "mine", target.to_str().unwrap()]);
+    let head = git(&target, &["rev-parse", "HEAD"]);
+
+    let applied = b.json(&["worktrees", "apply", &w.hex, "--to", target.to_str().unwrap(), "--json"]);
+    assert_eq!(applied["data"]["files"], serde_json::json!(["a.txt", "new.txt"]), "{applied}");
+    assert_eq!(applied["data"]["to"].as_str(), target.to_str());
+    assert_eq!(applied["data"]["snapshot"].as_str(), Some(format!("refs/krowk/snapshots/{}", w.hex).as_str()));
+    assert_eq!(std::fs::read_to_string(target.join("a.txt")).unwrap(), "committed\n");
+    assert_eq!(std::fs::read_to_string(target.join("new.txt")).unwrap(), "uncommitted\n");
+    assert_eq!((git(&target, &["rev-parse", "HEAD"]), git(&target, &["diff", "--cached"])), (head, String::new()));
+    assert_eq!(std::fs::read_to_string(b.repo().join("a.txt")).unwrap(), "a\n", "the main checkout untouched");
+    assert!(!w.path.exists());
+    assert_eq!(git(&b.repo(), &["branch", "--list", "krowk/*"]), "");
+
+    // Held by a live session: refused, nothing changed.
+    let (live, held) = krowk_harness::worktree::create_held(&b.repo(), &b.worktrees(), "s2").unwrap();
+    std::fs::write(live.path.join("a.txt"), "live\n").unwrap();
+    let o = b.krowk(&["worktrees", "apply", &live.hex]);
+    assert_eq!(o.status.code(), Some(4), "{}", String::from_utf8_lossy(&o.stderr));
+    let err: Value = serde_json::from_slice(&o.stderr).unwrap();
+    assert_eq!(err["error"]["error"], "worktree_live");
+    assert_eq!(std::fs::read_to_string(b.repo().join("a.txt")).unwrap(), "a\n");
+    drop(held);
+
+    // The main checkout by default; a file it changed too conflicts.
+    std::fs::write(b.repo().join("a.txt"), "mine\n").unwrap();
+    let o = b.krowk(&["worktrees", "apply", &live.hex]);
+    assert_eq!(o.status.code(), Some(4), "{}", String::from_utf8_lossy(&o.stderr));
+    let err: Value = serde_json::from_slice(&o.stderr).unwrap();
+    assert_eq!((&err["error"]["error"], &err["error"]["details"]["files"]), (&Value::from("worktree_conflicts"), &serde_json::json!(["a.txt"])));
+    assert!(live.path.exists());
+    std::fs::write(b.repo().join("a.txt"), "a\n").unwrap();
+    let human = b.krowk(&["worktrees", "apply", live.path.to_str().unwrap(), "--format", "human"]);
+    assert!(human.status.success(), "{}", String::from_utf8_lossy(&human.stderr));
+    assert!(String::from_utf8_lossy(&human.stdout).starts_with("applied  a.txt\nApplied 1 changed file from "));
+    assert_eq!(std::fs::read_to_string(b.repo().join("a.txt")).unwrap(), "live\n");
+    // `--to` belongs to `apply`.
+    assert_eq!(b.krowk(&["worktrees", "prune", "--to", "x"]).status.code(), Some(1));
+}

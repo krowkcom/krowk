@@ -4,8 +4,9 @@
 //!
 //! No model is involved here: `create` makes one, `prepare` readies it,
 //! `finish` removes it when the agent left it as it found it and keeps it
-//! otherwise; `open` is the first two with what the agent holds while it
-//! works (`InUse`). The subagent tool calls them around a child's turn
+//! otherwise — or, for a subagent's, `finish_into` applies its changes to
+//! the parent's working tree (WT13, `apply`); `open` is the first two with
+//! what the agent holds while it works (`InUse`). The subagent tool calls them around a child's turn
 //! (`isolation: "worktree"`), and `krowk --worktree` around a session of
 //! its own (WT6).
 //!
@@ -51,6 +52,7 @@
 //!   worktree, for as long as they do: `KROWK_PORT_BASE` for the setup
 //!   command and the agent's commands.
 
+pub mod apply;
 pub mod include;
 pub mod manage;
 pub mod seed;
@@ -264,6 +266,11 @@ impl InUse {
     pub fn finish(self) -> Result<Finished, Error> {
         finish(&self.worktree)
     }
+
+    /// `finish_into`, then its port slot and its hold let go. Blocking.
+    pub fn finish_into(self, to: &Path) -> Result<Option<apply::Applied>, Error> {
+        finish_into(&self.worktree, to)
+    }
 }
 
 /// What `open` readies a new worktree with: the settings of the agent that
@@ -301,6 +308,13 @@ pub fn open(cwd: &Path, root: &Path, owner: &str, r: &Readying<'_>) -> Result<(I
     let mut notes: Vec<String> = missing.into_iter().collect();
     notes.extend(prepare_or_discard(&prepare)?);
     Ok((in_use, notes))
+}
+
+/// What a person is told of a session's own worktree (WT6) that was kept:
+/// where it is, and the command that applies its changes to the
+/// repository's main checkout (WT13).
+pub fn kept_line(wt: &Worktree) -> String {
+    format!("Worktree kept: {} (branch {}) — `krowk worktrees apply {}` brings its changes into your checkout", wt.path.display(), wt.branch(), wt.hex)
 }
 
 /// `wt` as a result names it when `finished` kept it (WT6); none when it
@@ -711,6 +725,23 @@ pub fn finish(wt: &Worktree) -> Result<Finished, Error> {
     let range = format!("{}..{head}", wt.base);
     let commits = read(query(&wt.path)?.args(["rev-list", "--count", &range]), "rev-list")?.parse().unwrap_or(0);
     Ok(Finished::Kept { commits, dirty: !status.is_empty() })
+}
+
+/// `finish` for a subagent's worktree (WT13): unchanged, it is removed
+/// with its branch, and none; changed, its changes are applied to the
+/// working tree `to` is in, the parent's (`apply::apply`), under the same
+/// hold of the lock, so siblings finishing at once apply one at a time.
+/// Unlocked on every way out. Blocking: off the async runtime.
+pub fn finish_into(wt: &Worktree, to: &Path) -> Result<Option<apply::Applied>, Error> {
+    let _held = lock(&wt.common)?;
+    let judged = changes(wt);
+    let _ = read(git(&wt.main)?.args(["worktree", "unlock"]).arg(&wt.path), "worktree unlock");
+    let (head, status) = judged?;
+    if head == wt.base && status.is_empty() {
+        remove(wt, false)?;
+        return Ok(None);
+    }
+    apply::apply(wt, to).map(Some)
 }
 
 /// The worktree's HEAD, and its `git status --porcelain`: every untracked
@@ -1131,7 +1162,7 @@ mod tests {
     /// A repository with a submodule `mid` that has a submodule `inner`,
     /// both initialised in the main checkout, their sources at
     /// `<base>/mid` and `<base>/inner`.
-    fn with_submodules(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+    pub(super) fn with_submodules(name: &str) -> (PathBuf, PathBuf, PathBuf) {
         let (base, main, root) = repo(name);
         let source = |n: &str| {
             let d = base.join(n);

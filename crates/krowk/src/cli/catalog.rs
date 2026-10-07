@@ -648,6 +648,11 @@ fn worktrees_command() -> Command {
                 flags: vec![flag("force", BOOL, "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>")],
                 ..cmd("remove", "krowk worktrees remove <hex|path> [--force]", "Remove one, its branch kept; not while its session runs")
             },
+            Command {
+                args: vec![arg("worktree", "Its 8 hex digits, its branch krowk/<hex>, or its directory", true)],
+                flags: vec![flag("to", STRING, "The checkout its changes go to (default: the repository's main checkout)")],
+                ..cmd("apply", "krowk worktrees apply <hex|path> [--to DIR]", "Bring one's changes into a checkout, uncommitted")
+            },
             cmd("prune", "krowk worktrees prune", "Clear what deleted worktrees left, and old snapshots"),
         ],
         ..cmd("worktrees", "", "The git worktrees krowk made for agents, across repositories")
@@ -970,6 +975,14 @@ Its branch krowk/<hex> is kept. Forced, uncommitted changes are saved as
 refs/krowk/snapshots/<hex>, and a HEAD off that branch as <hex>-head; the
 answer prints the commands that bring it back. Ignored files (build output,
 .worktreeinclude copies) are not changes: they are deleted with it.",
+        #[cfg(feature = "harness")]
+        "worktrees apply" => "\
+Its commits and uncommitted changes land in the checkout's working tree as
+uncommitted changes, new, deleted and binary files too; the checkout's index
+and HEAD are not touched. Applied, the worktree and its branch are removed,
+its final state kept as refs/krowk/snapshots/<hex> for 30 days. When a file
+does not apply cleanly nothing changes, both are kept, and the files are
+named. A worktree that changed submodules is not applied.",
         #[cfg(feature = "harness")]
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle

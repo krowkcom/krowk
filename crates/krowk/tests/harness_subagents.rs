@@ -1064,12 +1064,13 @@ fn two_in_worktrees(body: &Value, _: usize) -> mock::Reply {
     ]))
 }
 
-/// Worktrees WT3: each child in its own worktree and branch, recorded as
-/// its directory; the one that changed nothing leaves nothing behind, the
-/// one that wrote a file leaves its worktree and branch, named in its
-/// summary, and the parent's checkout is untouched.
+/// Worktrees WT3, WT13: each child in its own worktree and branch,
+/// recorded as its directory; the one that changed nothing leaves nothing
+/// behind, the one that wrote a file has it applied to the parent's
+/// working tree, uncommitted, its summary naming it, and its worktree and
+/// branch gone too.
 #[test]
-fn wt3_two_subagents_in_worktrees_each_get_their_own_and_only_a_changed_one_is_kept() {
+fn wt3_two_subagents_in_worktrees_each_get_their_own_and_a_changed_ones_work_is_applied() {
     let m = mock::serve(two_in_worktrees);
     let b = Sandbox::new("worktrees", &m.url);
     let repo = b.root.join("repo");
@@ -1077,6 +1078,7 @@ fn wt3_two_subagents_in_worktrees_each_get_their_own_and_only_a_changed_one_is_k
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["add", "README.md"]);
     git(&repo, &["commit", "-q", "-m", "one"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
     let root = b.root.join("worktrees");
     let cfg = HostConfig { agents: krowk_harness::subagent::AgentsConfig { worktrees: Some(root.clone()), ..krowk_harness::subagent::AgentsConfig::none() }, ..b.host() };
     let r = run_in_process(&b, cfg, None, "two subagents in worktrees", PermissionMode::AcceptEdits);
@@ -1088,20 +1090,16 @@ fn wt3_two_subagents_in_worktrees_each_get_their_own_and_only_a_changed_one_is_k
     assert_ne!(dirs[0], dirs[1], "a directory each");
     for d in &dirs {
         assert!(std::path::Path::new(d).starts_with(&root), "under the worktrees root: {d}");
+        assert!(!std::path::Path::new(d).exists(), "removed: {d}");
     }
     let results = parent_results(&b, &r.session_id);
     let (edit, noop) = (results.iter().find(|(c, ..)| c == "toolu_edit").unwrap(), results.iter().find(|(c, ..)| c == "toolu_noop").unwrap());
     assert!(!noop.2 && noop.1 == "done.", "nothing to say of a removed worktree: {noop:?}");
-    let note = edit.1.lines().last().unwrap();
-    let kept = dirs.iter().find(|d| std::path::Path::new(d).join("NEW.md").is_file()).expect("the file is in a worktree");
-    let hex = std::path::Path::new(kept).file_name().unwrap().to_string_lossy().into_owned();
-    assert_eq!(note, format!("Worktree: {kept} (branch krowk/{hex}, 0 commits, uncommitted changes: yes)"), "{edit:?}");
-    assert!(!repo.join("NEW.md").exists(), "not in the parent's checkout");
-    assert_eq!(git(&repo, &["branch", "--list", "--format=%(refname:short)", "krowk/*"]), format!("krowk/{hex}"), "the unchanged one's branch is gone");
-    let removed = dirs.iter().find(|d| *d != kept).unwrap();
-    assert!(!std::path::Path::new(removed).exists());
-    let list = git(&repo, &["worktree", "list", "--porcelain"]);
-    assert!(list.contains(kept.as_str()) && !list.contains(removed.as_str()), "{list}");
+    assert_eq!(edit.1.lines().last().unwrap(), "Changes applied to your working tree: NEW.md", "{edit:?}");
+    assert_eq!(std::fs::read_to_string(repo.join("NEW.md")).unwrap(), "from the child\n", "in the parent's checkout");
+    assert_eq!((git(&repo, &["rev-parse", "HEAD"]), git(&repo, &["diff", "--cached"])), (head, String::new()), "uncommitted, unstaged");
+    assert_eq!(git(&repo, &["branch", "--list", "krowk/*"]), "", "both branches are gone");
+    assert_eq!(git(&repo, &["worktree", "list", "--porcelain"]).lines().filter(|l| l.starts_with("worktree ")).count(), 1);
 }
 
 /// Worktrees WT3: outside a git repository a worktree is refused by name

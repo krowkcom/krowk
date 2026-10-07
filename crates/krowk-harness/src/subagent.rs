@@ -38,7 +38,10 @@
 //!   branch (`crate::worktree`), so parallel children that edit do not
 //!   overwrite each other. It starts from the parent's files, uncommitted
 //!   changes included, so a child started mid-edit sees the edit. One it left unchanged is removed when it ends;
-//!   a changed one is kept, and its summary says where.
+//!   a changed one has its changes applied to the parent's working tree
+//!   as uncommitted changes, and is removed (WT13), the summary ending
+//!   with the files; one whose changes do not apply is kept, and its
+//!   summary names the files that conflict and where it is.
 
 use crate::agents::AgentDef;
 use crate::budget::Budget;
@@ -385,7 +388,7 @@ impl Subagents {
         }
         let (text, failed) = answer(result);
         match worktree {
-            Some(w) => match finish(w).await {
+            Some(w) => match finish(w, p.cwd.clone()).await {
                 Some(note) => (format!("{text}\n\n{note}"), failed),
                 None => (text, failed),
             },
@@ -447,14 +450,15 @@ fn answer(result: Result<crate::protocol::RunResult, crate::engine::EngineError>
     }
 }
 
-/// A child's worktree, finished when the child is (`crate::worktree::finish`):
-/// what its parent is told of it, when it is kept. Its port slot, and its
-/// hold on it, are let go once it is.
-async fn finish(i: InUse) -> Option<String> {
+/// A child's worktree, finished when the child is, its changes applied to
+/// the parent's working tree, `to` being the parent's directory
+/// (`crate::worktree::finish_into`): what its parent is told of it. Its
+/// port slot, and its hold on it, are let go once it is.
+async fn finish(i: InUse, to: PathBuf) -> Option<String> {
     let path = i.worktree.path.clone();
     let finished = tokio::task::spawn_blocking(move || {
         let w = i.worktree.clone();
-        i.finish().map(|f| f.note(&w))
+        i.finish_into(&to).map(|a| a.and_then(|a| a.note(&w)))
     })
     .await;
     match finished {

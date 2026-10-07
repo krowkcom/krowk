@@ -22,7 +22,7 @@
 //!   OS lets go of this one when that process dies, so a crashed session's
 //!   worktree is not taken for a live one.
 //!
-//! The three operations:
+//! The operations:
 //!
 //! - **`list`**: each worktree git lists under the root — branch, base,
 //!   commits ahead of the base, uncommitted changes, session, age, and
@@ -37,6 +37,9 @@
 //!   detached it, or switched branch, and committed) is kept as
 //!   `refs/krowk/snapshots/<hex>-head`. Ignored files — build output, the
 //!   copies `.worktreeinclude` made — are not changes, and go with it.
+//! - **`apply`** (WT13): its changes applied to a checkout's working tree
+//!   (`super::apply`), refused while a live session holds it; removed with
+//!   its branch when they apply, kept when they do not.
 //! - **`prune`**: per repository, and only while its git directory is
 //!   where it was recorded (a repository moved, or on a drive not mounted,
 //!   is left alone and reported): git's record of each krowk worktree
@@ -544,6 +547,31 @@ pub fn remove(root: &Path, key: &str, force: bool) -> Result<Removed, Refusal> {
     read(git(&l.main)?.args(["-c", "status.showUntrackedFiles=normal", "worktree", "remove", "--force", "--force"]).arg(&l.path), "worktree remove")?;
     forget(&dir, &l.hex);
     Ok(Removed { listed: l, snapshot, head })
+}
+
+/// Applies the changes of the worktree `key` names (`find`) to the
+/// working tree `to` is in, the repository's main checkout by default
+/// (`super::apply::apply`): it, as found, and what came of it. Refused
+/// while a live session holds it, when its directory is gone, and when
+/// krowk has no record of its base, which its changes are judged against.
+/// Blocking.
+pub fn apply(root: &Path, key: &str, to: Option<&Path>) -> Result<(Listed, super::apply::Applied), Refusal> {
+    let found = find(root, key)?;
+    let _locked = lock(&found.common)?;
+    let dir = found.path.parent().unwrap_or(&found.path).to_path_buf();
+    let _claimed = match claim(&dir, &found.hex) {
+        Claim::Live => return Err(Refusal::Live(Box::new(found))),
+        Claim::Free(held) => held,
+    };
+    if found.missing {
+        return Err(Refusal::Failed(Error::Failed(format!("{} is gone, so there is nothing to apply — its branch {} holds its commits", found.path.display(), found.own_branch()))));
+    }
+    let Some(wt) = found.worktree() else {
+        return Err(Refusal::Failed(Error::Failed(format!("krowk has no record of the commit {} was made from, so it cannot tell its changes — merge its branch {} instead", found.path.display(), found.own_branch()))));
+    };
+    let to = to.map_or_else(|| found.main.clone(), Path::to_path_buf);
+    let applied = super::apply::apply(&wt, &to)?;
+    Ok((found, applied))
 }
 
 /// Keeps `head`, a krowk worktree's HEAD, as `refs/krowk/snapshots/<hex>-head`

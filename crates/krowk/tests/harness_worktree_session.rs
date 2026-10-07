@@ -154,7 +154,7 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
     // Resumed, it runs in its worktree again, and is named again on the
     // way out: on stderr, the answer being text.
     let (_, err) = b.prompt(&["--resume", session, "anything else?"]);
-    assert!(err.contains(&format!("Worktree kept: {} (branch krowk/{hex})", path.display())), "{err}");
+    assert!(err.contains(&format!("Worktree kept: {} (branch krowk/{hex}) — `krowk worktrees apply {hex}` brings its changes into your checkout", path.display())), "{err}");
     assert!(path.join("NEW.md").is_file());
 
     // A new session and a resumed one are not the same thing.

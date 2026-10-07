@@ -1374,6 +1374,26 @@ stdout:
           ]
         },
         {
+          "name": "apply",
+          "usage": "krowk worktrees apply <hex|path> [--to DIR]",
+          "summary": "Bring one's changes into a checkout, uncommitted",
+          "args": [
+            {
+              "name": "worktree",
+              "summary": "Its 8 hex digits, its branch krowk/<hex>, or its directory",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "to",
+              "type": "string",
+              "default": "",
+              "usage": "The checkout its changes go to (default: the repository's main checkout)"
+            }
+          ]
+        },
+        {
           "name": "prune",
           "usage": "krowk worktrees prune",
           "summary": "Clear what deleted worktrees left, and old snapshots"
@@ -2961,6 +2981,26 @@ tty:
               "type": "bool",
               "default": "false",
               "usage": "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>"
+            }
+          ]
+        },
+        {
+          "name": "apply",
+          "usage": "krowk worktrees apply <hex|path> [--to DIR]",
+          "summary": "Bring one's changes into a checkout, uncommitted",
+          "args": [
+            {
+              "name": "worktree",
+              "summary": "Its 8 hex digits, its branch krowk/<hex>, or its directory",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "to",
+              "type": "string",
+              "default": "",
+              "usage": "The checkout its changes go to (default: the repository's main checkout)"
             }
           ]
         },

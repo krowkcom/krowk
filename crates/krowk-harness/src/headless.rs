@@ -319,7 +319,7 @@ fn finish_before_exit(w: crate::worktree::InUse) {
     match rx.recv_timeout(FINISH_ON_EXIT) {
         Ok(Ok(crate::worktree::Finished::Removed)) => {}
         Ok(Ok(crate::worktree::Finished::Kept { .. })) => {
-            let _ = writeln!(std::io::stderr(), "Worktree kept: {} (branch {})", wt.path.display(), wt.branch());
+            let _ = writeln!(std::io::stderr(), "{}", crate::worktree::kept_line(&wt));
         }
         _ => {
             let _ = writeln!(std::io::stderr(), "! the worktree {} (branch {}) was left as it is — `krowk worktrees` lists it", wt.path.display(), wt.branch());

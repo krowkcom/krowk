@@ -85,6 +85,9 @@ pub struct Flags {
     /// written to (0600) instead of the screen.
     #[cfg(feature = "harness")]
     pub save: String,
+    /// `worktrees apply`: the checkout a worktree's changes go to.
+    #[cfg(feature = "harness")]
+    pub to: String,
     /// `sync init`: replace a device list the person already has.
     #[cfg(feature = "harness")]
     pub start_over: bool,
@@ -313,6 +316,8 @@ impl Flags {
             "name" => text(&mut self.name),
             #[cfg(feature = "harness")]
             "save" => text(&mut self.save),
+            #[cfg(feature = "harness")]
+            "to" => text(&mut self.to),
             #[cfg(feature = "harness")]
             "api-key-env" => text(&mut self.api_key_env),
             #[cfg(feature = "harness")]

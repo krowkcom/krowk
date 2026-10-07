@@ -25,14 +25,30 @@ the versions are the `v*` tags a release is cut from. Entries land under
   the branch starts there; with nothing uncommitted it starts at `HEAD`.
   Your index, `HEAD` and files are not touched. When
   it finishes having changed nothing, the worktree and its branch are
-  removed. When it changed something, both are kept, and the summary the
-  parent agent gets ends with
-  `Worktree: <path> (branch krowk/<hex>, <n> commits, uncommitted changes: yes|no)`.
-  Its changes are not brought back into your checkout yet: merge the
-  branch, or work in the directory. Outside a git repository the call fails
+  removed. When it changed something, its changes are applied to your
+  working tree (see below). Outside a git repository the call fails
   with `isolation: worktree needs a git repository`. Without the field, or
   with `"none"`, a subagent runs in your directory as before. Your
   repository's git hooks do not run when the worktree is made.
+
+- **A subagent's work in its worktree comes back to your working tree.**
+  When a subagent with `isolation: "worktree"` finishes having changed
+  something, krowk applies its commits and uncommitted changes, new,
+  deleted and binary files included, to the working tree the parent
+  agent works in, as uncommitted changes: your index and `HEAD` are not
+  touched. The worktree and its branch are then removed, its final state
+  kept as `refs/krowk/snapshots/<hex>` for 30 days, and the summary the
+  parent gets ends with `Changes applied to your working tree: <files>`.
+  Subagents finishing at once apply one after another. When a file
+  doesn't apply cleanly (you, or a sibling, changed the same lines),
+  nothing of it is applied, the worktree and branch are kept, and the
+  summary ends with `Changes not applied (conflicts in <files>).
+  Worktree: <path>, branch krowk/<hex>`. A subagent that changed a
+  submodule is kept the same way, as krowk doesn't apply submodule
+  changes. `krowk worktrees apply <hex|path> [--to <dir>]` does the same
+  for any kept worktree, into your repository's main checkout by default:
+  it is how you bring a `--worktree` session's work home, and it refuses
+  (exit 4) while that session is still running, or when a file conflicts.
 
 - **A subagent's worktree has your submodules checked out.** Before the
   subagent starts, krowk initialises every submodule of its worktree,
@@ -134,7 +150,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `KROWK_PORT_BASE`. When the session ends having changed nothing, the
   worktree and its branch are removed. When it changed something, both
   are kept and krowk says `Worktree kept: <path> (branch krowk/<hex>)` on
-  stderr; `-p --output-format json` or `stream-json` names it in the
+  stderr, with the `krowk worktrees apply <hex>` that brings its changes
+  into your checkout; `-p --output-format json` or `stream-json` names it in the
   result instead, as `worktree: {path, branch, commits,
   uncommittedChanges}`. Resuming such a session runs it in its worktree
   again; if that directory is gone, krowk says so (exit 2) and points to

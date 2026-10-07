@@ -400,6 +400,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(feature = "harness")]
         ["worktrees", "remove", ..] => worktrees::remove(ctx, rest(2)),
         #[cfg(feature = "harness")]
+        ["worktrees", "apply", ..] => worktrees::apply(ctx, rest(2)),
+        #[cfg(feature = "harness")]
         ["worktrees", "prune", ..] => worktrees::prune(ctx),
         #[cfg(feature = "harness")]
         ["devices"] | ["devices", "list", ..] => devices::list(ctx),
@@ -650,6 +652,9 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         let kit = words.starts_with(&["sync", "init"]) || words.starts_with(&["sync", "recovery", "new"]);
         if f.given.contains("save") && !kit {
             return Err(fail("bad_flag", "`--save` is only a flag of `krowk sync init` and `krowk sync recovery new`"));
+        }
+        if f.given.contains("to") && !words.starts_with(&["worktrees", "apply"]) {
+            return Err(fail("bad_flag", "`--to` is only a flag of `krowk worktrees apply`"));
         }
         if f.given.contains("start-over") && !words.starts_with(&["sync", "init"]) {
             return Err(fail("bad_flag", "`--start-over` is only a flag of `krowk sync init`"));

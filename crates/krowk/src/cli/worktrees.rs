@@ -15,6 +15,15 @@
 //!   `refs/krowk/snapshots/<hex>-head`. Its branch is always kept, and the
 //!   answer says how to bring it back. Ignored files (build output,
 //!   `.worktreeinclude` copies) are not changes, and are deleted with it.
+//! - `apply <hex|path> [--to <dir>]` (WT13): its commits and uncommitted
+//!   changes applied to the working tree of `--to`, the repository's main
+//!   checkout by default, as uncommitted changes, never its index or HEAD;
+//!   then it and its branch are removed, its final state kept as
+//!   `refs/krowk/snapshots/<hex>`. Refused (exit 4) while a live session
+//!   holds it (`worktree_live`), when a file does not apply cleanly
+//!   (`worktree_conflicts`, nothing changed, the files named), and when it
+//!   changed submodules (`worktree_submodules`). How a person brings a
+//!   `--worktree` session's work home.
 //! - `prune`: clears git's record of worktrees whose directory is gone,
 //!   deletes directories whose record is gone, and snapshots over 30 days
 //!   old. It also runs by itself once a day when a session starts.
@@ -26,7 +35,8 @@
 use super::Ctx;
 use crate::output::Format;
 use krowk_api::{fail, Error};
-use krowk_harness::worktree::manage::{self, Listed, Refusal};
+use krowk_harness::worktree::apply::{named, Applied};
+use krowk_harness::worktree::manage::{self, Listed, Refusal, SNAPSHOTS};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -139,6 +149,56 @@ pub(super) fn remove(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
+pub(super) fn apply(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    let key = args.first().map(|a| a.trim()).filter(|a| !a.is_empty()).ok_or_else(|| fail("missing_argument", "name the worktree to apply: `krowk worktrees apply <hex|path>` — `krowk worktrees` lists them"))?;
+    let root = root(ctx)?;
+    let human = ctx.format == Format::Human;
+    let to = match ctx.f.to.trim() {
+        "" => None,
+        dir => Some(std::path::absolute(dir).map_err(|e| fail("bad_flag", format!("--to {dir}: {e}")))?),
+    };
+    let (l, applied) = manage::apply(&root, key, to.as_deref()).map_err(|r| refused(r, now_ms(), !human))?;
+    let target = to.unwrap_or_else(|| l.main.clone());
+    let snapshot = format!("{SNAPSHOTS}{}", l.hex);
+    let kept = |mut e: Error, files: &[String]| {
+        if !human {
+            e.body.insert("details".into(), json!({ "worktree": row(&l, now_ms()), "files": files }));
+        }
+        e
+    };
+    let files = match applied {
+        Applied::Applied(files) => files,
+        Applied::Conflicts(files) => {
+            let fix = format!(
+                "{}'s changes do not apply cleanly to {} (conflicts in {}) — nothing was changed. The worktree and its branch {} are kept: merge that branch, or copy what you need from the worktree",
+                l.path.display(),
+                target.display(),
+                named(&files),
+                l.own_branch()
+            );
+            return Err(kept(fail("worktree_conflicts", fix), &files));
+        }
+        Applied::Submodules(paths) => {
+            let fix = format!("{} changed submodules ({}), which krowk does not apply — nothing was changed. The worktree and its branch {} are kept: bring those changes over by hand", l.path.display(), named(&paths), l.own_branch());
+            return Err(kept(fail("worktree_submodules", fix), &paths));
+        }
+    };
+    let summary = match files.len() {
+        0 => format!("{} had no changes left to apply; it and its branch {} are removed", l.path.display(), l.own_branch()),
+        n => format!("Applied {n} changed file{} from {} to {}; it and its branch {} are removed, its final state kept as {snapshot}", if n == 1 { "" } else { "s" }, l.path.display(), target.display(), l.own_branch()),
+    };
+    if !human {
+        let data = json!({ "applied": row(&l, now_ms()), "to": target.display().to_string(), "files": files, "snapshot": snapshot });
+        return super::sessions::emit_data(ctx, data, summary);
+    }
+    let out = &mut *ctx.io.stdout;
+    for f in &files {
+        let _ = writeln!(out, "applied  {f}");
+    }
+    let _ = writeln!(out, "{summary}.");
+    Ok(())
+}
+
 /// A refusal as krowk's error: its code and fix, and, when `details`, the
 /// worktree it is about as the error's `details`, for a script to read; a
 /// person has the fix.
@@ -157,7 +217,7 @@ fn refused(r: Refusal, now: i64, details: bool) -> Error {
         }
         Refusal::Live(l) => {
             let session = l.session.as_deref().unwrap_or("a session");
-            with(fail("worktree_live", format!("{} is in use by {session}, which is still running — remove it once that session ends", l.path.display())), &l)
+            with(fail("worktree_live", format!("{} is in use by {session}, which is still running — try again once that session ends", l.path.display())), &l)
         }
         Refusal::Changed(l) => {
             let mut what = Vec::new();
