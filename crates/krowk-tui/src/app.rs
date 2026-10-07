@@ -3986,7 +3986,7 @@ mod tests {
     #[test]
     fn r_budget_2_the_status_bar_shows_the_hosts_live_cost_and_the_result_is_not_added_twice() {
         let mut a = app();
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost], content_width: ContentWidth::FullWidth };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost], content_width: ContentWidth::FullWidth, ..Settings::default() };
         let cost = |usd: Option<f64>| live(LiveEvent::Cost { session_id: "s".into(), turn_id: "t".into(), cost_usd: usd, turn_cost_usd: usd, generated_tokens: 10 });
         // A resumed session's earlier turns and its subagents are in the
         // host's figure, so it replaces what the TUI had.
@@ -4050,9 +4050,9 @@ mod tests {
         a.pr = Some(Pr { number: 133, state: PrState::Open, url: "https://github.com/krowkcom/krowk-cli/pull/133".into() });
         a.branch = "feature/tui".into();
         assert_eq!(a.status_bar(), "Claude X (anthropic) | elvinas/primevise-arch-1 | ? help\nfeature/tui | #133↗ | $0.00", "the branch and its pull request before the cost");
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost, StatusItem::Pr, StatusItem::Help, StatusItem::Device, StatusItem::Model], content_width: ContentWidth::FullWidth };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost, StatusItem::Pr, StatusItem::Help, StatusItem::Device, StatusItem::Model], content_width: ContentWidth::FullWidth, ..Settings::default() };
         assert_eq!(a.status_bar(), "elvinas/primevise-arch-1 | Claude X (anthropic) | ? help\n$0.00 | #133↗", "in the order given, the help last on its row");
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost], content_width: ContentWidth::FullWidth };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Cost], content_width: ContentWidth::FullWidth, ..Settings::default() };
         assert_eq!(a.status_bar(), "$0.00");
         a.settings.status_bar = false;
         let (rows, _) = a.view(Instant::now());
@@ -4364,7 +4364,7 @@ mod tests {
     #[test]
     fn r_todo_3_the_todo_list_is_an_optional_overlay_and_a_reminder_is_krowks() {
         let mut a = app();
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Tasks], content_width: ContentWidth::FullWidth };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Tasks], content_width: ContentWidth::FullWidth, ..Settings::default() };
         assert_eq!(a.status_bar(), "", "no list, no item");
         let todo = |c: &str, s| Todo { content: c.into(), status: s };
         a.on_line(&log(LogBody::TodosUpdated { turn_id: "t".into(), todos: vec![todo("read", TodoStatus::Completed), todo("fix", TodoStatus::InProgress), todo("test", TodoStatus::Pending)] }));
@@ -4503,7 +4503,7 @@ mod tests {
     fn r_inst_6_usage_and_limits_are_shown_per_instance() {
         let mut a = app();
         a.set_width(160);
-        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Model], content_width: ContentWidth::FullWidth };
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Model], content_width: ContentWidth::FullWidth, ..Settings::default() };
         let usage = Usage { input_tokens: 1000, output_tokens: 200, ..Usage::default() };
         let response = |model: &str| LogBody::ResponseCompleted { turn_id: "t".into(), response_id: None, model: model.into(), usage, stop_reason: None, item_ids: Vec::new() };
         let done = LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage, duration_ms: 1, error: None, reported_cost_usd: None };

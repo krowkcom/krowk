@@ -1,5 +1,6 @@
-//! The terminal: an inline ratatui viewport at the bottom of the normal
-//! screen, and everything finished written above it into the terminal's own
+//! The inline terminal (`tui.screen`: `inline`; fullscreen, the default, is
+//! `crate::full`): a ratatui viewport at the bottom of the normal screen,
+//! and everything finished written above it into the terminal's own
 //! scrollback (R-TUI-1). No alternate screen, no mouse capture: what a phone
 //! terminal, tmux or an SSH session does not understand is never sent
 //! (R-TUI-3). The one exception is KEYS_PUSH, the keyboard protocol level
@@ -90,8 +91,8 @@ pub const TITLE_RESTORE: &[u8] = b"\x1b[23;2t";
 pub const KEYS_PUSH: &[u8] = b"\x1b7\x1b[>1u\x1b8";
 pub const KEYS_POP: &[u8] = b"\x1b7\x1b[<u\x1b8";
 /// Autowrap off and on again (DECAWM), around the live region's cells.
-const AUTOWRAP_OFF: &[u8] = b"\x1b[?7l";
-const AUTOWRAP_ON: &[u8] = b"\x1b[?7h";
+pub(crate) const AUTOWRAP_OFF: &[u8] = b"\x1b[?7l";
+pub(crate) const AUTOWRAP_ON: &[u8] = b"\x1b[?7h";
 
 /// Where a frame's bytes collect until the frame is done, and the row they
 /// leave the cursor on. ratatui flushes its writer after almost every
@@ -122,7 +123,7 @@ impl Write for FrameBuf {
 
 impl FrameBuf {
     /// What is queued, to send: the cursor is where it leaves it.
-    fn take(&self) -> Vec<u8> {
+    pub(crate) fn take(&self) -> Vec<u8> {
         let mut b = self.0.borrow_mut();
         b.sent_row = b.row;
         std::mem::take(&mut b.bytes)
@@ -130,20 +131,20 @@ impl FrameBuf {
 
     /// Where the queue stands: its length, and the row it leaves the cursor
     /// on, to go back to (`rewind`).
-    fn mark(&self) -> (usize, u16) {
+    pub(crate) fn mark(&self) -> (usize, u16) {
         let b = self.0.borrow();
         (b.bytes.len(), b.row)
     }
 
     /// What was queued since `mark`, dropped.
-    fn rewind(&self, (len, row): (usize, u16)) {
+    pub(crate) fn rewind(&self, (len, row): (usize, u16)) {
         let mut b = self.0.borrow_mut();
         b.bytes.truncate(len);
         b.row = row;
     }
 
     /// What is queued, dropped: the cursor is where what was sent left it.
-    fn discard(&self) {
+    pub(crate) fn discard(&self) {
         let mut b = self.0.borrow_mut();
         b.bytes.clear();
         b.row = b.sent_row;
@@ -176,6 +177,15 @@ impl FrameBuf {
         if x > 0 {
             write!(b.bytes, "\x1b[{x}C")?;
         }
+        b.row = y;
+        Ok(())
+    }
+
+    /// To column `x` of row `y`, absolutely: on the alternate screen, where
+    /// nothing is in scrollback for a resize to move.
+    fn cup(&self, x: u16, y: u16) -> io::Result<()> {
+        let mut b = self.0.borrow_mut();
+        write!(b.bytes, "\x1b[{};{}H", y + 1, x + 1)?;
         b.row = y;
         Ok(())
     }
@@ -221,6 +231,29 @@ pub struct Back {
     /// Whether the cursor was last shown: ratatui shows it every frame,
     /// and a terminal restarts its blink on every byte it is sent.
     shown: bool,
+    /// Moves are absolute (`crate::full`'s alternate screen) rather than
+    /// relative to the cursor.
+    absolute: bool,
+}
+
+impl Back {
+    /// A whole screen's backend, its moves absolute: `crate::full`'s.
+    pub(crate) fn fullscreen(buf: &FrameBuf, size: Size) -> Back {
+        Back { inner: CrosstermBackend::new(buf.clone()), buf: buf.clone(), size, cursor: Position::default(), drew: false, shown: false, absolute: true }
+    }
+
+    pub(crate) fn set_size(&mut self, size: Size) {
+        self.size = size;
+    }
+
+    /// Whether the last draw changed a cell; cleared.
+    pub(crate) fn take_drew(&mut self) -> bool {
+        std::mem::take(&mut self.drew)
+    }
+
+    fn goto(&self, x: u16, y: u16) -> io::Result<()> {
+        if self.absolute { self.buf.cup(x, y) } else { self.buf.goto(x, y) }
+    }
 }
 
 impl Backend for Back {
@@ -236,7 +269,7 @@ impl Backend for Back {
         for (x, y, cell) in content {
             self.drew = true;
             if !matches!(last, Some(p) if x == p.x + 1 && y == p.y) {
-                self.buf.goto(x, y)?;
+                self.goto(x, y)?;
             }
             last = Some(Position { x, y });
             let s = ratatui::style::Style::new().fg(cell.fg).bg(cell.bg).add_modifier(cell.modifier);
@@ -286,7 +319,7 @@ impl Backend for Back {
     fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
         let p = position.into();
         self.cursor = p;
-        self.buf.goto(p.x, p.y)
+        self.goto(p.x, p.y)
     }
 
     fn clear(&mut self) -> io::Result<()> {
@@ -677,7 +710,7 @@ pub fn soft_rows(line: &Line<'_>, width: u16) -> u16 {
 
 /// Whether `line` ends on the last column at `width` columns, the cursor
 /// left waiting there for the terminal's next wrap.
-fn fills_last_row(line: &Line<'_>, width: u16) -> bool {
+pub(crate) fn fills_last_row(line: &Line<'_>, width: u16) -> bool {
     soft_wrap(line, width).1 == usize::from(width.max(1))
 }
 
@@ -708,7 +741,7 @@ fn soft_wrap(line: &Line<'_>, width: u16) -> (u16, usize) {
 /// Every span is cleaned on its way out, whoever built it: what reaches
 /// scrollback is model output, tool names and paths, and none of it may
 /// carry an escape sequence or a control character to the terminal.
-fn write_styled(out: &mut impl Write, line: &Line<'_>) -> io::Result<()> {
+pub(crate) fn write_styled(out: &mut impl Write, line: &Line<'_>) -> io::Result<()> {
     for span in &line.spans {
         let style = line.style.patch(span.style);
         let sgr = sgr(style);
@@ -729,7 +762,7 @@ fn write_styled(out: &mut impl Write, line: &Line<'_>) -> io::Result<()> {
     Ok(())
 }
 
-fn sgr(style: ratatui::style::Style) -> String {
+pub(crate) fn sgr(style: ratatui::style::Style) -> String {
     use ratatui::style::{Color, Modifier};
     let mut codes: Vec<String> = Vec::new();
     let m = style.add_modifier;
@@ -789,7 +822,7 @@ fn build(buf: &FrameBuf, size: Size, top: u16, height: u16) -> io::Result<Termin
     // ratatui reserves the viewport's rows by printing newlines from the
     // cursor, so the real cursor has to be at the top first.
     buf.goto(0, top)?;
-    let back = Back { inner: CrosstermBackend::new(buf.clone()), buf: buf.clone(), size, cursor: Position { x: 0, y: top }, drew: false, shown: false };
+    let back = Back { inner: CrosstermBackend::new(buf.clone()), buf: buf.clone(), size, cursor: Position { x: 0, y: top }, drew: false, shown: false, absolute: false };
     Terminal::with_options(back, TerminalOptions { viewport: Viewport::Inline(height) })
 }
 

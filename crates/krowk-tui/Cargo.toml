@@ -1,4 +1,4 @@
-# The inline terminal UI bare `krowk` opens on a terminal: a client of the
+# The terminal UI bare `krowk` opens on a terminal: a client of the
 # harness's in-process protocol and nothing else. Compiled into `krowk` only
 # by the `harness` feature, so the agent build links none of it. Every
 # dependency here pays rent against full.size and the TUI's RSS budgets.

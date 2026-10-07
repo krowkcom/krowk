@@ -103,6 +103,9 @@ impl World {
         let home = self.root.join(name);
         let repo = home.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
+        // The inline renderer: the TUI's output here is read as it is sent.
+        std::fs::create_dir_all(home.join(".krowk")).unwrap();
+        std::fs::write(home.join(".krowk/config.json"), r#"{"tui": {"screen": "inline"}}"#).unwrap();
         let run = PathBuf::from(format!("/tmp/krowk-sc-{}-{name}-{}", self.name, std::process::id()));
         let _ = std::fs::remove_dir_all(&run);
         std::fs::create_dir_all(&run).unwrap();

@@ -54,7 +54,19 @@ impl Sandbox {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        Sandbox { root: root.canonicalize().unwrap() }
+        let b = Sandbox { root: root.canonicalize().unwrap() };
+        b.config(serde_json::json!({}));
+        b
+    }
+
+    /// `v` as config.json, inline unless it says otherwise: these hold the
+    /// inline renderer, scrollback and all; `fullscreen_*` the default one.
+    fn config(&self, mut v: serde_json::Value) {
+        if v["tui"]["screen"].is_null() {
+            v["tui"]["screen"] = "inline".into();
+        }
+        std::fs::create_dir_all(self.root.join("home/.krowk")).unwrap();
+        std::fs::write(self.root.join("home/.krowk/config.json"), v.to_string()).unwrap();
     }
 
     fn env(&self, url: &str) -> Vec<(String, String)> {
@@ -76,8 +88,7 @@ impl Sandbox {
     /// config.json laying out at the terminal's whole width, for a test
     /// that reads rows wider than `prose`'s 80 columns.
     fn full_width(&self) {
-        std::fs::create_dir_all(self.root.join("home/.krowk")).unwrap();
-        std::fs::write(self.root.join("home/.krowk/config.json"), r#"{"tui": {"contentWidth": "full-width"}}"#).unwrap();
+        self.config(serde_json::json!({"tui": {"contentWidth": "full-width"}}));
     }
 
     fn command(&self, url: &str, args: &[&str]) -> Command {
@@ -266,7 +277,7 @@ fn r_inst_7_the_tui_offers_the_next_instance_and_y_continues_there() {
         "anthropic:personal": {"kind": "anthropic-api", "apiKeyEnv": "ANTHROPIC_API_KEY", "baseUrl": ok.url},
         "anthropic:nokey": {"kind": "anthropic-api", "apiKeyEnv": "NO_SUCH_KEY", "baseUrl": ok.url},
     }});
-    std::fs::write(config.join("config.json"), instances.to_string()).unwrap();
+    b.config(instances);
     let mut t = pty::Pty::spawn(b.command(&limited.url, &["--model", "anthropic/claude-sonnet-4-6"]), 120, 30);
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     t.write(b"read README.md and summarise it\r");
@@ -1049,8 +1060,7 @@ fn r_perm_1_a_settings_error_is_named_before_the_trust_question() {
     // rule in the person's krowk config does not parse.
     std::fs::create_dir_all(b.root.join("repo/.claude")).unwrap();
     std::fs::write(b.root.join("repo/.claude/settings.json"), r#"{"permissions": {"allow": ["Bash(npm test)"]}}"#).unwrap();
-    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-    std::fs::write(b.root.join("home/.krowk/config.json"), r#"{"permissions": {"deny": ["Read(.env"]}}"#).unwrap();
+    b.config(serde_json::json!({"permissions": {"deny": ["Read(.env"]}}));
     let mut t = pty::Pty::spawn(b.command("http://127.0.0.1:9", &[]), 80, 24);
     let st = t.wait(Duration::from_secs(10)).expect("krowk exits");
     // The process can be gone before the pty's reader has taken the last
@@ -1633,7 +1643,7 @@ fn rename_in_the_tui_moves_the_session_onto_the_new_name() {
     let config = b.root.join("home/.krowk");
     std::fs::create_dir_all(&config).unwrap();
     let instances = serde_json::json!({"instances": {"anthropic:work": {"kind": "anthropic-api", "apiKeyEnv": "ANTHROPIC_API_KEY", "baseUrl": m.url}}});
-    std::fs::write(config.join("config.json"), instances.to_string()).unwrap();
+    b.config(instances);
     let mut t = pty::Pty::spawn(b.command(&m.url, &["--model", "anthropic:work/claude-sonnet-4-6"]), 110, 34);
     assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     let at = t.output().len();
@@ -1983,4 +1993,117 @@ fn wt6_the_tui_starts_in_a_worktree_of_its_own_and_names_it_when_kept() {
     assert_eq!(std::fs::read_to_string(path.join("NEW.md")).unwrap(), "from the tui\n");
     assert!(!repo.join("NEW.md").exists(), "not in the checkout");
     assert_eq!(git(&repo, &["branch", "--list", "--format=%(refname:short)", "krowk/*"]), format!("krowk/{hex}"));
+}
+
+// ---- fullscreen, the default ------------------------------------------------
+
+/// The wheel, as a terminal reporting buttons in SGR's encoding sends it,
+/// typed into the pane as bytes: up (64) or down (65) at column 10, row 5.
+fn wheel(tm: &Tmux, up: bool) {
+    let seq = format!("\x1b[<{};10;5M", if up { 64 } else { 65 });
+    let hex: Vec<String> = seq.bytes().map(|b| format!("{b:02x}")).collect();
+    let mut args = vec!["send-keys", "-t", "t", "-H"];
+    args.extend(hex.iter().map(String::as_str));
+    tm.tmux(&args);
+}
+
+/// The last `n` rows of the screen, blank rows at its bottom dropped.
+fn bottom(screen: &str, n: usize) -> Vec<String> {
+    let rows: Vec<&str> = screen.trim_end_matches('\n').lines().collect();
+    rows[rows.len().saturating_sub(n)..].iter().map(|r| r.to_string()).collect()
+}
+
+/// Fullscreen: the conversation scrolls with PgUp/PgDn and the wheel while
+/// the prompt and the status line stay on the bottom rows; Enter goes back
+/// to the bottom; leaving gives the shell's screen back with every line of
+/// the conversation printed on it once.
+#[test]
+fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conversation_scrolls() {
+    let m = streamed(120, Duration::from_micros(100));
+    let b = Sandbox::new("fullscreen");
+    b.config(serde_json::json!({"tui": {"screen": "fullscreen"}}));
+    let Some(tm) = Tmux::start_after("fullscreen", 100, 30, &b.root.join("repo"), &b.env(&m.url), &[], "echo shell-was-here &&") else { return };
+    assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    assert_eq!(tm.tmux(&["display", "-p", "-t", "t", "#{alternate_on}"]).trim(), "1", "on the alternate screen");
+    tm.keys(&["write it all out", "Enter"]);
+    assert!(tm.wait_for("tokens", Duration::from_secs(60)).is_some(), "the answer never finished:\n{}", tm.screen());
+    let footer = |s: &str| bottom(s, 3).join("\n");
+    let at_rest = tm.wait_still(|s| s.contains("line 00120"), Duration::from_secs(10)).unwrap_or_else(|| panic!("{}", tm.screen()));
+    let rest = footer(&at_rest);
+    assert!(rest.contains("help"), "the status line on the last rows: {at_rest}");
+    tm.keys(&["PPage"]);
+    let up = tm.wait_still(|s| s.contains("more below"), Duration::from_secs(5)).unwrap_or_else(|| panic!("PgUp scrolled nothing:\n{}", tm.screen()));
+    assert!(!up.contains("line 00120"), "the last line scrolled out of view: {up}");
+    assert_eq!(footer(&up), rest, "the footer where it was");
+    tm.keys(&["PPage"]);
+    let further = tm.wait_still(|s| !s.contains("line 00100"), Duration::from_secs(5)).unwrap_or_else(|| panic!("{}", tm.screen()));
+    assert_eq!(footer(&further), rest);
+    for _ in 0..30 {
+        wheel(&tm, false);
+    }
+    let down = tm.wait_still(|s| !s.contains("more below") && s.contains("line 00120"), Duration::from_secs(5)).unwrap_or_else(|| panic!("the wheel went back down to nothing:\n{}", tm.screen()));
+    assert_eq!(footer(&down), rest);
+    wheel(&tm, true);
+    assert!(tm.wait_for("more below", Duration::from_secs(5)).is_some(), "the wheel scrolled nothing up:\n{}", tm.screen());
+    // Typing keeps the view; sending goes back to the bottom.
+    tm.keys(&["again", "Enter"]);
+    assert!(tm.wait_gone("more below", Duration::from_secs(5)).is_some(), "sending stayed scrolled up:\n{}", tm.screen());
+    assert!(tm.wait_still(|s| s.matches("tokens").count() >= 1 && !s.contains("to interrupt"), Duration::from_secs(60)).is_some(), "{}", tm.screen());
+    // The pane kept once krowk is gone, to read what it left.
+    tm.tmux(&["set-option", "-t", "t", "remain-on-exit", "on"]);
+    tm.keys(&["C-d", "C-d"]);
+    assert!(tm.wait_for("krowk --resume", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    assert_eq!(tm.tmux(&["display", "-p", "-t", "t", "#{alternate_on}"]).trim(), "0", "the shell's screen back");
+    let history = tm.history();
+    assert!(history.find("shell-was-here").unwrap() < history.find("write it all out").unwrap(), "printed under what the shell had: {history}");
+    let want: Vec<String> = mock::numbered_lines(120).lines().map(String::from).collect();
+    let got: Vec<&str> = history.lines().filter(|l| l.starts_with("line ")).collect();
+    assert_eq!(got.len(), 2 * want.len(), "both answers, every line once each:\n{history}");
+    assert!(got.iter().zip(want.iter().chain(&want)).all(|(g, w)| g == w), "in order, byte for byte");
+    assert_eq!(history.matches("to interrupt").count() + history.matches("more below").count(), 0, "no live row left behind:\n{history}");
+}
+
+/// Fullscreen on a narrower window: the conversation is wrapped again, and
+/// the footer is on the new bottom rows.
+#[test]
+fn fullscreen_a_resize_rewraps_the_conversation_and_keeps_the_footer_at_the_bottom() {
+    let m = streamed(40, Duration::from_micros(100));
+    let b = Sandbox::new("fullscreen-resize");
+    b.config(serde_json::json!({"tui": {"screen": "fullscreen"}}));
+    let Some(tm) = Tmux::start("fullscreen-resize", 100, 30, &b.root.join("repo"), &b.env(&m.url), &[]) else { return };
+    assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    tm.keys(&["write it all out", "Enter"]);
+    assert!(tm.wait_for("tokens", Duration::from_secs(60)).is_some(), "{}", tm.screen());
+    tm.tmux(&["resize-window", "-t", "t", "-x", "40", "-y", "20"]);
+    let s = tm.wait_still(|s| s.lines().count() <= 20 && s.contains("line 00040"), Duration::from_secs(10)).unwrap_or_else(|| panic!("{}", tm.screen()));
+    let rows: Vec<&str> = s.trim_end_matches('\n').lines().collect();
+    assert!(rows.iter().all(|r| unicode_width(r) <= 40), "{s}");
+    assert!(rows.iter().any(|r| r.starts_with("line 00040: the quick brown fox")) && rows.iter().any(|r| r.starts_with("er the lazy dog again")), "wrapped at 40: {s}");
+    assert!(bottom(&s, 3).join("\n").contains("help"), "the status line on the new last rows: {s}");
+}
+
+fn unicode_width(s: &str) -> usize {
+    s.chars().count()
+}
+
+/// Fullscreen takes the alternate screen and the mouse once and gives both
+/// back once, the keyboard protocol pushed and popped on each screen, and
+/// the terminal left as the shell had it.
+#[test]
+fn fullscreen_takes_the_alternate_screen_and_gives_everything_back() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("fullscreen-seqs");
+    b.config(serde_json::json!({"tui": {"screen": "fullscreen"}}));
+    let mut t = pty::Pty::spawn(b.command(&m.url, &[]), 80, 24);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "no prompt: {:?}", t.text());
+    t.write(b"\x04\x04");
+    let st = t.wait(Duration::from_secs(10)).expect("krowk exits on Ctrl-D");
+    assert!(st.success(), "{st}");
+    let out = t.text();
+    for (seq, n) in [("\x1b[?1049h", 1), ("\x1b[?1049l", 1), ("\x1b[?1000h", 1), ("\x1b[?1000l", 1), ("\x1b[>1u", 2), ("\x1b[<u", 2)] {
+        assert_eq!(out.matches(seq).count(), n, "{seq:?}: {out:?}");
+    }
+    assert!(!out.contains("\x1b[?1003h") && !out.contains("\x1b[?1002h"), "no motion reported: {out:?}");
+    assert!(out.find("\x1b[?1049l").unwrap() < out.rfind("Directory").unwrap(), "the header printed again on the shell's screen: {out:?}");
+    assert!(out.ends_with("\x1b[?2004l\x1b[?25h"), "bracketed paste off and the cursor back, last: {out:?}");
 }

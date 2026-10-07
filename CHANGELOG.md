@@ -9,6 +9,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Changed
+
+- **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
+  takes the terminal's alternate screen. The prompt and status line stay on
+  the bottom rows while you scroll the conversation with the mouse wheel or
+  PgUp/PgDn, so you can read back without losing the prompt. Sending a
+  prompt jumps back to the bottom, and a resize rewraps the conversation.
+  When you leave, the conversation is printed into your normal scrollback
+  as before. Because krowk now reads the mouse wheel, select text with
+  Shift-drag (Option-drag in iTerm2). To keep the old inline mode, which
+  draws at the bottom of the normal screen and streams into scrollback, set
+  `"tui": {"screen": "inline"}` in `~/.krowk/config.json`.
+
 ## [0.13.0] - 2026-10-07
 
 ### Added
