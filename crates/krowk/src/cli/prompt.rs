@@ -99,6 +99,9 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     for n in notices {
         ctx.warn(&n);
     }
+    // Everything that can still refuse the run is asked first: a worktree
+    // made before a refusal would be left behind.
+    let (credentials, krowk_dir) = (super::providers::credentials_path()?, super::providers::krowk_dir()?);
     // WT6: `--worktree` makes the session's worktree now, from this
     // directory's repository, with the settings it would have run with
     // here; the session starts in it.
@@ -127,8 +130,8 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         krowk_version: super::VERSION.into(),
         pricer: pricer(ctx.io.env),
         catalog: catalog(ctx.io.env),
-        credentials: super::providers::credentials_path()?,
-        trust: trust_gate(ctx.f.trust, super::interactive(ctx) && std::io::stdin().is_terminal() && ctx.io.err_tty, super::providers::krowk_dir()?, home, vendor, trust_as),
+        credentials,
+        trust: trust_gate(ctx.f.trust, super::interactive(ctx) && std::io::stdin().is_terminal() && ctx.io.err_tty, krowk_dir, home, vendor, trust_as),
         publisher: Some(publisher(ctx)),
         permissions,
         agents: agents_config(ctx.io.env),

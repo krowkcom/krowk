@@ -138,7 +138,8 @@ impl Transport for crate::daemon::client::Client {
 
 async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> Outcome {
     let format = opts.format;
-    let worktree = opts.worktree;
+    let mut worktree = opts.worktree;
+    let mut held = HeldResult::default();
     let (tx, mut rx) = mpsc::channel::<StreamLine>(1024);
     // A resumed session's id is known up front; a new one's arrives with
     // its root event.
@@ -175,16 +176,7 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
                 {
                     agents.clone_from(a);
                 }
-                // A notice is the person's alone (a claim token is a secret):
-                // the terminal's stderr, never stdout, which a program reads.
-                if let StreamLine::Live(LiveEvent::Notice { text, .. }) = &line {
-                    let _ = writeln!(std::io::stderr(), "! {text}");
-                } else if worktree.is_some() && matches!(line, StreamLine::Live(LiveEvent::Result(_))) {
-                    // Printed once the worktree is finished, which it names.
-                } else if format == OutputFormat::StreamJson {
-                    let _ = writeln!(stdout, "{}", serde_json::to_string(&line).expect("a stream line serializes"));
-                    let _ = stdout.flush();
-                }
+                show(line, format, worktree.is_some().then_some(&mut held), stdout);
             }
             r = &mut exec, if done.is_none() => done = Some(r),
             _ = sigint.recv(), if done.is_none() => {
@@ -195,6 +187,9 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
                     // Not waited on, but not left running either: every
                     // backend's process group goes with krowk.
                     crate::group::kill_all();
+                    if let Some(w) = worktree.take() {
+                        finish_before_exit(w);
+                    }
                     std::process::exit(130);
                 }
                 want_interrupt = true;
@@ -222,13 +217,19 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
     host.shutdown().await;
     // The session is over: its worktree is finished before the result is
     // printed, so a kept one is named in it.
-    let worktree = worktree.map(|w| {
-        let wt = w.worktree.clone();
-        let finished = w.finish();
-        (wt, finished)
-    });
-    let kept = worktree.as_ref().and_then(|(wt, f)| f.clone().ok().and_then(|f| crate::worktree::kept(wt, f)));
+    let (worktree, kept) = finish(worktree);
     let done = done.expect("the loop ends only once the command has").map(|r| r.map(|result| RunResult { worktree: kept.map(Box::new), ..result }));
+    // The result held back for the worktree: the run's own, naming it, or
+    // the last one there was when the run has none.
+    if format == OutputFormat::StreamJson && worktree.is_some() {
+        let last = match &done {
+            Ok(Some(result)) => Some(StreamLine::Live(LiveEvent::Result(result.clone()))),
+            _ => held.take(),
+        };
+        if let Some(last) = last {
+            let _ = writeln!(stdout, "{}", serde_json::to_string(&last).expect("a stream line serializes"));
+        }
+    }
     match done {
         Ok(Some(result)) => {
             match format {
@@ -240,16 +241,89 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
                 OutputFormat::Json => {
                     let _ = writeln!(stdout, "{}", serde_json::to_string(&LiveEvent::Result(result.clone())).expect("a result serializes"));
                 }
-                // The result held back for the worktree.
-                OutputFormat::StreamJson if worktree.is_some() => {
-                    let _ = writeln!(stdout, "{}", serde_json::to_string(&StreamLine::Live(LiveEvent::Result(result.clone()))).expect("a result serializes"));
-                }
                 OutputFormat::StreamJson => {}
             }
             Outcome { session_id: Some(result.session_id.clone()), result: Some(result), error: None, worktree }
         }
         Ok(None) => Outcome { session_id, result: None, error: None, worktree },
         Err(e) => Outcome { session_id, result: None, error: Some(e), worktree },
+    }
+}
+
+/// One line of the stream, as the run shows it: a notice on stderr, every
+/// line on stdout under stream-json, and a `result` held back (`held`, a
+/// `--worktree` run's) until a newer one comes, or the worktree is
+/// finished.
+fn show(line: StreamLine, format: OutputFormat, held: Option<&mut HeldResult>, stdout: &mut dyn Write) {
+    // A notice is the person's alone (a claim token is a secret): the
+    // terminal's stderr, never stdout, which a program reads.
+    if let StreamLine::Live(LiveEvent::Notice { text, .. }) = &line {
+        let _ = writeln!(std::io::stderr(), "! {text}");
+        return;
+    }
+    let line = match held {
+        Some(held) if matches!(line, StreamLine::Live(LiveEvent::Result(_))) => match held.hold(line) {
+            Some(earlier) => earlier,
+            None => return,
+        },
+        _ => line,
+    };
+    if format == OutputFormat::StreamJson {
+        let _ = writeln!(stdout, "{}", serde_json::to_string(&line).expect("a stream line serializes"));
+        let _ = stdout.flush();
+    }
+}
+
+/// The run's worktree finished, with how that went, and as its result
+/// names it when it is kept.
+#[allow(clippy::type_complexity)]
+fn finish(worktree: Option<crate::worktree::InUse>) -> (Option<(crate::worktree::Worktree, Result<crate::worktree::Finished, crate::worktree::Error>)>, Option<crate::protocol::KeptWorktree>) {
+    let Some(w) = worktree else { return (None, None) };
+    let wt = w.worktree.clone();
+    let finished = w.finish();
+    let kept = finished.clone().ok().and_then(|f| crate::worktree::kept(&wt, f));
+    (Some((wt, finished)), kept)
+}
+
+/// The `result` frames of a `--worktree` run, held back one at a time: a
+/// turn that fails over to another instance (R-INST-7) sends one per turn,
+/// and only the last is the run's end, which names the worktree. An
+/// earlier one goes out as soon as a newer one arrives.
+#[derive(Default)]
+struct HeldResult(Option<StreamLine>);
+
+impl HeldResult {
+    /// Holds `line`: the one held before it, to write now.
+    fn hold(&mut self, line: StreamLine) -> Option<StreamLine> {
+        self.0.replace(line)
+    }
+
+    fn take(&mut self) -> Option<StreamLine> {
+        self.0.take()
+    }
+}
+
+/// How long a second Ctrl-C waits for the worktree to be finished.
+const FINISH_ON_EXIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The worktree of a run left at once (a second Ctrl-C), finished on the
+/// way out as far as `FINISH_ON_EXIT` allows, so an unchanged one is not
+/// left behind and a kept one is named. Best effort: one not finished in
+/// time is left as it is, which `krowk worktrees` lists.
+fn finish_before_exit(w: crate::worktree::InUse) {
+    let wt = w.worktree.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(w.finish());
+    });
+    match rx.recv_timeout(FINISH_ON_EXIT) {
+        Ok(Ok(crate::worktree::Finished::Removed)) => {}
+        Ok(Ok(crate::worktree::Finished::Kept { .. })) => {
+            let _ = writeln!(std::io::stderr(), "Worktree kept: {} (branch {})", wt.path.display(), wt.branch());
+        }
+        _ => {
+            let _ = writeln!(std::io::stderr(), "! the worktree {} (branch {}) was left as it is — `krowk worktrees` lists it", wt.path.display(), wt.branch());
+        }
     }
 }
 
@@ -279,5 +353,43 @@ impl Interrupts {
         }
         #[cfg(not(unix))]
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(turn: &str) -> StreamLine {
+        let r = RunResult {
+            session_id: "s".into(),
+            turn_id: turn.into(),
+            status: crate::protocol::TurnStatus::Failed,
+            is_error: true,
+            result: String::new(),
+            model: ModelRef { instance: "anthropic".into(), model: "m".into() },
+            usage: crate::protocol::Usage::default(),
+            cost_usd: None,
+            duration_ms: 1,
+            num_model_calls: 1,
+            error: None,
+            unread_steers: Vec::new(),
+            switch_offer: None,
+            worktree: None,
+        };
+        StreamLine::Live(LiveEvent::Result(r))
+    }
+
+    /// A run that fails over sends a result per turn: each but the last
+    /// goes out when the next arrives, and the last is held for the
+    /// worktree.
+    #[test]
+    fn wt6_only_the_latest_result_is_held_back() {
+        let mut held = HeldResult::default();
+        assert!(held.hold(result("t1")).is_none());
+        let out = held.hold(result("t2")).expect("the failed turn's result goes out");
+        assert!(matches!(&out, StreamLine::Live(LiveEvent::Result(r)) if r.turn_id == "t1"));
+        assert!(matches!(held.take(), Some(StreamLine::Live(LiveEvent::Result(r))) if r.turn_id == "t2"));
+        assert!(held.take().is_none());
     }
 }

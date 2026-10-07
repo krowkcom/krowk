@@ -130,6 +130,9 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
     let (trust, trusted, trust_ask) = prompt::tui_trust_gate(effective.as_ref(), &registry, &runs_in, super::providers::krowk_dir()?, home, widens, trust_as.clone());
     let permissions = prompt::permissions_config(ctx, &config, trusted, true);
     let (permission_mode, mode_notices) = prompt::resolve_mode(flag_mode, &permissions, &runs_in)?;
+    // Everything that can still refuse the TUI is asked first: a worktree
+    // made before a refusal would be left behind.
+    let (credentials, config_path) = (super::providers::credentials_path()?, super::providers::config_path()?);
     // WT6: `--worktree` makes the session's worktree now, from this
     // directory's repository, with the settings it would have run with
     // here; the session starts in it, and the header names its branch.
@@ -158,7 +161,7 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
         krowk_version: super::VERSION.into(),
         pricer: prompt::pricer(ctx.io.env),
         catalog: prompt::catalog(ctx.io.env),
-        credentials: super::providers::credentials_path()?,
+        credentials,
         trust,
         publisher: Some(prompt::publisher(ctx)),
         permissions,
@@ -188,7 +191,7 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
             super::upgrade::for_tui(ctx).map(|n| krowk_tui::app::Update { current: super::VERSION.into(), latest: n.latest, security: n.security, due: n.due })
         },
         version: super::VERSION.into(),
-        config: Some(super::providers::config_path()?),
+        config: Some(config_path),
         // A session in a worktree of its own runs here, where the worktree
         // is held, and finished once the TUI closes.
         daemon: if synced || worktree.is_some() { None } else { daemon(ctx)? },
