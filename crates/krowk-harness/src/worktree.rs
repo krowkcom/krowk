@@ -111,6 +111,9 @@ pub enum Error {
     Failed(String),
     /// The turn it was for was interrupted while it was readied: it is gone.
     Interrupted,
+    /// Its changes were to be applied to a checkout of another repository
+    /// (WT13): why.
+    OtherRepository(String),
 }
 
 impl std::fmt::Display for Error {
@@ -119,6 +122,7 @@ impl std::fmt::Display for Error {
             Error::NotARepository => f.write_str("not in a git repository"),
             Error::Failed(why) => f.write_str(why),
             Error::Interrupted => f.write_str("interrupted"),
+            Error::OtherRepository(why) => f.write_str(why),
         }
     }
 }
@@ -741,7 +745,7 @@ pub fn finish_into(wt: &Worktree, to: &Path) -> Result<Option<apply::Applied>, E
         remove(wt, false)?;
         return Ok(None);
     }
-    apply::apply(wt, to).map(Some)
+    apply::apply(wt, to, apply::Approval::Agent).map(Some)
 }
 
 /// The worktree's HEAD, and its `git status --porcelain`: every untracked

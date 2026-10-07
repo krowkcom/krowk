@@ -226,6 +226,18 @@ fn wt13_apply_brings_a_kept_worktree_into_a_checkout_and_refuses_while_live() {
     assert!(human.status.success(), "{}", String::from_utf8_lossy(&human.stderr));
     assert!(String::from_utf8_lossy(&human.stdout).starts_with("applied  a.txt\nApplied 1 changed file from "));
     assert_eq!(std::fs::read_to_string(b.repo().join("a.txt")).unwrap(), "live\n");
+    // A checkout of another repository is refused.
+    let w = b.create("s3");
+    std::fs::write(w.path.join("a.txt"), "elsewhere\n").unwrap();
+    let other = b.root.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    git(&other, &["init", "-q", "-b", "main"]);
+    git(&other, &["commit", "-q", "--allow-empty", "-m", "other"]);
+    let o = b.krowk(&["worktrees", "apply", &w.hex, "--to", other.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(1), "{}", String::from_utf8_lossy(&o.stderr));
+    let err: Value = serde_json::from_slice(&o.stderr).unwrap();
+    assert_eq!(err["error"]["error"], "worktree_other_repository");
+    assert!(!other.join("a.txt").exists() && w.path.is_dir());
     // `--to` belongs to `apply`.
     assert_eq!(b.krowk(&["worktrees", "prune", "--to", "x"]).status.code(), Some(1));
 }

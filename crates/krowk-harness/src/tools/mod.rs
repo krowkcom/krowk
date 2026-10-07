@@ -437,6 +437,18 @@ const MAX_LINKS: usize = 40;
 /// are in.
 const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".krowk"];
 
+/// The fenced directory (`FENCED`) one of `path`'s components names, if
+/// any: what the file tools change only with a person's say, and what
+/// applying a worktree's changes back leaves to a person (WT13). Compared
+/// the way the file system may: case-insensitively (macOS and Windows open
+/// `.Claude` as `.claude`), and with the trailing dots and spaces Windows
+/// drops (`.git.` is `.git`) — on every OS, since a checkout travels
+/// between them.
+pub fn fenced_dir(path: &Path) -> Option<&'static str> {
+    let fold = |c: &std::ffi::OsStr| c.to_string_lossy().trim_end_matches(['.', ' ']).to_ascii_lowercase();
+    path.components().find_map(|c| FENCED.into_iter().find(|d| fold(c.as_os_str()) == *d))
+}
+
 impl Scope {
     /// Only the working directory, nothing opened.
     pub fn within(cwd: &Path) -> Scope {
@@ -481,12 +493,7 @@ impl Scope {
     /// could run any command without the bash permission. Codex keeps
     /// `.git` read-only for the same reason.
     fn fence(&self, p: &Path, real: &Path, root: &Path) -> Option<String> {
-        // Compared the way the file system may: case-insensitively (macOS
-        // and Windows open `.Claude` as `.claude`), and with the trailing
-        // dots and spaces Windows drops (`.git.` is `.git`) — on every OS,
-        // since a checkout travels between them.
-        let fold = |c: &std::ffi::OsStr| c.to_string_lossy().trim_end_matches(['.', ' ']).to_ascii_lowercase();
-        let inside = |q: &Path| q.components().find_map(|c| FENCED.into_iter().find(|d| fold(c.as_os_str()) == *d));
+        let inside = fenced_dir;
         let rel = |q: &Path| {
             let mut bases: Vec<PathBuf> = vec![self.cwd.clone(), root.to_path_buf()];
             bases.extend(self.roots.iter().cloned());

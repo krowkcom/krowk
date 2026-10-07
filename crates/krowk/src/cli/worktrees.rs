@@ -22,7 +22,11 @@
 //!   `refs/krowk/snapshots/<hex>`. Refused (exit 4) while a live session
 //!   holds it (`worktree_live`), when a file does not apply cleanly
 //!   (`worktree_conflicts`, nothing changed, the files named), and when it
-//!   changed submodules (`worktree_submodules`). How a person brings a
+//!   changed submodules (`worktree_submodules`); `--to` a checkout of
+//!   another repository is refused (exit 1, `worktree_other_repository`).
+//!   Changes inside `.git`, `.claude`, `.codex` and `.krowk` directories,
+//!   which a subagent's apply-back leaves to a person, are applied: this is
+//!   the person's own command. How a person brings a
 //!   `--worktree` session's work home.
 //! - `prune`: clears git's record of worktrees whose directory is gone,
 //!   deletes directories whose record is gone, and snapshots over 30 days
@@ -166,8 +170,14 @@ pub(super) fn apply(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         }
         e
     };
-    let files = match applied {
-        Applied::Applied(files) => files,
+    let (files, left) = match applied {
+        Applied::Applied(files) => (files, None),
+        Applied::AppliedLeft(files, why) => (files, Some(why)),
+        // A person's command applies fenced files; never one of these.
+        Applied::Protected(files) => {
+            let fix = format!("{} changes protected files ({}) — nothing was changed; the worktree and its branch {} are kept", l.path.display(), named(&files), l.own_branch());
+            return Err(kept(fail("worktree_protected", fix), &files));
+        }
         Applied::Conflicts(files) => {
             let fix = format!(
                 "{}'s changes do not apply cleanly to {} (conflicts in {}) — nothing was changed. The worktree and its branch {} are kept: merge that branch, or copy what you need from the worktree",
@@ -183,12 +193,20 @@ pub(super) fn apply(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             return Err(kept(fail("worktree_submodules", fix), &paths));
         }
     };
-    let summary = match files.len() {
-        0 => format!("{} had no changes left to apply; it and its branch {} are removed", l.path.display(), l.own_branch()),
-        n => format!("Applied {n} changed file{} from {} to {}; it and its branch {} are removed, its final state kept as {snapshot}", if n == 1 { "" } else { "s" }, l.path.display(), target.display(), l.own_branch()),
+    let n = files.len();
+    let summary = match (&left, n) {
+        (Some(why), _) => format!(
+            "Applied {n} changed file{} from {} to {}, but could not remove it afterwards ({why}) — do not apply it again; `krowk worktrees remove {} --force` removes it",
+            if n == 1 { "" } else { "s" },
+            l.path.display(),
+            target.display(),
+            l.hex
+        ),
+        (None, 0) => format!("{} had no changes left to apply; it and its branch {} are removed", l.path.display(), l.own_branch()),
+        (None, n) => format!("Applied {n} changed file{} from {} to {}; it and its branch {} are removed, its final state kept as {snapshot}", if n == 1 { "" } else { "s" }, l.path.display(), target.display(), l.own_branch()),
     };
     if !human {
-        let data = json!({ "applied": row(&l, now_ms()), "to": target.display().to_string(), "files": files, "snapshot": snapshot });
+        let data = json!({ "applied": row(&l, now_ms()), "to": target.display().to_string(), "files": files, "snapshot": snapshot, "removed": left.is_none() });
         return super::sessions::emit_data(ctx, data, summary);
     }
     let out = &mut *ctx.io.stdout;
@@ -238,6 +256,7 @@ fn refused(r: Refusal, now: i64, details: bool) -> Error {
             );
             with(fail("worktree_has_changes", fix), &l)
         }
+        Refusal::Failed(krowk_harness::worktree::Error::OtherRepository(why)) => fail("worktree_other_repository", format!("{why} — name a checkout of that repository with --to")),
         Refusal::Failed(e) => fail("worktree_failed", e.to_string()),
     }
 }

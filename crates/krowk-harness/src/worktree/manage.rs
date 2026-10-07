@@ -551,7 +551,8 @@ pub fn remove(root: &Path, key: &str, force: bool) -> Result<Removed, Refusal> {
 
 /// Applies the changes of the worktree `key` names (`find`) to the
 /// working tree `to` is in, the repository's main checkout by default
-/// (`super::apply::apply`): it, as found, and what came of it. Refused
+/// (`super::apply::apply`), changes inside fenced directories included, as
+/// a person asked: it, as found, and what came of it. Refused
 /// while a live session holds it, when its directory is gone, and when
 /// krowk has no record of its base, which its changes are judged against.
 /// Blocking.
@@ -570,7 +571,8 @@ pub fn apply(root: &Path, key: &str, to: Option<&Path>) -> Result<(Listed, super
         return Err(Refusal::Failed(Error::Failed(format!("krowk has no record of the commit {} was made from, so it cannot tell its changes — merge its branch {} instead", found.path.display(), found.own_branch()))));
     };
     let to = to.map_or_else(|| found.main.clone(), Path::to_path_buf);
-    let applied = super::apply::apply(&wt, &to)?;
+    // A person's own command: fenced files are theirs to apply.
+    let applied = super::apply::apply(&wt, &to, super::apply::Approval::Person)?;
     Ok((found, applied))
 }
 

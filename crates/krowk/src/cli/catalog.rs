@@ -982,7 +982,9 @@ uncommitted changes, new, deleted and binary files too; the checkout's index
 and HEAD are not touched. Applied, the worktree and its branch are removed,
 its final state kept as refs/krowk/snapshots/<hex> for 30 days. When a file
 does not apply cleanly nothing changes, both are kept, and the files are
-named. A worktree that changed submodules is not applied.",
+named. A worktree that changed submodules is not applied. The checkout must
+be one of the same repository. Files in .git, .claude, .codex and .krowk
+directories, which a subagent's changes leave to you, are applied.",
         #[cfg(feature = "harness")]
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle

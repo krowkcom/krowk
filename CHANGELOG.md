@@ -45,10 +45,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   summary ends with `Changes not applied (conflicts in <files>).
   Worktree: <path>, branch krowk/<hex>`. A subagent that changed a
   submodule is kept the same way, as krowk doesn't apply submodule
-  changes. `krowk worktrees apply <hex|path> [--to <dir>]` does the same
-  for any kept worktree, into your repository's main checkout by default:
-  it is how you bring a `--worktree` session's work home, and it refuses
-  (exit 4) while that session is still running, or when a file conflicts.
+  changes. So is one that changed files inside a `.git`, `.claude`,
+  `.codex` or `.krowk` directory, which the file tools only change with
+  your say: its summary ends with `Changes not applied (they touch
+  protected files: <files>)`, the worktree and branch, and the
+  `krowk worktrees apply <hex>` you run to apply them.
+  `krowk worktrees apply <hex|path> [--to <dir>]` does the same for any
+  kept worktree, protected files included, into your repository's main
+  checkout by default: it is how you bring a `--worktree` session's work
+  home. It refuses (exit 4) while that session is still running, or when
+  a file conflicts, and refuses (exit 1) a `--to` that is a checkout of
+  another repository.
 
 - **A subagent's worktree has your submodules checked out.** Before the
   subagent starts, krowk initialises every submodule of its worktree,

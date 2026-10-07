@@ -20,6 +20,17 @@
 //! - **Applied**: the worktree and its branch are removed; the snapshot is
 //!   the way back. **Not applied** (a file the target changed too): both
 //!   are kept, and the files that conflict are named.
+//! - **Into its own repository only**: the target must be a checkout of the
+//!   worktree's repository (`Error::OtherRepository`), whose base the diff
+//!   is from.
+//! - **Fenced files left to a person**: a change inside a `.git`,
+//!   `.claude`, `.codex` or `.krowk` directory
+//!   (`crate::tools::fenced_dir`, the predicate the file tools are fenced
+//!   by) names what runs, or what is allowed, in the target. The file tools
+//!   change those only with a person's say, so applying a subagent's back
+//!   (`Approval::Agent`) applies nothing of a worktree with any, keeps it,
+//!   and names them; `krowk worktrees apply`, a person's own command
+//!   (`Approval::Person`), applies them.
 //! - **Submodules** (WT15): a change to what a submodule records, or edits
 //!   inside one, cannot be applied as a file change; a worktree with any is
 //!   not applied, and is kept, so nothing of it is lost on the way.
@@ -31,6 +42,16 @@ use std::path::{Path, PathBuf};
 /// How many files a note names before "and N more".
 const MAX_NAMED: usize = 20;
 
+/// Who asked for a worktree's changes to be applied: what may land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Approval {
+    /// Krowk, as a subagent finished: changes inside a fenced directory
+    /// are not applied.
+    Agent,
+    /// A person, by `krowk worktrees apply`: everything is.
+    Person,
+}
+
 /// What applying a worktree's changes came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Applied {
@@ -38,6 +59,12 @@ pub enum Applied {
     /// worktree and its branch are gone. Empty when its changes undid each
     /// other.
     Applied(Vec<String>),
+    /// Applied, the files named, but the worktree could not be removed
+    /// afterwards: why. It is left, its changes already in the target.
+    AppliedLeft(Vec<String>, String),
+    /// Not applied, as these files are inside a fenced directory and no
+    /// person asked; the worktree and its branch are kept.
+    Protected(Vec<String>),
     /// Not applied, as these files do not apply cleanly; the worktree and
     /// its branch are kept.
     Conflicts(Vec<String>),
@@ -55,6 +82,18 @@ impl Applied {
         match self {
             Applied::Applied(files) if files.is_empty() => None,
             Applied::Applied(files) => Some(format!("Changes applied to your working tree: {}", named(files))),
+            Applied::AppliedLeft(files, why) => Some(format!(
+                "Changes applied to your working tree: {}. The worktree {} could not be removed afterwards ({why}); `krowk worktrees remove {} --force` removes it — do not apply it again",
+                named(files),
+                wt.path.display(),
+                wt.hex
+            )),
+            Applied::Protected(files) => Some(format!(
+                "Changes not applied (they touch protected files: {}). {} — a person can apply them with `krowk worktrees apply {}`",
+                named(files),
+                kept(),
+                wt.hex
+            )),
             Applied::Conflicts(files) => Some(format!("Changes not applied (conflicts in {}). {}", named(files), kept())),
             Applied::Submodules(paths) => Some(format!("Changes not applied (they change submodules, which krowk does not apply: {}). {}", named(paths), kept())),
         }
@@ -71,11 +110,15 @@ pub fn named(files: &[String]) -> String {
 }
 
 /// Applies the changes of `wt`, which no agent works in any more, to the
-/// working tree `to` is in (see the module's docs): removed with its
-/// branch when they apply, kept when they do not. Under the caller's
-/// `super::lock`. Blocking.
-pub(super) fn apply(wt: &Worktree, to: &Path) -> Result<Applied, Error> {
+/// working tree `to` is in, a checkout of its own repository, as `by` may
+/// (see the module's docs): removed with its branch when they apply, kept
+/// when they do not. Under the caller's `super::lock`. Blocking.
+pub(super) fn apply(wt: &Worktree, to: &Path, by: Approval) -> Result<Applied, Error> {
     let top = top_level(to)?;
+    let common = read(query(&top)?.args(["rev-parse", "--path-format=absolute", "--git-common-dir"]), "rev-parse")?;
+    if PathBuf::from(&common).canonicalize().ok().as_ref() != Some(&wt.common) {
+        return Err(Error::OtherRepository(format!("{} is a checkout of another repository than {}'s ({}), which its changes are made against", top.display(), wt.path.display(), wt.main.display())));
+    }
     if wt.path.canonicalize().is_ok_and(|p| p == top) {
         return Err(Error::Failed(format!("{} is the worktree itself: name the checkout its changes go to", to.display())));
     }
@@ -91,6 +134,10 @@ pub(super) fn apply(wt: &Worktree, to: &Path) -> Result<Applied, Error> {
     let (files, links) = changed(wt, &snapshot)?;
     if !links.is_empty() {
         return Ok(Applied::Submodules(links));
+    }
+    let fenced: Vec<String> = files.iter().filter(|f| crate::tools::fenced_dir(Path::new(f.as_str())).is_some()).cloned().collect();
+    if by == Approval::Agent && !fenced.is_empty() {
+        return Ok(Applied::Protected(fenced));
     }
     if !files.is_empty() {
         let patch = Scratch(std::path::absolute(wt.repo_dir().join(format!(".patch-{}", random_hex()))).map_err(|e| Error::Failed(format!("the patch: {e}")))?);
@@ -111,8 +158,11 @@ pub(super) fn apply(wt: &Worktree, to: &Path) -> Result<Applied, Error> {
         }
     }
     let _ = read(git(&wt.main)?.args(["worktree", "unlock"]).arg(&wt.path), "worktree unlock");
-    remove(wt, true)?;
-    Ok(Applied::Applied(files))
+    // Applied already: a failure here must not read as nothing applied.
+    match remove(wt, true) {
+        Ok(()) => Ok(Applied::Applied(files)),
+        Err(e) => Ok(Applied::AppliedLeft(files, e.to_string())),
+    }
 }
 
 /// The top level of the working tree `dir` is in, canonical.
@@ -202,6 +252,7 @@ fn glob_escape(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::manage;
     use super::super::tests::{git_ok, has_git, repo, with_submodules};
     use super::super::{create, finish_into, prepare, Prepare};
     use super::*;
@@ -325,11 +376,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// A subagent's change inside `.krowk` or `.claude` is not applied: the
+    /// worktree is kept, nothing lands, and the note names the files and
+    /// the command a person runs. That person's `krowk worktrees apply`
+    /// applies them.
+    #[test]
+    fn wt13_protected_files_are_left_to_a_person() {
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let (base, main, root) = repo("wt13-protected");
+        let w = create(&main, &root, "s1").unwrap();
+        std::fs::create_dir_all(w.path.join(".krowk")).unwrap();
+        std::fs::create_dir_all(w.path.join("sub/.Claude")).unwrap();
+        std::fs::write(w.path.join(".krowk/config.json"), "{}\n").unwrap();
+        std::fs::write(w.path.join("sub/.Claude/settings.json"), "{}\n").unwrap();
+        std::fs::write(w.path.join("a.txt"), "child\n").unwrap();
+        let kept = finish_into(&w, &main).unwrap().unwrap();
+        assert_eq!(kept, Applied::Protected(vec![".krowk/config.json".into(), "sub/.Claude/settings.json".into()]));
+        assert_eq!(
+            kept.note(&w).unwrap(),
+            format!("Changes not applied (they touch protected files: .krowk/config.json, sub/.Claude/settings.json). Worktree: {}, branch {} — a person can apply them with `krowk worktrees apply {}`", w.path.display(), w.branch(), w.hex)
+        );
+        assert_eq!(std::fs::read_to_string(main.join("a.txt")).unwrap(), "a\n", "nothing applied");
+        assert!(!main.join(".krowk").exists() && w.path.is_dir());
+        let (_, applied) = manage::apply(&root, &w.hex, None).unwrap();
+        assert_eq!(applied, Applied::Applied(vec![".krowk/config.json".into(), "a.txt".into(), "sub/.Claude/settings.json".into()]));
+        assert_eq!(std::fs::read_to_string(main.join(".krowk/config.json")).unwrap(), "{}\n");
+        assert!(!w.path.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A checkout of another repository is refused, and nothing is changed.
+    #[test]
+    fn wt13_another_repositorys_checkout_is_refused() {
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let (base, main, root) = repo("wt13-elsewhere");
+        let (other_base, other, _) = repo("wt13-elsewhere-other");
+        let w = create(&main, &root, "s1").unwrap();
+        std::fs::write(w.path.join("a.txt"), "child\n").unwrap();
+        assert!(matches!(finish_into(&w, &other), Err(Error::OtherRepository(why)) if why.contains("another repository")));
+        assert_eq!(std::fs::read_to_string(other.join("a.txt")).unwrap(), "a\n");
+        assert!(w.path.is_dir());
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&other_base);
+    }
+
     #[test]
     fn wt13_a_note_names_twenty_files_then_how_many_more() {
         let files: Vec<String> = (0..23).map(|i| format!("f{i}")).collect();
         let n = named(&files);
         assert!(n.starts_with("f0, f1, ") && n.ends_with(", f19 and 3 more"), "{n}");
         assert_eq!(glob_escape("a[1]*?.txt"), r"a\[1\]\*\?.txt");
+        let w = Worktree { path: PathBuf::from("/w/0badf00d"), hex: "0badf00d".into(), base: String::new(), common: PathBuf::new(), main: PathBuf::new(), repo_id: String::new() };
+        let left = Applied::AppliedLeft(vec!["a.txt".into()], "busy".into()).note(&w).unwrap();
+        assert_eq!(left, "Changes applied to your working tree: a.txt. The worktree /w/0badf00d could not be removed afterwards (busy); `krowk worktrees remove 0badf00d --force` removes it — do not apply it again");
     }
 }
