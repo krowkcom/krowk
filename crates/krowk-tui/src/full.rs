@@ -150,10 +150,6 @@ impl<W: Write> Full<W> {
         width - 2 * self.inset(width)
     }
 
-    /// The column of a row at screen column `x`, past the padding.
-    fn col(&self, x: u16) -> u16 {
-        x.saturating_sub(self.inset(self.size.width))
-    }
 
     /// The row of `rows` at screen row `y`, if the conversation is there.
     fn at(&self, y: u16) -> Option<usize> {
@@ -165,7 +161,6 @@ impl<W: Write> Full<W> {
     pub fn press(&mut self, x: u16, y: u16) -> bool {
         let had = self.selection.take().is_some();
         let Some(row) = self.at(y) else { return had };
-        let x = self.col(x);
         self.selection = Some(Selection { from: (row, x), to: (row, x), held: true });
         true
     }
@@ -180,9 +175,8 @@ impl<W: Write> Full<W> {
             return false;
         }
         let row = self.top + usize::from(y).min(self.shown - 1);
-        let col = self.col(x);
         if let Some(s) = self.selection.as_mut() {
-            s.to = (row, col);
+            s.to = (row, x);
         }
         true
     }
@@ -212,8 +206,7 @@ impl<W: Write> Full<W> {
                 text.truncate(kept);
                 text.push('\n');
             }
-            let from = if row == r0 { c0 } else { 0 };
-            let to = if row == r1 { c1.saturating_add(1) } else { u16::MAX };
+            let (from, to) = span(row, ((r0, c0), (r1, c1)), self.inset(self.size.width), u16::MAX);
             text.push_str(&cells(&self.rows[row], from, to));
         }
         let kept = text.trim_end_matches(' ').len();
@@ -266,8 +259,7 @@ impl<W: Write> Full<W> {
                 if let Some(((r0, c0), (r1, c1))) = selected
                     && (r0..=r1).contains(&(start + y))
                 {
-                    let from = if start + y == r0 { c0.min(inner) } else { 0 };
-                    let to = if start + y == r1 { c1.saturating_add(1).min(inner) } else { inner };
+                    let (from, to) = span(start + y, ((r0, c0), (r1, c1)), pad, inner);
                     b.set_style(Rect::new(pad + from, y as u16, to.saturating_sub(from), 1), Style::new().add_modifier(Modifier::REVERSED));
                 }
             }
@@ -432,6 +424,17 @@ impl Selection {
     fn ordered(self) -> ((usize, u16), (usize, u16)) {
         if self.from <= self.to { (self.from, self.to) } else { (self.to, self.from) }
     }
+}
+
+/// The columns of `row` a selection from `(r0, c0)` to `(r1, c1)`, screen
+/// columns both, takes, past `pad` columns of padding and inside `inner`:
+/// from its first cell, a press on the padding starting at the row's start;
+/// up to and with its last, one let go on the padding taking nothing of
+/// the row.
+fn span(row: usize, ((r0, c0), (r1, c1)): ((usize, u16), (usize, u16)), pad: u16, inner: u16) -> (u16, u16) {
+    let from = if row == r0 { c0.saturating_sub(pad).min(inner) } else { 0 };
+    let to = if row == r1 { c1.saturating_add(1).saturating_sub(pad).min(inner) } else { inner };
+    (from, to.max(from))
 }
 
 /// The text of `row`'s cells from column `from` up to `to`, a link's target
@@ -680,6 +683,9 @@ mod tests {
         assert_eq!((s[0].as_str(), s[1].as_str()), ("  0123456789abcdef", "  g"), "wrapped inside the padding: {s:?}");
         assert!(t.press(0, 0), "a press on the padding starts at the row's first column");
         assert_eq!(t.release(5, 0).as_deref(), Some("0123"));
+        // Let go on the next row's padding: nothing of that row.
+        t.press(16, 0);
+        assert_eq!(t.release(1, 1).as_deref(), Some("ef"));
         // Too narrow to spare it, no padding.
         let size = Size { width: 12, height: 8 };
         t.resize(size).unwrap();
