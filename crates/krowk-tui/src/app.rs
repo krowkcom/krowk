@@ -28,8 +28,6 @@ use ratatui::text::{Line, Span};
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// Rows the prompt may take before it scrolls within itself.
-const MAX_INPUT_ROWS: usize = 8;
 /// The `/` menu shows this many entries at most, scrolling past them.
 const SLASH_ROWS: usize = 10;
 /// The help menu shows this many entries at most, scrolling past them: with
@@ -584,6 +582,8 @@ pub struct App {
     width: u16,
     /// The width there is, inside the padding.
     room: u16,
+    /// The terminal's rows: the prompt's box takes at most half of them.
+    screen_rows: u16,
     last_blank: bool,
     /// Whether what was pushed last is a tool call's block: the next call
     /// stacks under it, with no blank line between.
@@ -767,6 +767,10 @@ pub struct App {
     /// The screen saved in config.json differs from the one this session
     /// runs on: krowk opens on it the next time it starts.
     pub screen_later: bool,
+    /// The prompt's first row shown, when it has more than it shows: kept
+    /// from frame to frame, so the rows move only when the caret would
+    /// leave them.
+    input_top: std::cell::Cell<usize>,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
     /// A `/connect` or `/disconnect` running: its overlay's state.
@@ -783,6 +787,7 @@ impl App {
             pending: Vec::new(),
             width: settings.content_width.of(width.max(1)),
             room: width.max(1),
+            screen_rows: 24,
             last_blank: true,
             after_tool: false,
             held: Held::default(),
@@ -862,6 +867,7 @@ impl App {
             default_mode_overridden: None,
             setting_at: 0,
             screen_later: false,
+            input_top: std::cell::Cell::new(0),
             help_at: 0,
             flow: None,
             marks: BTreeMap::new(),
@@ -870,6 +876,20 @@ impl App {
 
     /// `w` is the room there is; what is laid out takes as much of it as
     /// the content width allows.
+    /// The terminal is `h` rows tall.
+    pub fn set_rows(&mut self, h: u16) {
+        self.screen_rows = h.max(1);
+        self.dirty = true;
+    }
+
+    /// The text rows the prompt shows before it scrolls within itself: its
+    /// box, the empty row of the band above and below with them, at most
+    /// half the terminal, as Grok Build's prompt is (Codex's takes up to two
+    /// thirds); always one.
+    fn input_rows(&self) -> usize {
+        (usize::from(self.screen_rows) / 2).saturating_sub(2).max(1)
+    }
+
     pub fn set_width(&mut self, w: u16) {
         self.room = w.max(1);
         self.width = self.settings.content_width.of(self.room);
@@ -2338,6 +2358,12 @@ impl App {
         flow_caret
     }
 
+    /// The columns the prompt's text is laid out in: the room less the
+    /// arrow before it.
+    pub fn input_width(&self) -> u16 {
+        self.room.max(1).saturating_sub(2).max(1)
+    }
+
     /// The prompt; where the caret goes.
     fn prompt_rows(&self, rows: &mut Vec<Line<'static>>, flow_caret: Option<(u16, u16)>) -> (u16, u16) {
         // The prompt on the band of what the person said, across the whole
@@ -2350,14 +2376,16 @@ impl App {
         // status line take all the room there is; the content width is for
         // what is above them.
         let inner = usize::from(self.room.max(1));
-        let (input, (crow, ccol)) = self.editor.layout(inner.saturating_sub(2).max(1) as u16);
-        let first = (crow as usize + 1).saturating_sub(MAX_INPUT_ROWS);
+        let (input, (crow, ccol)) = self.editor.layout(self.input_width());
+        let shown = self.input_rows();
+        let first = input_window(self.input_top.get(), crow as usize, input.len(), shown);
+        self.input_top.set(first);
         let band = look::said_band();
         let blank = Line::from(Span::styled(" ".repeat(inner), band)).style(band);
         rows.push(Line::default());
         rows.push(blank.clone());
         let top = rows.len() as u16;
-        for (i, row) in input.iter().enumerate().skip(first).take(MAX_INPUT_ROWS) {
+        for (i, row) in input.iter().enumerate().skip(first).take(shown) {
             let prefix = if i == 0 { Span::styled(look::ARROW, look::prompt().patch(band)) } else { Span::styled("  ", band) };
             let (text, style) = if i == 0 && self.editor.is_empty() {
                 (clip(if self.overlay == Overlay::Keys { "Type to filter" } else if self.running() { "Steer the running turn" } else { "Plan, search, build anything" }, inner.saturating_sub(2)), dim().patch(band))
@@ -3481,6 +3509,15 @@ fn widget_rows<W: ratatui::widgets::StatefulWidget>(widget: W, state: &mut W::St
         .collect()
 }
 
+/// The first of `len` prompt rows shown, `shown` of them at most, from
+/// `top` as it was: moved only as far as keeps the caret's row `crow` in
+/// view, and never past the last row's place.
+fn input_window(top: usize, crow: usize, len: usize, shown: usize) -> usize {
+    let shown = shown.max(1);
+    let top = top.min(len.saturating_sub(shown));
+    top.clamp((crow + 1).saturating_sub(shown), crow)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4073,6 +4110,35 @@ mod tests {
         let (rows, caret) = a.view(Instant::now());
         assert_eq!(rows.len(), 1 + HELP_ROWS + 5, "the help menu, a rule and as many entries as it shows, over the prompt");
         assert_eq!(caret, (2, 1 + HELP_ROWS as u16 + 2), "after the arrow");
+    }
+
+    #[test]
+    fn the_prompt_takes_half_the_screen_at_most_and_scrolls_only_as_the_caret_leaves_its_rows() {
+        assert_eq!(input_window(0, 9, 10, 4), 6, "at the end: the last four");
+        assert_eq!(input_window(6, 7, 10, 4), 6, "up within them: nothing moves");
+        assert_eq!(input_window(6, 5, 10, 4), 5, "up past the first: one row");
+        assert_eq!(input_window(5, 9, 10, 4), 6, "back down to the end");
+        assert_eq!(input_window(6, 1, 3, 4), 0, "the prompt got shorter: from its top");
+        let mut a = app();
+        a.set_rows(24);
+        assert_eq!(a.input_rows(), 10, "on 24 rows: its box, band and all, in twelve");
+        a.set_rows(50);
+        assert_eq!(a.input_rows(), 23);
+        a.set_rows(3);
+        assert_eq!(a.input_rows(), 1, "always a row to type in");
+        // Twelve rows: four of text.
+        a.set_rows(12);
+        a.set_width(40);
+        a.editor.insert_str(&(1..=10).map(|i| format!("row {i}")).collect::<Vec<_>>().join("\n"));
+        let shown = |a: &App| text(&a.view(Instant::now()).0).into_iter().filter(|r| r.contains("row ")).collect::<Vec<_>>();
+        assert_eq!(shown(&a).len(), 4, "{:?}", shown(&a));
+        assert!(shown(&a)[3].contains("row 10"));
+        a.editor.up();
+        a.editor.up();
+        assert!(shown(&a)[3].contains("row 10"), "the caret on row 8: the rows stay");
+        a.editor.up();
+        a.editor.up();
+        assert!(shown(&a)[0].contains("row 6") && shown(&a)[3].contains("row 9"), "{:?}", shown(&a));
     }
 
     #[test]

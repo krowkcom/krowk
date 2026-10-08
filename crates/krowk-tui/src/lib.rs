@@ -328,6 +328,7 @@ async fn session(opts: Options) -> Outcome {
     let sessions_dir = opts.host.sessions_dir.clone();
     let pricer: Pricer = opts.host.pricer.clone();
     let mut app = App::new(Editor::new(opts.history_file.clone()), inner(size.width), opts.settings.clone(), None, Some(pricer));
+    app.set_rows(size.height);
     app.log_dir = Some(sessions_dir.display().to_string());
     app.permission_mode = serde_json::to_value(opts.permission_mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     // Where the session runs: a resumed one where it started.
@@ -1760,6 +1761,7 @@ impl<'h> Ui<'h> {
             self.keys = Some(EventStream::new());
         }
         app.set_width(inner(w));
+        app.set_rows(h);
         Ok(())
     }
 
@@ -1809,6 +1811,7 @@ impl<'h> Ui<'h> {
         term.resume(Size { width: w.max(1), height: h.max(1) }, cursor_row)?;
         self.keys = Some(EventStream::new());
         app.set_width(inner(w));
+        app.set_rows(h);
         Ok(())
     }
 
@@ -2308,7 +2311,10 @@ impl<'h> Ui<'h> {
                     return Some(self.submit(app).await);
                 }
             }
-            _ => edit_key(&mut app.editor, k, ctrl, alt),
+            _ => {
+                let width = app.input_width();
+                edit_key(&mut app.editor, k, ctrl, alt, width);
+            }
         }
         None
     }
@@ -3011,7 +3017,7 @@ fn legacy(k: KeyEvent) -> KeyEvent {
 }
 
 /// A key that edits the prompt.
-fn edit_key(e: &mut Editor, k: KeyEvent, ctrl: bool, alt: bool) {
+fn edit_key(e: &mut Editor, k: KeyEvent, ctrl: bool, alt: bool, width: u16) {
     match k.code {
         KeyCode::Char('j') if ctrl => e.insert('\n'),
         KeyCode::Char('a') if ctrl => e.home(),
@@ -3033,8 +3039,8 @@ fn edit_key(e: &mut Editor, k: KeyEvent, ctrl: bool, alt: bool) {
         KeyCode::Right => e.right(),
         KeyCode::Home => e.home(),
         KeyCode::End => e.end(),
-        KeyCode::Up => e.up(),
-        KeyCode::Down => e.down(),
+        KeyCode::Up => e.up_in(width),
+        KeyCode::Down => e.down_in(width),
         KeyCode::Tab => e.insert_str("    "),
         KeyCode::Char(c) if !ctrl => e.insert(c),
         _ => {}

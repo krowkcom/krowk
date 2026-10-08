@@ -333,6 +333,66 @@ impl Editor {
         self.snap(false);
     }
 
+    /// Up in the prompt as it is shown at `width`: the row above, the
+    /// screen's wrapping one as much as a new line, at the same column or
+    /// the row's end; from the first row the previous prompt sent.
+    pub fn up_in(&mut self, width: u16) {
+        let (_, (row, col)) = self.layout(width);
+        if row == 0 {
+            self.history_back();
+            return;
+        }
+        self.cursor = self.offset_at(width, row - 1, col);
+        self.snap(false);
+    }
+
+    /// Down in the prompt as it is shown at `width`, as `up_in`; from the
+    /// last row the next prompt sent.
+    pub fn down_in(&mut self, width: u16) {
+        let (rows, (row, col)) = self.layout(width);
+        if usize::from(row) + 1 >= rows.len() {
+            self.history_forward();
+            return;
+        }
+        self.cursor = self.offset_at(width, row + 1, col);
+        self.snap(false);
+    }
+
+    /// Where the caret goes for column `col` of row `row` as `layout` lays
+    /// the text out at `width`: the last place on that row at or before
+    /// the column.
+    fn offset_at(&self, width: u16, row: u16, col: u16) -> usize {
+        let width = usize::from(width.max(2));
+        let (mut r, mut c, mut at) = (0u16, 0usize, 0usize);
+        let mut best = None;
+        for ch in self.text.chars() {
+            let w = ch.width().unwrap_or(0);
+            if ch != '\n' && c + w > width {
+                r += 1;
+                c = 0;
+            }
+            if r == row && c <= usize::from(col) {
+                best = Some(at);
+            }
+            if r > row {
+                break;
+            }
+            at += ch.len_utf8();
+            if ch == '\n' {
+                r += 1;
+                c = 0;
+            } else {
+                c += w;
+            }
+        }
+        // The row's end: past its last character, unless the screen wrapped
+        // it there, where the caret would show on the next row.
+        if r == row && c <= usize::from(col) {
+            best = Some(at);
+        }
+        best.unwrap_or(at)
+    }
+
     fn history_back(&mut self) {
         let next = self.browsing.map_or(0, |i| i + 1);
         if next >= self.history.len() {
@@ -464,6 +524,33 @@ mod tests {
         let mut e = Editor::new(None);
         e.insert_str(s);
         e
+    }
+
+    #[test]
+    fn up_and_down_go_by_the_rows_shown_wrapped_ones_too() {
+        // "0123456789ab" at 5 columns: 01234 / 56789 / ab, after a new line.
+        let mut e = typed("x\n0123456789ab");
+        assert_eq!(e.layout(5).1, (3, 2));
+        e.up_in(5);
+        assert_eq!(e.layout(5).1, (2, 2), "the row the screen wrapped, not the line before");
+        e.up_in(5);
+        assert_eq!(e.layout(5).1, (1, 2));
+        e.up_in(5);
+        assert_eq!(e.layout(5).1, (0, 1), "a shorter row: its end");
+        e.down_in(5);
+        e.down_in(5);
+        e.down_in(5);
+        assert_eq!(e.layout(5).1, (3, 1));
+        // From the first row, the history; with none, nothing moves.
+        let mut e = typed("0123456789");
+        e.home();
+        e.up_in(5);
+        assert_eq!(e.layout(5).1, (0, 0));
+        // A full row's end is where the screen wraps it: the next row's start.
+        let mut e = typed("0123456789");
+        assert_eq!(e.layout(5).1, (2, 0));
+        e.up_in(5);
+        assert_eq!(e.layout(5).1, (1, 0));
     }
 
     #[test]

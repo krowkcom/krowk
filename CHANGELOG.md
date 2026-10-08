@@ -24,6 +24,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `/settings`, or set `"tui": {"screen": "inline"}` in
   `~/.krowk/config.json` (`"fullscreen"` forces fullscreen, and `"auto"` is
   the default). The choice applies the next time krowk starts.
+- **The prompt grows to half the terminal, then scrolls.** It used to stop
+  at eight rows whatever the terminal's size. Now it takes up to half the
+  terminal's height, padding included, as Grok Build's does, and scrolls
+  within itself past that, moving only when the caret would leave the rows
+  shown. ↑ and ↓ move through the rows as shown, so a long paragraph the
+  terminal wraps is walked row by row; from the first or last row they
+  still bring back earlier prompts.
 - **An upgrade reaches the host daemon by itself.** The daemon that runs
   your sessions used to stay on the old version until you ran `krowk host
   stop`. Now a newer `krowk` replaces an older daemon when it starts, or
