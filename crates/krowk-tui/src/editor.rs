@@ -359,13 +359,18 @@ impl Editor {
     }
 
     /// Where the caret goes for column `col` of row `row` as `layout` lays
-    /// the text out at `width`: the last place on that row at or before
-    /// the column.
+    /// the text out at `width`, the caret where it is now: the last place
+    /// on that row at or before the column.
     fn offset_at(&self, width: u16, row: u16, col: u16) -> usize {
         let width = usize::from(width.max(2));
         let (mut r, mut c, mut at) = (0u16, 0usize, 0usize);
         let mut best = None;
         for ch in self.text.chars() {
+            // The caret at a full row's end has a row of its own (`layout`).
+            if at == self.cursor && c >= width {
+                r += 1;
+                c = 0;
+            }
             let w = ch.width().unwrap_or(0);
             if ch != '\n' && c + w > width {
                 r += 1;
@@ -387,6 +392,10 @@ impl Editor {
         }
         // The row's end: past its last character, unless the screen wrapped
         // it there, where the caret would show on the next row.
+        if at == self.cursor && c >= width {
+            r += 1;
+            c = 0;
+        }
         if r == row && c <= usize::from(col) {
             best = Some(at);
         }
@@ -546,6 +555,17 @@ mod tests {
         e.home();
         e.up_in(5);
         assert_eq!(e.layout(5).1, (0, 0));
+        // The caret at a full row's end, on a row of its own: down goes to
+        // the line under it, not past it.
+        let mut e = typed("01234\nab\ncd");
+        e.up();
+        e.up();
+        e.end();
+        assert_eq!(e.layout(5).1, (1, 0));
+        e.down_in(5);
+        // Off the full row's end, that row of its own is gone: "ab" is row 1.
+        let (rows, caret) = e.layout(5);
+        assert_eq!((rows[1].as_str(), caret), ("ab", (1, 0)));
         // A full row's end is where the screen wraps it: the next row's start.
         let mut e = typed("0123456789");
         assert_eq!(e.layout(5).1, (2, 0));

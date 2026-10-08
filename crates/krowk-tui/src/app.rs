@@ -4139,6 +4139,16 @@ mod tests {
         a.editor.up();
         a.editor.up();
         assert!(shown(&a)[0].contains("row 6") && shown(&a)[3].contains("row 9"), "{:?}", shown(&a));
+        // A turn running, its spinner and a streamed answer over a prompt as
+        // tall as it gets: the live region is taller than the screen, and
+        // the loop keeps its bottom, the prompt and the status line
+        // (`lib::draw`), so its last rows are those.
+        a.set_rows(24);
+        a.editor = Editor::new(None);
+        a.editor.insert_str(&(1..=30).map(|i| format!("row {i}")).collect::<Vec<_>>().join("\n"));
+        let rows = text(&a.view(Instant::now()).0);
+        assert_eq!(rows.iter().filter(|r| r.contains("row ")).count(), 10);
+        assert!(rows.len() <= 24, "the prompt and the status line fit 24 rows with room to spare: {}", rows.len());
     }
 
     #[test]
