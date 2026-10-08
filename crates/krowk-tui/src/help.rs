@@ -96,7 +96,7 @@ pub fn canonical(typed: &str) -> String {
 pub const COMMANDS: &[(&str, &str)] = &[
     ("model", "Switch model or instance"),
     ("mode", "Switch permission mode — default, acceptEdits, plan, bypassPermissions, unhinged"),
-    ("settings", "Settings saved to config.json — the default permission mode and content width"),
+    ("settings", "Settings saved to config.json — the default permission mode, content width and screen"),
     ("connect", "Connect a provider — a subscription or an API key — or rename an account"),
     ("disconnect", "Sign an instance out"),
     ("new", "Start a new session — the one shown can be continued with /sessions"),
