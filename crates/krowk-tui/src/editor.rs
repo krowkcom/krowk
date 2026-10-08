@@ -343,7 +343,9 @@ impl Editor {
             return;
         }
         self.cursor = self.offset_at(width, row - 1, col);
-        self.snap(false);
+        // Into an image's token the screen wrapped: to its start, which is
+        // up, never its end, which may be back on the row it left.
+        self.snap(true);
     }
 
     /// Down in the prompt as it is shown at `width`, as `up_in`; from the
@@ -566,6 +568,13 @@ mod tests {
         // Off the full row's end, that row of its own is gone: "ab" is row 1.
         let (rows, caret) = e.layout(5);
         assert_eq!((rows[1].as_str(), caret), ("ab", (1, 0)));
+        // Up into an image's token that the screen wrapped: to its start,
+        // on the row above, not back to where it was.
+        let mut e = typed("abcdefg[Image #1]xyz");
+        e.left();
+        assert_eq!(e.layout(10).1, (1, 9));
+        e.up_in(10);
+        assert_eq!(e.layout(10).1, (0, 7));
         // A full row's end is where the screen wraps it: the next row's start.
         let mut e = typed("0123456789");
         assert_eq!(e.layout(5).1, (2, 0));
