@@ -45,7 +45,8 @@
 //! and →, `permissions.defaultMode` — `default` or `unhinged`, which the next
 //! session starts in (`--permission-mode` and a trusted repository's own
 //! `defaultMode` still come first) — `tui.contentWidth`, which applies at
-//! once, and `tui.screen`, which the next session opens on.
+//! once, and `tui.screen`, which krowk opens on the next time it starts
+//! (`/new` keeps the terminal it has).
 //!
 //! The overlays are toggled from the keyboard rather than configured: `?` on
 //! an empty prompt for the keys, Ctrl-O for the session's details, Ctrl-T

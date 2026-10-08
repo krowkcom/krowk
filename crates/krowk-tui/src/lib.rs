@@ -1372,7 +1372,7 @@ impl<'h> Ui<'h> {
     /// The chosen setting one along its values, saved at once; at the end,
     /// nothing. The default permission mode leaves the session in the mode
     /// it runs in — `/mode` changes that — the content width applies from
-    /// the next frame, and the screen is the next session's.
+    /// the next frame, and the screen is krowk's next start's.
     fn step_setting(&mut self, app: &mut App, by: isize) {
         let Some(paths) = &self.paths else { return };
         let width = if app.setting_at == 1 { app.content_width().step(by) } else { None };

@@ -765,7 +765,7 @@ pub struct App {
     /// content width, 2 the screen.
     pub setting_at: usize,
     /// The screen saved in config.json differs from the one this session
-    /// runs on: it is the next session's.
+    /// runs on: krowk opens on it the next time it starts.
     pub screen_later: bool,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
@@ -2720,7 +2720,7 @@ impl App {
             Screen::Fullscreen => "the prompt stays at the bottom while the conversation scrolls",
             Screen::Inline => "under the shell's output, the conversation in the terminal's scrollback",
         };
-        let later = if self.screen_later { " · from the next session" } else { "" };
+        let later = if self.screen_later { " · when krowk next starts" } else { "" };
         let rows = [
             Choice { name: "Default permission mode".into(), value: Span::raw(mode), says: says.into(), warning },
             Choice { name: "Content width".into(), value: Span::raw(cw.name()), says: cw_says, warning: None },
@@ -4641,7 +4641,7 @@ mod tests {
         a.setting_at = 2;
         a.screen_later = true;
         let rows = text(&a.view(Instant::now()).0).join("\n");
-        assert!(rows.contains("❯ Screen") && rows.contains("‹ auto ›") && rows.contains("inline inside Zellij") && rows.contains("the next session"), "{rows}");
+        assert!(rows.contains("❯ Screen") && rows.contains("‹ auto ›") && rows.contains("inline inside Zellij") && rows.contains("next starts"), "{rows}");
         a.open_mode_picker();
         let rows = text(&a.view(Instant::now()).0);
         assert!(above(&rows).iter().all(|r| r.width() <= 80), "{rows:?}");
