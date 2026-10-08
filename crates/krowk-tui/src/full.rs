@@ -182,7 +182,8 @@ impl<W: Write> Full<W> {
     }
 
     /// The button let go at (`x`, `y`): what is selected, as text to copy;
-    /// none for a click that selected nothing, which leaves no selection.
+    /// none for a click, or a drag over nothing but padding, which leaves no
+    /// selection and the clipboard as it was.
     pub fn release(&mut self, x: u16, y: u16) -> Option<String> {
         self.drag(x, y);
         let s = self.selection.as_mut().filter(|s| s.held)?;
@@ -192,7 +193,12 @@ impl<W: Write> Full<W> {
             return None;
         }
         let s = *s;
-        Some(self.selected_text(s))
+        let text = self.selected_text(s);
+        if text.is_empty() {
+            self.selection = None;
+            return None;
+        }
+        Some(text)
     }
 
     /// The text from `s`'s first cell to its last, a row the screen wrapped
@@ -683,6 +689,10 @@ mod tests {
         assert_eq!((s[0].as_str(), s[1].as_str()), ("  0123456789abcdef", "  g"), "wrapped inside the padding: {s:?}");
         assert!(t.press(0, 0), "a press on the padding starts at the row's first column");
         assert_eq!(t.release(5, 0).as_deref(), Some("0123"));
+        // A drag within the padding selects nothing, and copies nothing.
+        t.press(0, 0);
+        assert_eq!(t.release(1, 0), None);
+        assert_eq!(t.selection, None);
         // Let go on the next row's padding: nothing of that row.
         t.press(16, 0);
         assert_eq!(t.release(1, 1).as_deref(), Some("ef"));
