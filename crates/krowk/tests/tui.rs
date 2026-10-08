@@ -2116,7 +2116,7 @@ fn fullscreen_a_resize_rewraps_the_conversation_and_keeps_the_footer_at_the_bott
     let s = tm.wait_still(|s| s.lines().count() <= 20 && s.contains("line 00040"), Duration::from_secs(10)).unwrap_or_else(|| panic!("{}", tm.screen()));
     let rows: Vec<&str> = s.trim_end_matches('\n').lines().collect();
     assert!(rows.iter().all(|r| unicode_width(r) <= 40), "{s}");
-    assert!(rows.iter().any(|r| *r == "  line 00040: the quick brown fox jump") && rows.iter().any(|r| *r == "  s over the lazy dog again"), "wrapped at 36, inside two columns of padding: {s}");
+    assert!(rows.contains(&"  line 00040: the quick brown fox jump") && rows.contains(&"  s over the lazy dog again"), "wrapped at 36, inside two columns of padding: {s}");
     assert!(bottom(&s, 3).join("\n").contains("help"), "the status line on the new last rows: {s}");
 }
 
