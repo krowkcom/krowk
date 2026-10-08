@@ -16,8 +16,12 @@
 //!   Build's fullscreen does.
 //! - **One write per frame, inside synchronized output**, as inline.
 //!   Moves are absolute: nothing is in a scrollback a resize could move.
-//! - **Wrapped here.** A line wider than the screen is wrapped a grapheme at
-//!   a time as the terminal would, and wrapped again on a resize.
+//! - **Wrapped here**, inside the same columns of padding as the live
+//!   region: a line wider than that is wrapped a grapheme at a time as the
+//!   terminal would, and wrapped again on a resize. Inline's scrollback
+//!   starts at the first column so the terminal's own selection copies
+//!   nothing before it; here the selection is krowk's, and the padding
+//!   copies as nothing.
 //! - **Left to the shell's screen.** On the way out the alternate screen is
 //!   left and the conversation printed onto the screen the shell had, the
 //!   way inline mode leaves it in scrollback. A job stop or a vendor's login
@@ -135,6 +139,18 @@ impl<W: Write> Full<W> {
         self.scroll = 0;
     }
 
+    /// The columns kept clear on each side at `width`: none on a screen too
+    /// narrow to spare them.
+    fn inset(&self, width: u16) -> u16 {
+        if width > 2 * self.pad + 10 { self.pad } else { 0 }
+    }
+
+    /// The columns the conversation is wrapped to at `width`.
+    fn room(&self, width: u16) -> u16 {
+        width - 2 * self.inset(width)
+    }
+
+
     /// The row of `rows` at screen row `y`, if the conversation is there.
     fn at(&self, y: u16) -> Option<usize> {
         (usize::from(y) < self.shown).then(|| self.top + usize::from(y))
@@ -166,7 +182,8 @@ impl<W: Write> Full<W> {
     }
 
     /// The button let go at (`x`, `y`): what is selected, as text to copy;
-    /// none for a click that selected nothing, which leaves no selection.
+    /// none for a click, or a drag over nothing but padding, which leaves no
+    /// selection and the clipboard as it was.
     pub fn release(&mut self, x: u16, y: u16) -> Option<String> {
         self.drag(x, y);
         let s = self.selection.as_mut().filter(|s| s.held)?;
@@ -176,7 +193,12 @@ impl<W: Write> Full<W> {
             return None;
         }
         let s = *s;
-        Some(self.selected_text(s))
+        let text = self.selected_text(s);
+        if text.is_empty() {
+            self.selection = None;
+            return None;
+        }
+        Some(text)
     }
 
     /// The text from `s`'s first cell to its last, a row the screen wrapped
@@ -190,8 +212,7 @@ impl<W: Write> Full<W> {
                 text.truncate(kept);
                 text.push('\n');
             }
-            let from = if row == r0 { c0 } else { 0 };
-            let to = if row == r1 { c1.saturating_add(1) } else { u16::MAX };
+            let (from, to) = span(row, ((r0, c0), (r1, c1)), self.inset(self.size.width), u16::MAX);
             text.push_str(&cells(&self.rows[row], from, to));
         }
         let kept = text.trim_end_matches(' ').len();
@@ -231,7 +252,7 @@ impl<W: Write> Full<W> {
         self.place();
         let (start, end) = (self.top, self.top + self.shown);
         let selected = self.selection.map(Selection::ordered);
-        let pad = if width > 2 * self.pad + 10 { self.pad } else { 0 };
+        let pad = self.inset(width);
         let inner = width - 2 * pad;
         let below = (self.scroll > 0 && view > 0).then(|| Line::from(Span::styled(format!("↓ {} more below · PgDn", self.scroll), crate::look::dim())));
         let at = (pad + caret.0.min(inner.saturating_sub(1)), self.view + caret.1.min(live.saturating_sub(1)));
@@ -240,13 +261,12 @@ impl<W: Write> Full<W> {
         let drawn = self.terminal.draw(|f| {
             let b = f.buffer_mut();
             for (y, row) in conversation.iter().enumerate() {
-                band(b, row, y as u16, 0, width);
+                band(b, row, y as u16, pad, width);
                 if let Some(((r0, c0), (r1, c1))) = selected
                     && (r0..=r1).contains(&(start + y))
                 {
-                    let from = if start + y == r0 { c0.min(width) } else { 0 };
-                    let to = if start + y == r1 { c1.saturating_add(1).min(width) } else { width };
-                    b.set_style(Rect::new(from, y as u16, to.saturating_sub(from), 1), Style::new().add_modifier(Modifier::REVERSED));
+                    let (from, to) = span(start + y, ((r0, c0), (r1, c1)), pad, inner);
+                    b.set_style(Rect::new(pad + from, y as u16, to.saturating_sub(from), 1), Style::new().add_modifier(Modifier::REVERSED));
                 }
             }
             if let Some(line) = &below {
@@ -275,7 +295,7 @@ impl<W: Write> Full<W> {
     /// up stays on what it shows.
     fn push(&mut self, line: &Line<'static>) {
         let line = clean(line);
-        let rows = wrap(&line, self.size.width);
+        let rows = wrap(&line, self.room(self.size.width));
         if self.scroll > 0 {
             self.scroll += rows.len();
         }
@@ -296,8 +316,9 @@ impl<W: Write> Full<W> {
             // Rows are numbered afresh: what was selected is not there.
             self.selection = None;
             (self.rows, self.joined) = (Vec::new(), Vec::new());
+            let room = self.room(size.width);
             for line in &self.lines {
-                let rows = wrap(line, size.width);
+                let rows = wrap(line, room);
                 self.joined.extend((0..rows.len()).map(|i| i > 0));
                 self.rows.extend(rows);
             }
@@ -411,6 +432,17 @@ impl Selection {
     }
 }
 
+/// The columns of `row` a selection from `(r0, c0)` to `(r1, c1)`, screen
+/// columns both, takes, past `pad` columns of padding and inside `inner`:
+/// from its first cell, a press on the padding starting at the row's start;
+/// up to and with its last, one let go on the padding taking nothing of
+/// the row.
+fn span(row: usize, ((r0, c0), (r1, c1)): ((usize, u16), (usize, u16)), pad: u16, inner: u16) -> (u16, u16) {
+    let from = if row == r0 { c0.saturating_sub(pad).min(inner) } else { 0 };
+    let to = if row == r1 { c1.saturating_add(1).saturating_sub(pad).min(inner) } else { inner };
+    (from, to.max(from))
+}
+
 /// The text of `row`'s cells from column `from` up to `to`, a link's target
 /// left out: a grapheme is in it when it starts there.
 fn cells(row: &Line<'_>, from: u16, to: u16) -> String {
@@ -428,13 +460,13 @@ fn cells(row: &Line<'_>, from: u16, to: u16) -> String {
     text
 }
 
-/// A conversation row at `y`: a band (`Line::style`'s background) across
-/// the whole width, as inline mode erases it to the edge.
-fn band(b: &mut ratatui::buffer::Buffer, row: &Line<'_>, y: u16, x: u16, width: u16) {
+/// A conversation row at `y`, from column `pad`: a band (`Line::style`'s
+/// background) across the whole width, padding and all, as the prompt's.
+fn band(b: &mut ratatui::buffer::Buffer, row: &Line<'_>, y: u16, pad: u16, width: u16) {
     if row.style.bg.is_some() {
         b.set_style(Rect::new(0, y, width, 1), row.style);
     }
-    b.set_line(x, y, row, width);
+    b.set_line(pad, y, row, width - 2 * pad);
 }
 
 /// `line` with no control character in it — model output, tool names and
@@ -645,6 +677,30 @@ mod tests {
         t.frame(&[], &footer(), (4, 0)).unwrap();
         assert!(t.press(0, 0));
         assert_eq!(t.release(2, 7).as_deref().map(|s| s.lines().last().unwrap().to_string()), Some("lin".into()));
+    }
+
+    #[test]
+    fn the_conversation_is_padded_as_the_prompt_is_and_selects_past_the_padding() {
+        let size = Size { width: 20, height: 8 };
+        let mut t = Full::new(Vec::new(), size).unwrap();
+        t.pad = 2;
+        t.frame(&[Line::from("0123456789abcdefg")], &footer(), (4, 0)).unwrap();
+        let s = screen(&t.out, size);
+        assert_eq!((s[0].as_str(), s[1].as_str()), ("  0123456789abcdef", "  g"), "wrapped inside the padding: {s:?}");
+        assert!(t.press(0, 0), "a press on the padding starts at the row's first column");
+        assert_eq!(t.release(5, 0).as_deref(), Some("0123"));
+        // A drag within the padding selects nothing, and copies nothing.
+        t.press(0, 0);
+        assert_eq!(t.release(1, 0), None);
+        assert_eq!(t.selection, None);
+        // Let go on the next row's padding: nothing of that row.
+        t.press(16, 0);
+        assert_eq!(t.release(1, 1).as_deref(), Some("ef"));
+        // Too narrow to spare it, no padding.
+        let size = Size { width: 12, height: 8 };
+        t.resize(size).unwrap();
+        t.frame(&[], &footer(), (4, 0)).unwrap();
+        assert_eq!(screen(&t.out, size)[0], "0123456789ab");
     }
 
     #[test]

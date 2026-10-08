@@ -328,6 +328,7 @@ async fn session(opts: Options) -> Outcome {
     let sessions_dir = opts.host.sessions_dir.clone();
     let pricer: Pricer = opts.host.pricer.clone();
     let mut app = App::new(Editor::new(opts.history_file.clone()), inner(size.width), opts.settings.clone(), None, Some(pricer));
+    app.set_rows(size.height);
     app.log_dir = Some(sessions_dir.display().to_string());
     app.permission_mode = serde_json::to_value(opts.permission_mode).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     // Where the session runs: a resumed one where it started.
@@ -468,6 +469,7 @@ async fn session(opts: Options) -> Outcome {
         trust_shown: None,
         settings_shown: None,
         trust: opts.trust,
+        fullscreen,
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
@@ -576,6 +578,9 @@ struct Ui<'h> {
     settings_shown: Option<std::time::Instant>,
     /// The trust question, for a route that lands on a backend.
     trust: Option<TrustAsk>,
+    /// This session runs fullscreen: what `/settings` says a saved screen
+    /// changes, from the next session.
+    fullscreen: bool,
     /// The effort as the header shows it.
     effort_label: Option<String>,
     /// Where the session runs, where a vendor is asked once trusted.
@@ -717,6 +722,10 @@ fn cursor_row() -> Option<u16> {
     let _ = crossterm::event::poll(Duration::ZERO);
     (0..2).find_map(|_| crossterm::cursor::position().ok()).map(|(_, y)| y)
 }
+
+/// The rows `/settings` has: the default permission mode, the content
+/// width and the screen.
+const SETTINGS: usize = 3;
 
 /// Columns of padding on each side of everything the TUI draws.
 const PAD: u16 = 2;
@@ -1356,18 +1365,21 @@ impl<'h> Ui<'h> {
     fn show_settings(&self, app: &mut App, raw: &serde_json::Map<String, serde_json::Value>) {
         app.default_mode = settings::default_mode(raw);
         app.default_mode_overridden = settings::overridden(&self.permissions_cfg, raw, &self.started_in).map(|m| (m, settings::claude_file(&self.permissions_cfg)));
+        app.settings.screen = settings::from_config(&serde_json::Value::Object(raw.clone())).0.screen;
+        app.screen_later = app.settings.screen.fullscreen(&|k| std::env::var(k).unwrap_or_default()) != self.fullscreen;
         app.touch();
     }
 
     /// The chosen setting one along its values, saved at once; at the end,
     /// nothing. The default permission mode leaves the session in the mode
-    /// it runs in — `/mode` changes that — and the content width applies
-    /// from the next frame.
+    /// it runs in — `/mode` changes that — the content width applies from
+    /// the next frame, and the screen is krowk's next start's.
     fn step_setting(&mut self, app: &mut App, by: isize) {
         let Some(paths) = &self.paths else { return };
         let width = if app.setting_at == 1 { app.content_width().step(by) } else { None };
         let mode = if app.setting_at == 0 { settings::step_default(app.default_mode.as_deref(), by) } else { None };
-        if width.is_none() && mode.is_none() {
+        let screen = if app.setting_at == 2 { app.settings.screen.step(by) } else { None };
+        if width.is_none() && mode.is_none() && screen.is_none() {
             return;
         }
         // A `/connect` writes config.json too, from its own thread: one at
@@ -1376,9 +1388,10 @@ impl<'h> Ui<'h> {
             app.flash = Some("a /connect is running — change settings once it is done".into());
             return;
         }
-        let saved = match (mode, width) {
-            (Some(m), _) => settings::set_default_mode(&paths.config, m),
-            (_, Some(w)) => settings::set_content_width(&paths.config, w).inspect(|_| app.set_content_width(w)),
+        let saved = match (mode, width, screen) {
+            (Some(m), _, _) => settings::set_default_mode(&paths.config, m),
+            (_, Some(w), _) => settings::set_content_width(&paths.config, w).inspect(|_| app.set_content_width(w)),
+            (_, _, Some(s)) => settings::set_screen(&paths.config, s),
             _ => return,
         };
         match saved {
@@ -1748,6 +1761,7 @@ impl<'h> Ui<'h> {
             self.keys = Some(EventStream::new());
         }
         app.set_width(inner(w));
+        app.set_rows(h);
         Ok(())
     }
 
@@ -1797,6 +1811,7 @@ impl<'h> Ui<'h> {
         term.resume(Size { width: w.max(1), height: h.max(1) }, cursor_row)?;
         self.keys = Some(EventStream::new());
         app.set_width(inner(w));
+        app.set_rows(h);
         Ok(())
     }
 
@@ -2000,8 +2015,8 @@ impl<'h> Ui<'h> {
             KeyCode::Esc => app.overlay = Overlay::None,
             KeyCode::Char('c') if ctrl => app.overlay = Overlay::None,
             KeyCode::Enter if settled && !ctrl && !alt => app.overlay = Overlay::None,
-            KeyCode::Up if !ctrl && !alt => app.setting_at = 0,
-            KeyCode::Down if !ctrl && !alt => app.setting_at = 1,
+            KeyCode::Up if !ctrl && !alt => app.setting_at = app.setting_at.saturating_sub(1),
+            KeyCode::Down if !ctrl && !alt => app.setting_at = (app.setting_at + 1).min(SETTINGS - 1),
             KeyCode::Left | KeyCode::Right if settled && !ctrl && !alt => self.step_setting(app, if k.code == KeyCode::Left { -1 } else { 1 }),
             _ => {}
         }
@@ -2296,7 +2311,10 @@ impl<'h> Ui<'h> {
                     return Some(self.submit(app).await);
                 }
             }
-            _ => edit_key(&mut app.editor, k, ctrl, alt),
+            _ => {
+                let width = app.input_width();
+                edit_key(&mut app.editor, k, ctrl, alt, width);
+            }
         }
         None
     }
@@ -2999,7 +3017,7 @@ fn legacy(k: KeyEvent) -> KeyEvent {
 }
 
 /// A key that edits the prompt.
-fn edit_key(e: &mut Editor, k: KeyEvent, ctrl: bool, alt: bool) {
+fn edit_key(e: &mut Editor, k: KeyEvent, ctrl: bool, alt: bool, width: u16) {
     match k.code {
         KeyCode::Char('j') if ctrl => e.insert('\n'),
         KeyCode::Char('a') if ctrl => e.home(),
@@ -3021,8 +3039,8 @@ fn edit_key(e: &mut Editor, k: KeyEvent, ctrl: bool, alt: bool) {
         KeyCode::Right => e.right(),
         KeyCode::Home => e.home(),
         KeyCode::End => e.end(),
-        KeyCode::Up => e.up(),
-        KeyCode::Down => e.down(),
+        KeyCode::Up => e.up_in(width),
+        KeyCode::Down => e.down_in(width),
         KeyCode::Tab => e.insert_str("    "),
         KeyCode::Char(c) if !ctrl => e.insert(c),
         _ => {}

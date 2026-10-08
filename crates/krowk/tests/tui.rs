@@ -479,7 +479,8 @@ fn new_after_a_resume_at_start_keeps_to_the_directory() {
 
 /// `/config` (or `/settings`) cycles the default permission mode and saves
 /// it to config.json, and the next session starts in it; ↓ chooses the
-/// content width, saved the same way.
+/// content width, saved the same way, and ↓ again the screen, which is
+/// the next session's.
 #[test]
 fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     let m = mock::serve(mock::readme_script);
@@ -513,6 +514,23 @@ fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     }
     assert_eq!(width().as_deref(), Some("prose-wide"), "{:?}", t.text());
     assert_eq!(saved().as_deref(), Some("unhinged"), "the mode stays as chosen");
+    // ↓ chooses the screen, held at the last row: ← from inline, which
+    // this session runs on, is fullscreen, krowk's next start's; → is inline
+    // again.
+    let screen = || std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["tui"]["screen"].as_str().map(String::from));
+    t.write(b"\x1b[B\x1b[B\x1b[D");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while screen().as_deref() != Some("fullscreen") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(screen().as_deref(), Some("fullscreen"), "{:?}", t.text());
+    t.write(b"\x1b[C");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while screen().as_deref() != Some("inline") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(screen().as_deref(), Some("inline"), "{:?}", t.text());
+    assert_eq!(width().as_deref(), Some("prose-wide"), "the width stays as chosen");
     t.write(b"\x1b");
     std::thread::sleep(Duration::from_millis(100));
     t.write(b"\x04\x04");
@@ -2057,15 +2075,16 @@ fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conve
     tm.keys(&["BSpace", "Enter"]);
     assert!(tm.wait_gone("more below", Duration::from_secs(5)).is_some(), "sending stayed scrolled up:\n{}", tm.screen());
     assert!(tm.wait_still(|s| s.matches("tokens").count() >= 1 && !s.contains("to interrupt"), Duration::from_secs(60)).is_some(), "{}", tm.screen());
-    // A drag from the start of one line to the eleventh column of the next
-    // (SGR's columns and rows count from 1) copies them, through OSC 52,
-    // which tmux keeps as a paste buffer.
+    // A drag from the padding before one line to the eleventh column of
+    // the next, two columns of padding in (SGR's columns and rows count
+    // from 1), copies them, through OSC 52, which tmux keeps as a paste
+    // buffer.
     tm.tmux(&["set-option", "-g", "set-clipboard", "on"]);
-    let y = tm.screen().lines().position(|l| l.starts_with("line 00110")).expect("line 00110 on screen") + 1;
+    let y = tm.screen().lines().position(|l| l.starts_with("  line 00110")).expect("line 00110 on screen") + 1;
     mouse(&tm, &format!("\x1b[<0;1;{y}M"));
     mouse(&tm, &format!("\x1b[<32;6;{y}M"));
-    mouse(&tm, &format!("\x1b[<32;11;{}M", y + 1));
-    mouse(&tm, &format!("\x1b[<0;11;{}m", y + 1));
+    mouse(&tm, &format!("\x1b[<32;13;{}M", y + 1));
+    mouse(&tm, &format!("\x1b[<0;13;{}m", y + 1));
     assert!(tm.wait_for("copied the selection (2 lines)", Duration::from_secs(5)).is_some(), "{}", tm.screen());
     assert_eq!(tm.tmux(&["show-buffer"]), "line 00110: the quick brown fox jumps over the lazy dog again\nline 00111:");
     // The pane kept once krowk is gone, to read what it left.
@@ -2082,8 +2101,8 @@ fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conve
     assert_eq!(history.matches("to interrupt").count() + history.matches("more below").count(), 0, "no live row left behind:\n{history}");
 }
 
-/// Fullscreen on a narrower window: the conversation is wrapped again, and
-/// the footer is on the new bottom rows.
+/// Fullscreen on a narrower window: the conversation is wrapped again,
+/// inside its padding, and the footer is on the new bottom rows.
 #[test]
 fn fullscreen_a_resize_rewraps_the_conversation_and_keeps_the_footer_at_the_bottom() {
     let m = streamed(40, Duration::from_micros(100));
@@ -2097,7 +2116,7 @@ fn fullscreen_a_resize_rewraps_the_conversation_and_keeps_the_footer_at_the_bott
     let s = tm.wait_still(|s| s.lines().count() <= 20 && s.contains("line 00040"), Duration::from_secs(10)).unwrap_or_else(|| panic!("{}", tm.screen()));
     let rows: Vec<&str> = s.trim_end_matches('\n').lines().collect();
     assert!(rows.iter().all(|r| unicode_width(r) <= 40), "{s}");
-    assert!(rows.iter().any(|r| r.starts_with("line 00040: the quick brown fox")) && rows.iter().any(|r| r.starts_with("er the lazy dog again")), "wrapped at 40: {s}");
+    assert!(rows.contains(&"  line 00040: the quick brown fox jump") && rows.contains(&"  s over the lazy dog again"), "wrapped at 36, inside two columns of padding: {s}");
     assert!(bottom(&s, 3).join("\n").contains("help"), "the status line on the new last rows: {s}");
 }
 

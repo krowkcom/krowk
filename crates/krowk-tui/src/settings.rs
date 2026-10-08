@@ -44,8 +44,9 @@
 //! `/settings` (or `/config`) sets, chosen with ↑ and ↓ and changed with ←
 //! and →, `permissions.defaultMode` — `default` or `unhinged`, which the next
 //! session starts in (`--permission-mode` and a trusted repository's own
-//! `defaultMode` still come first) — and `tui.contentWidth`, which applies
-//! at once.
+//! `defaultMode` still come first) — `tui.contentWidth`, which applies at
+//! once, and `tui.screen`, which krowk opens on the next time it starts
+//! (`/new` keeps the terminal it has).
 //!
 //! The overlays are toggled from the keyboard rather than configured: `?` on
 //! an empty prompt for the keys, Ctrl-O for the session's details, Ctrl-T
@@ -166,6 +167,19 @@ pub enum Screen {
 }
 
 impl Screen {
+    /// In the order `/settings` steps through them.
+    pub const ALL: [(&'static str, Screen); 3] = [("auto", Screen::Auto), ("fullscreen", Screen::Fullscreen), ("inline", Screen::Inline)];
+
+    pub fn name(self) -> &'static str {
+        Screen::ALL.iter().find(|(_, s)| *s == self).map_or("auto", |(n, _)| n)
+    }
+
+    /// The screen `by` along `ALL` from this one, and none past either end.
+    pub fn step(self, by: isize) -> Option<Screen> {
+        let at = Screen::ALL.iter().position(|(_, s)| *s == self).unwrap_or(0);
+        at.checked_add_signed(by).and_then(|i| Screen::ALL.get(i)).map(|(_, s)| *s)
+    }
+
     /// Whether the TUI takes the alternate screen, in the environment
     /// `env` reads.
     pub fn fullscreen(self, env: &dyn Fn(&str) -> String) -> bool {
@@ -177,12 +191,7 @@ impl Screen {
     }
 
     fn parse(s: &str) -> Option<Screen> {
-        match s {
-            "auto" => Some(Screen::Auto),
-            "fullscreen" => Some(Screen::Fullscreen),
-            "inline" => Some(Screen::Inline),
-            _ => None,
-        }
+        Screen::ALL.iter().find(|(n, _)| *n == s).map(|(_, m)| *m)
     }
 }
 
@@ -290,12 +299,22 @@ pub fn set_default_mode(config: &Path, m: PermissionMode) -> Result<Map<String, 
 
 /// Writes `tui.contentWidth`, keeping every other key as it was.
 pub fn set_content_width(config: &Path, w: ContentWidth) -> Result<Map<String, Value>, String> {
+    set_tui(config, "contentWidth", w.name())
+}
+
+/// Writes `tui.screen`, keeping every other key as it was.
+pub fn set_screen(config: &Path, s: Screen) -> Result<Map<String, Value>, String> {
+    set_tui(config, "screen", s.name())
+}
+
+/// Writes `tui.<key>`, keeping every other key as it was.
+fn set_tui(config: &Path, key: &str, value: &str) -> Result<Map<String, Value>, String> {
     let mut raw = krowk_harness::connect::read_config(config)?;
     let tui = raw.entry("tui").or_insert_with(|| Value::Object(Map::new()));
     let Some(tui) = tui.as_object_mut() else {
         return Err(format!("\"tui\" in {} is not an object — fix it by hand", config.display()));
     };
-    tui.insert("contentWidth".into(), Value::String(w.name().into()));
+    tui.insert(key.into(), Value::String(value.into()));
     krowk_harness::connect::write_config(config, &raw).map_err(|e| format!("{}: {e}", config.display()))?;
     Ok(raw)
 }
@@ -349,8 +368,12 @@ mod tests {
         assert_eq!(raw, json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"], "defaultMode": "unhinged"}}));
         let written = set_content_width(&config, ContentWidth::FullWidth).unwrap();
         assert_eq!(Value::Object(written), json!({"tui": {"statusBar": false, "contentWidth": "full-width"}, "permissions": {"allow": ["Bash(ls)"], "defaultMode": "unhinged"}}));
+        let written = set_screen(&config, Screen::Inline).unwrap();
+        assert_eq!(Value::Object(written.clone()), json!({"tui": {"statusBar": false, "contentWidth": "full-width", "screen": "inline"}, "permissions": {"allow": ["Bash(ls)"], "defaultMode": "unhinged"}}));
+        assert_eq!(from_config(&Value::Object(written)).0.screen, Screen::Inline, "read back as written");
         std::fs::write(&config, json!({"permissions": true, "tui": []}).to_string()).unwrap();
         assert!(set_content_width(&config, ContentWidth::Prose).is_err(), "a tui that is no object is not overwritten");
+        assert!(set_screen(&config, Screen::Auto).is_err());
         assert!(set_default_mode(&config, PermissionMode::Default).is_err(), "a permissions that is no object is not overwritten");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -418,6 +441,8 @@ mod tests {
         assert!(s.screen == Screen::Inline && w.is_empty(), "{w:?}");
         let (s, w) = from_config(&json!({"tui": {"screen": "alt"}}));
         assert_eq!(s.screen, Screen::Auto, "a malformed value leaves the default");
+        assert_eq!((Screen::Auto.step(1), Screen::Fullscreen.step(1), Screen::Inline.step(1)), (Some(Screen::Fullscreen), Some(Screen::Inline), None));
+        assert_eq!((Screen::Inline.step(-1), Screen::Auto.step(-1)), (Some(Screen::Fullscreen), None));
         assert!(w.len() == 1 && w[0].contains("\"alt\"") && w[0].contains("inline"), "{w:?}");
     }
 
