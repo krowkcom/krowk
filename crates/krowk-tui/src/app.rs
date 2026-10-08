@@ -13,7 +13,7 @@ use crate::editor::Editor;
 use crate::help;
 use crate::look;
 use crate::pr::State as PrState;
-use crate::settings::{ContentWidth, Item as StatusItem, Settings};
+use crate::settings::{ContentWidth, Item as StatusItem, Screen, Settings};
 use crate::syntax::Code;
 use crate::table;
 use krowk_harness::host::Pricer;
@@ -762,8 +762,11 @@ pub struct App {
     /// file as the person would find it.
     pub default_mode_overridden: Option<(PermissionMode, String)>,
     /// `/settings`' chosen row: 0 the default permission mode, 1 the
-    /// content width.
+    /// content width, 2 the screen.
     pub setting_at: usize,
+    /// The screen saved in config.json differs from the one this session
+    /// runs on: it is the next session's.
+    pub screen_later: bool,
     /// The help menu's selected entry, among those its filter finds.
     pub help_at: usize,
     /// A `/connect` or `/disconnect` running: its overlay's state.
@@ -858,6 +861,7 @@ impl App {
             default_mode: None,
             default_mode_overridden: None,
             setting_at: 0,
+            screen_later: false,
             help_at: 0,
             flow: None,
             marks: BTreeMap::new(),
@@ -2710,9 +2714,17 @@ impl App {
             ContentWidth::ProseWide => format!("at most {} columns", ContentWidth::PROSE_WIDE),
             ContentWidth::FullWidth => "the terminal's whole width".into(),
         };
+        let screen = self.settings.screen;
+        let screen_says = match screen {
+            Screen::Auto => "fullscreen, inline inside Zellij",
+            Screen::Fullscreen => "the prompt stays at the bottom while the conversation scrolls",
+            Screen::Inline => "under the shell's output, the conversation in the terminal's scrollback",
+        };
+        let later = if self.screen_later { " · from the next session" } else { "" };
         let rows = [
             Choice { name: "Default permission mode".into(), value: Span::raw(mode), says: says.into(), warning },
             Choice { name: "Content width".into(), value: Span::raw(cw.name()), says: cw_says, warning: None },
+            Choice { name: "Screen".into(), value: Span::raw(screen.name()), says: format!("{screen_says}{later}"), warning: None },
         ];
         let mut out = vec![picker_title("settings", "`↑` `↓` choose · `←` `→` change and save · `esc` close", width)];
         out.extend(choices(&rows, self.setting_at, true, width));
@@ -4626,6 +4638,10 @@ mod tests {
         let rows = text(&a.view(Instant::now()).0).join("\n");
         assert!(rows.contains("❯ Content width") && rows.contains("‹ prose ›") && rows.contains("  Default permission mode"), "{rows}");
         assert!(rows.contains("asks before edits and commands") && rows.contains("at most 80 columns"), "what each value does, whole: {rows}");
+        a.setting_at = 2;
+        a.screen_later = true;
+        let rows = text(&a.view(Instant::now()).0).join("\n");
+        assert!(rows.contains("❯ Screen") && rows.contains("‹ auto ›") && rows.contains("inline inside Zellij") && rows.contains("the next session"), "{rows}");
         a.open_mode_picker();
         let rows = text(&a.view(Instant::now()).0);
         assert!(above(&rows).iter().all(|r| r.width() <= 80), "{rows:?}");

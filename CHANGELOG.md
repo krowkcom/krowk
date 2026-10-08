@@ -20,9 +20,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   a wrapped line as one line. When you leave, the conversation is printed
   into your normal scrollback as before. Inside Zellij krowk stays inline.
   To keep the old inline mode everywhere, which draws at the bottom of the
-  normal screen and streams into scrollback, set
-  `"tui": {"screen": "inline"}` in `~/.krowk/config.json` (`"fullscreen"`
-  forces fullscreen, and `"auto"` is the default).
+  normal screen and streams into scrollback, choose Screen: inline in
+  `/settings`, or set `"tui": {"screen": "inline"}` in
+  `~/.krowk/config.json` (`"fullscreen"` forces fullscreen, and `"auto"` is
+  the default). The choice applies from the next session.
 - **An upgrade reaches the host daemon by itself.** The daemon that runs
   your sessions used to stay on the old version until you ran `krowk host
   stop`. Now a newer `krowk` replaces an older daemon when it starts, or

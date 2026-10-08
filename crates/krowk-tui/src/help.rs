@@ -43,7 +43,7 @@ pub const ENTRIES: &[Entry] = &[
     e("Commands", "Type / for commands and skills", "`/`", Action::Tell),
     e("Model", "Switch model or instance", "/model", Action::Model),
     e("Mode", "Switch permission mode", "/mode", Action::Mode),
-    e("Settings", "The default permission mode and content width, saved", "/settings · /config", Action::Settings),
+    e("Settings", "The default permission mode, content width and screen, saved", "/settings · /config", Action::Settings),
     e("Connect", "Connect a provider, renew a login or rename an account", "/connect", Action::Connect),
     e("Disconnect", "Sign an instance out", "/disconnect", Action::Disconnect),
     e("New session", "Start over in a fresh session", "/new · /clear", Action::New),

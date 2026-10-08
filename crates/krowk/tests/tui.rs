@@ -479,7 +479,8 @@ fn new_after_a_resume_at_start_keeps_to_the_directory() {
 
 /// `/config` (or `/settings`) cycles the default permission mode and saves
 /// it to config.json, and the next session starts in it; ↓ chooses the
-/// content width, saved the same way.
+/// content width, saved the same way, and ↓ again the screen, which is
+/// the next session's.
 #[test]
 fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     let m = mock::serve(mock::readme_script);
@@ -513,6 +514,25 @@ fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     }
     assert_eq!(width().as_deref(), Some("prose-wide"), "{:?}", t.text());
     assert_eq!(saved().as_deref(), Some("unhinged"), "the mode stays as chosen");
+    // ↓ chooses the screen, held at the last row: ← from inline, which
+    // this session runs on, is fullscreen, the next session's; → is inline
+    // again.
+    let screen = || std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["tui"]["screen"].as_str().map(String::from));
+    let at = t.output().len();
+    t.write(b"\x1b[B\x1b[B\x1b[D");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while screen().as_deref() != Some("fullscreen") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(screen().as_deref(), Some("fullscreen"), "{:?}", t.text());
+    assert!(wait_after(&t, at, "next session", Duration::from_secs(5)), "{:?}", t.text());
+    t.write(b"\x1b[C");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while screen().as_deref() != Some("inline") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(screen().as_deref(), Some("inline"), "{:?}", t.text());
+    assert_eq!(width().as_deref(), Some("prose-wide"), "the width stays as chosen");
     t.write(b"\x1b");
     std::thread::sleep(Duration::from_millis(100));
     t.write(b"\x04\x04");
