@@ -395,6 +395,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["sync", "host", ..] => synced::host_session(ctx, rest(2)),
         #[cfg(all(feature = "harness", unix))]
         ["sync", "attach", ..] => synced::attach(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["sync", "take", ..] => synced::take(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["worktrees"] | ["worktrees", "list", ..] => worktrees::list(ctx),
         #[cfg(feature = "harness")]

@@ -50,6 +50,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   to send again once the daemon is replaced.
 - **"copied … (N lines)" shows as soon as you copy.** After Ctrl-Y picked
   something to copy, the confirmation only appeared after the next key.
+- **A command in the sandbox can no longer leave a git repository behind.**
+  A sandboxed command could keep a repository it made by locking its
+  parent directory (`chmod 000`), making it read-only, or creating a bare
+  repository with no `.git`, and its config would then run the next time
+  git ran there. krowk now finds and removes all of these after the call,
+  restoring access to what the call itself locked. Directories you locked
+  yourself are left alone. If something still can't be removed, krowk
+  says so.
 - **Archiving sessions works on machines set up with `krowk sync init` or
   `join`.** `krowk sessions archive` and `restore` needed the old account
   key, which nothing creates any more, so they said "not set up" and
@@ -61,6 +69,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
 ## [0.13.0] - 2026-10-07
 
 ### Added
+
+- **Move a live session to another machine: `krowk sync take SESSION`.**
+  Run it from a clone of the session's repository on the machine you want
+  to continue on. krowk first checks the session can run there: its
+  instance connected under the same name and signed in, and for Claude
+  Code the repository trusted. If anything is missing it says how to fix
+  it, and the session stays where it is. Otherwise the host saves a
+  checkpoint, sends the commit it was on, its uncommitted changes and the
+  untracked files the session made, end-to-end encrypted, and hands over
+  its lease. The work lands in a fresh worktree on the new machine, which
+  hosts the session from there. A Claude Code session resumes its own
+  conversation. Anyone attached stays attached and sees the new host take
+  over. Dependencies and build output are not copied; they are rebuilt
+  where the session now runs. Moving a session needs a paid workspace, and
+  waits for a running turn to end.
 
 - **A subagent can work in a git worktree of its own.** Give the
   `subagent` tool `isolation: "worktree"`, or put `isolation: worktree` in

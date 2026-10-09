@@ -228,11 +228,19 @@ impl World {
         d
     }
 
-    fn env(&self) -> impl Fn(&str) -> String + Clone + Send + 'static {
-        let (root, url) = (self.root.clone(), self.mock_url.clone());
+    fn env(&self) -> impl Fn(&str) -> String + Clone + Send + Sync + 'static {
+        self.env_at("home", "run")
+    }
+
+    /// Another machine's environment: a home and a runtime directory of its
+    /// own, so a daemon of its own.
+    fn env_at(&self, home: &str, run: &str) -> impl Fn(&str) -> String + Clone + Send + Sync + 'static {
+        let (root, url, home, run) = (self.root.clone(), self.mock_url.clone(), home.to_string(), run.to_string());
+        let _ = std::fs::create_dir_all(root.join(&home));
+        let _ = std::fs::create_dir_all(root.join(&run));
         move |k| match k {
-            "HOME" => root.join("home").display().to_string(),
-            "XDG_RUNTIME_DIR" => root.join("run").display().to_string(),
+            "HOME" => root.join(&home).display().to_string(),
+            "XDG_RUNTIME_DIR" => root.join(&run).display().to_string(),
             "ANTHROPIC_API_KEY" => "sk-test".into(),
             "ANTHROPIC_BASE_URL" => url.clone(),
             _ => String::new(),
@@ -245,8 +253,14 @@ impl World {
 
     /// Machine A's host daemon, on a thread of its own.
     fn serve(&self) {
-        let (env, socket) = (self.env(), daemon::socket(&self.env()).unwrap());
-        let credentials = self.root.join("home/.krowk/credentials.json");
+        self.serve_env(self.env(), "home");
+    }
+
+    /// The host daemon of the machine `env` describes, its home `home`.
+    fn serve_env(&self, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static, home: &str) {
+        let socket = daemon::socket(&env).unwrap();
+        let credentials = self.root.join(home).join(".krowk/credentials.json");
+        let wait = env.clone();
         std::thread::spawn(move || {
             let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {
                 Ok(HostConfig {
@@ -267,7 +281,7 @@ impl World {
             server::run(server::Options { socket, idle: None, krowk_version: "test".into(), ..Default::default() }, factory)
         });
         let deadline = Instant::now() + Duration::from_secs(5);
-        while std::os::unix::net::UnixStream::connect(daemon::socket(&self.env()).unwrap()).is_err() {
+        while std::os::unix::net::UnixStream::connect(daemon::socket(&wait).unwrap()).is_err() {
             assert!(Instant::now() < deadline, "the daemon never listened");
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -303,6 +317,7 @@ impl World {
             keep,
             direct: None,
             tailnet: None,
+            handed: None,
         };
         self.run_bridge(o, daemon)
     }
@@ -326,6 +341,7 @@ impl World {
             keep: host::KEEP,
             direct: Some(direct::Config { socket: ts.socket.clone().into(), roster: krowk_harness::relay::Roster::parse(&roster).unwrap(), same_user, lan: false, stop: Some(stop) }),
             tailnet: krowk_harness::sync::tailscale::status(&ts.socket.clone().into()).ok().and_then(|s| s.tailnet()),
+            handed: None,
         };
         self.run_bridge(o, daemon)
     }
@@ -1539,4 +1555,120 @@ async fn r_off_2_a_whole_turn_the_relay_dropped_arrives_when_a_later_turn_shows_
     }
     let missing: Vec<_> = want.iter().filter(|i| !ids.contains(i)).collect();
     assert!(missing.is_empty(), "B never got {} of A's {} events", missing.len(), want.len());
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]).args(args).current_dir(dir).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// R-HAND-1, R-HAND-2, R-HAND-3: a session moves from A to B mid-task.
+/// B asks A over the E2E link; A checkpoints, ships its base commit, its
+/// uncommitted change and the untracked file the session made as a
+/// transport artifact, and hands B its lease. B applies them into a fresh
+/// worktree of its own clone and hosts the session from there. C, attached
+/// throughout, sees the host go and come back, and its next prompt runs on
+/// B, in B's worktree. The transport is spent once read, and a free
+/// workspace may not store one.
+#[tokio::test]
+async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attached() {
+    use krowk_harness::sync::handoff;
+    let w = World::new("handoff");
+    let (a, b, c) = (w.device("machine-a"), w.device("machine-b"), w.device("machine-c"));
+    let repo = w.repo();
+    std::fs::remove_dir_all(repo.join(".git")).unwrap();
+    git(&repo, &["init", "-q"]);
+    std::fs::write(repo.join("tracked.txt"), "one\n").unwrap();
+    git(&repo, &["add", "tracked.txt"]);
+    git(&repo, &["commit", "-q", "-m", "base"]);
+    // Untracked before the session started: not the session's to move.
+    std::fs::write(repo.join("old.txt"), "from before").unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    let (_d, session) = first_turn(&w).await;
+    // The session's work, uncommitted.
+    std::fs::write(repo.join("tracked.txt"), "one\ntwo\n").unwrap();
+    std::fs::create_dir_all(repo.join("notes")).unwrap();
+    std::fs::write(repo.join("notes/new.txt"), "made mid-task").unwrap();
+    let (_stop, _cp, a_bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+
+    let mut cv = viewer::attach(w.viewer(&c, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut cv, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+
+    // B: a clone of the repository, a home and a daemon of its own.
+    let b_repo = w.root.join("repo-b");
+    git(&w.root, &["clone", "-q", repo.to_str().unwrap(), b_repo.to_str().unwrap()]);
+    let b_env = w.env_at("home-b", "run-b");
+    w.serve_env(b_env.clone(), "home-b");
+
+    let mut bv = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    bv.handoff.send(()).unwrap();
+    let got = until(&mut bv, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Handoff(_))).await;
+    let handed = got.into_iter().find_map(|u| if let viewer::Update::Handoff(r) = u { Some(r) } else { None }).unwrap().expect("A hands the session over");
+    drop(bv);
+    let ended = tokio::time::timeout(Duration::from_secs(20), a_bridge).await.expect("A's bridge stops").unwrap();
+    assert!(ended.as_ref().is_err_and(|e| e.starts_with(host::HANDED_OVER)), "{ended:?}");
+
+    // B takes it up, as `krowk sync take` does.
+    let (api, keys, chain, id, slug, b_env2, from, me, wt_root, b_repo2) = (w.as_device(&b), w.keys(), w.chain(), session.clone(), handed.transport.clone(), b_env.clone(), handed.from_device.clone(), b.key.id().to_string(), w.root.join("worktrees-b"), b_repo.clone());
+    let key = handoff::key_from_hex(&handed.key).unwrap();
+    let applied = tokio::task::spawn_blocking(move || {
+        let sealed = api.read_transport(&slug).unwrap();
+        let plain = e2e::open_transport(&sealed, &krowk_harness::daemon::ws::uuid(&id), &key).unwrap();
+        let bundle = handoff::Bundle::decode(&plain, &id).unwrap();
+        let applied = handoff::apply(&bundle, &b_repo2, &wt_root).unwrap();
+        api.spend_transport(&slug).unwrap();
+        let gone = api.read_transport(&slug).unwrap_err();
+        assert_eq!(gone.status, 404, "R-HAND-2: a transport is read once, and gone when spent");
+        let s = api.show_sync_session(&id).unwrap();
+        let k = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld).unwrap();
+        let index = krowk_harness::sync::store::open_index(&k, &id, &s.sealed_index).unwrap();
+        let events = krowk_harness::sync::store::attach(&api, &k, &id, index, None).unwrap().events;
+        handoff::restore_log(&log::sessions_dir(&b_env2).unwrap(), &id, &events, &applied.cwd, &me, &from).unwrap();
+        applied
+    })
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(applied.cwd.join("tracked.txt")).unwrap(), "one\ntwo\n", "the uncommitted change moved");
+    assert_eq!(std::fs::read_to_string(applied.cwd.join("notes/new.txt")).unwrap(), "made mid-task", "the untracked file the session made moved");
+    assert!(!applied.cwd.join("old.txt").exists(), "an untracked file from before the session did not");
+
+    let b_daemon = Arc::new(Client::connect(&daemon::socket(&b_env).unwrap(), &applied.cwd, "test", true).await.ok().expect("B's daemon answers"));
+    let o = host::Options {
+        relay: w.relay_a.clone(),
+        env: "development".into(),
+        api: w.as_device(&b),
+        device: b.key.id(),
+        signing: SigningKey::from_secret(&*b.signing.secret_bytes()).unwrap(),
+        keys: w.keys(),
+        chain: w.chain(),
+        session: session.clone(),
+        title: String::new(),
+        cwd: applied.cwd.display().to_string(),
+        ttl: host::LEASE_TTL,
+        keep: host::KEEP,
+        direct: None,
+        tailnet: None,
+        handed: Some(handed),
+    };
+    let (_b_stop, _b_cp, _b_bridge) = w.run_bridge(o, b_daemon);
+
+    // C never let go: the host went, came back, and runs C's prompt on B.
+    until(&mut cv, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Host(false))).await;
+    until(&mut cv, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    cv.commands.send(w.prompt(Some(&session), "make the file")).unwrap();
+    let got = until(&mut cv, Duration::from_secs(20), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(_))))).await;
+    let req = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).unwrap();
+    cv.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
+    until(&mut cv, Duration::from_secs(20), &mut frames, result_of).await;
+    assert!(applied.cwd.join("approved.txt").exists(), "the turn ran on B, in B's worktree");
+    assert!(!repo.join("approved.txt").exists(), "not on A");
+    let b_log = std::fs::read_to_string(log::sessions_dir(&b_env).unwrap().join(&session).join("events.jsonl")).unwrap();
+    assert!(b_log.contains("session.moved"), "B logged the move");
+
+    // R-HAND-3: a free workspace stores no transport.
+    let free = krowk_api::Client::new(&w.api, "krowk_sk_free_0000000000000000000000").signed_by(signer(&b));
+    let refused = tokio::task::spawn_blocking(move || free.put_transport("01a0ec7b-3333-7000-8000-000000000001", b"x", "t")).await.unwrap().unwrap_err();
+    assert_eq!(refused.code(), "sync_requires_paid_plan", "{refused:?}");
 }

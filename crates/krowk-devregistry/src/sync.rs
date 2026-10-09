@@ -1,4 +1,4 @@
-//! Sync: sessions with their leases, chunks and vintages — the shapes and
+//! Sync: sessions with their leases, chunks, vintages and transports — the shapes and
 //! refusals of the registry's Api::V1::SessionsController and
 //! Sessions::LeasesController. A person's device list, user key and pairings
 //! are `devices.rs` and `pairings.rs`, and every device a call names or is
@@ -122,8 +122,23 @@ pub struct Chunk {
     pub created_at: Timestamp,
 }
 
+/// A transport artifact (R-HAND-2): a chunk's upload with no place in a
+/// log, for one session, gone a day after it is declared or once spent.
+pub struct Transport {
+    pub session: String,
+    pub chunk: Chunk,
+    pub expires_at: Timestamp,
+}
+
 /// The registry's burst ceiling on a keyed create, per minute.
 const KEYED_BURST: usize = 120;
+/// The registry's ceiling on transport declares, per minute (R-HAND-3):
+/// low, so transports are never free file hosting.
+const TRANSPORT_BURST: usize = 10;
+/// The registry's Artifact::MAX_TRANSPORT_BYTES.
+const MAX_TRANSPORT_BYTES: i64 = 256 << 20;
+/// How long a transport artifact lives unspent: the registry's 24 hours.
+const TRANSPORT_LIFETIME: SignedDuration = SignedDuration::from_hours(24);
 /// The registry's SyncSession::MAX_PER_WORKSPACE.
 pub const MAX_SESSIONS: usize = 10_000;
 const CHUNK_CONTENT_TYPE: &str = "application/octet-stream";
@@ -147,6 +162,9 @@ pub struct SyncStore {
     /// Vintages a later one replaced: kept, bytes and all, as the registry
     /// keeps them for its retention window, and no longer the week's.
     pub vintages_replaced: std::collections::HashSet<(String, String)>,
+    /// Workspace and slug → a transport artifact (a handoff's bundle):
+    /// the session it moves, its bytes' upload, and when it lapses.
+    pub transports: HashMap<(String, String), Transport>,
     /// Key and create → the minute its count began, and the count.
     pub bursts: HashMap<(String, &'static str), (Timestamp, usize)>,
     /// 0 is MAX_SESSIONS.
@@ -312,12 +330,16 @@ pub fn caller(req: &Req) -> String {
 
 /// The keyed burst ceiling on a create: 429 with Retry-After past it.
 pub fn burst(s: &mut SyncStore, key: &str, name: &'static str, now: Timestamp) -> Result<(), Resp> {
+    burst_under(s, key, name, now, KEYED_BURST)
+}
+
+fn burst_under(s: &mut SyncStore, key: &str, name: &'static str, now: Timestamp, ceiling: usize) -> Result<(), Resp> {
     let window = s.bursts.entry((key.to_owned(), name)).or_insert((now, 0));
     if now.duration_since(window.0) >= SignedDuration::from_mins(1) {
         *window = (now, 0);
     }
     window.1 += 1;
-    if window.1 > KEYED_BURST {
+    if window.1 > ceiling {
         let mut r = error(429, "too_many_requests", &format!("Too many {} too quickly. Retry in 60 seconds.", name.replace('_', " ")), None);
         r.headers.push(("Retry-After", "60".to_owned()));
         return Err(r);
@@ -940,17 +962,25 @@ fn declared_chunk(c: &Chunk, site: &str) -> Json {
     Json::map_of(out)
 }
 
+/// Whose upload a storage key is.
+enum Owner {
+    Chunk((String, String, u64)),
+    Vintage((String, String)),
+    Transport((String, String)),
+}
+
 /// Storage's PUT for a chunk's key, with a real signature's checks: the
 /// token, the window, the type, the digest header, the length and the
 /// digest. None when the key is no chunk's.
 pub fn put_chunk_object(app: &App, req: &mut Req, key: &str) -> Option<Resp> {
     let found = {
         let s = app.lock();
-        s.sync.chunks.iter().find(|(_, c)| c.storage_key == key).map(|(k, c)| (Ok(k.clone()), c.upload_tok.clone(), c.checksum.clone(), c.byte_size, c.upload_til, c.ready)).or_else(|| {
-            s.sync.vintages.iter().find(|(_, (_, c))| c.storage_key == key).map(|(k, (_, c))| (Err(k.clone()), c.upload_tok.clone(), c.checksum.clone(), c.byte_size, c.upload_til, c.ready))
-        })
+        let at = |c: &Chunk| (c.upload_tok.clone(), c.checksum.clone(), c.byte_size, c.upload_til, c.ready);
+        s.sync.chunks.iter().find(|(_, c)| c.storage_key == key).map(|(k, c)| (Owner::Chunk(k.clone()), at(c)))
+            .or_else(|| s.sync.vintages.iter().find(|(_, (_, c))| c.storage_key == key).map(|(k, (_, c))| (Owner::Vintage(k.clone()), at(c))))
+            .or_else(|| s.sync.transports.iter().find(|(_, t)| t.chunk.storage_key == key).map(|(k, t)| (Owner::Transport(k.clone()), at(&t.chunk))))
     };
-    let (ck, token, sum, size, until, ready) = found?;
+    let (ck, (token, sum, size, until, ready)) = found?;
     if ready || token.is_empty() || req.query_get("upload_token") != token {
         return Some(Resp::xml(403, "SignatureDoesNotMatch"));
     }
@@ -970,8 +1000,9 @@ pub fn put_chunk_object(app: &App, req: &mut Req, key: &str) -> Option<Resp> {
     }
     let mut s = app.lock();
     let c = match &ck {
-        Ok(ck) => s.sync.chunks.get_mut(ck),
-        Err(vk) => s.sync.vintages.get_mut(vk).map(|(_, c)| c),
+        Owner::Chunk(k) => s.sync.chunks.get_mut(k),
+        Owner::Vintage(k) => s.sync.vintages.get_mut(k).map(|(_, c)| c),
+        Owner::Transport(k) => s.sync.transports.get_mut(k).map(|t| &mut t.chunk),
     };
     if let Some(c) = c {
         c.uploaded_sum = Some(got);
@@ -1214,6 +1245,168 @@ pub fn list_vintages(app: &App, req: &Req, site: &str) -> Resp {
         })
         .collect();
     Resp::json(200, &Json::map([("vintages", Json::Arr(page))]))
+}
+
+fn serialize_transport(t: &Transport) -> Vec<(String, Json)> {
+    let mut out = serialize_chunk(&t.chunk);
+    out.retain(|(k, _)| k != "index");
+    out.insert(1, ("session".to_owned(), Json::str(&t.session)));
+    out.push(("expires_at".to_owned(), Json::str(rfc3339_nano(t.expires_at))));
+    out
+}
+
+fn transport_gone(slug: &str) -> Resp {
+    error(410, "transport_gone", &format!("transport {slug} has lapsed — a handoff's bundle is read within a day"), None)
+}
+
+/// The lease holder's declare of a transport artifact for its session (the
+/// registry's TransportsController#create, R-HAND-2): the lease token, the
+/// paid gate and a low per-minute ceiling (R-HAND-3), then an
+/// Idempotency-Key replay or a new transport with a presigned PUT. It is
+/// never an artifact: no listing, card or upload count holds it.
+pub fn declare_transport(app: &App, req: &mut Req, id: &str, site: &str, signer: &str) -> Resp {
+    let mut run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        let id = session_id(id).ok_or_else(not_found)?;
+        let attempt = crate::artifacts::idempotency_key(req)?;
+        let v = body(req, "transport")?;
+        let mut f = v.fields();
+        let byte_size = whole(&f, "byte_size").ok_or_else(|| invalid("byte_size", "must be a whole number"))?;
+        if byte_size <= 0 {
+            return Err(invalid("byte_size", "must be greater than 0"));
+        }
+        if byte_size > MAX_TRANSPORT_BYTES {
+            return Err(invalid("byte_size", &format!("must be at most {MAX_TRANSPORT_BYTES} bytes")));
+        }
+        let checksum = f.string("checksum").to_ascii_lowercase();
+        if checksum.len() != 64 || !checksum.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid("checksum", "must be a lowercase hex SHA-256"));
+        }
+        let token = f.string("lease_token");
+        let mut s = app.lock();
+        let now = s.now();
+        let x = s.sync.sessions.get(&(workspace.clone(), id.clone())).ok_or_else(not_found)?;
+        if token.is_empty() {
+            return Err(lease_token_missing());
+        }
+        holder(x, &token, now, signer)?;
+        if let Some(refused) = revoked_holder(&s.sync, x) {
+            return Err(crate::devices::revoked(&refused));
+        }
+        burst_under(&mut s.sync, &caller(req), "transport_declares", now, TRANSPORT_BURST)?;
+        let hash = crate::store::sha256_hex(format!("{id}\n{byte_size}\n{checksum}").as_bytes());
+        if let Some(attempt) = &attempt
+            && let Some((found, matches)) = s.replay("transport", &workspace, attempt, &hash)
+        {
+            let slug = found.artifact.clone();
+            if !matches {
+                return Err(crate::errors::key_reused(&slug));
+            }
+            let t = s.sync.transports.get_mut(&(workspace.clone(), slug)).ok_or_else(not_found)?;
+            if t.chunk.ready {
+                return Err(crate::errors::already_finalized(&t.chunk.slug));
+            }
+            t.chunk.upload_tok = crate::store::random_token();
+            t.chunk.upload_til = now + crate::store::UPLOAD_URL_LIFETIME;
+            return Ok(Resp::json(201, &declared_transport(t, site)));
+        }
+        let t = Transport {
+            session: id,
+            chunk: Chunk {
+                slug: generate_slug("art"),
+                index: 0,
+                fence: 0,
+                byte_size,
+                checksum,
+                storage_key: format!("{}/{}/transport.bin", crate::store::ARTIFACT_REGION, crate::store::random_base36()),
+                upload_tok: crate::store::random_token(),
+                upload_til: now + crate::store::UPLOAD_URL_LIFETIME,
+                uploaded_sum: None,
+                ready: false,
+                created_at: now,
+            },
+            expires_at: now + TRANSPORT_LIFETIME,
+        };
+        let resp = Resp::json(201, &declared_transport(&t, site));
+        if let Some(attempt) = &attempt {
+            s.remember("transport", &workspace, attempt, crate::store::Answered { request_hash: hash, artifact: t.chunk.slug.clone(), run: String::new() });
+        }
+        s.sync.transports.insert((workspace, t.chunk.slug.clone()), t);
+        Ok(resp)
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+fn declared_transport(t: &Transport, site: &str) -> Json {
+    let mut out = serialize_transport(t);
+    let Json::Obj(upload) = declared_chunk(&t.chunk, site) else { unreachable!("a declare is an object") };
+    out.extend(upload.into_iter().filter(|(k, _)| k == "upload"));
+    Json::map_of(out)
+}
+
+/// The transport, live: one in the workspace, neither spent nor lapsed.
+fn live_transport<'a>(s: &'a mut SyncStore, workspace: &str, slug: &str, now: Timestamp) -> Result<&'a mut Transport, Resp> {
+    let t = s.transports.get_mut(&(workspace.to_owned(), slug.to_owned())).ok_or_else(not_found)?;
+    if now >= t.expires_at {
+        return Err(transport_gone(slug));
+    }
+    Ok(t)
+}
+
+/// A transport's bytes landed: checked against the declare. Idempotent.
+pub fn finalize_transport(app: &App, req: &mut Req, slug: &str, signer: &str) -> Resp {
+    let run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        let mut s = app.lock();
+        let now = s.now();
+        named(&s.sync, &person(req), signer)?;
+        let t = live_transport(&mut s.sync, &workspace, slug, now)?;
+        if !t.chunk.ready {
+            match &t.chunk.uploaded_sum {
+                None => return Err(error(409, "upload_missing", &format!("nothing uploaded for {slug} yet"), None)),
+                Some(sum) if *sum != t.chunk.checksum => return Err(error(422, "checksum_mismatch", "what was uploaded does not match the declared checksum", None)),
+                Some(_) => {}
+            }
+            t.chunk.ready = true;
+            t.chunk.upload_tok.clear();
+        }
+        Ok(Resp::json(200, &Json::map_of(serialize_transport(t))))
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// A ready transport, with the URL its bytes are read from, for any device
+/// on the person's list; 410 once spent or lapsed.
+pub fn show_transport(app: &App, req: &mut Req, slug: &str, site: &str, signer: &str) -> Resp {
+    let run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        let mut s = app.lock();
+        let now = s.now();
+        named(&s.sync, &person(req), signer)?;
+        let t = live_transport(&mut s.sync, &workspace, slug, now)?;
+        if !t.chunk.ready {
+            return Err(not_found());
+        }
+        let mut j = serialize_transport(t);
+        j.push(("url".to_owned(), Json::str(format!("{site}/_storage/{}", t.chunk.storage_key))));
+        Ok(Resp::json(200, &Json::map_of(j)))
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// The target spent the transport: its bytes and record go at once, as the
+/// registry erases it. Idempotent: one already gone is spent.
+pub fn spend_transport(app: &App, req: &mut Req, slug: &str, signer: &str) -> Resp {
+    let run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        let mut s = app.lock();
+        named(&s.sync, &person(req), signer)?;
+        if let Some(t) = s.sync.transports.remove(&(workspace, slug.to_owned())) {
+            s.objects.remove(&t.chunk.storage_key);
+        }
+        Ok(Resp::empty(204))
+    };
+    run().unwrap_or_else(|r| r)
 }
 
 #[cfg(test)]

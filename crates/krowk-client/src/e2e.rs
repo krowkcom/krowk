@@ -477,6 +477,36 @@ fn open_vintage_v2(blob: &[u8], week: &str, keys: &UserKeys) -> Result<Vec<u8>, 
     cipher(&key).decrypt(&XNonce::from(nonce), Payload { msg: &blob[body + NONCE..], aad: &aad }).map_err(|_| refused())
 }
 
+/// The format byte of a sealed transport artifact.
+pub const TRANSPORT_V1: u8 = 1;
+
+/// A handoff's bundle sealed for the registry to carry (R-HAND-2):
+/// `version | suite | nonce | ciphertext + tag`, under `key`, a fresh random
+/// key per handoff that reaches the target only inside the session's E2E
+/// link, never the registry. The label, the version, the suite and the
+/// session bind as associated data: a bundle presented for another session
+/// does not open.
+pub fn seal_transport(key: &[u8; KEY], session: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
+    let head = [TRANSPORT_V1, SUITE_XCHACHA20_POLY1305];
+    let nonce: [u8; NONCE] = random();
+    let aad = [&b"krowk/transport/v1"[..], &head, session].concat();
+    let sealed = cipher(key).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).expect("a bundle is far below XChaCha's limit");
+    [&head[..], &nonce, &sealed].concat()
+}
+
+pub fn open_transport(blob: &[u8], session: &[u8; 16], key: &[u8; KEY]) -> Result<Vec<u8>, Error> {
+    let refused = || err("the handoff bundle does not open with the key its host sent: it was changed, or belongs to another session");
+    if blob.len() < 2 + NONCE + TAG || blob[0] != TRANSPORT_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
+        return Err(match blob.first() {
+            Some(&v) if v > TRANSPORT_V1 => err(format!("the handoff bundle is format {v}, newer than this krowk reads — upgrade krowk")),
+            _ => refused(),
+        });
+    }
+    let nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
+    let aad = [&b"krowk/transport/v1"[..], &blob[..2], session].concat();
+    cipher(key).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())
+}
+
 /// The format byte of a sealed chunk.
 pub const CHUNK_V1: u8 = 1;
 /// A chunk sealed under a rotated session key: version 1's header and the

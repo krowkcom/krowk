@@ -788,6 +788,17 @@ pub enum LogBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fell_back: Option<String>,
     },
+    /// The session moved to another host (R-HAND-1): its uncommitted work
+    /// applied into a fresh worktree there, and the next turn runs in `cwd`
+    /// on that machine. Logged by the host that took it up.
+    #[serde(rename = "session.moved")]
+    SessionMoved {
+        /// The session's working directory on its new host.
+        cwd: String,
+        /// The device it moved to, and the one it left.
+        device: String,
+        from_device: String,
+    },
     /// The turn is over.
     #[serde(rename = "turn.completed")]
     TurnCompleted {
