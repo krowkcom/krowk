@@ -12,18 +12,25 @@ pub(super) fn keystore(ctx: &Ctx) -> Result<Keystore, Error> {
 }
 
 /// The registry client vintages are written and read with, signed as this
-/// device, and the account key they are sealed under: a machine that has
-/// not joined sync has no vintages to write or read.
+/// device, and the keys they are sealed and opened with: the person's user
+/// keys, as the device list — read from the registry, verified and brought
+/// up to date first, as before anything else is sealed — leaves them, and
+/// the generation it names current. A machine that has not set up sync has no vintages to write or read.
 #[cfg(unix)]
-pub(super) fn vintage_keys(ctx: &Ctx) -> Result<(Client, krowk_client::e2e::AccountKey), Error> {
+pub(super) fn vintage_keys(ctx: &Ctx) -> Result<(Client, krowk_harness::vintage::Keys), Error> {
     let ks = keystore(ctx)?;
-    let not_set_up = || fail("not_set_up", "archived sessions are sealed under the account key, which this machine does not hold — run `krowk sync init`, `recover` or `join` first");
+    let not_set_up = || fail("not_set_up", "archived sessions are sealed under your user key, which this machine does not hold yet — set sync up with `krowk sync init`, or add this machine from one that syncs with `krowk devices add` and `krowk sync join`");
     let device = ks.device().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(not_set_up)?.id();
-    let account = ks.account().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(not_set_up)?;
+    // The list first: a vintage is sealed only under the generation the
+    // verified list leaves current, never under one a removed device holds.
+    super::chain::before_sealing(ctx, &keyed_client(ctx, "archiving sessions")?, &super::chain::Me::load(ctx)?)?;
+    let user = ks.user_keys().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(not_set_up)?;
+    let chain = ks.device_list().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(not_set_up)?;
+    let user = user.verified_by(&chain).map_err(|e| fail("keys_unreadable", e.0))?;
     let signing = ks.signing_key().map_err(|e| fail("keys_unreadable", e))?;
     let key = krowk_client::e2e::SigningKey::from_secret(&*signing.secret_bytes()).map_err(|e| fail("keys_unreadable", e.to_string()))?;
     let client = keyed_client(ctx, "archiving sessions")?.signed_by(krowk_client::e2e::DeviceSigner::new(device, key).shared());
-    Ok((client, account))
+    Ok((client, krowk_harness::vintage::Keys { user, generation: chain.generation() }))
 }
 
 /// The registry client for sync calls, which all need a key to a workspace.

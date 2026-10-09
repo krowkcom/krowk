@@ -50,6 +50,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   to send again once the daemon is replaced.
 - **"copied … (N lines)" shows as soon as you copy.** After Ctrl-Y picked
   something to copy, the confirmation only appeared after the next key.
+- **Archiving sessions works on machines set up with `krowk sync init` or
+  `join`.** `krowk sessions archive` and `restore` needed the old account
+  key, which nothing creates any more, so they said "not set up" and
+  pointed at commands that no longer exist. Vintages are now sealed under
+  your user key, like synced sessions, and keep opening after a device is
+  removed and the key rotates. A vintage sealed the old way is refused by
+  name.
 
 ## [0.13.0] - 2026-10-07
 
