@@ -1918,6 +1918,11 @@ impl App {
             }
             // The run the session's evidence goes under: the log's to keep.
             LogBody::RunOpened { .. } => {}
+            LogBody::SessionMoved { cwd, .. } => {
+                self.gap();
+                self.push_wrapped(look::SWITCH, "  ", &format!("moved to another machine, working in {cwd}"), look::switched(), dim());
+                self.gap();
+            }
             LogBody::SubagentStarted { call_id, subagent_session_id, description, agent, .. } => {
                 let s = self.sub(subagent_session_id);
                 s.call_id = Some(call_id.clone());

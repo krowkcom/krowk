@@ -234,6 +234,11 @@ impl Writer {
         self.index.head
     }
 
+    /// The ids of the events the registry's log holds.
+    pub fn stored_ids(&self) -> std::collections::HashSet<String> {
+        self.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect()
+    }
+
     /// How many events the log holds, those not yet in a chunk included.
     pub fn log_offset(&self) -> u64 {
         (self.events.len() + self.staged.as_ref().map_or(0, |s| s.events.len()) + self.pending.len()) as u64

@@ -80,6 +80,7 @@ Agent
   sync sessions     The synced sessions this machine can open
   sync host         Run a session here and sync it until interrupted
   sync attach       Follow a synced session in the TUI, or as stream-json
+  sync take         Move a live session here, uncommitted work and all
   devices list      The devices on your device list, this one marked
   devices add       Show a code that adds a new machine to your devices
   devices remove    Take a device off your list and rotate your key

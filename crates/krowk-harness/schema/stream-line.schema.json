@@ -459,6 +459,33 @@
           ]
         },
         {
+          "description": "The session moved to another host (R-HAND-1): its uncommitted work\napplied into a fresh worktree there, and the next turn runs in `cwd`\non that machine. Logged by the host that took it up.",
+          "type": "object",
+          "properties": {
+            "cwd": {
+              "description": "The session's working directory on its new host.",
+              "type": "string"
+            },
+            "device": {
+              "description": "The device it moved to, and the one it left.",
+              "type": "string"
+            },
+            "fromDevice": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.moved"
+            }
+          },
+          "required": [
+            "type",
+            "cwd",
+            "device",
+            "fromDevice"
+          ]
+        },
+        {
           "description": "The turn is over.",
           "type": "object",
           "properties": {

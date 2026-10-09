@@ -223,6 +223,8 @@ impl Pump {
                     self.line(StreamLine::Log(e), false).await;
                 }
             }
+            // The TUI never asks for one.
+            Update::Handoff(_) => {}
             Update::Host(present) => {
                 if !present {
                     self.host_left();

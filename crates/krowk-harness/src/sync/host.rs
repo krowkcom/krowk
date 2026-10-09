@@ -85,7 +85,14 @@ pub struct Options {
     /// `krowk hosts` finds it on the tailnet (R-NET-4); None when Tailscale
     /// is down.
     pub tailnet: Option<super::tailscale::Tailnet>,
+    /// The lease another host handed this one with the session (R-HAND-1):
+    /// taken up as it is rather than acquired. None for a plain take-up.
+    pub handed: Option<super::Handed>,
 }
+
+/// How a bridge that handed its session over ends: what `krowk sync host`
+/// says, its lease the other device's now.
+pub const HANDED_OVER: &str = "handed over";
 
 /// The lease as the bridge holds it: the token only the holder has, its
 /// fence, and the freshest host ticket.
@@ -126,7 +133,10 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
         }
         Err(e) => return Err(format!("the registry did not say whether it holds session {id} ({e}) — nothing was published; try again")),
     };
-    let lease = o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| e.to_string())?;
+    let lease = match &o.handed {
+        Some(h) => krowk_api::sync::Lease { token: h.token.clone(), fence: h.fence, relay_ticket: h.ticket.clone(), ..Default::default() },
+        None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| e.to_string())?,
+    };
     if lease.relay_ticket.is_empty() {
         return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
     }
@@ -310,6 +320,8 @@ enum Write {
     Event(Value),
     Flush,
     Checkpoint(Option<String>),
+    /// A checkpoint before a handoff, answered once it is stored or not.
+    Handoff(Option<String>, std::sync::mpsc::Sender<Result<(), String>>),
 }
 
 /// How often a write the registry refused is tried again.
@@ -334,6 +346,11 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
             }
             Some(Write::Flush) => w.flush(&h.token),
             Some(Write::Checkpoint(tree)) => w.checkpoint(tree, &h.token),
+            Some(Write::Handoff(tree, done)) => {
+                let r = w.checkpoint(tree, &h.token);
+                let _ = done.send(r.clone());
+                r
+            }
             // What was owed is put again, the same chunk under the same index.
             None if w.owes() => w.flush(&h.token),
             None => Ok(()),
@@ -427,6 +444,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     }
     let (heads_tx, mut heads) = mpsc::unbounded_channel();
     let head = writer.head();
+    let stored = writer.stored_ids();
     let (jobs, jobs_rx) = std::sync::mpsc::channel();
     let writing = {
         let (held, lost) = (held.clone(), lost.clone());
@@ -462,6 +480,10 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         approvals: BTreeMap::new(),
         log: Vec::new(),
         logged: HashSet::new(),
+        stored,
+        turn_running: false,
+        handing: false,
+        moved: Arc::default(),
         mode: PermissionMode::Default,
         remote_turns: Arc::default(),
         done: HashMap::new(),
@@ -561,6 +583,16 @@ struct Hosting {
     /// what a viewer's catch-up is answered from.
     log: Vec<crate::protocol::LogEvent>,
     logged: HashSet<String>,
+    /// The events the registry's log held when the bridge took the session
+    /// up: the daemon replays them, and they are not written again.
+    stored: HashSet<String>,
+    /// Whether a turn is running, which a handoff waits out.
+    turn_running: bool,
+    /// A handoff under way: another is refused meanwhile.
+    handing: bool,
+    /// What the bridge ends with once a handoff's answer has gone: set by
+    /// the handoff as it hands the lease over.
+    moved: Arc<Mutex<Option<String>>>,
     mode: PermissionMode,
     /// Turns a viewer's prompt started: the only ones whose approvals the
     /// bridge ever denies by itself.
@@ -603,10 +635,18 @@ impl Hosting {
             if !self.logged.insert(e.id.clone()) {
                 return;
             }
-            let _ = self.jobs.send(Write::Event(serde_json::to_value(e).expect("json")));
+            if !self.stored.contains(&e.id) {
+                let _ = self.jobs.send(Write::Event(serde_json::to_value(e).expect("json")));
+            }
             match &e.body {
-                LogBody::TurnCompleted { .. } => { let _ = self.jobs.send(Write::Flush); }
-                LogBody::TurnStarted { permission_mode, .. } => self.mode = *permission_mode,
+                LogBody::TurnCompleted { .. } => {
+                    self.turn_running = false;
+                    let _ = self.jobs.send(Write::Flush);
+                }
+                LogBody::TurnStarted { permission_mode, .. } => {
+                    self.mode = *permission_mode;
+                    self.turn_running = true;
+                }
                 _ => {}
             }
             self.log.push(e.clone());
@@ -634,6 +674,14 @@ impl Hosting {
     /// An answer for the viewer on link `to`, remembered when it acks a
     /// command, and sent where that viewer is now.
     async fn answer(&mut self, mut to: u64, a: Answer) {
+        if let Answer::Handoff { handed, .. } = &a {
+            self.handing = false;
+            // The lease is the other device's from here: nothing more is
+            // written, and it is not given back on the way out.
+            if handed.is_some() {
+                self.lost.store(true, Ordering::Relaxed);
+            }
+        }
         if let Answer::Ack { id, .. } = &a && !id.is_empty() {
             if let Some(now) = self.running.remove(id) { to = now; }
             self.remember(id, &a);
@@ -655,7 +703,13 @@ impl Hosting {
     /// otherwise viewers gone are forgotten, and a remote turn's approval
     /// nobody is here to answer is denied.
     async fn sweep(&mut self) -> Result<(), String> {
-        if self.lost.load(Ordering::Relaxed) {
+        // A handoff hands the lease over before it answers: the lease
+        // moving then is its own doing, and the bridge ends once its answer
+        // has gone.
+        if !self.handing && let Some(moved) = self.moved.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            return Err(moved);
+        }
+        if self.lost.load(Ordering::Relaxed) && !self.handing {
             return Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", self.o.session));
         }
         if let Some(why) = self.stale.lock().unwrap_or_else(|e| e.into_inner()).take() {
@@ -870,6 +924,7 @@ impl Hosting {
     fn frame(&mut self, from: u64, body: &[u8]) {
         match serde_json::from_slice::<ViewerFrame>(body) {
             Ok(ViewerFrame::CatchUp { after }) => self.catch_up(from, after),
+            Ok(ViewerFrame::Handoff { id, device }) => self.handoff(from, id, device),
             // Run once: a command sent again (its ack lost, the
             // viewer reconnected) is answered with the ack it
             // had, or nothing while it is still being taken.
@@ -889,6 +944,59 @@ impl Hosting {
             Ok(ViewerFrame::Command(r)) => self.execute(from, r),
             Err(e) => { let _ = self.answers_tx.send((from, Answer::Ack { id: String::new(), error: Some(format!("not a frame this host reads: {e}")) })); }
         }
+    }
+
+    /// Hands the session to `device` (R-HAND-1, R-HAND-2): refused while a
+    /// turn runs or another handoff is under way, and for a device not on
+    /// the verified list. Otherwise, off the loop: a checkpoint stored, the
+    /// bundle packed and stored sealed as a transport artifact, and the
+    /// lease handed over. Only once the registry has given the lease to
+    /// `device` does this bridge stop writing; anything that fails before
+    /// leaves the session here, as it was.
+    fn handoff(&mut self, from: u64, id: String, device: String) {
+        let refuse = |error: String| (from, Answer::Handoff { id: id.clone(), handed: None, error: Some(error) });
+        let to = DeviceId::parse(&device).filter(|d| *d != self.o.device && self.o.chain.devices().iter().any(|l| l.id() == *d));
+        let refused = match () {
+            _ if to.is_none() => Some(format!("{device} is not another device on your device list")),
+            _ if self.handing => Some("a handoff of this session is under way already".to_string()),
+            _ if self.turn_running => Some(format!("session {} is running a turn; take it once the turn ends, or interrupt it first", self.o.session)),
+            _ => None,
+        };
+        if let Some(why) = refused {
+            let _ = self.answers_tx.send(refuse(why));
+            return;
+        }
+        self.handing = true;
+        let since = self.log.first().map_or(0, |e| e.time_ms);
+        let backend = {
+            let events: Vec<Value> = self.log.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
+            super::handoff::last_backend(&events)
+        };
+        let (o, held, jobs, tx, moved_to) = (self.o.clone(), self.held.clone(), self.jobs.clone(), self.answers_tx.clone(), self.moved.clone());
+        tokio::task::spawn_blocking(move || {
+            let run = || -> Result<(super::Handed, String), String> {
+                let (done, wait) = std::sync::mpsc::channel();
+                jobs.send(Write::Handoff(worktree(&o.cwd), done)).map_err(|_| "the session's writer has stopped".to_string())?;
+                wait.recv_timeout(Duration::from_secs(60)).map_err(|_| "the checkpoint was not stored in a minute".to_string())?.map_err(|e| format!("the checkpoint could not be stored ({e})"))?;
+                let transcript = backend.as_ref().map(|(b, id, path)| (b.as_str(), id.as_str(), std::path::Path::new(path.as_str())));
+                let bundle = super::handoff::pack(std::path::Path::new(&o.cwd), &o.session, since, transcript)?;
+                let key: [u8; 32] = e2e::random();
+                let sealed = e2e::seal_transport(&key, &crate::daemon::ws::uuid(&o.session), &bundle.encode());
+                let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+                let t = o.api.put_transport(&o.session, &sealed, &token).map_err(|e| format!("the bundle could not be stored ({}): {}", e.code(), e.fix()))?;
+                let lease = o.api.renew_lease(&o.session, &device, &token, o.ttl, &o.env).map_err(|e| format!("the registry did not hand the lease over ({}): {}", e.code(), e.fix()))?;
+                let handed = super::Handed { transport: t.slug, key: super::handoff::key_hex(&key), token: lease.token, fence: lease.fence, ticket: lease.relay_ticket, from_device: o.device.to_string() };
+                let name = o.chain.devices().iter().find(|d| d.id().to_string() == device).map_or(device.clone(), |d| d.name.clone());
+                Ok((handed, format!("{HANDED_OVER} session {} to {name}; it runs there now", o.session)))
+            };
+            let _ = tx.send(match run() {
+                Ok((handed, moved)) => {
+                    *moved_to.lock().unwrap_or_else(|e| e.into_inner()) = Some(moved);
+                    (from, Answer::Handoff { id, handed: Some(handed), error: None })
+                }
+                Err(e) => (from, Answer::Handoff { id, handed: None, error: Some(format!("{e} — the session stays here")) }),
+            });
+        });
     }
 
     /// The logged events after `after`, a page at a time.
@@ -1082,7 +1190,7 @@ mod tests {
     /// `d` on the stand-in registry at `url`, hosting `session`.
     fn options(url: &str, d: &Dev, keys: UserKeys, chain: Chain, session: &str) -> Options {
         let api = Arc::new(client(url, d));
-        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None }
+        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None, handed: None }
     }
 
     fn registry() -> (krowk_devregistry::Running, String) {

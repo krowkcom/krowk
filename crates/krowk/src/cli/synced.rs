@@ -8,6 +8,11 @@
 //! - `host <session>`: this machine's daemon runs the session, and the
 //!   bridge holds its lease and syncs it until interrupted. The session is
 //!   one this machine already has; any other id is refused up front.
+//! - `take <session>`: moves it here from the machine hosting it
+//!   (R-HAND-1): checked first that it can run here, then the host
+//!   checkpoints, ships its uncommitted work and hands its lease over; the
+//!   work lands in a fresh worktree of this clone, and this machine hosts
+//!   the session from there until interrupted.
 //! - `attach <session>`: follows it from another machine. On a terminal it
 //!   opens the TUI on it (D11); otherwise, or with `--json`, as stream-json
 //!   on stdout, each line typed on stdin a prompt to it, queued while no
@@ -268,8 +273,15 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
         return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sessions` lists this machine's")));
     }
     let session = local_log(ctx, &session)?;
+    let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
+    host_loop(ctx, &session, &cwd, None)
+}
+
+/// Hosts until the bridge ends, again from the top after a device's
+/// removal; `handed` is the lease a handoff brought, for the first run.
+fn host_loop(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, mut handed: Option<krowk_harness::sync::Handed>) -> Result<(), Error> {
     loop {
-        match host_once(ctx, &session) {
+        match host_once(ctx, session, cwd, handed.take()) {
             // A device was removed while it ran: hosted again from the top,
             // so the new list is verified and its user key taken up.
             Err(e) if e.code() == "device_list_moved" => {
@@ -281,14 +293,14 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
 }
 
 /// One run of the bridge, from the list's check to the bridge's end.
-fn host_once(ctx: &mut Ctx, session: &str) -> Result<(), Error> {
+fn host_once(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, handed: Option<krowk_harness::sync::Handed>) -> Result<(), Error> {
     let session = session.to_string();
     // The list first: a newer key it takes up is the one `keys` reads.
     current(ctx)?;
     let k = keys(ctx)?;
     let api = Arc::new(signed(ctx, &k, "krowk sync host")?);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
-    let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
+    let cwd = cwd.to_path_buf();
     let spawn = super::host::spawner(ctx)?;
     let direct = direct(ctx, &api)?;
     let o = host::Options {
@@ -307,6 +319,7 @@ fn host_once(ctx: &mut Ctx, session: &str) -> Result<(), Error> {
         direct,
         // Kept in the session's sealed index, for `krowk hosts`.
         tailnet: krowk_harness::sync::tailscale::status(&krowk_harness::sync::tailscale::socket(ctx.io.env)).ok().and_then(|s| s.tailnet()),
+        handed,
     };
     krowk_harness::sync::run_host(o, ctx.io.env, &cwd, super::VERSION, &spawn).map_err(|(code, message)| fail(&code, message))
 }
@@ -335,6 +348,96 @@ fn log_id_for(ctx: &Ctx, id: &str) -> Option<String> {
     }
     let conn = super::sessions::open_store(ctx).ok()?;
     krowk_store::foreign_session_id(&conn, id, krowk_harness::project::HARNESS).ok().flatten()
+}
+
+/// `krowk sync take <session>` (R-HAND-1, R-HAND-5, R-INST-5, R-CRED-1):
+/// the session moved here from the machine hosting it, run from a clone of
+/// its repository. Nothing moves until this machine has shown it can run
+/// the session — its instance here by name, signed in, its model reachable,
+/// a backend's repository trusted — so a refusal leaves it on its host.
+pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    use krowk_harness::sync::{handoff, store};
+    let session = one(args, "take")?;
+    if !krowk_harness::log::valid_id(&session) {
+        return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sync sessions` lists the synced ones")));
+    }
+    let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
+    current(ctx)?;
+    let k = keys(ctx)?;
+    let api = Arc::new(signed(ctx, &k, "krowk sync take")?);
+    let me = k.device.to_string();
+    let read_log = |api: &Client| -> Result<Vec<serde_json::Value>, Error> {
+        let s = api.show_sync_session(&session).map_err(|e| if e.status == 404 { fail("no_session", format!("the registry holds no synced session {session} — `krowk sync sessions` lists them")) } else { e })?;
+        let key = store::open_session_key(&s, &session, &k.user, &k.chain, krowk_client::session_record::Signer::EverHeld).map_err(|e| fail("sync_failed", e))?;
+        let index = store::open_index(&key, &session, &s.sealed_index).map_err(|e| fail("sync_failed", e))?;
+        Ok(store::attach(api, &key, &session, index, None).map_err(|e| fail("sync_failed", e))?.events)
+    };
+    match api.show_sync_session(&session).ok().and_then(|s| s.lease) {
+        Some(l) if l.device == me => return Err(fail("already_here", format!("this machine hosts session {session} already"))),
+        Some(_) => {}
+        None => return Err(fail("no_host", format!("session {session} has no host right now, so there is no live work to move; `krowk sync host {session}` on the machine that has it, then take it again"))),
+    }
+    let events = read_log(&api)?;
+    let home = ready_here(ctx, &session, &events, &cwd)?;
+
+    // The host checkpoints, ships the bundle and hands the lease over.
+    let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
+    let v = keys(ctx)?;
+    let o = viewer::Options { relay: relay(ctx, &api.base_url), env, api: api.clone(), device: v.device, signing: v.signing, keys: v.user, chain: v.chain, session: session.clone(), known: None };
+    let _ = writeln!(ctx.io.stderr, "krowk: asking the session's host to hand it over…");
+    let handed = krowk_harness::sync::ask_handoff(o, std::time::Duration::from_secs(120)).map_err(|e| fail("handoff_refused", e))?;
+
+    // The lease is this machine's now: anything failing from here gives it
+    // back, so the session can be hosted again.
+    let give_back = |e: Error| {
+        let _ = api.release_lease(&session, &handed.token);
+        e
+    };
+    let key = handoff::key_from_hex(&handed.key).ok_or_else(|| give_back(fail("handoff_failed", "the host sent no key this krowk reads")))?;
+    let sealed = api.read_transport(&handed.transport).map_err(give_back)?;
+    let plain = krowk_client::e2e::open_transport(&sealed, &krowk_harness::daemon::ws::uuid(&session), &key).map_err(|e| give_back(fail("handoff_failed", e.to_string())))?;
+    let bundle = handoff::Bundle::decode(&plain, &session).map_err(|e| give_back(fail("handoff_failed", e)))?;
+    let root = krowk_api::home::worktrees_root(ctx.io.env).ok_or_else(|| give_back(fail("no_home", "krowk found no home directory to make worktrees under — set HOME or XDG_DATA_HOME")))?;
+    let applied = handoff::apply(&bundle, &cwd, &root).map_err(|e| give_back(fail("handoff_failed", format!("{e} — the session's lease was given back; host it again where it was"))))?;
+    let _ = api.spend_transport(&handed.transport);
+    if let Some(home) = &home {
+        handoff::place_transcript(&bundle, home, &applied.cwd).map_err(|e| give_back(fail("handoff_failed", e)))?;
+        // The worktree is this repository's, which a backend may run in.
+        let trusted = krowk_harness::trust::Store::new(Some(super::providers::krowk_dir()?.join(krowk_harness::trust::FILE)), Some(ctx.env("HOME")).filter(|h| !h.is_empty()).map(Into::into));
+        let _ = trusted.trust(&krowk_harness::trust::root(&applied.cwd));
+    }
+    // The log as the host left it, checkpoint and all.
+    let events = read_log(&api).map_err(give_back)?;
+    let sessions = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    handoff::restore_log(&sessions, &session, &events, &applied.cwd, &me, &handed.from_device).map_err(|e| give_back(fail("handoff_failed", e)))?;
+    let _ = writeln!(ctx.io.stderr, "krowk: session {session} moved here, working in {} (branch {}); hosting it until interrupted", applied.cwd.display(), applied.worktree.branch());
+    let _held = applied.held;
+    host_loop(ctx, &session, &applied.cwd, Some(handed))
+}
+
+/// Whether the session can run here (R-INST-5, R-CRED-1): the instance its
+/// next turn runs on, by name, ready — signed in, its key set, its vendor's
+/// login good — and for a backend this repository trusted. The backend's
+/// config directory, where its transcript goes; None for a native session.
+fn ready_here(ctx: &Ctx, session: &str, events: &[serde_json::Value], cwd: &std::path::Path) -> Result<Option<std::path::PathBuf>, Error> {
+    use krowk_harness::{readiness, trust};
+    let Some(name) = krowk_harness::sync::handoff::last_instance(events) else { return Ok(None) };
+    let stays = "the session stays where it is";
+    let config = super::prompt::config_json()?;
+    let registry = krowk_harness::instances::Registry::resolve(&super::prompt::instances_from(&config)?, &krowk_api::home::process_env);
+    let inst = registry.get(&name).map_err(|_| fail("instance_missing", format!("session {session} runs on the {name} instance, which this machine does not have — {stays}; connect it here under the same name with `krowk connect`, then take it again")))?;
+    let creds = super::providers::credentials_path()?;
+    let probe = readiness::Probe { dir: cwd.to_path_buf(), within: std::time::Duration::from_secs(20) };
+    if let Some(e) = readiness::check(inst, &creds, &probe).refusal(inst) {
+        return Err(fail(&e.code, format!("{} — {stays}", e.message)));
+    }
+    let Some(b) = &inst.backend else { return Ok(None) };
+    let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), Some(ctx.env("HOME")).filter(|h| !h.is_empty()).map(Into::into));
+    let root = trust::root(cwd);
+    if !store.trusts(&root) {
+        return Err(fail("untrusted_directory", format!("{} is not a repository you have trusted, and the session runs on {}, which runs what a repository configures — {stays}; run krowk there once on a terminal and trust it, then take it again", root.display(), inst.vendor)));
+    }
+    Ok(b.home.clone())
 }
 
 pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {

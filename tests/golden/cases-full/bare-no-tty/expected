@@ -1320,6 +1320,11 @@ stdout:
           "name": "attach",
           "usage": "krowk sync attach SESSION",
           "summary": "Follow a synced session in the TUI, or as stream-json"
+        },
+        {
+          "name": "take",
+          "usage": "krowk sync take SESSION",
+          "summary": "Move a live session here, uncommitted work and all"
         }
       ]
     },
@@ -2931,6 +2936,11 @@ tty:
           "name": "attach",
           "usage": "krowk sync attach SESSION",
           "summary": "Follow a synced session in the TUI, or as stream-json"
+        },
+        {
+          "name": "take",
+          "usage": "krowk sync take SESSION",
+          "summary": "Move a live session here, uncommitted work and all"
         }
       ]
     },

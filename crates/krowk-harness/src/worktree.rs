@@ -611,7 +611,14 @@ pub fn create(cwd: &Path, root: &Path, owner: &str) -> Result<Worktree, Error> {
 /// unheld in between; recorded (`manage::Record`) for listing it later.
 /// Always a checkout: `create_fastest` may make a snapshot.
 pub fn create_held(cwd: &Path, root: &Path, owner: &str) -> Result<(Worktree, manage::Held), Error> {
-    create_as(cwd, root, owner, None).map(|(wt, held, _)| (wt, held))
+    create_as(cwd, root, owner, None, None).map(|(wt, held, _)| (wt, held))
+}
+
+/// `create_held` at `commit`, which the repository must have, rather than
+/// at its working state: where a session handed over from another machine
+/// goes on (R-HAND-1), its uncommitted work then applied on top.
+pub fn create_at(cwd: &Path, root: &Path, owner: &str, commit: &str) -> Result<(Worktree, manage::Held), Error> {
+    create_as(cwd, root, owner, None, Some(commit)).map(|(wt, held, _)| (wt, held))
 }
 
 /// How a worktree was made (WT11).
@@ -630,19 +637,26 @@ pub enum Made {
 /// (`template::snapshot`), noted in `seed.log`, and this creation is a
 /// checkout. Blocking: off the async runtime.
 pub fn create_fastest(cwd: &Path, root: &Path, owner: &str, config: &WorktreesConfig) -> Result<(Worktree, manage::Held, Made), Error> {
-    create_as(cwd, root, owner, Some(config))
+    create_as(cwd, root, owner, Some(config), None)
 }
 
-/// `create_fastest`, or with no `config` `create_held`.
-fn create_as(cwd: &Path, root: &Path, owner: &str, config: Option<&WorktreesConfig>) -> Result<(Worktree, manage::Held, Made), Error> {
+/// `create_fastest`, or with no `config` `create_held`; at `commit`, as a
+/// checkout, when one is given.
+fn create_as(cwd: &Path, root: &Path, owner: &str, config: Option<&WorktreesConfig>, commit: Option<&str>) -> Result<(Worktree, manage::Held, Made), Error> {
     let common = match read(query(cwd)?.args(["rev-parse", "--path-format=absolute", "--git-common-dir"]), "rev-parse") {
         Ok(c) if !c.is_empty() => PathBuf::from(c).canonicalize().map_err(|e| Error::Failed(format!("the repository's git directory: {e}")))?,
         _ => return Err(Error::NotARepository),
     };
-    let head = read(query(cwd)?.args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]), "rev-parse HEAD")
-        .ok()
-        .filter(|b| !b.is_empty())
-        .ok_or_else(|| Error::Failed("the repository has no commit yet to start a worktree from".into()))?;
+    let head = match commit {
+        Some(c) => read(query(cwd)?.args(["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{c}^{{commit}}")]), "rev-parse")
+            .ok()
+            .filter(|b| !b.is_empty())
+            .ok_or_else(|| Error::Failed(format!("the repository has no commit {c}")))?,
+        None => read(query(cwd)?.args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]), "rev-parse HEAD")
+            .ok()
+            .filter(|b| !b.is_empty())
+            .ok_or_else(|| Error::Failed("the repository has no commit yet to start a worktree from".into()))?,
+    };
     let main = main_checkout(cwd, &common)?;
     let repo_id = repo_id(&common);
     let dir = root.join(&repo_id);
@@ -652,7 +666,7 @@ fn create_as(cwd: &Path, root: &Path, owner: &str, config: Option<&WorktreesConf
     manage::note_common(&dir, &common);
     // Hashing the files is the slow part: done before the lock, so
     // creations at once in one repository do not queue behind it.
-    let tree = working_state(cwd, &head, &dir)?;
+    let tree = if commit.is_some() { None } else { working_state(cwd, &head, &dir)? };
     let repo_lock = lock(&common)?;
     let (hex, path) = std::iter::repeat_with(random_hex).map(|h| (h.clone(), dir.join(h))).take(16).find(|(_, p)| !p.exists()).ok_or_else(|| Error::Failed(format!("no free name for a worktree in {}", dir.display())))?;
     let base = match tree {
@@ -660,7 +674,7 @@ fn create_as(cwd: &Path, root: &Path, owner: &str, config: Option<&WorktreesConf
         None => head,
     };
     let wt = Worktree { path, hex, base, common, main, repo_id };
-    let (mut repo_lock, taken) = match config {
+    let (mut repo_lock, taken) = match config.filter(|_| commit.is_none()) {
         Some(config) if seed::method(&dir, &wt.common) == seed::Method::Snapshot => {
             let (held, taken) = template::snapshot(repo_lock, &wt, config)?;
             (held, taken.unwrap_or_else(|e| {
