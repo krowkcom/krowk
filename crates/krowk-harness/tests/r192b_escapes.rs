@@ -616,3 +616,231 @@ async fn r192b_8_cargo_builds_offline_and_cannot_write_its_homes() {
     let _ = std::fs::remove_dir_all(&b);
     t.done();
 }
+
+// ---------------------------------------------------------------- round 3
+//
+// Ticket 40: the round-3 probes the third review never ran (P2 follow-ups'
+// gate). Each one must be blocked.
+
+/// The fixture with the workspace inside the home, as `~/proj` is: the home
+/// is a tmpfs with the workspace bound back into it.
+fn fx_in_home(name: &str) -> Fx {
+    let base = base(name);
+    let home = base.join("home");
+    let ws = home.join("proj");
+    std::fs::create_dir_all(&ws).unwrap();
+    plant(&home);
+    let w = |rel: &str, body: &str| {
+        let p = home.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    w("Documents/taxes.txt", &format!("{MARKER}-documents\n"));
+    w("Documents/sub/passwords.kdbx", &format!("{MARKER}-kdbx\n"));
+    git(&ws, &home, &["init", "-q"]);
+    std::fs::write(ws.join("a.txt"), "hello\n").unwrap();
+    let cfg = permissions::Config { home: Some(home.clone()), claude_dir: Some(home.join(".claude")), krowk_dir: Some(home.join(".krowk")), sandbox: Some(Sandbox { profile: Profile::Workspace, by: By::Bubblewrap }), ..Default::default() };
+    let policy = Policy::load(&cfg, &ws).unwrap();
+    let gate = Gate::new(policy, PermissionMode::BypassPermissions, Arc::new(Mutex::new(Vec::new())), None, None, "r192b", "t");
+    let scope = gate.scope(permissions::Opens { outside: true, fences: true });
+    Fx { base, ws, home, scope }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn r192b_9_r_perm_3_credentials_stay_hidden_with_the_workspace_inside_the_home() {
+    if !enforced("r192b_9") {
+        return;
+    }
+    unsafe {
+        std::env::remove_var("CARGO_HOME");
+        std::env::remove_var("RUSTUP_HOME");
+    }
+    let f = fx_in_home("w9");
+    let mut t = Tally::default();
+    let (out, err) = sh(&f, "cat a.txt").await;
+    t.control("the workspace inside the home is readable", !err && out.contains("hello"), &out);
+    let creds = [".ssh/id_ed25519", ".cargo/credentials.toml", ".git-credentials", ".netrc", ".claude/.credentials.json", ".codex/auth.json", ".npmrc", ".config/gh/hosts.yml", ".local/share/keyrings/login.keyring", ".bash_history", "Documents/taxes.txt", "Documents/sub/passwords.kdbx"];
+    for rel in creds {
+        let (out, _) = sh(&f, &format!("cat ../{rel} {} 2>&1", q(&f.home.join(rel)))).await;
+        t.blocked(&format!("9a cat ~/{rel} from ~/proj"), !out.contains(MARKER), out);
+        let (out, _) = run(&f, READ, json!({"path": format!("../{rel}")})).await;
+        t.blocked(&format!("9b read tool ../{rel}"), !out.contains(MARKER), out);
+    }
+    let (out, _) = sh(&f, "ls -la ~ ../ ../Documents 2>&1; grep -r FAKE ~ 2>/dev/null; find / -name 'taxes.txt' 2>/dev/null | xargs cat 2>/dev/null").await;
+    t.blocked("9c search the home from inside it", !out.contains(MARKER) && !out.contains("taxes"), out);
+    let (out, _) = run(&f, GREP, json!({"pattern": "FAKE", "path": f.home})).await;
+    t.blocked("9d grep tool over the home", !out.contains(MARKER), out);
+    let (out, _) = sh(&f, "ln -s ../Documents docs; cat docs/taxes.txt 2>&1").await;
+    t.blocked("9e symlink from the workspace into the home", !out.contains(MARKER), out);
+    let (out, _) = run(&f, READ, json!({"path": "docs/taxes.txt"})).await;
+    t.blocked("9e' read tool through it", !out.contains(MARKER), out);
+    t.done();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn r192b_10_r_perm_3_a_hooks_path_set_between_turns_is_fenced_on_the_next() {
+    if !enforced("r192b_10") {
+        return;
+    }
+    let f = bw("w10", Profile::Workspace);
+    let mut t = Tally::default();
+    std::fs::create_dir_all(f.ws.join("newhooks")).unwrap();
+    let (out, err) = sh(&f, "echo ok > newhooks/before.txt && cat newhooks/before.txt").await;
+    t.control("not yet a hooks directory, so writable", !err && out.contains("ok"), &out);
+    // The person, between turns, points git at it.
+    git(&f.ws, &f.home, &["config", "core.hooksPath", "newhooks"]);
+    let (out, _) = sh(&f, "echo 'echo pwned' > newhooks/pre-commit; chmod +x newhooks/pre-commit").await;
+    t.blocked("10a bash writes the new core.hooksPath", !f.ws.join("newhooks/pre-commit").exists(), out);
+    let (out, _) = run(&f, WRITE, json!({"path": "newhooks/post-checkout", "content": "echo pwned"})).await;
+    t.blocked("10b file tool writes the new core.hooksPath", !f.ws.join("newhooks/post-checkout").exists(), out);
+    // And moved again, to a path with a `~/` and one that is absolute.
+    std::fs::create_dir_all(f.ws.join("abs-hooks")).unwrap();
+    git(&f.ws, &f.home, &["config", "core.hooksPath", &f.ws.join("abs-hooks").display().to_string()]);
+    let (out, _) = sh(&f, "echo 'echo pwned' > abs-hooks/pre-commit").await;
+    t.blocked("10c bash writes an absolute core.hooksPath set since", !f.ws.join("abs-hooks/pre-commit").exists(), out);
+    t.done();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn r192b_11_r_perm_3_husky_lefthook_and_gitdir_files() {
+    if !enforced("r192b_11") {
+        return;
+    }
+    let f = bw("w11", Profile::Workspace);
+    let mut t = Tally::default();
+    // husky v9: core.hooksPath = .husky/_, whose stubs run .husky/<hook>.
+    std::fs::create_dir_all(f.ws.join(".husky/_")).unwrap();
+    git(&f.ws, &f.home, &["config", "core.hooksPath", ".husky/_"]);
+    let (out, _) = sh(&f, "echo 'echo pwned' > .husky/_/pre-commit").await;
+    t.blocked("11a write husky's hooks directory (.husky/_)", !f.ws.join(".husky/_/pre-commit").exists(), out);
+    let (out, _) = run(&f, WRITE, json!({"path": ".husky/_/h", "content": "echo pwned"})).await;
+    t.blocked("11a' file tool writes .husky/_", !f.ws.join(".husky/_/h").exists(), out);
+    // lefthook installs into .git/hooks, which stays fenced.
+    let (out, _) = sh(&f, "echo 'echo pwned' > .git/hooks/pre-commit; mkdir -p .git/hooks && echo x > .git/hooks/lefthook").await;
+    t.blocked("11b write lefthook's .git/hooks", !f.ws.join(".git/hooks/pre-commit").exists() && !f.ws.join(".git/hooks/lefthook").exists(), out);
+
+    // A repository whose .git is a gitdir file naming a git directory
+    // inside the workspace: that directory is fenced as a .git is.
+    let sub = f.ws.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    git(&f.ws, &f.home, &["init", "-q", "--separate-git-dir", f.ws.join("store.git").to_str().unwrap(), sub.to_str().unwrap()]);
+    let (out, _) = sh(&f, "echo 'echo pwned' > store.git/hooks/pre-commit; printf '[core]\\n\\tfsmonitor = echo pwned\\n' >> store.git/config").await;
+    t.blocked("11c write the git directory a gitdir file names inside the workspace", !f.ws.join("store.git/hooks/pre-commit").exists() && !read(&f.ws.join("store.git/config")).contains("fsmonitor"), out);
+    let (out, _) = sh(&f, "echo 'gitdir: ../evil.git' > sub/.git").await;
+    t.blocked("11d rewrite the gitdir file", read(&sub.join(".git")).contains("store.git"), out);
+    // One naming a git directory outside the workspace: not writable at all.
+    let outside = f.base.join("outside.git");
+    git(&f.base, &f.home, &["init", "-q", "--bare", outside.to_str().unwrap()]);
+    let sub2 = f.ws.join("sub2");
+    std::fs::create_dir_all(&sub2).unwrap();
+    std::fs::write(sub2.join(".git"), format!("gitdir: {}\n", outside.display())).unwrap();
+    let (out, _) = sh(&f, &format!("echo 'echo pwned' > {}/hooks/pre-commit", q(&outside))).await;
+    t.blocked("11e write a gitdir file's target outside the workspace", !outside.join("hooks/pre-commit").exists(), out);
+    t.done();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn r192b_12_r_perm_3_the_search_cache_is_not_fooled() {
+    if !enforced("r192b_12") {
+        return;
+    }
+    let f = bw("w12", Profile::Workspace);
+    let mut t = Tally::default();
+    // A nested repository the person made, so fenced.
+    let nested = f.ws.join("outer/sub");
+    std::fs::create_dir_all(&nested).unwrap();
+    git(&nested, &f.home, &["init", "-q"]);
+    let (out, _) = sh(&f, "echo 'echo pwned' > outer/sub/.git/hooks/pre-commit").await;
+    t.control("the nested .git is fenced", !nested.join(".git/hooks/pre-commit").exists(), &out);
+    // A first call warms the turn's search; the next ones try to slip past it.
+    let (out, _) = sh(&f, "touch -d '2000-01-01' outer outer/sub; echo 'echo pwned' > outer/sub/.git/hooks/pre-commit").await;
+    t.blocked("12a touch -d the parents, then write", !nested.join(".git/hooks/pre-commit").exists(), out);
+    let (out, _) = sh(&f, "mv outer outer2 && echo 'echo pwned' > outer2/sub/.git/hooks/pre-commit; mv outer2 outer").await;
+    t.blocked("12b rename a parent of the fence away, write, rename it back", !nested.join(".git/hooks/pre-commit").exists() && !f.ws.join("outer2/sub/.git/hooks/pre-commit").exists(), out);
+    let (out, _) = sh(&f, "mv outer/sub outer/sub2 && echo 'echo pwned' > outer/sub2/.git/hooks/pre-commit; mv outer/sub2 outer/sub").await;
+    t.blocked("12c rename the fence's own parent away and back", !nested.join(".git/hooks/pre-commit").exists() && !f.ws.join("outer/sub2/.git/hooks/pre-commit").exists(), out);
+    // A repository made in one call, under parents set back in time and
+    // renamed in and out, is still found and removed after it.
+    let (out, _) = sh(&f, "mkdir -p made/x && git -C made/x init -q && touch -d '2000-01-01' made/x made; mv made made2; mv made2 made; echo done").await;
+    t.blocked("12d a .git made under back-dated, renamed parents is removed", !f.ws.join("made/x/.git").exists(), out);
+    t.done();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn r192b_13_r_perm_3_a_nested_git_cannot_hide_from_the_search() {
+    if !enforced("r192b_13") {
+        return;
+    }
+    let f = bw("w13", Profile::Workspace);
+    let mut t = Tally::default();
+    // Behind a directory nobody may read.
+    let (out, _) = sh(&f, "mkdir -p locked/sub && git -C locked/sub init -q && echo 'echo pwned' > locked/sub/.git/hooks/pre-commit && chmod 000 locked; echo done").await;
+    let _ = std::process::Command::new("chmod").args(["-R", "u+rwx"]).arg(f.ws.join("locked")).status();
+    t.blocked("13a a .git behind a mode-000 directory survives the call", !f.ws.join("locked/sub/.git").exists(), out);
+    let (out, _) = sh(&f, "mkdir -p listed/sub && git -C listed/sub init -q && chmod 400 listed; echo done").await;
+    let _ = std::process::Command::new("chmod").args(["-R", "u+rwx"]).arg(f.ws.join("listed")).status();
+    t.blocked("13a' a .git behind a readable but unsearchable (0400) directory survives the call", !f.ws.join("listed/sub/.git").exists(), out);
+    // Deeper than a path may be named (PATH_MAX).
+    let (out, _) = sh(&f, "d=deep; mkdir deep; cd deep; for i in $(seq 1 220); do mkdir -p aaaaaaaaaaaaaaaaaaaa && cd aaaaaaaaaaaaaaaaaaaa || break; done; git init -q && echo 'echo pwned' > .git/hooks/pre-commit; pwd | wc -c").await;
+    let made = out.lines().filter_map(|l| l.trim().parse::<usize>().ok()).next_back().unwrap_or(0);
+    t.control("the deep repository's path is past PATH_MAX", made > 4096, &out);
+    let deep = std::process::Command::new("bash").arg("-c").arg("cd deep && for i in $(seq 1 220); do cd aaaaaaaaaaaaaaaaaaaa || exit 1; done; test -e .git && echo SURVIVED").current_dir(&f.ws).output().unwrap();
+    t.blocked("13b a .git past PATH_MAX survives the call", !String::from_utf8_lossy(&deep.stdout).contains("SURVIVED"), out);
+    let _ = std::process::Command::new("rm").args(["-rf"]).arg(f.ws.join("deep")).status();
+    // Under names git would read as a repository, and a FIFO in .git's place.
+    let (out, _) = sh(&f, "mkdir -p c1 c2 c3 c4; git -C c1 init -q; mv c1/.git c1/.GIT; mkdir -p c2/.git./hooks; mkfifo c3/.git; mkdir -p 'c4/.git '; echo done").await;
+    let left: Vec<String> = ["c1/.GIT", "c2/.git.", "c3/.git", "c4/.git "].iter().filter(|p| std::fs::symlink_metadata(f.ws.join(p)).is_ok()).map(|p| p.to_string()).collect();
+    t.blocked("13c .GIT, .git., a FIFO .git and '.git ' made in a call are removed", left.is_empty(), format!("{out} left: {left:?}"));
+    t.done();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn r192b_14_r_perm_3_parent_symlink_races_and_hardlinks() {
+    if !enforced("r192b_14") {
+        return;
+    }
+    let f = bw("w14", Profile::Workspace);
+    let mut t = Tally::default();
+    // The file tool writing `d/f` while a host thread flips `d` between a
+    // directory and a link to .git/hooks, or to outside the workspace.
+    let (hooks, outdir) = (f.ws.join(".git/hooks"), f.base.join("outdir"));
+    std::fs::create_dir_all(&outdir).unwrap();
+    for (name, target) in [("14a write tool, parent swapped to .git/hooks", &hooks), ("14b write tool, parent swapped to outside", &outdir)] {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (ws, tgt) = (f.ws.clone(), target.clone());
+        let flipper = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let (d, l, g) = (ws.join("d"), ws.join(".d.link"), ws.join(".d.dir"));
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::fs::create_dir(&g);
+                    let _ = std::fs::remove_file(&d).or_else(|_| std::fs::remove_dir_all(&d));
+                    let _ = std::fs::rename(&g, &d);
+                    let _ = std::os::unix::fs::symlink(&tgt, &l);
+                    let _ = std::fs::remove_dir_all(&d);
+                    let _ = std::fs::rename(&l, &d);
+                }
+            })
+        };
+        let landed = target.join("pre-push");
+        for _ in 0..3000 {
+            let _ = run(&f, WRITE, json!({"path": "d/pre-push", "content": "echo pwned\n"})).await;
+            if landed.exists() {
+                break;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        flipper.join().unwrap();
+        let hit = landed.exists();
+        let _ = std::fs::remove_file(&landed);
+        t.blocked(name, !hit, format!("{} written through a swapped parent", landed.display()));
+    }
+    // Hard links to protected files, made inside the sandbox.
+    let config = read(&f.ws.join(".git/config"));
+    let (out, _) = sh(&f, "ln .git/config hl-config 2>&1; printf '[core]\\n\\tfsmonitor = echo pwned\\n' >> hl-config; ln .git/hooks/pre-commit.sample hl-hook 2>&1 && echo pwned >> hl-hook").await;
+    let sample = read(&f.ws.join(".git/hooks/pre-commit.sample"));
+    t.blocked("14c hard links to .git/config and a hook", read(&f.ws.join(".git/config")) == config && !sample.contains("pwned"), out);
+    let (out, _) = sh(&f, &format!("ln {} hl-key 2>&1; cat hl-key 2>&1", q(&f.home.join(".ssh/id_ed25519")))).await;
+    t.blocked("14d hard link to a hidden key", !out.contains(MARKER), out);
+    t.done();
+}

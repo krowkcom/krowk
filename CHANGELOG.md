@@ -50,6 +50,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   to send again once the daemon is replaced.
 - **"copied … (N lines)" shows as soon as you copy.** After Ctrl-Y picked
   something to copy, the confirmation only appeared after the next key.
+- **A command in the sandbox can no longer hide a git repository from it.**
+  A sandboxed command could create a repository, lock its parent
+  directory with `chmod 000`, and leave hooks there that the sandbox never
+  saw or cleaned up. krowk now restores read access to such a directory
+  of yours before it checks the workspace, so the repository is fenced or
+  removed like any other.
 
 ## [0.13.0] - 2026-10-07
 

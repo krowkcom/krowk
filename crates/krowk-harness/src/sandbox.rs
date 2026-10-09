@@ -608,7 +608,8 @@ impl WalkCache {
         for root in roots {
             let mut stack = vec![root.clone()];
             while let Some(dir) = stack.pop() {
-                let Some(st) = std::fs::symlink_metadata(&dir).ok().filter(std::fs::Metadata::is_dir).and_then(|m| stamp_of(&m)) else { continue };
+                let Some(m) = std::fs::symlink_metadata(&dir).ok().filter(std::fs::Metadata::is_dir) else { continue };
+                let Some(st) = searchable(&dir, m).and_then(|m| stamp_of(&m)) else { continue };
                 if !self.dirs.get(&dir).is_some_and(|s| s.stamp == st) {
                     let Ok(rd) = std::fs::read_dir(&dir) else { continue };
                     let mut s = Seen { stamp: st, entries: 0, subdirs: Vec::new(), gits: Vec::new() };
@@ -657,6 +658,27 @@ impl WalkCache {
         self.gits.retain(|g, _| repos.contains(g));
         Ok(f)
     }
+}
+
+/// A directory of the workspace the search may read and enter. One of
+/// this user's that it could not — a command in the sandbox runs as the
+/// same user, so `chmod 000` on a directory it made would hide a `.git`
+/// beneath it from the search, and from the removal after the call — gets
+/// its owner's read and search bits back first. One of another user's is
+/// left as it is: a command could not have made it, nor written under it.
+fn searchable(dir: &Path, m: std::fs::Metadata) -> Option<std::fs::Metadata> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // SAFETY: geteuid(2) has no failure and reads nothing.
+        let me = unsafe { libc::geteuid() };
+        if m.uid() == me && m.mode() & 0o500 != 0o500 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode((m.mode() & 0o7777) | 0o500)).ok()?;
+            return std::fs::symlink_metadata(dir).ok().filter(std::fs::Metadata::is_dir);
+        }
+    }
+    let _ = dir;
+    Some(m)
 }
 
 /// A small regular file's text, read without following a symlink and
