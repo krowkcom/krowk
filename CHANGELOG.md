@@ -50,6 +50,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   to send again once the daemon is replaced.
 - **"copied … (N lines)" shows as soon as you copy.** After Ctrl-Y picked
   something to copy, the confirmation only appeared after the next key.
+- **A command in the sandbox can no longer leave a git repository behind.**
+  A sandboxed command could keep a repository it made by locking its
+  parent directory (`chmod 000`), making it read-only, or creating a bare
+  repository with no `.git`, and its config would then run the next time
+  git ran there. krowk now finds and removes all of these after the call,
+  restoring access to what the call itself locked. Directories you locked
+  yourself are left alone. If something still can't be removed, krowk
+  says so.
 
 ## [0.13.0] - 2026-10-07
 
