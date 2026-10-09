@@ -780,17 +780,39 @@ async fn r192b_13_r_perm_3_a_nested_git_cannot_hide_from_the_search() {
     let (out, _) = sh(&f, "mkdir -p listed/sub && git -C listed/sub init -q && chmod 400 listed; echo done").await;
     let _ = std::process::Command::new("chmod").args(["-R", "u+rwx"]).arg(f.ws.join("listed")).status();
     t.blocked("13a' a .git behind a readable but unsearchable (0400) directory survives the call", !f.ws.join("listed/sub/.git").exists(), out);
-    // Deeper than a path may be named (PATH_MAX).
-    let (out, _) = sh(&f, "d=deep; mkdir deep; cd deep; for i in $(seq 1 220); do mkdir -p aaaaaaaaaaaaaaaaaaaa && cd aaaaaaaaaaaaaaaaaaaa || break; done; git init -q && echo 'echo pwned' > .git/hooks/pre-commit; pwd | wc -c").await;
+    // Made hard to remove rather than hidden: read-only, its parent
+    // read-only, itself locked, or all of it at once.
+    let (out, _) = sh(&f, "for d in r1 r2 r3 r4; do mkdir -p $d/sub && git -C $d/sub init -q; done; chmod -R a-w r1/sub/.git; chmod 0500 r2/sub; chmod 000 r3/sub/.git; chmod 000 r4/sub r4; echo done").await;
+    let _ = std::process::Command::new("chmod").args(["-R", "u+rwx"]).arg(&f.ws).status();
+    let left: Vec<&str> = ["r1", "r2", "r3", "r4"].into_iter().filter(|d| f.ws.join(d).join("sub/.git").exists()).collect();
+    t.blocked("13b a .git made read-only, under a read-only parent, or locked survives the call", left.is_empty(), format!("{out} left: {left:?}"));
+    // A bare repository's layout, which git finds when run inside it.
+    let (out, _) = sh(&f, "git init -q --bare bare.git && printf '[core]\\n\\tfsmonitor = echo PWNED\\n' >> bare.git/config; mkdir -p hidden && git init -q --bare hidden/x && mv hidden/x hidden/notgit; echo done").await;
+    t.blocked("13c a bare repository made in a call survives it", !f.ws.join("bare.git").exists() && !f.ws.join("hidden/notgit/HEAD").exists(), out);
+    // Deeper than git can work: a repository there is one it cannot use.
+    let (out, _) = sh(&f, "mkdir deep; cd deep; for i in $(seq 1 220); do mkdir -p aaaaaaaaaaaaaaaaaaaa && cd aaaaaaaaaaaaaaaaaaaa || break; done; mkdir -p .git/hooks .git/objects .git/refs && echo 'ref: refs/heads/main' > .git/HEAD && printf '[core]\\n\\tfsmonitor = echo PWNED\\n' > .git/config; pwd | wc -c").await;
     let made = out.lines().filter_map(|l| l.trim().parse::<usize>().ok()).next_back().unwrap_or(0);
     t.control("the deep repository's path is past PATH_MAX", made > 4096, &out);
-    let deep = std::process::Command::new("bash").arg("-c").arg("cd deep && for i in $(seq 1 220); do cd aaaaaaaaaaaaaaaaaaaa || exit 1; done; test -e .git && echo SURVIVED").current_dir(&f.ws).output().unwrap();
-    t.blocked("13b a .git past PATH_MAX survives the call", !String::from_utf8_lossy(&deep.stdout).contains("SURVIVED"), out);
+    let deep = std::process::Command::new("bash").arg("-c").arg("cd deep && for i in $(seq 1 220); do cd aaaaaaaaaaaaaaaaaaaa || exit 1; done; git status 2>&1; git -c core.fsmonitor= rev-parse --git-dir 2>&1").current_dir(&f.ws).output().unwrap();
+    let said = String::from_utf8_lossy(&deep.stdout).to_string();
+    t.blocked("13d git run in a repository past PATH_MAX runs none of its config", !said.contains("PWNED"), said);
     let _ = std::process::Command::new("rm").args(["-rf"]).arg(f.ws.join("deep")).status();
     // Under names git would read as a repository, and a FIFO in .git's place.
     let (out, _) = sh(&f, "mkdir -p c1 c2 c3 c4; git -C c1 init -q; mv c1/.git c1/.GIT; mkdir -p c2/.git./hooks; mkfifo c3/.git; mkdir -p 'c4/.git '; echo done").await;
     let left: Vec<String> = ["c1/.GIT", "c2/.git.", "c3/.git", "c4/.git "].iter().filter(|p| std::fs::symlink_metadata(f.ws.join(p)).is_ok()).map(|p| p.to_string()).collect();
-    t.blocked("13c .GIT, .git., a FIFO .git and '.git ' made in a call are removed", left.is_empty(), format!("{out} left: {left:?}"));
+    t.blocked("13e .GIT, .git., a FIFO .git and '.git ' made in a call are removed", left.is_empty(), format!("{out} left: {left:?}"));
+    // A directory the person locked before the turn stays locked: a call
+    // opens only what it changed.
+    std::fs::create_dir_all(f.ws.join("private")).unwrap();
+    std::fs::write(f.ws.join("private/secret.txt"), format!("{MARKER}-private\n")).unwrap();
+    let _ = std::process::Command::new("chmod").arg("000").arg(f.ws.join("private")).status();
+    std::thread::sleep(Duration::from_millis(1100));
+    let (out, _) = sh(&f, "cat private/secret.txt 2>&1; ls private 2>&1").await;
+    let (out2, _) = run(&f, READ, json!({"path": "private/secret.txt"})).await;
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(f.ws.join("private")).unwrap().permissions().mode() & 0o777;
+    let _ = std::process::Command::new("chmod").arg("700").arg(f.ws.join("private")).status();
+    t.blocked("13f a directory the person locked stays locked", mode == 0 && !out.contains(MARKER) && !out2.contains(MARKER), format!("mode {mode:o}: {out} {out2}"));
     t.done();
 }
 

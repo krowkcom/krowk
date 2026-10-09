@@ -302,7 +302,7 @@ impl Plan {
         // Every repository in the workspace, nested ones too, and the hooks
         // directory each names: bound read-only, and fenced from the file
         // tools alike.
-        let (fences, refused) = match walk.lock().unwrap_or_else(|e| e.into_inner()).repositories(&writable, home) {
+        let (fences, refused) = match walk.lock().unwrap_or_else(|e| e.into_inner()).repositories(&writable, home, None) {
             Ok(r) => (r, None),
             Err(why) => (Fences::default(), Some(why)),
         };
@@ -473,6 +473,9 @@ impl Plan {
 /// `.git`'s inode and is left alone, while one made new (`git init`, a
 /// clone, a copy) has an inode the workspace did not have, and goes.
 pub struct Unfenced {
+    /// When the call started, by the change-time clock: a directory changed
+    /// since is one the call may have locked.
+    since: (i64, i64),
     missing: Vec<PathBuf>,
     swept: Vec<(PathBuf, bool)>,
     writable: Vec<PathBuf>,
@@ -499,7 +502,11 @@ impl Unfenced {
     pub fn before(plan: &Plan) -> Unfenced {
         let missing = plan.read_only.iter().filter(|p| std::fs::symlink_metadata(p).is_err()).cloned().collect();
         let repos = plan.repos.iter().filter_map(|r| identity(r)).collect();
-        Unfenced { missing, swept: plan.swept.clone(), writable: plan.writable.clone(), home: plan.home.clone(), repos, walk: plan.inputs.walk.clone() }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        // A second early: a file system's change times may be coarser than
+        // the clock read here.
+        let since = (now.as_secs() as i64 - 1, now.subsec_nanos() as i64);
+        Unfenced { since, missing, swept: plan.swept.clone(), writable: plan.writable.clone(), home: plan.home.clone(), repos, walk: plan.inputs.walk.clone() }
     }
 
     /// Removes what appeared and says so; empty when nothing did.
@@ -509,15 +516,26 @@ impl Unfenced {
             sweep(&d, deep, &mut out);
         }
         let mut gone = std::mem::take(&mut self.missing);
-        if let Ok(now) = self.walk.lock().unwrap_or_else(|e| e.into_inner()).repositories(&std::mem::take(&mut self.writable), self.home.as_deref()) {
+        if let Ok(now) = self.walk.lock().unwrap_or_else(|e| e.into_inner()).repositories(&std::mem::take(&mut self.writable), self.home.as_deref(), Some(self.since)) {
             gone.extend(now.repos.into_iter().filter(|r| identity(r).is_none_or(|id| !self.repos.contains(&id))));
         }
         for p in gone {
             let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+            // A call may have made it hard to remove: its directory or itself
+            // read-only, or locked. What it made is the call's, so its bits
+            // come back — the parent's too — before it goes.
+            if let Some(parent) = p.parent() {
+                grant(parent, 0o300);
+            }
+            if m.is_dir() {
+                open_tree(&p);
+            }
             // Not followed: a symlink is removed as a link, and a directory's
             // contents are removed without following the links in it.
-            let _ = if m.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
-            out.push(p);
+            match if m.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) } {
+                Ok(()) => out.push(p),
+                Err(e) => eprintln!("krowk: a sandboxed command left {} and it could not be removed ({e}) — it may hold hooks git would run: remove it yourself before running git there", p.display()),
+            }
         }
         out
     }
@@ -599,7 +617,9 @@ impl WalkCache {
     /// Every repository in each writable root, following no symlink and not
     /// descending into a `.git` (compared as the file tools compare it,
     /// case-folded, with Windows' trailing dots and spaces dropped).
-    fn repositories(&mut self, roots: &[PathBuf], home: Option<&Path>) -> Result<Fences, String> {
+    /// `since`, after a call: a directory of the user's own that the call
+    /// changed and left unreadable or unsearchable is opened again first.
+    fn repositories(&mut self, roots: &[PathBuf], home: Option<&Path>, since: Option<(i64, i64)>) -> Result<Fences, String> {
         let is_git = |n: &std::ffi::OsStr| n.to_string_lossy().trim_end_matches(['.', ' ']).eq_ignore_ascii_case(".git");
         let within = |p: &Path| roots.iter().any(|r| p.starts_with(r));
         let mut f = Fences::default();
@@ -609,18 +629,29 @@ impl WalkCache {
             let mut stack = vec![root.clone()];
             while let Some(dir) = stack.pop() {
                 let Some(m) = std::fs::symlink_metadata(&dir).ok().filter(std::fs::Metadata::is_dir) else { continue };
-                let Some(st) = searchable(&dir, m).and_then(|m| stamp_of(&m)) else { continue };
+                let Some(st) = searchable(&dir, m, since).and_then(|m| stamp_of(&m)) else { continue };
                 if !self.dirs.get(&dir).is_some_and(|s| s.stamp == st) {
                     let Ok(rd) = std::fs::read_dir(&dir) else { continue };
                     let mut s = Seen { stamp: st, entries: 0, subdirs: Vec::new(), gits: Vec::new() };
+                    // A bare repository's layout, which git finds as one
+                    // when run inside it: `HEAD`, `objects` and `refs`.
+                    let mut bare = 0;
                     for e in rd.flatten() {
                         s.entries += 1;
                         let Ok(t) = e.file_type() else { continue };
-                        if is_git(&e.file_name()) {
+                        let name = e.file_name();
+                        if (name == "HEAD" && t.is_file()) || ((name == "objects" || name == "refs") && t.is_dir()) {
+                            bare += 1;
+                        }
+                        if is_git(&name) {
                             s.gits.push((e.path(), t.is_dir()));
                         } else if t.is_dir() {
                             s.subdirs.push(e.path());
                         }
+                    }
+                    if bare == 3 && !roots.contains(&dir) {
+                        s.subdirs.clear();
+                        s.gits = vec![(dir.clone(), true)];
                     }
                     self.dirs.insert(dir.clone(), s);
                 }
@@ -660,32 +691,72 @@ impl WalkCache {
     }
 }
 
-/// A directory of the workspace the search may read and enter. One of
-/// this user's that it could not — a command in the sandbox runs as the
-/// same user, so `chmod 000` on a directory it made would hide a `.git`
-/// beneath it from the search, and from the removal after the call — gets
-/// its owner's read and search bits back first. One of another user's is
-/// left as it is: a command could not have made it, nor written under it.
-fn searchable(dir: &Path, m: std::fs::Metadata) -> Option<std::fs::Metadata> {
+/// A directory of the workspace the search may read and enter. After a
+/// call, one of this user's that the call changed and left unreadable or
+/// unsearchable — a command in the sandbox runs as the same user, so `chmod
+/// 000` on a directory it made would hide a `.git` beneath it from the
+/// search and from the removal after the call — gets its owner's read and
+/// search bits back first. One the person locked before the call, or
+/// another user's, is left as it is.
+fn searchable(dir: &Path, m: std::fs::Metadata, since: Option<(i64, i64)>) -> Option<std::fs::Metadata> {
     #[cfg(target_os = "linux")]
     {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        // SAFETY: geteuid(2) has no failure and reads nothing.
-        let me = unsafe { libc::geteuid() };
-        if m.uid() == me && m.mode() & 0o500 != 0o500 {
-            // Through a handle on the directory itself, never its path: a
-            // command swapping it for a link meanwhile changes nothing the
-            // link leads to.
-            use std::os::unix::fs::OpenOptionsExt;
-            let held = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_DIRECTORY).open(dir).ok()?;
-            let now = held.metadata().ok().filter(|n| n.is_dir() && n.ino() == m.ino() && n.dev() == m.dev())?;
-            let at = Path::new("/proc/self/fd").join(std::os::fd::AsRawFd::as_raw_fd(&held).to_string());
-            std::fs::set_permissions(&at, std::fs::Permissions::from_mode((now.mode() & 0o7777) | 0o500)).ok()?;
-            return held.metadata().ok();
+        use std::os::unix::fs::MetadataExt;
+        let changed = since.is_some_and(|s| (m.ctime(), m.ctime_nsec()) >= s);
+        if changed && m.mode() & 0o500 != 0o500 {
+            return grant(dir, 0o500);
         }
     }
-    let _ = dir;
+    let _ = (dir, since);
     Some(m)
+}
+
+/// `bits` added to the owner's on `dir`, a directory of this user's, through
+/// a handle on it rather than its path, so a directory swapped for a link
+/// meanwhile changes nothing the link leads to. Its metadata after; none
+/// when it is not this user's directory, or could not be changed.
+fn grant(dir: &Path, bits: u32) -> Option<std::fs::Metadata> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        let held = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_DIRECTORY).open(dir).ok()?;
+        let now = held.metadata().ok()?;
+        // SAFETY: geteuid(2) has no failure and reads nothing.
+        if !now.is_dir() || now.uid() != unsafe { libc::geteuid() } {
+            return None;
+        }
+        if now.mode() & bits != bits {
+            let at = Path::new("/proc/self/fd").join(std::os::fd::AsRawFd::as_raw_fd(&held).to_string());
+            std::fs::set_permissions(&at, std::fs::Permissions::from_mode((now.mode() & 0o7777) | bits)).ok()?;
+        }
+        held.metadata().ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (dir, bits);
+        None
+    }
+}
+
+/// Every directory in the tree at `dir`, followed through no link, given
+/// its owner's read, write and search bits, so the tree can be removed.
+fn open_tree(dir: &Path) {
+    let mut stack = vec![dir.to_path_buf()];
+    let mut seen = 0usize;
+    while let Some(d) = stack.pop() {
+        if grant(&d, 0o700).is_none() {
+            continue;
+        }
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            seen += 1;
+            if seen > WALK_BUDGET {
+                return;
+            }
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(e.path());
+            }
+        }
+    }
 }
 
 /// A small regular file's text, read without following a symlink and
@@ -1187,10 +1258,10 @@ mod tests {
             let base = base.canonicalize().unwrap();
             let mut cache = WalkCache::default();
             let t = std::time::Instant::now();
-            cache.repositories(std::slice::from_ref(&base), None).unwrap();
+            cache.repositories(std::slice::from_ref(&base), None, None).unwrap();
             let first = t.elapsed();
             let t = std::time::Instant::now();
-            cache.repositories(std::slice::from_ref(&base), None).unwrap();
+            cache.repositories(std::slice::from_ref(&base), None, None).unwrap();
             let cached = t.elapsed();
             eprintln!("walk {total} entries ({} directories): first {first:?}, cached {cached:?}", cache.dirs.len());
         }
