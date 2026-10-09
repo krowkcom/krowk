@@ -398,7 +398,7 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     };
     // Room to apply the work before the bridge renews it: the handed
     // lease's TTL is the bridge's minute.
-    let _ = api.renew_lease(&session, &me, &handed.token, 600, &krowk_api::relay_env(&api.base_url, ctx.io.env));
+    let _ = api.renew_lease(&session, &me, &handed.token, 600, krowk_api::relay_env(&api.base_url, ctx.io.env));
 
     // The lease is this machine's now: anything failing from here gives it
     // back, so the session can be hosted again.
@@ -421,7 +421,7 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if let Some(home) = &home {
         handoff::place_transcript(&bundle, home, &applied.cwd).map_err(|e| undo(fail("handoff_failed", e)))?;
         // The worktree is this repository's, which a backend may run in.
-        let trusted = krowk_harness::trust::Store::new(Some(super::providers::krowk_dir()?.join(krowk_harness::trust::FILE)), Some(ctx.env("HOME")).filter(|h| !h.is_empty()).map(Into::into));
+        let trusted = krowk_harness::trust::Store::new(Some(super::providers::krowk_dir().map_err(undo)?.join(krowk_harness::trust::FILE)), Some(ctx.env("HOME")).filter(|h| !h.is_empty()).map(Into::into));
         let _ = trusted.trust(&krowk_harness::trust::root(&applied.cwd));
     }
     // The log as the host left it, checkpoint and all.

@@ -94,6 +94,10 @@ pub struct Options {
 /// says, its lease the other device's now.
 pub const HANDED_OVER: &str = "handed over";
 
+/// How long a bridge that handed its session over stays: a target whose
+/// link dropped as the answer went asks again, and is answered again.
+const HANDED_GRACE: Duration = Duration::from_secs(10);
+
 /// The lease as the bridge holds it: the token only the holder has, its
 /// fence, and the freshest host ticket.
 #[derive(Clone, Default)]
@@ -484,6 +488,8 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         turn_running: false,
         handing: false,
         handoff: None,
+        handed_at: None,
+        refused_moving: HashSet::new(),
         link_devices: HashMap::new(),
         moved: Arc::default(),
         mode: PermissionMode::Default,
@@ -596,7 +602,13 @@ struct Hosting {
     /// The handoff asked for, by its id: the link to answer, which a viewer
     /// that joins again moves, and the answer once there is one, sent again
     /// to a viewer that asks again.
-    handoff: Option<(String, u64, Option<Answer>)>,
+    handoff: Option<(String, u64, Option<Answer>, DeviceId)>,
+    /// When the lease went with a handoff's answer: the bridge ends
+    /// `HANDED_GRACE` after.
+    handed_at: Option<Instant>,
+    /// Commands refused because the session is moving: their refusal is not
+    /// the ack a command sent again is answered with.
+    refused_moving: HashSet<String>,
     /// The device each viewer link joined as, by the relay's word.
     link_devices: HashMap<u64, DeviceId>,
     /// What the bridge ends with once a handoff's answer has gone: set by
@@ -687,7 +699,7 @@ impl Hosting {
     /// command, and sent where that viewer is now.
     async fn answer(&mut self, mut to: u64, a: Answer) {
         if let Answer::Handoff { id, handed, .. } = &a
-            && let Some((asked, link, done)) = self.handoff.as_mut()
+            && let Some((asked, link, done, _)) = self.handoff.as_mut()
             && asked == id
         {
             to = *link;
@@ -698,12 +710,13 @@ impl Hosting {
                     // is written, and it is not given back on the way out.
                     self.lost.store(true, Ordering::Relaxed);
                     *done = Some(a.clone());
+                    self.handed_at = Some(Instant::now());
                 } else {
                     self.handoff = None;
                 }
             }
         }
-        if let Answer::Ack { id, .. } = &a && !id.is_empty() {
+        if let Answer::Ack { id, .. } = &a && !id.is_empty() && !self.refused_moving.remove(id) {
             if let Some(now) = self.running.remove(id) { to = now; }
             self.remember(id, &a);
         }
@@ -727,10 +740,12 @@ impl Hosting {
         // A handoff hands the lease over before it answers: the lease
         // moving then is its own doing, and the bridge ends once its answer
         // has gone.
-        if !self.handing && let Some(moved) = self.moved.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            return Err(moved);
+        if let Some(at) = self.handed_at
+            && at.elapsed() > HANDED_GRACE
+        {
+            return Err(self.moved.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_else(|| format!("{HANDED_OVER} session {}", self.o.session)));
         }
-        if self.lost.load(Ordering::Relaxed) && !self.handing {
+        if self.lost.load(Ordering::Relaxed) && !self.handing && self.handed_at.is_none() {
             return Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", self.o.session));
         }
         if let Some(why) = self.stale.lock().unwrap_or_else(|e| e.into_inner()).take() {
@@ -950,13 +965,14 @@ impl Hosting {
             // Run once: a command sent again (its ack lost, the
             // viewer reconnected) is answered with the ack it
             // had, or nothing while it is still being taken.
-            Ok(ViewerFrame::Command(r)) if self.handing => {
-                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("session {} is moving to another machine; send it there once it has moved", self.o.session)) }));
-            }
             Ok(ViewerFrame::Command(r)) if self.done.contains_key(&r.id) => {
                 let _ = self.answers_tx.send((from, self.done[&r.id].clone()));
             }
             Ok(ViewerFrame::Command(r)) if self.running.contains_key(&r.id) => { self.running.insert(r.id, from); }
+            Ok(ViewerFrame::Command(r)) if self.handing || self.handed_at.is_some() => {
+                self.refused_moving.insert(r.id.clone());
+                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("session {} is moving to another machine; send it there once it has moved", self.o.session)) }));
+            }
             Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &self.o.session) => {
                 let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, and nothing else", self.o.session)) }));
             }
@@ -981,9 +997,13 @@ impl Hosting {
     fn handoff(&mut self, from: u64, id: String, device: String) {
         // The same handoff asked again, by a viewer that joined again: its
         // answer goes where that viewer is now.
-        if let Some((asked, link, done)) = self.handoff.as_mut()
+        if let Some((asked, link, done, asker)) = self.handoff.as_mut()
             && *asked == id
         {
+            // From the device that asked first, and no other.
+            if self.link_devices.get(&from) != Some(asker) {
+                return;
+            }
             *link = from;
             if let Some(a) = done.clone() {
                 let _ = self.answers_tx.send((from, a));
@@ -1005,7 +1025,7 @@ impl Hosting {
             return;
         }
         self.handing = true;
-        self.handoff = Some((id.clone(), from, None));
+        self.handoff = Some((id.clone(), from, None, to.expect("checked")));
         let since = self.log.first().map_or(0, |e| e.time_ms);
         let backend = {
             let events: Vec<Value> = self.log.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
