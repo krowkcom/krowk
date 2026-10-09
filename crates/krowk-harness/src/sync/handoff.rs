@@ -217,6 +217,8 @@ pub fn apply(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<Applied, Strin
         Some(sub) => worktree.path.join(sub),
         None => worktree.path.clone(),
     };
+    // As Claude Code resolves it, which its transcript's place is named for.
+    let cwd = cwd.canonicalize().unwrap_or(cwd);
     Ok(Applied { worktree, held, cwd })
 }
 
@@ -290,16 +292,11 @@ pub fn place_transcript(b: &Bundle, home: &Path, cwd: &Path) -> Result<Option<Pa
 /// another history, and refused rather than replaced.
 pub fn restore_log(sessions: &Path, id: &str, events: &[Value], cwd: &Path, device: &str, from_device: &str) -> Result<(), String> {
     use crate::log::{SessionLog, CONTEXT_FILE, EVENTS_FILE};
+    check_local_log(sessions, id, events)?;
     let mut seen = std::collections::HashSet::new();
     let events: Vec<&Value> = events.iter().filter(|e| e["id"].as_str().is_some_and(|i| seen.insert(i.to_string()))).collect();
     let dir = sessions.join(id);
     let file = dir.join(EVENTS_FILE);
-    if let Ok(here) = std::fs::read_to_string(&file) {
-        let ours = here.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter_map(|e| e["id"].as_str().map(String::from)).find(|i| !seen.contains(i));
-        if let Some(extra) = ours {
-            return Err(format!("this machine's log of session {id} holds event {extra}, which the synced log does not — it went on here after it left; nothing was replaced"));
-        }
-    }
     let mut d = std::fs::DirBuilder::new();
     d.recursive(true);
     #[cfg(unix)]
@@ -313,6 +310,18 @@ pub fn restore_log(sessions: &Path, id: &str, events: &[Value], cwd: &Path, devi
     let (mut log, _) = SessionLog::open(sessions, id).map_err(|e| e.message().to_string())?;
     log.append(crate::protocol::LogBody::SessionMoved { cwd: cwd.display().to_string(), device: device.to_string(), from_device: from_device.to_string() }).map_err(|e| e.message().to_string())?;
     Ok(())
+}
+
+/// Refuses a log of the session this machine holds with an event `events`,
+/// the synced log, does not: it went on here after it left, and taking the
+/// session would replace that history. Asked before anything moves.
+pub fn check_local_log(sessions: &Path, id: &str, events: &[Value]) -> Result<(), String> {
+    let Ok(here) = std::fs::read_to_string(sessions.join(id).join(crate::log::EVENTS_FILE)) else { return Ok(()) };
+    let synced: std::collections::HashSet<&str> = events.iter().filter_map(|e| e["id"].as_str()).collect();
+    match here.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter_map(|e| e["id"].as_str().map(String::from)).find(|i| !synced.contains(i.as_str())) {
+        Some(extra) => Err(format!("this machine's log of session {id} holds event {extra}, which the synced log does not — it went on here after it left; nothing was moved")),
+        None => Ok(()),
+    }
 }
 
 /// A file written whole, 0600, through a temporary beside it and a rename.

@@ -379,13 +379,26 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let events = read_log(&api)?;
     let home = ready_here(ctx, &session, &events, &cwd)?;
+    let sessions = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    handoff::check_local_log(&sessions, &session, &events).map_err(|e| fail("handoff_refused", e))?;
 
     // The host checkpoints, ships the bundle and hands the lease over.
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let v = keys(ctx)?;
     let o = viewer::Options { relay: relay(ctx, &api.base_url), env, api: api.clone(), device: v.device, signing: v.signing, keys: v.user, chain: v.chain, session: session.clone(), known: None };
     let _ = writeln!(ctx.io.stderr, "krowk: asking the session's host to hand it over…");
-    let handed = krowk_harness::sync::ask_handoff(o, std::time::Duration::from_secs(120)).map_err(|e| fail("handoff_refused", e))?;
+    let handed = match krowk_harness::sync::ask_handoff(o, std::time::Duration::from_secs(300)) {
+        Ok(h) => h,
+        // The host may have handed the lease over with an answer that never
+        // came: said as it is, not as a refusal.
+        Err(e) if api.show_sync_session(&session).ok().and_then(|s| s.lease).is_some_and(|l| l.device == me) => {
+            return Err(fail("handoff_lost", format!("the host handed session {session} to this machine, but its answer did not arrive ({e}); the lease lapses in a minute — then `krowk sync host {session}` on the machine whose work it is")));
+        }
+        Err(e) => return Err(fail("handoff_refused", e)),
+    };
+    // Room to apply the work before the bridge renews it: the handed
+    // lease's TTL is the bridge's minute.
+    let _ = api.renew_lease(&session, &me, &handed.token, 600, &krowk_api::relay_env(&api.base_url, ctx.io.env));
 
     // The lease is this machine's now: anything failing from here gives it
     // back, so the session can be hosted again.
@@ -400,16 +413,20 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let root = krowk_api::home::worktrees_root(ctx.io.env).ok_or_else(|| give_back(fail("no_home", "krowk found no home directory to make worktrees under — set HOME or XDG_DATA_HOME")))?;
     let applied = handoff::apply(&bundle, &cwd, &root).map_err(|e| give_back(fail("handoff_failed", format!("{e} — the session's lease was given back; host it again where it was"))))?;
     let _ = api.spend_transport(&handed.transport);
+    // And past here the worktree goes too.
+    let undo = |e: Error| {
+        let _ = krowk_harness::worktree::discard(&applied.worktree);
+        give_back(e)
+    };
     if let Some(home) = &home {
-        handoff::place_transcript(&bundle, home, &applied.cwd).map_err(|e| give_back(fail("handoff_failed", e)))?;
+        handoff::place_transcript(&bundle, home, &applied.cwd).map_err(|e| undo(fail("handoff_failed", e)))?;
         // The worktree is this repository's, which a backend may run in.
         let trusted = krowk_harness::trust::Store::new(Some(super::providers::krowk_dir()?.join(krowk_harness::trust::FILE)), Some(ctx.env("HOME")).filter(|h| !h.is_empty()).map(Into::into));
         let _ = trusted.trust(&krowk_harness::trust::root(&applied.cwd));
     }
     // The log as the host left it, checkpoint and all.
-    let events = read_log(&api).map_err(give_back)?;
-    let sessions = krowk_harness::log::sessions_dir(ctx.io.env)?;
-    handoff::restore_log(&sessions, &session, &events, &applied.cwd, &me, &handed.from_device).map_err(|e| give_back(fail("handoff_failed", e)))?;
+    let events = read_log(&api).map_err(undo)?;
+    handoff::restore_log(&sessions, &session, &events, &applied.cwd, &me, &handed.from_device).map_err(|e| undo(fail("handoff_failed", e)))?;
     let _ = writeln!(ctx.io.stderr, "krowk: session {session} moved here, working in {} (branch {}); hosting it until interrupted", applied.cwd.display(), applied.worktree.branch());
     let _held = applied.held;
     host_loop(ctx, &session, &applied.cwd, Some(handed))

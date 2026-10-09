@@ -483,6 +483,8 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         stored,
         turn_running: false,
         handing: false,
+        handoff: None,
+        link_devices: HashMap::new(),
         moved: Arc::default(),
         mode: PermissionMode::Default,
         remote_turns: Arc::default(),
@@ -588,8 +590,15 @@ struct Hosting {
     stored: HashSet<String>,
     /// Whether a turn is running, which a handoff waits out.
     turn_running: bool,
-    /// A handoff under way: another is refused meanwhile.
+    /// A handoff under way: another is refused meanwhile, and so is every
+    /// command, so nothing runs here once the work is packed.
     handing: bool,
+    /// The handoff asked for, by its id: the link to answer, which a viewer
+    /// that joins again moves, and the answer once there is one, sent again
+    /// to a viewer that asks again.
+    handoff: Option<(String, u64, Option<Answer>)>,
+    /// The device each viewer link joined as, by the relay's word.
+    link_devices: HashMap<u64, DeviceId>,
     /// What the bridge ends with once a handoff's answer has gone: set by
     /// the handoff as it hands the lease over.
     moved: Arc<Mutex<Option<String>>>,
@@ -635,7 +644,8 @@ impl Hosting {
             if !self.logged.insert(e.id.clone()) {
                 return;
             }
-            if !self.stored.contains(&e.id) {
+            let stored = self.stored.contains(&e.id);
+            if !stored {
                 let _ = self.jobs.send(Write::Event(serde_json::to_value(e).expect("json")));
             }
             match &e.body {
@@ -645,7 +655,9 @@ impl Hosting {
                 }
                 LogBody::TurnStarted { permission_mode, .. } => {
                     self.mode = *permission_mode;
-                    self.turn_running = true;
+                    // A turn the log already held, with no end, ended with
+                    // the host it ran on: not one running here.
+                    self.turn_running = !stored;
                 }
                 _ => {}
             }
@@ -674,12 +686,21 @@ impl Hosting {
     /// An answer for the viewer on link `to`, remembered when it acks a
     /// command, and sent where that viewer is now.
     async fn answer(&mut self, mut to: u64, a: Answer) {
-        if let Answer::Handoff { handed, .. } = &a {
-            self.handing = false;
-            // The lease is the other device's from here: nothing more is
-            // written, and it is not given back on the way out.
-            if handed.is_some() {
-                self.lost.store(true, Ordering::Relaxed);
+        if let Answer::Handoff { id, handed, .. } = &a
+            && let Some((asked, link, done)) = self.handoff.as_mut()
+            && asked == id
+        {
+            to = *link;
+            if self.handing {
+                self.handing = false;
+                if handed.is_some() {
+                    // The lease is the other device's from here: nothing more
+                    // is written, and it is not given back on the way out.
+                    self.lost.store(true, Ordering::Relaxed);
+                    *done = Some(a.clone());
+                } else {
+                    self.handoff = None;
+                }
             }
         }
         if let Answer::Ack { id, .. } = &a && !id.is_empty() {
@@ -879,7 +900,8 @@ impl Hosting {
             }
             In::Control(v) => {
                 if v["type"] == "viewer" && let Some(l) = v["link"].as_u64() {
-                    if v["event"] == "left" { self.link.forget(l); }
+                    if v["event"] == "left" { self.link.forget(l); self.link_devices.remove(&l); }
+                    if v["event"] == "joined" && let Some(d) = v["device"].as_str().and_then(DeviceId::parse) { self.link_devices.insert(l, d); }
                     if v["event"] == "joined" && let Some((here, _)) = if direct { self.dpresent.as_mut() } else { self.present.as_mut() } { here.insert(l); }
                     // The relay names the device; anything that is not an
                     // id is no device to say anything of.
@@ -928,6 +950,9 @@ impl Hosting {
             // Run once: a command sent again (its ack lost, the
             // viewer reconnected) is answered with the ack it
             // had, or nothing while it is still being taken.
+            Ok(ViewerFrame::Command(r)) if self.handing => {
+                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("session {} is moving to another machine; send it there once it has moved", self.o.session)) }));
+            }
             Ok(ViewerFrame::Command(r)) if self.done.contains_key(&r.id) => {
                 let _ = self.answers_tx.send((from, self.done[&r.id].clone()));
             }
@@ -954,12 +979,25 @@ impl Hosting {
     /// `device` does this bridge stop writing; anything that fails before
     /// leaves the session here, as it was.
     fn handoff(&mut self, from: u64, id: String, device: String) {
+        // The same handoff asked again, by a viewer that joined again: its
+        // answer goes where that viewer is now.
+        if let Some((asked, link, done)) = self.handoff.as_mut()
+            && *asked == id
+        {
+            *link = from;
+            if let Some(a) = done.clone() {
+                let _ = self.answers_tx.send((from, a));
+            }
+            return;
+        }
         let refuse = |error: String| (from, Answer::Handoff { id: id.clone(), handed: None, error: Some(error) });
         let to = DeviceId::parse(&device).filter(|d| *d != self.o.device && self.o.chain.devices().iter().any(|l| l.id() == *d));
         let refused = match () {
             _ if to.is_none() => Some(format!("{device} is not another device on your device list")),
-            _ if self.handing => Some("a handoff of this session is under way already".to_string()),
-            _ if self.turn_running => Some(format!("session {} is running a turn; take it once the turn ends, or interrupt it first", self.o.session)),
+            // Only to the device asking, as the relay names it.
+            _ if self.link_devices.get(&from) != to.as_ref() => Some(format!("a session is handed to the device that asks for it, and this one is not {device}")),
+            _ if self.handing || self.handoff.is_some() => Some("a handoff of this session is under way already".to_string()),
+            _ if self.turn_running || !self.running.is_empty() => Some(format!("session {} is running a turn; take it once the turn ends, or interrupt it first", self.o.session)),
             _ => None,
         };
         if let Some(why) = refused {
@@ -967,6 +1005,7 @@ impl Hosting {
             return;
         }
         self.handing = true;
+        self.handoff = Some((id.clone(), from, None));
         let since = self.log.first().map_or(0, |e| e.time_ms);
         let backend = {
             let events: Vec<Value> = self.log.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
