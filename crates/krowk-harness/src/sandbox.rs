@@ -667,14 +667,21 @@ impl WalkCache {
 /// its owner's read and search bits back first. One of another user's is
 /// left as it is: a command could not have made it, nor written under it.
 fn searchable(dir: &Path, m: std::fs::Metadata) -> Option<std::fs::Metadata> {
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         // SAFETY: geteuid(2) has no failure and reads nothing.
         let me = unsafe { libc::geteuid() };
         if m.uid() == me && m.mode() & 0o500 != 0o500 {
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode((m.mode() & 0o7777) | 0o500)).ok()?;
-            return std::fs::symlink_metadata(dir).ok().filter(std::fs::Metadata::is_dir);
+            // Through a handle on the directory itself, never its path: a
+            // command swapping it for a link meanwhile changes nothing the
+            // link leads to.
+            use std::os::unix::fs::OpenOptionsExt;
+            let held = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_DIRECTORY).open(dir).ok()?;
+            let now = held.metadata().ok().filter(|n| n.is_dir() && n.ino() == m.ino() && n.dev() == m.dev())?;
+            let at = Path::new("/proc/self/fd").join(std::os::fd::AsRawFd::as_raw_fd(&held).to_string());
+            std::fs::set_permissions(&at, std::fs::Permissions::from_mode((now.mode() & 0o7777) | 0o500)).ok()?;
+            return held.metadata().ok();
         }
     }
     let _ = dir;
