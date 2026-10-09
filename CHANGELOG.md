@@ -58,6 +58,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   restoring access to what the call itself locked. Directories you locked
   yourself are left alone. If something still can't be removed, krowk
   says so.
+- **Archiving sessions works on machines set up with `krowk sync init` or
+  `join`.** `krowk sessions archive` and `restore` needed the old account
+  key, which nothing creates any more, so they said "not set up" and
+  pointed at commands that no longer exist. Vintages are now sealed under
+  your user key, like synced sessions, and keep opening after a device is
+  removed and the key rotates. A vintage sealed the old way is refused by
+  name.
 
 ## [0.13.0] - 2026-10-07
 
