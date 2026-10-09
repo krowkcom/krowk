@@ -55,6 +55,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Move a live session to another machine: `krowk sync take SESSION`.**
+  Run it from a clone of the session's repository on the machine you want
+  to continue on. krowk first checks the session can run there: its
+  instance connected under the same name and signed in, and for Claude
+  Code the repository trusted. If anything is missing it says how to fix
+  it, and the session stays where it is. Otherwise the host saves a
+  checkpoint, sends the commit it was on, its uncommitted changes and the
+  untracked files the session made, end-to-end encrypted, and hands over
+  its lease. The work lands in a fresh worktree on the new machine, which
+  hosts the session from there. A Claude Code session resumes its own
+  conversation. Anyone attached stays attached and sees the new host take
+  over. Dependencies and build output are not copied; they are rebuilt
+  where the session now runs. Moving a session needs a paid workspace, and
+  waits for a running turn to end.
+
 - **A subagent can work in a git worktree of its own.** Give the
   `subagent` tool `isolation: "worktree"`, or put `isolation: worktree` in
   an agent definition's frontmatter as in Claude Code's agent files (the

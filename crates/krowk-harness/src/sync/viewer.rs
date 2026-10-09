@@ -95,6 +95,9 @@ pub enum Update {
     /// not a line on stderr, so a screen drawing the session shows it where
     /// it draws rather than having it written over its frame.
     Note(String),
+    /// The host's answer to a handoff this viewer asked for (R-HAND-1):
+    /// what this device takes the session up with, or why it stays.
+    Handoff(Result<super::Handed, String>),
 }
 
 pub struct Options {
@@ -121,6 +124,9 @@ pub struct Options {
 /// A running viewer: `send` a command, read `updates` a frame at a time.
 pub struct Viewer {
     pub commands: mpsc::UnboundedSender<Command>,
+    /// Asks the host to hand the session to this device, once welcomed;
+    /// `Update::Handoff` answers.
+    pub handoff: mpsc::UnboundedSender<()>,
     pub updates: mpsc::Receiver<Vec<Update>>,
     /// How long reading the checkpoint and the tail took.
     pub attach_time: Duration,
@@ -154,13 +160,14 @@ pub async fn attach(o: Options) -> Result<Viewer, String> {
     };
     let attach_time = started.elapsed();
     let (commands, rx) = mpsc::unbounded_channel();
+    let (handoff, handoff_rx) = mpsc::unbounded_channel();
     let (tx, updates) = mpsc::channel(256);
     let handed = Arc::new(std::sync::Mutex::new(vec![Instant::now()]));
     let first = vec![Update::Attached { events: attached.events.clone(), head: attached.head }];
     let title = attached.index.title.clone();
     let _ = tx.send(first).await;
-    tokio::spawn(live(o, key, attached, rx, tx, handed.clone()));
-    Ok(Viewer { commands, updates, attach_time, handed, title, host })
+    tokio::spawn(live(o, key, attached, rx, handoff_rx, tx, handed.clone()));
+    Ok(Viewer { commands, handoff, updates, attach_time, handed, title, host })
 }
 
 /// The last-applied-batch ack a viewer sends the relay (relay.md → Flow
@@ -184,7 +191,7 @@ fn newest(last: &mut Option<String>, id: &str) {
     }
 }
 
-async fn live(o: Arc<Options>, key: SessionKeys, at_rest: Attached, mut commands: mpsc::UnboundedReceiver<Command>, out: mpsc::Sender<Vec<Update>>, handed: Arc<std::sync::Mutex<Vec<Instant>>>) {
+async fn live(o: Arc<Options>, key: SessionKeys, at_rest: Attached, mut commands: mpsc::UnboundedReceiver<Command>, mut handoff: mpsc::UnboundedReceiver<()>, out: mpsc::Sender<Vec<Update>>, handed: Arc<std::sync::Mutex<Vec<Instant>>>) {
     let raw = crate::daemon::ws::uuid(&o.session);
     let seen: HashSet<String> = at_rest.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect();
     let mut last_id: Option<String> = None;
@@ -228,6 +235,7 @@ async fn live(o: Arc<Options>, key: SessionKeys, at_rest: Attached, mut commands
         applied: 0,
         acked: 0,
         catching_up: false,
+        handoff: None,
     };
     // The first frame went with the attach; the next is a frame after it,
     // and a late tick waits a whole frame rather than firing twice.
@@ -240,6 +248,7 @@ async fn live(o: Arc<Options>, key: SessionKeys, at_rest: Attached, mut commands
                 let Some(command) = c else { break };
                 v.command(command).await;
             }
+            Some(()) = handoff.recv() => v.ask_handoff().await,
             _ = tick.tick(), if !v.frame.is_empty() || v.applied > v.acked => {
                 if !v.tick().await { break; }
             }
@@ -320,6 +329,9 @@ struct Watching {
     acked: u64,
     /// A catch-up asked and not yet answered: another is not asked meanwhile.
     catching_up: bool,
+    /// A handoff asked and not yet answered, by its id: asked again of the
+    /// next host to welcome this viewer.
+    handoff: Option<String>,
 }
 
 impl Watching {
@@ -337,6 +349,22 @@ impl Watching {
         } else {
             self.queued.push_back(r);
         }
+    }
+
+    /// Asks the host to hand the session to this device, now if a host
+    /// has welcomed this viewer, else at the next welcome.
+    async fn ask_handoff(&mut self) {
+        self.next_id += 1;
+        self.handoff = Some(format!("{}-{}-{}", self.o.device, self.run_id, self.next_id));
+        if self.host && self.link.as_ref().is_some_and(|l| l.welcomed()) {
+            self.send_handoff().await;
+        }
+    }
+
+    async fn send_handoff(&mut self) {
+        let (Some(id), Some(l)) = (self.handoff.clone(), self.link.as_mut()) else { return };
+        let f = ViewerFrame::Handoff { id, device: self.o.device.to_string() };
+        if let (Some(w), Ok(sealed)) = (self.ws.as_mut(), l.frame(&serde_json::to_vec(&f).expect("json"), false)) && !super::send(w, sealed).await { self.ws = None; }
     }
 
     /// A display frame: the batches applied acked, and what was gathered
@@ -671,6 +699,7 @@ impl Watching {
         for f in sends {
             if let (Some(w), Ok(sealed)) = (self.ws.as_mut(), l.frame(&serde_json::to_vec(&f).expect("json"), false)) && !super::send(w, sealed).await { self.ws = None; break; }
         }
+        self.send_handoff().await;
     }
 
     /// The host's answer to this viewer: a command's ack, or a page of
@@ -681,6 +710,11 @@ impl Watching {
                 self.unacked.remove(&id);
                 self.frame.push(Update::Acked { id, error });
             }
+            Ok(Answer::Handoff { id, handed, error }) if self.handoff.as_deref() == Some(id.as_str()) => {
+                self.handoff = None;
+                self.frame.push(Update::Handoff(handed.ok_or_else(|| error.unwrap_or_else(|| "the host refused the handoff".into()))));
+            }
+            Ok(Answer::Handoff { .. }) => {}
             Ok(Answer::CatchUp { events, more }) => {
                 let events: Vec<serde_json::Value> = events.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
                 let fresh = fresh_only(events, &mut self.seen, &mut self.last_id);

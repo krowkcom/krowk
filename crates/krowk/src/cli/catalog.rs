@@ -599,6 +599,8 @@ fn sync_command() -> Command {
             cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
             #[cfg(unix)]
             cmd("attach", "krowk sync attach SESSION", "Follow a synced session in the TUI, or as stream-json"),
+            #[cfg(unix)]
+            cmd("take", "krowk sync take SESSION", "Move a live session here, uncommitted work and all"),
         ],
         ..cmd("sync", "", "Sync sessions between your machines, end-to-end encrypted")
     }

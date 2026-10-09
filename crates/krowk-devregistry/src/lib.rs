@@ -276,6 +276,16 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         }
         (_, ["v1", "vintages"]) if get => sync::list_vintages(a, req, &site(req, &a.site)),
         ("PUT" | "PATCH", ["v1", "vintages", slug, "finalization"]) => sync::signed(a, req, |a, req, by| sync::finalize_vintage(a, req, slug, by)),
+        ("POST", ["v1", "sessions", id, "transports"]) => {
+            let site = site(req, &a.site);
+            sync::signed(a, req, |a, req, by| sync::declare_transport(a, req, id, &site, by))
+        }
+        ("PUT" | "PATCH", ["v1", "transports", slug, "finalization"]) => sync::signed(a, req, |a, req, by| sync::finalize_transport(a, req, slug, by)),
+        (_, ["v1", "transports", slug]) if get => {
+            let site = site(req, &a.site);
+            sync::signed(a, req, |a, req, by| sync::show_transport(a, req, slug, &site, by))
+        }
+        ("DELETE", ["v1", "transports", slug]) => sync::signed(a, req, |a, req, by| sync::spend_transport(a, req, slug, by)),
         ("POST", ["_settings", "devices", id, "revocation"]) => sync::revoke(a, req, id),
         (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
         _ => no_such_endpoint(),

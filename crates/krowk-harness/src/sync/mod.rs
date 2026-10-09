@@ -8,6 +8,7 @@
 //! ever hold ciphertext (R-E2E-1).
 
 pub mod direct;
+pub mod handoff;
 pub mod host;
 pub mod hosts;
 pub mod store;
@@ -151,6 +152,11 @@ pub enum ViewerFrame {
     /// batch the relay dropped, a resync or a new stream loses nothing.
     #[serde(rename_all = "camelCase")]
     CatchUp { after: Option<String> },
+    /// Move the session to `device`, the viewer's own (R-HAND-1): the host
+    /// checkpoints, ships the bundle as a transport artifact and hands its
+    /// lease over, answering `Answer::Handoff` under `id`.
+    #[serde(rename_all = "camelCase")]
+    Handoff { id: String, device: String },
 }
 
 /// What the host routes back to one viewer.
@@ -162,6 +168,25 @@ pub enum Answer {
     /// Logged events a viewer asked for, in order; `more` when another
     /// page follows.
     CatchUp { events: Vec<crate::protocol::LogEvent>, more: bool },
+    /// The handoff `id` asked for: done, with what the new host needs, or
+    /// refused, the session staying here.
+    #[serde(rename_all = "camelCase")]
+    Handoff { id: String, handed: Option<Handed>, error: Option<String> },
+}
+
+/// What a host hands the device taking its session over, inside the E2E
+/// link and nowhere else: the transport artifact and the key it is sealed
+/// under, and the lease the registry minted for the new holder.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Handed {
+    pub transport: String,
+    pub key: String,
+    pub token: String,
+    pub fence: u64,
+    pub ticket: String,
+    /// The device that handed it over.
+    pub from_device: String,
 }
 
 /// The body of the host's welcome to one viewer.
@@ -214,7 +239,36 @@ pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path:
             }
         };
         let code = |e: &str| if e.starts_with(host::LIST_MOVED) { "device_list_moved" } else { "sync_failed" }.to_string();
-        ended.map_err(|e| ("sync_failed".to_string(), e.to_string()))?.map_err(|e| (code(&e), e))
+        match ended.map_err(|e| ("sync_failed".to_string(), e.to_string()))? {
+            // Handed over: done here, as asked.
+            Err(e) if e.starts_with(host::HANDED_OVER) => {
+                eprintln!("krowk: {e}");
+                Ok(())
+            }
+            r => r.map_err(|e| (code(&e), e)),
+        }
+    })
+}
+
+/// `krowk sync take`'s ask: attached to the session as a viewer, its host
+/// asked to hand it to this device, and its answer — what to take the
+/// session up with, or why it stays. A host that does not answer in `wait`
+/// is a refusal too.
+pub fn ask_handoff(o: viewer::Options, wait: Duration) -> Result<Handed, String> {
+    runtime()?.block_on(async move {
+        let mut v = viewer::attach(o).await?;
+        let _ = v.handoff.send(());
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let batch = tokio::time::timeout_at(deadline, v.updates.recv()).await.map_err(|_| format!("the host did not answer in {} seconds; the session stays where it was", wait.as_secs()))?.ok_or("the session's link closed before the host answered")?;
+            for u in batch {
+                match u {
+                    viewer::Update::Handoff(r) => return r,
+                    viewer::Update::Failed(e) => return Err(e),
+                    _ => {}
+                }
+            }
+        }
     })
 }
 
@@ -357,6 +411,8 @@ fn jsonl(u: viewer::Update) -> Result<String, String> {
         viewer::Update::Acked { id, error } => json!({"type": "sync.acked", "id": id, "error": error}).to_string(),
         viewer::Update::Path { path, via } => json!({"type": "sync.path", "path": path, "via": via}).to_string(),
         viewer::Update::Gap => json!({"type": "sync.gap"}).to_string(),
+        // `krowk sync attach` never asks for one; the line is for whoever does.
+        viewer::Update::Handoff(r) => json!({"type": "sync.handoff", "error": r.err()}).to_string(),
         viewer::Update::Note(n) => {
             eprintln!("krowk: {n}");
             String::new()
