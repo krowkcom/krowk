@@ -364,6 +364,33 @@ pub struct VintagePage {
     pub vintages: Vec<Vintage>,
 }
 
+/// A transport artifact (R-HAND-2): a handoff's bundle, sealed on the client
+/// under a key that travels only over the session's E2E link, kept a day or
+/// until the target spends it, and never listed. `upload` from a declare,
+/// `url` from a read.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Transport {
+    #[serde(default, deserialize_with = "nullable")]
+    pub slug: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub session: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub state: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub byte_size: u64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub checksum: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub expires_at: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub upload: Option<Upload>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub url: String,
+}
+
+/// The most a transport read back may be: the registry's own cap on one.
+pub const MAX_TRANSPORT_BYTES: u64 = 256 << 20;
+
 /// The most a vintage read back may be: the registry's own cap on one.
 pub const MAX_VINTAGE_BYTES: u64 = 256 << 20;
 
@@ -445,6 +472,38 @@ impl Client {
             return Err(crate::fail("checksum_mismatch", format!("the vintage for {} read back does not match its digest — read it again", v.week)));
         }
         Ok(bytes)
+    }
+
+    /// The lease holder stores a handoff's bundle for session `session`:
+    /// declared under its lease token, put straight to storage and
+    /// finalized. Paid workspaces only, a few a minute (R-HAND-3).
+    pub fn put_transport(&self, session: &str, sealed: &[u8], lease_token: &str) -> Result<Transport, Error> {
+        let checksum = crate::client::sha256_hex(sealed);
+        let body = json!({ "transport": { "byte_size": sealed.len(), "checksum": checksum, "lease_token": lease_token } });
+        let key = crate::client::idempotency_key()?;
+        let declared: Transport = self.call_as_device("POST", &format!("/sessions/{}/transports", slug_path(session)), Some(body), ATTEMPTS, Some(key))?.0;
+        let upload = declared.upload.as_ref().filter(|u| !u.url.is_empty()).ok_or_else(|| crate::fail("no_upload_url", "the registry declared the transport but did not say where to put its bytes"))?;
+        self.put_blob(upload, sealed)?;
+        Ok(self.call_as_device("PUT", &format!("/transports/{}/finalization", slug_path(&declared.slug)), Some(json!({})), ATTEMPTS, None)?.0)
+    }
+
+    /// A transport's sealed bytes, read once: checked against the digest the
+    /// registry recorded before anything opens them. Not found once spent,
+    /// `transport_gone` once lapsed.
+    pub fn read_transport(&self, slug: &str) -> Result<Vec<u8>, Error> {
+        let t: Transport = self.get_as_device(&format!("/transports/{}", slug_path(slug)))?;
+        let bytes = self.get_blob(&t.url, MAX_TRANSPORT_BYTES)?;
+        if crate::client::sha256_hex(&bytes) != t.checksum {
+            return Err(crate::fail("checksum_mismatch", format!("transport {slug} read back does not match its digest — read it again")));
+        }
+        Ok(bytes)
+    }
+
+    /// The target spent the transport: the registry deletes its bytes now
+    /// rather than at the end of its day.
+    pub fn spend_transport(&self, slug: &str) -> Result<(), Error> {
+        let url = format!("{}/transports/{}", self.base_url, slug_path(slug));
+        self.request_signed("DELETE", &url, None, ATTEMPTS, None, Some(self.device_signer()?)).map(|_| ())
     }
 
     /// A page of this person's device list from after `after`. Not signed: a
