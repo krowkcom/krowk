@@ -136,7 +136,7 @@ pub(crate) struct Shared {
     watch: broadcast::Sender<StreamLine>,
     /// Every session's background commands (R-STEER-2): they outlive the
     /// turn that started them, and end with the host.
-    pub(crate) jobs: crate::jobs::Jobs,
+    pub(crate) jobs: Arc<crate::jobs::Jobs>,
 }
 
 struct Running {
@@ -198,7 +198,12 @@ fn log_failure(e: LogError) -> EngineError {
 impl Host {
     pub fn new(mut cfg: HostConfig) -> Host {
         let registry = Arc::new(std::mem::take(&mut cfg.registry));
-        let jobs = crate::jobs::Jobs::new(cfg.sessions_dir.clone());
+        let watch = broadcast::channel(64).0;
+        // How many jobs run, to whoever watches: the status line's count.
+        let tell = watch.clone();
+        let jobs = Arc::new(crate::jobs::Jobs::new(cfg.sessions_dir.clone()).telling(Arc::new(move |session: &str, running: usize| {
+            let _ = tell.send(StreamLine::Live(LiveEvent::Background { session_id: session.into(), running: running as u32 }));
+        })));
         Host {
             shared: Arc::new(Shared {
                 instances: std::sync::RwLock::new(Instances { registry, changed: HashMap::new() }),
@@ -209,7 +214,7 @@ impl Host {
                 approvals: permissions::Approvals::default(),
                 grants: Mutex::new(HashMap::new()),
                 started: Mutex::new(std::collections::HashSet::new()),
-                watch: broadcast::channel(64).0,
+                watch,
                 jobs,
             }),
         }
@@ -1130,6 +1135,7 @@ impl Shared {
             budget: budget.clone(),
             evidence: plan.evidence.clone(),
             builds: self.registry().builds.clone(),
+            jobs: Some(self.jobs.clone()),
             gate,
             compat,
             subagents,

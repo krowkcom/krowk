@@ -54,7 +54,17 @@ impl std::fmt::Display for Status {
 pub struct Jobs {
     sessions_dir: PathBuf,
     table: Arc<Mutex<Table>>,
+    tell: Option<Tell>,
 }
+
+impl std::fmt::Debug for Jobs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Jobs").field("sessions_dir", &self.sessions_dir).finish_non_exhaustive()
+    }
+}
+
+/// Told a session's count of running jobs each time it changes.
+pub type Tell = Arc<dyn Fn(&str, usize) + Send + Sync>;
 
 #[derive(Default)]
 struct Table {
@@ -88,7 +98,13 @@ fn lock(t: &Mutex<Table>) -> std::sync::MutexGuard<'_, Table> {
 
 impl Jobs {
     pub fn new(sessions_dir: PathBuf) -> Jobs {
-        Jobs { sessions_dir, table: Arc::default() }
+        Jobs { sessions_dir, table: Arc::default(), tell: None }
+    }
+
+    /// Tells `tell` each session's count of running jobs as it changes.
+    pub fn telling(mut self, tell: Tell) -> Jobs {
+        self.tell = Some(tell);
+        self
     }
 
     /// Whether `session` may start another job; the refusal says why.
@@ -117,8 +133,13 @@ impl Jobs {
         let file = self.sessions_dir.join(session).join("jobs").join(format!("{id}.out"));
         let (kill, killed) = oneshot::channel();
         let read = shown.len() as u64;
-        let task = tokio::spawn(watch(self.table.clone(), (session.to_string(), id.clone()), file.clone(), started, shown, killed));
+        let task = tokio::spawn(watch(self.table.clone(), self.tell.clone(), (session.to_string(), id.clone()), file.clone(), started, shown, killed));
         s.jobs.push(Job { id: id.clone(), file, read, status: Status::Running, ended_ms: None, kill: Some(kill), task: Some(task) });
+        let running = s.jobs.iter().filter(|j| j.status == Status::Running).count();
+        drop(t);
+        if let Some(tell) = &self.tell {
+            tell(session, running);
+        }
         Ok(id)
     }
 
@@ -287,7 +308,7 @@ impl Out {
 
 /// Reads a job's output into its file until it is done, or killed; then
 /// sweeps for it, records how it ended, and leaves its note.
-async fn watch(table: Arc<Mutex<Table>>, (session, id): (String, String), path: PathBuf, mut started: Started, shown: Vec<u8>, mut kill: oneshot::Receiver<()>) {
+async fn watch(table: Arc<Mutex<Table>>, tell: Option<Tell>, (session, id): (String, String), path: PathBuf, mut started: Started, shown: Vec<u8>, mut kill: oneshot::Receiver<()>) {
     // Bound first, so it is let go of last: after the group is killed.
     let slot = started.slot.take();
     let Started { mut child, out: mut so, err: mut se, mut group, slot: _, slot_note: _ } = started;
@@ -371,11 +392,32 @@ async fn watch(table: Arc<Mutex<Table>>, (session, id): (String, String), path: 
         None => Some(note),
     };
     s.held.extend(note);
+    let running = s.jobs.iter().filter(|j| j.status == Status::Running).count();
+    drop(t);
+    if let Some(tell) = tell {
+        tell(&session, running);
+    }
 }
+
+/// What a note of background work that ended starts with.
+pub const NOTE: &str = "<background-done ";
 
 /// A job's end, as the model reads it: krowk's words, not the person's.
 pub fn note(id: &str, status: Status, last: &str) -> String {
-    format!("<background-done id=\"{id}\" status=\"{status}\">\n{last}</background-done>")
+    format!("{NOTE}id=\"{id}\" status=\"{status}\">\n{last}</background-done>")
+}
+
+/// A note's id and status, when `text` is one.
+pub fn noted(text: &str) -> Option<(&str, &str)> {
+    let head = text.strip_prefix(NOTE)?.split('>').next()?;
+    let id = head.strip_prefix("id=\"")?.split('"').next()?;
+    let status = head.split("status=\"").nth(1)?.split('"').next()?;
+    Some((id, status))
+}
+
+/// Whether a note's id names a job (`b1`), not a child session.
+pub fn is_job(id: &str) -> bool {
+    id.strip_prefix('b').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// How much of a job's last lines its note carries at most.
@@ -413,7 +455,7 @@ mod tests {
     }
 
     async fn start(jobs: &Jobs, cwd: &Path, command: &str) -> String {
-        let env = ToolEnv { cwd, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
+        let env = ToolEnv { cwd, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None };
         jobs.start(S, crate::tools::start(command, &env, None).await.unwrap()).unwrap()
     }
 
@@ -552,7 +594,7 @@ mod tests {
     #[tokio::test]
     async fn r_steer_2_an_adopted_call_reads_on_from_what_was_shown() {
         let (jobs, d) = jobs("adopt");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None };
         let started = crate::tools::start("sleep 0.3; echo after", &env, None).await.unwrap();
         let id = jobs.adopt(S, started, b"before\n".to_vec()).unwrap();
         ended(&jobs, &id).await;

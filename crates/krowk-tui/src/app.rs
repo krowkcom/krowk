@@ -66,6 +66,7 @@ enum Rank {
     Pr,
     Branch,
     Device,
+    Background,
     Subagents,
     Tasks,
     Cost,
@@ -724,6 +725,8 @@ pub struct App {
     /// The agents a backend runs by itself (Claude Code's `Agent` tool),
     /// as it last listed them: counted and listed, never driven from here.
     backend_agents: Vec<BackendAgent>,
+    /// The session's background jobs and children running (`background`).
+    background: u32,
     /// The backend began a turn by itself (`turn.unprompted`): the client
     /// runs it with `continue` as soon as no turn of its own runs.
     pub unprompted: bool,
@@ -849,6 +852,7 @@ impl App {
             subs: Vec::new(),
             agent_sel: 0,
             backend_agents: Vec::new(),
+            background: 0,
             unprompted: false,
             todos: Vec::new(),
             instances: BTreeMap::new(),
@@ -1628,6 +1632,13 @@ impl App {
                 self.dirty = true;
             }
             StreamLine::Live(LiveEvent::TurnUnprompted { .. }) => self.unprompted = true,
+            // The session's own: a subagent's jobs are its own business.
+            StreamLine::Live(LiveEvent::Background { session_id, running }) => {
+                if self.session_id.as_deref().is_none_or(|s| s == session_id) {
+                    self.background = *running;
+                    self.dirty = true;
+                }
+            }
         }
     }
 
@@ -1977,6 +1988,14 @@ impl App {
                 self.finish_live();
                 self.gap();
                 self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled("Reminded the model of its todo list", dim().add_modifier(Modifier::ITALIC))]));
+            }
+            // Background work that ended (R-STEER-2): one plain line,
+            // never the person's words.
+            Item::UserText { text, .. } if let Some((id, status)) = krowk_harness::jobs::noted(text) => {
+                let what = if krowk_harness::jobs::is_job(id) { "job" } else { "agent" };
+                self.finish_live();
+                self.gap();
+                self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(format!("background {what} {} {}", clean(id), clean(status)), dim())]));
             }
             // A turn Claude Code began by itself: why, as krowk's note.
             Item::UserText { text, .. } if text.starts_with(krowk_harness::claude::UNPROMPTED) => {
@@ -2484,6 +2503,11 @@ impl App {
                     let running = (self.subs.iter().filter(|s| s.status.is_none()).count() + self.backend_agents.len()) as u32;
                     if running > 0 {
                         parts.push(part(Rank::Subagents, format!("[{}]", plural(running, "subagent"))));
+                    }
+                }
+                StatusItem::Background => {
+                    if self.background > 0 {
+                        parts.push(part(Rank::Background, format!("[{} background]", self.background)));
                     }
                 }
                 StatusItem::Branch => {
@@ -3098,7 +3122,7 @@ fn line_session(line: &StreamLine) -> Option<&str> {
         StreamLine::Live(LiveEvent::Result(r)) => &r.session_id,
         StreamLine::Live(LiveEvent::ApprovalRequested(r)) => &r.session_id,
         StreamLine::Live(LiveEvent::ApprovalResolved { session_id, .. }) => session_id,
-        StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. }) => session_id,
+        StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. } | LiveEvent::Background { session_id, .. }) => session_id,
     })
 }
 
@@ -4452,6 +4476,28 @@ mod tests {
         assert!(done.iter().any(|l| l.contains("Agent read the docs · explorer · interrupted")) && done.iter().any(|l| l.contains("the subagent was interrupted")), "{done:?}");
         let (rows, _) = a.view(Instant::now());
         assert!(!text(&rows).iter().any(|r| r.contains("Agent ")), "gone from the live region");
+    }
+
+    /// R-STEER-2: the status line counts the session's background work
+    /// while there is any, and a job's end is one plain line of krowk's.
+    #[test]
+    fn r_steer_2_the_background_count_rises_and_falls_and_a_note_is_one_line() {
+        let mut a = app();
+        a.session_id = Some("s".into());
+        a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Background], content_width: ContentWidth::FullWidth, ..Settings::default() };
+        let count = |n| live(LiveEvent::Background { session_id: "s".into(), running: n });
+        assert_eq!(a.status_bar(), "");
+        a.on_line(&count(2));
+        assert_eq!(a.status_bar(), "[2 background]");
+        a.on_line(&live(LiveEvent::Background { session_id: "a subagent".into(), running: 5 }));
+        assert_eq!(a.status_bar(), "[2 background]", "another session's are not counted");
+        a.on_line(&count(1));
+        assert_eq!(a.status_bar(), "[1 background]");
+        a.on_line(&count(0));
+        assert_eq!(a.status_bar(), "");
+        let note = "<background-done id=\"b1\" status=\"exited 0\">\nhi\n</background-done>";
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "n".into(), item: Item::user(note) }));
+        assert_eq!(text(&a.take_pending()), ["◆ background job b1 exited 0"], "never the person's words");
     }
 
     #[test]

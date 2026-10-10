@@ -85,6 +85,7 @@ pub fn slot_of(line: &StreamLine) -> Option<Slot> {
         StreamLine::Live(LiveEvent::Cost { session_id, .. }) => Some(Slot("cost", session_id.clone())),
         StreamLine::Live(LiveEvent::Limits { session_id, instance, .. }) => Some(Slot("limits", format!("{session_id}\u{0}{instance}"))),
         StreamLine::Live(LiveEvent::BackendAgents { session_id, .. }) => Some(Slot("agents", session_id.clone())),
+        StreamLine::Live(LiveEvent::Background { session_id, .. }) => Some(Slot("background", session_id.clone())),
         _ => None,
     }
 }

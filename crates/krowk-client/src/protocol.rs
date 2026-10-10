@@ -885,6 +885,11 @@ pub enum LiveEvent {
     /// stream. Empty when the last one has finished.
     #[serde(rename = "backend.agents")]
     BackendAgents { session_id: String, agents: Vec<BackendAgent> },
+    /// How many background jobs and background children the session has
+    /// running (R-STEER-2, R-STEER-3), each time it changes: during a turn
+    /// and between turns alike, to a host's watchers (`Host::watch`).
+    #[serde(rename = "background")]
+    Background { session_id: String, running: u32 },
     /// A backend began a turn nobody prompted — Claude Code answering a
     /// background agent that finished — and it waits for `continue`. Sent
     /// to a host's watchers, between turns.
@@ -981,7 +986,7 @@ impl StreamLine {
             StreamLine::Log(ev) => &ev.session_id,
             StreamLine::Live(LiveEvent::ItemStarted { session_id, .. } | LiveEvent::ItemDelta { session_id, .. }) => session_id,
             StreamLine::Live(LiveEvent::Cost { session_id, .. } | LiveEvent::Notice { session_id, .. } | LiveEvent::Limits { session_id, .. }) => session_id,
-            StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. }) => session_id,
+            StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. } | LiveEvent::Background { session_id, .. }) => session_id,
             StreamLine::Live(LiveEvent::ApprovalRequested(r)) => &r.session_id,
             StreamLine::Live(LiveEvent::ApprovalResolved { session_id, .. }) => session_id,
             StreamLine::Live(LiveEvent::Result(r)) => &r.session_id,
