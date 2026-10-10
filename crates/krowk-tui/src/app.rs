@@ -1634,7 +1634,7 @@ impl App {
             StreamLine::Live(LiveEvent::TurnUnprompted { .. }) => self.unprompted = true,
             // The session's own: a subagent's jobs are its own business.
             StreamLine::Live(LiveEvent::Background { session_id, running }) => {
-                if self.session_id.as_deref().is_none_or(|s| s == session_id) {
+                if self.session_id.as_deref() == Some(session_id) {
                     self.background = *running;
                     self.dirty = true;
                 }
@@ -2816,6 +2816,7 @@ impl App {
         self.finish_live();
         self.flush_calls();
         self.session_id = None;
+        self.background = 0;
         self.images_seen = 0;
         self.cost = 0.0;
         self.unpriced = false;

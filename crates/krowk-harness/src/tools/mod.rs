@@ -292,7 +292,7 @@ pub fn describe(name: &str, input: &Value, env: &ToolEnv<'_>) -> Result<Call, (S
         // governs but a deny or ask rule on them does.
         BASH_OUTPUT | KILL_BASH => {
             parse_input::<JobInput>(name, input)?;
-            Call { tool: if name == BASH_OUTPUT { "BashOutput" } else { "KillShell" }.into(), access: Access::Session, subject: None }
+            call(Access::Session)
         }
         crate::evidence::PUBLISH => crate::evidence::call(env.cwd, input)?,
         other => return Err((format!("there is no tool named {other:?} — the tools are read, write, {}, bash, grep, glob, todo_write, publish, subagent and ask_user", env.edit.name()), true)),
@@ -1334,7 +1334,7 @@ pub(crate) mod tests {
     fn r_tool_1_the_core_tools_are_derived_object_schemas_in_a_fixed_order() {
         for (preset, edit) in [("claude", STR_REPLACE), ("gpt", APPLY_PATCH), ("grok", SEARCH_REPLACE)] {
             let defs = definitions(&toolset(preset, false));
-            assert_eq!(defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), [READ, WRITE, edit, BASH, GREP, GLOB, crate::todo::TODO_WRITE, crate::evidence::PUBLISH, crate::subagent::SUBAGENT, crate::ask::ASK_USER], "{preset}");
+            assert_eq!(defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), [READ, WRITE, edit, BASH, BASH_OUTPUT, KILL_BASH, GREP, GLOB, crate::todo::TODO_WRITE, crate::evidence::PUBLISH, crate::subagent::SUBAGENT, crate::ask::ASK_USER], "{preset}");
             assert!(defs.iter().all(|d| d.input_schema["type"] == "object" && d.grammar.is_none()), "function tools everywhere without custom tools");
             assert_eq!(definitions(&toolset(preset, false)), defs, "deterministic: the definitions are part of the cached prefix");
         }
@@ -1344,10 +1344,12 @@ pub(crate) mod tests {
         assert!(defs[3].input_schema["properties"]["timeout_ms"].is_object());
         assert_eq!(definitions(&toolset("grok", false))[2].input_schema["required"], json!(["file_path", "old_string", "new_string"]));
         assert_eq!(definitions(&toolset("gpt", false))[2].input_schema["required"], json!(["input"]));
-        assert_eq!(defs[6].input_schema["required"], json!(["todos"]), "todo_write takes the whole list");
-        assert_eq!(defs[7].input_schema["required"], json!(["files"]), "publish takes the files krowk_push takes");
-        assert_eq!(defs[8].input_schema["required"], json!(["description", "prompt"]));
-        assert_eq!(defs[9].input_schema["required"], json!(["questions"]), "ask_user takes Claude Code's AskUserQuestion input");
+        assert_eq!(defs[4].input_schema["required"], json!(["id"]), "bash_output takes a job's id");
+        assert_eq!(defs[5].input_schema["required"], json!(["id"]), "kill_bash too");
+        assert_eq!(defs[8].input_schema["required"], json!(["todos"]), "todo_write takes the whole list");
+        assert_eq!(defs[9].input_schema["required"], json!(["files"]), "publish takes the files krowk_push takes");
+        assert_eq!(defs[10].input_schema["required"], json!(["description", "prompt"]));
+        assert_eq!(defs[11].input_schema["required"], json!(["questions"]), "ask_user takes Claude Code's AskUserQuestion input");
     }
 
     #[test]

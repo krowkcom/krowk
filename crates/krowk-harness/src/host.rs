@@ -1135,7 +1135,9 @@ impl Shared {
             budget: budget.clone(),
             evidence: plan.evidence.clone(),
             builds: self.registry().builds.clone(),
-            jobs: Some(self.jobs.clone()),
+            // A subagent's one turn would leave its jobs to nobody: only
+            // a session's own turns keep them.
+            jobs: plan.agent.is_none().then(|| self.jobs.clone()),
             gate,
             compat,
             subagents,

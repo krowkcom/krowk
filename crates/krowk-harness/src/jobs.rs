@@ -207,6 +207,13 @@ impl Jobs {
             }
         }
         s.turn = Some(steers.clone());
+        // Said at a turn's start while any run, so a client that came to
+        // the session since the last change counts them.
+        let running = counted_jobs(s);
+        drop(t);
+        if let Some(tell) = self.tell.as_ref().filter(|_| running > 0) {
+            tell(session, running);
+        }
     }
 
     /// `session`'s turn is over: the notes it never read wait for the next.
@@ -401,6 +408,11 @@ async fn watch(table: Arc<Mutex<Table>>, tell: Option<Tell>, (session, id): (Str
 
 /// What a note of background work that ended starts with.
 pub const NOTE: &str = "<background-done ";
+
+/// A session's running jobs.
+fn counted_jobs(s: &Session) -> usize {
+    s.jobs.iter().filter(|j| j.status == Status::Running).count()
+}
 
 /// A job's end, as the model reads it: krowk's words, not the person's.
 pub fn note(id: &str, status: Status, last: &str) -> String {

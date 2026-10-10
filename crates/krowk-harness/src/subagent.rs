@@ -187,9 +187,10 @@ impl AgentRun {
         if name == SUBAGENT {
             return false;
         }
-        // A background job's tools go where bash does.
+        // A background job outlives the turn that starts it, and a
+        // subagent has one turn: it keeps none, and is offered no job tools.
         if name == crate::tools::BASH_OUTPUT || name == crate::tools::KILL_BASH {
-            return self.allows(crate::tools::BASH, edit);
+            return false;
         }
         match &self.tools {
             None => true,
@@ -606,16 +607,14 @@ mod tests {
         assert!(text.contains("a0199") && !text.contains("a0200") && text.ends_with(" (and 800 more)"), "named up to {MAX_NAMED}");
     }
 
-    /// R-STEER-2: a background job's tools go where bash does, and a
-    /// toolset without bash offers neither.
+    /// R-STEER-2: a subagent, whose one turn would leave a job to nobody,
+    /// is offered neither of a job's tools, whatever its allowlist.
     #[test]
-    fn r_steer_2_bash_output_and_kill_bash_are_offered_only_with_bash() {
+    fn r_steer_2_a_subagent_is_offered_no_job_tools() {
         let (o, k) = (crate::tools::BASH_OUTPUT, crate::tools::KILL_BASH);
-        assert!(AgentRun::default().allows(o, "str_replace") && AgentRun::default().allows(k, "str_replace"));
-        let with = AgentRun { tools: Some(vec!["bash".into()]), ..AgentRun::default() };
-        assert!(with.allows(o, "str_replace") && with.allows(k, "str_replace"));
-        let without = AgentRun { tools: Some(vec!["read".into(), "bash_output".into(), "kill_bash".into()]), ..AgentRun::default() };
-        assert!(!without.allows(o, "str_replace") && !without.allows(k, "str_replace"));
+        assert!(!AgentRun::default().allows(o, "str_replace") && !AgentRun::default().allows(k, "str_replace"));
+        let asked = AgentRun { tools: Some(vec!["bash".into(), "bash_output".into(), "kill_bash".into()]), ..AgentRun::default() };
+        assert!(asked.allows("bash", "str_replace") && !asked.allows(o, "str_replace") && !asked.allows(k, "str_replace"));
     }
 
     #[test]

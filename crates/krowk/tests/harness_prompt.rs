@@ -201,7 +201,7 @@ fn r_tool_2_krowk_p_records_each_familys_edit_tool_and_toolset_overrides_it() {
     };
     let edit = |args: &[&str]| {
         let (preset, names) = tools(args);
-        assert_eq!([&names[..2], &names[3..]].concat(), ["read", "write", "bash", "grep", "glob", "todo_write", "publish", "subagent"], "{args:?}");
+        assert_eq!([&names[..2], &names[3..]].concat(), ["read", "write", "bash", "bash_output", "kill_bash", "grep", "glob", "todo_write", "publish", "subagent"], "{args:?}");
         (preset, names[2].clone())
     };
     let pair = |p: &str, e: &str| (p.to_string(), e.to_string());

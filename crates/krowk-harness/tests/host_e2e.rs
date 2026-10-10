@@ -215,7 +215,7 @@ fn assert_context_records(dir: &Path, m: &mock::Mock) {
     let ctx: Vec<ContextRecord> = std::fs::read_to_string(dir.join(log::CONTEXT_FILE)).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(ctx.len(), 2);
     assert_eq!(ctx[0].system, seen_system(m));
-    assert_eq!(ctx[0].tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["read", "write", "str_replace", "bash", "grep", "glob", "todo_write", "publish", "subagent"]);
+    assert_eq!(ctx[0].tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["read", "write", "str_replace", "bash", "bash_output", "kill_bash", "grep", "glob", "todo_write", "publish", "subagent"]);
     assert_eq!(ctx[0].toolset, "claude");
     assert!(ctx[0].system_tokens > 0 && ctx[0].tools_tokens > ctx[0].system_tokens, "{} {}", ctx[0].system_tokens, ctx[0].tools_tokens);
     let context_schema = schema("context-record.schema.json");
@@ -250,13 +250,13 @@ fn r_tool_2_the_recorded_tools_carry_each_model_familys_edit_tool_and_toolset_ov
         let dir = log::sessions_dir(&home.env()).unwrap().join(&r.session_id);
         let ctx: ContextRecord = serde_json::from_str(std::fs::read_to_string(dir.join(log::CONTEXT_FILE)).unwrap().lines().next().unwrap()).unwrap();
         assert_eq!(ctx.toolset, *preset, "{model} {toolset:?}");
-        assert_eq!(ctx.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["read", "write", edit, "bash", "grep", "glob", "todo_write", "publish", "subagent"], "{model} {toolset:?}");
+        assert_eq!(ctx.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["read", "write", edit, "bash", "bash_output", "kill_bash", "grep", "glob", "todo_write", "publish", "subagent"], "{model} {toolset:?}");
         assert!(ctx.system.contains(&format!("Change existing files with {edit};")), "the system prompt names the edit tool");
         // No grammar tool on the Messages API: apply_patch is a JSON function there.
         assert!(ctx.tools.iter().all(|t| t.grammar.is_none() && t.input_schema["type"] == "object"));
         let seen = m.seen.lock().unwrap();
         let sent: Vec<&str> = seen[n].body["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(sent, ["read", "write", edit, "bash", "grep", "glob", "todo_write", "publish", "subagent"], "what was recorded is what was sent");
+        assert_eq!(sent, ["read", "write", edit, "bash", "bash_output", "kill_bash", "grep", "glob", "todo_write", "publish", "subagent"], "what was recorded is what was sent");
     }
     // A toolset that does not exist is refused before any session is made.
     let mut out = Vec::new();
