@@ -1323,8 +1323,7 @@ impl<'h> Ui<'h> {
         // The child view takes the screen it is given, the conversation
         // back as it was once it closes.
         let waiting = (!app.approvals.is_empty()).then_some(if app.inline { "⚠ approval waiting · `esc` to answer it" } else { "⚠ approval waiting · answer it below" });
-        if let Some(child) = app.child.as_mut() {
-            let view = child.rows(inner(term.size().width), term.view_rows(rows.len()), waiting);
+        if let Some(view) = app.child_rows(inner(term.size().width), term.view_rows(rows.len()), waiting) {
             return term.view(&lines, &view, &rows, caret);
         }
         term.frame(&lines, &rows, caret)
@@ -1877,7 +1876,7 @@ impl<'h> Ui<'h> {
         app.touch();
         app.flash = None;
         let armed = self.quit_armed.take().filter(|(_, t)| t.elapsed() < QUIT_CONFIRM).map(|(c, _)| c);
-        if let Some(done) = child_key(app, k) {
+        if let Some(done) = self.view_key(app, k).await {
             return done;
         }
         // A call waiting for the person's say takes the keys that answer it
@@ -1922,13 +1921,7 @@ impl<'h> Ui<'h> {
                 _ => None,
             };
             if let Some(d) = decision {
-                app.answered(&req.request_id);
-                match self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d, answers: Vec::new() }).await {
-                    Ok(()) => {}
-                    // Sent, and not answered in time: the daemon has it.
-                    Err(e) if e.code == SLOW => app.notice("the host daemon is slow to answer — the approval was sent, and the turn goes on once it takes it"),
-                    Err(_) => app.notice("that approval was already answered, or its turn is over"),
-                }
+                self.approve(app, &req, d).await;
             }
             return false;
         }
@@ -1971,6 +1964,17 @@ impl<'h> Ui<'h> {
             return false;
         }
         self.on_prompt_key(app, k, quitting, armed).await
+    }
+
+    /// `req` answered `d`, and the answer sent.
+    async fn approve(&mut self, app: &mut App, req: &ApprovalRequest, d: ApprovalDecision) {
+        app.answered(&req.request_id);
+        match self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d, answers: Vec::new() }).await {
+            Ok(()) => {}
+            // Sent, and not answered in time: the daemon has it.
+            Err(e) if e.code == SLOW => app.notice("the host daemon is slow to answer — the approval was sent, and the turn goes on once it takes it"),
+            Err(_) => app.notice("that approval was already answered, or its turn is over"),
+        }
     }
 
     /// Ctrl-C or Ctrl-D asked to leave krowk: the first press asks for a
@@ -2082,15 +2086,42 @@ impl<'h> Ui<'h> {
                 }
             }
             KeyCode::Char('x') => {
-                if let Some(id) = app.agent_to_interrupt()
-                    && let Err(e) = self.command(Command::Interrupt { session_id: id }).await
-                {
-                    app.notice(&e.message);
+                if let Some(id) = app.agent_to_interrupt() {
+                    self.stop_child(app, id, false).await;
                 }
             }
             _ => return None,
         }
         Some(false)
+    }
+
+    /// The child view's keys (`child_key`), ← → and `x` carried out: the
+    /// sibling's log read and opened, the child interrupted alone.
+    async fn view_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+        match child_key(app, k)? {
+            child::Key::Sibling(by) => {
+                if let Some(id) = app.child_sibling(by) {
+                    let history = read_child(&self.sessions_dir, &id);
+                    app.open_child(&id, history);
+                }
+            }
+            child::Key::Stop => {
+                if let Some(id) = app.child_to_stop() {
+                    self.stop_child(app, id, true).await;
+                }
+            }
+            _ => {}
+        }
+        Some(false)
+    }
+
+    /// Interrupts child `id` alone (R-SUB-10): its row says it is stopping
+    /// until its end arrives, or, refused — `not_stoppable`, or nothing of
+    /// it running — the answer is said, in the child view's footer when
+    /// `in_view`, else as a notice. Never silently nothing.
+    async fn stop_child(&mut self, app: &mut App, id: String, in_view: bool) {
+        let answer = self.command(Command::Interrupt { session_id: id.clone() }).await;
+        stop_answered(app, &id, in_view, answer);
     }
 
     /// The trust question for a routed backend. It is answered by one
@@ -3203,20 +3234,36 @@ fn copy(app: &mut App) {
 /// the other Ctrl keys, which do nothing: each would open an overlay under
 /// the view. Inline, the card is hidden, and the view says so: Esc closes
 /// it to show the card. Esc closes it onto the Agents overlay that opened
-/// it, the same child selected. Like each `…_key`: Some with what `on_key`
-/// answers when it took the key.
-fn child_key(app: &mut App, k: KeyEvent) -> Option<bool> {
+/// it, the same child selected. Some with what the view made of the key
+/// when it took it — ← → and `x` are `on_key`'s to carry out — None when
+/// the key goes on.
+fn child_key(app: &mut App, k: KeyEvent) -> Option<child::Key> {
     app.child.as_ref()?;
     if !app.inline && !app.approvals.is_empty() {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        return (ctrl && !matches!(k.code, KeyCode::Char('c' | 'd'))).then_some(false);
+        return (ctrl && !matches!(k.code, KeyCode::Char('c' | 'd'))).then_some(child::Key::Taken);
     }
     match app.child.as_mut()?.key(k) {
-        child::Key::Close => app.child = None,
-        child::Key::Taken => {}
-        child::Key::Pass => return None,
+        child::Key::Close => {
+            app.close_child();
+            Some(child::Key::Close)
+        }
+        child::Key::Pass => None,
+        other => Some(other),
     }
-    Some(false)
+}
+
+/// The host's answer to child `id`'s interrupt: taken — or sent to a host
+/// slow to answer, which has it — the child reads stopping; refused, why,
+/// in the child view's footer when `in_view`, else as a notice.
+fn stop_answered(app: &mut App, id: &str, in_view: bool, answer: Result<(), EngineError>) {
+    match answer {
+        Err(e) if e.code != SLOW => {
+            let why = format!("not stopped: {}", e.message);
+            if in_view { app.child_say(&why) } else { app.notice(&why) }
+        }
+        _ => app.stopping(id),
+    }
 }
 
 #[cfg(test)]
@@ -3229,13 +3276,13 @@ mod tests {
         for inline in [true, false] {
             let mut app = App::new(Editor::new(None), 40, Settings::default(), None, None);
             app.inline = inline;
-            app.child = Some(child::ChildView::new("a child", (0..30).map(|i| ratatui::text::Line::from(format!("line {i}"))), 40));
-            assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(false), "no approval: the view takes it");
+            app.child = Some(child::ChildView::new((0..30).map(|i| ratatui::text::Line::from(format!("line {i}"))), 40));
+            assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(child::Key::Taken), "no approval: the view takes it");
             app.approvals.push(req.clone());
             if inline {
                 // The card is hidden: y is no answer, Esc shows it.
-                assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(false));
-                assert_eq!(child_key(&mut app, key(KeyCode::Esc)), Some(false));
+                assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(child::Key::Taken));
+                assert_eq!(child_key(&mut app, key(KeyCode::Esc)), Some(child::Key::Close));
                 assert!(app.child.is_none(), "closed, the card under it");
             } else {
                 // The card is on screen: y, n and Esc are its, the view stays.
@@ -3245,13 +3292,33 @@ mod tests {
                 assert!(app.child.is_some());
                 // No overlay opens under it; Ctrl-C and Ctrl-D go on.
                 for c in ['o', 'g', 't', 'y'] {
-                    assert_eq!(child_key(&mut app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)), Some(false), "Ctrl-{c}");
+                    assert_eq!(child_key(&mut app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)), Some(child::Key::Taken), "Ctrl-{c}");
                 }
                 for c in ['c', 'd'] {
                     assert_eq!(child_key(&mut app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)), None, "Ctrl-{c}");
                 }
             }
         }
+    }
+
+    /// R-SUB-10: an interrupt the host refuses — `not_stoppable`, with why —
+    /// is said in the child view's footer, and the child does not read
+    /// stopping; one sent to a slow host does.
+    #[test]
+    fn r_sub_10_a_refused_interrupt_says_why_in_the_footer_and_nothing_reads_stopping() {
+        use super::*;
+        use krowk_harness::protocol::{LogBody, LogEvent, ModelRef};
+        let mut app = App::new(Editor::new(None), 80, Settings::default(), None, None);
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
+        app.on_line(&StreamLine::Log(LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "build it".into(), agent: None, model, ran_by: Default::default(), backend_id: None } }));
+        app.open_child("k1", Ok(Vec::new()));
+        let rows = |app: &mut App| app.child_rows(100, 8, None).unwrap().iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>();
+        stop_answered(&mut app, "k1", true, Err(EngineError::new("not_stoppable", "its backend cannot stop one agent alone")));
+        let shown = rows(&mut app);
+        assert_eq!(shown[7], "⚠ not stopped: its backend cannot stop one agent alone", "{shown:?}");
+        assert!(!shown[0].contains("stopping"), "{shown:?}");
+        stop_answered(&mut app, "k1", true, Err(EngineError::new(SLOW, "slow")));
+        assert!(rows(&mut app)[0].contains("· stopping…"), "sent, to a host slow to answer: {:?}", rows(&mut app));
     }
 
     #[test]

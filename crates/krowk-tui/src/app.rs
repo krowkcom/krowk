@@ -21,7 +21,7 @@ use crate::table;
 use krowk_harness::host::Pricer;
 use krowk_harness::log::Recent;
 use krowk_harness::protocol::{
-    ApprovalRequest, BackendAgent, Billing, ChildState, ChildTool, Delta, ErrorInfo, HandoffKind, ImageInput, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
+    ApprovalRequest, BackendAgent, Billing, ChildState, ChildTool, Delta, ErrorInfo, HandoffKind, ImageInput, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RanBy, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
     TurnStatus, Usage, Waiting,
 };
 use std::collections::{BTreeMap, HashMap};
@@ -222,6 +222,10 @@ struct Sub {
     /// The item it is streaming, and its text so far: what a child view
     /// opened in the middle of it starts from.
     streaming: Option<Streaming>,
+    /// What ran it (`subagent.started`'s `ranBy`): whether `x` can stop it.
+    ran_by: RanBy,
+    /// `x` was taken for it and its end has not come yet.
+    stopping: bool,
 }
 
 /// A child's item under way: its start, and the text it has streamed.
@@ -259,6 +263,8 @@ impl Sub {
             last_event_ms: None,
             waiting: None,
             streaming: None,
+            ran_by: RanBy::Krowk,
+            stopping: false,
         }
     }
 
@@ -287,8 +293,40 @@ impl Sub {
         if let Some(a) = &self.agent {
             parts.push(a.clone());
         }
+        self.state(&mut parts, now, facts);
+        parts.join(" · ")
+    }
+
+    /// The child view's header (R-SUB-11): `<description> · <agent> · by
+    /// <what ran it> · <state> · <facts> · N tokens · $x`.
+    fn header(&self, now: Instant) -> String {
+        let mut parts = vec![if self.description.is_empty() { "subagent".to_string() } else { self.description.clone() }];
+        if let Some(a) = &self.agent {
+            parts.push(a.clone());
+        }
+        parts.push(format!("by {}", ran_by(self.ran_by)));
+        self.state(&mut parts, now, true);
+        parts.join(" · ")
+    }
+
+    /// Why `x` cannot stop it, when it cannot (R-SUB-10): it has ended, it
+    /// was sent its interrupt already, or what ran it is not krowk, whose
+    /// backend half is not built yet.
+    fn unstoppable(&self) -> Option<String> {
+        if self.status.is_some() {
+            return Some("that subagent has finished — nothing of it is running to interrupt".into());
+        }
+        if self.stopping {
+            return Some("already stopping — its end is on the way".into());
+        }
+        (self.ran_by != RanBy::Krowk).then(|| format!("{} runs that subagent, and krowk cannot stop one of its agents alone yet — Ctrl-C stops the whole turn, its agents with it", ran_by(self.ran_by)))
+    }
+
+    /// Its state, its facts while it runs, its tokens and cost.
+    fn state(&self, parts: &mut Vec<String>, now: Instant, facts: bool) {
         let took = self.took.unwrap_or_else(|| now.saturating_duration_since(self.started));
         parts.push(match self.status {
+            None if self.stopping => "stopping…".into(),
             None if self.background => "in the background".into(),
             None => format!("running {}", look::duration(took)),
             Some(TurnStatus::Completed) => format!("done in {}", look::duration(took)),
@@ -306,7 +344,6 @@ impl Sub {
             (Some(c), false) => parts.push(format!("${c:.2}")),
             (None, false) => {}
         }
-        parts.join(" · ")
     }
 
     /// What its `subagent.status` says of a running child at `now_ms`, each
@@ -330,6 +367,15 @@ impl Sub {
             facts.push(format!("{}waiting on you", look::WARN));
         }
         facts
+    }
+}
+
+/// What ran a child, as the person knows it.
+fn ran_by(r: RanBy) -> &'static str {
+    match r {
+        RanBy::Krowk => "krowk",
+        RanBy::Claude => "Claude Code",
+        RanBy::Codex => "Codex",
     }
 }
 
@@ -838,6 +884,12 @@ pub struct App {
     /// reorders as children start and end. Its place, for when it is gone.
     agent_pick: Option<String>,
     agent_sel: usize,
+    /// The order ← → step through while the child view is open: the
+    /// Agents overlay's when it opened, held, so a child that ends while
+    /// it is stepped through keeps its place and ← undoes →. How many of
+    /// them were running: children started since go after those.
+    child_order: Vec<String>,
+    child_order_running: usize,
     /// The time of the last event a replay read.
     replayed_ms: Option<i64>,
     /// The agents a backend runs by itself (Claude Code's `Agent` tool),
@@ -978,6 +1030,8 @@ impl App {
             sub_clock: 0,
             agent_pick: None,
             agent_sel: 0,
+            child_order: Vec::new(),
+            child_order_running: 0,
             replayed_ms: None,
             backend_agents: Vec::new(),
             background: 0,
@@ -2051,6 +2105,13 @@ impl App {
     /// The child view on child `sid` (R-SUB-11): `history`, its log as
     /// read (or why it could not be), then what arrives of it live.
     pub fn open_child(&mut self, sid: &str, history: Result<Vec<LogEvent>, String>) {
+        // Opened from the overlay: the order ← → step through, held.
+        if self.child.is_none() {
+            let children = self.children();
+            let running = children.iter().filter(|s| s.status.is_none()).count();
+            let order = children.iter().map(|s| s.session_id.clone()).collect();
+            (self.child_order, self.child_order_running) = (order, running);
+        }
         let sub = self.subs.iter().chain(&self.past).find(|s| s.session_id == sid);
         // The item it is in the middle of, as far as it has come.
         let under_way = sub.and_then(|s| s.streaming.clone()).map(|st| {
@@ -2058,20 +2119,81 @@ impl App {
             let so_far = StreamLine::Live(LiveEvent::ItemDelta { session_id: sid.into(), turn_id: st.turn_id, item_id: st.item_id.clone(), delta: Delta::Text { text: st.text } });
             (st.item_id, [start, so_far])
         });
-        let title = match sub {
-            Some(s) => {
-                let what = if s.description.is_empty() { "subagent" } else { s.description.as_str() };
-                match &s.agent {
-                    Some(a) => format!("{what} · {a}"),
-                    None => what.to_string(),
-                }
-            }
-            None => "subagent".to_string(),
-        };
         let mut app = App::new(Editor::new(None), self.room, self.settings.clone(), None, None);
         app.set_rows(self.screen_rows);
-        self.child = Some(crate::child::ChildView::open(&title, sid, app, history, under_way));
+        self.child = Some(crate::child::ChildView::open(sid, app, history, under_way));
         self.dirty = true;
+    }
+
+    /// The child view's `height` rows at `width` columns, while it is open:
+    /// its header is its child's row as it stands now, live (R-SUB-11).
+    pub fn child_rows(&mut self, width: u16, height: u16, waiting: Option<&str>) -> Option<Vec<Line<'static>>> {
+        let sid = self.child.as_ref()?.session_id();
+        let header = self.subs.iter().chain(&self.past).find(|s| s.session_id == sid).map_or_else(|| "subagent".to_string(), |s| s.header(Instant::now()));
+        Some(self.child.as_mut()?.rows(width, height, &header, waiting))
+    }
+
+    /// ← or → in the child view: the child `by` places from the open one in
+    /// the order the Agents overlay had when the view opened (`child_order`),
+    /// round the ends, selected there — Esc comes back to it — or nothing
+    /// when there is no other. Children that end meanwhile keep their
+    /// places, so ← undoes →; one started since goes after the running,
+    /// one gone is left out.
+    pub fn child_sibling(&mut self, by: isize) -> Option<String> {
+        let open = self.child.as_ref()?.session_id().to_string();
+        let new: Vec<String> = self.children().iter().map(|s| s.session_id.clone()).filter(|id| !self.child_order.contains(id)).collect();
+        for id in new {
+            self.child_order.insert(self.child_order_running.min(self.child_order.len()), id);
+            self.child_order_running += 1;
+        }
+        let all: Vec<String> = self.children().iter().map(|s| s.session_id.clone()).collect();
+        let ids: Vec<&String> = self.child_order.iter().filter(|id| all.contains(id)).collect();
+        let at = ids.iter().position(|id| **id == open)?;
+        let next = ids[(at as isize + by).rem_euclid(ids.len() as isize) as usize].clone();
+        self.agent_pick = Some(next.clone());
+        self.agent_sel = self.children().iter().position(|s| s.session_id == next).unwrap_or(0);
+        self.dirty = true;
+        (next != open).then_some(next)
+    }
+
+    /// `x` in the child view: its child's session to interrupt, or nothing,
+    /// and the footer says why (R-SUB-10).
+    pub fn child_to_stop(&mut self) -> Option<String> {
+        let sid = self.child.as_ref()?.session_id().to_string();
+        let why = self.subs.iter().chain(&self.past).find(|s| s.session_id == sid).and_then(Sub::unstoppable);
+        match why {
+            Some(why) => {
+                self.child_say(&why);
+                None
+            }
+            None => Some(sid),
+        }
+    }
+
+    /// Esc in the child view: it closes onto the overlay, and the order ←
+    /// → stepped through goes with it.
+    pub fn close_child(&mut self) {
+        self.child = None;
+        self.child_order.clear();
+        self.child_order_running = 0;
+        self.dirty = true;
+    }
+
+    /// Says `note` in the child view's footer: an answer to its key.
+    pub fn child_say(&mut self, note: &str) {
+        if let Some(c) = self.child.as_mut() {
+            c.say(note);
+            self.dirty = true;
+        }
+    }
+
+    /// Child `sid` was sent its interrupt: its row says it is stopping
+    /// until its end arrives.
+    pub fn stopping(&mut self, sid: &str) {
+        if let Some(s) = self.child(sid) {
+            s.stopping = true;
+            self.dirty = true;
+        }
     }
 
     /// The selected subagent's session, while it is still running: what
@@ -2085,11 +2207,15 @@ impl App {
     /// interrupt, or, when it has finished, nothing — and the person is
     /// told nothing of it runs.
     pub fn agent_to_interrupt(&mut self) -> Option<String> {
-        let id = self.agent_selected_running();
-        if id.is_none() && self.agent_count() > 0 {
-            self.notice("that subagent has finished — nothing of it is running to interrupt");
+        let children = self.children();
+        let why = children.get(self.selected(&children)).map(|s| (s.session_id.clone(), s.unstoppable()));
+        match why? {
+            (_, Some(why)) => {
+                self.notice(&why);
+                None
+            }
+            (id, None) => Some(id),
         }
-        id
     }
 
     fn on_text(&mut self, item_id: &str, text: &str) {
@@ -2229,9 +2355,10 @@ impl App {
                 self.push_wrapped(look::SWITCH, "  ", &format!("moved to another machine, working in {cwd}"), look::switched(), dim());
                 self.gap();
             }
-            LogBody::SubagentStarted { call_id, subagent_session_id, description, agent, .. } => {
+            LogBody::SubagentStarted { call_id, subagent_session_id, description, agent, ran_by, .. } => {
                 let s = self.sub(subagent_session_id);
                 s.started_ms = Some(ev.time_ms);
+                s.ran_by = *ran_by;
                 s.call_id = Some(call_id.clone());
                 s.description.clone_from(description);
                 if agent.is_some() {
@@ -4991,7 +5118,7 @@ mod tests {
         assert_eq!(a.agent_selected().as_deref(), Some("k1"));
         a.open_child("k1", Ok(history));
         a.on_line(&live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "t".into(), item_id: "m0".into(), delta: Delta::Text { text: " and the rest\n".into() } }));
-        assert!(text(&a.child.as_mut().unwrap().rows(40, 20, None)).iter().any(|r| r == "EARLY part and the rest"), "before it is whole");
+        assert!(text(&a.child_rows(40, 20, None).unwrap()).iter().any(|r| r == "EARLY part and the rest"), "before it is whole");
         a.on_line(&ev("k1", "h5", LogBody::ItemCompleted { turn_id: "t".into(), item_id: "m0".into(), item: Item::AssistantText { text: "EARLY part and the rest\n".into() } }));
         // Read, and sent too: once.
         a.on_line(&said("k1", "h2", "TASK-1"));
@@ -5000,16 +5127,16 @@ mod tests {
         a.on_line(&ev("k1", "h4", LogBody::ItemCompleted { turn_id: "t".into(), item_id: "h4".into(), item: Item::ToolResult { call_id: "r1".into(), output: "README.md".into(), is_error: false } }));
         a.on_line(&live(LiveEvent::ItemStarted { session_id: "k1".into(), turn_id: "t".into(), item_id: "m1".into(), item: ItemKind::AssistantText }));
         a.on_line(&live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "t".into(), item_id: "m1".into(), delta: Delta::Text { text: "WHOLE line\nstreaming tai".into() } }));
-        let rows = text(&a.child.as_mut().unwrap().rows(40, 20, None));
-        assert_eq!(rows[0], "do k1");
+        let rows = text(&a.child_rows(40, 20, None).unwrap());
+        assert!(rows[0].starts_with("do k1 · by krowk · running"), "{rows:#?}");
         let at = |s: &str| rows.iter().position(|r| r.contains(s)).unwrap_or_else(|| panic!("{s}: {rows:#?}"));
         assert!(at("TASK-1") < at("EARLY part and the rest") && at("EARLY part and the rest") < at("Run ls") && at("Run ls") < at("WHOLE line") && at("WHOLE line") < at("streaming tai"), "{rows:#?}");
         assert_eq!(rows.iter().filter(|r| r.contains("TASK-1") || r.contains("EARLY")).count(), 2, "each once: {rows:#?}");
         assert!(!rows.iter().any(|r| r.contains("SIBLING")), "{rows:#?}");
         // Scrolled up, it holds still and the unfinished line waits.
-        a.child.as_mut().unwrap().rows(40, 6, None);
+        a.child_rows(40, 6, None).unwrap();
         a.child.as_mut().unwrap().key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Up));
-        let rows = text(&a.child.as_mut().unwrap().rows(40, 6, None));
+        let rows = text(&a.child_rows(40, 6, None).unwrap());
         assert!(rows[4].starts_with("↓ 1 more below") && !rows.iter().any(|r| r.contains("streaming tai")), "{rows:#?}");
         // The row folded it as ever; the conversation's own wait unseen.
         assert!(a.view(Instant::now()).0.iter().all(|r| !text(std::slice::from_ref(r))[0].contains("do k")), "nothing of the overlay or the rows under the view");
@@ -5068,6 +5195,123 @@ mod tests {
         let ended = row(&a, 60.0);
         assert!(!ended.contains("bash") && !ended.contains("quiet") && !ended.contains("waiting"), "{ended}");
         assert!(!a.status_bar().contains("waiting"), "{}", a.status_bar());
+    }
+
+    /// Three children started on `a`'s turn — k1, k2, k3, by `ran_by` —
+    /// running, so in the Agents overlay in that order.
+    fn started_three(a: &mut App, ran_by: RanBy) {
+        a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        a.start_turn(Instant::now());
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
+        for (call, kid) in [("c1", "k1"), ("c2", "k2"), ("c3", "k3")] {
+            a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: call.into(), item: Item::ToolCall { call_id: call.into(), name: "subagent".into(), input: serde_json::json!({"description": kid}) } }));
+            a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: kid.into(), description: format!("do {kid}"), agent: Some("explorer".into()), model: model.clone(), ran_by, backend_id: None }));
+        }
+    }
+
+    /// R-SUB-11: ← and → in the child view open the child before and after
+    /// it in the Agents overlay's order, round the ends, and Esc goes back
+    /// to the overlay with the one last open selected.
+    #[test]
+    fn r_sub_11_left_and_right_open_the_siblings_in_the_overlays_order() {
+        let mut a = app();
+        started_three(&mut a, RanBy::Krowk);
+        a.open_agents();
+        let first = a.agent_selected().unwrap();
+        assert_eq!(first, "k1");
+        a.open_child(&first, Ok(Vec::new()));
+        let open = |a: &App| a.child.as_ref().unwrap().session_id().to_string();
+        let go = |a: &mut App, by: isize| {
+            let id = a.child_sibling(by).expect("another child");
+            a.open_child(&id, Ok(Vec::new()));
+        };
+        go(&mut a, 1);
+        go(&mut a, 1);
+        assert_eq!(open(&a), "k3", "→ twice from the first reaches the third");
+        assert!(text(&a.child_rows(60, 8, None).unwrap())[0].starts_with("do k3 · explorer · by krowk · running"));
+        go(&mut a, -1);
+        assert_eq!(open(&a), "k2", "← returns");
+        go(&mut a, -1);
+        go(&mut a, -1);
+        assert_eq!(open(&a), "k3", "round the top");
+        a.child = None;
+        assert_eq!((a.overlay, a.agent_selected().as_deref()), (Overlay::Agents, Some("k3")), "Esc: the overlay, the last one open selected");
+        // The open child ends and its row moves among the finished: ← and →
+        // still step from where it was, not turned round.
+        let mut c = app();
+        started_three(&mut c, RanBy::Krowk);
+        c.open_agents();
+        c.open_child("k2", Ok(Vec::new()));
+        c.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1_000, error: None, reported_cost_usd: None }));
+        let k3 = c.child_sibling(1);
+        assert_eq!(k3.as_deref(), Some("k3"), "→ after it, as it was");
+        c.open_child("k3", Ok(Vec::new()));
+        assert_eq!(c.child_sibling(-1).as_deref(), Some("k2"), "← returns to it, ended");
+        c.open_child("k2", Ok(Vec::new()));
+        // A child started meanwhile goes after the running ones.
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
+        c.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c4".into(), subagent_session_id: "k4".into(), description: "do k4".into(), agent: None, model, ran_by: RanBy::Krowk, backend_id: None }));
+        let mut order = Vec::new();
+        for _ in 0..4 {
+            let id = c.child_sibling(1).unwrap();
+            c.open_child(&id, Ok(Vec::new()));
+            order.push(id);
+        }
+        assert_eq!(order, ["k3", "k4", "k1", "k2"]);
+        // Closed and opened again on the ended one: it steps from its place
+        // among the finished now, round to the top.
+        c.close_child();
+        c.open_child("k2", Ok(Vec::new()));
+        assert_eq!(c.child_sibling(1).as_deref(), Some("k1"));
+        // An only child has no sibling.
+        let mut b = app();
+        started_three(&mut b, RanBy::Krowk);
+        b.subs.truncate(1);
+        b.open_child("k1", Ok(Vec::new()));
+        assert_eq!(b.child_sibling(1), None);
+    }
+
+    /// R-SUB-10, R-SUB-11: the child view's header is the child's
+    /// description, agent, what ran it and its facts, live — `⚠ waiting on
+    /// you` while it waits on an approval — and `x` stops it: it reads
+    /// stopping, then how it ended. Ended, or run by a backend krowk cannot
+    /// stop one agent of yet, `x` sends nothing and the footer says why.
+    #[test]
+    fn r_sub_10_r_sub_11_the_header_says_who_ran_it_and_waiting_and_x_says_why_it_stops_nothing() {
+        let mut a = app();
+        started_three(&mut a, RanBy::Krowk);
+        a.open_child("k2", Ok(Vec::new()));
+        let rows = |a: &mut App| text(&a.child_rows(120, 8, None).unwrap());
+        let ms = super::wall_ms(Instant::now());
+        a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k2".into(), status: ChildState::Running, tool: None, last_event_ms: ms, waiting: Some(Waiting::Approval), tokens: 0 }));
+        let header = rows(&mut a)[0].clone();
+        assert!(header.starts_with("do k2 · explorer · by krowk · running") && header.ends_with("· ⚠ waiting on you"), "{header}");
+        a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k2".into(), status: ChildState::Running, tool: None, last_event_ms: ms, waiting: None, tokens: 0 }));
+        assert!(!rows(&mut a)[0].contains("waiting"), "answered: {:?}", rows(&mut a)[0]);
+        // x: its session, and it reads stopping until its end arrives.
+        assert_eq!(a.child_to_stop().as_deref(), Some("k2"));
+        a.stopping("k2");
+        assert!(rows(&mut a)[0].contains("· stopping…"), "{:?}", rows(&mut a));
+        // x again before its end: nothing sent, and said.
+        assert_eq!(a.child_to_stop(), None);
+        assert_eq!(rows(&mut a)[7], "⚠ already stopping — its end is on the way");
+        a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 4_000, error: None, reported_cost_usd: None }));
+        assert!(rows(&mut a)[0].contains("· interrupted after 4.0s"), "{:?}", rows(&mut a));
+        // Ended: nothing to send, and the footer says so.
+        assert_eq!(a.child_to_stop(), None);
+        assert!(rows(&mut a)[7].contains("finished — nothing of it is running"), "{:?}", rows(&mut a));
+        // Run by Claude Code: said, not sent.
+        let mut b = app();
+        started_three(&mut b, RanBy::Claude);
+        b.open_child("k1", Ok(Vec::new()));
+        assert!(rows(&mut b)[0].starts_with("do k1 · explorer · by Claude Code · running"), "{:?}", rows(&mut b));
+        assert_eq!(b.child_to_stop(), None);
+        assert!(rows(&mut b)[7].starts_with("⚠ Claude Code runs that subagent, and krowk cannot stop one of its agents alone yet"), "{:?}", rows(&mut b));
+        // The overlay's x says the same, as a notice.
+        b.child = None;
+        b.open_agents();
+        assert_eq!(b.agent_to_interrupt(), None);
+        assert!(text(&b.take_pending()).iter().any(|r| r.contains("Claude Code runs that subagent")));
     }
 
     /// R-SUB-11: frames are not sent per delta, so what streams from a
