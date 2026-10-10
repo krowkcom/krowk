@@ -2204,29 +2204,7 @@ impl App {
                 }
                 let call = self.calls.iter().position(|c| &c.call_id == call_id).map(|i| self.calls.remove(i));
                 if let Some(i) = self.subs.iter().position(|s| s.call_id.as_deref() == Some(call_id.as_str())) {
-                    let mut s = self.subs.remove(i);
-                    // Started in the background, or moved there by a steer
-                    // (R-STEER-3, R-STEER-4): its end comes as a note,
-                    // which names it as its line did.
-                    s.background = output.starts_with("started background agent ") || output.starts_with("moved to background as agent ");
-                    if s.background {
-                        self.background_agents.insert(s.session_id.clone(), s.description.clone());
-                    }
-                    self.commit_sub(&s, output, *is_error);
-                    // Kept for the Agents overlay, which lists every child.
-                    let id = s.session_id.clone();
-                    let background = s.background;
-                    self.past.push(s);
-                    if !background {
-                        let how = match (*is_error, output.contains("interrupted")) {
-                            (false, _) => TurnStatus::Completed,
-                            (true, true) => TurnStatus::Interrupted,
-                            (true, false) => TurnStatus::Failed,
-                        };
-                        self.ended(&id, how, at_ms);
-                    }
-                    self.agent_sel = self.agent_sel.min(self.agent_count().saturating_sub(1));
-                    return;
+                    return self.answer_sub(i, output, *is_error, at_ms);
                 }
                 match call {
                     Some(c) => self.commit_tool(&c.name, &c.input, output, *is_error),
@@ -2234,6 +2212,31 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Subagent `i`'s call answered, at `at_ms`: its line into scrollback,
+    /// and it kept for the Agents overlay, which lists every child.
+    fn answer_sub(&mut self, i: usize, output: &str, is_error: bool, at_ms: i64) {
+        let mut s = self.subs.remove(i);
+        // Started in the background, or moved there by a steer (R-STEER-3,
+        // R-STEER-4): its end comes as a note, which names it as its line did.
+        s.background = output.starts_with("started background agent ") || output.starts_with("moved to background as agent ");
+        if s.background {
+            self.background_agents.insert(s.session_id.clone(), s.description.clone());
+        }
+        self.commit_sub(&s, output, is_error);
+        let id = s.session_id.clone();
+        let background = s.background;
+        self.past.push(s);
+        if !background {
+            let how = match (is_error, output.contains("interrupted")) {
+                (false, _) => TurnStatus::Completed,
+                (true, true) => TurnStatus::Interrupted,
+                (true, false) => TurnStatus::Failed,
+            };
+            self.ended(&id, how, at_ms);
+        }
+        self.agent_sel = self.agent_sel.min(self.agent_count().saturating_sub(1));
     }
 
     /// Whatever of the streaming text never ended in a newline goes to
