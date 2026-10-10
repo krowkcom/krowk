@@ -1851,6 +1851,14 @@ impl App {
         self.sub_clock += 1;
         let tick = self.sub_clock;
         let Some(s) = self.child(sid) else { return };
+        // Anything live from a running child is news of it: frames are not
+        // sent per delta, so a child streaming text is not quiet.
+        if let StreamLine::Live(_) = line
+            && s.status.is_none()
+            && let Some(ms) = &mut s.last_event_ms
+        {
+            *ms = (*ms).max(wall_ms(Instant::now()));
+        }
         match line {
             StreamLine::Log(ev) => match &ev.body {
                 LogBody::ItemCompleted { item: Item::ToolCall { name, input, .. }, .. } => {
@@ -1885,7 +1893,8 @@ impl App {
             StreamLine::Live(LiveEvent::SubagentStatus { status, tool, last_event_ms, waiting, .. }) => {
                 let running = *status == ChildState::Running;
                 s.tool = tool.clone().filter(|_| running);
-                s.last_event_ms = running.then_some(*last_event_ms);
+                // Its stamp, or what arrived since, whichever is later.
+                s.last_event_ms = running.then(|| s.last_event_ms.map_or(*last_event_ms, |ms| ms.max(*last_event_ms)));
                 s.waiting = waiting.filter(|_| running);
             }
             _ => return,
@@ -4919,6 +4928,8 @@ mod tests {
         assert!(a.take_pending().is_empty(), "a frame reaches no conversation");
         let under = row(&a, 9.5);
         assert!(under.contains("running") && !under.contains("bash") && !under.contains("quiet") && !under.contains("waiting"), "nothing under the thresholds: {under}");
+        let whole: Vec<String> = listed_at(&a, t0 + Duration::from_secs_f64(12.5)).iter().map(|r| r.chars().skip(2).collect()).collect();
+        assert_eq!(whole, ["Agent build it · running 12s · bash 12s"], "the row it was, and only the new fact");
         let tool = row(&a, 12.5);
         assert!(tool.contains("· bash 12s") && !tool.contains("quiet"), "the tool once over 10 s: {tool}");
         let quiet = row(&a, 95.5);
@@ -4944,6 +4955,28 @@ mod tests {
         let ended = row(&a, 60.0);
         assert!(!ended.contains("bash") && !ended.contains("quiet") && !ended.contains("waiting"), "{ended}");
         assert!(!a.status_bar().contains("waiting"), "{}", a.status_bar());
+    }
+
+    /// R-SUB-11: frames are not sent per delta, so what streams from a
+    /// child between them is news of it too: a child whose last frame is
+    /// 35 s old but which streams text now is not quiet, and an older frame
+    /// after that does not make it so.
+    #[test]
+    fn r_sub_11_a_child_streaming_between_frames_is_not_quiet() {
+        let mut a = App::new(Editor::new(None), 120, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        a.start_turn(Instant::now());
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
+        a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "write it up".into(), agent: None, model, ran_by: Default::default(), backend_id: None }));
+        let old = super::wall_ms(Instant::now()) - 35_500;
+        let frame = live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Running, tool: None, last_event_ms: old, waiting: None, tokens: 0 });
+        a.on_line(&frame);
+        let later = |a: &App| listed_at(a, Instant::now() + Duration::from_secs(5)).join("\n");
+        assert!(later(&a).contains("· quiet 40s"), "nothing since the frame: {}", later(&a));
+        a.on_line(&live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "u".into(), item_id: "x".into(), delta: Delta::Text { text: "and so".into() } }));
+        assert!(!later(&a).contains("quiet"), "it streams: {}", later(&a));
+        a.on_line(&frame);
+        assert!(!later(&a).contains("quiet"), "an older stamp moves nothing back: {}", later(&a));
     }
 
     /// R-SUB-11: the client's clock, moved to `now`, reads a frame's times.
