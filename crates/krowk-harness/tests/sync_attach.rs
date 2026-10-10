@@ -50,6 +50,14 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let messages = body["messages"].as_array().cloned().unwrap_or_default();
     let last = messages.last().cloned().unwrap_or_default();
     let has_result = last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
+    // A subagent's own call: a slow answer, stopped part way.
+    if body["system"].to_string().contains("You are a subagent") {
+        let words: String = (0..400).map(|i| format!("childword{i} ")).collect();
+        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
+    }
+    if !has_result && last.to_string().contains("start a slow subagent") {
+        return mock::Reply::sse(&mock::tool_use("toolu_01Kid", "subagent", &serde_json::json!({"description": "a slow look", "prompt": "look slowly"})));
+    }
     if !has_result && last.to_string().contains("a long answer") {
         let words: String = (0..160).map(|i| format!("word{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
@@ -909,17 +917,20 @@ async fn r_hand_4_with_a_offline_b_is_read_only_and_its_queued_prompt_runs_when_
 
 /// The session's events as the registry holds them, read at rest by a
 /// device that has never seen it: what every later attach gets.
-async fn at_rest_ids(w: &World, session: &str) -> Result<Vec<String>, String> {
+async fn at_rest(w: &World, session: &str) -> Result<Vec<serde_json::Value>, String> {
     let (api, keys, chain, id) = (w.client(), w.keys(), w.chain(), session.to_string());
     tokio::task::spawn_blocking(move || {
         let s = api.show_sync_session(&id).map_err(|e| e.to_string())?;
         let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld)?;
         let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index)?;
-        let a = krowk_harness::sync::store::attach(&api, &key, &id, index, None)?;
-        Ok(a.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect())
+        Ok(krowk_harness::sync::store::attach(&api, &key, &id, index, None)?.events)
     })
     .await
     .unwrap()
+}
+
+async fn at_rest_ids(w: &World, session: &str) -> Result<Vec<String>, String> {
+    Ok(at_rest(w, session).await?.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect())
 }
 
 /// Waits until what the registry holds is A's whole log.
@@ -1671,4 +1682,91 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
     let free = krowk_api::Client::new(&w.api, "krowk_sk_free_0000000000000000000000").signed_by(signer(&b));
     let refused = tokio::task::spawn_blocking(move || free.put_transport("01a0ec7b-3333-7000-8000-000000000001", b"x", "t")).await.unwrap().unwrap_err();
     assert_eq!(refused.code(), "sync_requires_paid_plan", "{refused:?}");
+}
+
+/// The ids of a session's events, `of` alone, in the order they came.
+fn ids_of(events: &[serde_json::Value], of: &str) -> Vec<String> {
+    events.iter().filter(|e| e["sessionId"] == of).filter_map(|e| e["id"].as_str().map(String::from)).collect()
+}
+
+/// R-SUB-12, R-SUB-6: B stops a subagent of the session it follows, by
+/// the child's id, while the parent's turn — started at A's terminal, in
+/// another directory than the bridge's — goes on and ends. B can stop
+/// nothing else that way: another session on A, an id it made up, and a
+/// steer of the child are refused. And the child's logged events are
+/// written into the parent's chunks: the parent's branch walk leaves them
+/// out, so its replay is its own log's, and the child is rebuilt from them.
+#[tokio::test]
+async fn r_sub_12_a_viewer_stops_the_sessions_own_child_and_nothing_else() {
+    let w = World::new("child");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (d, session) = first_turn(&w).await;
+    let (tx, mut rx) = mpsc::channel(1024);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let other = d.execute(w.prompt(None, "another session"), tx).await.unwrap().unwrap().session_id;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+
+    // The person at A's terminal, in a subdirectory: the child runs on that
+    // directory's host, not on the bridge's.
+    let sub = w.repo().join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let terminal = Client::connect(&daemon::socket(&w.env()).unwrap(), &sub, "test", true).await.ok().expect("the daemon answers");
+    let ask = w.prompt(Some(&session), "start a slow subagent");
+    let parent_turn = tokio::spawn(async move {
+        let (tx, mut rx) = mpsc::channel(4096);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        terminal.execute(ask, tx).await.map(|r| r.unwrap().status)
+    });
+    let started = |u: &viewer::Update| match u {
+        viewer::Update::Line(StreamLine::Log(e)) if e.session_id == session => match &e.body {
+            krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id, .. } => Some(subagent_session_id.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| started(u).is_some()).await;
+    let child = got.iter().find_map(started).unwrap();
+    until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ItemDelta { session_id, .. })) if *session_id == child)).await;
+
+    let mut ack = async |c: Command| {
+        v.commands.send(c).unwrap();
+        let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+        got.into_iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error) } else { None }).unwrap()
+    };
+    for refused in [other.as_str(), "01a0ec7b-0000-7000-8000-00000000beef"] {
+        let e = ack(Command::Interrupt { session_id: refused.into() }).await;
+        assert!(e.as_deref().is_some_and(|e| e.contains("nothing else")), "{refused}: {e:?}");
+    }
+    let e = ack(Command::Steer { session_id: child.clone(), text: "not you".into(), images: Vec::new() }).await;
+    assert!(e.as_deref().is_some_and(|e| e.contains("nothing else")), "a steer of the child: {e:?}");
+    assert_eq!(ack(Command::Interrupt { session_id: child.clone() }).await, None, "the session's own child stops");
+
+    let status = tokio::time::timeout(Duration::from_secs(15), parent_turn).await.expect("the parent's turn ends").unwrap().unwrap();
+    assert_eq!(status, krowk_harness::protocol::TurnStatus::Completed, "the parent's turn goes on past its stopped child");
+    let child_log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&child).join("events.jsonl")).unwrap();
+    assert!(child_log.contains("\"status\":\"interrupted\""), "the child ended interrupted: {child_log}");
+    assert!(!child_log.contains("childword399"), "short of its end");
+    let other_log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&other).join("events.jsonl")).unwrap();
+    assert!(!other_log.contains("interrupted"), "the other session was never reached");
+
+    // R-SUB-6: the child's events ride the parent's chunks.
+    let (parent_ids, child_ids) = (log_ids(&w, &session), log_ids(&w, &child));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let rest = loop {
+        let rest = at_rest(&w, &session).await.unwrap_or_default();
+        if ids_of(&rest, &session) == parent_ids && ids_of(&rest, &child) == child_ids {
+            break rest;
+        }
+        assert!(Instant::now() < deadline, "the chunks hold {:?} of the parent's {parent_ids:?} and {:?} of the child's {child_ids:?}", ids_of(&rest, &session), ids_of(&rest, &child));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    assert!(rest.iter().all(|e| e["sessionId"] == session || e["sessionId"] == child), "nothing of another session");
+    let events: Vec<krowk_harness::protocol::LogEvent> = rest.iter().map(|e| serde_json::from_value(e.clone()).unwrap()).collect();
+    let walk = |head: &String| log::branch(&events, head).iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+    assert_eq!(walk(parent_ids.last().unwrap()), parent_ids, "the parent's replay is its own log's, the child's events left out");
+    assert_eq!(walk(child_ids.last().unwrap()), child_ids, "the child is rebuilt from the parent's chunks");
 }

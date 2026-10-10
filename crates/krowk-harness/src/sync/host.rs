@@ -13,6 +13,16 @@
 //! viewer started that no viewer is left to answer is denied after
 //! `APPROVAL_WAIT`, so such a turn never waits on a device that never
 //! comes; a turn started at the host's own terminal waits for its person.
+//! A viewer may also interrupt one of the session's own subagents, and
+//! only those its log's `subagent.started` named (R-SUB-12,
+//! `for_this_session`).
+//!
+//! A subagent's lines reach the bridge on the session's stream, under the
+//! child's session id, and its logged events are written into the
+//! session's chunks with the session's own (R-SUB-6), on purpose: a viewer
+//! rebuilds the child from them — its history, behind the child view —
+//! with no key but the session's, while the session's replay walks its own
+//! branch (`log::branch`), whose parent chain never enters a child's.
 //!
 //! Losing the relay loses nothing (R-OFF-2): the turn runs on in the
 //! daemon, the chunks go on being written, and every batch sealed while the
@@ -379,14 +389,29 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
 }
 
 /// What a viewer may ask of the host: its session's prompt, steer,
-/// interrupt and approval, and nothing else. A viewer holds this session's
-/// key and no other, so a command naming another session — or none, which
-/// would start one in the host's directory — is refused, never run.
-fn for_this_session(c: &Command, session: &str) -> bool {
+/// interrupt and approval, and an interrupt of one of its own `children`
+/// (R-SUB-12), and nothing else. A viewer holds this session's key and no
+/// other, so a command naming another session — or none, which would start
+/// one in the host's directory — is refused, never run. `children` is what
+/// the session's own log named (`child_of`), never what the viewer says:
+/// an id it knows or guesses stops nothing the key does not reach, and a
+/// child is steered or answered by nobody but the host.
+fn for_this_session(c: &Command, session: &str, children: &HashSet<String>) -> bool {
     match c {
         Command::Prompt { session_id, .. } => session_id.as_deref() == Some(session),
-        Command::Steer { session_id, .. } | Command::Interrupt { session_id } | Command::Approve { session_id, .. } => session_id == session,
+        Command::Interrupt { session_id } => session_id == session || children.contains(session_id),
+        Command::Steer { session_id, .. } | Command::Approve { session_id, .. } => session_id == session,
         _ => false,
+    }
+}
+
+/// The child an event names as `session`'s own: its `subagent.started`,
+/// logged by the session itself. One a child logs — a grandchild, riding
+/// the same stream — names nothing of `session`'s.
+fn child_of<'a>(e: &'a crate::protocol::LogEvent, session: &str) -> Option<&'a str> {
+    match &e.body {
+        LogBody::SubagentStarted { subagent_session_id, .. } if e.session_id == session => Some(subagent_session_id),
+        _ => None,
     }
 }
 
@@ -485,6 +510,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         log: Vec::new(),
         logged: HashSet::new(),
         stored,
+        children: HashSet::new(),
         turn_running: false,
         handing: false,
         handoff: None,
@@ -594,6 +620,9 @@ struct Hosting {
     /// The events the registry's log held when the bridge took the session
     /// up: the daemon replays them, and they are not written again.
     stored: HashSet<String>,
+    /// The session's own children, by the `subagent.started` events its
+    /// log holds: the ids a viewer may interrupt besides the session's.
+    children: HashSet<String>,
     /// Whether a turn is running, which a handoff waits out.
     turn_running: bool,
     /// A handoff under way: another is refused meanwhile, and so is every
@@ -660,12 +689,19 @@ impl Hosting {
             if !stored {
                 let _ = self.jobs.send(Write::Event(serde_json::to_value(e).expect("json")));
             }
+            if let Some(child) = child_of(e, &self.o.session) {
+                self.children.insert(child.to_string());
+            }
+            // A child's lines ride the session's stream and are written
+            // with it (R-SUB-6), but its turn is not the session's: a
+            // child ending is no end of the turn a handoff waits out.
+            let own = e.session_id == self.o.session;
             match &e.body {
                 LogBody::TurnCompleted { .. } => {
-                    self.turn_running = false;
+                    self.turn_running &= !own;
                     let _ = self.jobs.send(Write::Flush);
                 }
-                LogBody::TurnStarted { permission_mode, .. } => {
+                LogBody::TurnStarted { permission_mode, .. } if own => {
                     self.mode = *permission_mode;
                     // A turn the log already held, with no end, ended with
                     // the host it ran on: not one running here.
@@ -973,8 +1009,8 @@ impl Hosting {
                 self.refused_moving.insert(r.id.clone());
                 let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("session {} is moving to another machine; send it there once it has moved", self.o.session)) }));
             }
-            Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &self.o.session) => {
-                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, and nothing else", self.o.session)) }));
+            Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &self.o.session, &self.children) => {
+                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, or interrupt one of its own subagents, and nothing else", self.o.session)) }));
             }
             // A rule for the whole project is written into the
             // host's repository settings: made at the host, not
@@ -1173,6 +1209,36 @@ mod tests {
         }
         let Command::Prompt { permission_mode, .. } = under_session_settings(prompt(PermissionMode::Unhinged), PermissionMode::Plan) else { unreachable!() };
         assert_eq!(permission_mode, PermissionMode::Plan, "plan asks more, and stays");
+    }
+
+    /// R-SUB-12: the children a viewer may interrupt are the ones the
+    /// session's own `subagent.started` names. A grandchild's start, logged
+    /// by a child, names none; nothing but an interrupt widens; and an id
+    /// the log never named — another session's, or one made up — is refused.
+    #[test]
+    fn r_sub_12_a_viewer_interrupts_only_the_children_the_sessions_own_log_names() {
+        let started = |by: &str, child: &str| crate::protocol::LogEvent {
+            id: format!("e-{child}"),
+            parent_id: None,
+            session_id: by.into(),
+            time_ms: 1,
+            body: LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c".into(), subagent_session_id: child.into(), description: "look".into(), agent: None, model: crate::protocol::ModelRef { instance: "anthropic".into(), model: "claude-haiku-4-5".into() }, ran_by: Default::default(), backend_id: None },
+        };
+        let children: HashSet<String> = [started("s", "kid"), started("kid", "grandkid"), started("other", "theirs")].iter().filter_map(|e| child_of(e, "s")).map(String::from).collect();
+        assert_eq!(children, HashSet::from(["kid".to_string()]), "the session's own start, and no other");
+
+        let interrupt = |id: &str| Command::Interrupt { session_id: id.into() };
+        assert!(for_this_session(&interrupt("s"), "s", &children), "the session itself");
+        assert!(for_this_session(&interrupt("kid"), "s", &children), "its own child");
+        for refused in ["grandkid", "theirs", "other", "made-up"] {
+            assert!(!for_this_session(&interrupt(refused), "s", &children), "{refused}");
+        }
+        let steer = Command::Steer { session_id: "kid".into(), text: "t".into(), images: Vec::new() };
+        let approve = Command::Approve { session_id: "kid".into(), request_id: "r".into(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+        let prompt = Command::Prompt { session_id: Some("kid".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        for c in [steer, approve, prompt] {
+            assert!(!for_this_session(&c, "s", &children), "only an interrupt reaches a child: {c:?}");
+        }
     }
 
     /// A link is let go at a beat after a pause past `DEAD`, after silence
