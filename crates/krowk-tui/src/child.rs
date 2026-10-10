@@ -175,14 +175,15 @@ impl ChildView {
 /// left out — it arrives live — where anything else unreadable is an
 /// error, as `log::read_events` has it.
 pub fn read_log(path: &std::path::Path) -> Result<Vec<LogEvent>, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let whole = text.rfind('\n').map_or("", |end| &text[..end]);
+    // Bytes, not text: a line cut mid-append can end inside a character.
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let whole = bytes.iter().rposition(|&b| b == b'\n').map_or(&[][..], |end| &bytes[..end]);
     let mut out = Vec::new();
-    for (n, line) in whole.lines().enumerate() {
-        if line.trim().is_empty() {
+    for (n, line) in whole.split(|&b| b == b'\n').enumerate() {
+        if line.trim_ascii().is_empty() {
             continue;
         }
-        out.push(serde_json::from_str(line).map_err(|e| format!("{} line {}: {e}", path.display(), n + 1))?);
+        out.push(serde_json::from_slice(line).map_err(|e| format!("{} line {}: {e}", path.display(), n + 1))?);
     }
     Ok(out)
 }
@@ -248,6 +249,13 @@ mod tests {
         std::fs::write(&path, format!("{}\n{}", line(&a), &whole[..whole.len() / 2])).unwrap();
         let read = read_log(&path).unwrap();
         assert_eq!(read.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["e1"]);
+        // Cut inside a character: the whole lines before it still read.
+        let wide = line(&said("e3", "i3", Item::AssistantText { text: "é".repeat(100) }));
+        let mid = wide.find('é').unwrap() + 1;
+        let mut bytes = format!("{}\n", line(&a)).into_bytes();
+        bytes.extend_from_slice(&wide.as_bytes()[..mid]);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(read_log(&path).unwrap().len(), 1, "cut mid-character");
         std::fs::write(&path, format!("{}\n{whole}\n", line(&a))).unwrap();
         assert_eq!(read_log(&path).unwrap().len(), 2, "whole, every line");
         std::fs::write(&path, format!("not json\n{}\n", line(&a))).unwrap();
