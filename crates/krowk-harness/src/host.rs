@@ -226,8 +226,9 @@ impl Host {
     /// How many sessions have work under way between turns — a backend's
     /// agents, a turn it began by itself — which goes with their process.
     pub fn background(&self) -> u32 {
-        let backends = self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).values().filter(|b| b.engine.busy()).count();
-        (backends + self.shared.jobs.busy_sessions()) as u32
+        let mut busy: std::collections::HashSet<String> = self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(_, b)| b.engine.busy()).map(|(id, _)| id.clone()).collect();
+        busy.extend(self.shared.jobs.busy_sessions());
+        busy.len() as u32
     }
 
     /// Denies every approval request of these sessions still waiting: the

@@ -93,12 +93,7 @@ impl Jobs {
 
     /// Whether `session` may start another job; the refusal says why.
     pub fn admit(&self, session: &str) -> Result<(), String> {
-        let t = lock(&self.table);
-        let running = t.sessions.get(session).map_or(0, |s| s.jobs.iter().filter(|j| j.status == Status::Running).count());
-        if running >= MAX_RUNNING {
-            return Err(format!("not started: {MAX_RUNNING} background jobs are already running in this session, the most there can be — wait for one to end, or stop one with kill_bash"));
-        }
-        Ok(())
+        admitted(&lock(&self.table), session)
     }
 
     /// Takes a started command on as a job of `session`, and returns its id.
@@ -114,8 +109,8 @@ impl Jobs {
     }
 
     fn take(&self, session: &str, started: Started, shown: Vec<u8>) -> Result<String, String> {
-        self.admit(session)?;
         let mut t = lock(&self.table);
+        admitted(&t, session)?;
         let s = t.sessions.entry(session.to_string()).or_default();
         s.next += 1;
         let id = format!("b{}", s.next);
@@ -175,9 +170,9 @@ impl Jobs {
         lock(&self.table).sessions.get(session).map_or(0, |s| s.jobs.iter().filter(|j| j.status == Status::Running).count())
     }
 
-    /// How many sessions have a job running.
-    pub fn busy_sessions(&self) -> usize {
-        lock(&self.table).sessions.values().filter(|s| s.jobs.iter().any(|j| j.status == Status::Running)).count()
+    /// The sessions with a job running.
+    pub fn busy_sessions(&self) -> Vec<String> {
+        lock(&self.table).sessions.iter().filter(|(_, s)| s.jobs.iter().any(|j| j.status == Status::Running)).map(|(id, _)| id.clone()).collect()
     }
 
     /// A turn of `session` starts: notes go on its queue from now on, and
@@ -201,14 +196,23 @@ impl Jobs {
         s.held.splice(0..0, unread);
     }
 
-    /// Kills every job, and waits until each is let go of.
+    /// Kills every job and waits for each to be swept, as a kill does;
+    /// one that takes longer than `SHUTDOWN_GRACE` is let go of as a drop
+    /// lets go of it.
     pub async fn shutdown(&self) {
-        let tasks: Vec<_> = lock(&self.table).sessions.values_mut().flat_map(|s| s.jobs.iter_mut()).filter_map(|j| j.task.take()).collect();
-        for t in &tasks {
-            t.abort();
+        let jobs: Vec<_> = lock(&self.table).sessions.values_mut().flat_map(|s| s.jobs.iter_mut()).filter_map(|j| Some((j.kill.take(), j.task.take()?))).collect();
+        let mut tasks = Vec::new();
+        for (kill, task) in jobs {
+            if let Some(k) = kill {
+                let _ = k.send(());
+            }
+            tasks.push(task);
         }
-        for t in tasks {
-            let _ = t.await;
+        let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE;
+        for mut t in tasks {
+            if tokio::time::timeout_at(deadline, &mut t).await.is_err() {
+                t.abort();
+            }
         }
     }
 }
@@ -223,6 +227,19 @@ impl Drop for Jobs {
             }
         }
     }
+}
+
+/// How long a shutdown waits for every job to be killed and swept: the
+/// sandbox's first process gets ten seconds to go.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// Whether `session` may start another job; the refusal says why.
+fn admitted(t: &Table, session: &str) -> Result<(), String> {
+    let running = t.sessions.get(session).map_or(0, |s| s.jobs.iter().filter(|j| j.status == Status::Running).count());
+    if running >= MAX_RUNNING {
+        return Err(format!("not started: {MAX_RUNNING} background jobs are already running in this session, the most there can be — wait for one to end, or stop one with kill_bash"));
+    }
+    Ok(())
 }
 
 fn find<'a>(t: &'a Table, session: &str, id: &str) -> Result<&'a Job, String> {
@@ -246,7 +263,9 @@ impl Out {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let file = std::fs::OpenOptions::new().create(true).append(true).open(path).ok();
+        // A job of the same id from before the host started again is
+        // another job: its file is replaced, never read on into.
+        let file = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path).ok();
         Out { file, written: 0, truncated: false }
     }
 
@@ -268,8 +287,10 @@ impl Out {
 
 /// Reads a job's output into its file until it is done, or killed; then
 /// sweeps for it, records how it ended, and leaves its note.
-async fn watch(table: Arc<Mutex<Table>>, (session, id): (String, String), path: PathBuf, started: Started, shown: Vec<u8>, mut kill: oneshot::Receiver<()>) {
-    let Started { mut child, out: mut so, err: mut se, mut group, slot, slot_note: _ } = started;
+async fn watch(table: Arc<Mutex<Table>>, (session, id): (String, String), path: PathBuf, mut started: Started, shown: Vec<u8>, mut kill: oneshot::Receiver<()>) {
+    // Bound first, so it is let go of last: after the group is killed.
+    let slot = started.slot.take();
+    let Started { mut child, out: mut so, err: mut se, mut group, slot: _, slot_note: _ } = started;
     let mut out = Out::open(&path);
     out.push(&shown);
     let (mut b1, mut b2) = ([0u8; 8192], [0u8; 8192]);
@@ -301,7 +322,9 @@ async fn watch(table: Arc<Mutex<Table>>, (session, id): (String, String), path: 
                 code = s.ok().and_then(|s| s.code());
                 drain_until = Some(tokio::time::Instant::now() + BASH_DRAIN_AFTER_EXIT);
             }
-            _ = &mut kill, if !killed => {
+            // A kill once the shell has exited is too late to say it was
+            // killed, and its group is no longer its own to signal.
+            _ = &mut kill, if !killed && !exited => {
                 killed = true;
                 group.kill_group();
             }
@@ -315,19 +338,27 @@ async fn watch(table: Arc<Mutex<Table>>, (session, id): (String, String), path: 
     if !killed {
         group.group = None;
     }
-    let _ = tokio::task::spawn_blocking(move || {
+    let removed = tokio::task::spawn_blocking(move || {
         if killed {
-            group.settle();
+            return group.settle();
         }
-        drop(group);
+        group.unfenced.as_mut().map(|u| u.appeared()).unwrap_or_default()
     })
-    .await;
+    .await
+    .unwrap_or_default();
     drop(slot);
     let status = match code {
         Some(c) if !killed => Status::Exited(c),
         _ => Status::Killed,
     };
-    let note = Steer::note(note(&id, status, &last_lines(&path)));
+    let mut last = last_lines(&path);
+    // What the sweep removed, as a foreground call says it: the job ran
+    // beside everything else in the workspace while it ran.
+    if !removed.is_empty() {
+        let names = removed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
+        last += &format!("the sandbox removed {names}, which appeared in the workspace while the job ran: git, Claude Code, Codex and krowk run what such a directory names\n");
+    }
+    let note = Steer::note(note(&id, status, &last));
     let mut t = lock(&table);
     let Some(s) = t.sessions.get_mut(&session) else { return };
     if let Some(j) = s.jobs.iter_mut().find(|j| j.id == id) {
@@ -347,7 +378,11 @@ pub fn note(id: &str, status: Status, last: &str) -> String {
     format!("<background-done id=\"{id}\" status=\"{status}\">\n{last}</background-done>")
 }
 
-/// The last `NOTE_LINES` lines of a job's file, each ending in a newline.
+/// How much of a job's last lines its note carries at most.
+const NOTE_BYTES: usize = 4000;
+
+/// The last `NOTE_LINES` lines of a job's file, each ending in a newline,
+/// at most `NOTE_BYTES` of them.
 fn last_lines(path: &Path) -> String {
     let mut tail = Vec::new();
     if let Ok(mut f) = std::fs::File::open(path) {
@@ -356,7 +391,10 @@ fn last_lines(path: &Path) -> String {
     }
     let text = String::from_utf8_lossy(&tail);
     let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(NOTE_LINES)..].iter().map(|l| format!("{l}\n")).collect()
+    let last: String = lines[lines.len().saturating_sub(NOTE_LINES)..].iter().map(|l| format!("{l}\n")).collect();
+    let cut = last.len().saturating_sub(NOTE_BYTES);
+    let cut = (cut..=last.len()).find(|i| last.is_char_boundary(*i)).unwrap_or(last.len());
+    last[cut..].to_string()
 }
 
 #[cfg(all(test, unix))]
@@ -492,6 +530,21 @@ mod tests {
         let after = Steers::default();
         jobs.attach(S, &after);
         assert_eq!(after.take().len(), 1);
+    }
+
+    /// A host started again numbers jobs from b1 again: the new b1 is its
+    /// own job, never read on from the old one's file.
+    #[tokio::test]
+    async fn r_steer_2_a_job_after_the_host_starts_again_has_its_own_file() {
+        let (jobs, d) = jobs("again");
+        let id = start(&jobs, &d, "echo old").await;
+        ended(&jobs, &id).await;
+        drop(jobs);
+        let again = Jobs::new(d.join("sessions"));
+        let id = start(&again, &d, "echo new").await;
+        assert_eq!(id, "b1");
+        ended(&again, &id).await;
+        assert_eq!(again.read(S, &id).unwrap(), ("new\n".to_string(), Status::Exited(0)));
     }
 
     /// A foreground call taken on as it runs (R-STEER-4): what was shown is

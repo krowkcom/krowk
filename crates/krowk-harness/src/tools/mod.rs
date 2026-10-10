@@ -945,7 +945,7 @@ impl GroupKill {
 
     /// Kills the sandbox's first process and waits until it has exited —
     /// when everything in its namespace has — then sweeps. Blocks.
-    pub(crate) fn settle(&mut self) {
+    pub(crate) fn settle(&mut self) -> Vec<PathBuf> {
         #[cfg(target_os = "linux")]
         if let Some(Ok(Some(init))) = self.init.take().map(|rx| rx.recv_timeout(SANDBOX_LEARN)) {
             use std::os::fd::AsRawFd;
@@ -957,7 +957,7 @@ impl GroupKill {
                 libc::poll(&mut p, 1, SANDBOX_EXIT_MS);
             }
         }
-        drop(self.unfenced.take());
+        self.unfenced.take().map(|mut u| u.appeared()).unwrap_or_default()
     }
 }
 
@@ -965,7 +965,7 @@ impl Drop for GroupKill {
     fn drop(&mut self) {
         if self.kill_group() {
             let mut rest = GroupKill { group: None, init: self.init.take(), unfenced: self.unfenced.take() };
-            std::thread::spawn(move || rest.settle());
+            std::thread::spawn(move || drop(rest.settle()));
         }
     }
 }
@@ -1162,10 +1162,13 @@ pub async fn start(command: &str, env: &ToolEnv<'_>, sandbox: Option<&crate::san
 async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
     use tokio::io::AsyncReadExt;
     let timeout = i.timeout_ms.map_or(BASH_DEFAULT_TIMEOUT, Duration::from_millis).min(BASH_MAX_TIMEOUT);
-    let Started { mut child, out: mut so, err: mut se, mut group, slot: _slot, slot_note } = match start(&i.command, env, sandbox).await {
+    let mut started = match start(&i.command, env, sandbox).await {
         Ok(s) => s,
         Err(e) => return (e, true),
     };
+    // Bound first, so it is let go of last: after the group is killed.
+    let _slot = started.slot.take();
+    let Started { mut child, out: mut so, err: mut se, mut group, slot: _, slot_note } = started;
     let mut cap = Capture::new(BASH_MAX_OUTPUT);
     let run = async {
         let (mut b1, mut b2) = ([0u8; 8192], [0u8; 8192]);
