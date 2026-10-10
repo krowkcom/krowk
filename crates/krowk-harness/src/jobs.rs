@@ -504,7 +504,7 @@ mod tests {
     }
 
     async fn start(jobs: &Jobs, cwd: &Path, command: &str) -> String {
-        let env = ToolEnv { cwd, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None };
+        let env = ToolEnv { cwd, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         jobs.start(S, crate::tools::start(command, &env, None).await.unwrap()).unwrap()
     }
 
@@ -643,7 +643,7 @@ mod tests {
     #[tokio::test]
     async fn r_steer_2_an_adopted_call_reads_on_from_what_was_shown() {
         let (jobs, d) = jobs("adopt");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         let started = crate::tools::start("sleep 0.3; echo after", &env, None).await.unwrap();
         let id = jobs.adopt(S, started, b"before\n".to_vec()).unwrap();
         ended(&jobs, &id).await;

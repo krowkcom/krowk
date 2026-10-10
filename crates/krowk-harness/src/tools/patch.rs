@@ -467,7 +467,7 @@ mod tests {
     use serde_json::json;
 
     fn env(d: &Path) -> ToolEnv<'_> {
-        ToolEnv { cwd: d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[], jobs: None }
+        ToolEnv { cwd: d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None }
     }
 
     #[test]

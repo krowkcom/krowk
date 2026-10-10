@@ -266,6 +266,20 @@ impl Steers {
         self.lock().waiting.is_empty()
     }
 
+    /// Returns once the person's steering waits: krowk's notes do not
+    /// count.
+    pub async fn steered(&self) {
+        loop {
+            let arrived = self.0.arrived.notified();
+            tokio::pin!(arrived);
+            arrived.as_mut().enable();
+            if self.lock().waiting.iter().any(|s| !s.from_krowk) {
+                return;
+            }
+            arrived.await;
+        }
+    }
+
     /// Returns once something waits in the queue.
     pub async fn arrival(&self) {
         let arrived = self.0.arrived.notified();
