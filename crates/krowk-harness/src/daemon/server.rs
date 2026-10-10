@@ -898,8 +898,17 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     let registers = turn || switch;
     // A turn runs on the host of the client that asks for it — its
     // directory, and whether it answers approvals; the rest go to the host
-    // running the session.
-    let known = if turn { None } else { root.as_ref().and_then(|r| state.borrow().hubs.get(r).map(|h| h.host.clone())) };
+    // running the session, and a subagent's (an interrupt of one child) to
+    // its parent's, whose turn runs it — whichever directory the client
+    // asking is in: a sync bridge's is not the terminal's that ran it.
+    let known = if turn {
+        None
+    } else {
+        root.as_ref().and_then(|r| {
+            let s = state.borrow();
+            s.hubs.get(r).or_else(|| s.hubs.values().find(|h| h.children.contains(r))).map(|h| h.host.clone())
+        })
+    };
     // Working from here: a `stop` while a new directory's configuration is
     // read, or the log is counted below, must not end the daemon under a
     // prompt it accepted.
