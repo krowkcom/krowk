@@ -390,7 +390,9 @@ pub struct Term<W: Write> {
     /// The last lines printed, newest last, at most `TAIL`: the rows right
     /// above the live region, what the full-height view (`cover`) draws
     /// over and puts back.
-    tail: VecDeque<Line<'static>>,
+    /// Each with the width it was printed at: a terminal that does not
+    /// reflow (`reflows`) keeps the rows it took then.
+    tail: VecDeque<(Line<'static>, u16)>,
     /// While the view covers the screen: how many of `tail`'s last lines it
     /// drew over, to put back when it closes.
     covered: Option<usize>,
@@ -533,21 +535,35 @@ impl<W: Write> Term<W> {
     /// The first frame after the full-height view closes puts back what it
     /// drew over, then prints what arrived while it was open, then `lines`.
     pub fn frame(&mut self, lines: &[Line<'static>], rows: &[Line<'static>], caret: (u16, u16)) -> io::Result<()> {
-        let Some(n) = self.covered.take() else {
-            self.remember(lines);
-            return self.paint(lines, rows, Some(caret));
-        };
-        let held = std::mem::take(&mut self.held);
-        self.remember(&held);
-        self.remember(lines);
-        let back = self.tail.len().saturating_sub(n + held.len() + lines.len());
-        let all: Vec<Line<'static>> = self.tail.range(back..).cloned().collect();
-        self.paint(&all, rows, Some(caret))
+        match self.uncover(lines) {
+            Some(all) => self.paint(&all, rows, Some(caret)),
+            None => {
+                self.remember(lines);
+                self.paint(lines, rows, Some(caret))
+            }
+        }
     }
 
-    /// `lines`, printed, kept as the last ones.
+    /// Closes the full-height view, if open: what it drew over, then what
+    /// arrived while it was open, then `lines` — all to print, in order, and
+    /// kept as printed. None when it was not open.
+    fn uncover(&mut self, lines: &[Line<'static>]) -> Option<Vec<Line<'static>>> {
+        let n = self.covered.take()?;
+        let held = std::mem::take(&mut self.held);
+        // Taken before the new ones are kept, which may let these go.
+        let back = self.tail.len().saturating_sub(n);
+        let mut all: Vec<Line<'static>> = self.tail.range(back..).map(|(l, _)| l.clone()).collect();
+        all.extend(held.iter().cloned());
+        all.extend(lines.iter().cloned());
+        self.remember(&held);
+        self.remember(lines);
+        Some(all)
+    }
+
+    /// `lines`, printed at the width there is, kept as the last ones.
     fn remember(&mut self, lines: &[Line<'static>]) {
-        self.tail.extend(lines.iter().cloned());
+        let w = self.size.width;
+        self.tail.extend(lines.iter().map(|l| (l.clone(), w)));
         let over = self.tail.len().saturating_sub(TAIL);
         self.tail.drain(..over);
     }
@@ -572,8 +588,10 @@ impl<W: Write> Term<W> {
         let (w, h) = (self.size.width, self.size.height.max(1));
         let top = self.top();
         let (mut known, mut n) = (0u16, 0usize);
-        for line in self.tail.iter().rev() {
-            let rows = soft_rows(line, w);
+        for (line, printed) in self.tail.iter().rev() {
+            // A terminal that reflows has rewrapped it to the width now; one
+            // that does not left it in the rows it took when printed.
+            let rows = soft_rows(line, if self.reflows { w } else { *printed });
             if known + rows > top {
                 break;
             }
@@ -754,7 +772,16 @@ impl<W: Write> Term<W> {
     /// Clears the live region and leaves the cursor at its top, at the
     /// start of a line, so the shell prompt that follows lands right under
     /// the conversation.
+    ///
+    /// With the full-height view open, what it drew over and what arrived
+    /// meanwhile are printed first: leaving krowk, or a job stop, puts the
+    /// conversation back as closing the view would.
     pub fn finish(&mut self) -> io::Result<()> {
+        if let Some(all) = self.uncover(&[])
+            && !all.is_empty()
+        {
+            self.emit(&all, 1)?;
+        }
         let top = self.top();
         let mut w = self.buf.clone();
         self.buf.clear_down(top)?;
@@ -1540,6 +1567,90 @@ mod tests {
         assert_eq!(rows.len(), 25 + 3, "the conversation once, the prompt once: {all:?}");
         let after = all.iter().position(|r| r == "after").unwrap();
         assert_eq!(all[after - 1], "row 24", "printed after the conversation: {all:?}");
+    }
+
+    fn said(n: usize, what: &str) -> Vec<Line<'static>> {
+        (0..n).map(|i| Line::from(format!("{what} {i}"))).collect()
+    }
+
+    #[test]
+    fn r_sub_11_leaving_krowk_with_the_view_open_puts_the_conversation_back() {
+        let (w, h) = (40, 10);
+        let mut t = Term::new(Vec::new(), Size { width: w, height: h }, 0, 3).unwrap();
+        let mut vt = Vt::new(w, h);
+        t.frame(&said(20, "line"), &prompt(3), (0, 2)).unwrap();
+        t.view(&[], &view(h)).unwrap();
+        t.view(&[Line::from("arrived")], &view(h)).unwrap();
+        t.finish().unwrap();
+        pump(&mut t, &mut vt);
+        let mut want = said(20, "line").iter().map(|l| l.spans[0].content.to_string()).collect::<Vec<_>>();
+        want.push("arrived".into());
+        assert_eq!(text(&vt.all()), want, "{:?}", vt.all());
+        assert_eq!(vt.screen()[vt.y - 1], "arrived", "the shell's prompt goes right under it");
+    }
+
+    #[test]
+    fn r_sub_11_a_job_stop_with_the_view_open_puts_the_conversation_back_and_reopens_it() {
+        let (w, h) = (40, 10);
+        let mut t = Term::new(Vec::new(), Size { width: w, height: h }, 0, 3).unwrap();
+        let mut vt = Vt::new(w, h);
+        t.frame(&said(20, "line"), &prompt(3), (0, 2)).unwrap();
+        t.view(&[Line::from("arrived")], &view(h)).unwrap();
+        t.finish().unwrap();
+        pump(&mut t, &mut vt);
+        vt.feed(b"[1]+ Stopped\r\n$ fg\r\n");
+        t.resume(Size { width: w, height: h }, Some(vt.y as u16)).unwrap();
+        t.view(&[], &view(h)).unwrap();
+        pump(&mut t, &mut vt);
+        assert_eq!(vt.screen(), (0..h).map(|i| format!("view {i}")).collect::<Vec<_>>());
+        t.frame(&[], &prompt(3), (0, 2)).unwrap();
+        pump(&mut t, &mut vt);
+        let all = text(&vt.all());
+        assert!(!all.iter().any(|r| r.starts_with("view")), "{all:?}");
+        let mut want = said(20, "line").iter().map(|l| l.spans[0].content.to_string()).collect::<Vec<_>>();
+        want.extend(["arrived", "[1]+ Stopped", "$ fg", "row 0", "row 1", "row 2"].map(String::from));
+        assert_eq!(all, want);
+    }
+
+    #[test]
+    fn r_sub_11_many_lines_arriving_while_it_is_open_are_all_printed_and_nothing_it_covered_is_lost() {
+        let (w, h) = (40, 10);
+        let mut t = Term::new(Vec::new(), Size { width: w, height: h }, 0, 3).unwrap();
+        let mut vt = Vt::new(w, h);
+        t.frame(&said(20, "line"), &prompt(3), (0, 2)).unwrap();
+        t.view(&[], &view(h)).unwrap();
+        t.view(&said(TAIL + 88, "held"), &view(h)).unwrap();
+        t.frame(&[Line::from("last")], &prompt(3), (0, 2)).unwrap();
+        pump(&mut t, &mut vt);
+        let mut want: Vec<String> = said(20, "line").iter().chain(&said(TAIL + 88, "held")).map(|l| l.spans[0].content.to_string()).collect();
+        want.extend(["last", "row 0", "row 1", "row 2"].map(String::from));
+        assert_eq!(text(&vt.all()), want);
+    }
+
+    #[test]
+    fn r_sub_11_a_terminal_that_does_not_reflow_is_put_back_at_the_rows_it_printed() {
+        // xterm keeps a line printed at 40 columns in its two rows on a
+        // wider screen: measured at 80, the view would take it for one.
+        let (w, h) = (40, 10);
+        let mut t = Term::new(Vec::new(), Size { width: w, height: h }, 0, 3).unwrap();
+        t.reflows = false;
+        let mut vt = Vt::new(w, h);
+        let mut lines = said(3, "line");
+        lines.insert(1, Line::from("x".repeat(60)));
+        t.frame(&lines, &prompt(3), (0, 2)).unwrap();
+        pump(&mut t, &mut vt);
+        vt.resize(80, h);
+        t.resize(Size { width: 80, height: h }, Some(vt.y as u16)).unwrap();
+        t.frame(&[], &prompt(3), (0, 2)).unwrap();
+        pump(&mut t, &mut vt);
+        let before = text(&vt.all());
+        t.view(&[], &view(h)).unwrap();
+        t.frame(&[], &prompt(3), (0, 2)).unwrap();
+        pump(&mut t, &mut vt);
+        let after = text(&vt.all());
+        // Printed back at 80 columns, the wide line is one row now.
+        assert_eq!(after.iter().filter(|r| r.starts_with('x')).map(|r| r.len()).sum::<usize>(), 60, "the wide line once: {after:?}");
+        assert_eq!(after.iter().filter(|r| r.starts_with("line")).count(), 3, "measured at 80, line 0 would be printed twice: {before:?} {after:?}");
     }
 
     #[test]
