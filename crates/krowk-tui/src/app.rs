@@ -1844,9 +1844,10 @@ impl App {
                 self.sub_clock += 1;
                 let mut s = Sub::new(sid);
                 s.born = self.sub_clock;
-                // The overlay's selection, from the first child on: the
-                // child it is drawn on stays the one `x` stops.
-                if self.agent_pick.is_none() {
+                // The overlay open with nothing selected: the first child
+                // drawn selected stays the one `x` stops. Closed, Ctrl-G
+                // opens on the top of the list.
+                if self.overlay == Overlay::Agents && self.agent_pick.is_none() {
                     self.agent_pick = Some(sid.to_string());
                 }
                 self.subs.push(s);
@@ -4803,9 +4804,7 @@ mod tests {
         assert!(a.status_bar().contains("[1 subagent]"), "the running ones counted, as before: {}", a.status_bar());
         // ↑ ↓ select across both groups, round.
         assert_eq!(a.agent_count(), 3);
-        assert_eq!(a.agent_selected_running(), None, "still on the first to start, finished and last now");
-        a.agent_move(1);
-        assert_eq!(a.agent_to_interrupt().as_deref(), Some("k2"), "round to the top");
+        assert_eq!(a.agent_to_interrupt().as_deref(), Some("k2"), "opened on the top");
         a.agent_move(1);
         assert_eq!(a.agent_selected_running(), None);
         a.agent_move(1);

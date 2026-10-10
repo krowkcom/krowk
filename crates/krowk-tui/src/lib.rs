@@ -319,6 +319,17 @@ async fn renew_at_start(app: &mut App, client: &krowk_harness::daemon::remote::R
     }
 }
 
+/// A session resumed at start, replayed. With no `daemon`, nothing of it
+/// runs now: the children its log left unanswered ended with it, said with
+/// the rest of it, above the header. A daemon's sessions are known once it
+/// answers, and what ended is said then.
+fn resumed(app: &mut App, id: &str, daemon: bool) {
+    if !daemon {
+        app.end_replayed_children(true);
+    }
+    app.say(&format!("resumed session {id}"), app::dim());
+}
+
 async fn session(opts: Options) -> Outcome {
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(b"\x1b[?2004h");
@@ -343,6 +354,7 @@ async fn session(opts: Options) -> Outcome {
             Ok(events) => {
                 replayed_to = events.last().map(|e| e.id.clone());
                 runs_in = replay(&mut app, id, &events, &opts.host.registry).unwrap_or(runs_in);
+                resumed(&mut app, id, opts.daemon.is_some());
             }
             Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(e) },
         }
@@ -409,6 +421,7 @@ async fn session(opts: Options) -> Outcome {
     // reached leaves them here, and says so.
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut live: Vec<String> = Vec::new();
+    let has_daemon = opts.daemon.is_some();
     let host = match (opened, opts.daemon) {
         (Some(client), _) => link::Link::Synced { host: local, client },
         (None, None) => link::Link::Local(local),
@@ -479,16 +492,12 @@ async fn session(opts: Options) -> Outcome {
         permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
     // A resumed session still running in the daemon is followed from where
     // its log left off: the turn so far, then live. One that is not left no
-    // child running: its log's unanswered children ended with it.
-    // Said under all of it.
-    if let Some(id) = opts.resume.clone() {
-        if live.contains(&id) {
-            app.say(&format!("resumed session {id}"), app::dim());
-            ui.reattach(&mut app, &id, replayed_to.clone());
-        } else {
-            app.end_replayed_children(matches!(ui.host, link::Link::Local(_)));
-            app.say(&format!("resumed session {id}"), app::dim());
-        }
+    // child running: its log's unanswered children ended with it (with no
+    // daemon, `resumed` said so already).
+    match opts.resume.clone() {
+        Some(id) if live.contains(&id) => ui.reattach(&mut app, &id, replayed_to.clone()),
+        Some(_) if has_daemon => app.end_replayed_children(matches!(ui.host, link::Link::Local(_))),
+        _ => {}
     }
     let result = ui.run(&mut app, &mut term).await;
     ui.drain(&mut app);
