@@ -6,7 +6,8 @@
 //! the direct path with no setup (ticket 42): the host goes direct with the
 //! registry's published ticket keys, or says in one line why it does not.
 //! And `krowk hosts` listing the machines that host, with no Tailscale tag
-//! (ticket 43).
+//! (ticket 43). And a subagent of A's turn stopped alone from B by its id
+//! (R-SUB-12).
 //! Against the stand-in registry, the reference relay and a mock model.
 
 #![cfg(all(feature = "harness", unix))]
@@ -41,6 +42,14 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let last = messages.last().cloned().unwrap_or_default();
     let has_result = last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
     let text = last.to_string();
+    // A subagent's own call: a slow answer, stopped part way.
+    if body["system"].to_string().contains("You are a subagent") {
+        let words: String = (0..400).map(|i| format!("childword{i} ")).collect();
+        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
+    }
+    if !has_result && text.contains("start a slow subagent") {
+        return mock::Reply::sse(&mock::tool_use("toolu_01Kid", "subagent", &serde_json::json!({"description": "a slow look", "prompt": "look slowly"})));
+    }
     if !has_result && text.contains("tui round trip") {
         return mock::Reply::paced(mock::text_stream(TUI_ANSWER), Duration::from_millis(5));
     }
@@ -280,6 +289,28 @@ fn r_perm_2_sync_attach_approves_denies_and_interrupts_from_stdin() {
     let said = view.stderr();
     assert!(said.iter().any(|l| l.contains("wants approval") && l.contains("/approve")), "stderr names the command that answers: {said:?}");
     assert!(host.child.try_wait().unwrap().is_none(), "A still hosts: {:?}", host.stderr());
+}
+
+/// R-SUB-12 through the command line: B, attached with `krowk sync
+/// attach`, stops one subagent of A's turn with `/interrupt` and the id its
+/// `subagent.started` line names, and the turn goes on to its answer.
+#[test]
+fn r_sub_12_sync_attach_stops_one_subagent_by_its_id() {
+    let w = World::new("child");
+    let a = w.machine("a");
+    let b = w.machine("b");
+    let (_host, session) = hosted(&w, &a);
+    let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
+    view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
+    view.type_line("start a slow subagent");
+    let started = view.until("the subagent", is("subagent.started"));
+    let child = started["subagentSessionId"].as_str().expect("the line names the child").to_string();
+    view.until("the subagent typing", |v| v["type"] == "item.delta" && v["sessionId"] == child.as_str());
+    view.type_line(&format!("/interrupt {child}"));
+    let ended = view.until("the subagent's end", |v| v["type"] == "turn.completed" && v["sessionId"] == child.as_str());
+    assert_eq!(ended["status"], "interrupted", "{ended}");
+    let result = view.until("the turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
+    assert_eq!(result["status"], "completed", "the turn went on past its stopped subagent: {result}");
 }
 
 /// A's session made with `krowk -p` and hosted by `krowk sync host`, synced

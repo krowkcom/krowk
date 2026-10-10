@@ -301,8 +301,11 @@ pub fn typed(session: &str, line: String) -> Result<crate::protocol::Command, St
         "allow-session" => ApprovalDecision::AllowSession,
         "deny" => ApprovalDecision::Deny,
         "interrupt" if arg.is_empty() => return Ok(Command::Interrupt { session_id }),
+        // One of the session's subagents, by the id its `subagent.started`
+        // line names (R-SUB-12): the host refuses any other.
+        "interrupt" if crate::log::valid_id(arg) => return Ok(Command::Interrupt { session_id: arg.to_string() }),
         "steer" if !arg.is_empty() => return Ok(Command::Steer { session_id, text: arg.to_string(), images: Vec::new() }),
-        "interrupt" | "steer" => return Err(format!("`/{word}` is `/interrupt` alone, or `/steer TEXT`")),
+        "interrupt" | "steer" => return Err(format!("`/{word}` is `/interrupt` alone or with a subagent's session id, or `/steer TEXT`")),
         _ => return prompt(line),
     };
     if arg.is_empty() || arg.contains(char::is_whitespace) {
@@ -475,6 +478,7 @@ mod tests {
 
     /// The five commands, each to its `Command`; anything else starting
     /// with `/` is a prompt as typed, and `//` escapes a command's name.
+    /// `/interrupt` takes a subagent's session id, and nothing else.
     #[test]
     fn typed_lines_are_the_five_commands_or_else_prompts() {
         let t = |l: &str| typed("s", l.to_string());
@@ -483,6 +487,8 @@ mod tests {
             assert_eq!((session_id.as_str(), request_id.as_str(), decision), ("s", "r1", want), "{line}");
         }
         assert!(matches!(t("/interrupt"), Ok(Command::Interrupt { session_id }) if session_id == "s"));
+        let child = "01a0ec7b-0000-7000-8000-00000000c41d";
+        assert!(matches!(t(&format!("/interrupt {child}")), Ok(Command::Interrupt { session_id }) if session_id == child), "R-SUB-12: a subagent, by its id");
         assert!(matches!(t("/steer go on"), Ok(Command::Steer { text, .. }) if text == "go on"));
         for bad in ["/approve", "/deny a b", "/interrupt now", "/steer"] {
             assert!(t(bad).is_err(), "{bad}");

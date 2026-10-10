@@ -17,7 +17,8 @@
 //!   opens the TUI on it (D11); otherwise, or with `--json`, as stream-json
 //!   on stdout, each line typed on stdin a prompt to it, queued while no
 //!   host is online, or a command: `/approve`, `/allow-session` and `/deny`
-//!   a request, `/interrupt` or `/steer` the turn. Stdin's end ends it once
+//!   a request, `/interrupt` or `/steer` the turn, or `/interrupt` one of
+//!   its subagents by its session id (R-SUB-12). Stdin's end ends it once
 //!   every command sent is answered.
 //!
 //! The relay is `KROWK_RELAY_URL`, else the reference relay on this
