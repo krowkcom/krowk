@@ -54,7 +54,9 @@ impl ChildView {
 
     /// The view's `height` rows at `width` columns: its header, the body's
     /// window, its footer. The body is wrapped again when the width changed.
-    pub fn rows(&mut self, width: u16, height: u16) -> Vec<Line<'static>> {
+    /// `waiting`, when an approval waits on the person, takes the footer's
+    /// place: it says so and how to get to it.
+    pub fn rows(&mut self, width: u16, height: u16, waiting: Option<&str>) -> Vec<Line<'static>> {
         let width = width.max(1);
         if width != self.width {
             self.width = width;
@@ -74,7 +76,10 @@ impl ChildView {
             rows.push(Line::from(Span::styled(format!("↓ {below} more below · PgDn"), look::dim())));
         }
         rows.resize(h - 1, Line::default());
-        rows.push(Line::from(look::keys("`esc` back · `↑` `↓` `PgUp` `PgDn` scroll", look::dim())));
+        rows.push(Line::from(match waiting {
+            Some(note) => look::keys(note, look::warning()),
+            None => look::keys("`esc` back · `↑` `↓` `PgUp` `PgDn` scroll", look::dim()),
+        }));
         rows
     }
 
@@ -130,21 +135,23 @@ mod tests {
     fn r_sub_11_the_view_is_its_header_a_window_of_its_body_and_its_footer() {
         let lines = (0..30).map(|i| Line::from(format!("line {i}")));
         let mut v = ChildView::new("explore the repo", lines, 40);
-        let rows = text(&v.rows(40, 10));
+        let rows = text(&v.rows(40, 10, None));
         assert_eq!(rows.len(), 10);
         assert_eq!(rows[0], "explore the repo");
         assert_eq!(rows[1..9], (22..30).map(|i| format!("line {i}")).collect::<Vec<_>>()[..], "the end, followed: {rows:?}");
         assert!(rows[9].contains("esc") && rows[9].contains("back"), "{rows:?}");
         assert_eq!(v.key(KeyEvent::from(KeyCode::PageUp)), Key::Taken);
-        let rows = text(&v.rows(40, 10));
+        let rows = text(&v.rows(40, 10, None));
         assert_eq!(rows[7], "line 23", "a page up, a line in common: {rows:?}");
         assert!(rows[8].starts_with("↓ 6 more below"), "{rows:?}");
         v.key(KeyEvent::from(KeyCode::End));
-        assert_eq!(text(&v.rows(40, 10))[8], "line 29");
+        assert_eq!(text(&v.rows(40, 10, None))[8], "line 29");
         // Taller, shorter, narrower: as many rows as asked, always.
         for (w, h) in [(40, 20), (12, 4), (5, 2), (40, 1)] {
-            assert_eq!(v.rows(w, h).len(), usize::from(h), "{w}x{h}");
+            assert_eq!(v.rows(w, h, None).len(), usize::from(h), "{w}x{h}");
         }
+        let rows = text(&v.rows(40, 10, Some("⚠ approval waiting · `esc` to answer it")));
+        assert_eq!(rows[9], "⚠ approval waiting · esc to answer it", "{rows:?}");
         assert_eq!(v.key(KeyEvent::from(KeyCode::Esc)), Key::Close);
         assert_eq!(v.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)), Key::Pass);
         assert_eq!(v.key(KeyEvent::from(KeyCode::Char('q'))), Key::Taken, "nothing reaches the prompt");

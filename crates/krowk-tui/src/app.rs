@@ -640,6 +640,9 @@ pub struct App {
     /// The child view, while it is open (R-SUB-11): drawn full height in
     /// place of the conversation, taking the keys.
     pub child: Option<crate::child::ChildView>,
+    /// The screen is inline (`tui.screen`): the child view hides the
+    /// prompt and an approval over it, where fullscreen keeps them pinned.
+    pub inline: bool,
     pub(crate) settings: Settings,
     /// Steering the host has queued and the engine not yet taken, oldest
     /// first; each leaves when its item comes back in the log.
@@ -833,6 +836,7 @@ impl App {
             pr: None,
             overlay: Overlay::None,
             child: None,
+            inline: false,
             settings,
             steers: Vec::new(),
             unsent_steers: Vec::new(),

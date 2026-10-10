@@ -401,6 +401,7 @@ async fn session(opts: Options) -> Outcome {
         }
         Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(format!("the terminal could not be drawn on: {e}")) },
     };
+    app.inline = term.inline();
     let credentials = opts.host.credentials.clone();
     let permissions_cfg = opts.host.permissions.clone();
     let local = Host::new(opts.host);
@@ -1300,8 +1301,9 @@ impl<'h> Ui<'h> {
         term.steady(app.running())?;
         // The child view takes the screen it is given, the conversation
         // back as it was once it closes.
+        let waiting = (!app.approvals.is_empty()).then_some(if app.inline { "⚠ approval waiting · `esc` to answer it" } else { "⚠ approval waiting · answer it below" });
         if let Some(child) = app.child.as_mut() {
-            let view = child.rows(inner(term.size().width), term.view_rows(rows.len()));
+            let view = child.rows(inner(term.size().width), term.view_rows(rows.len()), waiting);
             return term.view(&lines, &view, &rows, caret);
         }
         term.frame(&lines, &rows, caret)
@@ -3151,12 +3153,18 @@ fn copy(app: &mut App) {
     app.open_copy();
 }
 
-/// The child view takes every key but Ctrl-C's and Ctrl-D's, ahead of an
-/// approval: the prompt it would answer is not on screen. Esc closes it.
+/// The child view takes every key but Ctrl-C's and Ctrl-D's. With an
+/// approval waiting, fullscreen leaves every key to it: its card is on
+/// screen under the view, and y, n or Esc answer it as ever. Inline, the
+/// card is hidden, and the view says so: Esc closes it to show the card.
+/// Esc closes it.
 /// Until the Agents overlay opens one (SV8), a debug build opens it on F12,
 /// over a placeholder body: a developer's way in. Like each `…_key`: Some
 /// with what `on_key` answers when it took the key.
 fn child_key(app: &mut App, k: KeyEvent) -> Option<bool> {
+    if !app.inline && !app.approvals.is_empty() {
+        return None;
+    }
     if let Some(view) = app.child.as_mut() {
         match view.key(k) {
             child::Key::Close => app.child = None,
@@ -3174,6 +3182,32 @@ fn child_key(app: &mut App, k: KeyEvent) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn r_sub_11_an_approval_waiting_under_the_child_view_gets_its_keys_or_is_said_to_wait() {
+        use super::*;
+        let key = |c: KeyCode| KeyEvent::from(c);
+        let req = ApprovalRequest { session_id: "s".into(), turn_id: "t".into(), request_id: "r".into(), tool: "bash".into(), input: serde_json::json!({}), summary: "Bash `ls`".into(), reason: String::new(), remember: vec![], questions: vec![] };
+        for inline in [true, false] {
+            let mut app = App::new(Editor::new(None), 40, Settings::default(), None, None);
+            app.inline = inline;
+            app.child = Some(child::ChildView::placeholder(40));
+            assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(false), "no approval: the view takes it");
+            app.approvals.push(req.clone());
+            if inline {
+                // The card is hidden: y is no answer, Esc shows it.
+                assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(false));
+                assert_eq!(child_key(&mut app, key(KeyCode::Esc)), Some(false));
+                assert!(app.child.is_none(), "closed, the card under it");
+            } else {
+                // The card is on screen: y, n and Esc are its, the view stays.
+                for c in [KeyCode::Char('y'), KeyCode::Char('n'), KeyCode::Esc] {
+                    assert_eq!(child_key(&mut app, key(c)), None, "{c:?}");
+                }
+                assert!(app.child.is_some());
+            }
+        }
+    }
+
     #[test]
     fn r_perf_2_the_turn_clock_ticks_at_the_spinner_rate_and_never_in_the_past() {
         use tokio::time::Instant;
