@@ -2674,6 +2674,13 @@ impl App {
         rows
     }
 
+    /// Whether a call out is one a child answers — krowk's `subagent`, or a
+    /// backend's that a child's `subagent.started` names: its line is the
+    /// child's, not a tool's.
+    fn starts_child(&self, c: &Call) -> bool {
+        c.name == "subagent" || self.subs.iter().any(|s| s.call_id.as_deref() == Some(c.call_id.as_str()))
+    }
+
     /// Quiet calls running while a batch is counted stand under its line,
     /// as its branches, the bullet orange until they are back: the batch
     /// takes them in without the rows below it moving.
@@ -2748,7 +2755,7 @@ impl App {
     /// Calls out, their results not back: each as it will be shown — a
     /// subagent's as its own line, below.
     fn call_rows(&self, rows: &mut Vec<Line<'static>>, stacks: &mut bool, width: usize) {
-        for c in self.calls.iter().filter(|c| c.name != "subagent" && !self.nests(&c.name)) {
+        for c in self.calls.iter().filter(|c| !self.starts_child(c) && !self.nests(&c.name)) {
             tool_gap(rows, stacks);
             let (verb, arg) = look::tool_title(&c.name, &c.input);
             let text = clip(&format!("{verb} {arg}"), width.saturating_sub(2));
@@ -2791,7 +2798,7 @@ impl App {
                 (Some(Live { kind: LiveKind::Text, .. }), _) => "Responding…".to_string(),
                 // What runs, not for how long: the turn's clock on the
                 // right is the one duration the line shows.
-                _ if t.tool_running => match self.calls.iter().find(|c| c.name != "subagent") {
+                _ if t.tool_running => match self.calls.iter().find(|c| !self.starts_child(c)) {
                     Some(c) => {
                         let (verb, arg) = look::tool_title(&c.name, &c.input);
                         if arg.is_empty() { format!("Running {verb}…") } else { format!("Running {verb} {arg}…") }
@@ -4992,6 +4999,8 @@ mod tests {
             a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: child.into(), description: what.into(), agent: Some("general-purpose".into()), model: model.clone(), ran_by: RanBy::Claude, backend_id: Some(task.into()) }));
         }
         assert_eq!(a.status_bar(), "Sonnet (claude) | [2 subagents] | ? help\n$0.00", "never 4");
+        let rows = text(&a.view(Instant::now()).0);
+        assert_eq!(rows.iter().filter(|r| r.contains("Agent")).count(), 2, "each agent its child's row, its call no tool row of its own: {rows:?}");
         a.overlay = Overlay::Agents;
         let rows = text(&a.view(Instant::now()).0);
         assert!(!rows.iter().any(|r| r.contains("running in Claude Code")), "{rows:?}");
