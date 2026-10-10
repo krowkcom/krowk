@@ -224,6 +224,9 @@ struct Sub {
     streaming: Option<Streaming>,
     /// What ran it (`subagent.started`'s `ranBy`): whether `x` can stop it.
     ran_by: RanBy,
+    /// The backend's own id for it (`backendId`): the agent `backend.agents`
+    /// lists it by, which is then not counted again.
+    backend_id: Option<String>,
     /// `x` was taken for it and its end has not come yet.
     stopping: bool,
 }
@@ -264,6 +267,7 @@ impl Sub {
             waiting: None,
             streaming: None,
             ran_by: RanBy::Krowk,
+            backend_id: None,
             stopping: false,
         }
     }
@@ -2055,6 +2059,15 @@ impl App {
         !self.backend_agents.is_empty()
     }
 
+    /// The backend's agents (`backend.agents`, deprecated) that no running
+    /// child of the session is: a host that writes them as children names
+    /// each by its `backendId`, and the child is the one counted and listed
+    /// (R-SUB-7). An older host's agents, which come as no child, still
+    /// show from the frame.
+    fn backend_only(&self) -> impl Iterator<Item = &BackendAgent> {
+        self.backend_agents.iter().filter(|a| !self.subs.iter().chain(&self.past).any(|s| s.status.is_none() && s.backend_id.as_deref() == Some(a.task_id.as_str())))
+    }
+
     /// When the oldest running child started, while one runs: its row's
     /// facts are redrawn each second, counted from then (R-SUB-11).
     pub fn child_running_since(&self) -> Option<Instant> {
@@ -2355,10 +2368,11 @@ impl App {
                 self.push_wrapped(look::SWITCH, "  ", &format!("moved to another machine, working in {cwd}"), look::switched(), dim());
                 self.gap();
             }
-            LogBody::SubagentStarted { call_id, subagent_session_id, description, agent, ran_by, .. } => {
+            LogBody::SubagentStarted { call_id, subagent_session_id, description, agent, ran_by, backend_id, .. } => {
                 let s = self.sub(subagent_session_id);
                 s.started_ms = Some(ev.time_ms);
                 s.ran_by = *ran_by;
+                s.backend_id.clone_from(backend_id);
                 s.call_id = Some(call_id.clone());
                 s.description.clone_from(description);
                 if agent.is_some() {
@@ -2857,9 +2871,10 @@ impl App {
             // Under a child it opened: back, as it was, on Esc.
             Overlay::Agents if self.child.is_some() => {}
             Overlay::Agents => {
-                // The backend's own, listed as it reports them: they run in
-                // its process, and are not krowk's to open or stop.
-                for a in &self.backend_agents {
+                // The backend's own that no child is (an older host's, or
+                // one between turns), listed as it reports them: they run
+                // in its process, and are not krowk's to open or stop.
+                for a in self.backend_only() {
                     let line = match &a.agent {
                         Some(k) => format!("Agent {} · {} · running in Claude Code", a.description, k),
                         None => format!("Agent {} · running in Claude Code", a.description),
@@ -2870,7 +2885,7 @@ impl App {
                 let more = if hidden > 0 { format!("{hidden} more · ") } else { String::new() };
                 // `x` only while one of them runs.
                 let x = if self.children().first().is_some_and(|s| s.status.is_none()) { "`x` interrupts that one · " } else { "" };
-                let hint = match (self.agent_count() == 0, self.backend_agents.is_empty()) {
+                let hint = match (self.agent_count() == 0, self.backend_only().next().is_none()) {
                     (true, true) => "no subagents in this session · `esc` closes this".to_string(),
                     (true, false) => "Claude Code runs these itself · `esc` closes this".to_string(),
                     _ => format!("{more}`↑` `↓` select · `enter` opens · {x}`esc` closes this"),
@@ -3008,10 +3023,10 @@ impl App {
                         parts.push(part(Rank::Tasks, format!("[{}]", plural(open, "task"))));
                     }
                 }
-                // krowk's own and the backend's, one count: both are agents
-                // at work for the session.
+                // Every child running, and the backend's agents that are no
+                // child of it: each agent at work for the session, once.
                 StatusItem::Subagents => {
-                    let running = (self.subs.iter().filter(|s| s.status.is_none()).count() + self.backend_agents.len()) as u32;
+                    let running = (self.subs.iter().filter(|s| s.status.is_none()).count() + self.backend_only().count()) as u32;
                     // Of those, the ones an approval or a question of theirs
                     // waits on the person for (R-SUB-11).
                     let waiting = self.subs.iter().filter(|s| s.status.is_none() && s.waiting.is_some()).count();
@@ -4957,6 +4972,38 @@ mod tests {
         assert_eq!(a.status_bar(), "Sonnet (claude) | ? help\n$0.00");
         a.on_line(&live(LiveEvent::TurnUnprompted { session_id: "s".into(), reason: "background agent “survey the repo” completed".into() }));
         assert!(a.unprompted, "the client is told to run it");
+    }
+
+    /// R-SUB-7: a backend's agents written as children are counted and
+    /// listed as children, each once, while the deprecated frame goes on
+    /// naming them; one the frame names and no child is still shows.
+    #[test]
+    fn r_sub_7_a_backends_agents_that_are_children_count_once_and_are_not_listed_read_only() {
+        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, Some(ModelRef { instance: "claude".into(), model: "sonnet".into() }), None);
+        a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        a.start_turn(Instant::now());
+        let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
+        let agent = |task: &str, what: &str| BackendAgent { task_id: task.into(), description: what.into(), agent: Some("general-purpose".into()) };
+        let agents = |v: Vec<BackendAgent>| live(LiveEvent::BackendAgents { session_id: "s".into(), agents: v });
+        a.on_line(&agents(vec![agent("t1", "read notes"), agent("t2", "sleeper")]));
+        for (call, child, task, what) in [("c1", "k1", "t1", "read notes"), ("c2", "k2", "t2", "sleeper")] {
+            a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("i{call}"), item: Item::ToolCall { call_id: call.into(), name: "Agent".into(), input: serde_json::json!({"description": what, "prompt": "…"}) } }));
+            a.on_line(&child_log(child, LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: Some("s".into()), agent: Some("general-purpose".into()) }));
+            a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: child.into(), description: what.into(), agent: Some("general-purpose".into()), model: model.clone(), ran_by: RanBy::Claude, backend_id: Some(task.into()) }));
+        }
+        assert_eq!(a.status_bar(), "Sonnet (claude) | [2 subagents] | ? help\n$0.00", "never 4");
+        a.overlay = Overlay::Agents;
+        let rows = text(&a.view(Instant::now()).0);
+        assert!(!rows.iter().any(|r| r.contains("running in Claude Code")), "{rows:?}");
+        assert_eq!(rows.iter().filter(|r| r.contains("Agent read notes") || r.contains("Agent sleeper")).count(), 2, "{rows:?}");
+        // An agent the frame names and no child is: an older host's.
+        a.on_line(&agents(vec![agent("t1", "read notes"), agent("t2", "sleeper"), agent("t3", "survey")]));
+        assert!(a.status_bar().contains("[3 subagents]"), "{}", a.status_bar());
+        // A child that ended no longer hides its agent's line: the frame
+        // drops it as the agent ends.
+        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 9, error: None, reported_cost_usd: None }));
+        a.on_line(&agents(vec![agent("t2", "sleeper"), agent("t3", "survey")]));
+        assert!(a.status_bar().contains("[2 subagents]"), "{}", a.status_bar());
     }
 
     fn child_log(session: &str, body: LogBody) -> StreamLine {
