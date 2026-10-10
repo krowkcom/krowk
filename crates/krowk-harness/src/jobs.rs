@@ -176,15 +176,19 @@ impl Jobs {
         Ok((cap.render(), status))
     }
 
-    /// Stops `session`'s job `id` with its whole process group.
-    pub fn kill(&self, session: &str, id: &str) -> Result<(), String> {
+    /// Stops `session`'s job `id` with its whole process group; how it
+    /// ended instead when it had.
+    pub fn kill(&self, session: &str, id: &str) -> Result<Option<Status>, String> {
         let mut t = lock(&self.table);
         find(&t, session, id)?;
         let j = t.sessions.get_mut(session).and_then(|s| s.jobs.iter_mut().find(|j| j.id == id)).expect("found above");
-        if let Some(k) = j.kill.take() {
-            let _ = k.send(());
+        match j.kill.take() {
+            Some(k) => {
+                let _ = k.send(());
+                Ok(None)
+            }
+            None => Ok(Some(j.status)),
         }
-        Ok(())
     }
 
     /// When `session`'s job `id` ended, in milliseconds since the epoch.
@@ -581,6 +585,7 @@ mod tests {
         jobs.kill(S, "b3").unwrap();
         ended(&jobs, "b3").await;
         assert_eq!(jobs.read(S, "b3").unwrap().1, Status::Killed);
+        assert_eq!(jobs.kill(S, "b3").unwrap(), Some(Status::Killed), "a job that ended says how");
         assert_eq!(jobs.running(S), MAX_RUNNING - 1);
         jobs.admit(S).unwrap();
         jobs.shutdown().await;

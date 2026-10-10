@@ -1224,7 +1224,8 @@ fn job(name: &str, id: &str, env: &ToolEnv<'_>) -> (String, bool) {
     let Some((jobs, session)) = env.jobs else { return (NO_JOBS.into(), true) };
     if name == KILL_BASH {
         return match jobs.kill(session, id) {
-            Ok(()) => (format!("stopped background job {id}"), false),
+            Ok(None) => (format!("stopped background job {id}"), false),
+            Ok(Some(status)) => (format!("background job {id} had already ended: {status}"), false),
             Err(e) => (e, true),
         };
     }
