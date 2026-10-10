@@ -147,7 +147,7 @@ pub enum Overlay {
     Details,
     /// The session's todo list (R-TODO-3).
     Todos,
-    /// The subagents' lines, selectable: expand one, interrupt one (R-SUB-3).
+    /// The subagents' lines, selectable: open one, interrupt one (R-SUB-3).
     Agents,
     /// The model and instance picker (`/model`).
     Models,
@@ -201,12 +201,8 @@ struct Sub {
     /// The host's figure for it, from its `cost` frames.
     cost: Option<f64>,
     unpriced: bool,
-    /// What it did last: a tool call, or the first line of what it said.
-    activity: String,
     started: Instant,
     took: Option<Duration>,
-    /// Shown with its activity under it.
-    expanded: bool,
     /// Its call was answered while it runs on: started in the background,
     /// or moved there by a steer.
     background: bool,
@@ -237,8 +233,8 @@ struct Streaming {
     text: String,
 }
 
-/// A tool's output under way is shown by its last line: only its last
-/// bytes are kept for a view that opens in the middle of it.
+/// A tool's output and reasoning under way are shown by their last line:
+/// only their last bytes are kept for a view that opens in the middle.
 const STREAMED_OUTPUT: usize = 4096;
 
 impl Sub {
@@ -253,10 +249,8 @@ impl Sub {
             calls: 0,
             cost: None,
             unpriced: false,
-            activity: String::new(),
             started: Instant::now(),
             took: None,
-            expanded: false,
             background: false,
             born: 0,
             ended: 0,
@@ -1894,7 +1888,7 @@ impl App {
             StreamLine::Live(LiveEvent::ItemDelta { item_id, delta: Delta::Text { text }, .. }) => {
                 if let Some(st) = s.streaming.as_mut().filter(|st| &st.item_id == item_id) {
                     st.text.push_str(text);
-                    if matches!(st.kind, ItemKind::ToolResult { .. }) && st.text.len() > STREAMED_OUTPUT {
+                    if matches!(st.kind, ItemKind::ToolResult { .. } | ItemKind::Reasoning) && st.text.len() > STREAMED_OUTPUT {
                         let mut cut = st.text.len() - STREAMED_OUTPUT;
                         while !st.text.is_char_boundary(cut) {
                             cut += 1;
@@ -1909,15 +1903,6 @@ impl App {
         }
         match line {
             StreamLine::Log(ev) => match &ev.body {
-                LogBody::ItemCompleted { item: Item::ToolCall { name, input, .. }, .. } => {
-                    let (verb, arg) = look::tool_title(name, input);
-                    s.activity = format!("{verb} {arg}").trim().to_string();
-                }
-                LogBody::ItemCompleted { item: Item::AssistantText { text }, .. } => {
-                    if let Some(l) = text.lines().find(|l| !l.trim().is_empty()) {
-                        s.activity = l.trim().to_string();
-                    }
-                }
                 LogBody::ResponseCompleted { usage, .. } => {
                     s.tokens += usage.total();
                     s.calls += 1;
@@ -1936,7 +1921,6 @@ impl App {
                 }
                 None => s.unpriced = true,
             },
-            StreamLine::Live(LiveEvent::ItemStarted { item: ItemKind::Reasoning, .. }) => s.activity = "thinking…".into(),
             // Each replaces the last; an ended child's says nothing more.
             StreamLine::Live(LiveEvent::SubagentStatus { status, tool, last_event_ms, waiting, .. }) => {
                 let running = *status == ChildState::Running;
@@ -2087,16 +2071,6 @@ impl App {
         let mut app = App::new(Editor::new(None), self.room, self.settings.clone(), None, None);
         app.set_rows(self.screen_rows);
         self.child = Some(crate::child::ChildView::open(&title, sid, app, history, under_way));
-        self.dirty = true;
-    }
-
-    /// Expands or collapses the selected subagent's line.
-    pub fn agent_toggle(&mut self) {
-        let children = self.children();
-        let id = children.get(self.selected(&children)).map(|s| s.session_id.clone());
-        if let Some(s) = id.and_then(|id| self.child(&id)) {
-            s.expanded = !s.expanded;
-        }
         self.dirty = true;
     }
 
@@ -2757,7 +2731,7 @@ impl App {
             Overlay::Agents if self.child.is_some() => {}
             Overlay::Agents => {
                 // The backend's own, listed as it reports them: they run in
-                // its process, and are not krowk's to expand or stop.
+                // its process, and are not krowk's to open or stop.
                 for a in &self.backend_agents {
                     let line = match &a.agent {
                         Some(k) => format!("Agent {} · {} · running in Claude Code", a.description, k),
@@ -2772,7 +2746,7 @@ impl App {
                 let hint = match (self.agent_count() == 0, self.backend_agents.is_empty()) {
                     (true, true) => "no subagents in this session · `esc` closes this".to_string(),
                     (true, false) => "Claude Code runs these itself · `esc` closes this".to_string(),
-                    _ => format!("{more}`↑` `↓` select · `enter` opens · `space` expands · {x}`esc` closes this"),
+                    _ => format!("{more}`↑` `↓` select · `enter` opens · {x}`esc` closes this"),
                 };
                 rows.push(Line::from(clip_spans(look::keys(&hint, dim()), width)));
             }
@@ -3873,7 +3847,7 @@ fn flat(s: &str) -> String {
 }
 
 /// A child's one line, its spinner while it runs, reversed when
-/// `selected`, and what it did last under it when expanded.
+/// `selected`.
 fn sub_row(rows: &mut Vec<Line<'static>>, s: &Sub, selected: bool, width: usize, now: Instant) {
     let since = now.saturating_duration_since(s.started);
     let (glyph, style) = match s.status {
@@ -3883,9 +3857,6 @@ fn sub_row(rows: &mut Vec<Line<'static>>, s: &Sub, selected: bool, width: usize,
     };
     let text_style = if selected { dim().add_modifier(Modifier::REVERSED) } else { dim() };
     rows.push(Line::from(vec![Span::styled(glyph, style), Span::styled(clip(&s.line(now, true), width.saturating_sub(2)), text_style)]));
-    if s.expanded && !s.activity.is_empty() {
-        rows.push(Line::from(Span::styled(clip(&format!("{}{}", look::LAST_BRANCH, s.activity), width), dim())));
-    }
 }
 
 /// A menu over the prompt: a ratatui table under a top border, a row an
@@ -4890,14 +4861,10 @@ mod tests {
         assert_eq!(lines.len(), 2, "one line each, and no second line for their calls: {rows:?}");
         assert!(lines[0].contains("Agent find the tests · explorer · running") && lines[0].ends_with("2.0k tokens · $0.02"), "{}", lines[0]);
         assert!(lines[1].contains("Agent read the docs · explorer · interrupted"), "{}", lines[1]);
-        // Expanded, a line shows what its subagent did last.
         a.overlay = Overlay::Agents;
         assert_eq!(a.agent_selected_running().as_deref(), Some("k1"));
-        a.agent_toggle();
         a.agent_move(1);
         assert_eq!(a.agent_selected_running(), None, "the interrupted one has nothing left to interrupt");
-        let (rows, _) = a.view(Instant::now());
-        assert!(text(&rows).iter().any(|r| r == "└─ Search fn test"), "{:?}", text(&rows));
         // Answered, each goes to scrollback once.
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r1".into(), item: Item::ToolResult { call_id: "c1".into(), output: "found them".into(), is_error: false } }));
         let done = text(&a.take_pending());
@@ -4999,8 +4966,8 @@ mod tests {
 
     /// R-SUB-11: the child view draws its child's log, then that child's
     /// lines alone as they arrive — an event both read and sent once, what
-    /// streams under what is kept — while the row goes on folding them, and
-    /// closing it leaves the overlay on the same child.
+    /// streams under what is kept — and closing it leaves the overlay on
+    /// the same child.
     #[test]
     fn r_sub_11_the_child_view_draws_its_log_then_its_own_live_lines_once() {
         let ev = |sid: &str, id: &str, body: LogBody| StreamLine::Log(LogEvent { id: id.into(), parent_id: None, session_id: sid.into(), time_ms: 0, body });
@@ -5048,8 +5015,6 @@ mod tests {
         assert!(a.view(Instant::now()).0.iter().all(|r| !text(std::slice::from_ref(r))[0].contains("do k")), "nothing of the overlay or the rows under the view");
         a.child = None;
         assert_eq!((a.overlay, a.agent_selected().as_deref()), (Overlay::Agents, Some("k1")));
-        a.agent_toggle();
-        assert!(text(&a.view(Instant::now()).0).iter().any(|r| r.contains("└─ Run ls")), "what k1 did last, on its row");
     }
 
     /// R-SUB-11: a running child's row says what its `subagent.status`

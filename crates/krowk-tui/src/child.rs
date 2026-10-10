@@ -15,7 +15,7 @@
 use crate::app::App;
 use crate::look;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use krowk_harness::protocol::{LogBody, LogEvent, StreamLine};
+use krowk_harness::protocol::{LiveEvent, LogBody, LogEvent, StreamLine};
 use ratatui::text::{Line, Span};
 use std::collections::HashSet;
 
@@ -28,6 +28,9 @@ pub struct ChildView {
     /// The ids of the events its log gave: the same events arriving live
     /// (read and sent while the view opened) are not drawn twice.
     read: HashSet<String>,
+    /// The items its log has whole: their live frames, still on their way
+    /// when it was read, would draw them a second time.
+    done: HashSet<String>,
     /// The columns the body is laid out in.
     width: u16,
 }
@@ -51,23 +54,26 @@ impl ChildView {
     /// said, and what arrives from now on is still shown.
     pub fn open(title: &str, session_id: &str, mut app: App, history: Result<Vec<LogEvent>, String>, under_way: Option<(String, [StreamLine; 2])>) -> ChildView {
         app.keep();
-        let mut read = HashSet::new();
-        let mut done = false;
+        let (mut read, mut done) = (HashSet::new(), HashSet::new());
         match history {
             Ok(events) => {
                 let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
                 app.replay(&krowk_harness::log::branch(&events, &head));
-                done = under_way.as_ref().is_some_and(|(id, _)| events.iter().any(|e| matches!(&e.body, LogBody::ItemCompleted { item_id, .. } if item_id == id)));
-                read.extend(events.into_iter().map(|e| e.id));
+                for e in events {
+                    if let LogBody::ItemCompleted { item_id, .. } = e.body {
+                        done.insert(item_id);
+                    }
+                    read.insert(e.id);
+                }
             }
             Err(e) => app.say(&format!("its history could not be read here ({e}) — what it does from now on is shown"), look::dim()),
         }
         app.session_id = Some(session_id.to_string());
-        for line in under_way.filter(|_| !done).into_iter().flat_map(|(_, lines)| lines) {
+        for line in under_way.filter(|(id, _)| !done.contains(id)).into_iter().flat_map(|(_, lines)| lines) {
             app.on_line(&line);
         }
         // None yet: the first frame lays it out at the width it is drawn at.
-        ChildView { title: crate::card::clean(title), session_id: session_id.to_string(), app: Box::new(app), read, width: 0 }
+        ChildView { title: crate::card::clean(title), session_id: session_id.to_string(), app: Box::new(app), read, done, width: 0 }
     }
 
     /// A view titled `title` on `lines` alone, at `width` columns.
@@ -86,6 +92,7 @@ impl ChildView {
     pub fn on_line(&mut self, line: &StreamLine) -> bool {
         let ours = match line {
             StreamLine::Log(ev) => ev.session_id == self.session_id && !self.read.remove(&ev.id),
+            StreamLine::Live(LiveEvent::ItemStarted { item_id, .. } | LiveEvent::ItemDelta { item_id, .. }) if self.done.contains(item_id) => false,
             StreamLine::Live(_) => crate::app::line_session(line) == Some(self.session_id.as_str()),
         };
         if ours {
@@ -163,6 +170,23 @@ impl ChildView {
     }
 }
 
+/// A child's log, as far as it is written: its events, oldest first. The
+/// child may be appending as it is read, so a last line not ended yet is
+/// left out — it arrives live — where anything else unreadable is an
+/// error, as `log::read_events` has it.
+pub fn read_log(path: &std::path::Path) -> Result<Vec<LogEvent>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let whole = text.rfind('\n').map_or("", |end| &text[..end]);
+    let mut out = Vec::new();
+    for (n, line) in whole.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        out.push(serde_json::from_str(line).map_err(|e| format!("{} line {}: {e}", path.display(), n + 1))?);
+    }
+    Ok(out)
+}
+
 fn clip(text: &str, width: u16) -> String {
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
@@ -184,6 +208,51 @@ mod tests {
 
     fn text(rows: &[Line<'_>]) -> Vec<String> {
         rows.iter().map(|r| r.spans.iter().map(|s| s.content.as_ref()).collect()).collect()
+    }
+
+    fn said(id: &str, item_id: &str, item: krowk_harness::protocol::Item) -> LogEvent {
+        LogEvent { id: id.into(), parent_id: None, session_id: "k1".into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: item_id.into(), item } }
+    }
+
+    /// R-SUB-11: an item the log has whole, its live frames still queued
+    /// when it was read, is drawn once, and nothing of it is left streaming.
+    #[test]
+    fn r_sub_11_an_item_read_whole_is_not_drawn_again_from_its_queued_frames() {
+        use krowk_harness::protocol::{Delta, Item, ItemKind};
+        let app = App::new(crate::editor::Editor::new(None), 40, crate::settings::Settings::default(), None, None);
+        let done = said("e1", "m1", Item::AssistantText { text: "QUEUED line".into() });
+        let mut v = ChildView::open("k1", "k1", app, Ok(vec![done.clone()]), None);
+        assert!(!v.on_line(&StreamLine::Live(LiveEvent::ItemStarted { session_id: "k1".into(), turn_id: "t".into(), item_id: "m1".into(), item: ItemKind::AssistantText })));
+        assert!(!v.on_line(&StreamLine::Live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "t".into(), item_id: "m1".into(), delta: Delta::Text { text: "QUEUED line\nta".into() } })));
+        assert!(!v.on_line(&StreamLine::Log(done)));
+        let rows = text(&v.rows(40, 10, None));
+        assert_eq!(rows.iter().filter(|r| r.contains("QUEUED line")).count(), 1, "{rows:?}");
+        assert!(!rows.iter().any(|r| r.trim() == "ta"), "{rows:?}");
+        // The next item streams as ever.
+        assert!(v.on_line(&StreamLine::Live(LiveEvent::ItemStarted { session_id: "k1".into(), turn_id: "t".into(), item_id: "m2".into(), item: ItemKind::AssistantText })));
+        v.on_line(&StreamLine::Live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "t".into(), item_id: "m2".into(), delta: Delta::Text { text: "next".into() } }));
+        assert!(text(&v.rows(40, 10, None)).iter().any(|r| r == "next"));
+    }
+
+    /// R-SUB-11: a running child's log is read as far as it is written: a
+    /// last line still being appended is left for the stream to bring.
+    #[test]
+    fn r_sub_11_a_childs_log_is_read_without_its_half_written_last_line() {
+        use krowk_harness::protocol::Item;
+        let dir = std::env::temp_dir().join(format!("krowk-sv7-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("events.jsonl");
+        let line = |e: &LogEvent| serde_json::to_string(e).unwrap();
+        let (a, b) = (said("e1", "i1", Item::user("TASK")), said("e2", "i2", Item::AssistantText { text: "x".repeat(5000) }));
+        let whole = line(&b);
+        std::fs::write(&path, format!("{}\n{}", line(&a), &whole[..whole.len() / 2])).unwrap();
+        let read = read_log(&path).unwrap();
+        assert_eq!(read.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["e1"]);
+        std::fs::write(&path, format!("{}\n{whole}\n", line(&a))).unwrap();
+        assert_eq!(read_log(&path).unwrap().len(), 2, "whole, every line");
+        std::fs::write(&path, format!("not json\n{}\n", line(&a))).unwrap();
+        assert!(read_log(&path).unwrap_err().contains("line 1"), "a broken line before the end is an error");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

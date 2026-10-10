@@ -386,7 +386,7 @@ fn r_sub_11_a_childs_transcript_opens_from_its_log_and_follows_it_live_and_whole
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let host = Host::new(b.host());
     let new_app = || krowk_tui::app::App::new(krowk_tui::editor::Editor::new(None), 120, krowk_tui::settings::Settings::default(), None, None);
-    let read = |sid: &str| log::read_events(&b.sessions().join(sid).join(log::EVENTS_FILE)).map_err(|e| e.message().to_string());
+    let read = |sid: &str| krowk_tui::child::read_log(&b.sessions().join(sid).join(log::EVENTS_FILE));
     let mut app = new_app();
     let mut a: Option<String> = None;
     // What the view showed when A's call came back, and when its first line

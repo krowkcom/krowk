@@ -2071,18 +2071,16 @@ impl<'h> Ui<'h> {
 
     /// The Agents overlay takes the keys that move through it: select a
     /// subagent, open its transcript (its log read now, its lines live
-    /// after), expand its line, interrupt it alone (R-SUB-2, R-SUB-3,
-    /// R-SUB-11).
+    /// after), interrupt it alone (R-SUB-2, R-SUB-3, R-SUB-11).
     async fn agents_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
         match k.code {
             KeyCode::Up | KeyCode::Down => app.agent_move(if k.code == KeyCode::Up { -1 } else { 1 }),
             KeyCode::Enter => {
                 if let Some(id) = app.agent_selected() {
-                    let history = read_session(&self.sessions_dir, &id);
+                    let history = read_child(&self.sessions_dir, &id);
                     app.open_child(&id, history);
                 }
             }
-            KeyCode::Char(' ') => app.agent_toggle(),
             KeyCode::Char('x') => {
                 if let Some(id) = app.agent_to_interrupt()
                     && let Err(e) = self.command(Command::Interrupt { session_id: id }).await
@@ -3044,6 +3042,15 @@ fn read_session(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_ha
     log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(|e| format!("session {id} could not be read: {}", e.message()))
 }
 
+/// Child `id`'s log for the child view, as far as it is written: it may be
+/// running, and appending as it is read (`child::read_log`).
+fn read_child(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_harness::protocol::LogEvent>, String> {
+    if !log::valid_id(id) {
+        return Err(format!("{id:?} is not a krowk session id"));
+    }
+    child::read_log(&sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(|e| format!("session {id} could not be read: {e}"))
+}
+
 /// Session `id`'s conversation into `app`, which continues it; the
 /// directory it was started in.
 fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry) -> Option<PathBuf> {
@@ -3191,25 +3198,25 @@ fn copy(app: &mut App) {
 }
 
 /// The child view takes every key but Ctrl-C's and Ctrl-D's. With an
-/// approval waiting, fullscreen leaves every key to it: its card is on
-/// screen under the view, and y, n or Esc answer it as ever. Inline, the
-/// card is hidden, and the view says so: Esc closes it to show the card.
-/// Esc closes it onto the Agents overlay that opened it, the same child
-/// selected. Like each `…_key`: Some with what `on_key` answers when it
-/// took the key.
+/// approval waiting, fullscreen leaves the other keys to it — its card is
+/// on screen under the view, and y, n or Esc answer it as ever — but for
+/// the other Ctrl keys, which do nothing: each would open an overlay under
+/// the view. Inline, the card is hidden, and the view says so: Esc closes
+/// it to show the card. Esc closes it onto the Agents overlay that opened
+/// it, the same child selected. Like each `…_key`: Some with what `on_key`
+/// answers when it took the key.
 fn child_key(app: &mut App, k: KeyEvent) -> Option<bool> {
+    app.child.as_ref()?;
     if !app.inline && !app.approvals.is_empty() {
-        return None;
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        return (ctrl && !matches!(k.code, KeyCode::Char('c' | 'd'))).then_some(false);
     }
-    if let Some(view) = app.child.as_mut() {
-        match view.key(k) {
-            child::Key::Close => app.child = None,
-            child::Key::Taken => {}
-            child::Key::Pass => return None,
-        }
-        return Some(false);
+    match app.child.as_mut()?.key(k) {
+        child::Key::Close => app.child = None,
+        child::Key::Taken => {}
+        child::Key::Pass => return None,
     }
-    None
+    Some(false)
 }
 
 #[cfg(test)]
@@ -3236,6 +3243,13 @@ mod tests {
                     assert_eq!(child_key(&mut app, key(c)), None, "{c:?}");
                 }
                 assert!(app.child.is_some());
+                // No overlay opens under it; Ctrl-C and Ctrl-D go on.
+                for c in ['o', 'g', 't', 'y'] {
+                    assert_eq!(child_key(&mut app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)), Some(false), "Ctrl-{c}");
+                }
+                for c in ['c', 'd'] {
+                    assert_eq!(child_key(&mut app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)), None, "Ctrl-{c}");
+                }
             }
         }
     }
