@@ -3245,7 +3245,7 @@ fn child_key(app: &mut App, k: KeyEvent) -> Option<child::Key> {
     }
     match app.child.as_mut()?.key(k) {
         child::Key::Close => {
-            app.child = None;
+            app.close_child();
             Some(child::Key::Close)
         }
         child::Key::Pass => None,
