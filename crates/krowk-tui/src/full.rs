@@ -419,6 +419,9 @@ impl Kept {
         self.lines.push_back(line);
         if self.most.is_some_and(|most| self.lines.len() > most) {
             self.trim();
+            // A window at the top as rows go from there: held to what is
+            // left, so `below` never counts rows that are not there.
+            self.place();
         }
     }
 

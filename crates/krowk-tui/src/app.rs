@@ -5195,4 +5195,26 @@ mod tests {
         a.kept().unwrap().home();
         assert_eq!(window(&mut a)[..2], ["… earlier lines not shown", "line 6"], "wrapped again, the note still at the top");
     }
+
+    #[test]
+    fn r_sub_11_at_the_top_of_a_trimmed_transcript_below_counts_only_what_is_there() {
+        let mut a = app();
+        a.keep();
+        for i in 0..KEPT_LINES + 5 {
+            a.say(&format!("line {i}"), Style::new());
+        }
+        a.take_pending();
+        let k = a.kept().unwrap();
+        k.set_height(3);
+        k.home();
+        let below = k.below();
+        for i in 0..10 {
+            a.say(&format!("more {i}"), Style::new());
+        }
+        a.take_pending();
+        // As many rows went from the top as arrived at the bottom: no window
+        // drawn between, and still the same count below.
+        assert_eq!(a.kept().unwrap().below(), below);
+        assert_eq!(window(&mut a)[0], "… earlier lines not shown");
+    }
 }
