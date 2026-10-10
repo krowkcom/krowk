@@ -242,6 +242,22 @@ impl Sub {
         }
     }
 
+    /// Its end, as `App::ended` says it, where nothing said it before.
+    fn end(&mut self, status: TurnStatus, at_ms: i64, tick: u64) {
+        if self.status.is_none() {
+            self.status = Some(status);
+        }
+        if self.took.is_none() {
+            self.took = Some(match self.started_ms {
+                Some(t) if at_ms >= t => Duration::from_millis((at_ms - t) as u64),
+                _ => self.started.elapsed(),
+            });
+        }
+        if self.ended == 0 {
+            self.ended = tick;
+        }
+    }
+
     /// `Agent <description> · <agent> · <state> · N tokens · $x`.
     fn line(&self, now: Instant) -> String {
         let mut parts = vec![format!("Agent {}", if self.description.is_empty() { "…" } else { &self.description })];
@@ -1838,18 +1854,8 @@ impl App {
     fn ended(&mut self, sid: &str, status: TurnStatus, at_ms: i64) {
         self.sub_clock += 1;
         let tick = self.sub_clock;
-        let Some(s) = self.child(sid) else { return };
-        if s.status.is_none() {
-            s.status = Some(status);
-        }
-        if s.took.is_none() {
-            s.took = Some(match s.started_ms {
-                Some(t) if at_ms >= t => Duration::from_millis((at_ms - t) as u64),
-                _ => s.started.elapsed(),
-            });
-        }
-        if s.ended == 0 {
-            s.ended = tick;
+        if let Some(s) = self.child(sid) {
+            s.end(status, at_ms, tick);
         }
     }
 
@@ -2215,7 +2221,9 @@ impl App {
     }
 
     /// Subagent `i`'s call answered, at `at_ms`: its line into scrollback,
-    /// and it kept for the Agents overlay, which lists every child.
+    /// and it kept for the Agents overlay, which lists every child. Unless
+    /// it runs on, it has ended, as its result says when its own lines did
+    /// not (a replayed log holds none of them).
     fn answer_sub(&mut self, i: usize, output: &str, is_error: bool, at_ms: i64) {
         let mut s = self.subs.remove(i);
         // Started in the background, or moved there by a steer (R-STEER-3,
@@ -2223,19 +2231,17 @@ impl App {
         s.background = output.starts_with("started background agent ") || output.starts_with("moved to background as agent ");
         if s.background {
             self.background_agents.insert(s.session_id.clone(), s.description.clone());
-        }
-        self.commit_sub(&s, output, is_error);
-        let id = s.session_id.clone();
-        let background = s.background;
-        self.past.push(s);
-        if !background {
+        } else {
             let how = match (is_error, output.contains("interrupted")) {
                 (false, _) => TurnStatus::Completed,
                 (true, true) => TurnStatus::Interrupted,
                 (true, false) => TurnStatus::Failed,
             };
-            self.ended(&id, how, at_ms);
+            self.sub_clock += 1;
+            s.end(how, at_ms, self.sub_clock);
         }
+        self.commit_sub(&s, output, is_error);
+        self.past.push(s);
         self.agent_sel = self.agent_sel.min(self.agent_count().saturating_sub(1));
     }
 
@@ -2524,11 +2530,13 @@ impl App {
                     rows.push(Line::from(vec![Span::styled(look::TOOL, look::accent()), Span::styled(clip(&clean(&line), width.saturating_sub(2)), dim())]));
                 }
                 let hidden = self.children_rows(rows, width, now);
+                let more = if hidden > 0 { format!("{hidden} more · ") } else { String::new() };
+                // `x` only while one of them runs.
+                let x = if self.children().first().is_some_and(|s| s.status.is_none()) { "`x` interrupts that one · " } else { "" };
                 let hint = match (self.agent_count() == 0, self.backend_agents.is_empty()) {
                     (true, true) => "no subagents in this session · `esc` closes this".to_string(),
                     (true, false) => "Claude Code runs these itself · `esc` closes this".to_string(),
-                    _ if hidden > 0 => format!("{hidden} more · `↑` `↓` select · `enter` expands · `x` interrupts that one · `esc` closes this"),
-                    _ => "`↑` `↓` select · `enter` expands · `x` interrupts that one · `esc` closes this".to_string(),
+                    _ => format!("{more}`↑` `↓` select · `enter` expands · {x}`esc` closes this"),
                 };
                 rows.push(Line::from(clip_spans(look::keys(&hint, dim()), width)));
             }
@@ -4659,7 +4667,7 @@ mod tests {
         // Answered, each goes to scrollback once.
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r1".into(), item: Item::ToolResult { call_id: "c1".into(), output: "found them".into(), is_error: false } }));
         let done = text(&a.take_pending());
-        assert!(done.iter().any(|l| l.starts_with("◆ Agent find the tests · explorer · running") && l.contains("2.0k tokens")), "{done:?}");
+        assert!(done.iter().any(|l| l.starts_with("◆ Agent find the tests · explorer · done in") && l.contains("2.0k tokens")), "{done:?}");
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r2".into(), item: Item::ToolResult { call_id: "c2".into(), output: "the subagent was interrupted".into(), is_error: true } }));
         let done = text(&a.take_pending());
         assert!(done.iter().any(|l| l.contains("Agent read the docs · explorer · interrupted")) && done.iter().any(|l| l.contains("the subagent was interrupted")), "{done:?}");
@@ -4757,12 +4765,16 @@ mod tests {
         let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
         let evs = three_children();
         a.replay(&evs.iter().collect::<Vec<_>>());
+        let shown = text(&a.take_pending()).join("\n");
+        assert!(shown.contains("◆ Agent find the tests · done in 9.0s") && shown.contains("◆ Agent map the store · interrupted after 17s"), "its lines in the conversation say so too: {shown}");
         a.overlay = Overlay::Agents;
         let rows = listed(&a);
         assert_eq!(rows.len(), 3, "{rows:?}");
         assert!(rows[0].contains("Agent read the docs · running"), "its call never answered in the log: {rows:?}");
         assert!(rows[1].contains("Agent map the store · interrupted after 17s"), "{rows:?}");
         assert!(rows[2].contains("Agent find the tests · done in 9.0s"), "{rows:?}");
+        let all = text(&a.view(Instant::now()).0).join("\n");
+        assert!(all.contains("x interrupts that one"), "one runs, so x is offered: {all}");
         // A background child's end is its note's.
         let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
         let mut evs = three_children();
