@@ -411,9 +411,12 @@ impl Subagents {
         }
     }
 
-    /// Once the parent's turn is over: each background child is waited
-    /// for, so its log ends with its turn.
+    /// Once the parent's turn is over: each background child still running
+    /// is stopped — the engine may not have said how the turn ended, when
+    /// the host let go of it first — and waited for, so its log ends with
+    /// its turn.
     pub async fn settle_background(&self) {
+        self.stop_background();
         let children: Vec<(String, tokio::task::JoinHandle<()>)> = std::mem::take(&mut *self.0.background.lock().unwrap_or_else(|e| e.into_inner()));
         for (_, task) in children {
             let _ = task.await;
