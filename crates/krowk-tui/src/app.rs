@@ -22,7 +22,7 @@ use krowk_harness::protocol::{
     ApprovalRequest, BackendAgent, Billing, Delta, ErrorInfo, HandoffKind, ImageInput, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
     TurnStatus, Usage,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::{Duration, Instant};
@@ -202,6 +202,9 @@ struct Sub {
     took: Option<Duration>,
     /// Shown with its activity under it.
     expanded: bool,
+    /// Its call was answered while it runs on: started in the background,
+    /// or moved there by a steer.
+    background: bool,
 }
 
 impl Sub {
@@ -220,6 +223,7 @@ impl Sub {
             started: Instant::now(),
             took: None,
             expanded: false,
+            background: false,
         }
     }
 
@@ -231,6 +235,7 @@ impl Sub {
         }
         let took = self.took.unwrap_or_else(|| now.saturating_duration_since(self.started));
         parts.push(match self.status {
+            None if self.background => "in the background".into(),
             None => format!("running {}", look::duration(took)),
             Some(TurnStatus::Completed) => format!("done in {}", look::duration(took)),
             Some(TurnStatus::Interrupted) => "interrupted".into(),
@@ -727,6 +732,9 @@ pub struct App {
     backend_agents: Vec<BackendAgent>,
     /// The session's background jobs and children running (`background`).
     background: u32,
+    /// The background children's descriptions, by session id, for the
+    /// note that says one ended.
+    background_agents: HashMap<String, String>,
     /// The backend began a turn by itself (`turn.unprompted`): the client
     /// runs it with `continue` as soon as no turn of its own runs.
     pub unprompted: bool,
@@ -853,6 +861,7 @@ impl App {
             agent_sel: 0,
             backend_agents: Vec::new(),
             background: 0,
+            background_agents: HashMap::new(),
             unprompted: false,
             todos: Vec::new(),
             instances: BTreeMap::new(),
@@ -1992,10 +2001,14 @@ impl App {
             // Background work that ended (R-STEER-2): one plain line,
             // never the person's words.
             Item::UserText { text, .. } if let Some((id, status)) = krowk_harness::jobs::noted(text) => {
-                let what = if krowk_harness::jobs::is_job(id) { "job" } else { "agent" };
+                let what = match self.background_agents.get(id) {
+                    Some(d) if !d.is_empty() => format!("agent {d}"),
+                    _ if krowk_harness::jobs::is_job(id) => format!("job {id}"),
+                    _ => format!("agent {id}"),
+                };
                 self.finish_live();
                 self.gap();
-                self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(format!("background {what} {} {}", clean(id), clean(status)), dim())]));
+                self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(format!("background {} {}", clean(&what), clean(status)), dim())]));
             }
             // A turn Claude Code began by itself: why, as krowk's note.
             Item::UserText { text, .. } if text.starts_with(krowk_harness::claude::UNPROMPTED) => {
@@ -2067,7 +2080,14 @@ impl App {
                 }
                 let call = self.calls.iter().position(|c| &c.call_id == call_id).map(|i| self.calls.remove(i));
                 if let Some(i) = self.subs.iter().position(|s| s.call_id.as_deref() == Some(call_id.as_str())) {
-                    let s = self.subs.remove(i);
+                    let mut s = self.subs.remove(i);
+                    // Started in the background, or moved there by a steer
+                    // (R-STEER-3, R-STEER-4): its end comes as a note,
+                    // which names it as its line did.
+                    s.background = output.starts_with("started background agent ") || output.starts_with("moved to background as agent ");
+                    if s.background {
+                        self.background_agents.insert(s.session_id.clone(), s.description.clone());
+                    }
                     self.agent_sel = self.agent_sel.min(self.subs.len().saturating_sub(1));
                     self.commit_sub(s, output, *is_error);
                     return;
@@ -2817,6 +2837,7 @@ impl App {
         self.flush_calls();
         self.session_id = None;
         self.background = 0;
+        self.background_agents.clear();
         self.images_seen = 0;
         self.cost = 0.0;
         self.unpriced = false;
@@ -4477,6 +4498,23 @@ mod tests {
         assert!(done.iter().any(|l| l.contains("Agent read the docs · explorer · interrupted")) && done.iter().any(|l| l.contains("the subagent was interrupted")), "{done:?}");
         let (rows, _) = a.view(Instant::now());
         assert!(!text(&rows).iter().any(|r| r.contains("Agent ")), "gone from the live region");
+    }
+
+    /// R-STEER-3, R-STEER-4: a subagent whose call was answered while it
+    /// runs on is in the background, and its end is named as its line was.
+    #[test]
+    fn r_steer_3_a_background_subagent_is_said_to_be_there_and_its_end_named() {
+        let mut a = app();
+        a.session_id = Some("s".into());
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-x".into() };
+        a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "kid".into(), description: "review the store".into(), agent: None, model }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r".into(), item: Item::ToolResult { call_id: "c1".into(), output: "moved to background as agent kid".into(), is_error: false } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "n".into(), item: Item::user("<background-done id=\"kid\" status=\"completed\">\nfine\n</background-done>") }));
+        let shown = text(&a.take_pending());
+        let all = shown.join(" ");
+        assert!(all.contains("◆ Agent review the store · in the backg") && !all.contains("running"), "{shown:?}");
+        assert!(all.contains("◆ background agent review the store completed"), "{shown:?}");
+        assert_eq!(look::tool_title("kill_bash", &serde_json::json!({"id": "b2"})), ("Stop job".to_string(), "b2".to_string()));
     }
 
     /// R-STEER-2: the status line counts the session's background work

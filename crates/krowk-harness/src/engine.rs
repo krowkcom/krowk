@@ -307,8 +307,10 @@ impl Steers {
     }
 
     /// Returns steering to the front of the queue, oldest first, whether or
-    /// not it is closed: the host's notes of krowk's, taken out with the
-    /// person's steering when the turn ended and kept for the next.
+    /// not it is closed: steering a backend took but the model never read
+    /// (cancelled on an interrupt), and the host's notes of krowk's, taken
+    /// out with the person's steering when the turn ended and kept for the
+    /// next.
     pub fn put_back(&self, steers: Vec<Steer>) {
         self.lock().waiting.splice(0..0, steers);
     }

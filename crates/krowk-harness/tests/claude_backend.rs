@@ -1084,3 +1084,232 @@ fn r_back_5_a_turn_claude_code_begins_after_a_prompt_still_names_the_agent_it_an
         host.shutdown().await;
     }));
 }
+
+/// The steer ST0's recordings wrote.
+const STEER: &str = "Also: end your answer with the word PINEAPPLE.";
+
+impl Home {
+    /// One of ST0's live recordings (`fixtures/claude/recorded`) as a
+    /// scenario the fake plays. Its `init` and the prompt's replay are the
+    /// fake's own. Where the steer was written, the fake waits for it
+    /// (`@await-steer`) when Claude Code read it in the same turn, and its
+    /// replay is `@replay`; when Claude Code read it only in a turn of its
+    /// own after the `result`, the turn pauses there (`@sleep 1`) so krowk
+    /// writes it in time, and that turn is the scenario's next, begun by
+    /// the fake for the line it reads next, as Claude Code does.
+    fn scenario_from(&self, recording: &str) -> String {
+        let raw = std::fs::read_to_string(fixture("recorded").join(recording)).unwrap();
+        let lines: Vec<(&str, serde_json::Value)> = raw.lines().map(|l| (&l[..3], serde_json::from_str(&l[3..]).unwrap())).collect();
+        let is_steer = |v: &serde_json::Value| v["type"] == "user" && v.pointer("/message/content/0/text").or(v.pointer("/message/content")).and_then(serde_json::Value::as_str) == Some(STEER);
+        let replayed = lines.iter().position(|(d, v)| *d == "<< " && v["isReplay"] == true && is_steer(v)).unwrap();
+        let first_result = lines.iter().position(|(d, v)| *d == "<< " && v["type"] == "result").unwrap();
+        let same_turn = replayed < first_result;
+        let mut out = Vec::new();
+        let mut results = 0;
+        for (d, v) in &lines {
+            match *d {
+                ">> " if is_steer(v) => out.push(if same_turn { "@await-steer" } else { "@sleep 1" }.to_string()),
+                ">> " => {}
+                _ if v["type"] == "system" && v["subtype"] == "init" => {
+                    if results > 0 {
+                        out.push("---".into());
+                    }
+                }
+                _ if v["isReplay"] == true => {
+                    if is_steer(v) && same_turn {
+                        out.push("@replay".into());
+                    }
+                }
+                _ => {
+                    results += usize::from(v["type"] == "result");
+                    out.push(v.to_string());
+                }
+            }
+        }
+        let path = self.root.join(recording.replace(".txt", ".jsonl"));
+        std::fs::write(&path, out.join("\n") + "\n").unwrap();
+        path.display().to_string()
+    }
+}
+
+/// Runs a prompt and steers it once with `text`, at the first line `when`
+/// picks out of those seen so far.
+async fn run_steered(host: &Host, cmd: Command, text: &str, when: impl Fn(&[StreamLine]) -> bool) -> (Vec<StreamLine>, Result<Option<RunResult>, krowk_harness::engine::EngineError>) {
+    let (tx, mut rx) = mpsc::channel(4096);
+    let exec = host.execute(cmd, tx);
+    tokio::pin!(exec);
+    let mut lines = Vec::new();
+    let mut session = String::new();
+    let mut steered = false;
+    let mut done = None;
+    loop {
+        tokio::select! {
+            l = rx.recv() => match l {
+                Some(l) => {
+                    if let StreamLine::Log(e) = &l {
+                        session.clone_from(&e.session_id);
+                    }
+                    lines.push(l);
+                    if !steered && when(&lines) {
+                        steered = true;
+                        let (stx, _srx) = mpsc::channel(8);
+                        host.execute(Command::Steer { session_id: session.clone(), text: text.into(), images: Vec::new() }, stx).await.unwrap();
+                    }
+                }
+                None => break,
+            },
+            r = &mut exec, if done.is_none() => done = Some(r),
+        }
+    }
+    (lines, done.expect("the command ran"))
+}
+
+fn delta(lines: &[StreamLine]) -> bool {
+    matches!(lines.last(), Some(StreamLine::Live(LiveEvent::ItemDelta { .. })))
+}
+
+fn user_texts(items: &[Item]) -> Vec<String> {
+    items.iter().filter_map(|i| if let Item::UserText { text, .. } = i { Some(text.clone()) } else { None }).collect()
+}
+
+/// R-STEER-1, against ST0's mid-turn recording: a steer queued while a
+/// Bash call runs is written to Claude Code at once, and logged where
+/// Claude Code replayed it — after the call's result, before the answer
+/// that read it — once; the prompt's own replay is not logged again. The
+/// turn completes with nothing unread, so nothing goes back to the prompt.
+#[test]
+fn r_steer_1_a_steer_during_a_tool_call_is_logged_where_claude_code_replayed_it_and_none_is_left_unread() {
+    let home = Home::new("steer-mid");
+    let dir = home.signed_in("cfg");
+    let scenario = home.scenario_from("steer_mid_turn.txt");
+    let host = home.host(vec![("claude", home.instance(&dir, Some(&scenario)))], trust::allow_all());
+    within(Box::pin(async {
+        let (_, r) = run_steered(&host, prompt(None, "run sleep 20 && echo done", "claude/haiku", PermissionMode::Default), STEER, delta).await;
+        let r = r.unwrap().unwrap();
+        assert_eq!(r.status, TurnStatus::Completed, "{r:?}");
+        assert!(r.unread_steers.is_empty(), "{:?}", r.unread_steers);
+        assert!(r.result.contains("PINEAPPLE"), "{}", r.result);
+        let items: Vec<Item> = home.events(&r.session_id).iter().filter_map(|e| if let LogBody::ItemCompleted { item, .. } = &e.body { Some(item.clone()) } else { None }).collect();
+        assert_eq!(user_texts(&items), ["run sleep 20 && echo done", STEER], "each once");
+        let at = |f: &dyn Fn(&Item) -> bool| items.iter().position(f).unwrap();
+        let result = at(&|i| matches!(i, Item::ToolResult { output, .. } if output == "done"));
+        let steer = at(&|i| matches!(i, Item::UserText { text, .. } if text == STEER));
+        let answer = at(&|i| matches!(i, Item::AssistantText { text } if text.contains("PINEAPPLE")));
+        assert!(result < steer && steer < answer, "result {result}, steer {steer}, answer {answer}: {items:?}");
+        host.shutdown().await;
+    }));
+    let fake = home.fake_log();
+    let written = lines_of(&fake, "steer ");
+    assert!(written.len() == 1 && written[0].contains(STEER) && written[0].contains(r#""uuid":""#), "written mid-call, under a uuid: {fake}");
+    assert!(fake.contains("--replay-user-messages"));
+}
+
+/// R-STEER-1, against ST0's late recording: a steer written as the model
+/// writes its last answer is read in a turn Claude Code begins after the
+/// `result`; the krowk turn reads on into it and completes with the steer
+/// read, logged where it was replayed.
+#[test]
+fn r_steer_1_a_steer_during_the_last_answer_is_read_in_a_second_claude_code_turn_inside_the_krowk_turn() {
+    let home = Home::new("steer-late");
+    let dir = home.signed_in("cfg");
+    let scenario = home.scenario_from("steer_late.txt");
+    let host = home.host(vec![("claude", home.instance(&dir, Some(&scenario)))], trust::allow_all());
+    within(Box::pin(async {
+        // The first delta of the answer after the tool's result.
+        let after_result = |lines: &[StreamLine]| delta(lines) && completed(lines).iter().any(|i| matches!(i, Item::ToolResult { .. }));
+        let (_, r) = run_steered(&host, prompt(None, "run it, then write a story", "claude/haiku", PermissionMode::Default), STEER, after_result).await;
+        let r = r.unwrap().unwrap();
+        assert_eq!(r.status, TurnStatus::Completed, "{r:?}");
+        assert!(r.unread_steers.is_empty(), "{:?}", r.unread_steers);
+        assert_eq!(r.result, "PINEAPPLE", "the turn ends at the answer that read it");
+        let items: Vec<Item> = home.events(&r.session_id).iter().filter_map(|e| if let LogBody::ItemCompleted { item, .. } = &e.body { Some(item.clone()) } else { None }).collect();
+        assert_eq!(user_texts(&items), ["run it, then write a story", STEER]);
+        let story = items.iter().position(|i| matches!(i, Item::AssistantText { text } if text.contains("Lighthouse"))).unwrap();
+        let steer = items.iter().position(|i| matches!(i, Item::UserText { text, .. } if text == STEER)).unwrap();
+        assert!(story < steer, "logged after the story it arrived during: {items:?}");
+        host.shutdown().await;
+    }));
+    let fake = home.fake_log();
+    assert_eq!(lines_of(&fake, "in ").iter().filter(|l| l.contains(STEER)).count(), 1, "written once: {fake}");
+    assert_eq!(processes(&fake), 1);
+}
+
+/// An interrupted Claude Code turn hands back the steering it never read:
+/// one written and then cancelled by the interrupt (`cancel_queued`), and
+/// one that arrived after the interrupt, never written at all.
+#[test]
+fn r_steer_1_an_interrupted_turn_hands_back_steering_claude_code_never_read() {
+    let home = Home::new("steer-interrupt");
+    let dir = home.signed_in("cfg");
+    let host = home.host(vec![("claude", home.instance(&dir, Some("interrupt.jsonl")))], trust::allow_all());
+    let log = home.log_file();
+    within(Box::pin(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let exec = host.execute(prompt(None, "count to a thousand", "claude/haiku", PermissionMode::Default), tx);
+        tokio::pin!(exec);
+        let mut session = String::new();
+        let mut steered = false;
+        let mut interrupted = false;
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(20));
+        let steer = |session: &str, text: &str| Command::Steer { session_id: session.into(), text: text.into(), images: Vec::new() };
+        let result = loop {
+            tokio::select! {
+                biased;
+                Some(line) = rx.recv() => {
+                    if let StreamLine::Log(ev) = &line {
+                        session.clone_from(&ev.session_id);
+                    }
+                    if matches!(line, StreamLine::Live(LiveEvent::ItemDelta { .. })) && !steered {
+                        steered = true;
+                        let (stx, _srx) = mpsc::channel(8);
+                        host.execute(steer(&session, "first"), stx).await.unwrap();
+                    }
+                }
+                r = &mut exec => break r.unwrap().unwrap(),
+                // Once the fake has read the first, written: the interrupt,
+                // and a steer after it.
+                _ = tick.tick(), if steered && !interrupted => {
+                    if std::fs::read_to_string(&log).unwrap_or_default().lines().any(|l| l.starts_with("in ") && l.contains(r#""content":"first""#)) {
+                        interrupted = true;
+                        let (stx, _srx) = mpsc::channel(8);
+                        host.execute(Command::Interrupt { session_id: session.clone() }, stx.clone()).await.unwrap();
+                        host.execute(steer(&session, "second"), stx).await.unwrap();
+                    }
+                }
+            }
+        };
+        assert_eq!(result.status, TurnStatus::Interrupted);
+        assert_eq!(result.unread_steers, ["first", "second"], "oldest first");
+        host.shutdown().await;
+    }));
+    let fake = home.fake_log();
+    assert!(fake.lines().any(|l| l.starts_with("cancelled \"")), "the interrupt cancelled what was queued: {fake}");
+    assert!(!lines_of(&fake, "in ").iter().any(|l| l.contains(r#""content":"second""#)), "never written: {fake}");
+}
+
+/// The lines of the fake's log with a prefix, e.g. `in ` or `steer `.
+fn lines_of(log: &str, prefix: &str) -> Vec<String> {
+    log.lines().filter_map(|l| l.strip_prefix(prefix)).map(String::from).collect()
+}
+
+/// A Claude Code too old to cancel what it has not read on an interrupt
+/// (no `interrupt_cancel_queued_v1`) is written no steering: it comes back
+/// on the turn's result, as before R-STEER-1.
+#[test]
+fn r_steer_1_a_claude_that_cannot_cancel_steering_is_written_none_and_hands_it_back() {
+    let home = Home::new("steer-old");
+    let dir = home.signed_in("cfg");
+    let mut instance = home.instance(&dir, Some("slow.jsonl"));
+    if let InstanceKind::ClaudeCode { env, .. } = &mut instance {
+        env.insert("FAKE_CLAUDE_CAPABILITIES".into(), r#""interrupt_receipt_v1""#.into());
+    }
+    let host = home.host(vec![("claude", instance)], trust::allow_all());
+    within(Box::pin(async {
+        let started = |lines: &[StreamLine]| lines.iter().any(|l| matches!(l, StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { .. }, .. })));
+        let (_, r) = run_steered(&host, prompt(None, "take your time", "claude/haiku", PermissionMode::Default), STEER, started).await;
+        let r = r.unwrap().unwrap();
+        assert_eq!((r.status, r.unread_steers.as_slice()), (TurnStatus::Completed, [STEER.to_string()].as_slice()));
+        host.shutdown().await;
+    }));
+    assert!(!home.fake_log().contains(STEER), "never written");
+}

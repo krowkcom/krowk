@@ -101,3 +101,22 @@ fn r_steer_1_a_line_written_during_the_final_answer_becomes_a_turn_claude_code_b
     assert!(!turns[0].1.contains("PINEAPPLE"), "not read in the first turn");
     assert!(turns[1].1.contains("PINEAPPLE"), "read in the second: {}", turns[1].1);
 }
+
+#[test]
+fn r_steer_1_an_interrupt_that_cancels_what_is_queued_names_the_unread_line_and_no_turn_reads_it() {
+    let lines = recording("steer_interrupt.txt");
+    let steer = lines.iter().find_map(|l| match l {
+        Line::Wrote(m) if is_steer(m) || m.pointer("/message/content").and_then(Value::as_str) == Some(STEER) => m["uuid"].as_str(),
+        _ => None,
+    });
+    let steer = steer.expect("the steer was written with a uuid");
+    let answer = lines.iter().find_map(|l| match l {
+        Line::Printed(m) if m["type"] == "control_response" => Some(&m["response"]["response"]),
+        _ => None,
+    });
+    let answer = answer.expect("the interrupt was answered");
+    assert_eq!(answer["cancelled"], serde_json::json!([steer]), "{answer}");
+    assert!(!lines.iter().any(|l| matches!(l, Line::Printed(m) if m["isReplay"] == true && m.pointer("/message/content").and_then(Value::as_str) == Some(STEER))), "never replayed");
+    let turns = turns(&lines);
+    assert_eq!(turns.len(), 1, "no turn follows for the cancelled line");
+}

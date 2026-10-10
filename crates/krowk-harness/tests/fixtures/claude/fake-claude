@@ -17,6 +17,8 @@
 #   FAKE_CLAUDE_STATUS_DELAY  seconds `auth status` takes to answer
 #   FAKE_CLAUDE_PERMISSION_MODE  the mode init reports, as a settings file
 #                         could make it; the --permission-mode given otherwise
+#   FAKE_CLAUDE_CAPABILITIES  the capabilities init announces, as JSON strings
+#                         joined by commas; an older binary's fewer
 #
 # A scenario is turns separated by lines holding `---`. Each user line from
 # krowk plays the next turn: `system/init` first, then each line of the turn:
@@ -24,7 +26,13 @@
 #   @ask <request>     sent as a control_request; waits for krowk's answer
 #   @tool_result <id>  a tool_result for <id> built from the last answer: the
 #                      denial's message, a hook's deny reason, or the MCP result's text
-#   @await-interrupt   waits for krowk's interrupt, and acknowledges it
+#   @await-interrupt   waits for krowk's interrupt, and acknowledges it; a
+#                      `user` line read meanwhile is queued, and cancelled
+#                      by an interrupt that asks (`cancel_queued`)
+#   @await-steer       waits for a `user` line from krowk, as steering
+#                      written mid-turn
+#   @replay            prints that line back, as `--replay-user-messages`
+#                      does once the model reads it
 #   @sleep <seconds>   waits
 #   @exit <code>       exits mid-turn, as a crashed process would
 #   @exit-once <code>  the same, the first time only (a marker in the config dir)
@@ -36,7 +44,8 @@
 #   @begin             prints `system/init` again, as Claude Code does when
 #                      it begins a turn — one of its own, inside or after
 #                      another
-# The turn ends with the scenario's own `result` line. A section whose first
+# With `--replay-user-messages` the line that starts a turn is printed back
+# after `init`. The turn ends with the scenario's own `result` line. A section whose first
 # line is `@by-itself` plays as soon as the one before it ends, with no
 # user line from krowk: what Claude Code does between turns, while a
 # background agent runs and when it begins a turn to answer it.
@@ -99,12 +108,14 @@ esac
 MODEL=default
 PMODE=default
 RESUMING=
+REPLAY=
 SESSION="${FAKE_CLAUDE_SESSION:-fa4e0000-0000-4000-8000-000000000001}"
 while [ $# -gt 0 ]; do
   case "$1" in
   --model) MODEL="$2"; shift ;;
   --resume) SESSION="$2"; RESUMING=1; log "resume $2"; shift ;;
   --permission-mode) PMODE="$2"; log "permission-mode $2"; shift ;;
+  --replay-user-messages) REPLAY=1 ;;
   esac
   shift
 done
@@ -135,6 +146,8 @@ fi
 POS=0
 ASKED=0
 ANSWER=""
+STEER=""
+QUEUED=""
 
 emit() {
   local out="$1" p
@@ -175,7 +188,14 @@ control() {
     ;;
   *'"subtype":"interrupt"'*)
     log "interrupt"
-    ack "$id" '{"still_queued":[]}'
+    case "$line" in
+    *'"cancel_queued":true'*)
+      ack "$id" '{"still_queued":[],"cancelled":['"$QUEUED"']}'
+      log "cancelled $QUEUED"
+      QUEUED=""
+      ;;
+    *) ack "$id" '{"still_queued":[]}' ;;
+    esac
     return 1
     ;;
   *) ack "$id" ;;
@@ -223,21 +243,50 @@ tool_result() {
   emit "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"$id\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"$text\"}],\"is_error\":$err}]},\"parent_tool_use_id\":null,\"session_id\":\"$SESSION\"}"
 }
 
+uuid_of() {
+  local re='"uuid":"([^"]+)"'
+  [[ $1 =~ $re ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
 await_interrupt() {
+  local u
   while readline; do
     case "$LINE" in
     '{"type":"control_request"'*) control "$LINE" || return 0 ;;
+    '{"type":"user"'*)
+      u="$(uuid_of "$LINE")"
+      [ -n "$u" ] && QUEUED="${QUEUED:+$QUEUED,}\"$u\""
+      ;;
     esac
   done
 }
 
+await_steer() {
+  while readline; do
+    case "$LINE" in
+    '{"type":"control_request"'*) control "$LINE" || true ;;
+    '{"type":"user"'*)
+      STEER="$LINE"
+      log "steer $LINE"
+      return 0
+      ;;
+    esac
+  done
+}
+
+# A line of krowk's printed back, as `--replay-user-messages` does.
+replay() {
+  emit "${1%\}},\"isReplay\":true}"
+}
+
 init() {
-  emit '{"type":"system","subtype":"init","cwd":"{{CWD}}","session_id":"{{SESSION}}","tools":["Read","Edit","Bash","mcp__krowk__session_info"],"mcp_servers":[{"name":"krowk","status":"connected","source":"sdk"}],"model":"{{MODEL}}","permissionMode":"'$PMODE'","apiKeySource":"'$SOURCE'","claude_code_version":"2.1.280","capabilities":["interrupt_receipt_v1"]}'
+  emit '{"type":"system","subtype":"init","cwd":"{{CWD}}","session_id":"{{SESSION}}","tools":["Read","Edit","Bash","mcp__krowk__session_info"],"mcp_servers":[{"name":"krowk","status":"connected","source":"sdk"}],"model":"{{MODEL}}","permissionMode":"'$PMODE'","apiKeySource":"'$SOURCE'","claude_code_version":"2.1.280","capabilities":['"${FAKE_CLAUDE_CAPABILITIES-\"interrupt_receipt_v1\",\"interrupt_cancel_queued_v1\"}"']}'
 }
 
 turn() {
   mkdir -p "$(dirname "$TRANSCRIPT")" && printf '%s\n' "$1" >>"$TRANSCRIPT"
   init
+  [ -n "$REPLAY" ] && replay "$1"
   if [ ! -f "$DIR/fake-login" ] && [ "$SOURCE" = none ]; then
     emit '{"type":"assistant","message":{"id":"msg_login","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Not logged in · Please run /login"}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}'
     emit '{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login","session_id":"{{SESSION}}"}'
@@ -262,6 +311,8 @@ play() {
     '@ask '*) ask "${l#@ask }" ;;
     '@tool_result '*) tool_result "${l#@tool_result }" ;;
     @await-interrupt) await_interrupt ;;
+    @await-steer) await_steer ;;
+    @replay) replay "$STEER" ;;
     '@sleep '*) sleep "${l#@sleep }" ;;
     '@exit '*) exit "${l#@exit }" ;;
     '@exit-once '*)

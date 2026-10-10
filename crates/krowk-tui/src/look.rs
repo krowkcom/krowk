@@ -276,6 +276,8 @@ pub fn tool_kind(name: &str) -> &str {
         "TodoWrite" => "todo_write",
         "Skill" => "skill",
         "AskUserQuestion" => "ask_user",
+        "BashOutput" => "bash_output",
+        "KillShell" | "KillBash" => "kill_bash",
         other => other,
     }
 }
@@ -293,6 +295,10 @@ pub fn tool_title(name: &str, input: &serde_json::Value) -> (String, String) {
         "glob" => ("Find".into(), s("pattern")),
         "todo_write" => ("Plan".into(), String::new()),
         "subagent" => ("Agent".into(), s("description")),
+        // A background job's, by its id (Claude Code's tools name it `bash_id`
+        // or `shell_id`).
+        "bash_output" => ("Read job".into(), [s("id"), s("bash_id"), s("shell_id")].into_iter().find(|i| !i.is_empty()).unwrap_or_default()),
+        "kill_bash" => ("Stop job".into(), [s("id"), s("bash_id"), s("shell_id")].into_iter().find(|i| !i.is_empty()).unwrap_or_default()),
         "ask_user" => {
             let qs = input.get("questions").and_then(|q| q.as_array()).map(Vec::as_slice).unwrap_or_default();
             let q = |q: &serde_json::Value| q.get("question").and_then(|v| v.as_str()).unwrap_or_default().to_string();
