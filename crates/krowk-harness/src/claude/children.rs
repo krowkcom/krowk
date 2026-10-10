@@ -58,6 +58,9 @@ pub const HOLD: usize = 256;
 /// `task_started`, or an agent `own` turns away, is never released.
 pub const WAITING: usize = 32;
 
+/// Why a background agent Claude Code stopped listing ended as done.
+pub const UNSAID: &str = "Claude Code stopped listing it and did not say how it ended";
+
 /// The note in an agent's transcript where lines held for it were dropped:
 /// krowk's words, not the agent's.
 pub const DROPPED: &str = "<dropped-lines>";
@@ -213,12 +216,12 @@ impl Children {
     }
 
     /// Background agents no longer listed, whose end Claude Code never
-    /// said: finished, as the list says.
+    /// said: finished, as the list says, and said to be unsaid.
     fn unlisted(&mut self, out: &mut Vec<EngineEvent>) {
         let open: Vec<String> = self.agents.iter().filter(|(_, c)| c.unlisted && c.translator.is_some()).map(|(k, _)| k.clone()).collect();
         for call in open {
             if let Some(c) = self.agents.get_mut(&call) {
-                c.end.get_or_insert((ChildState::Done, None));
+                c.end.get_or_insert((ChildState::Done, Some(UNSAID.into())));
             }
             self.end(&call, out);
         }
@@ -315,8 +318,8 @@ impl Children {
 
     /// A turn's `result` was read: its foreground agents end with it, as
     /// Claude Code said, or interrupted when it said nothing; a background
-    /// one no longer listed, finished. What is left of the ended agents
-    /// goes, and the lines held for an agent not known yet go too, unless
+    /// one no longer listed, finished. The ended agents go, their calls
+    /// staying known so a late line of theirs is dropped; the lines held for an agent not known yet go too, unless
     /// a background agent runs on, whose agents' lines may still come.
     pub fn turn_ended(&mut self) -> Vec<EngineEvent> {
         let mut out = Vec::new();
@@ -328,9 +331,9 @@ impl Children {
             self.end(&call, &mut out);
         }
         self.unlisted(&mut out);
-        let ended: Vec<String> = self.agents.iter().filter(|(_, c)| c.translator.is_none()).map(|(k, _)| k.clone()).collect();
+        // Their calls stay known: a late line of one, or of its own
+        // agents, finds no agent running and is dropped, not held.
         self.agents.retain(|_, c| c.translator.is_some());
-        self.under.retain(|_, a| !ended.contains(a));
         if self.agents.is_empty() {
             self.held.clear();
             self.waiting.clear();
@@ -478,7 +481,11 @@ mod tests {
         // does every line still held.
         let ended = c.turn_ended();
         assert_eq!(ended.iter().filter(|e| matches!(e, EngineEvent::BackendChildEnded { .. })).count(), 2);
-        assert!(c.held.is_empty() && c.waiting.is_empty() && c.agents.is_empty() && c.under.is_empty());
+        assert!(c.held.is_empty() && c.waiting.is_empty() && c.agents.is_empty());
+        // Their calls stay known: a late line of an ended agent is dropped,
+        // not held as one not started yet.
+        assert!(c.apply(&says("call_2", "late", json!({"type": "text", "text": "late"}))).is_empty());
+        assert!(c.held.is_empty());
         // With a background agent running on, its lines may still come.
         let mut bg = started("b1", "call_b", 1, false);
         bg["is_backgrounded"] = json!(true);
@@ -486,6 +493,11 @@ mod tests {
         c.apply(&says("call_x", "mx", json!({"type": "text", "text": "x"})));
         assert!(c.turn_ended().is_empty());
         assert_eq!((c.held.len(), c.agents.len()), (1, 1));
+        // While the hold lives on, an ended agent's late lines — its own or
+        // its agent's — take no slot.
+        c.apply(&says("call_2", "late2", json!({"type": "tool_use", "id": "x", "name": "Bash", "input": {}})));
+        c.apply(&result("call_0", "y", "late result"));
+        assert_eq!(c.held.len(), 1, "only the line of an agent never started");
     }
 
     #[test]
@@ -505,6 +517,6 @@ mod tests {
         feed(&mut c, &[bg, json!({"type": "system", "subtype": "background_tasks_changed", "tasks": [{"task_id": "b2"}]})]);
         assert!(feed(&mut c, &[unlisted]).is_empty());
         let evs = c.apply(&json!({"type": "system", "subtype": "init"}));
-        assert!(matches!(evs.last(), Some(EngineEvent::BackendChildEnded { task_id, status: ChildState::Done, error: None }) if task_id == "b2"));
+        assert!(matches!(evs.last(), Some(EngineEvent::BackendChildEnded { task_id, status: ChildState::Done, error: Some(e) }) if task_id == "b2" && e == UNSAID));
     }
 }
