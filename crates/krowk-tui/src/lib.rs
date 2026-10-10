@@ -479,11 +479,12 @@ async fn session(opts: Options) -> Outcome {
         started_in,
         permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
     // A resumed session still running in the daemon is followed from where
-    // its log left off: the turn so far, then live.
-    if let Some(id) = opts.resume.clone()
-        && live.contains(&id)
-    {
-        ui.reattach(&mut app, &id, replayed_to.clone());
+    // its log left off: the turn so far, then live. One that is not left no
+    // child running: its log's unanswered children ended with it.
+    match opts.resume.clone() {
+        Some(id) if live.contains(&id) => ui.reattach(&mut app, &id, replayed_to.clone()),
+        Some(_) => app.end_replayed_children(),
+        None => {}
     }
     let result = ui.run(&mut app, &mut term).await;
     ui.drain(&mut app);
@@ -2194,7 +2195,7 @@ impl<'h> Ui<'h> {
             help::Action::New => self.new_session(app),
             help::Action::Sessions => self.open_resume(app),
             help::Action::Todos => app.overlay = Overlay::Todos,
-            help::Action::Agents => app.overlay = Overlay::Agents,
+            help::Action::Agents => app.open_agents(),
             help::Action::Details => app.overlay = Overlay::Details,
             help::Action::Copy => copy(app),
             help::Action::PasteImage => self.start_paste(app, paste::from_clipboard),
@@ -2327,7 +2328,13 @@ impl<'h> Ui<'h> {
             KeyCode::Char('v') if ctrl || alt => self.start_paste(app, paste::from_clipboard),
             KeyCode::Char('o') if ctrl => app.overlay = if app.overlay == Overlay::Details { Overlay::None } else { Overlay::Details },
             KeyCode::Char('t') if ctrl => app.overlay = if app.overlay == Overlay::Todos { Overlay::None } else { Overlay::Todos },
-            KeyCode::Char('g') if ctrl => app.overlay = if app.overlay == Overlay::Agents { Overlay::None } else { Overlay::Agents },
+            KeyCode::Char('g') if ctrl => {
+                if app.overlay == Overlay::Agents {
+                    app.overlay = Overlay::None;
+                } else {
+                    app.open_agents();
+                }
+            }
             KeyCode::F(1) => app.toggle_help(),
             KeyCode::Char('?') if app.editor.is_empty() && !ctrl && !alt => app.toggle_help(),
             KeyCode::Enter if alt => app.editor.insert('\n'),
@@ -2423,6 +2430,8 @@ impl<'h> Ui<'h> {
         if self.live.iter().any(|l| l == id) {
             self.live.retain(|l| l != id);
             self.reattach(app, id, events.last().map(|e| e.id.clone()));
+        } else {
+            app.end_replayed_children();
         }
         // Where that session's agent was at work, not this one's.
         self.look_for_pr(app);

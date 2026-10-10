@@ -242,14 +242,16 @@ impl Sub {
         }
     }
 
-    /// Its end, as `App::ended` says it, where nothing said it before.
-    fn end(&mut self, status: TurnStatus, at_ms: i64, tick: u64) {
+    /// Its end, where nothing said it before: how long it took from the
+    /// log's times when `at_ms`, the log's time of its end, is given, else
+    /// by this client's clock.
+    fn end(&mut self, status: TurnStatus, at_ms: Option<i64>, tick: u64) {
         if self.status.is_none() {
             self.status = Some(status);
         }
         if self.took.is_none() {
-            self.took = Some(match self.started_ms {
-                Some(t) if at_ms >= t => Duration::from_millis((at_ms - t) as u64),
+            self.took = Some(match (self.started_ms, at_ms) {
+                (Some(t), Some(at)) if at >= t => Duration::from_millis((at - t) as u64),
                 _ => self.started.elapsed(),
             });
         }
@@ -771,8 +773,12 @@ pub struct App {
     past: Vec<Sub>,
     /// Counts the children's starts and ends, for `Sub::born` and `ended`.
     sub_clock: u64,
-    /// The line the Agents overlay has selected.
-    pub agent_sel: usize,
+    /// The child the Agents overlay has selected, by session id: the list
+    /// reorders as children start and end. Its place, for when it is gone.
+    agent_pick: Option<String>,
+    agent_sel: usize,
+    /// The time of the last event a replay read.
+    replayed_ms: Option<i64>,
     /// The agents a backend runs by itself (Claude Code's `Agent` tool),
     /// as it last listed them: counted and listed, never driven from here.
     backend_agents: Vec<BackendAgent>,
@@ -909,7 +915,9 @@ impl App {
             subs: Vec::new(),
             past: Vec::new(),
             sub_clock: 0,
+            agent_pick: None,
             agent_sel: 0,
+            replayed_ms: None,
             backend_agents: Vec::new(),
             background: 0,
             background_agents: HashMap::new(),
@@ -1855,7 +1863,7 @@ impl App {
         self.sub_clock += 1;
         let tick = self.sub_clock;
         if let Some(s) = self.child(sid) {
-            s.end(status, at_ms, tick);
+            s.end(status, Some(at_ms), tick);
         }
     }
 
@@ -1894,18 +1902,40 @@ impl App {
         self.subs.len() + self.past.len()
     }
 
+    /// Opens the Agents overlay, its selection held on the child it falls
+    /// on, wherever the list moves it.
+    pub fn open_agents(&mut self) {
+        let children = self.children();
+        let pick = children.get(self.selected(&children)).map(|s| s.session_id.clone());
+        self.agent_pick = pick;
+        self.overlay = Overlay::Agents;
+        self.dirty = true;
+    }
+
     /// Moves the Agents overlay's selection.
     pub fn agent_move(&mut self, by: isize) {
-        let n = self.agent_count();
-        if n > 0 {
-            self.agent_sel = (self.agent_sel as isize + by).rem_euclid(n as isize) as usize;
+        let children = self.children();
+        if !children.is_empty() {
+            let at = (self.selected(&children) as isize + by).rem_euclid(children.len() as isize) as usize;
+            self.agent_pick = Some(children[at].session_id.clone());
+            self.agent_sel = at;
         }
         self.dirty = true;
     }
 
+    /// Where the selected child is in `children`: where it is now, or,
+    /// when it is gone, the place it had.
+    fn selected(&self, children: &[&Sub]) -> usize {
+        match self.agent_pick.as_ref().and_then(|id| children.iter().position(|s| &s.session_id == id)) {
+            Some(i) => i,
+            None => self.agent_sel.min(children.len().saturating_sub(1)),
+        }
+    }
+
     /// Expands or collapses the selected subagent's line.
     pub fn agent_toggle(&mut self) {
-        let id = self.children().get(self.agent_sel).map(|s| s.session_id.clone());
+        let children = self.children();
+        let id = children.get(self.selected(&children)).map(|s| s.session_id.clone());
         if let Some(s) = id.and_then(|id| self.child(&id)) {
             s.expanded = !s.expanded;
         }
@@ -1915,7 +1945,8 @@ impl App {
     /// The selected subagent's session, while it is still running: what
     /// an interrupt of that one alone is sent to (R-SUB-2).
     pub fn agent_selected_running(&self) -> Option<String> {
-        self.children().get(self.agent_sel).filter(|s| s.status.is_none()).map(|s| s.session_id.clone())
+        let children = self.children();
+        children.get(self.selected(&children)).filter(|s| s.status.is_none()).map(|s| s.session_id.clone())
     }
 
     /// `x` in the Agents overlay: the selected child's session to
@@ -2085,6 +2116,11 @@ impl App {
                     u.settle();
                 }
                 self.finish_live();
+                // Replayed, a child whose call the turn never answered
+                // ended with it; live, `end_turn` sees to it.
+                if !live {
+                    self.stop_unanswered(Some(ev.time_ms));
+                }
                 self.flush_calls();
                 match status {
                     // A blank line first: straight under the answer, the
@@ -2232,17 +2268,38 @@ impl App {
         if s.background {
             self.background_agents.insert(s.session_id.clone(), s.description.clone());
         } else {
-            let how = match (is_error, output.contains("interrupted")) {
+            let interrupted = output.starts_with("the subagent was interrupted") || output.starts_with("not run: the turn was interrupted");
+            let how = match (is_error, interrupted) {
                 (false, _) => TurnStatus::Completed,
                 (true, true) => TurnStatus::Interrupted,
                 (true, false) => TurnStatus::Failed,
             };
             self.sub_clock += 1;
-            s.end(how, at_ms, self.sub_clock);
+            s.end(how, Some(at_ms), self.sub_clock);
         }
         self.commit_sub(&s, output, is_error);
         self.past.push(s);
-        self.agent_sel = self.agent_sel.min(self.agent_count().saturating_sub(1));
+    }
+
+    /// The subagents whose calls were never answered, their turn over:
+    /// each ended as interrupted, at `at_ms` in the log's time when it is
+    /// known, and its line committed saying so.
+    fn stop_unanswered(&mut self, at_ms: Option<i64>) {
+        for mut s in std::mem::take(&mut self.subs) {
+            self.calls.retain(|c| s.call_id.as_deref() != Some(c.call_id.as_str()));
+            self.sub_clock += 1;
+            s.end(TurnStatus::Interrupted, at_ms, self.sub_clock);
+            self.commit_sub(&s, "no result — the turn stopped first", true);
+            self.past.push(s);
+        }
+    }
+
+    /// A resumed session not followed live: the children its log left
+    /// unanswered, a last turn that never completed, are not running —
+    /// ended at the log's last event.
+    pub fn end_replayed_children(&mut self) {
+        self.stop_unanswered(self.replayed_ms);
+        self.dirty = true;
     }
 
     /// Whatever of the streaming text never ended in a newline goes to
@@ -2299,6 +2356,7 @@ impl App {
         for ev in branch {
             self.on_log(ev, false);
         }
+        self.replayed_ms = branch.last().map(|e| e.time_ms);
         // A last turn that never completed: what it priced.
         self.settle_replayed(None);
         self.release();
@@ -2423,7 +2481,7 @@ impl App {
     /// the selected one reversed, at most SLASH_ROWS of them around it.
     fn children_rows(&self, rows: &mut Vec<Line<'static>>, width: usize, now: Instant) -> usize {
         let children = self.children();
-        let at = self.agent_sel.min(children.len().saturating_sub(1));
+        let at = self.selected(&children);
         let from = at.saturating_sub(SLASH_ROWS - 1);
         for (i, s) in children.iter().enumerate().skip(from).take(SLASH_ROWS) {
             sub_row(rows, s, i == at, width, now);
@@ -3015,7 +3073,9 @@ impl App {
         self.approval_expanded = false;
         self.subs.clear();
         self.past.clear();
+        self.agent_pick = None;
         self.agent_sel = 0;
+        self.replayed_ms = None;
         self.backend_agents.clear();
         self.unprompted = false;
         self.todos.clear();
@@ -3160,16 +3220,8 @@ impl App {
         self.turn = None;
         self.echoed = None;
         self.finish_live();
-        // A subagent whose call was never answered is shown as it stood.
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-        for s in std::mem::take(&mut self.subs) {
-            self.calls.retain(|c| s.call_id.as_deref() != Some(c.call_id.as_str()));
-            self.commit_sub(&s, "no result — the turn stopped first", true);
-            let id = s.session_id.clone();
-            self.past.push(s);
-            self.ended(&id, TurnStatus::Interrupted, now_ms);
-        }
-        self.agent_sel = 0;
+        // A subagent whose call was never answered ended with the turn.
+        self.stop_unanswered(None);
         self.flush_calls();
         self.dirty = true;
         (std::mem::take(&mut self.steers), std::mem::take(&mut self.unsent_steers))
@@ -3638,11 +3690,6 @@ fn flat(s: &str) -> String {
         .collect()
 }
 
-/// A menu over the prompt: a ratatui table under a top border, a row an
-/// entry — a title, a dim description, a faint third column — the selected
-/// one marked and its title coloured. Narrow, the third column goes and
-/// the description is cut; the columns fit the rows shown, the description
-/// at most half the width.
 /// A child's one line, its spinner while it runs, reversed when
 /// `selected`, and what it did last under it when expanded.
 fn sub_row(rows: &mut Vec<Line<'static>>, s: &Sub, selected: bool, width: usize, now: Instant) {
@@ -3659,6 +3706,11 @@ fn sub_row(rows: &mut Vec<Line<'static>>, s: &Sub, selected: bool, width: usize,
     }
 }
 
+/// A menu over the prompt: a ratatui table under a top border, a row an
+/// entry — a title, a dim description, a faint third column — the selected
+/// one marked and its title coloured. Narrow, the third column goes and
+/// the description is cut; the columns fit the rows shown, the description
+/// at most half the width.
 fn menu(rows: &[[String; 3]], at: usize, width: usize, most_rows: usize) -> Vec<Line<'static>> {
     use ratatui::layout::Constraint;
     use ratatui::widgets::{Block, Borders, Cell, HighlightSpacing, Row, Table, TableState};
@@ -4762,30 +4814,81 @@ mod tests {
     /// log names, as they ended and how long they took.
     #[test]
     fn r_sub_11_a_resumed_session_lists_the_same_finished_children() {
-        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
-        let evs = three_children();
+        let fresh = || App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        let at = |ms: i64, body: LogBody| LogEvent { id: format!("e{ms}"), parent_id: None, session_id: "s".into(), time_ms: ms, body };
+        // The turn was interrupted with `k2`'s call out: it ended with it.
+        let mut a = fresh();
+        let mut evs = three_children();
+        evs.push(at(30_001, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None }));
         a.replay(&evs.iter().collect::<Vec<_>>());
         let shown = text(&a.take_pending()).join("\n");
         assert!(shown.contains("◆ Agent find the tests · done in 9.0s") && shown.contains("◆ Agent map the store · interrupted after 17s"), "its lines in the conversation say so too: {shown}");
-        a.overlay = Overlay::Agents;
+        assert!(shown.contains("◆ Agent read the docs · interrupted after 28s") && !shown.contains("running"), "{shown}");
+        a.open_agents();
         let rows = listed(&a);
         assert_eq!(rows.len(), 3, "{rows:?}");
-        assert!(rows[0].contains("Agent read the docs · running"), "its call never answered in the log: {rows:?}");
+        assert!(rows[0].contains("Agent read the docs · interrupted after 28s"), "{rows:?}");
         assert!(rows[1].contains("Agent map the store · interrupted after 17s"), "{rows:?}");
         assert!(rows[2].contains("Agent find the tests · done in 9.0s"), "{rows:?}");
         let all = text(&a.view(Instant::now()).0).join("\n");
-        assert!(all.contains("x interrupts that one"), "one runs, so x is offered: {all}");
+        assert!(!all.contains("x interrupts") && !a.status_bar().contains("subagent"), "nothing runs: {all}");
+        assert_eq!(a.agent_to_interrupt(), None);
+        // A last turn that never completed, not followed live: its children
+        // end at the log's last event.
+        let mut a = fresh();
+        a.replay(&three_children().iter().collect::<Vec<_>>());
+        a.end_replayed_children();
+        a.open_agents();
+        assert!(listed(&a)[0].contains("Agent read the docs · interrupted after 18s"), "{:?}", listed(&a));
         // A background child's end is its note's.
-        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        let mut a = fresh();
         let mut evs = three_children();
         evs.truncate(evs.len() - 2);
-        let at = |ms: i64, body: LogBody| LogEvent { id: format!("e{ms}"), parent_id: None, session_id: "s".into(), time_ms: ms, body };
         evs.push(at(2500, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r2".into(), item: Item::ToolResult { call_id: "c2".into(), output: "moved to background as agent k2".into(), is_error: false } }));
         evs.push(at(62_002, LogBody::ItemCompleted { turn_id: "t2".into(), item_id: "n".into(), item: Item::user("<background-done id=\"k2\" status=\"failed\">\nboom\n</background-done>") }));
         a.replay(&evs.iter().collect::<Vec<_>>());
-        a.overlay = Overlay::Agents;
+        a.open_agents();
         let rows = listed(&a);
         assert!(rows.iter().any(|r| r.contains("Agent read the docs · failed after 1m")), "{rows:?}");
+    }
+
+    /// R-SUB-11: the overlay's selection stays on its child as the list
+    /// reorders, and `x` goes to that one or to none.
+    #[test]
+    fn r_sub_11_the_selection_follows_its_child_when_the_list_reorders() {
+        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        a.start_turn(Instant::now());
+        for ev in three_children().into_iter().filter(|e| !matches!(e.body, LogBody::ItemCompleted { item: Item::ToolResult { .. }, .. })) {
+            a.on_line(&StreamLine::Log(ev));
+        }
+        a.open_agents();
+        assert_eq!(a.agent_selected_running().as_deref(), Some("k1"));
+        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 5, error: None, reported_cost_usd: None }));
+        assert_eq!(a.agent_to_interrupt(), None, "k1 ended and is still the one selected, now last");
+        a.agent_move(-1);
+        assert_eq!(a.agent_selected_running().as_deref(), Some("k3"), "the one above it");
+        // An answered call does not move it either.
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r2".into(), item: Item::ToolResult { call_id: "c2".into(), output: "the subagent failed: the tool was interrupted by a signal".into(), is_error: true } }));
+        assert_eq!(a.agent_selected_running().as_deref(), Some("k3"));
+        assert!(listed(&a).iter().any(|r| r.contains("Agent read the docs · failed after")), "an error that names an interruption is still a failure: {:?}", listed(&a));
+    }
+
+    /// R-SUB-11: a turn that ends with a child's call out ends the child
+    /// with it, and its line says so, as the overlay does.
+    #[test]
+    fn r_sub_11_a_child_left_when_the_turn_ends_is_interrupted_in_its_line_too() {
+        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        a.start_turn(Instant::now());
+        for ev in three_children().into_iter().take(3) {
+            a.on_line(&StreamLine::Log(ev));
+        }
+        a.take_pending();
+        a.end_turn();
+        let shown = text(&a.take_pending()).join("\n");
+        assert!(shown.contains("◆ Agent find the tests · interrupted after") && !shown.contains("running") && shown.contains("no result — the turn stopped first"), "{shown}");
+        a.open_agents();
+        let rows = listed(&a);
+        assert!(rows[0].contains("interrupted after 0.0s"), "by this client's clock, not the log's: {rows:?}");
     }
 
     /// R-STEER-2: the status line counts the session's background work
