@@ -422,7 +422,7 @@ impl<C: ModelClient> NativeEngine<C> {
                         // stops itself, so its log ends with its turn.
                         let runs: Vec<BoxFuture<'_, (String, bool)>> =
                             batch.iter().zip(&ids).map(|((call_id, name, input), item_id)| Box::pin(call_tool(&ctx, &hooks, &tool_env, &events, (call_id, item_id), name, input)) as BoxFuture<'_, (String, bool)>).collect();
-                        let out = join_all(runs).await;
+                        let out = fan_out(&ctx, runs).await;
                         interrupted = *ctx.cancel.borrow();
                         out
                     } else {
@@ -455,6 +455,27 @@ impl<C: ModelClient> NativeEngine<C> {
                 format!("the turn made {MAX_STEPS} model calls without finishing, so it was stopped — ask again with a narrower task"),
             ))
         })
+    }
+}
+
+/// A batch of subagent calls, run together. A steer moves the children
+/// still running to the background once the batch has run `MOVE_AFTER`
+/// (R-STEER-4): their calls answer at once, and their summaries arrive as
+/// notes.
+async fn fan_out<'a>(ctx: &TurnContext, runs: Vec<BoxFuture<'a, (String, bool)>>) -> Vec<(String, bool)> {
+    let Some(s) = &ctx.subagents else { return join_all(runs).await };
+    s.batch_starts();
+    let all = join_all(runs);
+    tokio::pin!(all);
+    tokio::select! {
+        out = &mut all => out,
+        _ = async {
+            tokio::time::sleep(tools::MOVE_AFTER).await;
+            ctx.steers.steered().await;
+        } => {
+            s.move_running();
+            all.await
+        }
     }
 }
 

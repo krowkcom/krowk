@@ -1122,6 +1122,7 @@ impl Shared {
                 background: std::sync::Mutex::new(Vec::new()),
                 running: std::sync::atomic::AtomicUsize::new(0),
                 stop,
+                moving: watch::channel(false).0,
             };
             (Subagents(Arc::new(spawn)), problems)
         });

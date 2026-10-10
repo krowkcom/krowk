@@ -849,3 +849,118 @@ fn r_steer_4_a_steer_during_a_short_command_waits_for_it() {
     assert!(next.contains("done\\nexit code 0") && !next.contains("moved to background"), "{next}");
     assert!(next.contains("and then say hi"), "{next}");
 }
+
+/// A response that calls several tools at once.
+fn tool_uses(calls: &[(&str, &str, serde_json::Value)]) -> String {
+    let mut out = format!(
+        "event: message_start\ndata: {}\n\n",
+        serde_json::json!({"type": "message_start", "message": {"id": "msg_fan", "type": "message", "role": "assistant", "model": "claude-sonnet-4-6", "content": [], "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 20, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 1}}})
+    );
+    for (i, (id, name, input)) in calls.iter().enumerate() {
+        out += &format!("event: content_block_start\ndata: {}\n\n", serde_json::json!({"type": "content_block_start", "index": i, "content_block": {"type": "tool_use", "id": id, "name": name, "input": {}}}));
+        out += &format!("event: content_block_delta\ndata: {}\n\n", serde_json::json!({"type": "content_block_delta", "index": i, "delta": {"type": "input_json_delta", "partial_json": input.to_string()}}));
+        out += &format!("event: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":{i}}}\n\n");
+    }
+    out + "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":40}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+}
+
+/// Two children at once, a quick one and a slow one held until `gate`;
+/// the parent's own requests answered by `parent` in order.
+fn two_children(gate: &mock::Gate, parent: impl Fn(usize) -> mock::Reply + Send + 'static) -> mock::Mock {
+    let (g, n) = (gate.clone(), Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+    mock::serve(move |body, _| {
+        if is_child(body) {
+            return match body["messages"].to_string().contains("the slow one") {
+                true => mock::Reply { hold: Some(("message_stop", g.clone())), ..mock::Reply::paced(mock::text_stream("The slow one found two files."), std::time::Duration::from_millis(1)) },
+                false => mock::Reply::sse(&mock::text_stream("The quick one found a README.")),
+            };
+        }
+        match n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => mock::Reply::sse(&tool_uses(&[
+                ("t1", "subagent", serde_json::json!({"description": "quick", "prompt": "the quick one: look at the README"})),
+                ("t2", "subagent", serde_json::json!({"description": "slow", "prompt": "the slow one: list every file"})),
+            ])),
+            i => parent(i),
+        }
+    })
+}
+
+/// R-STEER-4: a steer at 3 s into a batch of two children moves the one
+/// still running to the background: the model's next call carries the
+/// quick child's summary, the slow one's move and the steer; the turn
+/// waits for the slow one's note, reads it, and completes after it.
+#[test]
+fn r_steer_4_a_steer_moves_the_children_still_running_to_the_background() {
+    let gate = mock::Gate::default();
+    let g = gate.clone();
+    let m = two_children(&gate, move |i| match i {
+        1 => {
+            let g = g.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                g.open();
+            });
+            mock::Reply::sse(&mock::text_stream("Noted; waiting for the slow one."))
+        }
+        _ => mock::Reply::sse(&mock::text_stream("Both are done.")),
+    });
+    let home = Home::new("move-children", &m.url);
+    let (result, _) = steered_after(&home, "just tell me what the quick one found", std::time::Duration::from_secs(3));
+    assert_eq!((result.status, result.result.as_str()), (TurnStatus::Completed, "Both are done."), "{result:?}");
+    let seen = parent_seen(&m);
+    assert_eq!(seen.len(), 3, "the move, then the note");
+    let next = seen[1]["messages"].as_array().unwrap().last().unwrap().to_string();
+    assert!(next.contains("The quick one found a README.") && next.contains("moved to background as agent ") && next.contains("just tell me what the quick one found"), "{next}");
+    let noted = seen[2]["messages"].as_array().unwrap().last().unwrap().to_string();
+    assert!(noted.contains("status=\\\"completed\\\">\\nThe slow one found two files.\\n</background-done>"), "{noted}");
+}
+
+/// R-STEER-4: interrupting after the move still interrupts the moved child.
+#[test]
+fn r_steer_4_interrupting_after_the_move_interrupts_the_moved_child() {
+    use krowk_harness::host::Host;
+    use krowk_harness::protocol::Command;
+    use tokio::sync::mpsc;
+    let gate = mock::Gate::default();
+    let m = two_children(&gate, |_| mock::Reply::sse(&mock::text_stream("Waiting.")));
+    let home = Home::new("move-children-interrupt", &m.url);
+    let host = Host::new(home.config());
+    let model = Registry::resolve(&InstancesConfig::default(), &home.env()).parse_model("claude-sonnet-4-6").unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let (result, slow) = rt.block_on(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let cmd = Command::Prompt { session_id: None, text: "two at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let exec = host.execute(cmd, tx);
+        tokio::pin!(exec);
+        let (mut session, mut slow, mut steer_at, mut stopped) = (String::new(), None, None::<tokio::time::Instant>, false);
+        let result = loop {
+            tokio::select! {
+                Some(line) = rx.recv() => match &line {
+                    StreamLine::Log(LogEvent { session_id, body: LogBody::SubagentStarted { subagent_session_id, description, .. }, .. }) => {
+                        session.clone_from(session_id);
+                        if description == "slow" {
+                            slow = Some(subagent_session_id.clone());
+                            steer_at = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(2));
+                        }
+                    }
+                    StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::AssistantText { text }, .. }, .. }) if text == "Waiting." && !stopped => {
+                        stopped = true;
+                        let (itx, _irx) = mpsc::channel(1);
+                        host.execute(Command::Interrupt { session_id: session.clone() }, itx).await.unwrap();
+                    }
+                    _ => {}
+                },
+                _ = krowk_harness::engine::sleep_until(steer_at) => {
+                    steer_at = None;
+                    let (stx, _srx) = mpsc::channel(8);
+                    host.execute(Command::Steer { session_id: session.clone(), text: "stop waiting".into(), images: Vec::new() }, stx).await.unwrap();
+                }
+                r = &mut exec => break r.unwrap().unwrap(),
+            }
+        };
+        (result, slow.unwrap())
+    });
+    assert_eq!(result.status, TurnStatus::Interrupted);
+    let events = log::read_events(&log::sessions_dir(&home.env()).unwrap().join(&slow).join(log::EVENTS_FILE)).unwrap();
+    assert!(matches!(&events.last().unwrap().body, LogBody::TurnCompleted { status: TurnStatus::Interrupted, .. }), "{:?}", events.last());
+}
