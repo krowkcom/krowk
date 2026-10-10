@@ -54,7 +54,7 @@ const BASH_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 const BASH_MAX_TIMEOUT: Duration = Duration::from_secs(600);
 /// Output beyond this is cut from the middle: the start says what ran, the
 /// end says how it finished.
-const BASH_MAX_OUTPUT: usize = 30_000;
+pub(crate) const BASH_MAX_OUTPUT: usize = 30_000;
 
 /// Read a file from the filesystem.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -853,12 +853,12 @@ fn read_file(path: &Path, start: usize, limit: usize, exact: bool) -> (String, b
 /// How long the output is still read once the shell has exited: long enough
 /// for what it wrote last, short enough that a process it left in the
 /// background — which holds the pipes open — does not hold the call.
-const BASH_DRAIN_AFTER_EXIT: Duration = Duration::from_millis(250);
+pub(crate) const BASH_DRAIN_AFTER_EXIT: Duration = Duration::from_millis(250);
 
 /// A bounded capture of a stream: the first half of the budget kept whole,
 /// the last half as a ring, and a count of what fell in between — so a
 /// command that prints gigabytes costs 30 KB.
-struct Capture {
+pub(crate) struct Capture {
     head: Vec<u8>,
     tail: std::collections::VecDeque<u8>,
     dropped: u64,
@@ -866,11 +866,11 @@ struct Capture {
 }
 
 impl Capture {
-    fn new(max: usize) -> Capture {
+    pub(crate) fn new(max: usize) -> Capture {
         Capture { head: Vec::new(), tail: std::collections::VecDeque::new(), dropped: 0, half: max / 2 }
     }
 
-    fn push(&mut self, mut b: &[u8]) {
+    pub(crate) fn push(&mut self, mut b: &[u8]) {
         let room = self.half - self.head.len();
         if room > 0 {
             let n = room.min(b.len());
@@ -885,7 +885,7 @@ impl Capture {
         }
     }
 
-    fn render(&self) -> String {
+    pub(crate) fn render(&self) -> String {
         let (a, b) = self.tail.as_slices();
         let tail: Vec<u8> = [a, b].concat();
         if self.dropped == 0 {
@@ -908,10 +908,10 @@ impl Capture {
 /// could be undone by it (a link planted again just after). On a timeout
 /// that is awaited; on an interrupt, where nothing awaits a drop, it runs
 /// on a thread of its own.
-struct GroupKill {
-    group: Option<u32>,
+pub struct GroupKill {
+    pub(crate) group: Option<u32>,
     init: Option<std::sync::mpsc::Receiver<Option<Pidfd>>>,
-    unfenced: Option<crate::sandbox::Unfenced>,
+    pub(crate) unfenced: Option<crate::sandbox::Unfenced>,
 }
 
 #[cfg(unix)]
@@ -930,7 +930,7 @@ impl GroupKill {
     /// Kills the group, at once: its leader is not reaped until the call's
     /// child is dropped, after this, so the pid cannot name another's.
     /// Returns whether it was armed, and disarms it.
-    fn kill_group(&mut self) -> bool {
+    pub(crate) fn kill_group(&mut self) -> bool {
         let Some(pid) = self.group.take() else { return false };
         // SAFETY: kill(2) on the group this call created; a group that
         // already exited is ESRCH, which is fine.
@@ -945,7 +945,7 @@ impl GroupKill {
 
     /// Kills the sandbox's first process and waits until it has exited —
     /// when everything in its namespace has — then sweeps. Blocks.
-    fn settle(&mut self) {
+    pub(crate) fn settle(&mut self) {
         #[cfg(target_os = "linux")]
         if let Some(Ok(Some(init))) = self.init.take().map(|rx| rx.recv_timeout(SANDBOX_LEARN)) {
             use std::os::fd::AsRawFd;
@@ -1028,10 +1028,28 @@ async fn build_slot(env: &ToolEnv<'_>, pool: &crate::slots::Pool) -> (Option<cra
     }
 }
 
-async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
-    use tokio::io::AsyncReadExt;
+/// A command started the way `bash` starts one: in the sandbox when the
+/// session has one, in its own process group, its stdout and stderr on one
+/// pipe, holding a build slot when it is a build. A foreground call reads
+/// it to its end; a background job (`crate::jobs`) is the same command,
+/// read by the session instead.
+pub struct Started {
+    pub(crate) child: tokio::process::Child,
+    /// The merged output (stdout only off unix, with `err` beside it).
+    pub(crate) out: tokio::process::ChildStdout,
+    pub(crate) err: Option<tokio::process::ChildStderr>,
+    /// Kills the group when dropped armed, and sweeps the sandbox once
+    /// what ran in it is gone.
+    pub(crate) group: GroupKill,
+    /// The build slot it holds until it is done, and what the result says
+    /// of it.
+    pub(crate) slot: Option<crate::slots::Slot>,
+    pub(crate) slot_note: Option<String>,
+}
+
+/// Starts `command` as `bash` runs it, or says why it could not be.
+pub async fn start(command: &str, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox::Plan>) -> Result<Started, String> {
     let cwd = env.cwd;
-    let timeout = i.timeout_ms.map_or(BASH_DEFAULT_TIMEOUT, Duration::from_millis).min(BASH_MAX_TIMEOUT);
     // Inside the sandbox when the session has one, or not at all: a plan
     // this machine cannot enforce refuses the command (R-PERM-3). Laid out
     // as the workspace is now, so a repository or a hooks directory made
@@ -1039,7 +1057,7 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     let current = sandbox.map(crate::sandbox::Plan::current);
     let sandbox = current.as_ref();
     if let Some(why) = sandbox.and_then(|p| p.refused.as_ref()) {
-        return (format!("the command was not run: {why}"), true);
+        return Err(format!("the command was not run: {why}"));
     }
     // Where bubblewrap says which process is the sandbox's first.
     #[cfg(target_os = "linux")]
@@ -1047,16 +1065,16 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     // A build or a test run: its share of the cores, and a build slot
     // before it starts, held until it is done — dropped after the group
     // is killed, since it was taken first.
-    let builds = env.builds.filter(|b| b.pool.is_some() && crate::builds::heavy(&i.command));
+    let builds = env.builds.filter(|b| b.pool.is_some() && crate::builds::heavy(command));
     let jobs: Vec<(String, String)> = env.env.iter().cloned().chain(builds.and_then(|b| b.jobs.clone()).map(|n| ("CARGO_BUILD_JOBS".to_string(), n))).collect();
-    let (_slot, slot_note) = match builds.and_then(|b| b.pool.as_ref()) {
+    let (slot, slot_note) = match builds.and_then(|b| b.pool.as_ref()) {
         Some(pool) => build_slot(env, pool).await,
         None => (None, None),
     };
-    let mut cmd = match sandbox.filter(|p| p.kernel).map(|p| crate::sandbox::bash(p, &i.command, &jobs)) {
+    let mut cmd = match sandbox.filter(|p| p.kernel).map(|p| crate::sandbox::bash(p, command, &jobs)) {
         None => {
             let mut c = tokio::process::Command::new("bash");
-            c.arg("-c").arg(&i.command).envs(jobs.iter().cloned());
+            c.arg("-c").arg(command).envs(jobs.iter().cloned());
             c
         }
         Some(Ok((program, args))) => {
@@ -1070,7 +1088,7 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
                     c.args(["--info-fd", "3"]);
                     fd
                 }
-                Err(e) => return (format!("bash could not be started: {e}"), true),
+                Err(e) => return Err(format!("bash could not be started: {e}")),
             };
             // bubblewrap's own environment is the allowlist too: its
             // process inside the namespace is pid 1, whose environ the
@@ -1095,7 +1113,7 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
             }
             c
         }
-        Some(Err(fix)) => return (format!("the command was not run: {fix}"), true),
+        Some(Err(fix)) => return Err(format!("the command was not run: {fix}")),
     };
     let unfenced = sandbox.filter(|p| p.kernel).map(crate::sandbox::Unfenced::before);
     cmd.current_dir(cwd);
@@ -1109,7 +1127,7 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
             cmd.stdout(w1).stderr(w2);
             r
         }
-        Err(e) => return (format!("bash could not be started: {e}"), true),
+        Err(e) => return Err(format!("bash could not be started: {e}")),
     };
     #[cfg(not(unix))]
     cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
@@ -1118,10 +1136,8 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     // command started too, not just the shell.
     #[cfg(unix)]
     cmd.process_group(0);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => return (format!("bash could not be started: {e}"), true),
-    };
+    #[allow(unused_mut)]
+    let mut child = cmd.spawn().map_err(|e| format!("bash could not be started: {e}"))?;
     // The command's copies of the write end go with it, so the pipe closes
     // when the shell and what it started are done.
     drop(cmd);
@@ -1132,17 +1148,24 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     });
     #[cfg(not(target_os = "linux"))]
     let init = None;
-    let mut group = GroupKill { group: child.id(), init, unfenced };
+    let group = GroupKill { group: child.id(), init, unfenced };
     #[cfg(unix)]
-    let (mut so, mut se): (_, Option<tokio::process::ChildStderr>) = {
+    let (out, err) = {
         let std_out = std::process::ChildStdout::from(std::os::fd::OwnedFd::from(merged));
-        match tokio::process::ChildStdout::from_std(std_out) {
-            Ok(so) => (so, None),
-            Err(e) => return (format!("bash's output could not be read: {e}"), true),
-        }
+        (tokio::process::ChildStdout::from_std(std_out).map_err(|e| format!("bash's output could not be read: {e}"))?, None)
     };
     #[cfg(not(unix))]
-    let (mut so, mut se) = (child.stdout.take().expect("piped"), child.stderr.take());
+    let (out, err) = (child.stdout.take().expect("piped"), child.stderr.take());
+    Ok(Started { child, out, err, group, slot, slot_note })
+}
+
+async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
+    use tokio::io::AsyncReadExt;
+    let timeout = i.timeout_ms.map_or(BASH_DEFAULT_TIMEOUT, Duration::from_millis).min(BASH_MAX_TIMEOUT);
+    let Started { mut child, out: mut so, err: mut se, mut group, slot: _slot, slot_note } = match start(&i.command, env, sandbox).await {
+        Ok(s) => s,
+        Err(e) => return (e, true),
+    };
     let mut cap = Capture::new(BASH_MAX_OUTPUT);
     let run = async {
         let (mut b1, mut b2) = ([0u8; 8192], [0u8; 8192]);
