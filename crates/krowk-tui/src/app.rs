@@ -1852,8 +1852,11 @@ impl App {
         let tick = self.sub_clock;
         let Some(s) = self.child(sid) else { return };
         // Anything live from a running child is news of it: frames are not
-        // sent per delta, so a child streaming text is not quiet.
-        if let StreamLine::Live(_) = line
+        // sent per delta, so a child streaming text is not quiet. Not a
+        // frame itself: its own stamp says when, however late it arrives
+        // (queued, or sent again on attach).
+        if let StreamLine::Live(l) = line
+            && !matches!(l, LiveEvent::SubagentStatus { .. })
             && s.status.is_none()
             && let Some(ms) = &mut s.last_event_ms
         {
@@ -4960,7 +4963,8 @@ mod tests {
     /// R-SUB-11: frames are not sent per delta, so what streams from a
     /// child between them is news of it too: a child whose last frame is
     /// 35 s old but which streams text now is not quiet, and an older frame
-    /// after that does not make it so.
+    /// after that does not make it so. A frame is read by its own stamp,
+    /// however late it arrives (R-SUB-9).
     #[test]
     fn r_sub_11_a_child_streaming_between_frames_is_not_quiet() {
         let mut a = App::new(Editor::new(None), 120, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
@@ -4968,8 +4972,12 @@ mod tests {
         a.start_turn(Instant::now());
         let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
         a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "write it up".into(), agent: None, model, ran_by: Default::default(), backend_id: None }));
-        let old = super::wall_ms(Instant::now()) - 35_500;
-        let frame = live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Running, tool: None, last_event_ms: old, waiting: None, tokens: 0 });
+        let now = super::wall_ms(Instant::now());
+        let stamped = |ms: i64| live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Running, tool: None, last_event_ms: ms, waiting: None, tokens: 0 });
+        a.on_line(&stamped(now - 60_000));
+        // A frame arriving late (queued, or sent again on attach) is read
+        // by its stamp, not by when it arrived.
+        let frame = stamped(now - 35_500);
         a.on_line(&frame);
         let later = |a: &App| listed_at(a, Instant::now() + Duration::from_secs(5)).join("\n");
         assert!(later(&a).contains("· quiet 40s"), "nothing since the frame: {}", later(&a));
