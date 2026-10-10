@@ -134,6 +134,9 @@ pub(crate) struct Shared {
     started: Mutex<std::collections::HashSet<String>>,
     /// What the backends say between turns, to whoever watches (`watch`).
     watch: broadcast::Sender<StreamLine>,
+    /// Every session's background commands (R-STEER-2): they outlive the
+    /// turn that started them, and end with the host.
+    pub(crate) jobs: crate::jobs::Jobs,
 }
 
 struct Running {
@@ -195,6 +198,7 @@ fn log_failure(e: LogError) -> EngineError {
 impl Host {
     pub fn new(mut cfg: HostConfig) -> Host {
         let registry = Arc::new(std::mem::take(&mut cfg.registry));
+        let jobs = crate::jobs::Jobs::new(cfg.sessions_dir.clone());
         Host {
             shared: Arc::new(Shared {
                 instances: std::sync::RwLock::new(Instances { registry, changed: HashMap::new() }),
@@ -206,6 +210,7 @@ impl Host {
                 grants: Mutex::new(HashMap::new()),
                 started: Mutex::new(std::collections::HashSet::new()),
                 watch: broadcast::channel(64).0,
+                jobs,
             }),
         }
     }
@@ -221,7 +226,9 @@ impl Host {
     /// How many sessions have work under way between turns — a backend's
     /// agents, a turn it began by itself — which goes with their process.
     pub fn background(&self) -> u32 {
-        self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).values().filter(|b| b.engine.busy()).count() as u32
+        let mut busy: std::collections::HashSet<String> = self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(_, b)| b.engine.busy()).map(|(id, _)| id.clone()).collect();
+        busy.extend(self.shared.jobs.busy_sessions());
+        busy.len() as u32
     }
 
     /// Denies every approval request of these sessions still waiting: the
@@ -248,6 +255,7 @@ impl Host {
     /// killed instead, so a host going away never waits on one. They are let
     /// go together, so the wait is the slowest one's, not their sum.
     pub async fn shutdown(&self) {
+        self.shared.jobs.shutdown().await;
         let engines: Vec<Arc<dyn Engine>> = self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, b)| b.engine).collect();
         let waits = engines.iter().map(|e| -> BoxFuture<'_, bool> { Box::pin(async move { tokio::time::timeout(SHUTDOWN_GRACE, e.shutdown()).await.is_err() }) }).collect();
         let stuck = crate::native::join_all(waits).await.contains(&true);
@@ -352,7 +360,7 @@ impl Host {
                     false => tokio::task::spawn_blocking(move || images::save(&dir, &decoded)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
                 };
                 match Some(&steers) {
-                    Some(r) if r.push(Steer { text, images }).is_ok() => Ok(None),
+                    Some(r) if r.push(Steer { text, images, from_krowk: false }).is_ok() => Ok(None),
                     // The turn has taken its last input and is ending.
                     Some(_) => Err(EngineError::new("turn_ending", format!("the turn in session {session_id} is finishing and reads no more input — send it as the next prompt"))),
                     _ => unreachable!("the turn's queue was found"),
@@ -1165,7 +1173,11 @@ impl Shared {
         };
         // Refused from here on, not queued for a turn that is over; what an
         // interrupted or failed turn never took goes back on its result.
-        let unread_steers = steers.close().into_iter().map(|s| s.text).collect();
+        // krowk's own notes are not the person's words: they wait for the
+        // session's next turn (`Registration::finish`).
+        let (notes, unread): (Vec<Steer>, Vec<Steer>) = steers.close().into_iter().partition(|s| s.from_krowk);
+        steers.put_back(notes);
+        let unread_steers = unread.into_iter().map(|s| s.text).collect();
         self.approvals.forget_session(&session_id);
         if let Some(b) = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&session_id) {
             b.used = Instant::now();
@@ -1332,12 +1344,16 @@ impl Registration {
         }
         running.insert(id.to_string(), Running { cancel: self.cancel.clone(), steers: self.steers.clone(), switch: None });
         self.id = Some(id.to_string());
+        // A background job's note, held for this turn, is read first.
+        self.shared.jobs.attach(id, &self.steers);
         Ok(())
     }
 
     /// Lets go, and returns the switch that arrived for after the turn.
     fn finish(&mut self) -> Option<ModelRef> {
         let id = self.id.take()?;
+        let notes = self.steers.close().into_iter().filter(|s| s.from_krowk).collect();
+        self.shared.jobs.detach(&id, notes);
         self.shared.running.lock().unwrap_or_else(|e| e.into_inner()).remove(&id).and_then(|r| r.switch)
     }
 }

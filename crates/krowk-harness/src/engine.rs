@@ -205,20 +205,29 @@ struct SteerQueue {
     closed: bool,
 }
 
-/// One steer: its text, and the images it carries, already kept.
+/// One steer: its text, and the images it carries, already kept. Or a
+/// note of krowk's riding the same queue (`from_krowk`): a background job
+/// or child that ended, which the model reads as it reads steering but
+/// which is never handed back as the person's words.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Steer {
     pub text: String,
     pub images: Vec<ImageRef>,
+    pub from_krowk: bool,
 }
 
 impl From<&str> for Steer {
     fn from(text: &str) -> Steer {
-        Steer { text: text.to_string(), images: Vec::new() }
+        Steer { text: text.to_string(), images: Vec::new(), from_krowk: false }
     }
 }
 
 impl Steer {
+    /// A note of krowk's.
+    pub fn note(text: String) -> Steer {
+        Steer { text, images: Vec::new(), from_krowk: true }
+    }
+
     pub fn item(self) -> Item {
         Item::UserText { text: self.text, images: self.images }
     }
@@ -252,6 +261,13 @@ impl Steers {
             q.closed = true;
         }
         q.closed
+    }
+
+    /// Returns steering to the front of the queue, oldest first, whether or
+    /// not it is closed: the host's notes of krowk's, taken out with the
+    /// person's steering when the turn ended and kept for the next.
+    pub fn put_back(&self, steers: Vec<Steer>) {
+        self.lock().waiting.splice(0..0, steers);
     }
 
     /// Closes the queue whatever it holds, and returns what was never taken.

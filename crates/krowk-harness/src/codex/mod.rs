@@ -563,7 +563,7 @@ impl Engine for CodexEngine {
                 if let Some(ev) = handoff {
                     let _ = events.send(ev).await;
                 }
-                p.turn(Steer { text: prompt, images }, &mut ctx, &ask, &events, &self.instance.name).await
+                p.turn(Steer { text: prompt, images, from_krowk: false }, &mut ctx, &ask, &events, &self.instance.name).await
             }
             .await;
             // A process that died, or a turn that failed partway, is not
