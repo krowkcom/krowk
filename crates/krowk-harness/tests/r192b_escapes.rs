@@ -155,7 +155,7 @@ fn bw(name: &str, profile: Profile) -> Fx {
 }
 
 async fn run(f: &Fx, name: &str, input: Value) -> (String, bool) {
-    let env = ToolEnv { cwd: &f.ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
+    let env = ToolEnv { cwd: &f.ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None };
     tools::execute(name, &input, &env, f.scope.clone()).await
 }
 

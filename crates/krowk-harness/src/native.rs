@@ -294,7 +294,7 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
             // Response indexes continue from the history's, so a replayed
             // turn and this one never share an index.
             let first_response = req.history.iter().filter_map(|h| h.response).max().map_or(0, |m| m + 1);
-            let tool_env = tools::ToolEnv { cwd: &ctx.cwd, permission_mode: ctx.permission_mode, edit: ctx.preset.edit, evidence: ctx.evidence.as_ref().map(|e| (e, &events)), builds: Some(&ctx.builds), live: None, env: &ctx.env };
+            let tool_env = tools::ToolEnv { cwd: &ctx.cwd, permission_mode: ctx.permission_mode, edit: ctx.preset.edit, evidence: ctx.evidence.as_ref().map(|e| (e, &events)), builds: Some(&ctx.builds), live: None, env: &ctx.env, jobs: ctx.jobs.as_deref().map(|j| (j, ctx.session_id.as_str())) };
             for (made, response) in (first_response..).take(MAX_STEPS).enumerate() {
                 if *ctx.cancel.borrow() {
                     return Ok(TurnEnd::Interrupted);
@@ -767,8 +767,10 @@ mod tests {
     /// The ceiling for a toolset whose `apply_patch` is a freeform grammar
     /// tool: the JSON budget plus the grammar (about 125 tokens) with
     /// headroom. Ticket 10 measured 1,617 with a long working directory;
-    /// `ask_user` brings it to 1,766.
-    const FREEFORM_CONTEXT_TOKENS: u64 = 1825;
+    /// `ask_user` brings it to 1,766. Background jobs' `bash_output`,
+    /// `kill_bash` and `run_in_background` (R-STEER-2), about 115 more, bring
+    /// it to 1,918.
+    const FREEFORM_CONTEXT_TOKENS: u64 = 1925;
 
     /// The ceiling with no MCP servers, which is what the bench measures:
     /// `context.tokens` in budgets.toml was raised to 1,625 for the two MCP
@@ -776,7 +778,9 @@ mod tests {
     /// 1,500 it had before, so that headroom is MCP's alone. `ask_user`
     /// raised both by 175 (1,641 for gpt, its largest); the `subagent`
     /// tool's `isolation` field (WT3) takes 29 of what was left (1,670).
-    const BASE_CONTEXT_TOKENS: u64 = 1675;
+    /// Background jobs (R-STEER-2) add `bash_output` (51), `kill_bash` (44)
+    /// and `bash`'s `run_in_background` (about 20): 1,793 for gpt.
+    const BASE_CONTEXT_TOKENS: u64 = 1800;
 
     fn freeform_or(ts: &Toolset) -> bool {
         tools::definitions(ts).iter().any(|d| d.grammar.is_some())

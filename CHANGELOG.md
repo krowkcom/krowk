@@ -9,6 +9,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **Background commands.** The agent can run a command in the background
+  (`bash` with `run_in_background`) and keep working: a dev server, a long
+  test run, a build. It reads the output later with `bash_output` and stops
+  the command with `kill_bash`. When one ends, the agent is told at its next
+  step. A command runs the way it would in the foreground, in the sandbox
+  when there is one. Up to 8 run at once per session, and they stop when
+  krowk's host does. The status line shows `[N background]` while any run.
+
 ### Changed
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now

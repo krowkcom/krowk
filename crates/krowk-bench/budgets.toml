@@ -432,8 +432,11 @@ unit = "tokens"
 # which this bench runs, does not carry it and measures 1,472 still; the unit
 # tests hold every preset with it. The `subagent` tool's `isolation` field
 # (worktrees WT3) is 29 more: 1,670 with no MCP servers (gpt), 1,798 with
-# them, and about 1,501 for this bench.
-max = 1800
+# them, and about 1,501 for this bench. Background jobs (R-STEER-2) add
+# `bash_output` and `kill_bash` and `bash`'s `run_in_background`, about 115
+# tokens the design pins: 1,793 with no MCP servers (gpt), 1,921 with them,
+# and about 1,616 for this bench, so this is raised to 1,925.
+max = 1925
 runs = 1
 status = "enforced"
 

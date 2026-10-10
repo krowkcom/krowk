@@ -455,7 +455,7 @@ fn head_prompt(path: &Path, cwd: &Path) -> Option<String> {
         _ => return None,
     }
     lines.take(HEAD_LINES).filter_map(|l| serde_json::from_str::<LogEvent>(&l).ok()).find_map(|ev| match ev.body {
-        LogBody::ItemCompleted { item: Item::UserText { text, .. }, .. } if !text.starts_with(crate::todo::REMINDER) => Some(text),
+        LogBody::ItemCompleted { item: Item::UserText { text, .. }, .. } if !text.starts_with(crate::todo::REMINDER) && !text.starts_with(crate::jobs::NOTE) => Some(text),
         _ => None,
     })
 }

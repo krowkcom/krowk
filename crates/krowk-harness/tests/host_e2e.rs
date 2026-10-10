@@ -215,7 +215,7 @@ fn assert_context_records(dir: &Path, m: &mock::Mock) {
     let ctx: Vec<ContextRecord> = std::fs::read_to_string(dir.join(log::CONTEXT_FILE)).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(ctx.len(), 2);
     assert_eq!(ctx[0].system, seen_system(m));
-    assert_eq!(ctx[0].tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["read", "write", "str_replace", "bash", "grep", "glob", "todo_write", "publish", "subagent"]);
+    assert_eq!(ctx[0].tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["read", "write", "str_replace", "bash", "bash_output", "kill_bash", "grep", "glob", "todo_write", "publish", "subagent"]);
     assert_eq!(ctx[0].toolset, "claude");
     assert!(ctx[0].system_tokens > 0 && ctx[0].tools_tokens > ctx[0].system_tokens, "{} {}", ctx[0].system_tokens, ctx[0].tools_tokens);
     let context_schema = schema("context-record.schema.json");
@@ -250,13 +250,13 @@ fn r_tool_2_the_recorded_tools_carry_each_model_familys_edit_tool_and_toolset_ov
         let dir = log::sessions_dir(&home.env()).unwrap().join(&r.session_id);
         let ctx: ContextRecord = serde_json::from_str(std::fs::read_to_string(dir.join(log::CONTEXT_FILE)).unwrap().lines().next().unwrap()).unwrap();
         assert_eq!(ctx.toolset, *preset, "{model} {toolset:?}");
-        assert_eq!(ctx.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["read", "write", edit, "bash", "grep", "glob", "todo_write", "publish", "subagent"], "{model} {toolset:?}");
+        assert_eq!(ctx.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["read", "write", edit, "bash", "bash_output", "kill_bash", "grep", "glob", "todo_write", "publish", "subagent"], "{model} {toolset:?}");
         assert!(ctx.system.contains(&format!("Change existing files with {edit};")), "the system prompt names the edit tool");
         // No grammar tool on the Messages API: apply_patch is a JSON function there.
         assert!(ctx.tools.iter().all(|t| t.grammar.is_none() && t.input_schema["type"] == "object"));
         let seen = m.seen.lock().unwrap();
         let sent: Vec<&str> = seen[n].body["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(sent, ["read", "write", edit, "bash", "grep", "glob", "todo_write", "publish", "subagent"], "what was recorded is what was sent");
+        assert_eq!(sent, ["read", "write", edit, "bash", "bash_output", "kill_bash", "grep", "glob", "todo_write", "publish", "subagent"], "what was recorded is what was sent");
     }
     // A toolset that does not exist is refused before any session is made.
     let mut out = Vec::new();
@@ -538,4 +538,64 @@ fn an_image_sent_with_a_prompt_is_kept_beside_the_log_and_reaches_the_model() {
     let content = &seen[0].body["messages"][0]["content"];
     assert_eq!(content[1]["text"], "[Image #1]");
     assert_eq!(content[2]["source"]["data"], data.as_str(), "{content}");
+}
+
+/// The last message of a request, as JSON text.
+fn last_message(m: &mock::Mock, n: usize) -> String {
+    m.seen.lock().unwrap()[n].body["messages"].as_array().unwrap().last().unwrap().to_string()
+}
+
+/// R-STEER-2: a command started in the background is answered at once; a
+/// job that ends while the turn runs reaches the model as a note at its next
+/// call, logged where it landed; and `bash_output` reads what it printed.
+#[test]
+fn r_steer_2_a_background_job_answers_at_once_and_its_end_reaches_the_next_call() {
+    let m = mock::serve(|_, n| {
+        mock::Reply::sse(&match n {
+            0 => mock::tool_use("t1", "bash", &serde_json::json!({"command": "sleep 1; echo hi", "run_in_background": true})),
+            1 => mock::tool_use("t2", "bash", &serde_json::json!({"command": "sleep 2"})),
+            2 => mock::tool_use("t3", "bash_output", &serde_json::json!({"id": "b1"})),
+            _ => mock::text_stream("done"),
+        })
+    });
+    let home = Home::new("bg-job", &m.url);
+    let started = std::time::Instant::now();
+    let (lines, result) = home.run_as("run it in the background", None, "claude-sonnet-4-6", None, PermissionMode::BypassPermissions);
+    assert_eq!(result.status, TurnStatus::Completed, "{result:?}");
+    let tools: Vec<String> = m.seen.lock().unwrap()[0].body["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+    let bash = tools.iter().position(|t| t == "bash").unwrap();
+    assert_eq!(tools[bash + 1..bash + 3], ["bash_output", "kill_bash"], "offered after bash: {tools:?}");
+    let first = last_message(&m, 1);
+    assert!(first.contains("started background job b1"), "{first}");
+    let noted = last_message(&m, 2);
+    assert!(noted.contains("<background-done id=\\\"b1\\\" status=\\\"exited 0\\\">\\nhi\\n</background-done>"), "the note, read at the next call: {noted}");
+    let read = last_message(&m, 3);
+    assert!(read.contains("hi\\nexited 0"), "{read}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    // Logged where it landed: after the call it ended during.
+    let items: Vec<Item> = lines.iter().filter_map(|l| if let StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item, .. }, .. }) = l { Some(item.clone()) } else { None }).collect();
+    let note = items.iter().position(|i| matches!(i, Item::UserText { text, .. } if text.starts_with("<background-done"))).expect("logged");
+    assert!(matches!(&items[note - 1], Item::ToolResult { output, .. } if output.contains("exit code 0")), "{items:?}");
+}
+
+/// R-STEER-2: `kill_bash` stops a running job, and the job says so.
+#[test]
+fn r_steer_2_kill_bash_stops_a_running_job() {
+    let m = mock::serve(|_, n| {
+        mock::Reply::sse(&match n {
+            0 => mock::tool_use("t1", "bash", &serde_json::json!({"command": "sleep 30", "run_in_background": true})),
+            1 => mock::tool_use("t2", "kill_bash", &serde_json::json!({"id": "b1"})),
+            2 => mock::tool_use("t3", "bash", &serde_json::json!({"command": "sleep 0.5"})),
+            3 => mock::tool_use("t4", "bash_output", &serde_json::json!({"id": "b1"})),
+            _ => mock::text_stream("done"),
+        })
+    });
+    let home = Home::new("bg-kill", &m.url);
+    let started = std::time::Instant::now();
+    let (_, result) = home.run_as("start and stop it", None, "claude-sonnet-4-6", None, PermissionMode::BypassPermissions);
+    assert_eq!(result.status, TurnStatus::Completed);
+    assert!(last_message(&m, 2).contains("stopped background job b1"));
+    let read = last_message(&m, 4);
+    assert!(read.contains("killed"), "{read}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "not the 30 s it would have run");
 }

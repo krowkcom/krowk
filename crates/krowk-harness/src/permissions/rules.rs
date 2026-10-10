@@ -104,6 +104,8 @@ pub fn canonical(tool: &str) -> String {
         "skill" => "Skill",
         "task" => "Task",
         "publish" => "Publish",
+        "bash_output" => "BashOutput",
+        "kill_bash" => "KillShell",
         "mcp" => "Mcp",
         _ => return tool.to_string(),
     }

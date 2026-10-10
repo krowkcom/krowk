@@ -1392,6 +1392,29 @@
           ]
         },
         {
+          "description": "How many background jobs and background children the session has\nrunning (R-STEER-2, R-STEER-3), each time it changes: during a turn\nand between turns alike, to a host's watchers (`Host::watch`).",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "running": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "background"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "running"
+          ]
+        },
+        {
           "description": "A backend began a turn nobody prompted — Claude Code answering a\nbackground agent that finished — and it waits for `continue`. Sent\nto a host's watchers, between turns.",
           "type": "object",
           "properties": {
