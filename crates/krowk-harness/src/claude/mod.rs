@@ -1182,11 +1182,9 @@ impl Proc {
                     };
                     match msg["type"].as_str() {
                         Some("control_request") => self.answer(&msg, ask, events, &ctx.cancel).await?,
-                        // The interrupt's receipt: once acknowledged, the result
-                        // is waited for the full grace.
                         Some("control_response") => {
-                            if receipted(&msg, &mut receipt) {
-                                deadline = Some(tokio::time::Instant::now() + INTERRUPT_GRACE);
+                            if let Some(o) = receipted(&msg, &mut receipt, &mut grace, &mut deadline) {
+                                break o;
                             }
                         }
                         _ => {
@@ -1216,12 +1214,10 @@ impl Proc {
     }
 
     /// A line of the conversation: its agents kept, its items sent on, and
-    /// a replayed steer logged where it landed. A turn that begins, or a
-    /// steer replayed, ends the wait for one (`grace`).
+    /// a replayed steer logged where it landed, which ends the wait for the
+    /// turn that reads it (`grace`). An `init` alone does not: Claude Code
+    /// sends some that no turn follows.
     async fn conversation(&mut self, msg: &Value, t: &mut Translator, events: &Events, grace: &mut Option<(tokio::time::Instant, stream::Outcome)>) -> Result<(), EngineError> {
-        if msg["type"] == "system" && msg["subtype"] == "init" {
-            *grace = None;
-        }
         if let Some(agents) = self.track(msg) {
             let _ = events.send(EngineEvent::BackendAgents { agents }).await;
         }
@@ -1561,14 +1557,18 @@ impl Proc {
 }
 
 
-/// Whether `msg` answers the interrupt (`receipt`), which is then no longer
-/// waited on.
-fn receipted(msg: &Value, receipt: &mut Option<String>) -> bool {
+/// When `msg` answers the interrupt (`receipt`): once acknowledged, the
+/// result is waited for the full grace (`deadline`). Between a result and
+/// the turn that reads the steering (`grace`), no other result is coming,
+/// since the interrupt cancelled that turn's input: the turn ends at the
+/// result it had, returned.
+fn receipted(msg: &Value, receipt: &mut Option<String>, grace: &mut Option<(tokio::time::Instant, stream::Outcome)>, deadline: &mut Option<tokio::time::Instant>) -> Option<stream::Outcome> {
     if receipt.is_none() || msg.pointer("/response/request_id").and_then(Value::as_str) != receipt.as_deref() {
-        return false;
+        return None;
     }
     *receipt = None;
-    true
+    *deadline = Some(tokio::time::Instant::now() + INTERRUPT_GRACE);
+    grace.take().map(|(_, o)| o)
 }
 
 /// Why a turn Claude Code ended without success failed.
