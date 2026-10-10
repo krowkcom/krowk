@@ -36,9 +36,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 ### Changed
 
 - **A synced session keeps playing when a newer host sends something
-  unknown.** A device following a session, or a client of krowk's host,
-  skips a line it does not understand and shows the rest, where it used to
-  drop the whole batch.
+  unknown.** A device following a session skips a line it does not
+  understand and shows the rest, where it used to drop the whole batch.
 - **A message you send while a command or subagents run reaches the agent
   within seconds.** A long build or test run, or a batch of subagents, used
   to hold your message until the slowest finished, sometimes for minutes.
