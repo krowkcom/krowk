@@ -966,6 +966,18 @@ impl Shared {
         Ok(plan)
     }
 
+    /// Where the agents a session's backend runs are written, as children
+    /// of its turn's session: none on krowk's own loop.
+    fn kids(&self, session_id: &str, plan: &TurnPlan) -> Option<Kids> {
+        let ran_by = match plan.wire {
+            WireApi::ClaudeCode => RanBy::Claude,
+            WireApi::CodexAppServer => RanBy::Codex,
+            _ => return None,
+        };
+        let state = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|b| b.children.clone())?;
+        Some(Kids { state, sessions_dir: self.cfg.sessions_dir.clone(), cwd: plan.cwd.clone(), krowk_version: self.cfg.krowk_version.clone(), ran_by, permission_mode: plan.permission_mode, effort: plan.effort })
+    }
+
     /// A subagent (R-SUB-1): a child session of the parent turn `spawn`
     /// describes, answering its tool call `call_id` with one turn on
     /// `model`, as the session `child` in the directory `cwd` — the
@@ -1057,16 +1069,7 @@ impl Shared {
         let engine = plan.engine.clone();
         let model = plan.model.clone();
         let session_dir = plan.log.dir.clone();
-        // The agents the session's backend runs, written as its children.
-        let ran_by = match plan.wire {
-            WireApi::ClaudeCode => Some(RanBy::Claude),
-            WireApi::CodexAppServer => Some(RanBy::Codex),
-            _ => None,
-        };
-        let kids = ran_by.and_then(|ran_by| {
-            let state = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get(&session_id).map(|b| b.children.clone())?;
-            Some(Kids { state, sessions_dir: self.cfg.sessions_dir.clone(), cwd: plan.cwd.clone(), krowk_version: self.cfg.krowk_version.clone(), ran_by, permission_mode: plan.permission_mode, effort: plan.effort })
-        });
+        let kids = self.kids(&session_id, &plan);
         let mut w = Writer {
             log: &mut plan.log,
             out: &out,
@@ -1875,6 +1878,17 @@ impl Writer<'_> {
         Ok(())
     }
 
+    /// An event of one of the backend's agents, into its child session.
+    async fn backend_child(&mut self, ev: EngineEvent, session_id: &str, model: &ModelRef) -> Result<(), EngineError> {
+        match ev {
+            EngineEvent::BackendChildStarted { task_id, call_id, description, agent, .. } => self.child_started(session_id, task_id, call_id, description, agent, model).await?,
+            EngineEvent::BackendChild { task_id, event } => self.child_event(session_id, &task_id, *event).await,
+            EngineEvent::BackendChildEnded { task_id, status, error } => self.child_ended(session_id, &task_id, status, error).await,
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// A backend's agent started (R-SUB-7): its child session, made as a
     /// native child's is — its root naming the session, the session's
     /// `subagent.started` naming it, with what ran it and the backend's id
@@ -2052,14 +2066,10 @@ impl Writer<'_> {
             EngineEvent::Unprompted { .. } => {}
             // A backend's agent's own conversation, into its child session;
             // its calls are metered as `SubagentResponse` above, once.
-            EngineEvent::BackendChildStarted { task_id, call_id, description, agent, .. } => self.child_started(session_id, task_id, call_id, description, agent, model).await?,
-            EngineEvent::BackendChild { task_id, event } => self.child_event(session_id, &task_id, *event).await,
-            EngineEvent::BackendChildEnded { task_id, status, error } => self.child_ended(session_id, &task_id, status, error).await,
+            ev @ (EngineEvent::BackendChildStarted { .. } | EngineEvent::BackendChild { .. } | EngineEvent::BackendChildEnded { .. }) => self.backend_child(ev, session_id, model).await?,
             EngineEvent::Handoff { how, from_instance, summarized_turns, recent_turns, fell_back, text } => {
                 self.log(LogBody::BackendHandoff { turn_id, how, from_instance, summarized_turns, recent_turns, fell_back }).await?;
-                if !text.is_empty() {
-                    self.handoff = Some(text);
-                }
+                self.handoff = Some(text).filter(|t| !t.is_empty()).or(self.handoff.take());
             }
         }
         Ok(())
