@@ -96,6 +96,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
   also in a session you resumed. Esc goes back to the overlay with the same
   subagent selected, and the conversation behind it has kept up with
   everything that happened meanwhile.
+- **See whether a subagent is stuck, move between subagents and stop one,
+  from inside its transcript.** The top line of a subagent's transcript
+  now shows its description, its agent, what ran it (krowk, Claude Code or
+  Codex) and where it stands, kept up to date: running for how long, the
+  tool it has been in for over 10 s, `quiet` once nothing has come from it
+  for 30 s, and `⚠ waiting on you` while it waits on your approval or
+  answer. ← and → open the subagent before or after it in the Ctrl-G
+  list, and Esc goes back to the list with that one selected. `x` stops
+  this subagent alone: the top line says `stopping…`, then `interrupted`,
+  while the others and the turn carry on. When it can't be stopped — it
+  has already finished, or Claude Code or Codex runs it and krowk can't
+  stop one of their agents alone yet — the bottom line says why, as `x` in
+  the Ctrl-G list now does too, instead of nothing happening.
 
 ### Changed
 
