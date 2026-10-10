@@ -1400,7 +1400,7 @@
           ]
         },
         {
-          "description": "The agents a backend runs by itself for the session (Claude Code's\n`Agent` tool, often in the background), whole, each time the list\nchanges — during a turn and between turns alike. Between turns it\nreaches a host's watchers (`Host::watch`) rather than a turn's\nstream. Empty when the last one has finished.",
+          "description": "The agents a backend runs by itself for the session (Claude Code's\n`Agent` tool, often in the background), whole, each time the list\nchanges — during a turn and between turns alike. Between turns it\nreaches a host's watchers (`Host::watch`) rather than a turn's\nstream. Empty when the last one has finished.\n\n**Deprecated** (R-SUB-7): a backend's agent is a child session of\nits own, named by the session's `subagent.started` — whose\n`backendId` is the `taskId` here — and followed by `subagent.status`.\nStill sent for clients older than those; a client that reads them\ncounts and shows the child, not this frame's entry for it.",
           "type": "object",
           "properties": {
             "sessionId": {

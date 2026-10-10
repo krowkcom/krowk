@@ -930,6 +930,12 @@ pub enum LiveEvent {
     /// changes — during a turn and between turns alike. Between turns it
     /// reaches a host's watchers (`Host::watch`) rather than a turn's
     /// stream. Empty when the last one has finished.
+    ///
+    /// **Deprecated** (R-SUB-7): a backend's agent is a child session of
+    /// its own, named by the session's `subagent.started` — whose
+    /// `backendId` is the `taskId` here — and followed by `subagent.status`.
+    /// Still sent for clients older than those; a client that reads them
+    /// counts and shows the child, not this frame's entry for it.
     #[serde(rename = "backend.agents")]
     BackendAgents { session_id: String, agents: Vec<BackendAgent> },
     /// How many background jobs and background children the session has
