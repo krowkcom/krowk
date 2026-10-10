@@ -18,6 +18,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   step. A command runs the way it would in the foreground, in the sandbox
   when there is one. Up to 8 run at once per session, and they stop when
   krowk's host does. The status line shows `[N background]` while any run.
+- **Background subagents.** The agent can start a subagent in the
+  background (`subagent` with `run_in_background`) and go on working while
+  it runs. Its summary reaches the agent at its next step. The turn doesn't
+  finish while a background subagent still runs: the agent waits for it,
+  reads what it found, and answers. Interrupting the turn stops them too.
+  They count in `[N background]`.
 
 ### Changed
 

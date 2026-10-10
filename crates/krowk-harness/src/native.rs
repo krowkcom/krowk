@@ -365,6 +365,12 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
                             continue;
                         }
                     }
+                    // Background children hold the turn open (R-STEER-3):
+                    // their notes, or the person's steering, then the model
+                    // is called again.
+                    if wait_background(&ctx).await {
+                        return Ok(TurnEnd::Interrupted);
+                    }
                     // An answer that crossed a steer in flight is not the
                     // end: the model has not read it yet.
                     if ctx.steers.close_if_empty() {
@@ -433,6 +439,20 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
             ))
         })
     }
+}
+
+/// Waits while the turn's background children run and nothing is queued
+/// for the model; true when the turn was interrupted meanwhile.
+async fn wait_background(ctx: &TurnContext) -> bool {
+    let Some(s) = &ctx.subagents else { return false };
+    let mut cancel = ctx.cancel.clone();
+    while s.background() > 0 && ctx.steers.is_empty() {
+        tokio::select! {
+            _ = ctx.steers.arrival() => {}
+            _ = crate::engine::cancelled(&mut cancel) => return true,
+        }
+    }
+    false
 }
 
 /// How many times a `Stop` hook may send the model back to work in one turn.
@@ -769,8 +789,9 @@ mod tests {
     /// headroom. Ticket 10 measured 1,617 with a long working directory;
     /// `ask_user` brings it to 1,766. Background jobs' `bash_output`,
     /// `kill_bash` and `run_in_background` (R-STEER-2), about 115 more, bring
-    /// it to 1,918.
-    const FREEFORM_CONTEXT_TOKENS: u64 = 1925;
+    /// it to 1,918; `subagent`'s `run_in_background` (R-STEER-3), 27 more,
+    /// to 1,945.
+    const FREEFORM_CONTEXT_TOKENS: u64 = 1950;
 
     /// The ceiling with no MCP servers, which is what the bench measures:
     /// `context.tokens` in budgets.toml was raised to 1,625 for the two MCP
@@ -780,7 +801,8 @@ mod tests {
     /// tool's `isolation` field (WT3) takes 29 of what was left (1,670).
     /// Background jobs (R-STEER-2) add `bash_output` (51), `kill_bash` (44)
     /// and `bash`'s `run_in_background` (about 20): 1,793 for gpt.
-    const BASE_CONTEXT_TOKENS: u64 = 1800;
+    /// `subagent`'s `run_in_background` (R-STEER-3) is 27 more: 1,820.
+    const BASE_CONTEXT_TOKENS: u64 = 1825;
 
     fn freeform_or(ts: &Toolset) -> bool {
         tools::definitions(ts).iter().any(|d| d.grammar.is_some())

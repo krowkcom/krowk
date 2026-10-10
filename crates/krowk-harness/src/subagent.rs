@@ -149,6 +149,9 @@ pub struct SubagentInput {
     #[serde(default)]
     #[schemars(with = "Isolation")]
     pub isolation: Option<Isolation>,
+    /// Answered at once; its summary arrives when it ends.
+    #[serde(default)]
+    pub run_in_background: Option<bool>,
 }
 
 /// Where a subagent works: the parent's directory, or a git worktree of
@@ -326,6 +329,9 @@ pub(crate) struct ParentTurn {
     pub grants: crate::permissions::SessionGrants,
     /// Flips when the parent's turn is interrupted: every child follows.
     pub cancel: watch::Receiver<bool>,
+    /// The parent turn's steer queue, where a background child's summary
+    /// goes as a note (R-STEER-3).
+    pub steers: crate::engine::Steers,
 }
 
 pub(crate) struct Spawn {
@@ -341,6 +347,10 @@ pub(crate) struct Spawn {
     /// had no price: part of the parent turn's cost, as a backend's own
     /// subagents are part of theirs.
     pub spent: std::sync::Mutex<(f64, bool)>,
+    /// The children started in the background, by session id, and how
+    /// many of them still run: the turn does not complete while one does.
+    pub background: std::sync::Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
+    pub running: std::sync::atomic::AtomicUsize,
 }
 
 impl Subagents {
@@ -373,17 +383,95 @@ impl Subagents {
 
     /// One `subagent` call: the child's final summary, or why there is none.
     /// `item_id` is the call's result, where a wait for an agent slot is said.
+    /// In the background (R-STEER-3) the call is answered at once with the
+    /// child's session id, and its summary is a note for the parent's next
+    /// model call.
     pub async fn run(&self, call_id: &str, item_id: &str, input: &Value, events: &Events) -> (String, bool) {
+        if input.get("run_in_background").and_then(Value::as_bool) == Some(true) {
+            return self.background_child(call_id, item_id, input, events);
+        }
+        let (text, failed, _) = self.run_as(call_id, item_id, input, events, krowk_store::new_id()).await;
+        (text, failed)
+    }
+
+    /// How many of the turn's background children still run.
+    pub fn background(&self) -> usize {
+        self.0.running.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Once the parent's turn is over: each background child still running
+    /// is interrupted, as an interrupt of the parent would, and waited for,
+    /// so its log ends with its turn.
+    pub async fn settle_background(&self) {
+        let children: Vec<(String, tokio::task::JoinHandle<()>)> = std::mem::take(&mut *self.0.background.lock().unwrap_or_else(|e| e.into_inner()));
+        let host = &self.0.host;
+        for (child, task) in children {
+            if !task.is_finished() {
+                host.interrupt(&child);
+            }
+            let _ = task.await;
+        }
+    }
+
+    /// A `subagent` call run in the background: checked as far as it can be
+    /// before it starts, then started on a task of its own.
+    fn background_child(&self, call_id: &str, item_id: &str, input: &Value, events: &Events) -> (String, bool) {
+        if let Err(why) = self.check(input) {
+            return (why, true);
+        }
+        let child = krowk_store::new_id();
+        let me = self.clone();
+        let (call_id, item_id, input, events, id) = (call_id.to_string(), item_id.to_string(), input.clone(), events.clone(), child.clone());
+        let spawn = &self.0;
+        spawn.running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        spawn.host.jobs.agent_started(&spawn.parent.session_id);
+        let task = tokio::spawn(async move {
+            let (text, _, status) = me.run_as(&call_id, &item_id, &input, &events, id.clone()).await;
+            let p = &me.0.parent;
+            // The note first, then the count: a turn that sees none running
+            // has the note waiting already.
+            let note = crate::engine::Steer::note(crate::jobs::note_of(&id, status, &format!("{}\n", text.trim_end())));
+            if let Err(note) = p.steers.push(note) {
+                me.0.host.jobs.hold(&p.session_id, note);
+            }
+            me.0.running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            me.0.host.jobs.agent_ended(&p.session_id);
+        });
+        spawn.background.lock().unwrap_or_else(|e| e.into_inner()).push((child.clone(), task));
+        (format!("started background agent {child}"), false)
+    }
+
+    /// Whether a call could start: its input, its prompt, its agent and
+    /// its model.
+    fn check(&self, input: &Value) -> Result<(), String> {
+        let input = SubagentInput::deserialize(input).map_err(|e| format!("invalid input for subagent: {e}"))?;
+        if input.prompt.trim().is_empty() {
+            return Err("subagent needs a prompt: the whole task, since the subagent sees nothing else".into());
+        }
+        let def = self.resolve(input.agent.as_deref())?;
+        let (registry, p) = (self.0.host.registry(), &self.0.parent);
+        choose_model(def.and_then(|d| d.model.as_deref()), registry.subagents.model.as_deref(), &p.model, &p.provider, &registry, self.0.host.cfg.agents.models.as_ref()).map(drop).map_err(|e| format!("the subagent could not start: {e}"))
+    }
+
+    /// One `subagent` call as the child `child`: its answer, whether it is
+    /// an error, and how its turn ended (`completed`, `interrupted`,
+    /// `failed`), for a background child's note.
+    async fn run_as(&self, call_id: &str, item_id: &str, input: &Value, events: &Events, child: String) -> (String, bool, &'static str) {
+        let (text, failed, status) = self.run_child(call_id, item_id, input, events, child).await;
+        (text, failed, status.unwrap_or("failed"))
+    }
+
+    async fn run_child(&self, call_id: &str, item_id: &str, input: &Value, events: &Events, child: String) -> (String, bool, Option<&'static str>) {
         let input = match SubagentInput::deserialize(input) {
             Ok(i) => i,
-            Err(e) => return (format!("invalid input for subagent: {e}"), true),
+            Err(e) => return (format!("invalid input for subagent: {e}"), true, None),
         };
         if input.prompt.trim().is_empty() {
-            return ("subagent needs a prompt: the whole task, since the subagent sees nothing else".into(), true);
+            return ("subagent needs a prompt: the whole task, since the subagent sees nothing else".into(), true, None);
         }
         let def = match self.resolve(input.agent.as_deref()) {
             Ok(d) => d,
-            Err(why) => return (why, true),
+            Err(why) => return (why, true, None),
         };
         let host = &self.0.host;
         let cfg = &host.cfg;
@@ -392,7 +480,7 @@ impl Subagents {
         let choose = |asked| choose_model(asked, registry.subagents.model.as_deref(), &p.model, &p.provider, &registry, cfg.agents.models.as_ref());
         let model = match choose(def.and_then(|d| d.model.as_deref())) {
             Ok(m) => m,
-            Err(e) => return (format!("the subagent could not start: {e}"), true),
+            Err(e) => return (format!("the subagent could not start: {e}"), true, None),
         };
         // A repository's definition is someone else's words until the
         // repository is trusted: it may pick a model of the parent's own
@@ -405,7 +493,7 @@ impl Subagents {
             Some(d) if d.project && model.instance != p.model.instance && !cfg.permissions.trusted.as_ref().is_some_and(|t| t(&crate::trust::root(&p.cwd))) => {
                 let fallback = match choose(None) {
                     Ok(m) => m,
-                    Err(e) => return (format!("the subagent could not start: {e}"), true),
+                    Err(e) => return (format!("the subagent could not start: {e}"), true, None),
                 };
                 let _ = events
                     .send(crate::engine::EngineEvent::Notice {
@@ -433,9 +521,9 @@ impl Subagents {
         let _permit = tokio::select! {
             permit = self.0.gate.clone().acquire_owned() => match permit {
                 Ok(permit) => permit,
-                Err(_) => return ("not run: the turn is ending".into(), true),
+                Err(_) => return ("not run: the turn is ending".into(), true, None),
             },
-            _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true),
+            _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true, Some("interrupted")),
         };
         // Then one of the machine's agent slots, held until it ends — or
         // its parent's, when the parent holds one (`--worktree`): a parent
@@ -451,19 +539,18 @@ impl Subagents {
         let _slot = match &registry.agents {
             Some(pool) if !host.cfg.session.on_agent_slot => tokio::select! {
                 taken = pool.take(waiting) => taken.ok().map(|(slot, _)| slot),
-                _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true),
+                _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true, Some("interrupted")),
             },
             _ => None,
         };
         // Its session id is chosen now: a worktree is locked in its name
         // before the session exists, and the session records it as its
         // directory.
-        let child = krowk_store::new_id();
         let (worktree, prompt) = match input.isolation.or(def.and_then(|d| d.isolation)).unwrap_or_default() {
             Isolation::None => (None, input.prompt.clone()),
             Isolation::Worktree => match self.worktree(&child).await {
                 Ok((w, notes)) => (Some(w), crate::worktree::first_prompt(&notes, &input.prompt)),
-                Err(why) => return (why, true),
+                Err(why) => return (why, true, None),
             },
         };
         let cwd = worktree.as_ref().map_or_else(|| p.cwd.clone(), |w| w.worktree.path.clone());
@@ -476,14 +563,7 @@ impl Subagents {
                 None => spent.1 = true,
             }
         }
-        let (text, failed) = answer(result);
-        match worktree {
-            Some(w) => match finish(w, p.cwd.clone()).await {
-                Some(note) => (format!("{text}\n\n{note}"), failed),
-                None => (text, failed),
-            },
-            None => (text, failed),
-        }
+        concluded(result, worktree, p.cwd.clone()).await
     }
 
     /// A worktree of the parent's repository for the child `child`, readied
@@ -522,6 +602,25 @@ impl Subagents {
             Ok(Err(e)) => Err(format!("the subagent's worktree could not be made: {e}")),
             Err(e) => Err(format!("the subagent's worktree could not be made: {e}")),
         }
+    }
+}
+
+/// What a child's call is answered with once its turn is over — its
+/// summary, or why there is none, and what became of its worktree — and
+/// how the turn ended.
+async fn concluded(result: Result<crate::protocol::RunResult, crate::engine::EngineError>, worktree: Option<InUse>, to: PathBuf) -> (String, bool, Option<&'static str>) {
+    let status = Some(match &result {
+        Ok(r) if r.status == TurnStatus::Completed => "completed",
+        Ok(r) if r.status == TurnStatus::Interrupted => "interrupted",
+        _ => "failed",
+    });
+    let (text, failed) = answer(result);
+    match worktree {
+        Some(w) => match finish(w, to).await {
+            Some(note) => (format!("{text}\n\n{note}"), failed, status),
+            None => (text, failed, status),
+        },
+        None => (text, failed, status),
     }
 }
 

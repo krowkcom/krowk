@@ -466,6 +466,13 @@ impl Shared {
     /// one, except a session's with a turn running, or with work of the
     /// backend's own under way — agents it runs, a turn it began. Swept
     /// when a prompt arrives, so an idle host costs nothing to keep tidy.
+    /// Interrupts `session`'s running turn, if it has one.
+    pub(crate) fn interrupt(&self, session: &str) {
+        if let Some(r) = self.running.lock().unwrap_or_else(|e| e.into_inner()).get(session) {
+            let _ = r.cancel.send(true);
+        }
+    }
+
     async fn evict_idle(&self) {
         let running: Vec<String> = self.running.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
         let idle: Vec<Arc<dyn Engine>> = {
@@ -1100,11 +1107,14 @@ impl Shared {
                     compat: compat.clone(),
                     grants: plan.grants.clone(),
                     cancel: cancel.clone(),
+                    steers: steers.clone(),
                 },
                 out: out.clone(),
                 gate: Arc::new(Semaphore::new(self.registry().subagents.max_parallel())),
                 defs,
                 spent: std::sync::Mutex::new((0.0, false)),
+                background: std::sync::Mutex::new(Vec::new()),
+                running: std::sync::atomic::AtomicUsize::new(0),
             };
             (Subagents(Arc::new(spawn)), problems)
         });
@@ -1173,6 +1183,11 @@ impl Shared {
             },
             Err(e) => Err(e),
         };
+        // Background children still running end with the turn that
+        // started them, their logs closed (R-STEER-3).
+        if let Some(s) = &spawned {
+            s.settle_background().await;
+        }
         // A backend turn the budget interrupted failed on it, whatever the
         // vendor made of the interrupt.
         let outcome = match tally.tripped.take() {
