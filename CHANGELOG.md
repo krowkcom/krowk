@@ -42,11 +42,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   inline screen it fills the terminal without switching to the alternate
   screen, so tmux, SSH and phone terminals still get only plain output.
   Nothing is printed into your scrollback while it is open, and when it
-  closes the conversation and the prompt are where they were. Lines that
-  arrive in the meantime are printed then. In the fullscreen screen it
-  takes the conversation's area and leaves the prompt and status line
-  where they are, and the conversation comes back scrolled where you left
-  it. Resizing the window while it is open redraws it at the new size. One
+  closes, or you quit krowk or suspend it with Ctrl-Z while it is open, the
+  conversation and the prompt are where they were. Lines that arrive in
+  the meantime are printed then. While an approval waits on you, the view
+  says so: in the inline screen Esc closes it to show the approval, and in
+  the fullscreen screen you answer it below as usual. In the fullscreen
+  screen it takes the conversation's area and leaves the prompt and status
+  line where they are, and the conversation comes back scrolled where you
+  left it. Resizing the window while it is open redraws it at the new size. One
   limit in the inline screen: making the window narrower than the view's
   lines pushes some of its rows into scrollback on terminals that reflow
   (tmux among them). You can't open it yet: the Agents overlay opens it
