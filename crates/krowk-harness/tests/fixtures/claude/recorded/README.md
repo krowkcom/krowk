@@ -3,10 +3,11 @@
 Live recordings of `claude` 2.1.289 (Claude Code), for what the fake
 `claude` beside them can't settle: what Claude Code itself does. Each line is
 `>> ` and what was written to its stdin, or `<< ` and what it printed, in the
-order they happened. In the steering recordings (`steer_*.txt`) the control protocol (`initialize`, the `krowk` MCP
-server's handshake, `can_use_tool` answered allow) is left out, and so are the
-`init` line's skills, plugins and memory path; the session id is
-`{{SESSION}}` and the working directory `{{CWD}}`, as in the scenarios.
+order they happened. In the steering recordings (`steer_*.txt`) the control
+protocol (`initialize`, the `krowk` MCP server's handshake, `can_use_tool`
+answered allow) is left out, and so are the `init` line's skills, plugins
+and memory path; the session id is `{{SESSION}}` and the working directory
+`{{CWD}}`, as in the scenarios.
 
 The command, krowk's flags plus `--replay-user-messages`:
 

@@ -169,7 +169,7 @@ fn r_sub_7_r_sub_8_parallel_agents_announce_their_call_and_prompt_before_any_lin
             assert!(a[k].as_str().is_some_and(|s| !s.is_empty()), "task_started.{k}: {a}");
         }
         assert_eq!(a["spawn_depth"], 1, "{a}");
-        assert_eq!(a["is_backgrounded"], false, "two Agent calls in one message run in the foreground: {a}");
+        assert_eq!(a["is_backgrounded"], false, "in this recording both run in the foreground: {a}");
         assert!(a.get("owned_by_subagent").is_none(), "{a}");
         let call = a["tool_use_id"].as_str().unwrap();
         let own = child_lines(&lines, call);

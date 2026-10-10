@@ -43,11 +43,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   returns. It appears in the conversation where the model read it. One sent
   as the model writes its last answer is read right after, in the same
   turn. Interrupting still gives back what Claude Code never read.
-- **Groundwork for watching Claude Code's agents.** krowk's tests now hold a
-  recording of what Claude Code says about the agents it starts: each
-  one's prompt and own messages, its progress, the approvals it asks for,
-  and stopping one agent while the others go on. Nothing changes in krowk
-  yet; showing each agent's work and stopping one from the TUI build on it.
+- **Groundwork for watching and stopping each Claude Code agent from the
+  TUI.** Seeing what each agent Claude Code starts is doing, and stopping
+  one while the others go on, is on its way. It is built against a
+  recording of a real Claude Code run: each agent's prompt and messages,
+  its progress, the approvals it asks for, and one agent stopped alone.
+  How krowk runs Claude Code today is unchanged.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on
