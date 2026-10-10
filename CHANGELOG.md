@@ -63,7 +63,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   lists its earlier subagents the same way. `x` on a finished one says
   there is nothing to interrupt. The area above the prompt still shows
   only the subagents running now, and a subagent line in the conversation
-  now says how long an interrupted or failed one ran.
+  now says how long an interrupted or failed one ran, also in a resumed
+  session, where it used to say `running 0.0s`.
 
 ### Changed
 
