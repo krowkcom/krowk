@@ -38,6 +38,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   scroll up and again once you're back at the bottom. It keeps the last
   20,000 lines and says when earlier ones are not shown. Nothing you see
   changes yet: the main conversation is printed exactly as before.
+- **A device attached to a synced session can stop one of its
+  subagents.** A device following the session with `krowk sync attach`
+  (and the apps, later) may now interrupt a subagent of that session by
+  the subagent's id, and only that subagent stops: the rest of the turn
+  goes on. It reaches only the subagents the session's own log started,
+  and only to stop them: another session, an id the device made up, or
+  steering or answering a subagent is refused as before. It works whichever
+  directory the subagent's session was started from.
 - **The subagent view can take the whole screen and give it back.** In the
   inline screen it fills the terminal without switching to the alternate
   screen, so tmux, SSH and phone terminals still get only plain output.
