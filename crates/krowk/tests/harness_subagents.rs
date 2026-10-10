@@ -876,7 +876,8 @@ fn r_sub_9_a_child_that_runs_a_tool_and_waits_on_an_approval_says_each_change_in
             // The model's call came back: its tokens.
             ("running", None, None),
             ("running", Some("bash"), None),
-            ("running", Some("bash"), Some("approval")),
+            // Waiting on the person, it is in no call yet.
+            ("running", None, Some("approval")),
             ("running", Some("bash"), None),
             ("running", None, None),
             ("running", None, None),
@@ -884,9 +885,10 @@ fn r_sub_9_a_child_that_runs_a_tool_and_waits_on_an_approval_says_each_change_in
         ],
         "{s:?}"
     );
-    // The call's start is a time, kept while it runs; the tokens only grow.
+    // The call's start is a time, moved to when the approval was answered:
+    // the wait was not the tool's. The tokens only grow.
     let started: Vec<i64> = s.iter().filter_map(|(_, t, _, _)| t.as_ref().map(|(_, at)| *at)).collect();
-    assert!(started.iter().all(|t| *t == started[0] && *t > 0), "{started:?}");
+    assert!(started.len() == 2 && started[0] > 0 && started[1] >= started[0], "{started:?}");
     assert!(s.windows(2).all(|w| w[0].3 <= w[1].3) && s.last().unwrap().3 > 0, "{s:?}");
     // Its link says krowk ran it.
     let started = b.log(&r.session_id).into_iter().find(|e| e["type"] == "subagent.started").unwrap();
