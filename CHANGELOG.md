@@ -27,13 +27,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
-- **A message you send while a command runs reaches the agent within
-  seconds.** A long build or test run used to hold your message until it
-  finished, sometimes for minutes. Now, once the command has run two
-  seconds with your message waiting, krowk moves it to the background
-  without stopping it: the agent reads what it printed so far and your
-  message at once, and can check on the command later with `bash_output`.
-  A command that finishes within two seconds just finishes.
+- **A message you send while a command or subagents run reaches the agent
+  within seconds.** A long build or test run, or a batch of subagents, used
+  to hold your message until the slowest finished, sometimes for minutes.
+  Now, once it has run two seconds with your message waiting, krowk moves
+  it to the background without stopping it. The agent reads your message
+  at once, with what the command printed so far or what the subagents
+  already finished. It can check on the command later with `bash_output`,
+  and each subagent still running reports back when it's done. Anything
+  that finishes within two seconds just finishes.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on
