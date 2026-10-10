@@ -266,6 +266,11 @@ impl World {
 
     /// The host daemon of the machine `env` describes, its home `home`.
     fn serve_env(&self, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static, home: &str) {
+        self.serve_with(env, home, InstancesConfig::default());
+    }
+
+    /// `serve_env`, the daemon's instances `instances`.
+    fn serve_with(&self, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static, home: &str, instances: InstancesConfig) {
         let socket = daemon::socket(&env).unwrap();
         let credentials = self.root.join(home).join(".krowk/credentials.json");
         let wait = env.clone();
@@ -274,7 +279,7 @@ impl World {
                 Ok(HostConfig {
                     sessions_dir: log::sessions_dir(&env).unwrap(),
                     cwd: cwd.to_path_buf(),
-                    registry: Registry::resolve(&InstancesConfig::default(), &env),
+                    registry: Registry::resolve(&instances, &env),
                     krowk_version: "test".into(),
                     pricer: Arc::new(|_, _, _| None),
                     catalog: Arc::new(|_, _| None),
@@ -1779,4 +1784,88 @@ async fn r_sub_12_a_viewer_stops_the_sessions_own_child_and_nothing_else() {
     let walk = |head: &String| log::branch(&events, head).iter().map(|e| e.id.clone()).collect::<Vec<_>>();
     assert_eq!(walk(parent_ids.last().unwrap()), parent_ids, "the parent's replay is its own log's, the child's events left out");
     assert_eq!(walk(child_ids.last().unwrap()), child_ids, "the child is rebuilt from the parent's chunks");
+}
+
+/// The fake `claude` beside the Claude Code tests, as an instance whose
+/// sessions play `scenario`: logged in, with a config directory of its own.
+fn fake_claude(w: &World, scenario: &Path) -> InstancesConfig {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude");
+    let bin = w.root.join("bin/claude");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(fixtures.join("fake-claude"), &bin).unwrap();
+    let config = w.root.join("claude-config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("fake-login"), "").unwrap();
+    let mut env = std::collections::BTreeMap::new();
+    env.insert("FAKE_CLAUDE_SCENARIO".to_string(), scenario.display().to_string());
+    let kind = krowk_harness::instances::InstanceKind::ClaudeCode { binary: Some(bin.display().to_string()), config_dir: Some(config.display().to_string()), env, args: Vec::new(), api_key_env: None, effort: None };
+    InstancesConfig { instances: [("claude".to_string(), kind)].into_iter().collect(), ..Default::default() }
+}
+
+/// R-SUB-6, R-SUB-7: Claude Code's agents, written as child sessions, ride
+/// the parent's chunks as krowk's own children do — the recorded parallel
+/// turn's two agents, on a session A's bridge syncs: every event of each
+/// child's log is in the chunks, the parent's replay is its own log's, and
+/// each child is rebuilt from them, its prompt first. What moves a session
+/// moves them with it.
+#[tokio::test]
+async fn r_sub_6_claude_codes_agents_ride_the_parents_chunks_as_krowks_own_children_do() {
+    let w = World::new("claude-kids");
+    let a = w.device("machine-a");
+    // A first turn to sync from, then the recording's turn after `init`,
+    // its control lines and replayed prompt left out.
+    let raw = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/recorded/agents_parallel.txt")).unwrap();
+    let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let mut scenario = String::from("{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-6\",\"id\":\"msg_hi\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"parent_tool_use_id\":null,\"session_id\":\"{{SESSION}}\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"hello\",\"session_id\":\"{{SESSION}}\"}\n---\n");
+    for m in printed[init + 1..].iter().filter(|m| !matches!(m["type"].as_str(), Some("control_request" | "control_response")) && m["isReplay"] != true) {
+        scenario.push_str(&format!("{m}\n"));
+    }
+    let path = w.root.join("agents.jsonl");
+    std::fs::write(&path, scenario).unwrap();
+    w.serve_with(w.env(), "home", fake_claude(&w, &path));
+    let d = w.daemon().await;
+    let claude = krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let run = async |c: Command| {
+        let (tx, mut rx) = mpsc::channel(4096);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        d.execute(c, tx).await.unwrap().unwrap()
+    };
+    let first = run(ask(None, "say hello")).await;
+    assert_eq!(first.status, krowk_harness::protocol::TurnStatus::Completed, "{first:?}");
+    let session = first.session_id;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let second = run(ask(Some(&session), "run two agents")).await;
+    assert_eq!(second.status, krowk_harness::protocol::TurnStatus::Completed, "{second:?}");
+
+    let parent = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    let kids: Vec<String> = parent.iter().filter_map(|e| match &e.body {
+        krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id, ran_by: krowk_harness::protocol::RanBy::Claude, backend_id: Some(_), .. } => Some(subagent_session_id.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(kids.len(), 2, "two children of Claude Code's");
+    let parent_ids = log_ids(&w, &session);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let rest = loop {
+        let rest = at_rest(&w, &session).await.unwrap_or_default();
+        if ids_of(&rest, &session) == parent_ids && kids.iter().all(|k| ids_of(&rest, k) == log_ids(&w, k)) {
+            break rest;
+        }
+        assert!(Instant::now() < deadline, "the chunks hold {:?} of the parent's {parent_ids:?}, and of the children {:?}", ids_of(&rest, &session), kids.iter().map(|k| (ids_of(&rest, k).len(), log_ids(&w, k).len())).collect::<Vec<_>>());
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let events: Vec<krowk_harness::protocol::LogEvent> = rest.iter().map(|e| serde_json::from_value(e.clone()).unwrap()).collect();
+    let walk = |head: &String| log::branch(&events, head).iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+    assert_eq!(walk(parent_ids.last().unwrap()), parent_ids, "the parent's replay is its own log's, the children's events left out");
+    for k in &kids {
+        let ids = log_ids(&w, k);
+        assert_eq!(walk(ids.last().unwrap()), ids, "{k} is rebuilt from the parent's chunks");
+        let first_item = events.iter().filter(|e| e.session_id == *k).find_map(|e| match &e.body {
+            krowk_harness::protocol::LogBody::ItemCompleted { item, .. } => Some(item.clone()),
+            _ => None,
+        });
+        assert!(matches!(first_item, Some(krowk_harness::protocol::Item::UserText { .. })), "its prompt first: {first_item:?}");
+    }
 }

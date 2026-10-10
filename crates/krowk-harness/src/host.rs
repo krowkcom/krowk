@@ -16,7 +16,7 @@ use crate::budget::Budget;
 use crate::agents;
 use crate::engine::{BoxFuture, Engine, EngineError, EngineEvent, Events, HistoryItem, Idle, Steer, Steers, TurnContext, TurnEnd};
 use crate::images;
-use crate::subagent::{AgentRun, AgentsConfig, ChildWatch, ParentTurn, Spawn, Subagents};
+use crate::subagent::{AgentRun, AgentsConfig, BackendChildren, ChildWatch, OpenChild, ParentTurn, Spawn, Subagents};
 use crate::evidence::{Evidence, Publisher};
 use crate::instances::{Asked, Auth, Registry, Resolved};
 use crate::oauth;
@@ -175,6 +175,9 @@ struct Backend {
     /// Its instance's generation when it was read (`Instances::changed`):
     /// one made before a connection or sign-out changed it is not reused.
     generation: u64,
+    /// The agents its process runs, as the session's children (R-SUB-7):
+    /// they live as long as the process does.
+    children: Arc<tokio::sync::Mutex<BackendChildren>>,
 }
 
 /// A backend process kept this long without a turn is let go: a long-lived
@@ -496,7 +499,7 @@ impl Shared {
             WireApi::CodexAppServer => Arc::new(CodexEngine::new(instance.clone(), &self.cfg.krowk_version)?),
             _ => Arc::new(ClaudeEngine::new(instance.clone(), &self.cfg.krowk_version)?.watched(self.teller(session_id))),
         };
-        backends.insert(session_id.to_string(), Backend { instance: instance.name.clone(), engine: e.clone(), used: Instant::now(), generation });
+        backends.insert(session_id.to_string(), Backend { instance: instance.name.clone(), engine: e.clone(), used: Instant::now(), generation, children: Arc::default() });
         Ok(e)
     }
 
@@ -1054,6 +1057,16 @@ impl Shared {
         let engine = plan.engine.clone();
         let model = plan.model.clone();
         let session_dir = plan.log.dir.clone();
+        // The agents the session's backend runs, written as its children.
+        let ran_by = match plan.wire {
+            WireApi::ClaudeCode => Some(RanBy::Claude),
+            WireApi::CodexAppServer => Some(RanBy::Codex),
+            _ => None,
+        };
+        let kids = ran_by.and_then(|ran_by| {
+            let state = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get(&session_id).map(|b| b.children.clone())?;
+            Some(Kids { state, sessions_dir: self.cfg.sessions_dir.clone(), cwd: plan.cwd.clone(), krowk_version: self.cfg.krowk_version.clone(), ran_by, permission_mode: plan.permission_mode, effort: plan.effort })
+        });
         let mut w = Writer {
             log: &mut plan.log,
             out: &out,
@@ -1065,6 +1078,7 @@ impl Shared {
             child: ChildWatch::of(plan.parent.as_ref(), &session_id),
             parent: plan.parent.clone(),
             handoff: None,
+            kids,
         };
         w.begin(plan.rolling.as_ref(), &session_id, &model, LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: engine.provider().into(), wire_api: engine.wire_api(), permission_mode: plan.permission_mode, effort: plan.effort }).await?;
         let mut history = std::mem::take(&mut plan.past.items);
@@ -1647,6 +1661,29 @@ struct Writer<'a> {
     /// What a backend was sent to bring it up to date, for the turn's
     /// context record.
     handoff: Option<String>,
+    /// Where the backend's own agents are written, as children of the
+    /// session (R-SUB-7): none for krowk's own loop.
+    kids: Option<Kids>,
+}
+
+/// What a backend's agent is written with, as a child session of the
+/// turn's: its process's children, and what its log's records say of it —
+/// the session's directory and mode, what ran it.
+struct Kids {
+    state: Arc<tokio::sync::Mutex<BackendChildren>>,
+    sessions_dir: PathBuf,
+    cwd: PathBuf,
+    krowk_version: String,
+    ran_by: RanBy,
+    permission_mode: PermissionMode,
+    effort: Option<Effort>,
+}
+
+/// Appends to a child's log, then sends: the order `Writer::log` keeps.
+async fn put(log: &mut SessionLog, out: &mpsc::Sender<StreamLine>, body: LogBody) -> Result<(), LogError> {
+    let ev = log.append_off(body).await?;
+    let _ = out.send(StreamLine::Log(ev)).await;
+    Ok(())
 }
 
 impl Writer<'_> {
@@ -1838,6 +1875,98 @@ impl Writer<'_> {
         Ok(())
     }
 
+    /// A backend's agent started (R-SUB-7): its child session, made as a
+    /// native child's is — its root naming the session, the session's
+    /// `subagent.started` naming it, with what ran it and the backend's id
+    /// for it — then its one turn begun. Its prompt is its first item, the
+    /// next event (R-SUB-8). A child log that cannot be made is said, and
+    /// the parent's turn goes on without it.
+    async fn child_started(&mut self, session_id: &str, task_id: String, call_id: String, description: String, agent: Option<String>, model: &ModelRef) -> Result<(), EngineError> {
+        let Some(k) = &self.kids else { return Ok(()) };
+        let child = krowk_store::new_id();
+        let (mut log, root) = match SessionLog::create_child_off(&k.sessions_dir, &child, &k.cwd, &k.krowk_version, Some(session_id), agent.as_deref()).await {
+            Ok(made) => made,
+            Err(e) => {
+                self.child_lost(session_id, &description, e).await;
+                return Ok(());
+            }
+        };
+        let _ = self.out.send(StreamLine::Log(root)).await;
+        let (state, ran_by, permission_mode, effort) = (k.state.clone(), k.ran_by, k.permission_mode, k.effort);
+        self.log(LogBody::SubagentStarted { turn_id: self.turn_id.clone(), call_id, subagent_session_id: child.clone(), description: description.clone(), agent, model: model.clone(), ran_by, backend_id: Some(task_id.clone()) }).await?;
+        let turn_id = krowk_store::new_id();
+        let begun = LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: self.provider.clone(), wire_api: self.wire, permission_mode, effort };
+        if let Err(e) = put(&mut log, self.out, begun).await {
+            self.child_lost(session_id, &description, e).await;
+            return Ok(());
+        }
+        let watch = ChildWatch::new(&child);
+        self.live(watch.frame(ChildState::Running)).await;
+        let mut st = state.lock().await;
+        st.sessions.insert(task_id.clone(), child);
+        st.open.insert(task_id, OpenChild { log, turn_id, watch, started: Instant::now() });
+        Ok(())
+    }
+
+    /// One event of a backend's running agent, as its own turn's: an item
+    /// streamed under its session id, a finished one or a response into
+    /// its log, and its `subagent.status` when its state changed.
+    async fn child_event(&self, session_id: &str, task_id: &str, ev: EngineEvent) {
+        let Some(k) = &self.kids else { return };
+        let mut st = k.state.lock().await;
+        let Some(c) = st.open.get_mut(task_id) else { return };
+        let changed = c.watch.note(&ev, krowk_store::now_ms());
+        let (child, turn_id) = (c.log.session_id.clone(), c.turn_id.clone());
+        let logged = match ev {
+            EngineEvent::ItemStarted { item_id, kind } => {
+                self.live(LiveEvent::ItemStarted { session_id: child, turn_id, item_id, item: kind }).await;
+                Ok(())
+            }
+            EngineEvent::ItemDelta { item_id, delta } => {
+                self.live(LiveEvent::ItemDelta { session_id: child, turn_id, item_id, delta }).await;
+                Ok(())
+            }
+            EngineEvent::ItemCompleted { item_id, item } => put(&mut c.log, self.out, LogBody::ItemCompleted { turn_id, item_id, item }).await,
+            EngineEvent::ResponseCompleted { response_id, model, usage, stop_reason, item_ids } => put(&mut c.log, self.out, LogBody::ResponseCompleted { turn_id, response_id, model, usage, stop_reason, item_ids }).await,
+            _ => Ok(()),
+        };
+        if let Err(e) = logged {
+            let gone = st.open.remove(task_id);
+            drop(st);
+            self.child_lost(session_id, &gone.map(|c| c.log.session_id).unwrap_or_default(), e).await;
+            return;
+        }
+        if changed {
+            self.live(c.watch.frame(ChildState::Running)).await;
+        }
+    }
+
+    /// A backend's agent ended: its turn completed as it ended — with no
+    /// usage, its spend being the parent's — and its last frame.
+    async fn child_ended(&self, session_id: &str, task_id: &str, status: ChildState, error: Option<String>) {
+        let Some(k) = &self.kids else { return };
+        let Some(mut c) = k.state.lock().await.open.remove(task_id) else { return };
+        let ended = match status {
+            ChildState::Done => TurnStatus::Completed,
+            ChildState::Interrupted => TurnStatus::Interrupted,
+            ChildState::Running | ChildState::Failed => TurnStatus::Failed,
+        };
+        let error = error.map(|message| crate::protocol::ErrorInfo { code: "agent_ended".into(), message, http_status: None, resets_at_ms: None });
+        let completed = LogBody::TurnCompleted { turn_id: c.turn_id.clone(), status: ended, usage: Usage::default(), duration_ms: c.started.elapsed().as_millis() as u64, error, reported_cost_usd: None };
+        match put(&mut c.log, self.out, completed).await {
+            Ok(()) => self.live(c.watch.frame(status)).await,
+            Err(e) => self.child_lost(session_id, &c.log.session_id, e).await,
+        }
+        c.log.sync_behind();
+    }
+
+    /// A backend's agent whose log could not be written: said, and the
+    /// rest of it not followed.
+    async fn child_lost(&self, session_id: &str, which: &str, e: LogError) {
+        let text = format!("a backend agent's log ({which}) could not be written, and the rest of what it does is not kept: {}", e.message());
+        self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text }).await;
+    }
+
     async fn handle(&mut self, ev: EngineEvent, session_id: &str, tally: &mut Tally, texts: &mut HashMap<String, String>, model: &ModelRef, budget: &Budget) -> Result<(), EngineError> {
         // A subagent's frame follows the line it reports on, once per
         // change of its state, never per delta.
@@ -1921,9 +2050,11 @@ impl Writer<'_> {
             }
             // Said between turns only, through the backend's `Idle`.
             EngineEvent::Unprompted { .. } => {}
-            // A backend's agent's own conversation: not written anywhere
-            // yet, its calls metered as `SubagentResponse` above.
-            EngineEvent::BackendChildStarted { .. } | EngineEvent::BackendChild { .. } | EngineEvent::BackendChildEnded { .. } => {}
+            // A backend's agent's own conversation, into its child session;
+            // its calls are metered as `SubagentResponse` above, once.
+            EngineEvent::BackendChildStarted { task_id, call_id, description, agent, .. } => self.child_started(session_id, task_id, call_id, description, agent, model).await?,
+            EngineEvent::BackendChild { task_id, event } => self.child_event(session_id, &task_id, *event).await,
+            EngineEvent::BackendChildEnded { task_id, status, error } => self.child_ended(session_id, &task_id, status, error).await,
             EngineEvent::Handoff { how, from_instance, summarized_turns, recent_turns, fell_back, text } => {
                 self.log(LogBody::BackendHandoff { turn_id, how, from_instance, summarized_turns, recent_turns, fell_back }).await?;
                 if !text.is_empty() {

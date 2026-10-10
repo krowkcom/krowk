@@ -782,7 +782,11 @@ impl ChildWatch {
     /// The watch of a turn's session when the turn is a subagent's: one
     /// with a parent.
     pub fn of<P>(parent: Option<&P>, session_id: &str) -> Option<ChildWatch> {
-        parent.map(|_| ChildWatch { session_id: session_id.into(), named: HashMap::new(), tools: Vec::new(), waiting: Vec::new(), last_event_ms: krowk_store::now_ms(), tokens: 0 })
+        parent.map(|_| ChildWatch::new(session_id))
+    }
+
+    pub fn new(session_id: &str) -> ChildWatch {
+        ChildWatch { session_id: session_id.into(), named: HashMap::new(), tools: Vec::new(), waiting: Vec::new(), last_event_ms: krowk_store::now_ms(), tokens: 0 }
     }
 
     /// Takes in what the child's engine said at `now`: true when its state
@@ -844,6 +848,28 @@ impl ChildWatch {
             tokens: self.tokens,
         }
     }
+}
+
+/// A backend's own agents as the session's children (R-SUB-7): each one's
+/// child session, by the backend's id for it, and the logs of those still
+/// running. Kept with the session's backend process, not a turn: an agent
+/// run in the background outlives the turn that started it, and its lines
+/// between turns are for this same writer to take (the idle loop's, not
+/// built yet); a stop and an approval are routed by `sessions`.
+#[derive(Default)]
+pub(crate) struct BackendChildren {
+    /// Every agent the process ran, its `backendId` to its child session.
+    pub sessions: HashMap<String, String>,
+    /// The ones still running, by `backendId`.
+    pub open: HashMap<String, OpenChild>,
+}
+
+/// A backend's agent still running: its log, its one turn, and its state.
+pub(crate) struct OpenChild {
+    pub log: crate::log::SessionLog,
+    pub turn_id: String,
+    pub watch: ChildWatch,
+    pub started: std::time::Instant,
 }
 
 #[cfg(test)]
