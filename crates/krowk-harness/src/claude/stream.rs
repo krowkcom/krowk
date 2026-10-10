@@ -16,8 +16,9 @@
 //! logged: the log reads call, response, result, as a native turn does.
 //!
 //! Lines of a subagent (`parent_tool_use_id` set) belong to the subagent's
-//! own conversation, which Claude Code keeps; the turn logs the `Task` call
-//! and its result. What each of the subagent's calls cost is still the
+//! own conversation, not the turn's (`super::children` makes them the
+//! agent's own events, each agent with a `Translator::child` of its own);
+//! the turn logs the `Agent` call and its result. What each of the subagent's calls cost is still the
 //! session's spend, so the usage of its `assistant` messages is reported,
 //! once per message, as `SubagentResponse` — by a `Meter` the process
 //! keeps, since a background agent's calls go on between turns. `result`
@@ -107,6 +108,9 @@ pub struct Translator {
     pub meter: Meter,
     /// What Claude Code last said of the account's rate limit.
     pub limit: Option<LimitStatus>,
+    /// One agent's conversation (`children`), not the session's: its lines
+    /// are the items, whole, and none of them is metered here.
+    child: bool,
 }
 
 /// A `rate_limit_event`'s `rate_limit_info`, as krowk's limit status:
@@ -142,10 +146,26 @@ fn retag(ev: EngineEvent) -> EngineEvent {
 }
 
 impl Translator {
+    /// The translator of one agent's own lines (`parent_tool_use_id` its
+    /// `Agent` call): whole messages only, since Claude Code forwards no
+    /// agent's stream, and nothing metered, since the session's translator
+    /// meters every agent's calls already.
+    pub fn child() -> Translator {
+        Translator { child: true, ..Translator::default() }
+    }
+
     /// Folds one stream-json line in; returns what the host should be told.
     /// Control messages are the engine's, and never reach here.
     pub fn apply(&mut self, msg: &Value) -> Result<Vec<EngineEvent>, EngineError> {
         let mut out = Vec::new();
+        if self.child {
+            match str_of(msg, "type") {
+                "assistant" => self.assistant(msg.get("message").unwrap_or(&Value::Null), &mut out),
+                "user" => self.results(msg, &mut out),
+                _ => {}
+            }
+            return Ok(out);
+        }
         if msg.get("parent_tool_use_id").is_some_and(|p| !p.is_null()) {
             if str_of(msg, "type") == "assistant" {
                 self.meter.see(msg, Some(&mut out));
@@ -156,20 +176,7 @@ impl Translator {
             "system" if str_of(msg, "subtype") == "init" => self.init = Some(init(msg)),
             "stream_event" => self.stream_event(msg.get("event").unwrap_or(&Value::Null), &mut out)?,
             "assistant" => self.assistant(msg.get("message").unwrap_or(&Value::Null), &mut out),
-            "user" => {
-                // A turn's own tool results; a prompt echoed back, or Claude
-                // Code's "[Request interrupted by user]" note, is not one.
-                let content = msg.pointer("/message/content").and_then(Value::as_array).cloned().unwrap_or_default();
-                let results: Vec<EngineEvent> = content.iter().filter(|b| str_of(b, "type") == "tool_result").flat_map(tool_result).collect();
-                if self.whole.is_some() {
-                    self.close_whole(&mut out);
-                }
-                if self.decoder.is_some() {
-                    self.held.extend(results);
-                } else {
-                    out.extend(results);
-                }
-            }
+            "user" => self.results(msg, &mut out),
             "result" => {
                 self.finish(&mut out);
                 if let Some(usd) = msg.get("total_cost_usd").and_then(Value::as_f64) {
@@ -198,6 +205,45 @@ impl Translator {
             _ => {}
         }
         Ok(out)
+    }
+
+    /// A `user` line: the tool results it holds. A prompt echoed back, an
+    /// agent's prompt, or Claude Code's "[Request interrupted by user]"
+    /// note is not one.
+    fn results(&mut self, msg: &Value, out: &mut Vec<EngineEvent>) {
+        let content = msg.pointer("/message/content").and_then(Value::as_array).cloned().unwrap_or_default();
+        let results: Vec<EngineEvent> = content.iter().filter(|b| str_of(b, "type") == "tool_result").flat_map(tool_result).collect();
+        if self.whole.is_some() {
+            self.close_whole(out);
+        }
+        if self.decoder.is_some() {
+            self.held.extend(results);
+        } else {
+            out.extend(results);
+        }
+    }
+
+    /// A grandchild's line, in its depth-1 ancestor's transcript: its tool
+    /// calls and their results, as that agent's, with no response of their
+    /// own — its words are its own agent's, which its call's result hands
+    /// back. The ancestor's message stays open: its next line, or another
+    /// message, closes it, as for any whole message.
+    pub fn aside(&mut self, msg: &Value) -> Vec<EngineEvent> {
+        let mut out = Vec::new();
+        let content = msg.pointer("/message/content").and_then(Value::as_array).cloned().unwrap_or_default();
+        for b in &content {
+            match str_of(b, "type") {
+                "tool_use" => {
+                    let Some(item) = block(b) else { continue };
+                    let item_id = krowk_store::new_id();
+                    out.push(EngineEvent::ItemStarted { item_id: item_id.clone(), kind: item.kind() });
+                    out.push(EngineEvent::ItemCompleted { item_id, item });
+                }
+                "tool_result" => out.extend(tool_result(b)),
+                _ => {}
+            }
+        }
+        out
     }
 
     fn stream_event(&mut self, ev: &Value, out: &mut Vec<EngineEvent>) -> Result<(), EngineError> {

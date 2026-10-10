@@ -36,7 +36,7 @@
 //!
 //! | subtype | direction | what krowk does |
 //! |---|---|---|
-//! | `initialize` | krowk → claude | first, on every process, registering the paste guard as a `PreToolUse` hook on `Bash`; its answer lists the `models`, which is how in-place model switching is detected |
+//! | `initialize` | krowk → claude | first, on every process, registering the paste guard as a `PreToolUse` hook on `Bash` and asking for agents' own text (`forwardSubagentText`); its answer lists the `models`, which is how in-place model switching is detected |
 //! | `can_use_tool` | claude → krowk | judged by krowk's permission evaluator (`crate::permissions`), asking the person when a client is attached; `AskUserQuestion` is the person's to answer (`crate::ask`), its answers returned in `updatedInput` |
 //! | `hook_callback` | claude → krowk | the paste guard (`crate::paste_guard`): a `gh` post carrying a bare krowk card link is denied, whatever the mode and the person's allow rules |
 //! | `mcp_message` | claude → krowk | a JSON-RPC message for the `krowk` MCP server, answered by `crate::bridge` |
@@ -51,7 +51,8 @@
 //! turns an idle loop holds it: it answers what Claude Code asks under the
 //! last turn's permissions (nobody is there to be asked), keeps the list of
 //! agents (`system` `task_started`, `task_updated`, `task_notification`,
-//! `background_tasks_changed`), meters their calls, and stops at the first
+//! `background_tasks_changed`), meters their calls, reports their own
+//! conversations (`children`), and stops at the first
 //! line of a turn Claude Code began, which then waits — `pending`, and
 //! `turn.unprompted` to the host's watchers — until the host runs it as a
 //! turn of the session (`Command::Continue`). A prompt never ends at such a
@@ -87,6 +88,7 @@
 //! holds every source file and every run to that.
 
 pub mod auth;
+pub mod children;
 pub mod stream;
 
 use crate::bridge::{self, BridgeEnv};
@@ -100,6 +102,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use children::Children;
 use stream::{Init, Meter, Translator};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
@@ -152,6 +155,23 @@ pub fn folded(reason: &str) -> String {
 
 /// Why a turn began by itself, when no agent's end says so.
 const BEGAN: &str = "it did not say why";
+
+/// Why an agent still running ended: its process went.
+const LET_GO: &str = "Claude Code was let go, and the agent stopped with it";
+const RESTARTED: &str = "Claude Code was started again for a turn's settings, and the agent stopped with it";
+const SHUT_DOWN: &str = "Claude Code was shut down with the session, and the agent with it";
+const FAILED: &str = "Claude Code was stopped after its turn failed, and the agent with it";
+const INTERRUPTED: &str = "Claude Code was stopped when the turn was interrupted, and the agent with it";
+const EXITED: &str = "Claude Code exited, and the agent with it";
+
+/// Why the agents of a process `settle` lets go of ended: how its turn did.
+fn stopped_why(outcome: &Result<TurnEnd, EngineError>) -> &'static str {
+    match outcome {
+        Err(_) => FAILED,
+        Ok(TurnEnd::Interrupted) => INTERRUPTED,
+        Ok(TurnEnd::Completed) => EXITED,
+    }
+}
 
 /// The launch settings a process is bound to. A turn that needs others —
 /// plan mode, another effort, or another model where `set_model` is not
@@ -396,6 +416,8 @@ struct Status {
     agents: Mutex<Vec<Tracked>>,
     pending: Mutex<Option<Pending>>,
     meter: Mutex<Meter>,
+    /// The agents' own conversations, as their events (R-SUB-7).
+    children: Mutex<Children>,
 }
 
 #[derive(Debug, Clone)]
@@ -418,15 +440,34 @@ impl Status {
         self.meter.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The process is gone, and all of it with it: the list, when it had
-    /// any, to report empty.
-    fn clear(&self) -> Option<Vec<BackendAgent>> {
+    fn children(&self) -> std::sync::MutexGuard<'_, Children> {
+        self.children.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `clear`, with what it ends told to `tell`: whether anything was.
+    fn clear_telling(&self, why: &str, tell: Option<&Idle>) -> bool {
+        let evs = self.clear(why);
+        let any = !evs.is_empty();
+        if let Some(tell) = tell {
+            for ev in evs {
+                tell(ev);
+            }
+        }
+        any
+    }
+
+    /// The process is gone, and all of it with it: what to report — the
+    /// list, when it had any, empty, and each agent's end, saying `why` —
+    /// or nothing when no agent ran.
+    fn clear(&self, why: &str) -> Vec<EngineEvent> {
         *self.pending() = None;
+        let mut out = self.children().gone(why);
         let mut a = self.agents();
-        (!a.is_empty()).then(|| {
+        if !a.is_empty() {
             a.clear();
-            Vec::new()
-        })
+            out.insert(0, EngineEvent::BackendAgents { agents: Vec::new() });
+        }
+        out
     }
 }
 
@@ -474,10 +515,9 @@ impl Drop for ClaudeEngine {
             i.task.abort();
         }
         let waiting = self.status.pending().is_some();
-        let stopped = self.status.clear();
+        let stopped = self.status.clear_telling(LET_GO, self.tell.as_ref());
         if let Some(tell) = &self.tell {
-            if let Some(agents) = stopped {
-                tell(EngineEvent::BackendAgents { agents });
+            if stopped {
                 tell(EngineEvent::Notice { text: format!("Claude Code on {} was let go, and the background agents it ran stopped with it", self.instance.name) });
             } else if waiting {
                 tell(EngineEvent::Notice { text: format!("Claude Code on {} was let go before the turn it began by itself ran", self.instance.name) });
@@ -544,8 +584,9 @@ impl Engine for ClaudeEngine {
                 if !switched && let Some(old) = slot.take() {
                     // Its agents, and a turn it began, go with it; the
                     // thread keeps what they did.
-                    if let Some(agents) = self.status.clear() {
-                        let _ = events.send(EngineEvent::BackendAgents { agents }).await;
+                    let stopped = self.status.clear(RESTARTED);
+                    if !stopped.is_empty() {
+                        forward(&events, stopped).await;
                         let _ = events.send(EngineEvent::Notice { text: "Claude Code was started again for this turn's settings, and the background agents it ran stopped".into() }).await;
                     }
                     old.shutdown().await;
@@ -591,8 +632,9 @@ impl Engine for ClaudeEngine {
             if let Some(p) = self.proc.lock().await.take() {
                 p.shutdown().await;
             }
-            // Asked for: nothing of it is news to anyone.
-            let _ = self.status.clear();
+            // Asked for, and said: no notice, but each agent still running
+            // ends, so its transcript is closed.
+            self.status.clear_telling(SHUT_DOWN, self.tell.as_ref());
         })
     }
 
@@ -612,9 +654,7 @@ impl ClaudeEngine {
     async fn settle(&self, mut slot: tokio::sync::MutexGuard<'_, Option<Proc>>, outcome: Result<TurnEnd, EngineError>, ask: Answers, events: &Events) -> Result<TurnEnd, EngineError> {
         let Some(p) = slot.as_mut() else { return outcome };
         if outcome.is_err() || !p.alive() {
-            if let Some(agents) = self.status.clear() {
-                let _ = events.send(EngineEvent::BackendAgents { agents }).await;
-            }
+            forward(events, self.status.clear(stopped_why(&outcome))).await;
             if let Some(old) = slot.take() {
                 old.kill().await;
             }
@@ -648,8 +688,8 @@ async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Re
         let Some(msg) = msg else {
             // It exited with nobody asking: the next turn starts another.
             p.exited = true;
-            if let Some(agents) = p.status.clear() {
-                say(EngineEvent::BackendAgents { agents });
+            for ev in p.status.clear(EXITED) {
+                say(ev);
             }
             return;
         };
@@ -668,6 +708,9 @@ async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Re
             _ => {
                 if let Some(agents) = p.track(&msg) {
                     say(EngineEvent::BackendAgents { agents });
+                }
+                for ev in p.status.children().apply(&msg) {
+                    say(ev);
                 }
                 p.idle_line(msg);
                 if !p.begun.is_empty() {
@@ -1013,7 +1056,9 @@ impl Proc {
             unread: Vec::new(),
             cancel_queued: false,
         };
-        let init = p.request(json!({"subtype": "initialize", "hooks": hooks()}), ask, INITIALIZE_TIMEOUT).await?;
+        // An agent's own text is forwarded too, not only its tool calls:
+        // its transcript is a child session's (R-SUB-7).
+        let init = p.request(json!({"subtype": "initialize", "hooks": hooks(), "forwardSubagentText": true}), ask, INITIALIZE_TIMEOUT).await?;
         p.set_model = init.get("models").is_some_and(Value::is_array);
         Ok(p)
     }
@@ -1221,6 +1266,10 @@ impl Proc {
         if let Some(agents) = self.track(msg) {
             let _ = events.send(EngineEvent::BackendAgents { agents }).await;
         }
+        // An agent's events come before the line's own: its end before the
+        // parent's `Agent` call is answered.
+        let children = self.status.children().apply(msg);
+        forward(events, children).await;
         let out = t.apply(msg)?;
         forward(events, out).await;
         if let Some(steer) = self.replayed(msg) {
@@ -1382,6 +1431,8 @@ impl Proc {
             self.finished = before;
         }
         // An agent run in the foreground ends with the turn that ran it.
+        let ended = self.status.children().turn_ended();
+        forward(events, ended).await;
         if let Some(agents) = self.drop_foreground() {
             let _ = events.send(EngineEvent::BackendAgents { agents }).await;
         }
@@ -1447,8 +1498,7 @@ impl Proc {
         let mut done = None;
         match s("subtype") {
             "task_started" => {
-                let own = s("task_type") == "local_agent" && msg["owned_by_subagent"] != true && msg.get("spawn_depth").and_then(Value::as_u64).is_none_or(|d| d <= 1);
-                if own && !id.is_empty() && !agents.iter().any(|t| t.agent.task_id == id) {
+                if children::own(msg) && !id.is_empty() && !agents.iter().any(|t| t.agent.task_id == id) {
                     let agent = BackendAgent { task_id: id.into(), description: s("description").into(), agent: Some(s("subagent_type").to_string()).filter(|a| !a.is_empty()) };
                     agents.push(Tracked { agent, background: msg["is_backgrounded"] == true });
                 }
@@ -1752,6 +1802,25 @@ mod tests {
         assert!(err.contains("settings decide what runs"), "the config directory in another case: {err}");
         assert!(judge(PermissionMode::BypassPermissions, "Write", &json!({"file_path": ".claude/settings.json"}), &[config]).is_ok());
         let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn r_sub_7_a_process_let_go_ends_its_agents_saying_why_whoever_asked() {
+        let status = Status::default();
+        let started = json!({"type": "system", "subtype": "task_started", "task_id": "a1", "tool_use_id": "call_a", "description": "x", "task_type": "local_agent", "spawn_depth": 1, "prompt": "p"});
+        assert!(status.children().apply(&started).len() > 1);
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let keep = told.clone();
+        let tell: Idle = Arc::new(move |ev| keep.lock().unwrap().push(ev));
+        // A shutdown asked for is told too: the transcript is closed.
+        assert!(status.clear_telling(SHUT_DOWN, Some(&tell)));
+        let told = told.lock().unwrap();
+        assert!(matches!(told.last(), Some(EngineEvent::BackendChildEnded { task_id, status: crate::protocol::ChildState::Interrupted, error: Some(e) }) if task_id == "a1" && e == SHUT_DOWN), "{told:?}");
+        assert!(!status.clear_telling(SHUT_DOWN, Some(&tell)), "nothing left to end");
+        // After a turn, the reason is how the turn did.
+        assert_eq!(stopped_why(&Ok(TurnEnd::Interrupted)), INTERRUPTED);
+        assert_eq!(stopped_why(&Ok(TurnEnd::Completed)), EXITED);
+        assert_eq!(stopped_why(&Err(EngineError::new("backend_failed", "x"))), FAILED);
     }
 
     #[test]
