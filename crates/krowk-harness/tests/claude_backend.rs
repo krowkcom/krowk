@@ -1291,3 +1291,25 @@ fn r_steer_1_an_interrupted_turn_hands_back_steering_claude_code_never_read() {
 fn lines_of(log: &str, prefix: &str) -> Vec<String> {
     log.lines().filter_map(|l| l.strip_prefix(prefix)).map(String::from).collect()
 }
+
+/// A Claude Code too old to cancel what it has not read on an interrupt
+/// (no `interrupt_cancel_queued_v1`) is written no steering: it comes back
+/// on the turn's result, as before R-STEER-1.
+#[test]
+fn r_steer_1_a_claude_that_cannot_cancel_steering_is_written_none_and_hands_it_back() {
+    let home = Home::new("steer-old");
+    let dir = home.signed_in("cfg");
+    let mut instance = home.instance(&dir, Some("slow.jsonl"));
+    if let InstanceKind::ClaudeCode { env, .. } = &mut instance {
+        env.insert("FAKE_CLAUDE_CAPABILITIES".into(), r#""interrupt_receipt_v1""#.into());
+    }
+    let host = home.host(vec![("claude", instance)], trust::allow_all());
+    within(Box::pin(async {
+        let started = |lines: &[StreamLine]| lines.iter().any(|l| matches!(l, StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { .. }, .. })));
+        let (_, r) = run_steered(&host, prompt(None, "take your time", "claude/haiku", PermissionMode::Default), STEER, started).await;
+        let r = r.unwrap().unwrap();
+        assert_eq!((r.status, r.unread_steers.as_slice()), (TurnStatus::Completed, [STEER.to_string()].as_slice()));
+        host.shutdown().await;
+    }));
+    assert!(!home.fake_log().contains(STEER), "never written");
+}

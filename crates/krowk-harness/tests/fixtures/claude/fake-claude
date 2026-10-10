@@ -17,6 +17,8 @@
 #   FAKE_CLAUDE_STATUS_DELAY  seconds `auth status` takes to answer
 #   FAKE_CLAUDE_PERMISSION_MODE  the mode init reports, as a settings file
 #                         could make it; the --permission-mode given otherwise
+#   FAKE_CLAUDE_CAPABILITIES  the capabilities init announces, as JSON strings
+#                         joined by commas; an older binary's fewer
 #
 # A scenario is turns separated by lines holding `---`. Each user line from
 # krowk plays the next turn: `system/init` first, then each line of the turn:
@@ -278,7 +280,7 @@ replay() {
 }
 
 init() {
-  emit '{"type":"system","subtype":"init","cwd":"{{CWD}}","session_id":"{{SESSION}}","tools":["Read","Edit","Bash","mcp__krowk__session_info"],"mcp_servers":[{"name":"krowk","status":"connected","source":"sdk"}],"model":"{{MODEL}}","permissionMode":"'$PMODE'","apiKeySource":"'$SOURCE'","claude_code_version":"2.1.280","capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1"]}'
+  emit '{"type":"system","subtype":"init","cwd":"{{CWD}}","session_id":"{{SESSION}}","tools":["Read","Edit","Bash","mcp__krowk__session_info"],"mcp_servers":[{"name":"krowk","status":"connected","source":"sdk"}],"model":"{{MODEL}}","permissionMode":"'$PMODE'","apiKeySource":"'$SOURCE'","claude_code_version":"2.1.280","capabilities":['"${FAKE_CLAUDE_CAPABILITIES-\"interrupt_receipt_v1\",\"interrupt_cancel_queued_v1\"}"']}'
 }
 
 turn() {

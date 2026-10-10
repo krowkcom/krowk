@@ -25,7 +25,9 @@
 //! writes its last answer is read in a turn Claude Code begins by itself
 //! after the `result`, which the krowk turn reads on into, so it does not
 //! complete with steering unread; an interrupt cancels what was not read
-//! (`cancel_queued`), and that goes back on the turn's result.
+//! (`cancel_queued`), and that goes back on the turn's result. Steering is
+//! written only to a binary that announces it can cancel it so
+//! (`interrupt_cancel_queued_v1`); an older one keeps it for the result.
 //!
 //! **The control protocol** rides the same pipes, as `control_request` /
 //! `control_response` lines. It is not publicly documented; the reference is
@@ -125,8 +127,8 @@ const STDERR_TAIL: usize = 4096;
 /// backend does.
 const STEER_POLL: Duration = Duration::from_millis(100);
 /// After a `result` with steering written and not yet replayed, how long
-/// Claude Code has to begin the turn that reads it — at once, as recorded —
-/// before krowk writes it again as that turn's input.
+/// Claude Code has to begin the turn that reads it (at once, as recorded)
+/// before krowk stops waiting and hands that steering back.
 const STEER_GRACE: Duration = Duration::from_secs(10);
 
 /// What a turn's context record says of the system prompt: it is Claude
@@ -847,6 +849,9 @@ struct Proc {
     /// Steering the running turn wrote to stdin that Claude Code has not
     /// replayed yet, oldest first.
     unread: Vec<Sent>,
+    /// Its `init` announced `interrupt_cancel_queued_v1`: an interrupt can
+    /// cancel the steering it has not read, so steering is written to it.
+    cancel_queued: bool,
 }
 
 /// A steer written to Claude Code: the `uuid` its line carried, which a
@@ -1006,6 +1011,7 @@ impl Proc {
             backlog: VecDeque::new(),
             origins: false,
             unread: Vec::new(),
+            cancel_queued: false,
         };
         let init = p.request(json!({"subtype": "initialize", "hooks": hooks()}), ask, INITIALIZE_TIMEOUT).await?;
         p.set_model = init.get("models").is_some_and(Value::is_array);
@@ -1101,14 +1107,12 @@ impl Proc {
         self.unread.clear();
         let r = self.read_turn(prompt, &mut t, ctx, ask, events, b, instance).await;
         *self.status.meter() = std::mem::take(&mut t.meter);
-        // Steering written and never read goes back on the turn's result
-        // when Claude Code will not read it: the process is let go (it
-        // failed, or died). An interrupted one that lives on reads what its
-        // interrupt did not cancel, in a turn it begins by itself.
-        let unread = std::mem::take(&mut self.unread);
-        if r.is_err() || !self.alive() {
-            ctx.steers.put_back(unread.into_iter().map(|s| s.steer).collect());
-        }
+        // Steering written and never replayed goes back on the turn's
+        // result, since Claude Code will not read it: an interrupt cancelled
+        // it (steering is written only where one can), a failed turn's
+        // process is let go, and a turn that completed has none left but
+        // what waited for a turn Claude Code never began.
+        ctx.steers.put_back(std::mem::take(&mut self.unread).into_iter().map(|s| s.steer).collect());
         r
     }
 
@@ -1120,14 +1124,14 @@ impl Proc {
         let (mut queued, mut why, mut owed, mut before) = self.take_begun(prompt.is_some());
         let mut interrupted = false;
         // What `init` announced: an interrupt is acknowledged, and can
-        // cancel the steering not read yet.
-        let (mut receipt_required, mut cancel_queued) = (false, false);
+        // cancel the steering not read yet, so steering is written.
+        let (mut receipt_required, mut cancel_queued) = (false, self.cancel_queued);
         let mut receipt: Option<String> = None;
         let mut deadline: Option<tokio::time::Instant> = None;
         let mut announced = false;
         let mut gone = false;
         let mut drain: Option<tokio::time::Instant> = None;
-        let mut grace: Option<tokio::time::Instant> = None;
+        let mut grace: Option<(tokio::time::Instant, stream::Outcome)> = None;
         let mut poll = tokio::time::interval(STEER_POLL);
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let result = loop {
@@ -1162,7 +1166,11 @@ impl Proc {
                 }
                 // Steering, written as it arrives (R-STEER-1): Claude Code
                 // reads it at its next call, and replays it when it does.
-                _ = poll.tick(), if !interrupted => self.steer(&ctx.steers, &ctx.session_dir, &mut grace).await?,
+                _ = poll.tick(), if !interrupted && cancel_queued => {
+                    if let Some(o) = self.steer(&ctx.steers, &ctx.session_dir, &mut grace).await? {
+                        break o;
+                    }
+                }
                 msg = next_line(&mut queued, &mut self.out) => {
                     let Some(msg) = msg else {
                         finish(t, events).await;
@@ -1177,7 +1185,7 @@ impl Proc {
                         // The interrupt's receipt: once acknowledged, the result
                         // is waited for the full grace.
                         Some("control_response") => {
-                            if self.receipt(&msg, &mut receipt, &ctx.steers) {
+                            if receipted(&msg, &mut receipt) {
                                 deadline = Some(tokio::time::Instant::now() + INTERRUPT_GRACE);
                             }
                         }
@@ -1188,7 +1196,7 @@ impl Proc {
                                 (receipt_required, cancel_queued) = self.came_up(&init, ask, events, b, instance).await?;
                             }
                             if let Some(o) = t.outcome.take()
-                                && !self.goes_on(&o, prompt.is_some(), &mut owed, (&mut why, &mut before), (!interrupted).then_some(&mut grace), ctx, events).await?
+                                && let Some(o) = self.goes_on(o, prompt.is_some(), &mut owed, (&mut why, &mut before), (!interrupted).then_some(&mut grace), ctx, events).await?
                             {
                                 break o;
                             }
@@ -1210,7 +1218,7 @@ impl Proc {
     /// A line of the conversation: its agents kept, its items sent on, and
     /// a replayed steer logged where it landed. A turn that begins, or a
     /// steer replayed, ends the wait for one (`grace`).
-    async fn conversation(&mut self, msg: &Value, t: &mut Translator, events: &Events, grace: &mut Option<tokio::time::Instant>) -> Result<(), EngineError> {
+    async fn conversation(&mut self, msg: &Value, t: &mut Translator, events: &Events, grace: &mut Option<(tokio::time::Instant, stream::Outcome)>) -> Result<(), EngineError> {
         if msg["type"] == "system" && msg["subtype"] == "init" {
             *grace = None;
         }
@@ -1228,7 +1236,7 @@ impl Proc {
 
     /// Asks Claude Code to stop: the request's id, and how long it has.
     /// With `interrupt_cancel_queued_v1` the steering it has not read yet is
-    /// cancelled with it, and its answer names what was.
+    /// cancelled with it.
     async fn interrupt(&mut self, receipt_required: bool, cancel_queued: bool) -> Result<(String, tokio::time::Instant), EngineError> {
         let id = self.request_id();
         let mut req = json!({"subtype": "interrupt"});
@@ -1239,29 +1247,17 @@ impl Proc {
         Ok((id, tokio::time::Instant::now() + if receipt_required { RECEIPT_GRACE } else { INTERRUPT_GRACE }))
     }
 
-    /// Writes the steering queued since the last look. And when a `result`
-    /// came with steering unread and no turn began to read it within
-    /// `grace`, that is written again, as such a turn's input.
-    async fn steer(&mut self, steers: &Steers, session_dir: &Path, grace: &mut Option<tokio::time::Instant>) -> Result<(), EngineError> {
-        if grace.is_some_and(|g| tokio::time::Instant::now() >= g) {
-            *grace = None;
-            let again = std::mem::take(&mut self.unread).into_iter().map(|s| s.steer).collect();
-            self.write_steers(again, steers, session_dir).await?;
+    /// Writes the steering queued since the last look. Returns the `result`
+    /// the steering written before it waits behind once Claude Code has
+    /// begun no turn to read it within `STEER_GRACE`: krowk stops waiting,
+    /// and the turn ends there, handing that steering back.
+    async fn steer(&mut self, steers: &Steers, session_dir: &Path, grace: &mut Option<(tokio::time::Instant, stream::Outcome)>) -> Result<Option<stream::Outcome>, EngineError> {
+        if grace.as_ref().is_some_and(|(at, _)| tokio::time::Instant::now() >= *at) {
+            return Ok(grace.take().map(|(_, o)| o));
         }
         let new = steers.take();
-        self.write_steers(new, steers, session_dir).await
-    }
-
-    /// Whether `msg` answers the interrupt (`receipt`), which it then no
-    /// longer waits on; the steering it says it cancelled was never read,
-    /// and goes back on the turn's result.
-    fn receipt(&mut self, msg: &Value, receipt: &mut Option<String>, steers: &Steers) -> bool {
-        if receipt.is_none() || msg.pointer("/response/request_id").and_then(Value::as_str) != receipt.as_deref() {
-            return false;
-        }
-        *receipt = None;
-        steers.put_back(self.cancelled(&msg["response"]["response"]));
-        true
+        self.write_steers(new, steers, session_dir).await?;
+        Ok(None)
     }
 
     /// Writes each steer to stdin as a `user` line of its own, images as a
@@ -1281,43 +1277,31 @@ impl Proc {
         Ok(())
     }
 
-    /// The steer a replayed `user` line is, once: by its `uuid`, or by its
-    /// text when Claude Code gave the replay another.
+    /// The steer a replayed `user` line is, once, by the `uuid` its line
+    /// carried, which the replay keeps.
     fn replayed(&mut self, msg: &Value) -> Option<Steer> {
         if msg["type"] != "user" || msg["isReplay"] != true || !main_thread(msg) {
             return None;
         }
-        let uuid = msg["uuid"].as_str().unwrap_or_default();
-        let content = &msg["message"]["content"];
-        let text = content.as_str().or_else(|| content.as_array()?.iter().find(|b| b["type"] == "text")?["text"].as_str());
-        let at = self.unread.iter().position(|s| s.uuid == uuid).or_else(|| self.unread.iter().position(|s| Some(s.steer.text.as_str()) == text))?;
+        let at = self.unread.iter().position(|s| msg["uuid"].as_str() == Some(s.uuid.as_str()))?;
         Some(self.unread.remove(at).steer)
     }
 
-    /// The steering an interrupt's answer says it cancelled, taken off the
-    /// unread.
-    fn cancelled(&mut self, answer: &Value) -> Vec<Steer> {
-        let ids: Vec<&str> = answer["cancelled"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-        let (gone, kept) = std::mem::take(&mut self.unread).into_iter().partition(|s| ids.contains(&s.uuid.as_str()));
-        self.unread = kept;
-        gone.into_iter().map(|s: Sent| s.steer).collect()
-    }
-
-    /// After a `result`, whether the krowk turn reads on: into the prompt's
-    /// own answer past a turn Claude Code began by itself (`fold`), or, not
-    /// interrupted (`grace` given), into a turn that reads steering, waited
-    /// on for `STEER_GRACE`.
+    /// After a `result`, the one the krowk turn ends at, or none when it
+    /// reads on: into the prompt's own answer past a turn Claude Code began
+    /// by itself (`fold`), or, not interrupted (`grace` given), into a turn
+    /// that reads steering, waited on for `STEER_GRACE`.
     #[allow(clippy::too_many_arguments)]
-    async fn goes_on(&mut self, o: &stream::Outcome, prompted: bool, owed: &mut u32, words: (&mut Option<String>, &mut Option<String>), grace: Option<&mut Option<tokio::time::Instant>>, ctx: &TurnContext, events: &Events) -> Result<bool, EngineError> {
-        if self.fold(o, prompted, owed, words, events).await {
-            return Ok(true);
+    async fn goes_on(&mut self, o: stream::Outcome, prompted: bool, owed: &mut u32, words: (&mut Option<String>, &mut Option<String>), grace: Option<&mut Option<(tokio::time::Instant, stream::Outcome)>>, ctx: &TurnContext, events: &Events) -> Result<Option<stream::Outcome>, EngineError> {
+        if self.fold(&o, prompted, owed, words, events).await {
+            return Ok(None);
         }
-        let Some(grace) = grace else { return Ok(false) };
-        if !self.read_on(o, &ctx.steers, &ctx.session_dir).await? {
-            return Ok(false);
+        let Some(grace) = grace else { return Ok(Some(o)) };
+        if !self.read_on(&o, &ctx.steers, &ctx.session_dir).await? {
+            return Ok(Some(o));
         }
-        *grace = Some(tokio::time::Instant::now() + STEER_GRACE);
-        Ok(true)
+        *grace = Some((tokio::time::Instant::now() + STEER_GRACE, o));
+        Ok(None)
     }
 
     /// After a `result`, whether the krowk turn reads on: steering written
@@ -1327,7 +1311,9 @@ impl Proc {
     /// is read or refused, never lost. A turn that failed reads on to
     /// nothing: what it never read goes back on its result.
     async fn read_on(&mut self, o: &stream::Outcome, steers: &Steers, session_dir: &Path) -> Result<bool, EngineError> {
-        if o.subtype != "success" || o.is_error {
+        // A binary that cannot cancel what it has not read is written no
+        // steering: it goes back on the turn's result, as it always did.
+        if o.subtype != "success" || o.is_error || !self.cancel_queued {
             return Ok(false);
         }
         if !self.unread.is_empty() {
@@ -1442,7 +1428,8 @@ impl Proc {
         }
         announce(events, init, b, instance).await?;
         let has = |c: &str| init.capabilities.iter().any(|x| x == c);
-        Ok((has("interrupt_receipt_v1"), has("interrupt_cancel_queued_v1")))
+        self.cancel_queued = has("interrupt_cancel_queued_v1");
+        Ok((has("interrupt_receipt_v1"), self.cancel_queued))
     }
 
     /// Keeps the list of agents from Claude Code's `system` lines, and says
@@ -1573,6 +1560,16 @@ impl Proc {
     }
 }
 
+
+/// Whether `msg` answers the interrupt (`receipt`), which is then no longer
+/// waited on.
+fn receipted(msg: &Value, receipt: &mut Option<String>) -> bool {
+    if receipt.is_none() || msg.pointer("/response/request_id").and_then(Value::as_str) != receipt.as_deref() {
+        return false;
+    }
+    *receipt = None;
+    true
+}
 
 /// Why a turn Claude Code ended without success failed.
 fn failed(result: &stream::Outcome, limit: Option<&crate::protocol::LimitStatus>, instance: &str) -> EngineError {
