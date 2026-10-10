@@ -13,6 +13,16 @@
 //! viewer started that no viewer is left to answer is denied after
 //! `APPROVAL_WAIT`, so such a turn never waits on a device that never
 //! comes; a turn started at the host's own terminal waits for its person.
+//! A viewer may also interrupt one of the session's own subagents, and
+//! only those its log's `subagent.started` named whose own log on this
+//! machine names the session its parent (R-SUB-12, `for_this_session`).
+//!
+//! A subagent's lines reach the bridge on the session's stream, under the
+//! child's session id, and its logged events are written into the
+//! session's chunks with the session's own (R-SUB-6), on purpose: a viewer
+//! rebuilds the child from them — its history, behind the child view —
+//! with no key but the session's, while the session's replay walks its own
+//! branch (`log::branch`), whose parent chain never enters a child's.
 //!
 //! Losing the relay loses nothing (R-OFF-2): the turn runs on in the
 //! daemon, the chunks go on being written, and every batch sealed while the
@@ -75,6 +85,9 @@ pub struct Options {
     pub session: String,
     pub title: String,
     pub cwd: String,
+    /// This machine's session logs (`log::sessions_dir`): where a child a
+    /// viewer would interrupt must have a log naming the session its parent.
+    pub sessions: std::path::PathBuf,
     pub ttl: u64,
     /// Batches kept for the relay while its link is down (`KEEP`).
     pub keep: usize,
@@ -379,14 +392,52 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
 }
 
 /// What a viewer may ask of the host: its session's prompt, steer,
-/// interrupt and approval, and nothing else. A viewer holds this session's
-/// key and no other, so a command naming another session — or none, which
-/// would start one in the host's directory — is refused, never run.
-fn for_this_session(c: &Command, session: &str) -> bool {
+/// interrupt and approval, and an interrupt of one of its own children
+/// (R-SUB-12), and nothing else. A viewer holds this session's key and no
+/// other, so a command naming another session — or none, which would start
+/// one in the host's directory — is refused, never run. `is_child` says
+/// what the session's own log named and this machine's logs bear out
+/// (`child_of`, `parent_here`), never what the viewer says: an id it knows
+/// or guesses stops nothing the key does not reach, and a child is steered
+/// or answered by nobody but the host.
+fn for_this_session(c: &Command, session: &str, is_child: impl Fn(&str) -> bool) -> bool {
     match c {
         Command::Prompt { session_id, .. } => session_id.as_deref() == Some(session),
-        Command::Steer { session_id, .. } | Command::Interrupt { session_id } | Command::Approve { session_id, .. } => session_id == session,
+        Command::Interrupt { session_id } => session_id == session || is_child(session_id),
+        Command::Steer { session_id, .. } | Command::Approve { session_id, .. } => session_id == session,
         _ => false,
+    }
+}
+
+/// The child an event names as `session`'s own: its `subagent.started`,
+/// logged by the session itself. One a child logs — a grandchild, riding
+/// the same stream — names nothing of `session`'s. Only a candidate: after
+/// a handoff the session's log holds what another device wrote, which
+/// could name any session on this machine, so `parent_here` has the last
+/// word.
+fn child_of<'a>(e: &'a crate::protocol::LogEvent, session: &str) -> Option<&'a str> {
+    match &e.body {
+        LogBody::SubagentStarted { subagent_session_id, .. } if e.session_id == session => Some(subagent_session_id),
+        _ => None,
+    }
+}
+
+/// Whether `child`'s own log on this machine, under `sessions`, begins
+/// with a `session.started` naming `session` its parent: what makes a
+/// session a child, written by this machine's host as it started it, and
+/// which a forged `subagent.started` in a synced log cannot make true of
+/// an unrelated session. No log, an id that names no log, or another
+/// parent, is no child. Read when a viewer asks, which is rarely: one line.
+fn parent_here(sessions: &std::path::Path, child: &str, session: &str) -> bool {
+    use std::io::BufRead;
+    if !crate::log::valid_id(child) {
+        return false;
+    }
+    let Ok(f) = std::fs::File::open(sessions.join(child).join(crate::log::EVENTS_FILE)) else { return false };
+    let Some(Ok(first)) = std::io::BufReader::new(f).lines().next() else { return false };
+    match serde_json::from_str::<crate::protocol::LogEvent>(&first) {
+        Ok(e) => e.session_id == child && matches!(e.body, LogBody::SessionStarted { parent_session_id: Some(ref p), .. } if p == session),
+        Err(_) => false,
     }
 }
 
@@ -485,6 +536,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         log: Vec::new(),
         logged: HashSet::new(),
         stored,
+        children: HashSet::new(),
         turn_running: false,
         handing: false,
         handoff: None,
@@ -594,6 +646,10 @@ struct Hosting {
     /// The events the registry's log held when the bridge took the session
     /// up: the daemon replays them, and they are not written again.
     stored: HashSet<String>,
+    /// The session's own children, by the `subagent.started` events its
+    /// log holds: the ids a viewer may interrupt besides the session's,
+    /// once this machine's log of each names the session its parent.
+    children: HashSet<String>,
     /// Whether a turn is running, which a handoff waits out.
     turn_running: bool,
     /// A handoff under way: another is refused meanwhile, and so is every
@@ -660,12 +716,19 @@ impl Hosting {
             if !stored {
                 let _ = self.jobs.send(Write::Event(serde_json::to_value(e).expect("json")));
             }
+            if let Some(child) = child_of(e, &self.o.session) {
+                self.children.insert(child.to_string());
+            }
+            // A child's lines ride the session's stream and are written
+            // with it (R-SUB-6), but its turn is not the session's: a
+            // child ending is no end of the turn a handoff waits out.
+            let own = e.session_id == self.o.session;
             match &e.body {
                 LogBody::TurnCompleted { .. } => {
-                    self.turn_running = false;
+                    self.turn_running &= !own;
                     let _ = self.jobs.send(Write::Flush);
                 }
-                LogBody::TurnStarted { permission_mode, .. } => {
+                LogBody::TurnStarted { permission_mode, .. } if own => {
                     self.mode = *permission_mode;
                     // A turn the log already held, with no end, ended with
                     // the host it ran on: not one running here.
@@ -973,8 +1036,8 @@ impl Hosting {
                 self.refused_moving.insert(r.id.clone());
                 let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("session {} is moving to another machine; send it there once it has moved", self.o.session)) }));
             }
-            Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &self.o.session) => {
-                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, and nothing else", self.o.session)) }));
+            Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &self.o.session, |id| self.children.contains(id) && parent_here(&self.o.sessions, id, &self.o.session)) => {
+                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, or interrupt one of its own subagents, and nothing else", self.o.session)) }));
             }
             // A rule for the whole project is written into the
             // host's repository settings: made at the host, not
@@ -1175,6 +1238,69 @@ mod tests {
         assert_eq!(permission_mode, PermissionMode::Plan, "plan asks more, and stays");
     }
 
+    /// R-SUB-12: the children a viewer may interrupt are the ones the
+    /// session's own `subagent.started` names. A grandchild's start, logged
+    /// by a child, names none; nothing but an interrupt widens; and an id
+    /// the log never named — another session's, or one made up — is refused.
+    #[test]
+    fn r_sub_12_a_viewer_interrupts_only_the_children_the_sessions_own_log_names() {
+        let started = |by: &str, child: &str| crate::protocol::LogEvent {
+            id: format!("e-{child}"),
+            parent_id: None,
+            session_id: by.into(),
+            time_ms: 1,
+            body: LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c".into(), subagent_session_id: child.into(), description: "look".into(), agent: None, model: crate::protocol::ModelRef { instance: "anthropic".into(), model: "claude-haiku-4-5".into() }, ran_by: Default::default(), backend_id: None },
+        };
+        let children: HashSet<String> = [started("s", "kid"), started("kid", "grandkid"), started("other", "theirs")].iter().filter_map(|e| child_of(e, "s")).map(String::from).collect();
+        assert_eq!(children, HashSet::from(["kid".to_string()]), "the session's own start, and no other");
+
+        let is_child = |id: &str| children.contains(id);
+        let interrupt = |id: &str| Command::Interrupt { session_id: id.into() };
+        assert!(for_this_session(&interrupt("s"), "s", is_child), "the session itself");
+        assert!(for_this_session(&interrupt("kid"), "s", is_child), "its own child");
+        for refused in ["grandkid", "theirs", "other", "made-up"] {
+            assert!(!for_this_session(&interrupt(refused), "s", is_child), "{refused}");
+        }
+        let steer = Command::Steer { session_id: "kid".into(), text: "t".into(), images: Vec::new() };
+        let approve = Command::Approve { session_id: "kid".into(), request_id: "r".into(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+        let prompt = Command::Prompt { session_id: Some("kid".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        for c in [steer, approve, prompt] {
+            assert!(!for_this_session(&c, "s", is_child), "only an interrupt reaches a child: {c:?}");
+        }
+    }
+
+    /// R-SUB-12: a `subagent.started` is only a candidate. After a handoff
+    /// the session's log holds what another device wrote, and a forged one
+    /// could name any session on this machine: a child is one whose own log
+    /// here begins with a `session.started` naming the session its parent.
+    /// One naming another parent, or none, or with no log here, or an id
+    /// that is no session id, is refused.
+    #[test]
+    fn r_sub_12_a_child_is_one_whose_own_log_here_names_the_session_its_parent() {
+        let sessions = std::env::temp_dir().join(format!("krowk-sub12-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sessions);
+        let (parent, kid, unrelated, orphan, absent) = ("01a0ec7b-0000-7000-8000-0000000000a1", "01a0ec7b-0000-7000-8000-0000000000a2", "01a0ec7b-0000-7000-8000-0000000000a3", "01a0ec7b-0000-7000-8000-0000000000a4", "01a0ec7b-0000-7000-8000-0000000000a5");
+        let root = |id: &str, of: Option<&str>| {
+            let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: of.map(String::from), agent: None } };
+            std::fs::create_dir_all(sessions.join(id)).unwrap();
+            std::fs::write(sessions.join(id).join(crate::log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&e).unwrap())).unwrap();
+        };
+        root(kid, Some(parent));
+        root(unrelated, Some("01a0ec7b-0000-7000-8000-0000000000ff"));
+        root(orphan, None);
+        assert!(parent_here(&sessions, kid, parent), "its own child");
+        for (refused, why) in [(unrelated, "another session's child"), (orphan, "a session of its own"), (absent, "no log here"), ("../x", "no session id"), (parent, "the parent itself, which no parent names")] {
+            assert!(!parent_here(&sessions, refused, parent), "{why}");
+        }
+        // A forged start in the session's own log names the unrelated one:
+        // a candidate, and still refused.
+        let forged: HashSet<String> = HashSet::from([unrelated.to_string(), kid.to_string()]);
+        let is_child = |id: &str| forged.contains(id) && parent_here(&sessions, id, parent);
+        assert!(!for_this_session(&Command::Interrupt { session_id: unrelated.into() }, parent, is_child), "a forged subagent.started stops nothing");
+        assert!(for_this_session(&Command::Interrupt { session_id: kid.into() }, parent, is_child));
+        let _ = std::fs::remove_dir_all(&sessions);
+    }
+
     /// A link is let go at a beat after a pause past `DEAD`, after silence
     /// past it, or as a ghost: eight batches the relay has not acked, the
     /// oldest past `GHOST_WAIT`. Fewer, or not waited on as long, is a
@@ -1249,7 +1375,7 @@ mod tests {
     /// `d` on the stand-in registry at `url`, hosting `session`.
     fn options(url: &str, d: &Dev, keys: UserKeys, chain: Chain, session: &str) -> Options {
         let api = Arc::new(client(url, d));
-        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None, handed: None }
+        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), sessions: std::path::PathBuf::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None, handed: None }
     }
 
     fn registry() -> (krowk_devregistry::Running, String) {
