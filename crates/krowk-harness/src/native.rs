@@ -226,6 +226,23 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
 
     fn run_turn<'a>(&'a self, ctx: TurnContext, events: Events) -> BoxFuture<'a, Result<TurnEnd, EngineError>> {
         Box::pin(async move {
+            // A turn that ends any other way than completed stops the
+            // background children it leaves (R-STEER-3).
+            let spawned = ctx.subagents.clone();
+            let ended = self.turn(ctx, events).await;
+            if !matches!(ended, Ok(TurnEnd::Completed))
+                && let Some(s) = spawned
+            {
+                s.stop_background();
+            }
+            ended
+        })
+    }
+}
+
+impl<C: ModelClient> NativeEngine<C> {
+    fn turn(&self, ctx: TurnContext, events: Events) -> BoxFuture<'_, Result<TurnEnd, EngineError>> {
+        Box::pin(async move {
             let toolset = Toolset { preset: ctx.preset, custom_tools: self.client.custom_tools(&ctx.model.model) };
             // The instructions and the skills' names ride after krowk's own
             // lines: stable for as long as their files are, so the prefix

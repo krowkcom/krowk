@@ -466,13 +466,6 @@ impl Shared {
     /// one, except a session's with a turn running, or with work of the
     /// backend's own under way — agents it runs, a turn it began. Swept
     /// when a prompt arrives, so an idle host costs nothing to keep tidy.
-    /// Interrupts `session`'s running turn, if it has one.
-    pub(crate) fn interrupt(&self, session: &str) {
-        if let Some(r) = self.running.lock().unwrap_or_else(|e| e.into_inner()).get(session) {
-            let _ = r.cancel.send(true);
-        }
-    }
-
     async fn evict_idle(&self) {
         let running: Vec<String> = self.running.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
         let idle: Vec<Arc<dyn Engine>> = {
@@ -1092,6 +1085,19 @@ impl Shared {
         // each turn from the repository and the person's own.
         let subagents = plan.spawns.then(|| {
             let (defs, problems) = agents::discover(&trust::root(&plan.cwd), &self.cfg.agents.user_dirs);
+            // What the children follow: the parent's interrupt, and the
+            // turn ending while background children run (R-STEER-3).
+            let (stop, stopped) = watch::channel(false);
+            let stop = Arc::new(stop);
+            let (mut parent, follows) = (cancel.clone(), stop.clone());
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = crate::engine::cancelled(&mut parent) => {
+                        let _ = follows.send(true);
+                    }
+                    _ = follows.closed() => {}
+                }
+            });
             let spawn = Spawn {
                 host: self.clone(),
                 parent: ParentTurn {
@@ -1106,7 +1112,7 @@ impl Shared {
                     gate: gate.clone(),
                     compat: compat.clone(),
                     grants: plan.grants.clone(),
-                    cancel: cancel.clone(),
+                    cancel: stopped,
                     steers: steers.clone(),
                 },
                 out: out.clone(),
@@ -1115,6 +1121,7 @@ impl Shared {
                 spent: std::sync::Mutex::new((0.0, false)),
                 background: std::sync::Mutex::new(Vec::new()),
                 running: std::sync::atomic::AtomicUsize::new(0),
+                stop,
             };
             (Subagents(Arc::new(spawn)), problems)
         });

@@ -713,3 +713,54 @@ fn r_steer_3_interrupting_the_parent_interrupts_its_background_child() {
     let events = log::read_events(&log::sessions_dir(&home.env()).unwrap().join(&child).join(log::EVENTS_FILE)).unwrap();
     assert!(matches!(&events.last().unwrap().body, LogBody::TurnCompleted { status: TurnStatus::Interrupted, .. }), "{:?}", events.last());
 }
+
+/// R-STEER-3: a parent turn that fails stops the background children it
+/// leaves, rather than waiting for them; each child's log ends with its
+/// turn.
+#[test]
+fn r_steer_3_a_failed_parent_turn_stops_its_background_children() {
+    use krowk_harness::host::Host;
+    use krowk_harness::protocol::Command;
+    use tokio::sync::mpsc;
+    let gate = mock::Gate::default();
+    let parent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (g, p) = (gate.clone(), parent.clone());
+    let m = mock::serve(move |body, _| {
+        if is_child(body) {
+            return held_child(&g);
+        }
+        match p.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => mock::Reply::sse(&mock::tool_use("t1", "subagent", &serde_json::json!({"description": "survey", "prompt": "survey the repo", "run_in_background": true}))),
+            _ => mock::Reply::json(400, &serde_json::json!({"type": "error", "error": {"type": "invalid_request_error", "message": "no"}})),
+        }
+    });
+    let home = Home::new("bg-child-failed", &m.url);
+    let host = Host::new(home.config());
+    let model = Registry::resolve(&InstancesConfig::default(), &home.env()).parse_model("claude-sonnet-4-6").unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let (result, child) = rt.block_on(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let cmd = Command::Prompt { session_id: None, text: "survey in the background".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let exec = host.execute(cmd, tx);
+        tokio::pin!(exec);
+        let mut child = None;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                tokio::select! {
+                    Some(line) = rx.recv() => {
+                        if let StreamLine::Log(LogEvent { body: LogBody::SubagentStarted { subagent_session_id, .. }, .. }) = &line {
+                            child = Some(subagent_session_id.clone());
+                        }
+                    }
+                    r = &mut exec => break r.unwrap().unwrap(),
+                }
+            }
+        })
+        .await
+        .expect("the failed turn did not wait for its child");
+        (result, child.unwrap())
+    });
+    assert_eq!(result.status, TurnStatus::Failed, "{result:?}");
+    let events = log::read_events(&log::sessions_dir(&home.env()).unwrap().join(&child).join(log::EVENTS_FILE)).unwrap();
+    assert!(matches!(&events.last().unwrap().body, LogBody::TurnCompleted { status: TurnStatus::Interrupted, .. }), "{:?}", events.last());
+}

@@ -351,6 +351,10 @@ pub(crate) struct Spawn {
     /// many of them still run: the turn does not complete while one does.
     pub background: std::sync::Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
     pub running: std::sync::atomic::AtomicUsize,
+    /// Flipped to stop every child: by the parent's interrupt, and by a
+    /// turn that ends any other way than completed with its background
+    /// children still running. `parent.cancel` follows it.
+    pub stop: Arc<watch::Sender<bool>>,
 }
 
 impl Subagents {
@@ -399,16 +403,19 @@ impl Subagents {
         self.0.running.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Once the parent's turn is over: each background child still running
-    /// is interrupted, as an interrupt of the parent would, and waited for,
-    /// so its log ends with its turn.
+    /// Stops the background children still running, as an interrupt of
+    /// the parent would: the turn is ending without them.
+    pub fn stop_background(&self) {
+        if self.background() > 0 {
+            let _ = self.0.stop.send(true);
+        }
+    }
+
+    /// Once the parent's turn is over: each background child is waited
+    /// for, so its log ends with its turn.
     pub async fn settle_background(&self) {
         let children: Vec<(String, tokio::task::JoinHandle<()>)> = std::mem::take(&mut *self.0.background.lock().unwrap_or_else(|e| e.into_inner()));
-        let host = &self.0.host;
-        for (child, task) in children {
-            if !task.is_finished() {
-                host.interrupt(&child);
-            }
+        for (_, task) in children {
             let _ = task.await;
         }
     }
@@ -426,7 +433,15 @@ impl Subagents {
         spawn.running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         spawn.host.jobs.agent_started(&spawn.parent.session_id);
         let task = tokio::spawn(async move {
-            let (text, _, status) = me.run_as(&call_id, &item_id, &input, &events, id.clone()).await;
+            // On a task of its own, so a child that panics still ends with
+            // a note and leaves the count.
+            let run = me.clone();
+            let child = id.clone();
+            let ran = tokio::spawn(async move { run.run_as(&call_id, &item_id, &input, &events, child).await }).await;
+            let (text, status) = match ran {
+                Ok((text, _, status)) => (text, status),
+                Err(e) => (format!("the subagent failed: {e}"), "failed"),
+            };
             let p = &me.0.parent;
             // The note first, then the count: a turn that sees none running
             // has the note waiting already.
@@ -556,6 +571,7 @@ impl Subagents {
         let cwd = worktree.as_ref().map_or_else(|| p.cwd.clone(), |w| w.worktree.path.clone());
         let env = worktree.as_ref().map(|w| w.env()).unwrap_or_default();
         let result = host.subagent(&self.0, call_id, &input.description, &prompt, model, run, (&child, &cwd, env), events).await;
+        let background = input.run_in_background == Some(true);
         if let Ok(r) = &result {
             let mut spent = self.0.spent.lock().unwrap_or_else(|e| e.into_inner());
             match r.cost_usd {
@@ -563,7 +579,7 @@ impl Subagents {
                 None => spent.1 = true,
             }
         }
-        concluded(result, worktree, p.cwd.clone()).await
+        concluded(result, worktree, (!background).then(|| p.cwd.clone())).await
     }
 
     /// A worktree of the parent's repository for the child `child`, readied
@@ -607,8 +623,11 @@ impl Subagents {
 
 /// What a child's call is answered with once its turn is over — its
 /// summary, or why there is none, and what became of its worktree — and
-/// how the turn ended.
-async fn concluded(result: Result<crate::protocol::RunResult, crate::engine::EngineError>, worktree: Option<InUse>, to: PathBuf) -> (String, bool, Option<&'static str>) {
+/// how the turn ended. A worktree's changes are applied to `to`, the
+/// parent's directory; with none — a background child's, which ends while
+/// its parent may be editing the same files — a changed worktree is kept,
+/// and the note says how to apply it.
+async fn concluded(result: Result<crate::protocol::RunResult, crate::engine::EngineError>, worktree: Option<InUse>, to: Option<PathBuf>) -> (String, bool, Option<&'static str>) {
     let status = Some(match &result {
         Ok(r) if r.status == TurnStatus::Completed => "completed",
         Ok(r) if r.status == TurnStatus::Interrupted => "interrupted",
@@ -641,13 +660,17 @@ fn answer(result: Result<crate::protocol::RunResult, crate::engine::EngineError>
 
 /// A child's worktree, finished when the child is, its changes applied to
 /// the parent's working tree, `to` being the parent's directory
-/// (`crate::worktree::finish_into`): what its parent is told of it. Its
-/// port slot, and its hold on it, are let go once it is.
-async fn finish(i: InUse, to: PathBuf) -> Option<String> {
+/// (`crate::worktree::finish_into`), or kept when there is none: what its
+/// parent is told of it. Its port slot, and its hold on it, are let go
+/// once it is.
+async fn finish(i: InUse, to: Option<PathBuf>) -> Option<String> {
     let path = i.worktree.path.clone();
     let finished = tokio::task::spawn_blocking(move || {
         let w = i.worktree.clone();
-        i.finish_into(&to).map(|a| a.and_then(|a| a.note(&w)))
+        match to {
+            Some(to) => i.finish_into(&to).map(|a| a.and_then(|a| a.note(&w))),
+            None => i.finish().map(|f| (f != crate::worktree::Finished::Removed).then(|| crate::worktree::kept_line(&w))),
+        }
     })
     .await;
     match finished {
