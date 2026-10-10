@@ -811,10 +811,16 @@ impl ChildWatch {
                 self.waiting.push((r.request_id.clone(), what));
                 true
             }
+            // Answered, the call it held runs from now: the time it waited
+            // on the person is not the tool's.
             EngineEvent::ApprovalResolved { request_id, .. } => {
                 let before = self.waiting.len();
                 self.waiting.retain(|(r, _)| r != request_id);
-                self.waiting.len() != before
+                let answered = self.waiting.len() != before;
+                if answered && let Some((_, t)) = self.tools.last_mut() {
+                    t.started_ms = now;
+                }
+                answered
             }
             EngineEvent::ResponseCompleted { usage, .. } => {
                 self.tokens += usage.total();
@@ -825,13 +831,14 @@ impl ChildWatch {
     }
 
     /// The frame for where the child stands: an ended child is in no call
-    /// and waits on nobody.
+    /// and waits on nobody, and one waiting on the person is in no call
+    /// yet — the call it waits to run starts once answered.
     pub fn frame(&self, status: ChildState) -> LiveEvent {
         let running = status == ChildState::Running;
         LiveEvent::SubagentStatus {
             session_id: self.session_id.clone(),
             status,
-            tool: self.tools.first().filter(|_| running).map(|(_, t)| t.clone()),
+            tool: self.tools.first().filter(|_| running && self.waiting.is_empty()).map(|(_, t)| t.clone()),
             last_event_ms: self.last_event_ms,
             waiting: self.waiting.first().filter(|_| running).map(|(_, w)| *w),
             tokens: self.tokens,

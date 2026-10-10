@@ -837,11 +837,12 @@ fn parse_cursor_report(bytes: &[u8]) -> Option<u16> {
     None
 }
 
-/// When the running turn's clock and spinner next change: the first whole
-/// `TICK` after `now`, counted from the turn's start, so it is always in
-/// the future and the loop sleeps until then.
-fn next_tick(started: Instant, now: Instant) -> Instant {
-    let tick = app::TICK.as_millis().max(1);
+/// When the running turn's clock and spinner next change (`every` is
+/// `TICK`), or a running child's facts (each second): the first whole
+/// `every` after `now`, counted from `started`, so it is always in the
+/// future and the loop sleeps until then.
+fn next_tick(started: Instant, now: Instant, every: Duration) -> Instant {
+    let tick = every.as_millis().max(1);
     let n = now.saturating_duration_since(started).as_millis() / tick + 1;
     started + Duration::from_millis((n * tick) as u64)
 }
@@ -1069,7 +1070,13 @@ impl<'h> Ui<'h> {
     fn due(&self, app: &App, reach: &Reach) -> Due {
         let now = Instant::now();
         Due {
-            tick: app.turn.as_ref().map(|t| next_tick(Instant::from_std(t.started), now)),
+            tick: match (&app.turn, app.child_running_since()) {
+                (Some(t), _) => Some(next_tick(Instant::from_std(t.started), now, app::TICK)),
+                // No turn, a child running on in the background: its row's
+                // durations each second (R-SUB-11).
+                (None, Some(since)) => Some(next_tick(Instant::from_std(since), now, Duration::from_secs(1))),
+                (None, None) => None,
+            },
             stall: (app.waiting_on_model() && reach.probe.is_none() && app.offline.is_none() && self.target.is_some())
                 .then(|| (reach.last_activity + STALL).max(reach.stall_quiet_until.unwrap_or(now))),
             retry: app.turn.as_ref().filter(|t| (t.want_interrupt && !t.interrupt_sent) || !app.unsent_steers.is_empty()).map(|_| now + INTERRUPT_RETRY),
@@ -3237,7 +3244,7 @@ mod tests {
         let tick = super::app::TICK;
         for ms in [0u64, 1, 124, 125, 126, 999, 1000, 5_001] {
             let now = t0 + std::time::Duration::from_millis(ms);
-            let next = super::next_tick(t0, now);
+            let next = super::next_tick(t0, now, tick);
             assert!(next > now, "at {ms} ms the next tick is in the future");
             assert!(next - now <= tick, "at {ms} ms it is at most one frame away");
         }

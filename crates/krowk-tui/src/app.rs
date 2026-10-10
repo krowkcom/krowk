@@ -21,8 +21,8 @@ use crate::table;
 use krowk_harness::host::Pricer;
 use krowk_harness::log::Recent;
 use krowk_harness::protocol::{
-    ApprovalRequest, BackendAgent, Billing, Delta, ErrorInfo, HandoffKind, ImageInput, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
-    TurnStatus, Usage,
+    ApprovalRequest, BackendAgent, Billing, ChildState, ChildTool, Delta, ErrorInfo, HandoffKind, ImageInput, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
+    TurnStatus, Usage, Waiting,
 };
 use std::collections::{BTreeMap, HashMap};
 use ratatui::style::{Color, Modifier, Style};
@@ -217,6 +217,12 @@ struct Sub {
     /// Its `subagent.started`'s time: how long a replayed child took is
     /// read from the log, where its own lines are not.
     started_ms: Option<i64>,
+    /// What its last `subagent.status` said (R-SUB-9): the call it is in,
+    /// when anything last arrived from it, what it waits on the person
+    /// for. Times on the host's clock, read against this client's.
+    tool: Option<ChildTool>,
+    last_event_ms: Option<i64>,
+    waiting: Option<Waiting>,
 }
 
 impl Sub {
@@ -239,6 +245,9 @@ impl Sub {
             born: 0,
             ended: 0,
             started_ms: None,
+            tool: None,
+            last_event_ms: None,
+            waiting: None,
         }
     }
 
@@ -260,8 +269,9 @@ impl Sub {
         }
     }
 
-    /// `Agent <description> · <agent> · <state> · N tokens · $x`.
-    fn line(&self, now: Instant) -> String {
+    /// `Agent <description> · <agent> · <state> · <facts> · N tokens · $x`,
+    /// the facts (`facts`) only while it runs.
+    fn line(&self, now: Instant, facts: bool) -> String {
         let mut parts = vec![format!("Agent {}", if self.description.is_empty() { "…" } else { &self.description })];
         if let Some(a) = &self.agent {
             parts.push(a.clone());
@@ -274,6 +284,9 @@ impl Sub {
             Some(TurnStatus::Interrupted) => format!("interrupted after {}", look::duration(took)),
             Some(TurnStatus::Failed) => format!("failed after {}", look::duration(took)),
         });
+        if facts && self.status.is_none() {
+            parts.extend(self.facts(wall_ms(now)));
+        }
         if self.tokens > 0 {
             parts.push(format!("{} tokens", tokens(self.tokens)));
         }
@@ -284,6 +297,43 @@ impl Sub {
         }
         parts.join(" · ")
     }
+
+    /// What its `subagent.status` says of a running child at `now_ms`, each
+    /// once it is worth saying (R-SUB-11): the tool it is in once that has
+    /// run 10 s (`bash 2m10s`), `quiet 35s` once nothing has arrived for
+    /// 30 s, and `⚠ waiting on you`. Facts, not verdicts: no colour.
+    fn facts(&self, now_ms: i64) -> Vec<String> {
+        let since = |ms: i64| Duration::from_millis(now_ms.saturating_sub(ms).max(0) as u64);
+        let mut facts = Vec::new();
+        if let Some(t) = &self.tool
+            && since(t.started_ms) >= TOOL_FACT
+        {
+            facts.push(format!("{} {}", look::tool_kind(&t.name), look::duration(since(t.started_ms))));
+        }
+        if let Some(ms) = self.last_event_ms
+            && since(ms) >= QUIET_FACT
+        {
+            facts.push(format!("quiet {}", look::duration(since(ms))));
+        }
+        if self.waiting.is_some() {
+            facts.push(format!("{}waiting on you", look::WARN));
+        }
+        facts
+    }
+}
+
+/// How long a child's tool runs, and how long nothing arrives from it,
+/// before its row says so (R-SUB-11).
+const TOOL_FACT: Duration = Duration::from_secs(10);
+const QUIET_FACT: Duration = Duration::from_secs(30);
+
+/// This client's clock at `now` (ms since the epoch): the time now, moved
+/// by how far `now` is from now, so a frame drawn for a later instant
+/// reads later.
+fn wall_ms(now: Instant) -> i64 {
+    let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+    let real = Instant::now();
+    wall + now.saturating_duration_since(real).as_millis() as i64 - real.saturating_duration_since(now).as_millis() as i64
 }
 
 /// One row of the model picker: an instance, and the model to run there
@@ -1801,6 +1851,17 @@ impl App {
         self.sub_clock += 1;
         let tick = self.sub_clock;
         let Some(s) = self.child(sid) else { return };
+        // Anything live from a running child is news of it: frames are not
+        // sent per delta, so a child streaming text is not quiet. Not a
+        // frame itself: its own stamp says when, however late it arrives
+        // (queued, or sent again on attach).
+        if let StreamLine::Live(l) = line
+            && !matches!(l, LiveEvent::SubagentStatus { .. })
+            && s.status.is_none()
+            && let Some(ms) = &mut s.last_event_ms
+        {
+            *ms = (*ms).max(wall_ms(Instant::now()));
+        }
         match line {
             StreamLine::Log(ev) => match &ev.body {
                 LogBody::ItemCompleted { item: Item::ToolCall { name, input, .. }, .. } => {
@@ -1831,6 +1892,14 @@ impl App {
                 None => s.unpriced = true,
             },
             StreamLine::Live(LiveEvent::ItemStarted { item: ItemKind::Reasoning, .. }) => s.activity = "thinking…".into(),
+            // Each replaces the last; an ended child's says nothing more.
+            StreamLine::Live(LiveEvent::SubagentStatus { status, tool, last_event_ms, waiting, .. }) => {
+                let running = *status == ChildState::Running;
+                s.tool = tool.clone().filter(|_| running);
+                // Its stamp, or what arrived since, whichever is later.
+                s.last_event_ms = running.then(|| s.last_event_ms.map_or(*last_event_ms, |ms| ms.max(*last_event_ms)));
+                s.waiting = waiting.filter(|_| running);
+            }
             _ => return,
         }
         self.dirty = true;
@@ -1889,7 +1958,7 @@ impl App {
     fn commit_sub(&mut self, s: &Sub, output: &str, is_error: bool) {
         self.gap();
         let width = usize::from(self.width.max(8));
-        let text = clip(&s.line(Instant::now()), width.saturating_sub(2));
+        let text = clip(&s.line(Instant::now(), false), width.saturating_sub(2));
         self.push_line(Line::from(vec![Span::styled(look::TOOL, if is_error { red() } else { look::success() }), Span::styled(text, bold())]));
         if is_error {
             let body_width = width.saturating_sub(look::BRANCH.width());
@@ -1901,6 +1970,12 @@ impl App {
     /// back to this session as a turn it begins.
     pub fn backend_agents_running(&self) -> bool {
         !self.backend_agents.is_empty()
+    }
+
+    /// When the oldest running child started, while one runs: its row's
+    /// facts are redrawn each second, counted from then (R-SUB-11).
+    pub fn child_running_since(&self) -> Option<Instant> {
+        self.subs.iter().chain(&self.past).filter(|s| s.status.is_none()).map(|s| s.started).min()
     }
 
     /// Every child of the session: what the Agents overlay selects among.
@@ -2746,8 +2821,12 @@ impl App {
                 // at work for the session.
                 StatusItem::Subagents => {
                     let running = (self.subs.iter().filter(|s| s.status.is_none()).count() + self.backend_agents.len()) as u32;
+                    // Of those, the ones an approval or a question of theirs
+                    // waits on the person for (R-SUB-11).
+                    let waiting = self.subs.iter().filter(|s| s.status.is_none() && s.waiting.is_some()).count();
                     if running > 0 {
-                        parts.push(part(Rank::Subagents, format!("[{}]", plural(running, "subagent"))));
+                        let waiting = if waiting > 0 { format!(" · {waiting} waiting") } else { String::new() };
+                        parts.push(part(Rank::Subagents, format!("[{}{waiting}]", plural(running, "subagent"))));
                     }
                 }
                 StatusItem::Background => {
@@ -3713,7 +3792,7 @@ fn sub_row(rows: &mut Vec<Line<'static>>, s: &Sub, selected: bool, width: usize,
         Some(_) => (look::TOOL.to_string(), red()),
     };
     let text_style = if selected { dim().add_modifier(Modifier::REVERSED) } else { dim() };
-    rows.push(Line::from(vec![Span::styled(glyph, style), Span::styled(clip(&s.line(now), width.saturating_sub(2)), text_style)]));
+    rows.push(Line::from(vec![Span::styled(glyph, style), Span::styled(clip(&s.line(now, true), width.saturating_sub(2)), text_style)]));
     if s.expanded && !s.activity.is_empty() {
         rows.push(Line::from(Span::styled(clip(&format!("{}{}", look::LAST_BRANCH, s.activity), width), dim())));
     }
@@ -4777,7 +4856,12 @@ mod tests {
 
     /// The Agents overlay's child lines, top to bottom.
     fn listed(a: &App) -> Vec<String> {
-        text(&a.view(Instant::now()).0).into_iter().filter(|r| r.contains("Agent ")).collect()
+        listed_at(a, Instant::now())
+    }
+
+    /// The same, drawn at `now`.
+    fn listed_at(a: &App, now: Instant) -> Vec<String> {
+        text(&a.view(now).0).into_iter().filter(|r| r.contains("Agent ")).collect()
     }
 
     /// R-SUB-11: the Agents overlay lists every child of the session —
@@ -4821,6 +4905,104 @@ mod tests {
         a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None }));
         let rows = listed(&a);
         assert!(rows[0].contains("Agent read the docs · done in 30s") && rows[1].contains("map the store") && rows[2].contains("find the tests"), "{rows:?}");
+    }
+
+    /// R-SUB-11: a running child's row says what its `subagent.status`
+    /// (R-SUB-9) says once each fact is worth saying, against this
+    /// client's clock — its tool once that has run 10 s, `quiet` once
+    /// nothing has arrived for 30 s, `⚠ waiting on you` — in the live
+    /// region and the overlay alike, and the status line counts the
+    /// waiting; the next frame takes them back.
+    #[test]
+    fn r_sub_11_a_running_childs_row_says_its_long_tool_quiet_and_waiting_once_over_the_thresholds() {
+        let mut a = App::new(Editor::new(None), 120, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        let t0 = Instant::now();
+        a.start_turn(t0);
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::ToolCall { call_id: "c1".into(), name: "subagent".into(), input: serde_json::json!({"description": "build it", "prompt": "…"}) } }));
+        a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "build it".into(), agent: None, model, ran_by: Default::default(), backend_id: None }));
+        let ms = super::wall_ms(t0);
+        let status = |tool: Option<&str>, waiting: Option<Waiting>, status: ChildState| {
+            live(LiveEvent::SubagentStatus { session_id: "k1".into(), status, tool: tool.map(|n| ChildTool { name: n.into(), started_ms: ms }), last_event_ms: ms, waiting, tokens: 0 })
+        };
+        let row = |a: &App, secs: f64| listed_at(a, t0 + Duration::from_secs_f64(secs)).join("\n");
+        a.on_line(&status(Some("bash"), None, ChildState::Running));
+        assert!(a.take_pending().is_empty(), "a frame reaches no conversation");
+        let under = row(&a, 9.5);
+        assert!(under.contains("running") && !under.contains("bash") && !under.contains("quiet") && !under.contains("waiting"), "nothing under the thresholds: {under}");
+        let whole: Vec<String> = listed_at(&a, t0 + Duration::from_secs_f64(12.5)).iter().map(|r| r.chars().skip(2).collect()).collect();
+        assert_eq!(whole, ["Agent build it · running 12s · bash 12s"], "the row it was, and only the new fact");
+        let tool = row(&a, 12.5);
+        assert!(tool.contains("· bash 12s") && !tool.contains("quiet"), "the tool once over 10 s: {tool}");
+        let quiet = row(&a, 95.5);
+        assert!(quiet.contains("· bash 1m35s · quiet 1m35s") && !quiet.contains("waiting"), "quiet once over 30 s: {quiet}");
+        assert_eq!(quiet.matches("quiet").count(), 1, "each fact once: {quiet}");
+        // A Claude Code child's tool reads as krowk's own.
+        a.on_line(&status(Some("Bash"), None, ChildState::Running));
+        assert!(row(&a, 12.5).contains("· bash 12s"), "{}", row(&a, 12.5));
+        // An approval waits: said, and counted in the status line.
+        a.on_line(&status(None, Some(Waiting::Approval), ChildState::Running));
+        let waiting = row(&a, 1.0);
+        assert!(waiting.contains("· ⚠ waiting on you") && !waiting.contains("bash"), "{waiting}");
+        assert!(a.status_bar().contains("[1 subagent · 1 waiting]"), "{}", a.status_bar());
+        a.overlay = Overlay::Agents;
+        assert!(row(&a, 40.5).contains("· quiet 40s · ⚠ waiting on you"), "the overlay's row too: {}", row(&a, 40.5));
+        a.overlay = Overlay::None;
+        // Answered: both go.
+        a.on_line(&status(None, None, ChildState::Running));
+        assert!(!row(&a, 1.0).contains("waiting"), "{}", row(&a, 1.0));
+        assert!(a.status_bar().contains("[1 subagent]"), "{}", a.status_bar());
+        // An ended child's last frame says nothing more of it.
+        a.on_line(&status(Some("bash"), Some(Waiting::Question), ChildState::Done));
+        let ended = row(&a, 60.0);
+        assert!(!ended.contains("bash") && !ended.contains("quiet") && !ended.contains("waiting"), "{ended}");
+        assert!(!a.status_bar().contains("waiting"), "{}", a.status_bar());
+    }
+
+    /// R-SUB-11: frames are not sent per delta, so what streams from a
+    /// child between them is news of it too: a child whose last frame is
+    /// 35 s old but which streams text now is not quiet, and an older frame
+    /// after that does not make it so. A frame is read by its own stamp,
+    /// however late it arrives (R-SUB-9).
+    #[test]
+    fn r_sub_11_a_child_streaming_between_frames_is_not_quiet() {
+        let mut a = App::new(Editor::new(None), 120, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        a.start_turn(Instant::now());
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
+        a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "write it up".into(), agent: None, model, ran_by: Default::default(), backend_id: None }));
+        let now = super::wall_ms(Instant::now());
+        let stamped = |ms: i64| live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Running, tool: None, last_event_ms: ms, waiting: None, tokens: 0 });
+        a.on_line(&stamped(now - 60_000));
+        // A frame arriving late (queued, or sent again on attach) is read
+        // by its stamp, not by when it arrived.
+        let frame = stamped(now - 35_500);
+        a.on_line(&frame);
+        let later = |a: &App| listed_at(a, Instant::now() + Duration::from_secs(5)).join("\n");
+        assert!(later(&a).contains("· quiet 40s"), "nothing since the frame: {}", later(&a));
+        a.on_line(&live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "u".into(), item_id: "x".into(), delta: Delta::Text { text: "and so".into() } }));
+        assert!(!later(&a).contains("quiet"), "it streams: {}", later(&a));
+        a.on_line(&frame);
+        assert!(!later(&a).contains("quiet"), "an older stamp moves nothing back: {}", later(&a));
+    }
+
+    /// R-SUB-11: the client's clock, moved to `now`, reads a frame's times.
+    #[test]
+    fn r_sub_11_a_frames_times_are_read_against_the_clients_clock() {
+        let now = Instant::now();
+        let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+        assert!((super::wall_ms(now) - wall).abs() < 1000);
+        assert!((super::wall_ms(now + Duration::from_secs(40)) - wall - 40_000).abs() < 1000);
+        assert!((super::wall_ms(now - Duration::from_secs(40)) - wall + 40_000).abs() < 1000);
+        // Running for 2 s on a later clock says nothing; a frame from the
+        // future reads as now, not as negative.
+        let mut s = Sub::new("k");
+        s.tool = Some(ChildTool { name: "bash".into(), started_ms: wall + 60_000 });
+        s.last_event_ms = Some(wall + 60_000);
+        assert!(s.facts(wall).is_empty());
+        s.tool = Some(ChildTool { name: "bash".into(), started_ms: wall - 130_000 });
+        assert_eq!(s.facts(wall), ["bash 2m10s"]);
     }
 
     /// R-SUB-11: a resumed session's Agents overlay lists the children its

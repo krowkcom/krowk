@@ -27,7 +27,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **Each subagent reports what it is doing as it goes.** While a subagent
   runs, krowk sends a `subagent.status` line each time its state changes:
   the tool it is in and since when, whether it waits on your approval or
-  answer, the tokens it has used, and how it ended. Programs reading
+  answer, the tokens it has used, and how it ended. While it waits on you
+  it names no tool, and a tool you allow counts from your answer, not from
+  when it asked. Programs reading
   `--output-format stream-json`, and anything attached to krowk's host,
   get it without working it out from the raw lines; the TUI will show it
   next. A subagent's start in the session log now also says who ran it
@@ -75,6 +77,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   only the subagents running now, and a subagent line in the conversation
   now says how long an interrupted or failed one ran, also in a resumed
   session, where it used to say `running 0.0s`.
+- **A running subagent's line says whether it is busy, quiet or waiting on
+  you.** Above the prompt and in the Ctrl-G overlay, a running subagent's
+  line now adds the tool it is in once that has run 10 seconds
+  (`bash 2m10s`), `quiet 45s` once nothing has come from it for 30 seconds
+  (text it is still writing counts),
+  and `⚠ waiting on you` while it waits on your approval or answer. The
+  status line's count says how many wait (`[3 subagents · 1 waiting]`).
+  The times go on counting every second, also between turns while a
+  background subagent runs. Nothing changes colour: a long build and a hung
+  command read the same until you look.
 
 ### Changed
 
