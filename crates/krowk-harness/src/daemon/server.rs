@@ -829,6 +829,7 @@ impl State {
         {
             hub.head = Some(ev.id.clone());
             own_log = Some(Rc::from(ev.id.as_str()));
+            let over = matches!(ev.body, LogBody::TurnCompleted { .. });
             match ev.body {
                 // The host that runs it is the one whose turn started —
                 // never one whose command was refused (a second `--resume`
@@ -842,8 +843,9 @@ impl State {
                 _ => {}
             }
             // The log holds everything up to here: what catching up
-            // replays of the turn starts after it.
-            hub.turn.clear();
+            // replays of the turn starts after it, but for the running
+            // children's state, which no log holds.
+            hub.turn.logged(over);
         } else if hub.running {
             hub.turn.push(root, seq, line.clone(), json.len() + 64);
         }

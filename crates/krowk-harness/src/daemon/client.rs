@@ -204,7 +204,17 @@ impl Client {
             let (inner, lines_tx) = (inner.clone(), lines_tx.clone());
             tokio::spawn(async move {
                 while let Ok(Some(line)) = lines.next_line().await {
-                    let Ok(f) = serde_json::from_str::<ServerFrame>(&line) else { continue };
+                    let f = match serde_json::from_str::<ServerFrame>(&line) {
+                        Ok(f) => f,
+                        // A frame of a newer daemon, or a line in it this
+                        // client does not know: skipped alone, and its place
+                        // in the stream still counted, so a resume does not
+                        // ask for it again.
+                        Err(_) => {
+                            skipped(&inner, &line);
+                            continue;
+                        }
+                    };
                     match f {
                         ServerFrame::Line { line, session, cmd, seq, .. } => {
                             let key = if session.is_empty() { line.session_id().to_string() } else { session };
@@ -435,5 +445,65 @@ impl Client {
             Ok(ServerFrame::Status { status, .. }) => Ok(status),
             _ => Err(gone()),
         }
+    }
+}
+
+/// Counts the `seq` of a `line` this client could not read in its session's
+/// cursor.
+fn skipped(inner: &Mutex<Inner>, raw: &str) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else { return };
+    let (Some("line"), Some(seq), Some(session)) = (v["type"].as_str(), v["seq"].as_u64(), v["session"].as_str().filter(|s| !s.is_empty())) else { return };
+    let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
+    let c = i.cursors.entry(session.to_string()).or_default();
+    c.0 = c.0.max(seq);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tokio::net::UnixListener;
+
+    /// R-SUB-9: a line from a newer daemon that this client cannot read is
+    /// skipped alone — the lines around it reach the stream, and the cursor
+    /// a resume asks from counts it.
+    #[tokio::test]
+    async fn r_sub_9_a_line_the_client_does_not_know_is_skipped_and_the_rest_reach_its_stream() {
+        let dir = std::env::temp_dir().join(format!("krowk-client-skip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("host.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let daemon = tokio::spawn(async move {
+            let (s, _) = listener.accept().await.unwrap();
+            let (r, mut w) = s.into_split();
+            let mut lines = BufReader::new(r).lines();
+            lines.next_line().await.unwrap();
+            let mut send = async |v: serde_json::Value| w.write_all(format!("{v}\n").as_bytes()).await.unwrap();
+            send(json!({"type": "welcome", "protocolVersion": PROTOCOL_VERSION, "krowkVersion": "test", "pid": 1, "epoch": 7})).await;
+            let attach: serde_json::Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let notice = |text: &str, seq: u64| json!({"type": "line", "session": "s", "seq": seq, "line": {"type": "notice", "sessionId": "s", "turnId": "t", "text": text}});
+            send(notice("before", 1)).await;
+            send(json!({"type": "line", "session": "s", "seq": 2, "line": {"type": "subagent.someday", "sessionId": "kid"}})).await;
+            send(notice("after", 3)).await;
+            send(json!({"type": "line", "session": "s", "seq": 4, "line": {"type": "subagent.someday", "sessionId": "kid"}})).await;
+            send(json!({"type": "attached", "id": attach["id"], "sessionId": "s", "running": true})).await;
+            lines.next_line().await.ok();
+        });
+        let c = Client::connect(&sock, &dir, "test", false).await.ok().expect("connected");
+        let (tx, mut rx) = mpsc::channel(8);
+        assert!(c.attach("s", None, tx).await.unwrap());
+        let mut texts = Vec::new();
+        while texts.len() < 2 {
+            match rx.recv().await.unwrap() {
+                StreamLine::Live(LiveEvent::Notice { text, .. }) => texts.push(text),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(texts, ["before", "after"]);
+        assert_eq!(c.resume_of("s").after_seq, 4, "the last line, unread, is counted all the same");
+        drop(c);
+        daemon.abort();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -266,6 +266,45 @@ impl Usage {
     }
 }
 
+/// Who runs a subagent's loop (R-SUB-7).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum RanBy {
+    /// krowk's own loop, through its `subagent` tool.
+    #[default]
+    Krowk,
+    /// Claude Code's `Agent` tool.
+    Claude,
+    /// A Codex child thread.
+    Codex,
+}
+
+/// Where a subagent stands, as its `subagent.status` says (R-SUB-9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ChildState {
+    Running,
+    Done,
+    Interrupted,
+    Failed,
+}
+
+/// The tool call a subagent is in, and when it began (ms since the epoch).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildTool {
+    pub name: String,
+    pub started_ms: i64,
+}
+
+/// What a subagent waits on the person for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Waiting {
+    Approval,
+    Question,
+}
+
 /// How a turn ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -735,6 +774,14 @@ pub enum LogBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
         model: ModelRef,
+        /// Who runs its loop (R-SUB-7): krowk's own, or a backend's agent.
+        /// A log written before the field existed reads as `krowk`.
+        #[serde(default)]
+        ran_by: RanBy,
+        /// The backend's own id for it: Claude Code's `task_id`, Codex's
+        /// thread id. Absent for krowk's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        backend_id: Option<String>,
     },
     /// The session's todo list, whole, as `todo_write` last set it
     /// (R-TODO-2): each write replaces the list before it.
@@ -890,6 +937,24 @@ pub enum LiveEvent {
     /// and between turns alike, to a host's watchers (`Host::watch`).
     #[serde(rename = "background")]
     Background { session_id: String, running: u32 },
+    /// A subagent's state, under its own session id (R-SUB-9): sent on
+    /// every change of it — a tool starts or ends, an approval or a
+    /// question waits or is answered, a response completes, the child ends
+    /// — and never per text delta. Timestamps, not durations, so every
+    /// client reads how long against its own clock.
+    #[serde(rename = "subagent.status")]
+    SubagentStatus {
+        session_id: String,
+        status: ChildState,
+        /// The call it is in, or null.
+        tool: Option<ChildTool>,
+        /// When anything last arrived from it (ms since the epoch).
+        last_event_ms: i64,
+        /// What it waits on the person for, or null.
+        waiting: Option<Waiting>,
+        /// What it has used so far.
+        tokens: i64,
+    },
     /// A backend began a turn nobody prompted — Claude Code answering a
     /// background agent that finished — and it waits for `continue`. Sent
     /// to a host's watchers, between turns.
@@ -986,7 +1051,7 @@ impl StreamLine {
             StreamLine::Log(ev) => &ev.session_id,
             StreamLine::Live(LiveEvent::ItemStarted { session_id, .. } | LiveEvent::ItemDelta { session_id, .. }) => session_id,
             StreamLine::Live(LiveEvent::Cost { session_id, .. } | LiveEvent::Notice { session_id, .. } | LiveEvent::Limits { session_id, .. }) => session_id,
-            StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. } | LiveEvent::Background { session_id, .. }) => session_id,
+            StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. } | LiveEvent::Background { session_id, .. } | LiveEvent::SubagentStatus { session_id, .. }) => session_id,
             StreamLine::Live(LiveEvent::ApprovalRequested(r)) => &r.session_id,
             StreamLine::Live(LiveEvent::ApprovalResolved { session_id, .. }) => session_id,
             StreamLine::Live(LiveEvent::Result(r)) => &r.session_id,

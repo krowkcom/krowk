@@ -209,9 +209,18 @@ pub struct Welcome {
 /// A batch's body: the frames the host sent in one display frame.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Batch {
+    /// Read one by one: a line this viewer does not know — a frame a newer
+    /// host sends — is skipped, and the rest of the batch still applies.
+    #[serde(deserialize_with = "known_lines")]
     pub lines: Vec<crate::protocol::StreamLine>,
     /// The log's head once the chunks written so far are in.
     pub head: Option<store::Head>,
+}
+
+/// The lines of a batch this krowk can read, in order, each decoded alone.
+fn known_lines<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<crate::protocol::StreamLine>, D::Error> {
+    let raw = Vec::<Value>::deserialize(d)?;
+    Ok(raw.into_iter().filter_map(|l| serde_json::from_value(l).ok()).collect())
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, String> {

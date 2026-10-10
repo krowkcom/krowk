@@ -88,8 +88,9 @@ pub enum EngineEvent {
     /// `todo_write` replaced the session's todo list: the host logs it.
     Todos { todos: Vec<Todo> },
     /// A subagent started, as the child session `session_id`, answering
-    /// the tool call `call_id`: the host logs the link.
-    SubagentStarted { call_id: String, session_id: String, description: String, agent: Option<String>, model: ModelRef },
+    /// the tool call `call_id`: the host logs the link, with who runs it
+    /// and the backend's own id for it (R-SUB-7).
+    SubagentStarted { call_id: String, session_id: String, description: String, agent: Option<String>, model: ModelRef, ran_by: crate::protocol::RanBy, backend_id: Option<String> },
     /// How close the instance is to its rate or usage limit, as its
     /// provider just said (R-INST-6).
     Limits(LimitStatus),

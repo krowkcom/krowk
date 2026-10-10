@@ -294,6 +294,18 @@
         "model": {
           "$ref": "#/$defs/ModelRef"
         },
+        "ranBy": {
+          "description": "Who runs its loop (R-SUB-7): krowk's own, or a backend's agent.\nA log written before the field existed reads as `krowk`.",
+          "$ref": "#/$defs/RanBy",
+          "default": "krowk"
+        },
+        "backendId": {
+          "description": "The backend's own id for it: Claude Code's `task_id`, Codex's\nthread id. Absent for krowk's own.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "type": {
           "type": "string",
           "const": "subagent.started"
@@ -803,6 +815,26 @@
       "enum": [
         "subscription",
         "apiKey"
+      ]
+    },
+    "RanBy": {
+      "description": "Who runs a subagent's loop (R-SUB-7).",
+      "oneOf": [
+        {
+          "description": "krowk's own loop, through its `subagent` tool.",
+          "type": "string",
+          "const": "krowk"
+        },
+        {
+          "description": "Claude Code's `Agent` tool.",
+          "type": "string",
+          "const": "claude"
+        },
+        {
+          "description": "A Codex child thread.",
+          "type": "string",
+          "const": "codex"
+        }
       ]
     },
     "Todo": {

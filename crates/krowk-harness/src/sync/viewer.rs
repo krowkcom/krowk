@@ -827,3 +827,31 @@ fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mut Op
     }
     gap
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use krowk_client::e2e::SessionKey;
+    use krowk_client::protocol::frame::HEADER;
+    use krowk_client::relay_link::HostLink;
+
+    /// R-SUB-9: a batch from a newer host, holding a line this viewer does
+    /// not know, still applies every other line, and asks for no resync.
+    #[test]
+    fn r_sub_9_a_line_the_viewer_does_not_know_is_skipped_and_the_rest_of_its_batch_applies() {
+        let key = SessionKey::generate();
+        let (mut host, mut link) = (HostLink::new(&key, [7; 16]), ViewerLink::new(&key, [7; 16], 1));
+        host.open(1, &link.hello(b"{}").unwrap()).unwrap();
+        let w = host.welcome(1, b"{}").unwrap();
+        link.open_routed(&w[HEADER..]).unwrap();
+        let notice = |text: &str| json!({"type": "notice", "sessionId": "s", "turnId": "t", "text": text});
+        let body = json!({"lines": [notice("before"), {"type": "subagent.someday", "sessionId": "kid", "what": 1}, {"type": "notice", "sessionId": "s"}, notice("after")], "head": null});
+        let b = host.batch(&serde_json::to_vec(&body).unwrap(), false).unwrap();
+        let (mut seen, mut last, mut asked, mut frame, mut applied) = (HashSet::new(), None, HashSet::new(), Vec::new(), 0);
+        let gap = apply(&mut link, &b, &mut seen, &mut last, &mut asked, &mut frame, &mut applied);
+        assert_eq!(gap, None, "opened, in order: no resync asked for");
+        let texts: Vec<&str> = frame.iter().filter_map(|u| match u { Update::Line(StreamLine::Live(LiveEvent::Notice { text, .. })) => Some(text.as_str()), _ => None }).collect();
+        assert_eq!(texts, ["before", "after"]);
+        assert_eq!(frame.len(), 2, "the unknown line, and the one missing its fields, are skipped");
+    }
+}

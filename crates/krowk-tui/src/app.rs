@@ -1648,6 +1648,8 @@ impl App {
                     self.dirty = true;
                 }
             }
+            // A child's, which reaches `on_sub_line`: never the session's own.
+            StreamLine::Live(LiveEvent::SubagentStatus { .. }) => {}
         }
     }
 
@@ -3144,7 +3146,7 @@ fn line_session(line: &StreamLine) -> Option<&str> {
         StreamLine::Live(LiveEvent::Result(r)) => &r.session_id,
         StreamLine::Live(LiveEvent::ApprovalRequested(r)) => &r.session_id,
         StreamLine::Live(LiveEvent::ApprovalResolved { session_id, .. }) => session_id,
-        StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. } | LiveEvent::Background { session_id, .. }) => session_id,
+        StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. } | LiveEvent::Background { session_id, .. } | LiveEvent::SubagentStatus { session_id, .. }) => session_id,
     })
 }
 
@@ -4466,7 +4468,7 @@ mod tests {
             a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("i{call}"), item: Item::ToolCall { call_id: call.into(), name: "subagent".into(), input: serde_json::json!({"description": what, "prompt": "…"}) } }));
             // The child's root can arrive before the parent logs the link.
             a.on_line(&child_log(child, LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: Some("s".into()), agent: Some("explorer".into()) }));
-            a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: child.into(), description: what.into(), agent: Some("explorer".into()), model: model.clone() }));
+            a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: child.into(), description: what.into(), agent: Some("explorer".into()), model: model.clone(), ran_by: Default::default(), backend_id: None }));
         }
         assert_eq!(a.session_id.as_deref(), Some("s"), "a child's root is not the session's");
         a.on_line(&child_log("k1", LogBody::ItemCompleted { turn_id: "u".into(), item_id: "x".into(), item: Item::ToolCall { call_id: "r".into(), name: "grep".into(), input: serde_json::json!({"pattern": "fn test"}) } }));
@@ -4507,7 +4509,7 @@ mod tests {
         let mut a = app();
         a.session_id = Some("s".into());
         let model = ModelRef { instance: "anthropic".into(), model: "claude-x".into() };
-        a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "kid".into(), description: "review the store".into(), agent: None, model }));
+        a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "kid".into(), description: "review the store".into(), agent: None, model, ran_by: Default::default(), backend_id: None }));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r".into(), item: Item::ToolResult { call_id: "c1".into(), output: "moved to background as agent kid".into(), is_error: false } }));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "n".into(), item: Item::user("<background-done id=\"kid\" status=\"completed\">\nfine\n</background-done>") }));
         let shown = text(&a.take_pending());

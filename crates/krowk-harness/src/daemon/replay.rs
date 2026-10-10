@@ -14,7 +14,7 @@
 //! the text after it: nothing twice.
 
 use super::outbox::{Slot, slot_of};
-use crate::protocol::{Delta, LiveEvent, StreamLine};
+use crate::protocol::{ChildState, Delta, LiveEvent, StreamLine};
 use std::collections::HashMap;
 
 /// The replay kept per session, in bytes of the frames as sent.
@@ -41,10 +41,14 @@ impl Tail {
         Tail { cap, ..Tail::default() }
     }
 
-    pub fn clear(&mut self) {
+    /// The session logged a line of its own: the log holds everything up
+    /// to it, so nothing before it is replayed — but a running child's
+    /// `subagent.status` (R-SUB-9), which no log holds, until the turn is
+    /// over (`turn_over`) or the child's frame says it ended.
+    pub fn logged(&mut self, turn_over: bool) {
         self.kept.clear();
-        self.slots.clear();
-        self.bytes = 0;
+        self.slots.retain(|_, k| !turn_over && matches!(k.line, StreamLine::Live(LiveEvent::SubagentStatus { status: ChildState::Running, .. })));
+        self.bytes = self.slots.values().map(|k| k.weight).sum();
     }
 
     pub fn bytes(&self) -> usize {
@@ -182,6 +186,28 @@ mod tests {
         // One progress frame, the latest.
         let costs = t.after(0).into_iter().filter(|(_, l)| matches!(l, StreamLine::Live(LiveEvent::Cost { .. }))).count();
         assert_eq!(costs, 1);
+    }
+
+    /// R-SUB-9: a running child's state outlives the parent's logged
+    /// lines — no log holds it — and goes once the child ends or the turn
+    /// is over.
+    #[test]
+    fn r_sub_9_a_running_childs_status_is_replayed_past_the_parents_log_lines() {
+        let status = |child: &str, status: ChildState| StreamLine::Live(LiveEvent::SubagentStatus { session_id: child.into(), status, tool: None, last_event_ms: 1, waiting: None, tokens: 0 });
+        let children = |t: &Tail| -> Vec<(u64, String)> { t.after(0).into_iter().map(|(s, l)| (s, l.session_id().to_string())).collect() };
+        let mut t = Tail::new(CAP);
+        t.push("s", 1, status("k1", ChildState::Running), 100);
+        t.push("s", 2, status("k2", ChildState::Running), 100);
+        t.push("s", 3, delta("s", "i", "x"), 100);
+        t.logged(false);
+        assert_eq!(children(&t), [(1, "k1".to_string()), (2, "k2".to_string())], "the parent's own line went; the children's state stayed");
+        assert_eq!(t.bytes(), 200);
+        t.push("s", 4, status("k2", ChildState::Done), 100);
+        t.logged(false);
+        assert_eq!(children(&t), [(1, "k1".to_string())], "an ended child's last frame goes with the next logged line");
+        t.logged(true);
+        assert!(t.after(0).is_empty(), "the turn's end takes the rest");
+        assert_eq!(t.bytes(), 0);
     }
 
     #[test]

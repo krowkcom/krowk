@@ -524,6 +524,18 @@
             "model": {
               "$ref": "#/$defs/ModelRef"
             },
+            "ranBy": {
+              "description": "Who runs its loop (R-SUB-7): krowk's own, or a backend's agent.\nA log written before the field existed reads as `krowk`.",
+              "$ref": "#/$defs/RanBy",
+              "default": "krowk"
+            },
+            "backendId": {
+              "description": "The backend's own id for it: Claude Code's `task_id`, Codex's\nthread id. Absent for krowk's own.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "type": "string",
               "const": "subagent.started"
@@ -1035,6 +1047,26 @@
         "apiKey"
       ]
     },
+    "RanBy": {
+      "description": "Who runs a subagent's loop (R-SUB-7).",
+      "oneOf": [
+        {
+          "description": "krowk's own loop, through its `subagent` tool.",
+          "type": "string",
+          "const": "krowk"
+        },
+        {
+          "description": "Claude Code's `Agent` tool.",
+          "type": "string",
+          "const": "claude"
+        },
+        {
+          "description": "A Codex child thread.",
+          "type": "string",
+          "const": "codex"
+        }
+      ]
+    },
     "Todo": {
       "description": "One item of a todo list. Fields other harnesses' todo tools add —\nClaude Code's `activeForm`, an `id`, a `priority` — are taken and\ndropped, so a model trained on theirs is not refused for them.",
       "type": "object",
@@ -1412,6 +1444,61 @@
             "type",
             "sessionId",
             "running"
+          ]
+        },
+        {
+          "description": "A subagent's state, under its own session id (R-SUB-9): sent on\nevery change of it — a tool starts or ends, an approval or a\nquestion waits or is answered, a response completes, the child ends\n— and never per text delta. Timestamps, not durations, so every\nclient reads how long against its own clock.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/ChildState"
+            },
+            "tool": {
+              "description": "The call it is in, or null.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ChildTool"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastEventMs": {
+              "description": "When anything last arrived from it (ms since the epoch).",
+              "type": "integer",
+              "format": "int64"
+            },
+            "waiting": {
+              "description": "What it waits on the person for, or null.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Waiting"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tokens": {
+              "description": "What it has used so far.",
+              "type": "integer",
+              "format": "int64"
+            },
+            "type": {
+              "type": "string",
+              "const": "subagent.status"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "status",
+            "lastEventMs",
+            "tokens"
           ]
         },
         {
@@ -1885,6 +1972,41 @@
       "required": [
         "taskId",
         "description"
+      ]
+    },
+    "ChildState": {
+      "description": "Where a subagent stands, as its `subagent.status` says (R-SUB-9).",
+      "type": "string",
+      "enum": [
+        "running",
+        "done",
+        "interrupted",
+        "failed"
+      ]
+    },
+    "ChildTool": {
+      "description": "The tool call a subagent is in, and when it began (ms since the epoch).",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "startedMs": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "name",
+        "startedMs"
+      ]
+    },
+    "Waiting": {
+      "description": "What a subagent waits on the person for.",
+      "type": "string",
+      "enum": [
+        "approval",
+        "question"
       ]
     },
     "HostStatus": {

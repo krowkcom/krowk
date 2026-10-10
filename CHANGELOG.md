@@ -24,9 +24,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
   finish while a background subagent still runs: the agent waits for it,
   reads what it found, and answers. Interrupting the turn stops them too.
   They count in `[N background]`.
+- **Each subagent reports what it is doing as it goes.** While a subagent
+  runs, krowk sends a `subagent.status` line each time its state changes:
+  the tool it is in and since when, whether it waits on your approval or
+  answer, the tokens it has used, and how it ended. Programs reading
+  `--output-format stream-json`, and anything attached to krowk's host,
+  get it without working it out from the raw lines; the TUI will show it
+  next. A subagent's start in the session log now also says who ran it
+  (`ranBy`); older logs read as krowk's own.
 
 ### Changed
 
+- **A synced session keeps playing when a newer host sends something
+  unknown.** A device following a session skips a line it does not
+  understand and shows the rest, where it used to drop the whole batch.
 - **A message you send while a command or subagents run reaches the agent
   within seconds.** A long build or test run, or a batch of subagents, used
   to hold your message until the slowest finished, sometimes for minutes.

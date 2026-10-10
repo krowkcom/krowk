@@ -16,7 +16,7 @@ use crate::budget::Budget;
 use crate::agents;
 use crate::engine::{BoxFuture, Engine, EngineError, EngineEvent, Events, HistoryItem, Idle, Steer, Steers, TurnContext, TurnEnd};
 use crate::images;
-use crate::subagent::{AgentRun, AgentsConfig, ParentTurn, Spawn, Subagents};
+use crate::subagent::{AgentRun, AgentsConfig, ChildWatch, ParentTurn, Spawn, Subagents};
 use crate::evidence::{Evidence, Publisher};
 use crate::instances::{Asked, Auth, Registry, Resolved};
 use crate::oauth;
@@ -27,7 +27,7 @@ use crate::toolset;
 use crate::handoff::{self, TurnSpan};
 use crate::instances::Rollover;
 use crate::protocol::{
-    Billing, BudgetLimits, Command, ContextRecord, Effort, Item, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchOffer, SwitchReason, TurnStatus, Usage,
+    Billing, BudgetLimits, ChildState, Command, ContextRecord, Effort, Item, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RanBy, RunResult, StreamLine, SwitchOffer, SwitchReason, TurnStatus, Usage,
     WireApi,
 };
 use crate::claude::ClaudeEngine;
@@ -989,7 +989,7 @@ impl Shared {
         let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, child, cwd, &self.cfg.krowk_version, Some(&p.session_id), run.name.as_deref()).await.map_err(log_failure)?;
         let _ = spawn.out.send(StreamLine::Log(root.clone())).await;
         let child = log.session_id.clone();
-        let _ = events.send(EngineEvent::SubagentStarted { call_id: call_id.into(), session_id: child.clone(), description: description.into(), agent: run.name.clone(), model: model.clone() }).await;
+        let _ = events.send(EngineEvent::SubagentStarted { call_id: call_id.into(), session_id: child.clone(), description: description.into(), agent: run.name.clone(), model: model.clone(), ran_by: RanBy::Krowk, backend_id: None }).await;
         let budget = Budget::for_subagent(&p.budget, &child, &instance.provider, &model.model, std::slice::from_ref(&root));
         let producer = crate::evidence::Producer::new(&instance, &model.model);
         let plan = TurnPlan {
@@ -1062,6 +1062,7 @@ impl Shared {
             wire: plan.wire,
             provider: plan.provider.clone(),
             backend: plan.past.backend.clone(),
+            child: ChildWatch::of(plan.parent.as_ref(), &session_id),
             parent: plan.parent.clone(),
             handoff: None,
         };
@@ -1228,7 +1229,7 @@ impl Shared {
         // subagents' are part of its turn (R-SUB-4).
         let (children_usd, children_unpriced) = spawned.as_ref().map_or((0.0, false), Subagents::spent);
         let completed = LogBody::TurnCompleted { turn_id: turn_id.clone(), status, usage: tally.usage, duration_ms, error: error.clone(), reported_cost_usd: tally.reported };
-        let next = w.close(completed, &model, after.as_ref(), &mut plan.here, next).await?;
+        let next = w.finish(completed, status, &model, after.as_ref(), &mut plan.here, next).await?;
         // Off the daemon's thread, and not waited for: the result goes out
         // as soon as the turn has ended, and the daemon waits for the sync
         // on its way out (`log::synced`).
@@ -1328,6 +1329,17 @@ impl Shared {
         (resume, plan)
     }
 
+}
+
+/// How a subagent ended, as its last `subagent.status` says: failed too
+/// when its log could not be closed.
+fn ended(status: TurnStatus, closed: bool) -> ChildState {
+    match status {
+        _ if !closed => ChildState::Failed,
+        TurnStatus::Completed => ChildState::Done,
+        TurnStatus::Interrupted => ChildState::Interrupted,
+        TurnStatus::Failed => ChildState::Failed,
+    }
 }
 
 /// A move `rollover = "auto"` makes: from the limited model to the next
@@ -1629,6 +1641,9 @@ struct Writer<'a> {
     backend: Option<BackendRecord>,
     /// A subagent's parent turn, whose spend the subagent's calls add to.
     parent: Option<ParentLink>,
+    /// A subagent's state, sent as `subagent.status` on each change
+    /// (R-SUB-9).
+    child: Option<ChildWatch>,
     /// What a backend was sent to bring it up to date, for the turn's
     /// context record.
     handoff: Option<String>,
@@ -1648,6 +1663,13 @@ impl Writer<'_> {
 
     async fn live(&self, ev: LiveEvent) {
         let _ = self.out.send(StreamLine::Live(ev)).await;
+    }
+
+    /// Where a subagent stands, on the parent's stream (R-SUB-9).
+    async fn child_status(&self, status: ChildState) {
+        if let Some(c) = &self.child {
+            self.live(c.frame(status)).await;
+        }
     }
 
     /// Where a metered call left the turn and the session: the result's
@@ -1722,6 +1744,8 @@ impl Writer<'_> {
                 *text = format!("{skill}\n\n{prompt}");
             }
         }
+        // A subagent is under way once it has its prompt.
+        self.child_status(ChildState::Running).await;
         Ok(())
     }
 
@@ -1730,6 +1754,13 @@ impl Writer<'_> {
         for why in problems {
             self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text: format!("an agent definition was skipped — {why}") }).await;
         }
+    }
+
+    /// `close`, and a subagent's last `subagent.status`: how it ended.
+    async fn finish(&mut self, completed: LogBody, status: TurnStatus, model: &ModelRef, after: Option<&(ModelRef, SwitchReason, String)>, here: &mut Registration, next: Option<Rolling>) -> Result<Option<Rolling>, EngineError> {
+        let closed = self.close(completed, model, after, here, next).await;
+        self.child_status(ended(status, closed.is_ok())).await;
+        closed
     }
 
     /// A turn's closing records: `completed`, the switch `after` its
@@ -1808,6 +1839,17 @@ impl Writer<'_> {
     }
 
     async fn handle(&mut self, ev: EngineEvent, session_id: &str, tally: &mut Tally, texts: &mut HashMap<String, String>, model: &ModelRef, budget: &Budget) -> Result<(), EngineError> {
+        // A subagent's frame follows the line it reports on, once per
+        // change of its state, never per delta.
+        let changed = self.child.as_mut().is_some_and(|c| c.note(&ev, krowk_store::now_ms()));
+        self.handle_event(ev, session_id, tally, texts, model, budget).await?;
+        if changed {
+            self.child_status(ChildState::Running).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_event(&mut self, ev: EngineEvent, session_id: &str, tally: &mut Tally, texts: &mut HashMap<String, String>, model: &ModelRef, budget: &Budget) -> Result<(), EngineError> {
         let turn_id = self.turn_id.clone();
         match ev {
             EngineEvent::Context { system, tools } => self.record_context(turn_id, system, tools, model).await?,
@@ -1868,8 +1910,8 @@ impl Writer<'_> {
             EngineEvent::Todos { todos } => {
                 self.log(LogBody::TodosUpdated { turn_id, todos }).await?;
             }
-            EngineEvent::SubagentStarted { call_id, session_id: child, description, agent, model } => {
-                self.log(LogBody::SubagentStarted { turn_id, call_id, subagent_session_id: child, description, agent, model }).await?;
+            EngineEvent::SubagentStarted { call_id, session_id: child, description, agent, model, ran_by, backend_id } => {
+                self.log(LogBody::SubagentStarted { turn_id, call_id, subagent_session_id: child, description, agent, model, ran_by, backend_id }).await?;
             }
             EngineEvent::Limits(limit) => {
                 self.live(LiveEvent::Limits { session_id: session_id.into(), turn_id, instance: model.instance.clone(), limit }).await;
