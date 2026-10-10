@@ -104,6 +104,22 @@ pub enum EngineEvent {
     /// Between turns only, through `Idle`: the backend began a turn by
     /// itself, and it waits for `Command::Continue` (`turn.unprompted`).
     Unprompted { reason: String },
+    /// One of the backend's own agents started (R-SUB-7): Claude Code's
+    /// task `task_id`, answering the conversation's `Agent` call `call_id`,
+    /// with what the parent asked of it (R-SUB-8) and whether it runs in the
+    /// background, outliving the turn. Its `BackendChild` events follow,
+    /// the prompt first, then its `BackendChildEnded`; in a turn's stream
+    /// or, between turns, through `Idle`.
+    BackendChildStarted { task_id: String, call_id: String, description: String, agent: Option<String>, prompt: String, background: bool },
+    /// One event of that agent's own conversation, in order: its items,
+    /// whole (a `ToolCall` completing is when its tool starts, the
+    /// `ToolResult` when it ends; each item's started and completed come
+    /// together), and its responses, which carry no usage — its calls are
+    /// metered once, as the parent's `SubagentResponse`.
+    BackendChild { task_id: String, event: Box<EngineEvent> },
+    /// It ended, and nothing more of it follows: how, and why when the
+    /// backend or krowk said.
+    BackendChildEnded { task_id: String, status: crate::protocol::ChildState, error: Option<String> },
 }
 
 /// A turn a backend began by itself, waiting for `Command::Continue`.

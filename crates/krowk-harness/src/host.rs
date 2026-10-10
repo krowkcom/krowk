@@ -1921,6 +1921,9 @@ impl Writer<'_> {
             }
             // Said between turns only, through the backend's `Idle`.
             EngineEvent::Unprompted { .. } => {}
+            // A backend's agent's own conversation: not written anywhere
+            // yet, its calls metered as `SubagentResponse` above.
+            EngineEvent::BackendChildStarted { .. } | EngineEvent::BackendChild { .. } | EngineEvent::BackendChildEnded { .. } => {}
             EngineEvent::Handoff { how, from_instance, summarized_turns, recent_turns, fell_back, text } => {
                 self.log(LogBody::BackendHandoff { turn_id, how, from_instance, summarized_turns, recent_turns, fell_back }).await?;
                 if !text.is_empty() {
