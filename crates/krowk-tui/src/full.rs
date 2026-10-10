@@ -218,6 +218,26 @@ impl<W: Write> Full<W> {
     /// cursor at `caret` (column, row) — as one synchronized write. A frame
     /// that changes nothing on screen sends nothing.
     pub fn frame(&mut self, lines: &[Line<'static>], rows: &[Line<'static>], caret: (u16, u16)) -> io::Result<()> {
+        self.paint(lines, None, rows, caret)
+    }
+
+    /// A frame of the full-height view (R-SUB-11): `view` where the
+    /// conversation's rows are (`view_rows` of them), `rows` pinned under it
+    /// as ever. No screen switch of its own: this one already has the
+    /// alternate screen. `lines` join the conversation unseen, and the next
+    /// `frame` shows it again as it was, scrolled where it was.
+    pub fn view(&mut self, lines: &[Line<'static>], view: &[Line<'static>], rows: &[Line<'static>], caret: (u16, u16)) -> io::Result<()> {
+        self.selection = None;
+        self.paint(lines, Some(view), rows, caret)
+    }
+
+    /// The rows above `live` rows of the live region: the conversation's,
+    /// or the view's.
+    pub fn view_rows(&self, live: usize) -> u16 {
+        self.size.height - (live as u16).min(self.size.height)
+    }
+
+    fn paint(&mut self, lines: &[Line<'static>], shown: Option<&[Line<'static>]>, rows: &[Line<'static>], caret: (u16, u16)) -> io::Result<()> {
         let mark = self.buf.mark();
         let room = self.room(self.size.width);
         for line in lines {
@@ -232,13 +252,18 @@ impl<W: Write> Full<W> {
         let selected = self.selection.map(Selection::ordered);
         let pad = self.inset(width);
         let inner = width - 2 * pad;
-        let below = (self.kept.scroll > 0 && view > 0).then(|| Line::from(Span::styled(format!("↓ {} more below · PgDn", self.kept.scroll), crate::look::dim())));
+        let below = (self.kept.scroll > 0 && view > 0 && shown.is_none()).then(|| Line::from(Span::styled(format!("↓ {} more below · PgDn", self.kept.scroll), crate::look::dim())));
         let at = (pad + caret.0.min(inner.saturating_sub(1)), self.kept.view + caret.1.min(live.saturating_sub(1)));
         let conversation = self.kept.rows.range(start..end);
         self.buf.clone().write_all(AUTOWRAP_OFF)?;
         let drawn = self.terminal.draw(|f| {
             let b = f.buffer_mut();
-            for (y, row) in conversation.enumerate() {
+            if let Some(shown) = shown {
+                for (y, row) in shown.iter().take(view).enumerate() {
+                    band(b, row, y as u16, pad, width);
+                }
+            }
+            for (y, row) in conversation.enumerate().filter(|_| shown.is_none()) {
                 band(b, row, y as u16, pad, width);
                 if let Some(((r0, c0), (r1, c1))) = selected
                     && (r0..=r1).contains(&(start + y))
@@ -896,6 +921,40 @@ mod tests {
         let out = String::from_utf8_lossy(&t.out[start..]).into_owned();
         assert!(out.find("\x1b[?1049l").unwrap() < out.find("see").unwrap(), "printed on the shell's screen: {out:?}");
         assert!(!out.chars().any(|c| ('\u{E0000}'..='\u{E007F}').contains(&c)), "{out:?}");
+    }
+
+    #[test]
+    fn r_sub_11_the_view_takes_the_conversation_s_rows_and_closing_puts_it_back_as_it_was() {
+        let size = Size { width: 30, height: 8 };
+        let mut t = Full::new(Vec::new(), size).unwrap();
+        t.frame(&lines(20), &footer(), (4, 0)).unwrap();
+        t.scroll(3);
+        t.frame(&[], &footer(), (4, 0)).unwrap();
+        let before = screen(&t.out, size);
+        assert_eq!(t.view_rows(footer().len()), 6);
+        let view: Vec<Line<'static>> = (0..6).map(|i| Line::from(format!("view {i}"))).collect();
+        let start = t.out.len();
+        t.view(&[Line::from("arrived")], &view, &footer(), (4, 0)).unwrap();
+        let s = screen(&t.out, size);
+        assert_eq!(s[..6], (0..6).map(|i| format!("view {i}")).collect::<Vec<_>>()[..], "{s:?}");
+        assert_eq!(s[6..], ["› hi", "status"].map(String::from), "the prompt and status stay pinned");
+        let sent = String::from_utf8_lossy(&t.out[start..]).into_owned();
+        assert!(!sent.contains("\x1b[?1049") && !sent.contains("\x1b[?47"), "no screen switch of its own: {sent:?}");
+        // A resize while open: drawn again at the new size.
+        let size = Size { width: 24, height: 10 };
+        t.resize(size).unwrap();
+        let view: Vec<Line<'static>> = (0..8).map(|i| Line::from(format!("view {i}"))).collect();
+        t.view(&[], &view, &footer(), (4, 0)).unwrap();
+        assert_eq!(screen(&t.out, size)[7], "view 7");
+        let size = Size { width: 30, height: 8 };
+        t.resize(size).unwrap();
+        t.frame(&[], &footer(), (4, 0)).unwrap();
+        let after = screen(&t.out, size);
+        assert!(!after.iter().any(|r| r.starts_with("view")), "{after:?}");
+        assert_eq!(after[..4], before[..4], "scrolled where it was, the line that arrived below: {after:?}");
+        assert!(after[5].starts_with("↓ 4 more below"), "{after:?}");
+        let out = String::from_utf8_lossy(&t.out).into_owned();
+        assert_eq!(out.matches("\x1b[?1049h").count(), 1, "the one screen it took at start");
     }
 
     #[test]

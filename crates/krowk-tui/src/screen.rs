@@ -33,6 +33,28 @@ impl<W: Write> Screen<W> {
         }
     }
 
+    /// The rows the full-height view (R-SUB-11) has with `live` rows of the
+    /// live region drawn: inline, the whole screen, which the view takes as
+    /// its live region; fullscreen, the conversation's, above the prompt and
+    /// the status line that stay pinned.
+    pub fn view_rows(&self, live: usize) -> u16 {
+        match self {
+            Screen::Full(t) => t.view_rows(live),
+            Screen::Inline(t) => t.size().height,
+        }
+    }
+
+    /// A frame with the full-height view open: `view`, `view_rows` of it.
+    /// `lines` print nowhere while it is (inline holds them, fullscreen
+    /// keeps them out of sight); the next `frame` closes it and puts the
+    /// conversation back as it was. Neither switches screens for it.
+    pub fn view(&mut self, lines: &[Line<'static>], view: &[Line<'static>], rows: &[Line<'static>], caret: (u16, u16)) -> io::Result<()> {
+        match self {
+            Screen::Full(t) => t.view(lines, view, rows, caret),
+            Screen::Inline(t) => t.view(lines, view),
+        }
+    }
+
     pub fn title(&mut self, title: &str) -> io::Result<()> {
         match self {
             Screen::Full(t) => t.title(title),
