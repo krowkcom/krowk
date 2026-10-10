@@ -900,13 +900,15 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     // directory, and whether it answers approvals; the rest go to the host
     // running the session, and a subagent's (an interrupt of one child) to
     // its parent's, whose turn runs it — whichever directory the client
-    // asking is in: a sync bridge's is not the terminal's that ran it.
+    // asking is in: a sync bridge's is not the terminal's that ran it. A
+    // child's own hub, made by a client following its id, is on that
+    // client's host and runs nothing: its parent's comes first.
     let known = if turn {
         None
     } else {
         root.as_ref().and_then(|r| {
             let s = state.borrow();
-            s.hubs.get(r).or_else(|| s.hubs.values().find(|h| h.children.contains(r))).map(|h| h.host.clone())
+            s.hubs.get(r).filter(|h| h.running).or_else(|| s.hubs.values().find(|h| h.children.contains(r))).or_else(|| s.hubs.get(r)).map(|h| h.host.clone())
         })
     };
     // Working from here: a `stop` while a new directory's configuration is
