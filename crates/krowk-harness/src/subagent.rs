@@ -362,8 +362,16 @@ pub(crate) struct Spawn {
 }
 
 /// Where a foreground child's answer goes: its call, until a steer moves
-/// the call on (`None`), when it goes to the parent as a note instead.
-type Answer = Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<(String, bool)>>>>;
+/// the call on (`to` taken), when it goes to the parent as a note instead.
+type Answer = Arc<std::sync::Mutex<AnswerSlot>>;
+
+#[derive(Default)]
+struct AnswerSlot {
+    to: Option<tokio::sync::oneshot::Sender<(String, bool)>>,
+    /// The child has chosen to answer its call — its worktree applied to
+    /// the parent's checkout as a call's is — and is no longer moved.
+    bound: bool,
+}
 
 impl Subagents {
     /// What the turn's subagents have cost so far: USD, and whether any of
@@ -405,7 +413,7 @@ impl Subagents {
         let child = krowk_store::new_id();
         let answer: Answer = Arc::default();
         let (tx, rx) = tokio::sync::oneshot::channel();
-        *answer.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+        answer.lock().unwrap_or_else(|e| e.into_inner()).to = Some(tx);
         let task = self.spawn_child(call_id, item_id, input, events, child.clone(), answer.clone());
         // Where the turn's end waits for it, whatever becomes of its call.
         self.0.background.lock().unwrap_or_else(|e| e.into_inner()).push((child.clone(), task));
@@ -427,12 +435,12 @@ impl Subagents {
     /// it has answered already.
     fn moved(&self, answer: &Answer) -> bool {
         let mut slot = answer.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.is_none() {
+        if slot.to.is_none() || slot.bound {
             return false;
         }
         self.0.running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.0.host.jobs.agent_started(&self.0.parent.session_id);
-        *slot = None;
+        slot.to = None;
         true
     }
 
@@ -448,7 +456,7 @@ impl Subagents {
             let to_call = answer.clone();
             let ran = tokio::spawn(async move { run.run_as(&call_id, &item_id, &input, &events, id, &to_call).await }).await;
             let (text, failed, status) = ran.unwrap_or_else(|e| (format!("the subagent failed: {e}"), true, "failed"));
-            let to_call = answer.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let to_call = answer.lock().unwrap_or_else(|e| e.into_inner()).to.take();
             match to_call {
                 Some(tx) => {
                     let _ = tx.send((text, failed));
@@ -638,7 +646,13 @@ impl Subagents {
         let result = host.subagent(&self.0, call_id, &input.description, &prompt, model, run, (&child, &cwd, env), events).await;
         // In the background from the start, or moved there by a steer: no
         // call waits on it any more.
-        let background = answer.lock().unwrap_or_else(|e| e.into_inner()).is_none();
+        // Chosen under the slot's lock, and binding: a call still waiting
+        // can no longer be moved once its child applies its worktree.
+        let background = {
+            let mut slot = answer.lock().unwrap_or_else(|e| e.into_inner());
+            slot.bound = slot.to.is_some();
+            !slot.bound
+        };
         if let Ok(r) = &result {
             let mut spent = self.0.spent.lock().unwrap_or_else(|e| e.into_inner());
             match r.cost_usd {
