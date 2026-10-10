@@ -319,6 +319,17 @@ async fn renew_at_start(app: &mut App, client: &krowk_harness::daemon::remote::R
     }
 }
 
+/// A session resumed at start, replayed. With no `daemon`, nothing of it
+/// runs now: the children its log left unanswered ended with it, said with
+/// the rest of it, above the header. A daemon's sessions are known once it
+/// answers, and what ended is said then.
+fn resumed(app: &mut App, id: &str, daemon: bool) {
+    if !daemon {
+        app.end_replayed_children(true);
+    }
+    app.say(&format!("resumed session {id}"), app::dim());
+}
+
 async fn session(opts: Options) -> Outcome {
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(b"\x1b[?2004h");
@@ -343,7 +354,7 @@ async fn session(opts: Options) -> Outcome {
             Ok(events) => {
                 replayed_to = events.last().map(|e| e.id.clone());
                 runs_in = replay(&mut app, id, &events, &opts.host.registry).unwrap_or(runs_in);
-                app.say(&format!("resumed session {id}"), app::dim());
+                resumed(&mut app, id, opts.daemon.is_some());
             }
             Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(e) },
         }
@@ -410,6 +421,7 @@ async fn session(opts: Options) -> Outcome {
     // reached leaves them here, and says so.
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut live: Vec<String> = Vec::new();
+    let has_daemon = opts.daemon.is_some();
     let host = match (opened, opts.daemon) {
         (Some(client), _) => link::Link::Synced { host: local, client },
         (None, None) => link::Link::Local(local),
@@ -479,11 +491,13 @@ async fn session(opts: Options) -> Outcome {
         started_in,
         permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
     // A resumed session still running in the daemon is followed from where
-    // its log left off: the turn so far, then live.
-    if let Some(id) = opts.resume.clone()
-        && live.contains(&id)
-    {
-        ui.reattach(&mut app, &id, replayed_to.clone());
+    // its log left off: the turn so far, then live. One that is not left no
+    // child running: its log's unanswered children ended with it (with no
+    // daemon, `resumed` said so already).
+    match opts.resume.clone() {
+        Some(id) if live.contains(&id) => ui.reattach(&mut app, &id, replayed_to.clone()),
+        Some(_) if has_daemon => app.end_replayed_children(matches!(ui.host, link::Link::Local(_))),
+        _ => {}
     }
     let result = ui.run(&mut app, &mut term).await;
     ui.drain(&mut app);
@@ -2049,13 +2063,14 @@ impl<'h> Ui<'h> {
     }
 
     /// The Agents overlay takes the keys that move through it: select a
-    /// subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3).
+    /// subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3,
+    /// R-SUB-11).
     async fn agents_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
         match k.code {
             KeyCode::Up | KeyCode::Down => app.agent_move(if k.code == KeyCode::Up { -1 } else { 1 }),
             KeyCode::Enter => app.agent_toggle(),
             KeyCode::Char('x') => {
-                if let Some(id) = app.agent_selected_running()
+                if let Some(id) = app.agent_to_interrupt()
                     && let Err(e) = self.command(Command::Interrupt { session_id: id }).await
                 {
                     app.notice(&e.message);
@@ -2193,7 +2208,7 @@ impl<'h> Ui<'h> {
             help::Action::New => self.new_session(app),
             help::Action::Sessions => self.open_resume(app),
             help::Action::Todos => app.overlay = Overlay::Todos,
-            help::Action::Agents => app.overlay = Overlay::Agents,
+            help::Action::Agents => app.open_agents(),
             help::Action::Details => app.overlay = Overlay::Details,
             help::Action::Copy => copy(app),
             help::Action::PasteImage => self.start_paste(app, paste::from_clipboard),
@@ -2326,7 +2341,13 @@ impl<'h> Ui<'h> {
             KeyCode::Char('v') if ctrl || alt => self.start_paste(app, paste::from_clipboard),
             KeyCode::Char('o') if ctrl => app.overlay = if app.overlay == Overlay::Details { Overlay::None } else { Overlay::Details },
             KeyCode::Char('t') if ctrl => app.overlay = if app.overlay == Overlay::Todos { Overlay::None } else { Overlay::Todos },
-            KeyCode::Char('g') if ctrl => app.overlay = if app.overlay == Overlay::Agents { Overlay::None } else { Overlay::Agents },
+            KeyCode::Char('g') if ctrl => {
+                if app.overlay == Overlay::Agents {
+                    app.overlay = Overlay::None;
+                } else {
+                    app.open_agents();
+                }
+            }
             KeyCode::F(1) => app.toggle_help(),
             KeyCode::Char('?') if app.editor.is_empty() && !ctrl && !alt => app.toggle_help(),
             KeyCode::Enter if alt => app.editor.insert('\n'),
@@ -2422,6 +2443,8 @@ impl<'h> Ui<'h> {
         if self.live.iter().any(|l| l == id) {
             self.live.retain(|l| l != id);
             self.reattach(app, id, events.last().map(|e| e.id.clone()));
+        } else {
+            app.end_replayed_children(matches!(self.host, link::Link::Local(_)));
         }
         // Where that session's agent was at work, not this one's.
         self.look_for_pr(app);
@@ -3157,7 +3180,6 @@ fn copy(app: &mut App) {
 /// approval waiting, fullscreen leaves every key to it: its card is on
 /// screen under the view, and y, n or Esc answer it as ever. Inline, the
 /// card is hidden, and the view says so: Esc closes it to show the card.
-/// Esc closes it.
 /// Until the Agents overlay opens one (SV8), a debug build opens it on F12,
 /// over a placeholder body: a developer's way in. Like each `…_key`: Some
 /// with what `on_key` answers when it took the key.
