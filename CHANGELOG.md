@@ -149,6 +149,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Nothing shows these transcripts yet: the next change writes them to each
   agent's own session. Usage and cost are counted exactly as before, each
   call once.
+- **Claude Code's agents are subagents of the session, like krowk's own.**
+  Each agent Claude Code starts during a turn gets its own session log,
+  linked to yours: what it was asked first, then its messages, tool calls
+  and results, then how it ended. It shows as a subagent row in the TUI,
+  Ctrl-G lists it, and Enter opens its transcript, live. `[N subagents]`
+  counts each agent once. Its log goes wherever the session goes: synced,
+  moved to another machine, and back after `krowk sessions rebuild`. Its
+  spend stays on the session, counted once. Stopping one agent alone, and
+  agents that keep running between turns, come next.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on
