@@ -351,9 +351,9 @@ pub(crate) struct Spawn {
     /// many of them still run: the turn does not complete while one does.
     pub background: std::sync::Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
     pub running: std::sync::atomic::AtomicUsize,
-    /// Flipped to stop every child: by the parent's interrupt, and by a
-    /// turn that ends any other way than completed with its background
-    /// children still running. `parent.cancel` follows it.
+    /// Flipped to stop every child: by the parent's interrupt, and once the
+    /// turn is over, whatever children it leaves. `parent.cancel` follows
+    /// it.
     pub stop: Arc<watch::Sender<bool>>,
     /// Raised when a steer moves the batch of subagent calls running to
     /// the background (R-STEER-4): each call still waiting on its child
@@ -407,6 +407,8 @@ impl Subagents {
         let (tx, rx) = tokio::sync::oneshot::channel();
         *answer.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
         let task = self.spawn_child(call_id, item_id, input, events, child.clone(), answer.clone());
+        // Where the turn's end waits for it, whatever becomes of its call.
+        self.0.background.lock().unwrap_or_else(|e| e.into_inner()).push((child.clone(), task));
         let mut moving = self.0.moving.subscribe();
         let mut rx = rx;
         let failed = || ("the subagent failed before it answered".to_string(), true);
@@ -417,7 +419,6 @@ impl Subagents {
         if !self.moved(&answer) {
             return rx.await.unwrap_or_else(|_| failed());
         }
-        self.0.background.lock().unwrap_or_else(|e| e.into_inner()).push((child.clone(), task));
         (format!("moved to background as agent {child}"), false)
     }
 
@@ -444,7 +445,8 @@ impl Subagents {
         tokio::spawn(async move {
             let run = me.clone();
             let id = child.clone();
-            let ran = tokio::spawn(async move { run.run_as(&call_id, &item_id, &input, &events, id).await }).await;
+            let to_call = answer.clone();
+            let ran = tokio::spawn(async move { run.run_as(&call_id, &item_id, &input, &events, id, &to_call).await }).await;
             let (text, failed, status) = ran.unwrap_or_else(|e| (format!("the subagent failed: {e}"), true, "failed"));
             let to_call = answer.lock().unwrap_or_else(|e| e.into_inner()).take();
             match to_call {
@@ -484,18 +486,17 @@ impl Subagents {
         self.0.running.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Stops the background children still running, as an interrupt of
-    /// the parent would: the turn is ending without them.
+    /// Stops every child still running, as an interrupt of the parent
+    /// would: the turn is ending without them.
     pub fn stop_background(&self) {
         // Every child of a turn that is over: a foreground one's call may
         // have been let go of with the turn, its child running on alone.
         let _ = self.0.stop.send(true);
     }
 
-    /// Once the parent's turn is over: each background child still running
-    /// is stopped — the engine may not have said how the turn ended, when
-    /// the host let go of it first — and waited for, so its log ends with
-    /// its turn.
+    /// Once the parent's turn is over: each child still running — in the
+    /// background, or a foreground one whose call was let go of with the
+    /// turn — is stopped and waited for, so its log ends with its turn.
     pub async fn settle_background(&self) {
         self.stop_background();
         let children: Vec<(String, tokio::task::JoinHandle<()>)> = std::mem::take(&mut *self.0.background.lock().unwrap_or_else(|e| e.into_inner()));
@@ -535,12 +536,12 @@ impl Subagents {
     /// One `subagent` call as the child `child`: its answer, whether it is
     /// an error, and how its turn ended (`completed`, `interrupted`,
     /// `failed`), for a background child's note.
-    async fn run_as(&self, call_id: &str, item_id: &str, input: &Value, events: &Events, child: String) -> (String, bool, &'static str) {
-        let (text, failed, status) = self.run_child(call_id, item_id, input, events, child).await;
+    async fn run_as(&self, call_id: &str, item_id: &str, input: &Value, events: &Events, child: String, answer: &Answer) -> (String, bool, &'static str) {
+        let (text, failed, status) = self.run_child(call_id, item_id, input, events, child, answer).await;
         (text, failed, status.unwrap_or("failed"))
     }
 
-    async fn run_child(&self, call_id: &str, item_id: &str, input: &Value, events: &Events, child: String) -> (String, bool, Option<&'static str>) {
+    async fn run_child(&self, call_id: &str, item_id: &str, input: &Value, events: &Events, child: String, answer: &Answer) -> (String, bool, Option<&'static str>) {
         let input = match SubagentInput::deserialize(input) {
             Ok(i) => i,
             Err(e) => return (format!("invalid input for subagent: {e}"), true, None),
@@ -635,7 +636,9 @@ impl Subagents {
         let cwd = worktree.as_ref().map_or_else(|| p.cwd.clone(), |w| w.worktree.path.clone());
         let env = worktree.as_ref().map(|w| w.env()).unwrap_or_default();
         let result = host.subagent(&self.0, call_id, &input.description, &prompt, model, run, (&child, &cwd, env), events).await;
-        let background = input.run_in_background == Some(true);
+        // In the background from the start, or moved there by a steer: no
+        // call waits on it any more.
+        let background = answer.lock().unwrap_or_else(|e| e.into_inner()).is_none();
         if let Ok(r) = &result {
             let mut spent = self.0.spent.lock().unwrap_or_else(|e| e.into_inner());
             match r.cost_usd {
