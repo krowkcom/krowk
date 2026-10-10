@@ -32,6 +32,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   get it without working it out from the raw lines; the TUI will show it
   next. A subagent's start in the session log now also says who ran it
   (`ranBy`); older logs read as krowk's own.
+- **Groundwork for reading a subagent's transcript in the TUI.** The view
+  that opens a subagent will keep its transcript's lines and scroll through
+  them itself: arrows, PgUp/PgDn, Home/End, following new lines until you
+  scroll up and again once you're back at the bottom. It keeps the last
+  20,000 lines and says when earlier ones are not shown. Nothing you see
+  changes yet: the main conversation is printed exactly as before.
 
 ### Changed
 

@@ -7,7 +7,9 @@
 //! What is finished is handed to scrollback once and forgotten: the app
 //! keeps the line being typed, never the conversation (R-PERF-3). A
 //! streamed answer is committed a line at a time as each line completes;
-//! only the unfinished tail is drawn in the live region.
+//! only the unfinished tail is drawn in the live region. The one exception
+//! is asked for (`keep`): the child view's App, which draws a window of a
+//! child's transcript and so keeps it, bounded.
 
 use crate::editor::Editor;
 use crate::help;
@@ -40,6 +42,9 @@ const MODEL_ROWS: usize = 12;
 const LOGO: [&str; 6] = ["......", ".#..#.", ".#..#.", ".###..", ".#..#.", "......"];
 /// Rows of an unfinished line shown while it streams.
 const MAX_LIVE_ROWS: usize = 3;
+/// The most lines an App that keeps them keeps (`keep`): a child's
+/// transcript can be long.
+pub const KEPT_LINES: usize = 20_000;
 
 pub use look::dim;
 
@@ -583,6 +588,9 @@ impl Held {
 pub struct App {
     pub editor: Editor,
     pending: Vec<Line<'static>>,
+    /// What went to scrollback, kept, and the window on it: only when asked
+    /// for (`keep`), never for the main conversation.
+    kept: Option<crate::full::Kept>,
     /// The width above the prompt is laid out in: `room`, at most
     /// `settings.content_width`'s. The prompt and status line take `room`.
     width: u16,
@@ -796,6 +804,7 @@ impl App {
         App {
             editor,
             pending: Vec::new(),
+            kept: None,
             width: settings.content_width.of(width.max(1)),
             room: width.max(1),
             screen_rows: 24,
@@ -904,9 +913,29 @@ impl App {
     }
 
     pub fn set_width(&mut self, w: u16) {
-        self.room = w.max(1);
+        let room = std::mem::replace(&mut self.room, w.max(1));
         self.width = self.settings.content_width.of(self.room);
+        if let Some(kept) = self.kept.as_mut()
+            && room != self.room
+        {
+            kept.rewrap(self.room);
+        }
         self.dirty = true;
+    }
+
+    /// Keeps every line handed to scrollback from here on, in order, the
+    /// last `KEPT_LINES` of them, wrapped to the room there is and again on
+    /// a resize, in a window `kept` scrolls: for the child view, which draws
+    /// a child's transcript rather than printing it. The main conversation
+    /// never asks.
+    pub fn keep(&mut self) {
+        self.kept.get_or_insert_with(|| crate::full::Kept::new(Some(KEPT_LINES), self.screen_rows));
+    }
+
+    /// What is kept and its window, when lines are (`keep`): what has gone
+    /// through `take_pending` so far.
+    pub fn kept(&mut self) -> Option<&mut crate::full::Kept> {
+        self.kept.as_mut()
     }
 
     pub fn content_width(&self) -> ContentWidth {
@@ -932,14 +961,20 @@ impl App {
     /// The lines owed to scrollback, oldest first, each wrapped to the
     /// width between words — but a code block's rows, on their band, which
     /// are the terminal's to wrap, so a copy of a long line of code joins it
-    /// again (`hung`).
+    /// again (`hung`). An App that keeps its lines (`keep`) keeps these too.
     pub fn take_pending(&mut self) -> Vec<Line<'static>> {
         if self.pending.len() > self.held.at {
             self.release();
         }
         self.held.at = 0;
         let width = usize::from(self.width);
-        std::mem::take(&mut self.pending).into_iter().flat_map(|l| if l.style.bg.is_some() { vec![l] } else { wrap_line(l, width) }).collect()
+        let lines: Vec<Line<'static>> = std::mem::take(&mut self.pending).into_iter().flat_map(|l| if l.style.bg.is_some() { vec![l] } else { wrap_line(l, width) }).collect();
+        if let Some(kept) = self.kept.as_mut() {
+            for line in &lines {
+                kept.push(line, self.room);
+            }
+        }
+        lines
     }
 
     pub fn running(&self) -> bool {
@@ -5036,5 +5071,150 @@ mod tests {
         assert!(a.offer.is_none(), "an offer from an instance to itself is no offer");
         let u = &a.instances["claude:c"];
         assert_eq!((a.instances.len(), u.turns, u.tokens), (1, 5, 20), "both old names' usage, added up");
+    }
+
+    /// A child's session, as its log has it: its prompt, a tool call, an
+    /// answer with a code block in it.
+    fn child_session() -> Vec<LogEvent> {
+        let ev = |body| LogEvent { id: "e".into(), parent_id: None, session_id: "child".into(), time_ms: 0, body };
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-y".into() };
+        vec![
+            ev(LogBody::TurnStarted { turn_id: "t".into(), model, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }),
+            ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "1".into(), item: Item::user("find where the config is read and say what it does with a missing file") }),
+            ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "2".into(), item: Item::ToolCall { call_id: "c".into(), name: "read".into(), input: serde_json::json!({"path": "src/config.rs"}) } }),
+            ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "3".into(), item: Item::ToolResult { call_id: "c".into(), output: "fn read()\n".into(), is_error: false } }),
+            ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "4".into(), item: Item::AssistantText { text: "It reads the file once at start, and a missing one is taken as empty:\n\n```rust\nlet text = std::fs::read_to_string(path).unwrap_or_default();\n```\n\n- defaults fill the rest\n- nothing is written back".into() } }),
+            ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 900, ..Usage::default() }, duration_ms: 2500, error: None, reported_cost_usd: None }),
+        ]
+    }
+
+    /// The window's rows, as text.
+    fn window(a: &mut App) -> Vec<String> {
+        text(&a.kept().unwrap().window().cloned().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn r_sub_11_an_app_that_keeps_its_lines_keeps_what_the_main_conversation_prints() {
+        let evs = child_session();
+        let mut main = app();
+        main.replay(&evs.iter().collect::<Vec<_>>());
+        let printed = main.take_pending();
+        assert!(main.kept().is_none(), "the main conversation keeps nothing");
+        let mut child = app();
+        child.keep();
+        child.replay(&evs.iter().collect::<Vec<_>>());
+        assert_eq!(child.take_pending(), printed, "handed out as before");
+        let kept: Vec<Line> = child.kept().unwrap().lines().cloned().collect();
+        assert_eq!(text(&kept), text(&printed));
+        assert!(text(&kept).iter().any(|l| l.contains("read_to_string")), "{kept:?}");
+        assert_eq!(kept.iter().map(|l| l.style).collect::<Vec<_>>(), printed.iter().map(|l| l.style).collect::<Vec<_>>(), "a code block's band kept");
+        // A window as tall as all of it shows all of it, wrapped as fullscreen
+        // wraps it: the code block's row, the terminal's to wrap inline, here.
+        child.kept().unwrap().set_height(100);
+        let code = "let text = std::fs::read_to_string(path).unwrap_or_default();";
+        let wrapped: Vec<String> = text(&printed).into_iter().flat_map(|l| if l == code { vec![code[..40].to_string(), code[40..].to_string()] } else { vec![l] }).collect();
+        assert_eq!(window(&mut child), wrapped);
+    }
+
+    #[test]
+    fn r_sub_11_scrolled_up_the_window_stays_put_as_lines_arrive_and_end_follows_again() {
+        let mut a = app();
+        a.keep();
+        let say = |a: &mut App, from: usize, to: usize| {
+            for i in from..to {
+                a.say(&format!("line {i}"), Style::new());
+            }
+            a.take_pending();
+        };
+        say(&mut a, 0, 20);
+        let k = a.kept().unwrap();
+        k.set_height(5);
+        assert!(k.following());
+        assert_eq!(window(&mut a), ["line 15", "line 16", "line 17", "line 18", "line 19"]);
+        a.kept().unwrap().up();
+        assert!(!a.kept().unwrap().following(), "scrolled up, it stops following");
+        // A row is left for the one that says what is below.
+        assert_eq!(window(&mut a), ["line 15", "line 16", "line 17", "line 18"]);
+        say(&mut a, 20, 23);
+        assert_eq!(window(&mut a), ["line 15", "line 16", "line 17", "line 18"], "what arrives does not move it");
+        assert_eq!(a.kept().unwrap().below(), 4);
+        a.kept().unwrap().page_up();
+        assert_eq!(window(&mut a)[0], "line 12");
+        a.kept().unwrap().page_down();
+        a.kept().unwrap().down();
+        assert_eq!(window(&mut a)[0], "line 16");
+        a.kept().unwrap().home();
+        assert_eq!(window(&mut a)[0], "line 0", "no further than the top");
+        a.kept().unwrap().end();
+        assert!(a.kept().unwrap().following());
+        assert_eq!(window(&mut a), ["line 18", "line 19", "line 20", "line 21", "line 22"]);
+        say(&mut a, 23, 24);
+        assert_eq!(window(&mut a).last().map(String::as_str), Some("line 23"), "following again");
+        // Back at the bottom by ↓, it follows too.
+        a.kept().unwrap().up();
+        a.kept().unwrap().down();
+        assert!(a.kept().unwrap().following());
+    }
+
+    #[test]
+    fn r_sub_11_a_resize_wraps_the_kept_lines_again() {
+        let mut a = app();
+        a.keep();
+        a.kept().unwrap().set_height(10);
+        // Printed 40 columns wide, as the main conversation would at 40.
+        a.say("0123456789012345678901234567890123456789", Style::new());
+        a.take_pending();
+        assert_eq!(window(&mut a), ["0123456789012345678901234567890123456789"]);
+        a.set_width(16);
+        assert_eq!(window(&mut a), ["0123456789012345", "6789012345678901", "23456789"]);
+        a.set_width(40);
+        assert_eq!(window(&mut a), ["0123456789012345678901234567890123456789"], "and back");
+    }
+
+    #[test]
+    fn r_sub_11_past_the_most_lines_the_oldest_go_and_the_top_says_so() {
+        let mut a = app();
+        a.keep();
+        for i in 0..KEPT_LINES + 5 {
+            a.say(&format!("line {i}"), Style::new());
+        }
+        a.take_pending();
+        let k = a.kept().unwrap();
+        assert_eq!(k.lines().count(), KEPT_LINES);
+        k.set_height(3);
+        k.home();
+        assert_eq!(window(&mut a), ["… earlier lines not shown", "line 5"]);
+        // Scrolled up, a line let go at the top leaves the window where it is.
+        a.kept().unwrap().end();
+        a.kept().unwrap().scroll(3);
+        let before = window(&mut a);
+        a.say("one more", Style::new());
+        a.take_pending();
+        assert_eq!(window(&mut a), before);
+        a.set_width(20);
+        a.kept().unwrap().home();
+        assert_eq!(window(&mut a)[..2], ["… earlier lines not shown", "line 6"], "wrapped again, the note still at the top");
+    }
+
+    #[test]
+    fn r_sub_11_at_the_top_of_a_trimmed_transcript_below_counts_only_what_is_there() {
+        let mut a = app();
+        a.keep();
+        for i in 0..KEPT_LINES + 5 {
+            a.say(&format!("line {i}"), Style::new());
+        }
+        a.take_pending();
+        let k = a.kept().unwrap();
+        k.set_height(3);
+        k.home();
+        let below = k.below();
+        for i in 0..10 {
+            a.say(&format!("more {i}"), Style::new());
+        }
+        a.take_pending();
+        // As many rows went from the top as arrived at the bottom: no window
+        // drawn between, and still the same count below.
+        assert_eq!(a.kept().unwrap().below(), below);
+        assert_eq!(window(&mut a)[0], "… earlier lines not shown");
     }
 }
