@@ -60,8 +60,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   ones first, oldest first, then the finished ones, newest first, each
   saying how it ended and how long it took (`done in 42s`,
   `interrupted after 3.1s`, `failed after 1m5s`). A session you resume
-  lists its earlier subagents the same way. `x` on a finished one says
-  there is nothing to interrupt. The area above the prompt still shows
+  lists its earlier subagents the same way; one its log left without an
+  answer is listed as interrupted, not as still running. The selection
+  stays on the subagent you picked as others start and finish, and `x` on
+  a finished one says there is nothing to interrupt. The area above the prompt still shows
   only the subagents running now, and a subagent line in the conversation
   now says how long an interrupted or failed one ran, also in a resumed
   session, where it used to say `running 0.0s`.
