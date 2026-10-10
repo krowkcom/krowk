@@ -1225,6 +1225,7 @@ fn job(name: &str, id: &str, env: &ToolEnv<'_>) -> (String, bool) {
     if name == KILL_BASH {
         return match jobs.kill(session, id) {
             Ok(None) => (format!("stopped background job {id}"), false),
+            Ok(Some(crate::jobs::Status::Running)) => (format!("background job {id} is already being stopped"), false),
             Ok(Some(status)) => (format!("background job {id} had already ended: {status}"), false),
             Err(e) => (e, true),
         };

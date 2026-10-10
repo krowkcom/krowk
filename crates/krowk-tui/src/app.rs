@@ -2837,6 +2837,7 @@ impl App {
         self.flush_calls();
         self.session_id = None;
         self.background = 0;
+        self.background_agents.clear();
         self.images_seen = 0;
         self.cost = 0.0;
         self.unpriced = false;
