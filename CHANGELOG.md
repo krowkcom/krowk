@@ -141,6 +141,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   recording of a real Claude Code run: each agent's prompt and messages,
   its progress, the approvals it asks for, and one agent stopped alone.
   How krowk runs Claude Code today is unchanged.
+- **krowk now follows what each Claude Code agent says and does.** Claude
+  Code is asked to pass on each agent's own words as well as its tool
+  calls, and krowk sorts them into one transcript per agent: what it was
+  asked first, then its messages, tool calls and results in order, then how
+  it ended. A sub-agent an agent starts lands in that agent's transcript.
+  Nothing shows these transcripts yet: the next change writes them to each
+  agent's own session. Usage and cost are counted exactly as before, each
+  call once.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on
