@@ -9,6 +9,8 @@
 //!   the alternate screen with the footer pinned (the default), or `term`,
 //!   the inline viewport over the terminal's scrollback (R-TUI-1).
 //! - `app` — what is shown, driven by frames and keys.
+//! - `child` — the child view: a full-height view of one subagent's
+//!   transcript, in either screen (R-SUB-11).
 //! - `editor` — the multi-line prompt and its history.
 //! - `look` — glyphs, colours, the spinner and the light markdown.
 //! - `syntax` — code in colour, in the terminal's own sixteen.
@@ -34,6 +36,7 @@
 pub mod app;
 pub mod ask;
 pub mod card;
+pub mod child;
 pub mod clipboard;
 pub mod connect;
 pub mod link;
@@ -1295,6 +1298,12 @@ impl<'h> Ui<'h> {
             term.follow();
         }
         term.steady(app.running())?;
+        // The child view takes the screen it is given, the conversation
+        // back as it was once it closes.
+        if let Some(child) = app.child.as_mut() {
+            let view = child.rows(inner(term.size().width), term.view_rows(rows.len()));
+            return term.view(&lines, &view, &rows, caret);
+        }
         term.frame(&lines, &rows, caret)
     }
 
@@ -1677,7 +1686,7 @@ impl<'h> Ui<'h> {
         match ev {
             Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::Char('z') && k.modifiers.contains(KeyModifiers::CONTROL) => self.suspend(app, term)?,
             // Fullscreen's conversation scrolls under the pinned footer.
-            Event::Key(k) if k.kind != KeyEventKind::Release && matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) && !term.inline() => {
+            Event::Key(k) if k.kind != KeyEventKind::Release && matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) && !term.inline() && app.child.is_none() => {
                 let page = term.page();
                 term.scroll(if k.code == KeyCode::PageUp { page } else { -page });
                 app.touch();
@@ -1730,6 +1739,16 @@ impl<'h> Ui<'h> {
     /// selects, and letting go copies what was selected.
     fn on_mouse<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, m: crossterm::event::MouseEvent) {
         use crossterm::event::{MouseButton, MouseEventKind};
+        // The child view scrolls with the wheel and selects nothing.
+        if let Some(child) = app.child.as_mut() {
+            match m.kind {
+                MouseEventKind::ScrollUp => child.scroll(full::WHEEL),
+                MouseEventKind::ScrollDown => child.scroll(-full::WHEEL),
+                _ => return,
+            }
+            app.touch();
+            return;
+        }
         let changed = match m.kind {
             MouseEventKind::ScrollUp => term.scroll(full::WHEEL),
             MouseEventKind::ScrollDown => term.scroll(-full::WHEEL),
@@ -1835,6 +1854,9 @@ impl<'h> Ui<'h> {
         app.touch();
         app.flash = None;
         let armed = self.quit_armed.take().filter(|(_, t)| t.elapsed() < QUIT_CONFIRM).map(|(c, _)| c);
+        if let Some(done) = child_key(app, k) {
+            return done;
+        }
         // A call waiting for the person's say takes the keys that answer it
         // (R-PERM-2): y once, s for the session, p for the project, n or
         // Esc no, v to print a request that was cut to fit (its y/s/p work
@@ -3127,6 +3149,27 @@ async fn finish_paste(f: &mut Option<(Option<u64>, PasteFuture)>) -> paste::Past
 /// Ctrl-Y: what there is to copy, or a picker of it (`App::open_copy`).
 fn copy(app: &mut App) {
     app.open_copy();
+}
+
+/// The child view takes every key but Ctrl-C's and Ctrl-D's, ahead of an
+/// approval: the prompt it would answer is not on screen. Esc closes it.
+/// Until the Agents overlay opens one (SV8), a debug build opens it on F12,
+/// over a placeholder body: a developer's way in. Like each `…_key`: Some
+/// with what `on_key` answers when it took the key.
+fn child_key(app: &mut App, k: KeyEvent) -> Option<bool> {
+    if let Some(view) = app.child.as_mut() {
+        match view.key(k) {
+            child::Key::Close => app.child = None,
+            child::Key::Taken => {}
+            child::Key::Pass => return None,
+        }
+        return Some(false);
+    }
+    if cfg!(debug_assertions) && k.code == KeyCode::F(12) {
+        app.child = Some(child::ChildView::placeholder(app.input_width()));
+        return Some(false);
+    }
+    None
 }
 
 #[cfg(test)]

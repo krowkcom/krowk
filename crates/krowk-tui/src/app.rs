@@ -637,6 +637,9 @@ pub struct App {
     /// The branch's pull request, as `gh` last said.
     pub pr: Option<crate::pr::Pr>,
     pub overlay: Overlay,
+    /// The child view, while it is open (R-SUB-11): drawn full height in
+    /// place of the conversation, taking the keys.
+    pub child: Option<crate::child::ChildView>,
     pub(crate) settings: Settings,
     /// Steering the host has queued and the engine not yet taken, oldest
     /// first; each leaves when its item comes back in the log.
@@ -829,6 +832,7 @@ impl App {
             branch: String::new(),
             pr: None,
             overlay: Overlay::None,
+            child: None,
             settings,
             steers: Vec::new(),
             unsent_steers: Vec::new(),
