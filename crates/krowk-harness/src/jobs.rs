@@ -117,32 +117,36 @@ impl Jobs {
     /// Takes a started command on as a job of `session`, and returns its id.
     /// Refused, the command is stopped with its group.
     pub fn start(&self, session: &str, started: Started) -> Result<String, String> {
-        self.take(session, started, Vec::new())
+        let mut t = lock(&self.table);
+        admitted(&t, session)?;
+        Ok(self.take(&mut t, session, started, (Vec::new(), Vec::new())))
     }
 
     /// Takes a foreground call on as a job, as it runs (R-STEER-4): what it
-    /// printed so far, `shown`, is the file's start and counts as read.
-    pub fn adopt(&self, session: &str, started: Started, shown: Vec<u8>) -> Result<String, String> {
-        self.take(session, started, shown)
+    /// printed so far, `shown`, is the file's start and counts as read;
+    /// `unread`, the start of a character `shown` stops short of, follows
+    /// it unread. Never refused: the command already runs, and the limit is
+    /// on starting them.
+    pub fn adopt(&self, session: &str, started: Started, shown: Vec<u8>, unread: Vec<u8>) -> String {
+        let mut t = lock(&self.table);
+        self.take(&mut t, session, started, (shown, unread))
     }
 
-    fn take(&self, session: &str, started: Started, shown: Vec<u8>) -> Result<String, String> {
-        let mut t = lock(&self.table);
-        admitted(&t, session)?;
+    fn take(&self, t: &mut std::sync::MutexGuard<'_, Table>, session: &str, started: Started, (mut shown, unread): (Vec<u8>, Vec<u8>)) -> String {
         let s = t.sessions.entry(session.to_string()).or_default();
         s.next += 1;
         let id = format!("b{}", s.next);
         let file = self.sessions_dir.join(session).join("jobs").join(format!("{id}.out"));
         let (kill, killed) = oneshot::channel();
         let read = shown.len() as u64;
+        shown.extend(unread);
         let task = tokio::spawn(watch(self.table.clone(), self.tell.clone(), (session.to_string(), id.clone()), file.clone(), started, shown, killed));
         s.jobs.push(Job { id: id.clone(), file, read, status: Status::Running, ended_ms: None, kill: Some(kill), task: Some(task) });
         let running = counted(s);
-        drop(t);
         if let Some(tell) = &self.tell {
             tell(session, running);
         }
-        Ok(id)
+        id
     }
 
     /// What `session`'s job `id` printed since the last read, cut as `bash`
@@ -504,7 +508,7 @@ mod tests {
     }
 
     async fn start(jobs: &Jobs, cwd: &Path, command: &str) -> String {
-        let env = ToolEnv { cwd, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None };
+        let env = ToolEnv { cwd, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         jobs.start(S, crate::tools::start(command, &env, None).await.unwrap()).unwrap()
     }
 
@@ -639,15 +643,16 @@ mod tests {
     }
 
     /// A foreground call taken on as it runs (R-STEER-4): what was shown is
-    /// the file's start and counts as read.
+    /// the file's start and counts as read, and the start of a character
+    /// it stopped short of is read with the rest of that character.
     #[tokio::test]
     async fn r_steer_2_an_adopted_call_reads_on_from_what_was_shown() {
         let (jobs, d) = jobs("adopt");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None };
-        let started = crate::tools::start("sleep 0.3; echo after", &env, None).await.unwrap();
-        let id = jobs.adopt(S, started, b"before\n".to_vec()).unwrap();
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
+        let started = crate::tools::start("sleep 0.3; printf '\\251after\\n'", &env, None).await.unwrap();
+        let id = jobs.adopt(S, started, b"before\n".to_vec(), vec![0xC3]);
         ended(&jobs, &id).await;
-        assert_eq!(jobs.read(S, &id).unwrap(), ("after\n".to_string(), Status::Exited(0)));
-        assert_eq!(std::fs::read_to_string(d.join("sessions").join(S).join("jobs/b1.out")).unwrap(), "before\nafter\n");
+        assert_eq!(jobs.read(S, &id).unwrap(), ("\u{e9}after\n".to_string(), Status::Exited(0)));
+        assert_eq!(std::fs::read_to_string(d.join("sessions").join(S).join("jobs/b1.out")).unwrap(), "before\n\u{e9}after\n");
     }
 }

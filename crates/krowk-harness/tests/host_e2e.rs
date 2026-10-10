@@ -764,3 +764,88 @@ fn r_steer_3_a_failed_parent_turn_stops_its_background_children() {
     let events = log::read_events(&log::sessions_dir(&home.env()).unwrap().join(&child).join(log::EVENTS_FILE)).unwrap();
     assert!(matches!(&events.last().unwrap().body, LogBody::TurnCompleted { status: TurnStatus::Interrupted, .. }), "{:?}", events.last());
 }
+
+/// Runs a prompt, steering it with `steer` `after` the turn's first tool
+/// call is logged: its result, and when that call started.
+fn steered_after(home: &Home, steer: &str, after: std::time::Duration) -> (RunResult, std::time::Instant) {
+    use krowk_harness::host::Host;
+    use krowk_harness::protocol::Command;
+    use tokio::sync::mpsc;
+    let host = Host::new(home.config());
+    let model = Registry::resolve(&InstancesConfig::default(), &home.env()).parse_model("claude-sonnet-4-6").unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let cmd = Command::Prompt { session_id: None, text: "run it".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::BypassPermissions, toolset: None, effort: None, budget: None };
+        let exec = host.execute(cmd, tx);
+        tokio::pin!(exec);
+        let (mut session, mut at, mut call_started) = (String::new(), None::<tokio::time::Instant>, None);
+        let result = loop {
+            tokio::select! {
+                Some(line) = rx.recv() => {
+                    if let StreamLine::Log(LogEvent { session_id, body: LogBody::ItemCompleted { item: Item::ToolCall { .. }, .. }, .. }) = &line
+                        && call_started.is_none()
+                    {
+                        session.clone_from(session_id);
+                        call_started = Some(std::time::Instant::now());
+                        at = Some(tokio::time::Instant::now() + after);
+                    }
+                }
+                _ = krowk_harness::engine::sleep_until(at) => {
+                    at = None;
+                    let (stx, _srx) = mpsc::channel(8);
+                    host.execute(Command::Steer { session_id: session.clone(), text: steer.into(), images: Vec::new() }, stx).await.unwrap();
+                }
+                r = &mut exec => break r.unwrap().unwrap(),
+            }
+        };
+        host.shutdown().await;
+        (result, call_started.unwrap())
+    })
+}
+
+/// A mock that answers in order and keeps when each request came.
+fn timed(replies: Vec<String>) -> (mock::Mock, Arc<std::sync::Mutex<Vec<std::time::Instant>>>) {
+    let times = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let t = times.clone();
+    let m = mock::serve(move |_, n| {
+        t.lock().unwrap().push(std::time::Instant::now());
+        mock::Reply::sse(replies.get(n).map_or_else(|| mock::text_stream("done"), Clone::clone).as_str())
+    });
+    (m, times)
+}
+
+/// R-STEER-4: a steer at 1 s into a long foreground command moves it to the
+/// background at 2 s, nothing killed: the model's next call carries what it
+/// printed so far, the move, and the steer; the job then ends on its own,
+/// and what the answer showed plus `bash_output` is the whole output.
+#[test]
+fn r_steer_4_a_steer_moves_a_long_bash_call_to_the_background_at_two_seconds() {
+    let (m, times) = timed(vec![
+        mock::tool_use("t1", "bash", &serde_json::json!({"command": "echo before; sleep 3; echo after"})),
+        mock::tool_use("t2", "bash", &serde_json::json!({"command": "sleep 3.5"})),
+        mock::tool_use("t3", "bash_output", &serde_json::json!({"id": "b1"})),
+    ]);
+    let home = Home::new("move-bash", &m.url);
+    let (result, call) = steered_after(&home, "stop, just say hi", std::time::Duration::from_secs(1));
+    assert_eq!(result.status, TurnStatus::Completed, "{result:?}");
+    let t = times.lock().unwrap().clone();
+    assert!(t[1] - call < std::time::Duration::from_millis(2500), "the next call within 2.5 s of the call's start: {:?}", t[1] - call);
+    let next = last_message(&m, 1);
+    assert!(next.contains("before\\nmoved to background as job b1 because the person sent a message"), "{next}");
+    assert!(next.contains("stop, just say hi"), "the steer, read at the same call: {next}");
+    let read = last_message(&m, 3);
+    assert!(read.contains("after\\nexited 0") && !read.contains("before"), "the rest, and nothing twice: {read}");
+}
+
+/// R-STEER-4: a command under 2 s just finishes; the steer waits for it.
+#[test]
+fn r_steer_4_a_steer_during_a_short_command_waits_for_it() {
+    let (m, _) = timed(vec![mock::tool_use("t1", "bash", &serde_json::json!({"command": "sleep 1; echo done"}))]);
+    let home = Home::new("short-bash", &m.url);
+    let (result, _) = steered_after(&home, "and then say hi", std::time::Duration::from_millis(300));
+    assert_eq!(result.status, TurnStatus::Completed);
+    let next = last_message(&m, 1);
+    assert!(next.contains("done\\nexit code 0") && !next.contains("moved to background"), "{next}");
+    assert!(next.contains("and then say hi"), "{next}");
+}
