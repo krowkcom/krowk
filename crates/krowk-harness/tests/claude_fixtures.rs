@@ -387,19 +387,37 @@ fn r_sub_9_parallel_agents_are_two_children_each_started_with_its_prompt_first_t
 fn r_sub_9_a_childs_line_before_its_task_started_yields_the_same_events_in_the_same_order() {
     let lines = recording("agents_parallel.txt");
     let recorded = stream(&lines);
-    // Each agent's task_started moved after its first line, the prompt.
+    // Each agent's task_started moved after its first line that is an
+    // item — its first message, its first call and that call's result — so
+    // those lines are held and must be released for the items to be there.
     let mut moved = recorded.clone();
     for (_, a) in agents(&lines) {
+        let call = &a["tool_use_id"];
         let from = moved.iter().position(|m| m["subtype"] == "task_started" && m["task_id"] == a["task_id"]).unwrap();
-        let first = moved.iter().position(|m| m["parent_tool_use_id"] == a["tool_use_id"]).unwrap();
-        assert!(from < first);
+        let result = moved.iter().position(|m| m["parent_tool_use_id"] == *call && m.pointer("/message/content/0/type").and_then(Value::as_str) == Some("tool_result"));
+        let first_call = moved.iter().position(|m| m["parent_tool_use_id"] == *call && m.pointer("/message/content/0/type").and_then(Value::as_str) == Some("tool_use")).unwrap();
+        // Never past its end, which names a task not started yet: the
+        // sleeper's call is answered only after it was stopped.
+        let end = moved.iter().position(|m| m["subtype"] == "task_updated" && m["task_id"] == a["task_id"]).unwrap();
+        let to = result.filter(|r| *r < end).unwrap_or(first_call);
+        assert!(from < to);
         let started = moved.remove(from);
-        moved.insert(first, started);
-        assert_eq!(moved[first - 1]["parent_tool_use_id"], a["tool_use_id"], "now after its first line");
+        moved.insert(to, started);
+        let before = moved[..to].iter().filter(|m| m["parent_tool_use_id"] == *call && m["type"] == "assistant").count();
+        assert!(before >= 2, "{call}: its messages held before it started");
     }
-    let (want, got): (Vec<String>, Vec<String>) = (children(&recorded).iter().filter_map(said).collect(), children(&moved).iter().filter_map(said).collect());
-    assert!(want.len() > 10, "{want:?}");
-    assert_eq!(got, want);
+    let (want, got) = (children(&recorded), children(&moved));
+    // Each child's own events are the same, in the same order. Across
+    // children the order moves with the task_started: a child's held lines
+    // are said as it starts, where the other's were said in between.
+    for (_, a) in agents(&lines) {
+        let task = a["task_id"].as_str().unwrap();
+        let of = |evs: &[EngineEvent]| evs.iter().filter(|e| matches!(e, EngineEvent::BackendChildStarted { task_id, .. } | EngineEvent::BackendChild { task_id, .. } | EngineEvent::BackendChildEnded { task_id, .. } if task_id == task)).filter_map(said).collect::<Vec<_>>();
+        let (want, got) = (of(&want), of(&got));
+        assert!(want.len() > 8 && want.iter().any(|w| w.contains("ToolCall")), "{want:?}");
+        assert_eq!(got, want, "{task}");
+    }
+    assert_eq!(got.len(), want.len());
 }
 
 /// What the session's translator meters across a recording, one

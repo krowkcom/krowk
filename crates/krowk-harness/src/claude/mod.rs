@@ -159,8 +159,19 @@ const BEGAN: &str = "it did not say why";
 /// Why an agent still running ended: its process went.
 const LET_GO: &str = "Claude Code was let go, and the agent stopped with it";
 const RESTARTED: &str = "Claude Code was started again for a turn's settings, and the agent stopped with it";
-const STOPPED: &str = "Claude Code was stopped after its turn failed, and the agent with it";
+const SHUT_DOWN: &str = "Claude Code was shut down with the session, and the agent with it";
+const FAILED: &str = "Claude Code was stopped after its turn failed, and the agent with it";
+const INTERRUPTED: &str = "Claude Code was stopped when the turn was interrupted, and the agent with it";
 const EXITED: &str = "Claude Code exited, and the agent with it";
+
+/// Why the agents of a process `settle` lets go of ended: how its turn did.
+fn stopped_why(outcome: &Result<TurnEnd, EngineError>) -> &'static str {
+    match outcome {
+        Err(_) => FAILED,
+        Ok(TurnEnd::Interrupted) => INTERRUPTED,
+        Ok(TurnEnd::Completed) => EXITED,
+    }
+}
 
 /// The launch settings a process is bound to. A turn that needs others —
 /// plan mode, another effort, or another model where `set_model` is not
@@ -433,6 +444,18 @@ impl Status {
         self.children.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// `clear`, with what it ends told to `tell`: whether anything was.
+    fn clear_telling(&self, why: &str, tell: Option<&Idle>) -> bool {
+        let evs = self.clear(why);
+        let any = !evs.is_empty();
+        if let Some(tell) = tell {
+            for ev in evs {
+                tell(ev);
+            }
+        }
+        any
+    }
+
     /// The process is gone, and all of it with it: what to report — the
     /// list, when it had any, empty, and each agent's end, saying `why` —
     /// or nothing when no agent ran.
@@ -492,12 +515,9 @@ impl Drop for ClaudeEngine {
             i.task.abort();
         }
         let waiting = self.status.pending().is_some();
-        let stopped = self.status.clear(LET_GO);
+        let stopped = self.status.clear_telling(LET_GO, self.tell.as_ref());
         if let Some(tell) = &self.tell {
-            if !stopped.is_empty() {
-                for ev in stopped {
-                    tell(ev);
-                }
+            if stopped {
                 tell(EngineEvent::Notice { text: format!("Claude Code on {} was let go, and the background agents it ran stopped with it", self.instance.name) });
             } else if waiting {
                 tell(EngineEvent::Notice { text: format!("Claude Code on {} was let go before the turn it began by itself ran", self.instance.name) });
@@ -612,8 +632,9 @@ impl Engine for ClaudeEngine {
             if let Some(p) = self.proc.lock().await.take() {
                 p.shutdown().await;
             }
-            // Asked for: nothing of it is news to anyone.
-            let _ = self.status.clear(LET_GO);
+            // Asked for, and said: no notice, but each agent still running
+            // ends, so its transcript is closed.
+            self.status.clear_telling(SHUT_DOWN, self.tell.as_ref());
         })
     }
 
@@ -633,7 +654,7 @@ impl ClaudeEngine {
     async fn settle(&self, mut slot: tokio::sync::MutexGuard<'_, Option<Proc>>, outcome: Result<TurnEnd, EngineError>, ask: Answers, events: &Events) -> Result<TurnEnd, EngineError> {
         let Some(p) = slot.as_mut() else { return outcome };
         if outcome.is_err() || !p.alive() {
-            forward(events, self.status.clear(STOPPED)).await;
+            forward(events, self.status.clear(stopped_why(&outcome))).await;
             if let Some(old) = slot.take() {
                 old.kill().await;
             }
@@ -1781,6 +1802,25 @@ mod tests {
         assert!(err.contains("settings decide what runs"), "the config directory in another case: {err}");
         assert!(judge(PermissionMode::BypassPermissions, "Write", &json!({"file_path": ".claude/settings.json"}), &[config]).is_ok());
         let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn r_sub_7_a_process_let_go_ends_its_agents_saying_why_whoever_asked() {
+        let status = Status::default();
+        let started = json!({"type": "system", "subtype": "task_started", "task_id": "a1", "tool_use_id": "call_a", "description": "x", "task_type": "local_agent", "spawn_depth": 1, "prompt": "p"});
+        assert!(status.children().apply(&started).len() > 1);
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let keep = told.clone();
+        let tell: Idle = Arc::new(move |ev| keep.lock().unwrap().push(ev));
+        // A shutdown asked for is told too: the transcript is closed.
+        assert!(status.clear_telling(SHUT_DOWN, Some(&tell)));
+        let told = told.lock().unwrap();
+        assert!(matches!(told.last(), Some(EngineEvent::BackendChildEnded { task_id, status: crate::protocol::ChildState::Interrupted, error: Some(e) }) if task_id == "a1" && e == SHUT_DOWN), "{told:?}");
+        assert!(!status.clear_telling(SHUT_DOWN, Some(&tell)), "nothing left to end");
+        // After a turn, the reason is how the turn did.
+        assert_eq!(stopped_why(&Ok(TurnEnd::Interrupted)), INTERRUPTED);
+        assert_eq!(stopped_why(&Ok(TurnEnd::Completed)), EXITED);
+        assert_eq!(stopped_why(&Err(EngineError::new("backend_failed", "x"))), FAILED);
     }
 
     #[test]

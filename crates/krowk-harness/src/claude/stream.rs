@@ -226,10 +226,10 @@ impl Translator {
     /// A grandchild's line, in its depth-1 ancestor's transcript: its tool
     /// calls and their results, as that agent's, with no response of their
     /// own — its words are its own agent's, which its call's result hands
-    /// back. What the ancestor was saying is closed first.
+    /// back. The ancestor's message stays open: its next line, or another
+    /// message, closes it, as for any whole message.
     pub fn aside(&mut self, msg: &Value) -> Vec<EngineEvent> {
         let mut out = Vec::new();
-        self.close_whole(&mut out);
         let content = msg.pointer("/message/content").and_then(Value::as_array).cloned().unwrap_or_default();
         for b in &content {
             match str_of(b, "type") {
