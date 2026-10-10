@@ -54,6 +54,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   lines pushes some of its rows into scrollback on terminals that reflow
   (tmux among them). You can't open it yet: the Agents overlay opens it
   next.
+- **Ctrl-G lists every subagent of the session, finished ones too.** The
+  Agents overlay used to show only the subagents still running, so one that
+  had finished could not be found again. It now lists them all: the running
+  ones first, oldest first, then the finished ones, newest first, each
+  saying how it ended and how long it took (`done in 42s`,
+  `interrupted after 3.1s`, `failed after 1m5s`). A session you resume
+  lists its earlier subagents the same way. `x` on a finished one says
+  there is nothing to interrupt. The area above the prompt still shows
+  only the subagents running now, and a subagent line in the conversation
+  now says how long an interrupted or failed one ran.
 
 ### Changed
 
