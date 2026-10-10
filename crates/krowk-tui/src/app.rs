@@ -147,7 +147,7 @@ pub enum Overlay {
     Details,
     /// The session's todo list (R-TODO-3).
     Todos,
-    /// The subagents' lines, selectable: expand one, interrupt one (R-SUB-3).
+    /// The subagents' lines, selectable: open one, interrupt one (R-SUB-3).
     Agents,
     /// The model and instance picker (`/model`).
     Models,
@@ -201,12 +201,8 @@ struct Sub {
     /// The host's figure for it, from its `cost` frames.
     cost: Option<f64>,
     unpriced: bool,
-    /// What it did last: a tool call, or the first line of what it said.
-    activity: String,
     started: Instant,
     took: Option<Duration>,
-    /// Shown with its activity under it.
-    expanded: bool,
     /// Its call was answered while it runs on: started in the background,
     /// or moved there by a steer.
     background: bool,
@@ -223,7 +219,23 @@ struct Sub {
     tool: Option<ChildTool>,
     last_event_ms: Option<i64>,
     waiting: Option<Waiting>,
+    /// The item it is streaming, and its text so far: what a child view
+    /// opened in the middle of it starts from.
+    streaming: Option<Streaming>,
 }
+
+/// A child's item under way: its start, and the text it has streamed.
+#[derive(Debug, Clone)]
+struct Streaming {
+    turn_id: String,
+    item_id: String,
+    kind: ItemKind,
+    text: String,
+}
+
+/// A tool's output and reasoning under way are shown by their last line:
+/// only their last bytes are kept for a view that opens in the middle.
+const STREAMED_OUTPUT: usize = 4096;
 
 impl Sub {
     fn new(session_id: &str) -> Sub {
@@ -237,10 +249,8 @@ impl Sub {
             calls: 0,
             cost: None,
             unpriced: false,
-            activity: String::new(),
             started: Instant::now(),
             took: None,
-            expanded: false,
             background: false,
             born: 0,
             ended: 0,
@@ -248,6 +258,7 @@ impl Sub {
             tool: None,
             last_event_ms: None,
             waiting: None,
+            streaming: None,
         }
     }
 
@@ -1698,6 +1709,14 @@ impl App {
         {
             return;
         }
+        // The child the view is open on draws its own lines as well, each
+        // delta too: the row goes on folding them as ever.
+        if let Some(view) = self.child.as_mut()
+            && !anyones
+            && view.on_line(line)
+        {
+            self.dirty = true;
+        }
         if let Some(sid) = line_session(line)
             && self.session_id.as_deref().is_some_and(|s| s != sid)
             && !anyones
@@ -1863,16 +1882,27 @@ impl App {
             *ms = (*ms).max(wall_ms(Instant::now()));
         }
         match line {
-            StreamLine::Log(ev) => match &ev.body {
-                LogBody::ItemCompleted { item: Item::ToolCall { name, input, .. }, .. } => {
-                    let (verb, arg) = look::tool_title(name, input);
-                    s.activity = format!("{verb} {arg}").trim().to_string();
-                }
-                LogBody::ItemCompleted { item: Item::AssistantText { text }, .. } => {
-                    if let Some(l) = text.lines().find(|l| !l.trim().is_empty()) {
-                        s.activity = l.trim().to_string();
+            StreamLine::Live(LiveEvent::ItemStarted { turn_id, item_id, item, .. }) => {
+                s.streaming = Some(Streaming { turn_id: turn_id.clone(), item_id: item_id.clone(), kind: item.clone(), text: String::new() });
+            }
+            StreamLine::Live(LiveEvent::ItemDelta { item_id, delta: Delta::Text { text }, .. }) => {
+                if let Some(st) = s.streaming.as_mut().filter(|st| &st.item_id == item_id) {
+                    st.text.push_str(text);
+                    if matches!(st.kind, ItemKind::ToolResult { .. } | ItemKind::Reasoning) && st.text.len() > STREAMED_OUTPUT {
+                        let mut cut = st.text.len() - STREAMED_OUTPUT;
+                        while !st.text.is_char_boundary(cut) {
+                            cut += 1;
+                        }
+                        st.text.drain(..cut);
                     }
                 }
+            }
+            StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item_id, .. }, .. }) if s.streaming.as_ref().is_some_and(|st| &st.item_id == item_id) => s.streaming = None,
+            StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. }) => s.streaming = None,
+            _ => {}
+        }
+        match line {
+            StreamLine::Log(ev) => match &ev.body {
                 LogBody::ResponseCompleted { usage, .. } => {
                     s.tokens += usage.total();
                     s.calls += 1;
@@ -1891,7 +1921,6 @@ impl App {
                 }
                 None => s.unpriced = true,
             },
-            StreamLine::Live(LiveEvent::ItemStarted { item: ItemKind::Reasoning, .. }) => s.activity = "thinking…".into(),
             // Each replaces the last; an ended child's says nothing more.
             StreamLine::Live(LiveEvent::SubagentStatus { status, tool, last_event_ms, waiting, .. }) => {
                 let running = *status == ChildState::Running;
@@ -2013,13 +2042,35 @@ impl App {
         }
     }
 
-    /// Expands or collapses the selected subagent's line.
-    pub fn agent_toggle(&mut self) {
+    /// The selected child's session, running or finished: what Enter opens.
+    pub fn agent_selected(&self) -> Option<String> {
         let children = self.children();
-        let id = children.get(self.selected(&children)).map(|s| s.session_id.clone());
-        if let Some(s) = id.and_then(|id| self.child(&id)) {
-            s.expanded = !s.expanded;
-        }
+        children.get(self.selected(&children)).map(|s| s.session_id.clone())
+    }
+
+    /// The child view on child `sid` (R-SUB-11): `history`, its log as
+    /// read (or why it could not be), then what arrives of it live.
+    pub fn open_child(&mut self, sid: &str, history: Result<Vec<LogEvent>, String>) {
+        let sub = self.subs.iter().chain(&self.past).find(|s| s.session_id == sid);
+        // The item it is in the middle of, as far as it has come.
+        let under_way = sub.and_then(|s| s.streaming.clone()).map(|st| {
+            let start = StreamLine::Live(LiveEvent::ItemStarted { session_id: sid.into(), turn_id: st.turn_id.clone(), item_id: st.item_id.clone(), item: st.kind });
+            let so_far = StreamLine::Live(LiveEvent::ItemDelta { session_id: sid.into(), turn_id: st.turn_id, item_id: st.item_id.clone(), delta: Delta::Text { text: st.text } });
+            (st.item_id, [start, so_far])
+        });
+        let title = match sub {
+            Some(s) => {
+                let what = if s.description.is_empty() { "subagent" } else { s.description.as_str() };
+                match &s.agent {
+                    Some(a) => format!("{what} · {a}"),
+                    None => what.to_string(),
+                }
+            }
+            None => "subagent".to_string(),
+        };
+        let mut app = App::new(Editor::new(None), self.room, self.settings.clone(), None, None);
+        app.set_rows(self.screen_rows);
+        self.child = Some(crate::child::ChildView::open(&title, sid, app, history, under_way));
         self.dirty = true;
     }
 
@@ -2453,7 +2504,23 @@ impl App {
     // ---- the live region -------------------------------------------------------
 
     /// The live region's rows, and where the caret goes among them.
+    /// With the child view open, the conversation's own unfinished rows
+    /// wait under it, unseen, as its lines do.
     pub fn view(&self, now: Instant) -> (Vec<Line<'static>>, (u16, u16)) {
+        let width = usize::from(self.width.max(1));
+        let mut rows = if self.child.is_some() { Vec::new() } else { self.tail(now) };
+        self.turn_rows(&mut rows, width, now);
+        self.question_rows(&mut rows, width);
+        let flow_caret = self.overlay_rows(&mut rows, width, now);
+        let caret = self.prompt_rows(&mut rows, flow_caret);
+        self.status_rows(&mut rows);
+        (rows, caret)
+    }
+
+    /// What is not in scrollback yet: the tool blocks held back, what
+    /// streams in now, the calls and subagents out. The live region's top,
+    /// and the child view's last rows while it follows the end.
+    pub fn tail(&self, now: Instant) -> Vec<Line<'static>> {
         let width = usize::from(self.width.max(1));
         let mut rows = self.held_rows(width);
         // A running call stands where its block will: after a blank line,
@@ -2463,12 +2530,7 @@ impl App {
         self.live_rows(&mut rows, &mut stacks, width);
         self.call_rows(&mut rows, &mut stacks, width);
         self.sub_rows(&mut rows, &mut stacks, width, now);
-        self.turn_rows(&mut rows, width, now);
-        self.question_rows(&mut rows, width);
-        let flow_caret = self.overlay_rows(&mut rows, width, now);
-        let caret = self.prompt_rows(&mut rows, flow_caret);
-        self.status_rows(&mut rows);
-        (rows, caret)
+        rows
     }
 
     /// Quiet calls running while a batch is counted stand under its line,
@@ -2665,9 +2727,11 @@ impl App {
             Overlay::Keys => rows.extend(self.keys_overlay(width)),
             Overlay::Details => rows.extend(self.details_overlay(width)),
             Overlay::Todos => rows.extend(self.todos_overlay(width)),
+            // Under a child it opened: back, as it was, on Esc.
+            Overlay::Agents if self.child.is_some() => {}
             Overlay::Agents => {
                 // The backend's own, listed as it reports them: they run in
-                // its process, and are not krowk's to expand or stop.
+                // its process, and are not krowk's to open or stop.
                 for a in &self.backend_agents {
                     let line = match &a.agent {
                         Some(k) => format!("Agent {} · {} · running in Claude Code", a.description, k),
@@ -2682,7 +2746,7 @@ impl App {
                 let hint = match (self.agent_count() == 0, self.backend_agents.is_empty()) {
                     (true, true) => "no subagents in this session · `esc` closes this".to_string(),
                     (true, false) => "Claude Code runs these itself · `esc` closes this".to_string(),
-                    _ => format!("{more}`↑` `↓` select · `enter` expands · {x}`esc` closes this"),
+                    _ => format!("{more}`↑` `↓` select · `enter` opens · {x}`esc` closes this"),
                 };
                 rows.push(Line::from(clip_spans(look::keys(&hint, dim()), width)));
             }
@@ -3440,7 +3504,7 @@ fn mode_says(name: &str) -> &'static str {
 }
 
 /// The session a frame belongs to.
-fn line_session(line: &StreamLine) -> Option<&str> {
+pub(crate) fn line_session(line: &StreamLine) -> Option<&str> {
     Some(match line {
         StreamLine::Log(ev) => &ev.session_id,
         StreamLine::Live(LiveEvent::ItemStarted { session_id, .. } | LiveEvent::ItemDelta { session_id, .. } | LiveEvent::Cost { session_id, .. } | LiveEvent::Notice { session_id, .. } | LiveEvent::Limits { session_id, .. }) => session_id,
@@ -3783,7 +3847,7 @@ fn flat(s: &str) -> String {
 }
 
 /// A child's one line, its spinner while it runs, reversed when
-/// `selected`, and what it did last under it when expanded.
+/// `selected`.
 fn sub_row(rows: &mut Vec<Line<'static>>, s: &Sub, selected: bool, width: usize, now: Instant) {
     let since = now.saturating_duration_since(s.started);
     let (glyph, style) = match s.status {
@@ -3793,9 +3857,6 @@ fn sub_row(rows: &mut Vec<Line<'static>>, s: &Sub, selected: bool, width: usize,
     };
     let text_style = if selected { dim().add_modifier(Modifier::REVERSED) } else { dim() };
     rows.push(Line::from(vec![Span::styled(glyph, style), Span::styled(clip(&s.line(now, true), width.saturating_sub(2)), text_style)]));
-    if s.expanded && !s.activity.is_empty() {
-        rows.push(Line::from(Span::styled(clip(&format!("{}{}", look::LAST_BRANCH, s.activity), width), dim())));
-    }
 }
 
 /// A menu over the prompt: a ratatui table under a top border, a row an
@@ -4800,14 +4861,10 @@ mod tests {
         assert_eq!(lines.len(), 2, "one line each, and no second line for their calls: {rows:?}");
         assert!(lines[0].contains("Agent find the tests · explorer · running") && lines[0].ends_with("2.0k tokens · $0.02"), "{}", lines[0]);
         assert!(lines[1].contains("Agent read the docs · explorer · interrupted"), "{}", lines[1]);
-        // Expanded, a line shows what its subagent did last.
         a.overlay = Overlay::Agents;
         assert_eq!(a.agent_selected_running().as_deref(), Some("k1"));
-        a.agent_toggle();
         a.agent_move(1);
         assert_eq!(a.agent_selected_running(), None, "the interrupted one has nothing left to interrupt");
-        let (rows, _) = a.view(Instant::now());
-        assert!(text(&rows).iter().any(|r| r == "└─ Search fn test"), "{:?}", text(&rows));
         // Answered, each goes to scrollback once.
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r1".into(), item: Item::ToolResult { call_id: "c1".into(), output: "found them".into(), is_error: false } }));
         let done = text(&a.take_pending());
@@ -4905,6 +4962,59 @@ mod tests {
         a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None }));
         let rows = listed(&a);
         assert!(rows[0].contains("Agent read the docs · done in 30s") && rows[1].contains("map the store") && rows[2].contains("find the tests"), "{rows:?}");
+    }
+
+    /// R-SUB-11: the child view draws its child's log, then that child's
+    /// lines alone as they arrive — an event both read and sent once, what
+    /// streams under what is kept — and closing it leaves the overlay on
+    /// the same child.
+    #[test]
+    fn r_sub_11_the_child_view_draws_its_log_then_its_own_live_lines_once() {
+        let ev = |sid: &str, id: &str, body: LogBody| StreamLine::Log(LogEvent { id: id.into(), parent_id: None, session_id: sid.into(), time_ms: 0, body });
+        let said = |sid: &str, id: &str, t: &str| ev(sid, id, LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::UserText { text: t.into(), images: Vec::new() } });
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
+        let mut a = app();
+        a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        a.start_turn(Instant::now());
+        for (call, kid) in [("c1", "k1"), ("c2", "k2")] {
+            a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: call.into(), item: Item::ToolCall { call_id: call.into(), name: "subagent".into(), input: serde_json::json!({"description": kid}) } }));
+            a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: kid.into(), description: format!("do {kid}"), agent: None, model: model.clone(), ran_by: Default::default(), backend_id: None }));
+        }
+        let history = vec![
+            LogEvent { id: "h1".into(), parent_id: None, session_id: "k1".into(), time_ms: 0, body: LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: Some("s".into()), agent: None } },
+            LogEvent { id: "h2".into(), parent_id: Some("h1".into()), session_id: "k1".into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: "h2".into(), item: Item::UserText { text: "TASK-1".into(), images: Vec::new() } } },
+        ];
+        // Opened in the middle of what it writes: from what came so far.
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "k1".into(), turn_id: "t".into(), item_id: "m0".into(), item: ItemKind::AssistantText }));
+        a.on_line(&live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "t".into(), item_id: "m0".into(), delta: Delta::Text { text: "EARLY part".into() } }));
+        a.open_agents();
+        assert_eq!(a.agent_selected().as_deref(), Some("k1"));
+        a.open_child("k1", Ok(history));
+        a.on_line(&live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "t".into(), item_id: "m0".into(), delta: Delta::Text { text: " and the rest\n".into() } }));
+        assert!(text(&a.child.as_mut().unwrap().rows(40, 20, None)).iter().any(|r| r == "EARLY part and the rest"), "before it is whole");
+        a.on_line(&ev("k1", "h5", LogBody::ItemCompleted { turn_id: "t".into(), item_id: "m0".into(), item: Item::AssistantText { text: "EARLY part and the rest\n".into() } }));
+        // Read, and sent too: once.
+        a.on_line(&said("k1", "h2", "TASK-1"));
+        a.on_line(&ev("k1", "h3", LogBody::ItemCompleted { turn_id: "t".into(), item_id: "h3".into(), item: Item::ToolCall { call_id: "r1".into(), name: "bash".into(), input: serde_json::json!({"command": "ls"}) } }));
+        a.on_line(&said("k2", "x1", "SIBLING"));
+        a.on_line(&ev("k1", "h4", LogBody::ItemCompleted { turn_id: "t".into(), item_id: "h4".into(), item: Item::ToolResult { call_id: "r1".into(), output: "README.md".into(), is_error: false } }));
+        a.on_line(&live(LiveEvent::ItemStarted { session_id: "k1".into(), turn_id: "t".into(), item_id: "m1".into(), item: ItemKind::AssistantText }));
+        a.on_line(&live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "t".into(), item_id: "m1".into(), delta: Delta::Text { text: "WHOLE line\nstreaming tai".into() } }));
+        let rows = text(&a.child.as_mut().unwrap().rows(40, 20, None));
+        assert_eq!(rows[0], "do k1");
+        let at = |s: &str| rows.iter().position(|r| r.contains(s)).unwrap_or_else(|| panic!("{s}: {rows:#?}"));
+        assert!(at("TASK-1") < at("EARLY part and the rest") && at("EARLY part and the rest") < at("Run ls") && at("Run ls") < at("WHOLE line") && at("WHOLE line") < at("streaming tai"), "{rows:#?}");
+        assert_eq!(rows.iter().filter(|r| r.contains("TASK-1") || r.contains("EARLY")).count(), 2, "each once: {rows:#?}");
+        assert!(!rows.iter().any(|r| r.contains("SIBLING")), "{rows:#?}");
+        // Scrolled up, it holds still and the unfinished line waits.
+        a.child.as_mut().unwrap().rows(40, 6, None);
+        a.child.as_mut().unwrap().key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Up));
+        let rows = text(&a.child.as_mut().unwrap().rows(40, 6, None));
+        assert!(rows[4].starts_with("↓ 1 more below") && !rows.iter().any(|r| r.contains("streaming tai")), "{rows:#?}");
+        // The row folded it as ever; the conversation's own wait unseen.
+        assert!(a.view(Instant::now()).0.iter().all(|r| !text(std::slice::from_ref(r))[0].contains("do k")), "nothing of the overlay or the rows under the view");
+        a.child = None;
+        assert_eq!((a.overlay, a.agent_selected().as_deref()), (Overlay::Agents, Some("k1")));
     }
 
     /// R-SUB-11: a running child's row says what its `subagent.status`

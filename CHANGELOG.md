@@ -62,8 +62,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   left it. Resizing the window while it is open redraws it at the new size. One
   limit in the inline screen: making the window narrower than the view's
   lines pushes some of its rows into scrollback on terminals that reflow
-  (tmux among them). You can't open it yet: the Agents overlay opens it
-  next.
+  (tmux among them). Enter on a subagent in the Ctrl-G overlay opens it.
 - **Ctrl-G lists every subagent of the session, finished ones too.** The
   Agents overlay used to show only the subagents still running, so one that
   had finished could not be found again. It now lists them all: the running
@@ -87,9 +86,23 @@ the versions are the `v*` tags a release is cut from. Entries land under
   The times go on counting every second, also between turns while a
   background subagent runs. Nothing changes colour: a long build and a hung
   command read the same until you look.
+- **Read a subagent's whole transcript from Ctrl-G.** Enter on a subagent
+  in the Agents overlay now opens its transcript, in the inline screen and
+  the fullscreen screen alike: the prompt its parent gave it first, then
+  every tool call and answer, read from its session log. While it runs,
+  what it does next appears as it happens, its text as it streams, and the
+  view stays at the bottom until you scroll up. Only that subagent's lines
+  are shown, never a sibling's. A finished subagent opens the same way,
+  also in a session you resumed. Esc goes back to the overlay with the same
+  subagent selected, and the conversation behind it has kept up with
+  everything that happened meanwhile.
 
 ### Changed
 
+- **Enter in the Agents overlay opens the subagent's transcript instead of
+  expanding its last line.** Ctrl-G's Enter used to add one line under the
+  selected subagent saying what it did last. The transcript shows that and
+  everything before it, so the one-line expansion is gone.
 - **A synced session keeps playing when a newer host sends something
   unknown.** A device following a session skips a line it does not
   understand and shows the rest, where it used to drop the whole batch.
