@@ -87,6 +87,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   The times go on counting every second, also between turns while a
   background subagent runs. Nothing changes colour: a long build and a hung
   command read the same until you look.
+- **Read a subagent's whole transcript from Ctrl-G.** Enter on a subagent
+  in the Agents overlay now opens its transcript, in the inline screen and
+  the fullscreen screen alike: the prompt its parent gave it first, then
+  every tool call and answer, read from its session log. While it runs,
+  what it does next appears as it happens, its text as it streams, and the
+  view stays at the bottom until you scroll up. Only that subagent's lines
+  are shown, never a sibling's. A finished subagent opens the same way,
+  also in a session you resumed. Esc goes back to the overlay with the same
+  subagent selected, and the conversation behind it has kept up with
+  everything that happened meanwhile. The one-line summary Enter used to
+  expand is now on Space.
 
 ### Changed
 
