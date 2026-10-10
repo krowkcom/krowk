@@ -4,19 +4,31 @@
 //! whole terminal as the live region; fullscreen, the conversation's rows
 //! above the prompt and the status line. Neither switches screens for it.
 //!
-//! Its body is a `Kept`, the lines and the window fullscreen's conversation
-//! scrolls with. Until a child's transcript fills it, a fixed list of lines
-//! does (`placeholder`), so the view can be opened and looked at alone.
+//! Its body is a second, headless App on the child's session that keeps
+//! what it would print (`App::keep`): the child's history read from its
+//! log — the parent's prompt first — then its lines as they arrive, which
+//! the main App hands on (`on_line`) while it folds them into the child's
+//! row as ever. Under the kept lines, while the window follows the end,
+//! what the child has not finished yet (`App::tail`): the text streaming,
+//! the call out.
 
-use crate::full::Kept;
+use crate::app::App;
 use crate::look;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use krowk_harness::protocol::{LogBody, LogEvent, StreamLine};
 use ratatui::text::{Line, Span};
+use std::collections::HashSet;
 
 pub struct ChildView {
     title: String,
-    body: Kept,
-    /// The columns `body` is wrapped to.
+    /// The child's session.
+    session_id: String,
+    /// The child's App: its transcript, kept.
+    app: Box<App>,
+    /// The ids of the events its log gave: the same events arriving live
+    /// (read and sent while the view opened) are not drawn twice.
+    read: HashSet<String>,
+    /// The columns the body is laid out in.
     width: u16,
 }
 
@@ -32,24 +44,54 @@ pub enum Key {
 }
 
 impl ChildView {
-    /// A view titled `title` on `lines`, at `width` columns.
-    pub fn new(title: &str, lines: impl IntoIterator<Item = Line<'static>>, width: u16) -> ChildView {
-        let mut body = Kept::new(None, 1);
-        for line in lines {
-            body.push(&line, width);
+    /// A view titled `title` on child `session_id`, drawn by `app`: its
+    /// history first, then the item it is in the middle of (`under_way`:
+    /// its id, its start and what it has streamed so far), unless its log
+    /// already has it whole, then live. A log that could not be read is
+    /// said, and what arrives from now on is still shown.
+    pub fn open(title: &str, session_id: &str, mut app: App, history: Result<Vec<LogEvent>, String>, under_way: Option<(String, [StreamLine; 2])>) -> ChildView {
+        app.keep();
+        let mut read = HashSet::new();
+        let mut done = false;
+        match history {
+            Ok(events) => {
+                let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
+                app.replay(&krowk_harness::log::branch(&events, &head));
+                done = under_way.as_ref().is_some_and(|(id, _)| events.iter().any(|e| matches!(&e.body, LogBody::ItemCompleted { item_id, .. } if item_id == id)));
+                read.extend(events.into_iter().map(|e| e.id));
+            }
+            Err(e) => app.say(&format!("its history could not be read here ({e}) — what it does from now on is shown"), look::dim()),
         }
-        ChildView { title: crate::card::clean(title), body, width }
+        app.session_id = Some(session_id.to_string());
+        for line in under_way.filter(|_| !done).into_iter().flat_map(|(_, lines)| lines) {
+            app.on_line(&line);
+        }
+        // None yet: the first frame lays it out at the width it is drawn at.
+        ChildView { title: crate::card::clean(title), session_id: session_id.to_string(), app: Box::new(app), read, width: 0 }
     }
 
-    /// A fixed transcript to look at the view with: the developer's entry
-    /// (F12 in a debug build) until a child's lines fill it.
-    pub fn placeholder(width: u16) -> ChildView {
-        let lines = (1..=120).map(|i| match i % 10 {
-            1 => Line::from(Span::styled(format!("◆ step {i}: a tool call the child made"), look::accent())),
-            5 => Line::from(format!("{i:>3}  a longer line of the child's answer, long enough to wrap on a narrow terminal and show that the body wraps to the width it is drawn at")),
-            _ => Line::from(format!("{i:>3}  placeholder transcript line")),
-        });
-        ChildView::new("placeholder child · no transcript yet", lines, width)
+    /// A view titled `title` on `lines` alone, at `width` columns.
+    #[cfg(test)]
+    pub fn new(title: &str, lines: impl IntoIterator<Item = Line<'static>>, width: u16) -> ChildView {
+        let mut app = App::new(crate::editor::Editor::new(None), width, crate::settings::Settings::default(), None, None);
+        for line in lines {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            app.say(&text, ratatui::style::Style::new());
+        }
+        ChildView::open(title, "child", app, Ok(Vec::new()), None)
+    }
+
+    /// A line of the stream: the child's own are its App's, once. Whether
+    /// it was: the view is drawn again for it.
+    pub fn on_line(&mut self, line: &StreamLine) -> bool {
+        let ours = match line {
+            StreamLine::Log(ev) => ev.session_id == self.session_id && !self.read.remove(&ev.id),
+            StreamLine::Live(_) => crate::app::line_session(line) == Some(self.session_id.as_str()),
+        };
+        if ours {
+            self.app.on_line(line);
+        }
+        ours
     }
 
     /// The view's `height` rows at `width` columns: its header, the body's
@@ -60,8 +102,9 @@ impl ChildView {
         let width = width.max(1);
         if width != self.width {
             self.width = width;
-            self.body.rewrap(width);
+            self.app.set_width(width);
         }
+        self.app.take_pending();
         let h = usize::from(height);
         let mut rows = vec![Line::from(Span::styled(clip(&self.title, width), look::bold()))];
         if h < 3 {
@@ -69,9 +112,15 @@ impl ChildView {
             return rows;
         }
         let body = height - 2;
-        self.body.set_height(body);
-        rows.extend(self.body.window().cloned());
-        let below = self.body.below();
+        let following = self.app.kept().is_none_or(|k| k.following());
+        // What is unfinished, under the kept lines, at most half the body.
+        let mut tail = if following { self.app.tail(std::time::Instant::now()) } else { Vec::new() };
+        tail.drain(..tail.len().saturating_sub(usize::from(body / 2)));
+        let Some(kept) = self.app.kept() else { return rows };
+        kept.set_height(body - tail.len() as u16);
+        rows.extend(kept.window().cloned());
+        let below = kept.below();
+        rows.extend(tail);
         if below > 0 {
             rows.push(Line::from(Span::styled(format!("↓ {below} more below · PgDn"), look::dim())));
         }
@@ -89,22 +138,28 @@ impl ChildView {
         if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('c' | 'd')) {
             return Key::Pass;
         }
-        match k.code {
-            KeyCode::Esc => return Key::Close,
-            KeyCode::Up => self.body.up(),
-            KeyCode::Down => self.body.down(),
-            KeyCode::PageUp => self.body.page_up(),
-            KeyCode::PageDown => self.body.page_down(),
-            KeyCode::Home => self.body.home(),
-            KeyCode::End => self.body.end(),
-            _ => {}
+        if k.code == KeyCode::Esc {
+            return Key::Close;
+        }
+        if let Some(body) = self.app.kept() {
+            match k.code {
+                KeyCode::Up => body.up(),
+                KeyCode::Down => body.down(),
+                KeyCode::PageUp => body.page_up(),
+                KeyCode::PageDown => body.page_down(),
+                KeyCode::Home => body.home(),
+                KeyCode::End => body.end(),
+                _ => {}
+            }
         }
         Key::Taken
     }
 
     /// The wheel: `by` rows, up when positive.
     pub fn scroll(&mut self, by: isize) {
-        self.body.scroll(by);
+        if let Some(body) = self.app.kept() {
+            body.scroll(by);
+        }
     }
 }
 

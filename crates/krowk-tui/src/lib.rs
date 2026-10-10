@@ -2070,12 +2070,19 @@ impl<'h> Ui<'h> {
     }
 
     /// The Agents overlay takes the keys that move through it: select a
-    /// subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3,
+    /// subagent, open its transcript (its log read now, its lines live
+    /// after), expand its line, interrupt it alone (R-SUB-2, R-SUB-3,
     /// R-SUB-11).
     async fn agents_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
         match k.code {
             KeyCode::Up | KeyCode::Down => app.agent_move(if k.code == KeyCode::Up { -1 } else { 1 }),
-            KeyCode::Enter => app.agent_toggle(),
+            KeyCode::Enter => {
+                if let Some(id) = app.agent_selected() {
+                    let history = read_session(&self.sessions_dir, &id);
+                    app.open_child(&id, history);
+                }
+            }
+            KeyCode::Char(' ') => app.agent_toggle(),
             KeyCode::Char('x') => {
                 if let Some(id) = app.agent_to_interrupt()
                     && let Err(e) = self.command(Command::Interrupt { session_id: id }).await
@@ -3187,9 +3194,9 @@ fn copy(app: &mut App) {
 /// approval waiting, fullscreen leaves every key to it: its card is on
 /// screen under the view, and y, n or Esc answer it as ever. Inline, the
 /// card is hidden, and the view says so: Esc closes it to show the card.
-/// Until the Agents overlay opens one (SV8), a debug build opens it on F12,
-/// over a placeholder body: a developer's way in. Like each `…_key`: Some
-/// with what `on_key` answers when it took the key.
+/// Esc closes it onto the Agents overlay that opened it, the same child
+/// selected. Like each `…_key`: Some with what `on_key` answers when it
+/// took the key.
 fn child_key(app: &mut App, k: KeyEvent) -> Option<bool> {
     if !app.inline && !app.approvals.is_empty() {
         return None;
@@ -3200,10 +3207,6 @@ fn child_key(app: &mut App, k: KeyEvent) -> Option<bool> {
             child::Key::Taken => {}
             child::Key::Pass => return None,
         }
-        return Some(false);
-    }
-    if cfg!(debug_assertions) && k.code == KeyCode::F(12) {
-        app.child = Some(child::ChildView::placeholder(app.input_width()));
         return Some(false);
     }
     None
@@ -3219,7 +3222,7 @@ mod tests {
         for inline in [true, false] {
             let mut app = App::new(Editor::new(None), 40, Settings::default(), None, None);
             app.inline = inline;
-            app.child = Some(child::ChildView::placeholder(40));
+            app.child = Some(child::ChildView::new("a child", (0..30).map(|i| ratatui::text::Line::from(format!("line {i}"))), 40));
             assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(false), "no approval: the view takes it");
             app.approvals.push(req.clone());
             if inline {

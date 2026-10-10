@@ -348,6 +348,139 @@ fn r_sub_1_r_sub_2_r_sub_3_three_subagents_run_in_parallel_each_on_a_line_and_on
 
 }
 
+/// The parent starts two subagents: A reads the README and sums it up, B
+/// answers with words of its own.
+fn two_children(body: &Value, _: usize) -> mock::Reply {
+    if !is_child(body) {
+        if answered(body) {
+            return mock::Reply::sse(&mock::text_stream("PARENT-DONE: both reported."));
+        }
+        return mock::Reply::sse(&tool_calls(&[
+            ("toolu_a", "subagent", json!({"description": "summarise the readme", "prompt": "TASK-A: read README.md and summarise it"})),
+            ("toolu_b", "subagent", json!({"description": "say hello", "prompt": "TASK-B: say hello"})),
+        ]));
+    }
+    if task(body).contains("TASK-A") {
+        if answered(body) {
+            return mock::Reply::paced(mock::text_stream("SUMMARY-A: krowk makes permalinks.\nSECOND-A: of agent output.\n"), Duration::from_millis(5));
+        }
+        return mock::Reply::sse(&mock::tool_use("toolu_read", "read", &json!({"path": "README.md"})));
+    }
+    mock::Reply::paced(mock::text_stream("SIBLING-B: hello from B.\n"), Duration::from_millis(5))
+}
+
+/// The child view's rows, tall enough to hold a child's whole transcript.
+fn child_rows(app: &mut krowk_tui::app::App) -> Vec<String> {
+    row_text!(app.child.as_mut().expect("the child view is open").rows(120, 400, None))
+}
+
+/// R-SUB-11: Enter on a child in the Agents overlay opens its transcript —
+/// its log read at once, the parent's prompt first, then its tool call and
+/// text as they arrive, and nothing of its sibling — while the main App
+/// goes on drawing the conversation. Resumed later, a finished child opens
+/// the same way, whole, from its log.
+#[test]
+fn r_sub_11_a_childs_transcript_opens_from_its_log_and_follows_it_live_and_whole_after_a_resume() {
+    let m = mock::serve(two_children);
+    let b = Sandbox::new("child-view", &m.url);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let host = Host::new(b.host());
+    let new_app = || krowk_tui::app::App::new(krowk_tui::editor::Editor::new(None), 120, krowk_tui::settings::Settings::default(), None, None);
+    let read = |sid: &str| log::read_events(&b.sessions().join(sid).join(log::EVENTS_FILE)).map_err(|e| e.message().to_string());
+    let mut app = new_app();
+    let mut a: Option<String> = None;
+    // What the view showed when A's call came back, and when its first line
+    // of text did: before its turn ended.
+    let (mut at_result, mut at_text): (Option<Vec<String>>, Option<Vec<String>>) = (None, None);
+    let result = rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
+        let cmd = Command::Prompt { session_id: None, text: "look into two things at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        app.start_turn(std::time::Instant::now());
+        let exec = host.execute(cmd, tx);
+        tokio::pin!(exec);
+        let mut on = |app: &mut krowk_tui::app::App, line: &StreamLine| {
+            app.on_line(line);
+            if let StreamLine::Log(ev) = line
+                && let LogBody::SubagentStarted { subagent_session_id, description, .. } = &ev.body
+                && description == "summarise the readme"
+            {
+                // Ctrl-G, down to A, Enter.
+                app.open_agents();
+                while app.agent_selected().as_deref() != Some(subagent_session_id.as_str()) {
+                    app.agent_move(1);
+                }
+                app.open_child(subagent_session_id, read(subagent_session_id));
+                a = Some(subagent_session_id.clone());
+            }
+            if let StreamLine::Log(ev) = line
+                && Some(&ev.session_id) == a.as_ref()
+                && let LogBody::ItemCompleted { item: krowk_harness::protocol::Item::ToolResult { .. }, .. } = &ev.body
+            {
+                at_result = Some(child_rows(app));
+            }
+            if at_text.is_none()
+                && let StreamLine::Live(LiveEvent::ItemDelta { session_id, .. }) = line
+                && Some(session_id) == a.as_ref()
+                && child_rows(app).iter().any(|r| r.contains("SUMMARY-A"))
+            {
+                at_text = Some(child_rows(app));
+            }
+        };
+        let result = loop {
+            tokio::select! {
+                Some(line) = rx.recv() => on(&mut app, &line),
+                r = &mut exec => break r,
+            }
+        };
+        while let Ok(line) = rx.try_recv() {
+            on(&mut app, &line);
+        }
+        result
+    });
+    let result = result.unwrap().unwrap();
+    assert_eq!(result.status, TurnStatus::Completed, "{:?}", result.error);
+    let a = a.expect("A was opened");
+
+    // Its prompt first, then its call, then its text as it came, before the
+    // turn ended; and nothing of B.
+    let at_result = at_result.expect("A's call came back with the view open");
+    let prompt = at_result.iter().position(|r| r.contains("TASK-A: read README.md and summarise it")).unwrap_or_else(|| panic!("the prompt is shown: {at_result:#?}"));
+    let read_call = at_result.iter().position(|r| r.contains("Read README.md")).unwrap_or_else(|| panic!("the call is shown: {at_result:#?}"));
+    assert!(prompt < read_call, "the prompt first: {at_result:#?}");
+    assert_eq!(at_result.iter().filter(|r| r.contains("TASK-A")).count(), 1, "once, though it was read and sent too: {at_result:#?}");
+    let at_text = at_text.expect("A's text was shown as it streamed");
+    assert!(!at_text.iter().any(|r| r.contains("Worked for")), "before A's turn ended: {at_text:#?}");
+    let all = child_rows(&mut app);
+    let summary = all.iter().position(|r| r.contains("SUMMARY-A")).unwrap();
+    assert!(read_call < summary && all.iter().any(|r| r.contains("SECOND-A")), "{all:#?}");
+    assert!(!all.iter().any(|r| r.contains("TASK-B") || r.contains("SIBLING-B") || r.contains("PARENT-DONE")), "nothing of the sibling or the parent: {all:#?}");
+
+    // Closed, the conversation has everything that happened meanwhile.
+    app.child = None;
+    let done = row_text!(app.take_pending());
+    for d in ["Agent summarise the readme", "Agent say hello", "PARENT-DONE: both reported."] {
+        assert!(done.iter().any(|l| l.contains(d)), "{d} is in scrollback: {done:#?}");
+    }
+    assert!(!done.iter().any(|l| l.contains("SUMMARY-A")), "a child's text is its own: {done:#?}");
+
+    // Resumed: A, finished, opens whole from its log.
+    let parent = read(&result.session_id).unwrap();
+    let head = parent.last().unwrap().id.clone();
+    let mut app = new_app();
+    app.replay(&log::branch(&parent, &head));
+    app.end_replayed_children(true);
+    app.open_agents();
+    while app.agent_selected().as_deref() != Some(a.as_str()) {
+        app.agent_move(1);
+    }
+    app.open_child(&a, read(&a));
+    let all = child_rows(&mut app);
+    let at = |s: &str| all.iter().position(|r| r.contains(s)).unwrap_or_else(|| panic!("{s} is shown: {all:#?}"));
+    assert!(at("TASK-A: read README.md") < at("Read README.md") && at("Read README.md") < at("SUMMARY-A") && at("SUMMARY-A") < at("SECOND-A") && at("SECOND-A") < at("Worked for"), "{all:#?}");
+    assert!(all[0].contains("summarise the readme"), "titled by its description: {all:#?}");
+}
+
 /// The parent starts one subagent that rereads the README, each call
 /// reading 20,000 tokens from cache — about $0.0066 a call at Sonnet's
 /// prices.
