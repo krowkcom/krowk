@@ -71,6 +71,7 @@ use ratatui::layout::{Position, Rect, Size};
 use ratatui::text::Line;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::rc::Rc;
 
@@ -386,7 +387,21 @@ pub struct Term<W: Write> {
     pub pad: u16,
     /// Whether the cursor's blink is held off (`steady`).
     steady: bool,
+    /// The last lines printed, newest last, at most `TAIL`: the rows right
+    /// above the live region, what the full-height view (`cover`) draws
+    /// over and puts back.
+    tail: VecDeque<Line<'static>>,
+    /// While the view covers the screen: how many of `tail`'s last lines it
+    /// drew over, to put back when it closes.
+    covered: Option<usize>,
+    /// Lines that reached the screen while the view covered it, printed
+    /// once it closes: nothing goes into scrollback under it.
+    held: Vec<Line<'static>>,
 }
+
+/// The most lines printed `tail` keeps: a line is at least a row, and no
+/// screen is this tall.
+const TAIL: usize = 512;
 
 /// The cursor's blink off (DEC private mode 12), and the cursor the
 /// terminal is set up with (DECSCUSR 0) — its own shape and blink, back.
@@ -402,7 +417,7 @@ impl<W: Write> Term<W> {
         buf.set_row(top);
         let height = to_bottom(size, top, height);
         let terminal = build(&buf, size, top, height)?;
-        Ok(Term { terminal, buf, out, size, height, want: height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, steady: false })
+        Ok(Term { terminal, buf, out, size, height, want: height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, steady: false, tail: VecDeque::new(), covered: None, held: Vec::new() })
     }
 
     pub fn width(&self) -> u16 {
@@ -466,7 +481,8 @@ impl<W: Write> Term<W> {
     pub fn resize(&mut self, size: Size, cursor_row: Option<u16>) -> io::Result<()> {
         self.buf.discard();
         self.size = size;
-        let want = self.want.clamp(1, size.height.max(1));
+        // The view takes the whole screen, whatever its height now.
+        let want = if self.covered.is_some() { size.height.max(1) } else { self.want.clamp(1, size.height.max(1)) };
         let narrowed = size.width < self.drawn_width;
         let above = if narrowed && self.reflows { self.reflowed_above_caret(size.width) } else { self.caret_row };
         // Not asked, the cursor is still on the caret, but its row was
@@ -513,7 +529,80 @@ impl<W: Write> Term<W> {
     /// A frame that changes nothing on screen sends nothing: a terminal
     /// restarts the cursor's blink on whatever it is sent (Ghostty, at most
     /// every 500ms), so a no-op frame would only break the blink up.
+    ///
+    /// The first frame after the full-height view closes puts back what it
+    /// drew over, then prints what arrived while it was open, then `lines`.
     pub fn frame(&mut self, lines: &[Line<'static>], rows: &[Line<'static>], caret: (u16, u16)) -> io::Result<()> {
+        let Some(n) = self.covered.take() else {
+            self.remember(lines);
+            return self.paint(lines, rows, Some(caret));
+        };
+        let held = std::mem::take(&mut self.held);
+        self.remember(&held);
+        self.remember(lines);
+        let back = self.tail.len().saturating_sub(n + held.len() + lines.len());
+        let all: Vec<Line<'static>> = self.tail.range(back..).cloned().collect();
+        self.paint(&all, rows, Some(caret))
+    }
+
+    /// `lines`, printed, kept as the last ones.
+    fn remember(&mut self, lines: &[Line<'static>]) {
+        self.tail.extend(lines.iter().cloned());
+        let over = self.tail.len().saturating_sub(TAIL);
+        self.tail.drain(..over);
+    }
+
+    /// Opens the full-height view (R-SUB-11): the live region becomes the
+    /// whole screen, drawn by `view` until the next `frame` closes it. No
+    /// alternate screen: it is the live region, drawn as every frame is.
+    /// What it draws over is the conversation's last rows on screen — not
+    /// scrollback — and the next `frame` prints them back where they were.
+    /// Rows above them that were never printed here (the shell's, or the
+    /// part of a wrapped line already scrolled off) cannot be put back:
+    /// they are scrolled into scrollback first, as the next line would.
+    /// A taller or shorter screen while it is open leaves nothing behind
+    /// (`paint` keeps the hidden cursor on its top row). A narrower one that
+    /// a reflowing terminal splits the view's rows for pushes as many of its
+    /// top rows into scrollback: the limit every region taller than the
+    /// screen has (`resize`), and there is no taking them back.
+    pub fn cover(&mut self) -> io::Result<()> {
+        if self.covered.is_some() {
+            return Ok(());
+        }
+        let (w, h) = (self.size.width, self.size.height.max(1));
+        let top = self.top();
+        let (mut known, mut n) = (0u16, 0usize);
+        for line in self.tail.iter().rev() {
+            let rows = soft_rows(line, w);
+            if known + rows > top {
+                break;
+            }
+            known += rows;
+            n += 1;
+        }
+        let unknown = top - known;
+        if unknown > 0 {
+            self.buf.goto(0, h - 1)?;
+            self.buf.feed(unknown, h);
+        }
+        self.covered = Some(n);
+        self.rebuild(0, h)
+    }
+
+    /// Whether the full-height view covers the screen.
+    pub fn covered(&self) -> bool {
+        self.covered.is_some()
+    }
+
+    /// A frame of the full-height view: `rows`, as many as the screen is
+    /// tall, the cursor hidden. `lines` are held, printed once it closes.
+    pub fn view(&mut self, lines: &[Line<'static>], rows: &[Line<'static>]) -> io::Result<()> {
+        self.cover()?;
+        self.held.extend(lines.iter().cloned());
+        self.paint(&[], rows, None)
+    }
+
+    fn paint(&mut self, lines: &[Line<'static>], rows: &[Line<'static>], caret: Option<(u16, u16)>) -> io::Result<()> {
         let mark = self.buf.mark();
         let before = (self.height, self.caret_row, self.caret_col);
         let width = self.size.width;
@@ -546,10 +635,22 @@ impl<W: Write> Term<W> {
                 }
                 f.buffer_mut().set_line(area.x + pad, y, row, inner);
             }
-            f.set_cursor_position((area.x + pad + caret.0.min(inner.saturating_sub(1)), area.y + (spare + caret.1).min(area.height.saturating_sub(1))));
+            // No caret, ratatui hides the cursor.
+            if let Some(caret) = caret {
+                f.set_cursor_position((area.x + pad + caret.0.min(inner.saturating_sub(1)), area.y + (spare + caret.1).min(area.height.saturating_sub(1))));
+            }
         });
         self.buf.clone().write_all(AUTOWRAP_ON)?;
         drawn?;
+        // Hidden, the cursor is left at the start of the region's top row:
+        // a screen made shorter takes the rows below the cursor first (tmux
+        // does, whatever is on them), so none of the view's is pushed into
+        // scrollback, and a resize finds the top where the cursor is.
+        if caret.is_none() {
+            let top = self.top();
+            self.buf.goto(0, top)?;
+            self.terminal.backend_mut().cursor = Position { x: 0, y: top };
+        }
         self.widths = std::iter::repeat_n(0, usize::from(spare)).chain(rows.iter().map(|r| if r.style.bg.is_some() { width } else { (r.width() as u16).min(inner) + pad })).take(shown).collect();
         let top = self.top();
         if let Some(Position { x, y }) = completed_cursor(&mut self.terminal) {
@@ -644,6 +745,7 @@ impl<W: Write> Term<W> {
     /// history just cleared, the region under them, as on a screen `new`
     /// opened on.
     pub fn wipe(&mut self) -> io::Result<()> {
+        self.forget();
         self.buf.clone().write_all(b"\x1b[H\x1b[2J\x1b[3J")?;
         self.buf.set_row(0);
         self.rebuild(0, to_bottom(self.size, 0, self.height))
@@ -668,6 +770,8 @@ impl<W: Write> Term<W> {
     /// cursor is on now (the shell may have printed below it).
     pub fn resume(&mut self, size: Size, cursor_row: Option<u16>) -> io::Result<()> {
         self.buf.discard();
+        // The shell may have printed above the region.
+        self.forget();
         self.size = size;
         // The rows the prompt needs, not the spare ones it kept: those would
         // scroll the shell's output up.
@@ -690,6 +794,15 @@ impl<W: Write> Term<W> {
         // Out now, as at start: a resize before the next frame measures
         // against a screen that has already moved.
         self.flush()
+    }
+
+    /// What is above the region is no longer what was printed here: the
+    /// view, if open, has nothing to put back.
+    fn forget(&mut self) {
+        self.tail.clear();
+        if self.covered.is_some() {
+            self.covered = Some(0);
+        }
     }
 
     pub fn into_inner(self) -> W {
@@ -1189,6 +1302,262 @@ mod tests {
         let out = String::from_utf8_lossy(&t.into_inner()).into_owned();
         assert!(out.contains(&format!("\x1b]8;;{url}\x1b\\#\x1b]8;;\x1b\\\x1b]8;;{url}\x1b\\1\x1b]8;;\x1b\\")), "{out:?}");
         assert!(!out.chars().any(|c| ('\u{E0000}'..='\u{E007F}').contains(&c)), "the URL's carrier never reaches the terminal");
+    }
+
+    /// A terminal enough for what an inline frame sends: text, CR, LF that
+    /// scrolls the top row into history at the bottom, relative moves,
+    /// clears, autowrap; everything else read and dropped. A resize does as
+    /// tmux's: a shorter screen drops the rows below the cursor first, then
+    /// pushes its top rows into history; a taller one adds rows at the
+    /// bottom; what is wider is cut.
+    struct Vt {
+        w: usize,
+        h: usize,
+        grid: Vec<Vec<char>>,
+        history: Vec<String>,
+        x: usize,
+        y: usize,
+        wrap: bool,
+        /// Every private mode set, for what must never be.
+        modes: Vec<String>,
+    }
+
+    impl Vt {
+        fn new(w: u16, h: u16) -> Vt {
+            let (w, h) = (usize::from(w), usize::from(h));
+            Vt { w, h, grid: vec![vec![' '; w]; h], history: Vec::new(), x: 0, y: 0, wrap: true, modes: Vec::new() }
+        }
+
+        fn row(r: &[char]) -> String {
+            r.iter().collect::<String>().trim_end().to_string()
+        }
+
+        fn lf(&mut self) {
+            if self.y + 1 < self.h {
+                self.y += 1;
+            } else {
+                let top = self.grid.remove(0);
+                self.history.push(Vt::row(&top));
+                self.grid.push(vec![' '; self.w]);
+            }
+        }
+
+        fn feed(&mut self, bytes: &[u8]) {
+            let text = String::from_utf8_lossy(bytes).into_owned();
+            let mut cs = text.chars().peekable();
+            while let Some(c) = cs.next() {
+                match c {
+                    '\x1b' => match cs.next() {
+                        Some('[') => {
+                            let mut p = String::new();
+                            let fin = loop {
+                                match cs.next() {
+                                    Some(c) if c.is_ascii_alphabetic() || c == '~' => break c,
+                                    Some(c) => p.push(c),
+                                    None => break ' ',
+                                }
+                            };
+                            let n = p.trim_start_matches(['?', '>', '<']).split(';').next().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).max(1);
+                            if p.starts_with('?') && fin == 'h' {
+                                self.modes.push(p.clone());
+                            }
+                            match (fin, p.as_str()) {
+                                ('h', "?7") => self.wrap = true,
+                                ('l', "?7") => self.wrap = false,
+                                ('A', _) => self.y = self.y.saturating_sub(n),
+                                ('B', _) => self.y = (self.y + n).min(self.h - 1),
+                                ('C', _) => self.x = (self.x + n).min(self.w - 1),
+                                ('J', "") => {
+                                    for x in self.x..self.w {
+                                        self.grid[self.y][x] = ' ';
+                                    }
+                                    for r in self.grid.iter_mut().skip(self.y + 1) {
+                                        r.fill(' ');
+                                    }
+                                }
+                                ('K', "") => self.grid[self.y][self.x.min(self.w - 1)..].fill(' '),
+                                ('K', "1") => self.grid[self.y][..=self.x.min(self.w - 1)].fill(' '),
+                                ('H' | 'J' | 'f' | 'r' | 'L' | 'M' | 'S' | 'T', _) => panic!("not sent inline: ESC[{p}{fin}"),
+                                _ => {}
+                            }
+                        }
+                        Some(']') => {
+                            while let Some(c) = cs.next() {
+                                if c == '\x07' || (c == '\x1b' && cs.next_if_eq(&'\\').is_some()) {
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
+                    '\r' => self.x = 0,
+                    '\n' => self.lf(),
+                    c => {
+                        if self.x >= self.w {
+                            if self.wrap {
+                                self.x = 0;
+                                self.lf();
+                            } else {
+                                self.x = self.w - 1;
+                            }
+                        }
+                        self.grid[self.y][self.x] = c;
+                        self.x += 1;
+                    }
+                }
+            }
+        }
+
+        fn resize(&mut self, w: u16, h: u16) {
+            let (w, h) = (usize::from(w), usize::from(h));
+            for r in &mut self.grid {
+                r.resize(w, ' ');
+            }
+            while self.grid.len() > h {
+                if self.y + 1 < self.grid.len() {
+                    self.grid.pop();
+                } else {
+                    let top = self.grid.remove(0);
+                    self.history.push(Vt::row(&top));
+                    self.y -= 1;
+                }
+            }
+            while self.grid.len() < h {
+                self.grid.push(vec![' '; w]);
+            }
+            (self.w, self.h, self.x) = (w, h, self.x.min(w - 1));
+        }
+
+        fn screen(&self) -> Vec<String> {
+            self.grid.iter().map(|r| Vt::row(r)).collect()
+        }
+
+        /// History and screen, as a copy of the whole pane reads them.
+        fn all(&self) -> Vec<String> {
+            self.history.iter().cloned().chain(self.screen()).collect()
+        }
+    }
+
+    /// What `t` sent since last asked, into `vt`.
+    fn pump(t: &mut Term<Vec<u8>>, vt: &mut Vt) {
+        vt.feed(&std::mem::take(&mut t.out));
+    }
+
+    fn view(n: u16) -> Vec<Line<'static>> {
+        (0..n).map(|i| Line::from(format!("view {i}"))).collect()
+    }
+
+    /// The pane less its blank rows: what is on it, in order.
+    fn text(rows: &[String]) -> Vec<String> {
+        rows.iter().filter(|r| !r.is_empty()).cloned().collect()
+    }
+
+    #[test]
+    fn r_sub_11_the_view_fills_the_screen_and_closing_leaves_scrollback_and_prompt_as_they_were() {
+        let (w, h) = (40, 10);
+        let mut t = Term::new(Vec::new(), Size { width: w, height: h }, 0, 3).unwrap();
+        let mut vt = Vt::new(w, h);
+        t.frame(&prompt(25).iter().map(|l| Line::from(format!("line {}", l.spans[0].content))).collect::<Vec<_>>(), &prompt(3), (2, 2)).unwrap();
+        pump(&mut t, &mut vt);
+        let (history, screen) = (vt.history.clone(), vt.screen());
+        assert_eq!(screen[9], "row 2", "{screen:?}");
+        // Open: every row is the view's, nothing scrolled into history.
+        t.view(&[], &view(h)).unwrap();
+        pump(&mut t, &mut vt);
+        assert_eq!(vt.screen(), (0..h).map(|i| format!("view {i}")).collect::<Vec<_>>());
+        assert_eq!(vt.history, history, "scrollback untouched");
+        // Redrawn, and lines arriving meanwhile: held, history untouched.
+        t.view(&[Line::from("arrived")], &view(h).into_iter().rev().collect::<Vec<_>>()).unwrap();
+        pump(&mut t, &mut vt);
+        assert_eq!((vt.screen()[0].as_str(), &vt.history), ("view 9", &history));
+        // Closed: the screen as it was, the line that arrived printed after
+        // the conversation, where the next line goes.
+        t.frame(&[], &prompt(3), (2, 2)).unwrap();
+        pump(&mut t, &mut vt);
+        let mut want: Vec<String> = history.iter().chain(&screen).filter(|r| r.starts_with("line")).cloned().collect();
+        want.push("arrived".into());
+        want.extend(["row 0", "row 1", "row 2"].map(String::from));
+        assert_eq!(text(&vt.all()), want, "{:?}", vt.all());
+        assert_eq!(vt.screen()[9], "row 2", "the prompt where it was");
+        assert!(vt.modes.iter().all(|m| !matches!(m.as_str(), "?1049" | "?1047" | "?47" | "?1000" | "?1002" | "?1003" | "?1006")), "no alternate screen, no mouse: {:?}", vt.modes);
+    }
+
+    #[test]
+    fn r_sub_11_closing_with_nothing_arrived_puts_back_exactly_what_was_on_screen() {
+        let (w, h) = (30, 8);
+        let mut t = Term::new(Vec::new(), Size { width: w, height: h }, 0, 2).unwrap();
+        let mut vt = Vt::new(w, h);
+        t.frame(&prompt(20), &prompt(2), (0, 1)).unwrap();
+        pump(&mut t, &mut vt);
+        let before = (vt.history.clone(), vt.screen());
+        t.view(&[], &view(h)).unwrap();
+        t.frame(&[], &prompt(2), (0, 1)).unwrap();
+        pump(&mut t, &mut vt);
+        assert_eq!((vt.history.clone(), vt.screen()), before);
+    }
+
+    #[test]
+    fn r_sub_11_rows_never_printed_here_move_into_scrollback_rather_than_being_lost() {
+        // The shell's output above where krowk started: nothing here can
+        // draw it again, so the view scrolls it up rather than over it.
+        let (w, h) = (30, 12);
+        let mut vt = Vt::new(w, h);
+        vt.feed(b"$ shell 0\r\n$ shell 1\r\n$ shell 2\r\n");
+        let mut t = Term::new(Vec::new(), Size { width: w, height: h }, 3, 2).unwrap();
+        t.frame(&[Line::from("hello"), Line::from("x".repeat(70))], &prompt(2), (0, 1)).unwrap();
+        pump(&mut t, &mut vt);
+        let before = text(&vt.all());
+        t.view(&[], &view(h)).unwrap();
+        pump(&mut t, &mut vt);
+        assert_eq!(vt.screen()[0], "view 0");
+        t.frame(&[], &prompt(2), (0, 1)).unwrap();
+        pump(&mut t, &mut vt);
+        assert_eq!(text(&vt.all()), before, "{:?}", vt.all());
+        assert_eq!(vt.screen()[11], "row 1");
+    }
+
+    #[test]
+    fn r_sub_11_a_resize_while_open_redraws_it_and_closing_leaves_no_stray_rows() {
+        let (w, h) = (40, 10);
+        let mut t = Term::new(Vec::new(), Size { width: w, height: h }, 0, 3).unwrap();
+        let mut vt = Vt::new(w, h);
+        t.frame(&prompt(25), &prompt(3), (0, 2)).unwrap();
+        t.view(&[], &view(h)).unwrap();
+        pump(&mut t, &mut vt);
+        for (w, h) in [(40, 14), (30, 6), (36, 9)] {
+            vt.resize(w, h);
+            t.resize(Size { width: w, height: h }, Some(vt.y as u16)).unwrap();
+            t.view(&[], &view(h)).unwrap();
+            pump(&mut t, &mut vt);
+            assert_eq!(vt.screen(), (0..h).map(|i| format!("view {i}")).collect::<Vec<_>>(), "redrawn whole at {w}x{h}");
+        }
+        t.frame(&[Line::from("after")], &prompt(3), (0, 2)).unwrap();
+        pump(&mut t, &mut vt);
+        let all = vt.all();
+        assert!(!all.iter().any(|r| r.starts_with("view")), "a stray row of the view: {all:?}");
+        assert_eq!(vt.screen().last().map(String::as_str), Some("row 2"), "{all:?}");
+        let rows: Vec<&String> = all.iter().filter(|r| r.starts_with("row ")).collect();
+        assert_eq!(rows.len(), 25 + 3, "the conversation once, the prompt once: {all:?}");
+        let after = all.iter().position(|r| r == "after").unwrap();
+        assert_eq!(all[after - 1], "row 24", "printed after the conversation: {all:?}");
+    }
+
+    #[test]
+    fn r_sub_11_the_view_sends_no_alternate_screen_and_hides_the_cursor_only_while_open() {
+        let mut t = Term::new(Vec::new(), Size { width: 40, height: 10 }, 0, 3).unwrap();
+        t.frame(&prompt(4), &prompt(3), (0, 2)).unwrap();
+        let start = t.out.len();
+        t.view(&[], &view(10)).unwrap();
+        let open = String::from_utf8_lossy(&t.out[start..]).into_owned();
+        assert!(open.contains("\x1b[?25l"), "{open:?}");
+        let start = t.out.len();
+        t.frame(&[], &prompt(3), (0, 2)).unwrap();
+        let closed = String::from_utf8_lossy(&t.out[start..]).into_owned();
+        assert!(closed.contains("\x1b[?25h"), "{closed:?}");
+        let out = String::from_utf8_lossy(&t.into_inner()).into_owned();
+        for seq in ["\x1b[?1049", "\x1b[?1047", "\x1b[?47", "\x1b[?1000", "\x1b[?1002", "\x1b[?1003", "\x1b[?1006", "\x1b[2J", "\x1b[>"] {
+            assert!(!out.contains(seq), "{seq:?} in {out:?}");
+        }
     }
 
     #[test]
