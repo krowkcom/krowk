@@ -1876,22 +1876,8 @@ impl<'h> Ui<'h> {
         app.touch();
         app.flash = None;
         let armed = self.quit_armed.take().filter(|(_, t)| t.elapsed() < QUIT_CONFIRM).map(|(c, _)| c);
-        match child_key(app, k) {
-            Some(child::Key::Sibling(by)) => {
-                if let Some(id) = app.child_sibling(by) {
-                    let history = read_child(&self.sessions_dir, &id);
-                    app.open_child(&id, history);
-                }
-                return false;
-            }
-            Some(child::Key::Stop) => {
-                if let Some(id) = app.child_to_stop() {
-                    self.stop_child(app, id, true).await;
-                }
-                return false;
-            }
-            Some(_) => return false,
-            None => {}
+        if let Some(done) = self.view_key(app, k).await {
+            return done;
         }
         // A call waiting for the person's say takes the keys that answer it
         // (R-PERM-2): y once, s for the session, p for the project, n or
@@ -1935,13 +1921,7 @@ impl<'h> Ui<'h> {
                 _ => None,
             };
             if let Some(d) = decision {
-                app.answered(&req.request_id);
-                match self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d, answers: Vec::new() }).await {
-                    Ok(()) => {}
-                    // Sent, and not answered in time: the daemon has it.
-                    Err(e) if e.code == SLOW => app.notice("the host daemon is slow to answer — the approval was sent, and the turn goes on once it takes it"),
-                    Err(_) => app.notice("that approval was already answered, or its turn is over"),
-                }
+                self.approve(app, &req, d).await;
             }
             return false;
         }
@@ -1984,6 +1964,17 @@ impl<'h> Ui<'h> {
             return false;
         }
         self.on_prompt_key(app, k, quitting, armed).await
+    }
+
+    /// `req` answered `d`, and the answer sent.
+    async fn approve(&mut self, app: &mut App, req: &ApprovalRequest, d: ApprovalDecision) {
+        app.answered(&req.request_id);
+        match self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d, answers: Vec::new() }).await {
+            Ok(()) => {}
+            // Sent, and not answered in time: the daemon has it.
+            Err(e) if e.code == SLOW => app.notice("the host daemon is slow to answer — the approval was sent, and the turn goes on once it takes it"),
+            Err(_) => app.notice("that approval was already answered, or its turn is over"),
+        }
     }
 
     /// Ctrl-C or Ctrl-D asked to leave krowk: the first press asks for a
@@ -2100,6 +2091,26 @@ impl<'h> Ui<'h> {
                 }
             }
             _ => return None,
+        }
+        Some(false)
+    }
+
+    /// The child view's keys (`child_key`), ← → and `x` carried out: the
+    /// sibling's log read and opened, the child interrupted alone.
+    async fn view_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+        match child_key(app, k)? {
+            child::Key::Sibling(by) => {
+                if let Some(id) = app.child_sibling(by) {
+                    let history = read_child(&self.sessions_dir, &id);
+                    app.open_child(&id, history);
+                }
+            }
+            child::Key::Stop => {
+                if let Some(id) = app.child_to_stop() {
+                    self.stop_child(app, id, true).await;
+                }
+            }
+            _ => {}
         }
         Some(false)
     }
