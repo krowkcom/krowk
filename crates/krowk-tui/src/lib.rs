@@ -2120,13 +2120,8 @@ impl<'h> Ui<'h> {
     /// it running — the answer is said, in the child view's footer when
     /// `in_view`, else as a notice. Never silently nothing.
     async fn stop_child(&mut self, app: &mut App, id: String, in_view: bool) {
-        match self.command(Command::Interrupt { session_id: id.clone() }).await {
-            Err(e) if e.code != SLOW => {
-                let why = format!("not stopped: {}", e.message);
-                if in_view { app.child_say(&why) } else { app.notice(&why) }
-            }
-            _ => app.stopping(&id),
-        }
+        let answer = self.command(Command::Interrupt { session_id: id.clone() }).await;
+        stop_answered(app, &id, in_view, answer);
     }
 
     /// The trust question for a routed backend. It is answered by one
@@ -3258,6 +3253,19 @@ fn child_key(app: &mut App, k: KeyEvent) -> Option<child::Key> {
     }
 }
 
+/// The host's answer to child `id`'s interrupt: taken — or sent to a host
+/// slow to answer, which has it — the child reads stopping; refused, why,
+/// in the child view's footer when `in_view`, else as a notice.
+fn stop_answered(app: &mut App, id: &str, in_view: bool, answer: Result<(), EngineError>) {
+    match answer {
+        Err(e) if e.code != SLOW => {
+            let why = format!("not stopped: {}", e.message);
+            if in_view { app.child_say(&why) } else { app.notice(&why) }
+        }
+        _ => app.stopping(id),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -3291,6 +3299,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// R-SUB-10: an interrupt the host refuses — `not_stoppable`, with why —
+    /// is said in the child view's footer, and the child does not read
+    /// stopping; one sent to a slow host does.
+    #[test]
+    fn r_sub_10_a_refused_interrupt_says_why_in_the_footer_and_nothing_reads_stopping() {
+        use super::*;
+        use krowk_harness::protocol::{LogBody, LogEvent, ModelRef};
+        let mut app = App::new(Editor::new(None), 80, Settings::default(), None, None);
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
+        app.on_line(&StreamLine::Log(LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "build it".into(), agent: None, model, ran_by: Default::default(), backend_id: None } }));
+        app.open_child("k1", Ok(Vec::new()));
+        let rows = |app: &mut App| app.child_rows(100, 8, None).unwrap().iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>();
+        stop_answered(&mut app, "k1", true, Err(EngineError::new("not_stoppable", "its backend cannot stop one agent alone")));
+        let shown = rows(&mut app);
+        assert_eq!(shown[7], "⚠ not stopped: its backend cannot stop one agent alone", "{shown:?}");
+        assert!(!shown[0].contains("stopping"), "{shown:?}");
+        stop_answered(&mut app, "k1", true, Err(EngineError::new(SLOW, "slow")));
+        assert!(rows(&mut app)[0].contains("· stopping…"), "sent, to a host slow to answer: {:?}", rows(&mut app));
     }
 
     #[test]

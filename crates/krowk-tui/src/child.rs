@@ -10,7 +10,7 @@
 //! the main App hands on (`on_line`) while it folds them into the child's
 //! row as ever. Under the kept lines, while the window follows the end,
 //! what the child has not finished yet (`App::tail`): the text streaming,
-//! the call out. Its header is the main App's to say (`App::child_header`):
+//! the call out. Its header is the main App's to say (`App::child_rows`):
 //! the child's row, which its frames keep current.
 
 use crate::app::App;

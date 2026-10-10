@@ -309,11 +309,15 @@ impl Sub {
         parts.join(" · ")
     }
 
-    /// Why `x` cannot stop it, when it cannot (R-SUB-10): it has ended, or
-    /// what ran it is not krowk, whose backend half is not built yet.
+    /// Why `x` cannot stop it, when it cannot (R-SUB-10): it has ended, it
+    /// was sent its interrupt already, or what ran it is not krowk, whose
+    /// backend half is not built yet.
     fn unstoppable(&self) -> Option<String> {
         if self.status.is_some() {
             return Some("that subagent has finished — nothing of it is running to interrupt".into());
+        }
+        if self.stopping {
+            return Some("already stopping — its end is on the way".into());
         }
         (self.ran_by != RanBy::Krowk).then(|| format!("{} runs that subagent, and krowk cannot stop one of its agents alone yet — Ctrl-C stops the whole turn, its agents with it", ran_by(self.ran_by)))
     }
@@ -880,6 +884,9 @@ pub struct App {
     /// reorders as children start and end. Its place, for when it is gone.
     agent_pick: Option<String>,
     agent_sel: usize,
+    /// The child view's child was running when it opened: while ← → step
+    /// from it, it keeps its place among the running though it has ended.
+    child_running: bool,
     /// The time of the last event a replay read.
     replayed_ms: Option<i64>,
     /// The agents a backend runs by itself (Claude Code's `Agent` tool),
@@ -1020,6 +1027,7 @@ impl App {
             sub_clock: 0,
             agent_pick: None,
             agent_sel: 0,
+            child_running: false,
             replayed_ms: None,
             backend_agents: Vec::new(),
             background: 0,
@@ -2016,9 +2024,15 @@ impl App {
     /// Every child of the session as the Agents overlay lists them: the
     /// running ones, oldest first, then the finished, newest first.
     fn children(&self) -> Vec<&Sub> {
-        let mut running: Vec<&Sub> = self.subs.iter().chain(&self.past).filter(|s| s.status.is_none()).collect();
+        self.children_keeping(None)
+    }
+
+    /// The same, child `keep` among the running whether it has ended or not.
+    fn children_keeping(&self, keep: Option<&str>) -> Vec<&Sub> {
+        let running = |s: &&Sub| s.status.is_none() || keep == Some(s.session_id.as_str());
+        let mut finished: Vec<&Sub> = self.subs.iter().chain(&self.past).filter(|s| !running(s)).collect();
+        let mut running: Vec<&Sub> = self.subs.iter().chain(&self.past).filter(running).collect();
         running.sort_by_key(|s| s.born);
-        let mut finished: Vec<&Sub> = self.subs.iter().chain(&self.past).filter(|s| s.status.is_some()).collect();
         finished.sort_by_key(|s| std::cmp::Reverse(s.ended));
         running.extend(finished);
         running
@@ -2094,6 +2108,7 @@ impl App {
     /// read (or why it could not be), then what arrives of it live.
     pub fn open_child(&mut self, sid: &str, history: Result<Vec<LogEvent>, String>) {
         let sub = self.subs.iter().chain(&self.past).find(|s| s.session_id == sid);
+        self.child_running = sub.is_some_and(|s| s.status.is_none());
         // The item it is in the middle of, as far as it has come.
         let under_way = sub.and_then(|s| s.streaming.clone()).map(|st| {
             let start = StreamLine::Live(LiveEvent::ItemStarted { session_id: sid.into(), turn_id: st.turn_id.clone(), item_id: st.item_id.clone(), item: st.kind });
@@ -2107,7 +2122,7 @@ impl App {
     }
 
     /// The child view's `height` rows at `width` columns, while it is open:
-    /// its header its child's row as it stands now, live (R-SUB-11).
+    /// its header is its child's row as it stands now, live (R-SUB-11).
     pub fn child_rows(&mut self, width: u16, height: u16, waiting: Option<&str>) -> Option<Vec<Line<'static>>> {
         let sid = self.child.as_ref()?.session_id();
         let header = self.subs.iter().chain(&self.past).find(|s| s.session_id == sid).map_or_else(|| "subagent".to_string(), |s| s.header(Instant::now()));
@@ -2116,12 +2131,18 @@ impl App {
 
     /// ← or → in the child view: the child `by` places from the open one in
     /// the Agents overlay's order, round the ends, selected there — Esc
-    /// comes back to it — or nothing when there is no other.
+    /// comes back to it — or nothing when there is no other. An open child
+    /// that has ended since it opened is stepped from where it was, among
+    /// the running: from where its end moved it, ← and → would turn round.
     pub fn child_sibling(&mut self, by: isize) -> Option<String> {
         let open = self.child.as_ref()?.session_id().to_string();
-        self.agent_pick = Some(open.clone());
-        self.agent_move(by);
-        self.agent_pick.clone().filter(|id| *id != open)
+        let ids: Vec<String> = self.children_keeping(self.child_running.then_some(open.as_str())).iter().map(|s| s.session_id.clone()).collect();
+        let at = ids.iter().position(|id| *id == open)?;
+        let next = ids[(at as isize + by).rem_euclid(ids.len() as isize) as usize].clone();
+        self.agent_pick = Some(next.clone());
+        self.agent_sel = self.children().iter().position(|s| s.session_id == next).unwrap_or(0);
+        self.dirty = true;
+        (next != open).then_some(next)
     }
 
     /// `x` in the child view: its child's session to interrupt, or nothing,
@@ -5195,6 +5216,16 @@ mod tests {
         assert_eq!(open(&a), "k3", "round the top");
         a.child = None;
         assert_eq!((a.overlay, a.agent_selected().as_deref()), (Overlay::Agents, Some("k3")), "Esc: the overlay, the last one open selected");
+        // The open child ends and its row moves among the finished: ← and →
+        // still step from where it was, not turned round.
+        let mut c = app();
+        started_three(&mut c, RanBy::Krowk);
+        c.open_agents();
+        c.open_child("k2", Ok(Vec::new()));
+        c.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1_000, error: None, reported_cost_usd: None }));
+        assert_eq!(c.child_sibling(1).as_deref(), Some("k3"), "→ after it, as it was");
+        c.open_child("k2", Ok(Vec::new()));
+        assert_eq!(c.child_sibling(1).as_deref(), Some("k1"), "opened ended, it steps from its place among the finished: round to the top");
         // An only child has no sibling.
         let mut b = app();
         started_three(&mut b, RanBy::Krowk);
@@ -5224,6 +5255,9 @@ mod tests {
         assert_eq!(a.child_to_stop().as_deref(), Some("k2"));
         a.stopping("k2");
         assert!(rows(&mut a)[0].contains("· stopping…"), "{:?}", rows(&mut a));
+        // x again before its end: nothing sent, and said.
+        assert_eq!(a.child_to_stop(), None);
+        assert_eq!(rows(&mut a)[7], "⚠ already stopping — its end is on the way");
         a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 4_000, error: None, reported_cost_usd: None }));
         assert!(rows(&mut a)[0].contains("· interrupted after 4.0s"), "{:?}", rows(&mut a));
         // Ended: nothing to send, and the footer says so.
