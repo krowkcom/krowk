@@ -4993,10 +4993,14 @@ mod tests {
         let agent = |task: &str, what: &str| BackendAgent { task_id: task.into(), description: what.into(), agent: Some("general-purpose".into()) };
         let agents = |v: Vec<BackendAgent>| live(LiveEvent::BackendAgents { session_id: "s".into(), agents: v });
         a.on_line(&agents(vec![agent("t1", "read notes"), agent("t2", "sleeper")]));
+        // As the host sends them: the session names the child, then the
+        // child's root follows. Counted once at every step.
         for (call, child, task, what) in [("c1", "k1", "t1", "read notes"), ("c2", "k2", "t2", "sleeper")] {
             a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("i{call}"), item: Item::ToolCall { call_id: call.into(), name: "Agent".into(), input: serde_json::json!({"description": what, "prompt": "…"}) } }));
-            a.on_line(&child_log(child, LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: Some("s".into()), agent: Some("general-purpose".into()) }));
             a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: child.into(), description: what.into(), agent: Some("general-purpose".into()), model: model.clone(), ran_by: RanBy::Claude, backend_id: Some(task.into()) }));
+            assert!(a.status_bar().contains("[2 subagents]"), "{child} named: {}", a.status_bar());
+            a.on_line(&child_log(child, LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: Some("s".into()), agent: Some("general-purpose".into()) }));
+            assert!(a.status_bar().contains("[2 subagents]"), "{child}'s root: {}", a.status_bar());
         }
         assert_eq!(a.status_bar(), "Sonnet (claude) | [2 subagents] | ? help\n$0.00", "never 4");
         let rows = text(&a.view(Instant::now()).0);

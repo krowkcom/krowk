@@ -551,6 +551,12 @@ fn r_sub_7_claude_codes_parallel_agents_are_child_sessions_their_prompt_first_an
         let end = log.last().unwrap();
         let want = if a["description"] == "sleeper" { "interrupted" } else { "completed" };
         assert_eq!((end["type"].as_str(), end["status"].as_str()), (Some("turn.completed"), Some(want)), "{end}");
+        // The session names it before any line of its own is sent, and
+        // its turn has begun by then.
+        let at = |f: &dyn Fn(&Value) -> bool| lines.iter().position(f).unwrap();
+        let named = at(&|l| l["type"] == "subagent.started" && l["subagentSessionId"] == child.as_str());
+        let root = at(&|l| l["type"] == "session.started" && l["sessionId"] == child.as_str());
+        assert!(named < root && lines[root + 1]["type"] == "turn.started", "{child}: named at {named}, its root at {root}");
         // Its lines rode the parent's stream, under its own id, whole.
         let streamed: Vec<&str> = lines.iter().filter(|l| l["sessionId"] == child.as_str() && l["id"].is_string()).filter_map(|l| l["id"].as_str()).collect();
         let logged: Vec<&str> = log.iter().filter_map(|e| e["id"].as_str()).collect();
