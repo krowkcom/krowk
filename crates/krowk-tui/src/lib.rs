@@ -3157,7 +3157,6 @@ fn copy(app: &mut App) {
 /// approval waiting, fullscreen leaves every key to it: its card is on
 /// screen under the view, and y, n or Esc answer it as ever. Inline, the
 /// card is hidden, and the view says so: Esc closes it to show the card.
-/// Esc closes it.
 /// Until the Agents overlay opens one (SV8), a debug build opens it on F12,
 /// over a placeholder body: a developer's way in. Like each `…_key`: Some
 /// with what `on_key` answers when it took the key.
