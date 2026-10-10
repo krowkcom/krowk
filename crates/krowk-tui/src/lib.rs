@@ -2049,13 +2049,14 @@ impl<'h> Ui<'h> {
     }
 
     /// The Agents overlay takes the keys that move through it: select a
-    /// subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3).
+    /// subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3,
+    /// R-SUB-11).
     async fn agents_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
         match k.code {
             KeyCode::Up | KeyCode::Down => app.agent_move(if k.code == KeyCode::Up { -1 } else { 1 }),
             KeyCode::Enter => app.agent_toggle(),
             KeyCode::Char('x') => {
-                if let Some(id) = app.agent_selected_running()
+                if let Some(id) = app.agent_to_interrupt()
                     && let Err(e) = self.command(Command::Interrupt { session_id: id }).await
                 {
                     app.notice(&e.message);
