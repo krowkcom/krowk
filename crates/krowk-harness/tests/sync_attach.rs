@@ -321,6 +321,7 @@ impl World {
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),
+            sessions: log::sessions_dir(&self.env()).unwrap(),
             ttl,
             keep,
             direct: None,
@@ -345,6 +346,7 @@ impl World {
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),
+            sessions: log::sessions_dir(&self.env()).unwrap(),
             ttl: host::LEASE_TTL,
             keep: host::KEEP,
             direct: Some(direct::Config { socket: ts.socket.clone().into(), roster: krowk_harness::relay::Roster::parse(&roster).unwrap(), same_user, lan: false, stop: Some(stop) }),
@@ -1657,6 +1659,7 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
         session: session.clone(),
         title: String::new(),
         cwd: applied.cwd.display().to_string(),
+        sessions: log::sessions_dir(&b_env).unwrap(),
         ttl: host::LEASE_TTL,
         keep: host::KEEP,
         direct: None,
@@ -1731,6 +1734,13 @@ async fn r_sub_12_a_viewer_stops_the_sessions_own_child_and_nothing_else() {
     let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| started(u).is_some()).await;
     let child = got.iter().find_map(started).unwrap();
     until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ItemDelta { session_id, .. })) if *session_id == child)).await;
+    // A client in the bridge's directory following the child's own id: the
+    // hub that makes is on that directory's host, where the child runs
+    // nothing, and the interrupt still goes to the parent's.
+    let (tx, mut rx) = mpsc::channel(1024);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let follower = w.daemon().await;
+    follower.attach(&child, None, tx).await.unwrap();
 
     let mut ack = async |c: Command| {
         v.commands.send(c).unwrap();

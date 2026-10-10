@@ -315,6 +315,7 @@ fn host_once(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, handed: Option
         session,
         title: String::new(),
         cwd: cwd.display().to_string(),
+        sessions: krowk_harness::log::sessions_dir(ctx.io.env)?,
         ttl: host::LEASE_TTL,
         keep: host::KEEP,
         direct,
