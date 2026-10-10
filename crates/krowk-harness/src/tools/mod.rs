@@ -922,6 +922,26 @@ impl Capture {
         }
     }
 
+    /// Takes off the end the bytes of a character not yet whole, and
+    /// returns them.
+    pub(crate) fn split_partial(&mut self) -> Vec<u8> {
+        let end: Vec<u8> = if self.tail.is_empty() { self.head.clone() } else { self.tail.iter().copied().collect() };
+        // Back from the end to the character's first byte: the length it
+        // says against the bytes there are.
+        let partial = (1..=end.len().min(3))
+            .find_map(|back| {
+                let b = end[end.len() - back];
+                (b & 0xC0 != 0x80).then(|| {
+                    let len = if b >= 0xF0 { 4 } else if b >= 0xE0 { 3 } else if b >= 0xC0 { 2 } else { 1 };
+                    if len > back { back } else { 0 }
+                })
+            })
+            .unwrap_or(0);
+        let mut out: Vec<u8> = (0..partial).filter_map(|_| if self.tail.is_empty() { self.head.pop() } else { self.tail.pop_back() }).collect();
+        out.reverse();
+        out
+    }
+
     pub(crate) fn render(&self) -> String {
         let (a, b) = self.tail.as_slices();
         let tail: Vec<u8> = [a, b].concat();
@@ -1244,15 +1264,12 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     let Started { mut child, out: mut so, err: mut se, mut group, slot: _, slot_note } = started;
     let mut cap = Capture::new(BASH_MAX_OUTPUT);
     // A steer moves it to the background once it has run `MOVE_AFTER`
-    // (R-STEER-4), where the session keeps jobs and has room for one more.
+    // (R-STEER-4), where the session keeps jobs.
     let movable = env.jobs.zip(env.steers);
     let moving = async {
-        let Some(((jobs, session), steers)) = movable else { return std::future::pending().await };
+        let Some((_, steers)) = movable else { return std::future::pending().await };
         tokio::time::sleep(MOVE_AFTER).await;
         steers.steered().await;
-        if jobs.admit(session).is_err() {
-            std::future::pending::<()>().await;
-        }
     };
     tokio::pin!(moving);
     let mut moved = false;
@@ -1306,15 +1323,15 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     };
     let ran = tokio::time::timeout(timeout, run).await;
     if moved && let Some((jobs, session)) = env.jobs {
+        // A character the command is part way through goes to the job,
+        // unread, rather than half into the answer.
+        let unread = cap.split_partial();
         let shown = cap.render();
+        let note = slot_note.as_ref().map(|n| format!("\n{n}")).unwrap_or_default();
         let started = Started { child, out: so, err: se, group, slot: _slot, slot_note };
-        return match jobs.adopt(session, started, shown.clone().into_bytes()) {
-            Ok(id) => {
-                let so_far = if shown.is_empty() { String::new() } else { format!("{}\n", shown.trim_end_matches('\n')) };
-                (format!("{so_far}moved to background as job {id} because the person sent a message"), false)
-            }
-            Err(e) => (format!("{shown}\n{e}"), true),
-        };
+        let id = jobs.adopt(session, started, shown.clone().into_bytes(), unread);
+        let so_far = if shown.is_empty() { String::new() } else { format!("{}\n", shown.trim_end_matches('\n')) };
+        return (format!("{so_far}moved to background as job {id} because the person sent a message{note}"), false);
     }
     match ran {
         Ok((code, held_open)) => {
@@ -1365,6 +1382,22 @@ pub(crate) mod tests {
 
     fn toolset(name: &str, custom_tools: bool) -> Toolset {
         Toolset { preset: crate::toolset::by_name(name).unwrap(), custom_tools }
+    }
+
+    /// R-STEER-4: a call moved part way through a character shows only
+    /// whole ones; the rest is the job's to read.
+    #[test]
+    fn r_steer_4_a_capture_gives_up_the_start_of_a_character_it_has_not_finished() {
+        let split = |bytes: &[u8]| {
+            let mut c = Capture::new(BASH_MAX_OUTPUT);
+            c.push(bytes);
+            let partial = c.split_partial();
+            (c.render(), partial)
+        };
+        assert_eq!(split("ab→".as_bytes()), ("ab→".to_string(), Vec::new()), "whole");
+        assert_eq!(split(&"ab→".as_bytes()[..4]), ("ab".to_string(), "→".as_bytes()[..2].to_vec()));
+        assert_eq!(split(&"é".as_bytes()[..1]), (String::new(), vec![0xC3]));
+        assert_eq!(split(b"plain\n"), ("plain\n".to_string(), Vec::new()));
     }
 
     #[test]
