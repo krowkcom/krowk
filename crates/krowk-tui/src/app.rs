@@ -1844,6 +1844,11 @@ impl App {
                 self.sub_clock += 1;
                 let mut s = Sub::new(sid);
                 s.born = self.sub_clock;
+                // The overlay's selection, from the first child on: the
+                // child it is drawn on stays the one `x` stops.
+                if self.agent_pick.is_none() {
+                    self.agent_pick = Some(sid.to_string());
+                }
                 self.subs.push(s);
                 self.subs.len() - 1
             }
@@ -2116,11 +2121,9 @@ impl App {
                     u.settle();
                 }
                 self.finish_live();
-                // Replayed, a child whose call the turn never answered
-                // ended with it; live, `end_turn` sees to it.
-                if !live {
-                    self.stop_unanswered(Some(ev.time_ms));
-                }
+                // A child whose call the turn never answered ended with it,
+                // timed by the log; `end_turn` sees to any left after.
+                self.stop_unanswered(Some(ev.time_ms));
                 self.flush_calls();
                 match status {
                     // A blank line first: straight under the answer, the
@@ -2296,9 +2299,18 @@ impl App {
 
     /// A resumed session not followed live: the children its log left
     /// unanswered, a last turn that never completed, are not running —
-    /// ended at the log's last event.
-    pub fn end_replayed_children(&mut self) {
-        self.stop_unanswered(self.replayed_ms);
+    /// ended at the log's last event. `local`, run by this process rather
+    /// than a daemon, its background children ended with the process that
+    /// ran them too; a daemon's may still run between turns.
+    pub fn end_replayed_children(&mut self, local: bool) {
+        let at_ms = self.replayed_ms;
+        self.stop_unanswered(at_ms);
+        if local {
+            for s in self.past.iter_mut().filter(|s| s.background && s.status.is_none()) {
+                self.sub_clock += 1;
+                s.end(TurnStatus::Interrupted, at_ms, self.sub_clock);
+            }
+        }
         self.dirty = true;
     }
 
@@ -4791,7 +4803,9 @@ mod tests {
         assert!(a.status_bar().contains("[1 subagent]"), "the running ones counted, as before: {}", a.status_bar());
         // ↑ ↓ select across both groups, round.
         assert_eq!(a.agent_count(), 3);
-        assert_eq!(a.agent_to_interrupt().as_deref(), Some("k2"));
+        assert_eq!(a.agent_selected_running(), None, "still on the first to start, finished and last now");
+        a.agent_move(1);
+        assert_eq!(a.agent_to_interrupt().as_deref(), Some("k2"), "round to the top");
         a.agent_move(1);
         assert_eq!(a.agent_selected_running(), None);
         a.agent_move(1);
@@ -4837,7 +4851,7 @@ mod tests {
         // end at the log's last event.
         let mut a = fresh();
         a.replay(&three_children().iter().collect::<Vec<_>>());
-        a.end_replayed_children();
+        a.end_replayed_children(false);
         a.open_agents();
         assert!(listed(&a)[0].contains("Agent read the docs · interrupted after 18s"), "{:?}", listed(&a));
         // A background child's end is its note's.
@@ -4850,6 +4864,25 @@ mod tests {
         a.open_agents();
         let rows = listed(&a);
         assert!(rows.iter().any(|r| r.contains("Agent read the docs · failed after 1m")), "{rows:?}");
+        // One whose note never came: under a daemon it may run on between
+        // turns; run here, it ended with the process that ran it.
+        let mut evs = three_children();
+        evs.push(at(4000, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i4".into(), item: Item::ToolCall { call_id: "c4".into(), name: "subagent".into(), input: serde_json::json!({"description": "review the store"}) } }));
+        evs.push(at(4001, LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c4".into(), subagent_session_id: "k4".into(), description: "review the store".into(), agent: None, model: ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() }, ran_by: Default::default(), backend_id: None }));
+        evs.push(at(4500, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r4".into(), item: Item::ToolResult { call_id: "c4".into(), output: "started background agent k4".into(), is_error: false } }));
+        evs.push(at(30_001, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None }));
+        for (local, running) in [(false, true), (true, false)] {
+            let mut a = fresh();
+            a.replay(&evs.iter().collect::<Vec<_>>());
+            a.end_replayed_children(local);
+            a.open_agents();
+            let rows = listed(&a);
+            let row = rows.iter().find(|r| r.contains("review the store")).cloned().unwrap_or_default();
+            assert_eq!(row.contains("in the background"), running, "local {local}: {rows:?}");
+            assert_eq!(row.contains("interrupted after 26s"), !running, "local {local}: {rows:?}");
+            let all = text(&a.view(Instant::now()).0).join("\n");
+            assert_eq!(all.contains("x interrupts"), running, "local {local}: x only while it may run: {all}");
+        }
     }
 
     /// R-SUB-11: the overlay's selection stays on its child as the list
@@ -4858,10 +4891,11 @@ mod tests {
     fn r_sub_11_the_selection_follows_its_child_when_the_list_reorders() {
         let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
         a.start_turn(Instant::now());
+        // Opened before any child: the first to start is the one selected.
+        a.open_agents();
         for ev in three_children().into_iter().filter(|e| !matches!(e.body, LogBody::ItemCompleted { item: Item::ToolResult { .. }, .. })) {
             a.on_line(&StreamLine::Log(ev));
         }
-        a.open_agents();
         assert_eq!(a.agent_selected_running().as_deref(), Some("k1"));
         a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 5, error: None, reported_cost_usd: None }));
         assert_eq!(a.agent_to_interrupt(), None, "k1 ended and is still the one selected, now last");
@@ -4888,7 +4922,18 @@ mod tests {
         assert!(shown.contains("◆ Agent find the tests · interrupted after") && !shown.contains("running") && shown.contains("no result — the turn stopped first"), "{shown}");
         a.open_agents();
         let rows = listed(&a);
-        assert!(rows[0].contains("interrupted after 0.0s"), "by this client's clock, not the log's: {rows:?}");
+        assert!(rows[0].contains("interrupted after 0.0s"), "with nothing in the log to time it, by this client's clock: {rows:?}");
+        // The turn's end logged, it is timed by the log, as a replay is:
+        // a child of a session followed again started when its log says.
+        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        a.start_turn(Instant::now());
+        for ev in three_children().into_iter().take(3) {
+            a.on_line(&StreamLine::Log(ev));
+        }
+        a.on_line(&StreamLine::Log(LogEvent { id: "end".into(), parent_id: None, session_id: "s".into(), time_ms: 30_001, body: LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None } }));
+        a.end_turn();
+        a.open_agents();
+        assert!(listed(&a)[0].contains("Agent find the tests · interrupted after 29s"), "{:?}", listed(&a));
     }
 
     /// R-STEER-2: the status line counts the session's background work

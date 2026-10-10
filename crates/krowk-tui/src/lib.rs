@@ -343,7 +343,6 @@ async fn session(opts: Options) -> Outcome {
             Ok(events) => {
                 replayed_to = events.last().map(|e| e.id.clone());
                 runs_in = replay(&mut app, id, &events, &opts.host.registry).unwrap_or(runs_in);
-                app.say(&format!("resumed session {id}"), app::dim());
             }
             Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(e) },
         }
@@ -481,10 +480,15 @@ async fn session(opts: Options) -> Outcome {
     // A resumed session still running in the daemon is followed from where
     // its log left off: the turn so far, then live. One that is not left no
     // child running: its log's unanswered children ended with it.
-    match opts.resume.clone() {
-        Some(id) if live.contains(&id) => ui.reattach(&mut app, &id, replayed_to.clone()),
-        Some(_) => app.end_replayed_children(),
-        None => {}
+    // Said under all of it.
+    if let Some(id) = opts.resume.clone() {
+        if live.contains(&id) {
+            app.say(&format!("resumed session {id}"), app::dim());
+            ui.reattach(&mut app, &id, replayed_to.clone());
+        } else {
+            app.end_replayed_children(matches!(ui.host, link::Link::Local(_)));
+            app.say(&format!("resumed session {id}"), app::dim());
+        }
     }
     let result = ui.run(&mut app, &mut term).await;
     ui.drain(&mut app);
@@ -2431,7 +2435,7 @@ impl<'h> Ui<'h> {
             self.live.retain(|l| l != id);
             self.reattach(app, id, events.last().map(|e| e.id.clone()));
         } else {
-            app.end_replayed_children();
+            app.end_replayed_children(matches!(self.host, link::Link::Local(_)));
         }
         // Where that session's agent was at work, not this one's.
         self.look_for_pr(app);
