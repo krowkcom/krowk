@@ -10,7 +10,8 @@
 //! the main App hands on (`on_line`) while it folds them into the child's
 //! row as ever. Under the kept lines, while the window follows the end,
 //! what the child has not finished yet (`App::tail`): the text streaming,
-//! the call out.
+//! the call out. Its header is the main App's to say (`App::child_header`):
+//! the child's row, which its frames keep current.
 
 use crate::app::App;
 use crate::look;
@@ -20,7 +21,6 @@ use ratatui::text::{Line, Span};
 use std::collections::HashSet;
 
 pub struct ChildView {
-    title: String,
     /// The child's session.
     session_id: String,
     /// The child's App: its transcript, kept.
@@ -33,6 +33,9 @@ pub struct ChildView {
     done: HashSet<String>,
     /// The columns the body is laid out in.
     width: u16,
+    /// What the footer says in place of its keys until the next key: why
+    /// `x` stopped nothing.
+    note: Option<String>,
 }
 
 /// What a key did to the view.
@@ -42,17 +45,21 @@ pub enum Key {
     Taken,
     /// Esc: the view closes.
     Close,
+    /// ← or →: the child before or after this one in the Agents overlay.
+    Sibling(isize),
+    /// `x`: stop this child alone.
+    Stop,
     /// Not the view's: Ctrl-C and Ctrl-D go on as anywhere.
     Pass,
 }
 
 impl ChildView {
-    /// A view titled `title` on child `session_id`, drawn by `app`: its
+    /// A view on child `session_id`, drawn by `app`: its
     /// history first, then the item it is in the middle of (`under_way`:
     /// its id, its start and what it has streamed so far), unless its log
     /// already has it whole, then live. A log that could not be read is
     /// said, and what arrives from now on is still shown.
-    pub fn open(title: &str, session_id: &str, mut app: App, history: Result<Vec<LogEvent>, String>, under_way: Option<(String, [StreamLine; 2])>) -> ChildView {
+    pub fn open(session_id: &str, mut app: App, history: Result<Vec<LogEvent>, String>, under_way: Option<(String, [StreamLine; 2])>) -> ChildView {
         app.keep();
         let (mut read, mut done) = (HashSet::new(), HashSet::new());
         match history {
@@ -73,18 +80,28 @@ impl ChildView {
             app.on_line(&line);
         }
         // None yet: the first frame lays it out at the width it is drawn at.
-        ChildView { title: crate::card::clean(title), session_id: session_id.to_string(), app: Box::new(app), read, done, width: 0 }
+        ChildView { session_id: session_id.to_string(), app: Box::new(app), read, done, width: 0, note: None }
     }
 
-    /// A view titled `title` on `lines` alone, at `width` columns.
+    /// A view on `lines` alone, at `width` columns.
     #[cfg(test)]
-    pub fn new(title: &str, lines: impl IntoIterator<Item = Line<'static>>, width: u16) -> ChildView {
+    pub fn new(lines: impl IntoIterator<Item = Line<'static>>, width: u16) -> ChildView {
         let mut app = App::new(crate::editor::Editor::new(None), width, crate::settings::Settings::default(), None, None);
         for line in lines {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             app.say(&text, ratatui::style::Style::new());
         }
-        ChildView::open(title, "child", app, Ok(Vec::new()), None)
+        ChildView::open("child", app, Ok(Vec::new()), None)
+    }
+
+    /// The child's session.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Says `note` in the footer until the next key.
+    pub fn say(&mut self, note: &str) {
+        self.note = Some(note.to_string());
     }
 
     /// A line of the stream: the child's own are its App's, once. Whether
@@ -101,11 +118,11 @@ impl ChildView {
         ours
     }
 
-    /// The view's `height` rows at `width` columns: its header, the body's
+    /// The view's `height` rows at `width` columns: `header`, the body's
     /// window, its footer. The body is wrapped again when the width changed.
-    /// `waiting`, when an approval waits on the person, takes the footer's
-    /// place: it says so and how to get to it.
-    pub fn rows(&mut self, width: u16, height: u16, waiting: Option<&str>) -> Vec<Line<'static>> {
+    /// A note (`say`) takes the footer's place, or else `waiting`, when an
+    /// approval waits on the person: it says so and how to get to it.
+    pub fn rows(&mut self, width: u16, height: u16, header: &str, waiting: Option<&str>) -> Vec<Line<'static>> {
         let width = width.max(1);
         if width != self.width {
             self.width = width;
@@ -113,7 +130,7 @@ impl ChildView {
         }
         self.app.take_pending();
         let h = usize::from(height);
-        let mut rows = vec![Line::from(Span::styled(clip(&self.title, width), look::bold()))];
+        let mut rows = vec![Line::from(Span::styled(clip(&crate::card::clean(header), width), look::bold()))];
         if h < 3 {
             rows.resize(h, Line::default());
             return rows;
@@ -132,21 +149,29 @@ impl ChildView {
             rows.push(Line::from(Span::styled(format!("↓ {below} more below · PgDn"), look::dim())));
         }
         rows.resize(h - 1, Line::default());
-        rows.push(Line::from(match waiting {
-            Some(note) => look::keys(note, look::warning()),
-            None => look::keys("`esc` back · `↑` `↓` `PgUp` `PgDn` scroll", look::dim()),
+        rows.push(Line::from(match (&self.note, waiting) {
+            (Some(note), _) => vec![Span::styled(clip(&format!("{}{note}", look::WARN), width), look::warning())],
+            (None, Some(note)) => look::keys(note, look::warning()),
+            (None, None) => look::keys("`esc` back · `←` `→` siblings · `x` stop · `↑` `↓` `PgUp` `PgDn` scroll", look::dim()),
         }));
         rows
     }
 
-    /// ↑ ↓ PgUp PgDn Home End scroll the body, Esc closes, Ctrl-C and
-    /// Ctrl-D go on; anything else is taken and does nothing.
+    /// ↑ ↓ PgUp PgDn Home End scroll the body, Esc closes, ← → go to a
+    /// sibling, `x` stops the child, Ctrl-C and Ctrl-D go on; anything else
+    /// is taken and does nothing. Any key takes the footer's note away.
     pub fn key(&mut self, k: KeyEvent) -> Key {
-        if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('c' | 'd')) {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
             return Key::Pass;
         }
-        if k.code == KeyCode::Esc {
-            return Key::Close;
+        self.note = None;
+        match k.code {
+            KeyCode::Esc => return Key::Close,
+            KeyCode::Left => return Key::Sibling(-1),
+            KeyCode::Right => return Key::Sibling(1),
+            KeyCode::Char('x') if !ctrl && !k.modifiers.contains(KeyModifiers::ALT) => return Key::Stop,
+            _ => {}
         }
         if let Some(body) = self.app.kept() {
             match k.code {
@@ -222,17 +247,17 @@ mod tests {
         use krowk_harness::protocol::{Delta, Item, ItemKind};
         let app = App::new(crate::editor::Editor::new(None), 40, crate::settings::Settings::default(), None, None);
         let done = said("e1", "m1", Item::AssistantText { text: "QUEUED line".into() });
-        let mut v = ChildView::open("k1", "k1", app, Ok(vec![done.clone()]), None);
+        let mut v = ChildView::open("k1", app, Ok(vec![done.clone()]), None);
         assert!(!v.on_line(&StreamLine::Live(LiveEvent::ItemStarted { session_id: "k1".into(), turn_id: "t".into(), item_id: "m1".into(), item: ItemKind::AssistantText })));
         assert!(!v.on_line(&StreamLine::Live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "t".into(), item_id: "m1".into(), delta: Delta::Text { text: "QUEUED line\nta".into() } })));
         assert!(!v.on_line(&StreamLine::Log(done)));
-        let rows = text(&v.rows(40, 10, None));
+        let rows = text(&v.rows(40, 10, "k1", None));
         assert_eq!(rows.iter().filter(|r| r.contains("QUEUED line")).count(), 1, "{rows:?}");
         assert!(!rows.iter().any(|r| r.trim() == "ta"), "{rows:?}");
         // The next item streams as ever.
         assert!(v.on_line(&StreamLine::Live(LiveEvent::ItemStarted { session_id: "k1".into(), turn_id: "t".into(), item_id: "m2".into(), item: ItemKind::AssistantText })));
         v.on_line(&StreamLine::Live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "t".into(), item_id: "m2".into(), delta: Delta::Text { text: "next".into() } }));
-        assert!(text(&v.rows(40, 10, None)).iter().any(|r| r == "next"));
+        assert!(text(&v.rows(40, 10, "k1", None)).iter().any(|r| r == "next"));
     }
 
     /// R-SUB-11: a running child's log is read as far as it is written: a
@@ -266,26 +291,45 @@ mod tests {
     #[test]
     fn r_sub_11_the_view_is_its_header_a_window_of_its_body_and_its_footer() {
         let lines = (0..30).map(|i| Line::from(format!("line {i}")));
-        let mut v = ChildView::new("explore the repo", lines, 40);
-        let rows = text(&v.rows(40, 10, None));
+        let mut v = ChildView::new(lines, 40);
+        let rows = text(&v.rows(40, 10, "explore the repo", None));
         assert_eq!(rows.len(), 10);
         assert_eq!(rows[0], "explore the repo");
         assert_eq!(rows[1..9], (22..30).map(|i| format!("line {i}")).collect::<Vec<_>>()[..], "the end, followed: {rows:?}");
         assert!(rows[9].contains("esc") && rows[9].contains("back"), "{rows:?}");
         assert_eq!(v.key(KeyEvent::from(KeyCode::PageUp)), Key::Taken);
-        let rows = text(&v.rows(40, 10, None));
+        let rows = text(&v.rows(40, 10, "explore the repo", None));
         assert_eq!(rows[7], "line 23", "a page up, a line in common: {rows:?}");
         assert!(rows[8].starts_with("↓ 6 more below"), "{rows:?}");
         v.key(KeyEvent::from(KeyCode::End));
-        assert_eq!(text(&v.rows(40, 10, None))[8], "line 29");
+        assert_eq!(text(&v.rows(40, 10, "explore the repo", None))[8], "line 29");
         // Taller, shorter, narrower: as many rows as asked, always.
         for (w, h) in [(40, 20), (12, 4), (5, 2), (40, 1)] {
-            assert_eq!(v.rows(w, h, None).len(), usize::from(h), "{w}x{h}");
+            assert_eq!(v.rows(w, h, "explore the repo", None).len(), usize::from(h), "{w}x{h}");
         }
-        let rows = text(&v.rows(40, 10, Some("⚠ approval waiting · `esc` to answer it")));
+        let rows = text(&v.rows(40, 10, "explore the repo", Some("⚠ approval waiting · `esc` to answer it")));
         assert_eq!(rows[9], "⚠ approval waiting · esc to answer it", "{rows:?}");
         assert_eq!(v.key(KeyEvent::from(KeyCode::Esc)), Key::Close);
         assert_eq!(v.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)), Key::Pass);
         assert_eq!(v.key(KeyEvent::from(KeyCode::Char('q'))), Key::Taken, "nothing reaches the prompt");
+    }
+
+    /// R-SUB-11: the footer names the view's keys — ← → for the siblings,
+    /// `x` to stop — and a note in their place, why `x` stopped nothing,
+    /// stays until the next key.
+    #[test]
+    fn r_sub_11_the_footer_names_siblings_and_stop_and_says_why_nothing_stopped() {
+        let mut v = ChildView::new((0..3).map(|i| Line::from(format!("line {i}"))), 60);
+        let footer = |v: &mut ChildView| text(&v.rows(80, 8, "h", None))[7].clone();
+        assert_eq!(footer(&mut v), "esc back · ← → siblings · x stop · ↑ ↓ PgUp PgDn scroll");
+        assert_eq!(v.key(KeyEvent::from(KeyCode::Left)), Key::Sibling(-1));
+        assert_eq!(v.key(KeyEvent::from(KeyCode::Right)), Key::Sibling(1));
+        assert_eq!(v.key(KeyEvent::from(KeyCode::Char('x'))), Key::Stop);
+        assert_eq!(v.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT)), Key::Taken);
+        v.say("Claude Code cannot stop one agent alone yet");
+        assert_eq!(footer(&mut v), "⚠ Claude Code cannot stop one agent alone yet");
+        assert_eq!(text(&v.rows(80, 8, "h", Some("⚠ approval waiting")))[7], "⚠ Claude Code cannot stop one agent alone yet", "the answer to the key first");
+        v.key(KeyEvent::from(KeyCode::Down));
+        assert!(footer(&mut v).starts_with("esc back"), "gone at the next key");
     }
 }

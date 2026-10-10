@@ -1323,8 +1323,7 @@ impl<'h> Ui<'h> {
         // The child view takes the screen it is given, the conversation
         // back as it was once it closes.
         let waiting = (!app.approvals.is_empty()).then_some(if app.inline { "⚠ approval waiting · `esc` to answer it" } else { "⚠ approval waiting · answer it below" });
-        if let Some(child) = app.child.as_mut() {
-            let view = child.rows(inner(term.size().width), term.view_rows(rows.len()), waiting);
+        if let Some(view) = app.child_rows(inner(term.size().width), term.view_rows(rows.len()), waiting) {
             return term.view(&lines, &view, &rows, caret);
         }
         term.frame(&lines, &rows, caret)
@@ -1877,8 +1876,22 @@ impl<'h> Ui<'h> {
         app.touch();
         app.flash = None;
         let armed = self.quit_armed.take().filter(|(_, t)| t.elapsed() < QUIT_CONFIRM).map(|(c, _)| c);
-        if let Some(done) = child_key(app, k) {
-            return done;
+        match child_key(app, k) {
+            Some(child::Key::Sibling(by)) => {
+                if let Some(id) = app.child_sibling(by) {
+                    let history = read_child(&self.sessions_dir, &id);
+                    app.open_child(&id, history);
+                }
+                return false;
+            }
+            Some(child::Key::Stop) => {
+                if let Some(id) = app.child_to_stop() {
+                    self.stop_child(app, id, true).await;
+                }
+                return false;
+            }
+            Some(_) => return false,
+            None => {}
         }
         // A call waiting for the person's say takes the keys that answer it
         // (R-PERM-2): y once, s for the session, p for the project, n or
@@ -2082,15 +2095,27 @@ impl<'h> Ui<'h> {
                 }
             }
             KeyCode::Char('x') => {
-                if let Some(id) = app.agent_to_interrupt()
-                    && let Err(e) = self.command(Command::Interrupt { session_id: id }).await
-                {
-                    app.notice(&e.message);
+                if let Some(id) = app.agent_to_interrupt() {
+                    self.stop_child(app, id, false).await;
                 }
             }
             _ => return None,
         }
         Some(false)
+    }
+
+    /// Interrupts child `id` alone (R-SUB-10): its row says it is stopping
+    /// until its end arrives, or, refused — `not_stoppable`, or nothing of
+    /// it running — the answer is said, in the child view's footer when
+    /// `in_view`, else as a notice. Never silently nothing.
+    async fn stop_child(&mut self, app: &mut App, id: String, in_view: bool) {
+        match self.command(Command::Interrupt { session_id: id.clone() }).await {
+            Err(e) if e.code != SLOW => {
+                let why = format!("not stopped: {}", e.message);
+                if in_view { app.child_say(&why) } else { app.notice(&why) }
+            }
+            _ => app.stopping(&id),
+        }
     }
 
     /// The trust question for a routed backend. It is answered by one
@@ -3203,20 +3228,23 @@ fn copy(app: &mut App) {
 /// the other Ctrl keys, which do nothing: each would open an overlay under
 /// the view. Inline, the card is hidden, and the view says so: Esc closes
 /// it to show the card. Esc closes it onto the Agents overlay that opened
-/// it, the same child selected. Like each `…_key`: Some with what `on_key`
-/// answers when it took the key.
-fn child_key(app: &mut App, k: KeyEvent) -> Option<bool> {
+/// it, the same child selected. Some with what the view made of the key
+/// when it took it — ← → and `x` are `on_key`'s to carry out — None when
+/// the key goes on.
+fn child_key(app: &mut App, k: KeyEvent) -> Option<child::Key> {
     app.child.as_ref()?;
     if !app.inline && !app.approvals.is_empty() {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        return (ctrl && !matches!(k.code, KeyCode::Char('c' | 'd'))).then_some(false);
+        return (ctrl && !matches!(k.code, KeyCode::Char('c' | 'd'))).then_some(child::Key::Taken);
     }
     match app.child.as_mut()?.key(k) {
-        child::Key::Close => app.child = None,
-        child::Key::Taken => {}
-        child::Key::Pass => return None,
+        child::Key::Close => {
+            app.child = None;
+            Some(child::Key::Close)
+        }
+        child::Key::Pass => None,
+        other => Some(other),
     }
-    Some(false)
 }
 
 #[cfg(test)]
@@ -3229,13 +3257,13 @@ mod tests {
         for inline in [true, false] {
             let mut app = App::new(Editor::new(None), 40, Settings::default(), None, None);
             app.inline = inline;
-            app.child = Some(child::ChildView::new("a child", (0..30).map(|i| ratatui::text::Line::from(format!("line {i}"))), 40));
-            assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(false), "no approval: the view takes it");
+            app.child = Some(child::ChildView::new((0..30).map(|i| ratatui::text::Line::from(format!("line {i}"))), 40));
+            assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(child::Key::Taken), "no approval: the view takes it");
             app.approvals.push(req.clone());
             if inline {
                 // The card is hidden: y is no answer, Esc shows it.
-                assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(false));
-                assert_eq!(child_key(&mut app, key(KeyCode::Esc)), Some(false));
+                assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(child::Key::Taken));
+                assert_eq!(child_key(&mut app, key(KeyCode::Esc)), Some(child::Key::Close));
                 assert!(app.child.is_none(), "closed, the card under it");
             } else {
                 // The card is on screen: y, n and Esc are its, the view stays.
@@ -3245,7 +3273,7 @@ mod tests {
                 assert!(app.child.is_some());
                 // No overlay opens under it; Ctrl-C and Ctrl-D go on.
                 for c in ['o', 'g', 't', 'y'] {
-                    assert_eq!(child_key(&mut app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)), Some(false), "Ctrl-{c}");
+                    assert_eq!(child_key(&mut app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)), Some(child::Key::Taken), "Ctrl-{c}");
                 }
                 for c in ['c', 'd'] {
                     assert_eq!(child_key(&mut app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)), None, "Ctrl-{c}");
