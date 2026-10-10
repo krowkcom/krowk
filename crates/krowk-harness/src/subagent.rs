@@ -56,15 +56,16 @@
 use crate::agents::AgentDef;
 use crate::budget::Budget;
 use crate::catalog::{self, Listed};
-use crate::engine::Events;
+use crate::engine::{EngineEvent, Events};
 use crate::evidence::Evidence;
 use crate::host::Shared;
 use crate::instances::{Registry, ALIASES};
-use crate::protocol::{ModelRef, PermissionMode, StreamLine, TurnStatus};
+use crate::protocol::{ChildState, ChildTool, Item, ItemKind, LiveEvent, ModelRef, PermissionMode, StreamLine, TurnStatus, Waiting};
 use crate::worktree::InUse;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Semaphore};
@@ -761,6 +762,83 @@ async fn finish(i: InUse, to: Option<PathBuf>) -> Option<String> {
     }
 }
 
+/// A child's state as its `subagent.status` frames say it (R-SUB-9), kept
+/// by the writer of the child's own turn from the events that turn
+/// handles: the call it is in, what it waits on the person for, its tokens
+/// and when anything last came from it.
+pub(crate) struct ChildWatch {
+    session_id: String,
+    /// The tool each call the model made names, by call id, until it runs.
+    named: HashMap<String, String>,
+    /// The calls running, oldest first, by call id.
+    tools: Vec<(String, ChildTool)>,
+    /// The requests waiting on the person, by request id.
+    waiting: Vec<(String, Waiting)>,
+    last_event_ms: i64,
+    tokens: i64,
+}
+
+impl ChildWatch {
+    /// The watch of a turn's session when the turn is a subagent's: one
+    /// with a parent.
+    pub fn of<P>(parent: Option<&P>, session_id: &str) -> Option<ChildWatch> {
+        parent.map(|_| ChildWatch { session_id: session_id.into(), named: HashMap::new(), tools: Vec::new(), waiting: Vec::new(), last_event_ms: krowk_store::now_ms(), tokens: 0 })
+    }
+
+    /// Takes in what the child's engine said at `now`: true when its state
+    /// changed, so a frame is due. A text delta, or anything else that only
+    /// shows it is alive, changes `lastEventMs` and nothing a frame is sent
+    /// for: the next frame carries it.
+    pub fn note(&mut self, ev: &EngineEvent, now: i64) -> bool {
+        self.last_event_ms = now;
+        match ev {
+            EngineEvent::ItemCompleted { item: Item::ToolCall { call_id, name, .. }, .. } => {
+                self.named.insert(call_id.clone(), name.clone());
+                false
+            }
+            EngineEvent::ItemStarted { kind: ItemKind::ToolResult { call_id }, .. } => {
+                let name = self.named.remove(call_id).unwrap_or_default();
+                self.tools.push((call_id.clone(), ChildTool { name, started_ms: now }));
+                true
+            }
+            EngineEvent::ItemCompleted { item: Item::ToolResult { call_id, .. }, .. } => {
+                let before = self.tools.len();
+                self.tools.retain(|(c, _)| c != call_id);
+                self.tools.len() != before
+            }
+            EngineEvent::Approval(r) => {
+                let what = if r.questions.is_empty() { Waiting::Approval } else { Waiting::Question };
+                self.waiting.push((r.request_id.clone(), what));
+                true
+            }
+            EngineEvent::ApprovalResolved { request_id, .. } => {
+                let before = self.waiting.len();
+                self.waiting.retain(|(r, _)| r != request_id);
+                self.waiting.len() != before
+            }
+            EngineEvent::ResponseCompleted { usage, .. } => {
+                self.tokens += usage.total();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The frame for where the child stands: an ended child is in no call
+    /// and waits on nobody.
+    pub fn frame(&self, status: ChildState) -> LiveEvent {
+        let running = status == ChildState::Running;
+        LiveEvent::SubagentStatus {
+            session_id: self.session_id.clone(),
+            status,
+            tool: self.tools.first().filter(|_| running).map(|(_, t)| t.clone()),
+            last_event_ms: self.last_event_ms,
+            waiting: self.waiting.first().filter(|_| running).map(|(_, w)| *w),
+            tokens: self.tokens,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,6 +868,25 @@ mod tests {
         // An alias on a GPT parent goes to the anthropic instance.
         let gpt = ModelRef { instance: "openai".into(), model: "gpt-5.5".into() };
         assert_eq!(choose_model(Some("sonnet"), None, &gpt, "openai", &registry, &listed).unwrap(), ModelRef { instance: "anthropic".into(), model: "claude-sonnet-5".into() });
+    }
+
+    /// R-SUB-7: a `subagent.started` logged before `ranBy` existed reads
+    /// as krowk's own; krowk's own is logged saying so, with no backend id.
+    #[test]
+    fn r_sub_7_an_old_subagent_started_without_ran_by_replays_as_krowk() {
+        use crate::protocol::{LogBody, LogEvent, RanBy};
+        let old = r#"{"id":"e1","sessionId":"p","timeMs":1,"type":"subagent.started","turnId":"t","callId":"c","subagentSessionId":"k","description":"look","model":{"instance":"anthropic","model":"claude-haiku-4-5"}}"#;
+        let ev: LogEvent = serde_json::from_str(old).unwrap();
+        let LogBody::SubagentStarted { ran_by, backend_id, .. } = &ev.body else { panic!("{ev:?}") };
+        assert_eq!((*ran_by, backend_id.as_deref()), (RanBy::Krowk, None));
+        let again = serde_json::to_value(&ev).unwrap();
+        assert_eq!(again["ranBy"], "krowk", "written whole from now on: {again}");
+        assert!(again.get("backendId").is_none());
+        let mut theirs = again;
+        theirs["ranBy"] = "claude".into();
+        theirs["backendId"] = "task_1".into();
+        let claude: LogEvent = serde_json::from_value(theirs).unwrap();
+        assert!(matches!(claude.body, LogBody::SubagentStarted { ran_by: RanBy::Claude, backend_id: Some(ref b), .. } if b == "task_1"));
     }
 
     #[test]

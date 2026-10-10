@@ -817,6 +817,119 @@ fn r_sub_2_a_subagents_approval_request_is_answered_under_its_own_session() {
     assert!(parent_result(&b, &r.session_id).0.starts_with("CHILD-SAW error=false from-the-child"), "approved, it ran");
 }
 
+/// A `subagent.status` frame as `(status, tool and when it began, waiting,
+/// tokens)`.
+type Status = (String, Option<(String, i64)>, Option<String>, i64);
+
+/// A child's `subagent.status` frames, from the lines of a run.
+fn statuses(lines: &[StreamLine], child: &str) -> Vec<Status> {
+    lines
+        .iter()
+        .filter_map(|l| match l {
+            StreamLine::Live(LiveEvent::SubagentStatus { session_id, status, tool, waiting, tokens, last_event_ms }) if session_id == child => {
+                assert!(*last_event_ms > 0);
+                let word = |v: Value| v.as_str().unwrap().to_string();
+                Some((word(json!(status)), tool.as_ref().map(|t| (t.name.clone(), t.started_ms)), waiting.map(|w| word(json!(w))), *tokens))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn r_sub_9_a_child_that_runs_a_tool_and_waits_on_an_approval_says_each_change_in_order() {
+    let m = mock::serve(child_runs_bash("subagent"));
+    let b = Sandbox::new("child-status", &m.url);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let host = Host::new(b.host_with(json!({}), true));
+    let mut lines = Vec::new();
+    let r = rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
+        let exec = host.execute(Command::Prompt { session_id: None, text: "run it in a subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }, tx);
+        tokio::pin!(exec);
+        loop {
+            tokio::select! {
+                Some(line) = rx.recv() => {
+                    if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &line {
+                        let (itx, _irx) = tokio::sync::mpsc::channel(1);
+                        host.execute(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: krowk_harness::protocol::ApprovalDecision::Allow, answers: Vec::new() }, itx).await.unwrap();
+                    }
+                    lines.push(line);
+                }
+                r = &mut exec => {
+                    while let Ok(l) = rx.try_recv() {
+                        lines.push(l);
+                    }
+                    break r.unwrap().unwrap();
+                }
+            }
+        }
+    });
+    let child = children_of(&b, &r.session_id).remove(0);
+    let s = statuses(&lines, &child);
+    let shape: Vec<(&str, Option<&str>, Option<&str>)> = s.iter().map(|(st, t, w, _)| (st.as_str(), t.as_ref().map(|(n, _)| n.as_str()), w.as_deref())).collect();
+    assert_eq!(
+        shape,
+        [
+            ("running", None, None),
+            // The model's call came back: its tokens.
+            ("running", None, None),
+            ("running", Some("bash"), None),
+            ("running", Some("bash"), Some("approval")),
+            ("running", Some("bash"), None),
+            ("running", None, None),
+            ("running", None, None),
+            ("done", None, None),
+        ],
+        "{s:?}"
+    );
+    // The call's start is a time, kept while it runs; the tokens only grow.
+    let started: Vec<i64> = s.iter().filter_map(|(_, t, _, _)| t.as_ref().map(|(_, at)| *at)).collect();
+    assert!(started.iter().all(|t| *t == started[0] && *t > 0), "{started:?}");
+    assert!(s.windows(2).all(|w| w[0].3 <= w[1].3) && s.last().unwrap().3 > 0, "{s:?}");
+    // Its link says krowk ran it.
+    let started = b.log(&r.session_id).into_iter().find(|e| e["type"] == "subagent.started").unwrap();
+    assert_eq!(started["ranBy"], "krowk");
+    assert!(started.get("backendId").is_none());
+}
+
+#[test]
+fn r_sub_9_a_child_streaming_a_thousand_deltas_sends_a_frame_per_change_of_state_only() {
+    let words: String = (0..1000).map(|i| format!("w{i} ")).collect();
+    let m = mock::serve(move |body: &Value, _| {
+        if is_child(body) {
+            return mock::Reply::sse(&mock::text_stream(&words));
+        }
+        if answered(body) {
+            return mock::Reply::sse(&mock::fixture("turn2_answer.sse"));
+        }
+        mock::Reply::sse(&tool_calls(&[("toolu_long", "subagent", json!({"description": "talk at length", "prompt": "TASK-L"}))]))
+    });
+    let b = Sandbox::new("child-deltas", &m.url);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let host = Host::new(b.host());
+    let (r, lines) = rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let keep = tokio::spawn(async move {
+            let mut lines = Vec::new();
+            while let Some(l) = rx.recv().await {
+                lines.push(l);
+            }
+            lines
+        });
+        let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
+        let r = host.execute(Command::Prompt { session_id: None, text: "have a child talk".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }, tx).await;
+        (r.unwrap().unwrap(), keep.await.unwrap())
+    });
+    let child = children_of(&b, &r.session_id).remove(0);
+    let deltas = lines.iter().filter(|l| matches!(l, StreamLine::Live(LiveEvent::ItemDelta { session_id, .. }) if *session_id == child)).count();
+    assert!(deltas >= 1000, "{deltas} deltas");
+    // Its start, its one response, its end.
+    let s = statuses(&lines, &child);
+    assert_eq!(s.iter().map(|(st, ..)| st.as_str()).collect::<Vec<_>>(), ["running", "running", "done"], "{s:?}");
+}
+
 /// The parent starts one subagent, naming `agent`; the subagent answers
 /// at once.
 fn names_agent(agent: &'static str) -> impl Fn(&Value, usize) -> mock::Reply + Send + 'static {

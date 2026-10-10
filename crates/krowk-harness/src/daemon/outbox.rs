@@ -86,6 +86,7 @@ pub fn slot_of(line: &StreamLine) -> Option<Slot> {
         StreamLine::Live(LiveEvent::Limits { session_id, instance, .. }) => Some(Slot("limits", format!("{session_id}\u{0}{instance}"))),
         StreamLine::Live(LiveEvent::BackendAgents { session_id, .. }) => Some(Slot("agents", session_id.clone())),
         StreamLine::Live(LiveEvent::Background { session_id, .. }) => Some(Slot("background", session_id.clone())),
+        StreamLine::Live(LiveEvent::SubagentStatus { session_id, .. }) => Some(Slot("subagent.status", session_id.clone())),
         _ => None,
     }
 }
@@ -461,6 +462,26 @@ mod tests {
         o.push("quiet", delta("quiet", 1, "hi"));
         let batch = o.take(20 * 1024);
         assert_eq!(seqs(&batch, "quiet"), vec![1], "the quiet session is in the first batch");
+    }
+
+    /// R-SUB-9: a child's `subagent.status` is progress — a newer one for
+    /// the same child replaces the one queued, in its place — and never
+    /// one of another child's.
+    #[test]
+    fn r_sub_9_a_newer_status_replaces_the_one_queued_for_its_child_alone() {
+        let status = |child: &str, seq: u64, tokens: i64| {
+            let line = StreamLine::Live(LiveEvent::SubagentStatus { session_id: child.into(), status: crate::protocol::ChildState::Running, tool: None, last_event_ms: 1, waiting: None, tokens });
+            Out { bytes: Rc::from(serde_json::to_vec(&line).unwrap()), seq, log: None, line: true, slot: slot_of(&line), mark: Cursor::default() }
+        };
+        let o = Outbox::new(Caps::default());
+        o.push("p", status("k1", 1, 10));
+        o.push("p", status("k2", 2, 20));
+        o.push("p", delta("p", 3, "x"));
+        o.push("p", status("k1", 4, 30));
+        let batch = o.take(1 << 20);
+        let sent: Vec<(u64, String)> = batch.iter().flat_map(|(_, v)| v.iter().map(|o| (o.seq, String::from_utf8_lossy(&o.bytes).into_owned()))).collect();
+        assert_eq!(sent.iter().map(|(s, _)| *s).collect::<Vec<_>>(), vec![2, 3, 4], "k1's first frame gave way to its newer one");
+        assert!(sent[2].1.contains("\"tokens\":30"), "{}", sent[2].1);
     }
 
     /// R-LAG-4 / R-LAG-10: a client that stops reading costs at most the
