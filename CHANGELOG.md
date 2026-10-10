@@ -11,6 +11,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **Steering reaches a Claude Code turn while it runs.** A message you send
+  while Claude Code works used to wait until its whole turn ended, then come
+  back into your prompt. Now it goes to Claude Code at once, and the model
+  reads it at its next step, usually as soon as the running tool call
+  returns. It appears in the conversation where the model read it. One sent
+  as the model writes its last answer is read right after, in the same
+  turn. Interrupting still gives back what Claude Code never read.
+
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on
   the bottom rows while you scroll the conversation with the mouse wheel or

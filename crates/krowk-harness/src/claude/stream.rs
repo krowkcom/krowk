@@ -267,6 +267,19 @@ impl Translator {
         }
     }
 
+    /// Steering Claude Code replayed: logged after the tool results it
+    /// arrived with, which wait for the response that called them, so the
+    /// log reads call, response, results, steer, as a native turn's does.
+    pub fn steered(&mut self, item: Item) -> Vec<EngineEvent> {
+        let item_id = krowk_store::new_id();
+        let evs = vec![EngineEvent::ItemStarted { item_id: item_id.clone(), kind: item.kind() }, EngineEvent::ItemCompleted { item_id, item }];
+        if self.decoder.is_some() {
+            self.held.extend(evs);
+            return Vec::new();
+        }
+        evs
+    }
+
     /// Closes whatever is open: the turn is over, or a new response began.
     /// Text cut off mid-stream is kept as far as it got; half a tool input
     /// or unsigned reasoning is not (the decoder's rule).

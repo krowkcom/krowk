@@ -25,5 +25,13 @@ claude -p --input-format stream-json --output-format stream-json --verbose
   while the model writes its final answer, is not read in that turn; after
   its `result` Claude Code begins another turn by itself (`init`, the line
   replayed, the answer, a second `result` with no `origin`).
+- `steer_interrupt.txt`: lines written with a `uuid`, and a second one 5 s
+  into the `Bash` call, then at 8 s an `interrupt` with `cancel_queued: true`
+  (Claude Code announces `interrupt_cancel_queued_v1`): its answer lists the
+  unread line under `cancelled`, and no turn follows for it. Without
+  `cancel_queued` the line survives the interrupt and Claude Code begins a
+  turn by itself to read it. Its control lines for the interrupt are kept.
 
-The prompt is replayed too, as the first line after `init`.
+The prompt is replayed too, as the first line after `init`. A line written
+with a `uuid` gets `command_lifecycle` lines naming it (`queued`, `started`,
+`cancelled`).

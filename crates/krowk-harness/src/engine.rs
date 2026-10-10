@@ -254,6 +254,13 @@ impl Steers {
         q.closed
     }
 
+    /// Returns steering an engine took but the model never read — a backend
+    /// that cancelled it on an interrupt — to the front of the queue, oldest
+    /// first, so the turn's result hands it back with the rest.
+    pub fn put_back(&self, steers: Vec<Steer>) {
+        self.lock().waiting.splice(0..0, steers);
+    }
+
     /// Closes the queue whatever it holds, and returns what was never taken.
     pub fn close(&self) -> Vec<Steer> {
         let mut q = self.lock();
