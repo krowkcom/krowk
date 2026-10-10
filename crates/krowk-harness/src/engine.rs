@@ -200,7 +200,15 @@ pub struct TurnContext {
 /// it is empty, and the host closes it when the turn is over, so a push that
 /// comes after either is told so instead of being queued for nobody.
 #[derive(Debug, Clone, Default)]
-pub struct Steers(Arc<Mutex<SteerQueue>>);
+pub struct Steers(Arc<Queue>);
+
+#[derive(Debug, Default)]
+struct Queue {
+    q: Mutex<SteerQueue>,
+    /// Woken by each push: a turn held open for its background children
+    /// waits on it for their notes, or the person's steering.
+    arrived: tokio::sync::Notify,
+}
 
 #[derive(Debug, Default)]
 struct SteerQueue {
@@ -238,7 +246,7 @@ impl Steer {
 
 impl Steers {
     fn lock(&self) -> std::sync::MutexGuard<'_, SteerQueue> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.0.q.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Queues `steer`, or hands it back when the turn takes no more.
@@ -248,7 +256,25 @@ impl Steers {
             return Err(steer);
         }
         q.waiting.push(steer);
+        drop(q);
+        self.0.arrived.notify_waiters();
         Ok(())
+    }
+
+    /// Whether nothing waits.
+    pub fn is_empty(&self) -> bool {
+        self.lock().waiting.is_empty()
+    }
+
+    /// Returns once something waits in the queue.
+    pub async fn arrival(&self) {
+        let arrived = self.0.arrived.notified();
+        tokio::pin!(arrived);
+        arrived.as_mut().enable();
+        if !self.is_empty() {
+            return;
+        }
+        arrived.await;
     }
 
     /// Everything waiting, oldest first, leaving the queue empty.

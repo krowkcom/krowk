@@ -435,8 +435,10 @@ unit = "tokens"
 # them, and about 1,501 for this bench. Background jobs (R-STEER-2) add
 # `bash_output` and `kill_bash` and `bash`'s `run_in_background`, about 115
 # tokens the design pins: 1,793 with no MCP servers (gpt), 1,921 with them,
-# and about 1,616 for this bench, so this is raised to 1,925.
-max = 1925
+# and about 1,616 for this bench, so this is raised to 1,925. Background
+# subagents (R-STEER-3) add `subagent`'s `run_in_background`, 27 more: 1,948
+# with MCP servers (gpt), about 1,643 for this bench, so 1,950.
+max = 1950
 runs = 1
 status = "enforced"
 

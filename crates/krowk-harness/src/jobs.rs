@@ -74,6 +74,8 @@ struct Table {
 #[derive(Default)]
 struct Session {
     next: u32,
+    /// Its background children running (R-STEER-3), counted with its jobs.
+    agents: usize,
     jobs: Vec<Job>,
     /// The running turn's steer queue, where a note goes.
     turn: Option<Steers>,
@@ -135,7 +137,7 @@ impl Jobs {
         let read = shown.len() as u64;
         let task = tokio::spawn(watch(self.table.clone(), self.tell.clone(), (session.to_string(), id.clone()), file.clone(), started, shown, killed));
         s.jobs.push(Job { id: id.clone(), file, read, status: Status::Running, ended_ms: None, kill: Some(kill), task: Some(task) });
-        let running = s.jobs.iter().filter(|j| j.status == Status::Running).count();
+        let running = counted(s);
         drop(t);
         if let Some(tell) = &self.tell {
             tell(session, running);
@@ -196,6 +198,34 @@ impl Jobs {
         lock(&self.table).sessions.iter().filter(|(_, s)| s.jobs.iter().any(|j| j.status == Status::Running)).map(|(id, _)| id.clone()).collect()
     }
 
+    /// A background child of `session` started (R-STEER-3): counted with
+    /// its jobs.
+    pub fn agent_started(&self, session: &str) {
+        self.agents(session, true);
+    }
+
+    /// A background child of `session` ended.
+    pub fn agent_ended(&self, session: &str) {
+        self.agents(session, false);
+    }
+
+    fn agents(&self, session: &str, started: bool) {
+        let mut t = lock(&self.table);
+        let s = t.sessions.entry(session.to_string()).or_default();
+        s.agents = if started { s.agents + 1 } else { s.agents.saturating_sub(1) };
+        let running = counted(s);
+        drop(t);
+        if let Some(tell) = &self.tell {
+            tell(session, running);
+        }
+    }
+
+    /// Holds a note for `session`'s next turn: one that came after its
+    /// turn stopped taking any.
+    pub fn hold(&self, session: &str, note: Steer) {
+        lock(&self.table).sessions.entry(session.to_string()).or_default().held.push(note);
+    }
+
     /// A turn of `session` starts: notes go on its queue from now on, and
     /// the ones held for it go there first.
     pub fn attach(&self, session: &str, steers: &Steers) {
@@ -209,7 +239,7 @@ impl Jobs {
         s.turn = Some(steers.clone());
         // Said at a turn's start while any run, so a client that came to
         // the session since the last change counts them.
-        let running = counted_jobs(s);
+        let running = counted(s);
         drop(t);
         if let Some(tell) = self.tell.as_ref().filter(|_| running > 0) {
             tell(session, running);
@@ -399,7 +429,7 @@ async fn watch(table: Arc<Mutex<Table>>, tell: Option<Tell>, (session, id): (Str
         None => Some(note),
     };
     s.held.extend(note);
-    let running = s.jobs.iter().filter(|j| j.status == Status::Running).count();
+    let running = counted(s);
     drop(t);
     if let Some(tell) = tell {
         tell(&session, running);
@@ -409,14 +439,21 @@ async fn watch(table: Arc<Mutex<Table>>, tell: Option<Tell>, (session, id): (Str
 /// What a note of background work that ended starts with.
 pub const NOTE: &str = "<background-done ";
 
-/// A session's running jobs.
-fn counted_jobs(s: &Session) -> usize {
-    s.jobs.iter().filter(|j| j.status == Status::Running).count()
-}
-
 /// A job's end, as the model reads it: krowk's words, not the person's.
 pub fn note(id: &str, status: Status, last: &str) -> String {
-    format!("{NOTE}id=\"{id}\" status=\"{status}\">\n{last}</background-done>")
+    note_of(id, &status.to_string(), last)
+}
+
+/// Background work's end — a job's, or a child's by its session id — as
+/// the model reads it.
+pub fn note_of(id: &str, status: &str, body: &str) -> String {
+    format!("{NOTE}id=\"{id}\" status=\"{status}\">\n{body}</background-done>")
+}
+
+/// What the status line counts for a session: its jobs and its children
+/// running in the background.
+fn counted(s: &Session) -> usize {
+    s.jobs.iter().filter(|j| j.status == Status::Running).count() + s.agents
 }
 
 /// A note's id and status, when `text` is one.

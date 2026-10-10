@@ -599,3 +599,168 @@ fn r_steer_2_kill_bash_stops_a_running_job() {
     assert!(read.contains("killed"), "{read}");
     assert!(started.elapsed() < std::time::Duration::from_secs(20), "not the 30 s it would have run");
 }
+
+/// Whether a request is a subagent's: its system prompt says so.
+fn is_child(body: &serde_json::Value) -> bool {
+    body["system"].to_string().contains("You are a subagent")
+}
+
+/// A child's answer, held before its end until `gate` opens.
+fn held_child(gate: &mock::Gate) -> mock::Reply {
+    mock::Reply { hold: Some(("message_stop", gate.clone())), ..mock::Reply::paced(mock::text_stream("The repo has one README."), std::time::Duration::from_millis(1)) }
+}
+
+/// The parent's requests, in order.
+fn parent_seen(m: &mock::Mock) -> Vec<serde_json::Value> {
+    m.seen.lock().unwrap().iter().filter(|s| !is_child(&s.body)).map(|s| s.body.clone()).collect()
+}
+
+/// R-STEER-3: a parent that starts a child in the background is answered at
+/// once and makes another model call while the child runs. Its model then
+/// finishes first: the turn waits, reads the child's summary as a note,
+/// logged where it landed, and completes after one more call. The child's
+/// spend is the tree's (R-SUB-4).
+#[test]
+fn r_steer_3_a_background_child_answers_at_once_and_its_summary_holds_the_turn_open() {
+    let gate = mock::Gate::default();
+    let parent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (g, p) = (gate.clone(), parent.clone());
+    let m = mock::serve(move |body, _| {
+        if is_child(body) {
+            return held_child(&g);
+        }
+        match p.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => mock::Reply::sse(&mock::tool_use("t1", "subagent", &serde_json::json!({"description": "survey", "prompt": "survey the repo", "run_in_background": true}))),
+            // The child still runs: the parent's model says it is done, and
+            // the child may end now.
+            1 => {
+                let g = g.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    g.open();
+                });
+                mock::Reply::sse(&mock::text_stream("I will wait for the survey."))
+            }
+            _ => mock::Reply::sse(&mock::text_stream("All done: the repo has one README.")),
+        }
+    });
+    let home = Home::new("bg-child", &m.url);
+    let (lines, result) = home.run("survey in the background", None);
+    assert_eq!((result.status, result.result.as_str()), (TurnStatus::Completed, "All done: the repo has one README."), "{result:?}");
+    let seen = parent_seen(&m);
+    assert_eq!(seen.len(), 3, "one more call after the note");
+    let started = seen[1]["messages"].as_array().unwrap().last().unwrap().to_string();
+    let child = started.split("started background agent ").nth(1).map(|s| s[..36].to_string()).expect(&started);
+    let noted = seen[2]["messages"].as_array().unwrap().last().unwrap().to_string();
+    assert!(noted.contains(&format!("<background-done id=\\\"{child}\\\" status=\\\"completed\\\">\\nThe repo has one README.\\n</background-done>")), "{noted}");
+    let items: Vec<Item> = lines.iter().filter_map(|l| if let StreamLine::Log(LogEvent { session_id, body: LogBody::ItemCompleted { item, .. }, .. }) = l { (*session_id == result.session_id).then(|| item.clone()) } else { None }).collect();
+    let note = items.iter().position(|i| matches!(i, Item::UserText { text, .. } if text.starts_with("<background-done"))).expect("logged");
+    assert!(matches!(&items[note - 1], Item::AssistantText { text } if text == "I will wait for the survey."), "after the answer it waited behind: {items:?}");
+    // The tree's cost: the parent's own share is less than the turn's.
+    let own = lines.iter().rev().find_map(|l| if let StreamLine::Live(LiveEvent::Cost { session_id, turn_cost_usd, .. }) = l { (*session_id == result.session_id).then_some(*turn_cost_usd) } else { None }).flatten().unwrap();
+    assert!(result.cost_usd.unwrap() > own, "the child's spend is counted with the parent's: {:?} vs {own}", result.cost_usd);
+}
+
+/// R-STEER-3: interrupting the parent interrupts its background child, and
+/// the child's log ends with its turn.
+#[test]
+fn r_steer_3_interrupting_the_parent_interrupts_its_background_child() {
+    use krowk_harness::host::Host;
+    use krowk_harness::protocol::Command;
+    use tokio::sync::mpsc;
+    let gate = mock::Gate::default();
+    let parent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (g, p) = (gate.clone(), parent.clone());
+    let m = mock::serve(move |body, _| {
+        if is_child(body) {
+            return held_child(&g);
+        }
+        match p.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => mock::Reply::sse(&mock::tool_use("t1", "subagent", &serde_json::json!({"description": "survey", "prompt": "survey the repo", "run_in_background": true}))),
+            _ => mock::Reply::sse(&mock::text_stream("Waiting.")),
+        }
+    });
+    let home = Home::new("bg-child-interrupt", &m.url);
+    let host = Host::new(home.config());
+    let model = Registry::resolve(&InstancesConfig::default(), &home.env()).parse_model("claude-sonnet-4-6").unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let (result, child) = rt.block_on(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let cmd = Command::Prompt { session_id: None, text: "survey in the background".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let exec = host.execute(cmd, tx);
+        tokio::pin!(exec);
+        let (mut session, mut child, mut interrupted) = (String::new(), None, false);
+        let result = loop {
+            tokio::select! {
+                Some(line) = rx.recv() => {
+                    if let StreamLine::Log(LogEvent { session_id, body: LogBody::SubagentStarted { subagent_session_id, .. }, .. }) = &line {
+                        session.clone_from(session_id);
+                        child = Some(subagent_session_id.clone());
+                    }
+                    // The parent's model has answered and waits on the child.
+                    if !interrupted && child.is_some() && matches!(&line, StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::AssistantText { text }, .. }, .. }) if text == "Waiting.") {
+                        interrupted = true;
+                        let (itx, _irx) = mpsc::channel(1);
+                        host.execute(Command::Interrupt { session_id: session.clone() }, itx).await.unwrap();
+                    }
+                }
+                r = &mut exec => break r.unwrap().unwrap(),
+            }
+        };
+        (result, child.unwrap())
+    });
+    assert_eq!(result.status, TurnStatus::Interrupted);
+    let events = log::read_events(&log::sessions_dir(&home.env()).unwrap().join(&child).join(log::EVENTS_FILE)).unwrap();
+    assert!(matches!(&events.last().unwrap().body, LogBody::TurnCompleted { status: TurnStatus::Interrupted, .. }), "{:?}", events.last());
+}
+
+/// R-STEER-3: a parent turn that fails stops the background children it
+/// leaves, rather than waiting for them; each child's log ends with its
+/// turn.
+#[test]
+fn r_steer_3_a_failed_parent_turn_stops_its_background_children() {
+    use krowk_harness::host::Host;
+    use krowk_harness::protocol::Command;
+    use tokio::sync::mpsc;
+    let gate = mock::Gate::default();
+    let parent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (g, p) = (gate.clone(), parent.clone());
+    let m = mock::serve(move |body, _| {
+        if is_child(body) {
+            return held_child(&g);
+        }
+        match p.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => mock::Reply::sse(&mock::tool_use("t1", "subagent", &serde_json::json!({"description": "survey", "prompt": "survey the repo", "run_in_background": true}))),
+            _ => mock::Reply::json(400, &serde_json::json!({"type": "error", "error": {"type": "invalid_request_error", "message": "no"}})),
+        }
+    });
+    let home = Home::new("bg-child-failed", &m.url);
+    let host = Host::new(home.config());
+    let model = Registry::resolve(&InstancesConfig::default(), &home.env()).parse_model("claude-sonnet-4-6").unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let (result, child) = rt.block_on(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let cmd = Command::Prompt { session_id: None, text: "survey in the background".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let exec = host.execute(cmd, tx);
+        tokio::pin!(exec);
+        let mut child = None;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                tokio::select! {
+                    Some(line) = rx.recv() => {
+                        if let StreamLine::Log(LogEvent { body: LogBody::SubagentStarted { subagent_session_id, .. }, .. }) = &line {
+                            child = Some(subagent_session_id.clone());
+                        }
+                    }
+                    r = &mut exec => break r.unwrap().unwrap(),
+                }
+            }
+        })
+        .await
+        .expect("the failed turn did not wait for its child");
+        (result, child.unwrap())
+    });
+    assert_eq!(result.status, TurnStatus::Failed, "{result:?}");
+    let events = log::read_events(&log::sessions_dir(&home.env()).unwrap().join(&child).join(log::EVENTS_FILE)).unwrap();
+    assert!(matches!(&events.last().unwrap().body, LogBody::TurnCompleted { status: TurnStatus::Interrupted, .. }), "{:?}", events.last());
+}

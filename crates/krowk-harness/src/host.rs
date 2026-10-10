@@ -1085,6 +1085,19 @@ impl Shared {
         // each turn from the repository and the person's own.
         let subagents = plan.spawns.then(|| {
             let (defs, problems) = agents::discover(&trust::root(&plan.cwd), &self.cfg.agents.user_dirs);
+            // What the children follow: the parent's interrupt, and the
+            // turn ending while background children run (R-STEER-3).
+            let (stop, stopped) = watch::channel(false);
+            let stop = Arc::new(stop);
+            let (mut parent, follows) = (cancel.clone(), stop.clone());
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = crate::engine::cancelled(&mut parent) => {
+                        let _ = follows.send(true);
+                    }
+                    _ = follows.closed() => {}
+                }
+            });
             let spawn = Spawn {
                 host: self.clone(),
                 parent: ParentTurn {
@@ -1099,12 +1112,16 @@ impl Shared {
                     gate: gate.clone(),
                     compat: compat.clone(),
                     grants: plan.grants.clone(),
-                    cancel: cancel.clone(),
+                    cancel: stopped,
+                    steers: steers.clone(),
                 },
                 out: out.clone(),
                 gate: Arc::new(Semaphore::new(self.registry().subagents.max_parallel())),
                 defs,
                 spent: std::sync::Mutex::new((0.0, false)),
+                background: std::sync::Mutex::new(Vec::new()),
+                running: std::sync::atomic::AtomicUsize::new(0),
+                stop,
             };
             (Subagents(Arc::new(spawn)), problems)
         });
@@ -1173,6 +1190,11 @@ impl Shared {
             },
             Err(e) => Err(e),
         };
+        // Background children still running end with the turn that
+        // started them, their logs closed (R-STEER-3).
+        if let Some(s) = &spawned {
+            s.settle_background().await;
+        }
         // A backend turn the budget interrupted failed on it, whatever the
         // vendor made of the interrupt.
         let outcome = match tally.tripped.take() {
