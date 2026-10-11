@@ -6,8 +6,9 @@
 //! the direct path with no setup (ticket 42): the host goes direct with the
 //! registry's published ticket keys, or says in one line why it does not.
 //! And `krowk hosts` listing the machines that host, with no Tailscale tag
-//! (ticket 43). And a subagent of A's turn stopped alone from B by its id
-//! (R-SUB-12).
+//! (ticket 43). And a subagent of A's turn stopped alone from B by its id,
+//! and opened in a TUI attached on a third machine, which reads its
+//! history there and stops it with `x` (R-SUB-12).
 //! Against the stand-in registry, the reference relay and a mock model.
 
 #![cfg(all(feature = "harness", unix))]
@@ -16,6 +17,8 @@
 mod mock;
 #[path = "common/pty.rs"]
 mod pty;
+#[path = "common/tmux.rs"]
+mod tmux;
 
 use krowk_client::e2e::{self, AccountKey};
 use krowk_client::keystore::Keystore;
@@ -34,6 +37,9 @@ const ANSWER: &str = "the-answer-marker-5c2e";
 /// What the model answers a prompt typed into the TUI on B.
 const TUI_ANSWER: &str = "tui-round-trip-answer-81aa";
 
+/// Holds the slower subagent's answer until the test opens it.
+static SLOWER: std::sync::LazyLock<mock::Gate> = std::sync::LazyLock::new(mock::Gate::default);
+
 /// A model that answers with the marker, except when asked to make a
 /// file, which it does with `bash` — an approval — and a long answer, paced
 /// so that it can be interrupted part way.
@@ -42,10 +48,22 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let last = messages.last().cloned().unwrap_or_default();
     let has_result = last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
     let text = last.to_string();
+    // The slower subagent: a search, then, once the test lets it
+    // (`SLOWER`), a slow answer — an item begun while a TUI looks on.
+    if body["system"].to_string().contains("You are a subagent") && messages.first().is_some_and(|m| m.to_string().contains("look slower")) {
+        if !has_result {
+            return mock::Reply::sse(&mock::tool_use("toolu_01Glob", "glob", &serde_json::json!({"pattern": "*"})));
+        }
+        let words: String = (0..400).map(|i| format!("slowword{i} ")).collect();
+        return mock::Reply { hold: Some(("content_block_start", SLOWER.clone())), ..mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(50)) };
+    }
     // A subagent's own call: a slow answer, stopped part way.
     if body["system"].to_string().contains("You are a subagent") {
         let words: String = (0..400).map(|i| format!("childword{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
+    }
+    if !has_result && text.contains("start a slower subagent") {
+        return mock::Reply::sse(&mock::tool_use("toolu_01Slower", "subagent", &serde_json::json!({"description": "a slower look", "prompt": "look slower"})));
     }
     if !has_result && text.contains("start a slow subagent") {
         return mock::Reply::sse(&mock::tool_use("toolu_01Kid", "subagent", &serde_json::json!({"description": "a slow look", "prompt": "look slowly"})));
@@ -311,6 +329,66 @@ fn r_sub_12_sync_attach_stops_one_subagent_by_its_id() {
     assert_eq!(ended["status"], "interrupted", "{ended}");
     let result = view.until("the turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
     assert_eq!(result["status"], "completed", "the turn went on past its stopped subagent: {result}");
+}
+
+/// R-SUB-12, R-SUB-11: a TUI attached to a synced session opens a child of
+/// it in the child view — its prompt first and what it has said so far,
+/// from what the session's chunks and stream carried, with no log of it on
+/// this machine — sees what it says next arrive, and stops it alone with
+/// `x`, on the host.
+#[test]
+fn r_sub_12_an_attached_tui_opens_a_childs_transcript_and_stops_it() {
+    let w = World::new("childview");
+    let (a, b, c) = (w.machine("a"), w.machine("b"), w.machine("c"));
+    let (host, session) = hosted(&w, &a);
+    // B, on the command line, starts the child; C opens it in its TUI.
+    let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
+    view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
+    view.type_line("start a slower subagent");
+    let started = view.until("the subagent", is("subagent.started"));
+    let child = started["subagentSessionId"].as_str().expect("the line names the child").to_string();
+    view.until("the subagent's search", |v| v["type"] == "item.completed" && v["sessionId"] == child.as_str() && v["item"]["kind"] == "toolResult");
+    // In tmux, so what is on the screen is read, not the bytes that drew it.
+    let mut env = c.env.clone();
+    env.push(("TERM".into(), "xterm-256color".into()));
+    let Some(tm) = tmux::Tmux::start("childview", 120, 40, &c.repo, &env, &["sync", "attach", &session]) else { return };
+    let until = |what: &str, ok: &dyn Fn(&str) -> bool| -> String {
+        let deadline = Instant::now() + Duration::from_secs(40);
+        loop {
+            let screen = tm.screen();
+            if ok(&screen) {
+                return screen;
+            }
+            assert!(Instant::now() < deadline, "no {what}: {screen}\nA: {:?}", host.stderr());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    // The child view is open: its header first, its footer last, and
+    // nothing of the conversation or the Agents overlay on the screen.
+    let in_view = |s: &str| {
+        let rows: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
+        rows.first().is_some_and(|r| r.contains("a slower look · by krowk")) && rows.last().is_some_and(|r| r.contains("esc back · ← → siblings · x stop")) && !s.contains("enter opens")
+    };
+    until("attach", &|s| s.contains("Attached to a"));
+    assert!(!c.home.join(".krowk/sessions").join(&child).exists(), "C holds no log of the child");
+    tm.keys(&["C-g"]);
+    until("the Agents overlay", &|s| s.contains("enter opens"));
+    tm.keys(&["Enter"]);
+    // Its history, read here: the parent's prompt, then its finished search.
+    let screen = until("the child's history", &|s| in_view(s) && s.contains("look slower") && s.contains("Find *"));
+    assert!(!screen.contains("could not be read"), "its history is read here: {screen}");
+    assert!(!screen.contains("slowword"), "nothing of its answer yet: {screen}");
+    // Its answer, begun only now, drawn in the view as it arrives.
+    SLOWER.open();
+    until("the answer, live in the view", &|s| in_view(s) && s.contains("slowword3"));
+    tm.keys(&["x"]);
+    let ended = view.until("the subagent's end", |v| v["type"] == "turn.completed" && v["sessionId"] == child.as_str());
+    assert_eq!(ended["status"], "interrupted", "{ended}");
+    let result = view.until("the turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
+    assert_eq!(result["status"], "completed", "the turn went on past its stopped subagent: {result}");
+    let log = std::fs::read_to_string(a.home.join(".krowk/sessions").join(&child).join("events.jsonl")).unwrap();
+    assert!(log.contains("\"status\":\"interrupted\""), "stopped on A: {log}");
+    until("the view saying so", &|s| in_view(s) && s.contains("interrupted after"));
 }
 
 /// A's session made with `krowk -p` and hosted by `krowk sync host`, synced

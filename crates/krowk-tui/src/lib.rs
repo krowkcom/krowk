@@ -90,6 +90,9 @@ pub mod synced {
         pub fn watch(&self) -> broadcast::Receiver<StreamLine> {
             match *self {}
         }
+        pub fn child_history(&self, _: &str) -> Vec<LogEvent> {
+            match *self {}
+        }
         pub fn events(&self) -> Option<mpsc::UnboundedReceiver<Event>> {
             match *self {}
         }
@@ -2199,15 +2202,14 @@ impl<'h> Ui<'h> {
     }
 
     /// The Agents overlay takes the keys that move through it: select a
-    /// subagent, open its transcript (its log read now, its lines live
-    /// after), interrupt it alone (R-SUB-2, R-SUB-3, R-SUB-11).
+    /// subagent, open its transcript (its history read now, its lines
+    /// live after), interrupt it alone (R-SUB-2, R-SUB-3, R-SUB-11).
     async fn agents_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
         match k.code {
             KeyCode::Up | KeyCode::Down => app.agent_move(if k.code == KeyCode::Up { -1 } else { 1 }),
             KeyCode::Enter => {
                 if let Some(id) = app.agent_selected() {
-                    let history = read_child(&self.sessions_dir, &id);
-                    app.open_child(&id, history);
+                    self.open_child(app, &id);
                 }
             }
             KeyCode::Char('x') => {
@@ -2221,13 +2223,12 @@ impl<'h> Ui<'h> {
     }
 
     /// The child view's keys (`child_key`), ← → and `x` carried out: the
-    /// sibling's log read and opened, the child interrupted alone.
+    /// sibling's history read and opened, the child interrupted alone.
     async fn view_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
         match child_key(app, k)? {
             child::Key::Sibling(by) => {
                 if let Some(id) = app.child_sibling(by) {
-                    let history = read_child(&self.sessions_dir, &id);
-                    app.open_child(&id, history);
+                    self.open_child(app, &id);
                 }
             }
             child::Key::Stop => {
@@ -2238,6 +2239,16 @@ impl<'h> Ui<'h> {
             _ => {}
         }
         Some(false)
+    }
+
+    /// The child view on child `id`, its history read now: its log, or, on
+    /// a synced session, where no child has a log here, its events as the
+    /// session's chunks and stream brought them, replayed whole (R-SUB-12).
+    fn open_child(&self, app: &mut App, id: &str) {
+        match self.host.synced() {
+            Some(s) => app.open_child_synced(id, s.child_history(id)),
+            None => app.open_child(id, read_child(&self.sessions_dir, id)),
+        }
     }
 
     /// Interrupts child `id` alone (R-SUB-10): its row says it is stopping

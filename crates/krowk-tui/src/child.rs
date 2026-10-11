@@ -6,12 +6,14 @@
 //!
 //! Its body is a second, headless App on the child's session that keeps
 //! what it would print (`App::keep`): the child's history read from its
-//! log — the parent's prompt first — then its lines as they arrive, which
-//! the main App hands on (`on_line`) while it folds them into the child's
-//! row as ever. Under the kept lines, while the window follows the end,
-//! what the child has not finished yet (`App::tail`): the text streaming,
-//! the call out. Its header is the main App's to say (`App::child_rows`):
-//! the child's row, which its frames keep current.
+//! log — the parent's prompt first — or, attached to a synced session,
+//! from what its chunks and stream carried of the child (R-SUB-12); then
+//! its lines as they arrive, which the main App hands on (`on_line`) while
+//! it folds them into the child's row as ever. Under the kept lines, while
+//! the window follows the end, what the child has not finished yet
+//! (`App::tail`): the text streaming, the call out. Its header is the main
+//! App's to say (`App::child_rows`): the child's row, which its frames keep
+//! current.
 
 use crate::app::App;
 use crate::look;
@@ -58,14 +60,22 @@ impl ChildView {
     /// history first, then the item it is in the middle of (`under_way`:
     /// its id, its start and what it has streamed so far), unless its log
     /// already has it whole, then live. A log that could not be read is
-    /// said, and what arrives from now on is still shown.
-    pub fn open(session_id: &str, mut app: App, history: Result<Vec<LogEvent>, String>, under_way: Option<(String, [StreamLine; 2])>) -> ChildView {
+    /// said, and what arrives from now on is still shown. A log is walked
+    /// back from its last event, as a session's is; `whole`, the history
+    /// is replayed as given — what a synced session brought of a child,
+    /// where a link may not have arrived yet: nothing is left out for it,
+    /// and what fills the gap is drawn when it arrives.
+    pub fn open(session_id: &str, mut app: App, history: Result<Vec<LogEvent>, String>, whole: bool, under_way: Option<(String, [StreamLine; 2])>) -> ChildView {
         app.keep();
         let (mut read, mut done) = (HashSet::new(), HashSet::new());
         match history {
             Ok(events) => {
-                let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
-                app.replay(&krowk_harness::log::branch(&events, &head));
+                if whole {
+                    app.replay(&events.iter().collect::<Vec<_>>());
+                } else {
+                    let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
+                    app.replay(&krowk_harness::log::branch(&events, &head));
+                }
                 for e in events {
                     if let LogBody::ItemCompleted { item_id, .. } = e.body {
                         done.insert(item_id);
@@ -91,7 +101,7 @@ impl ChildView {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             app.say(&text, ratatui::style::Style::new());
         }
-        ChildView::open("child", app, Ok(Vec::new()), None)
+        ChildView::open("child", app, Ok(Vec::new()), false, None)
     }
 
     /// The child's session.
@@ -247,7 +257,7 @@ mod tests {
         use krowk_harness::protocol::{Delta, Item, ItemKind};
         let app = App::new(crate::editor::Editor::new(None), 40, crate::settings::Settings::default(), None, None);
         let done = said("e1", "m1", Item::AssistantText { text: "QUEUED line".into() });
-        let mut v = ChildView::open("k1", app, Ok(vec![done.clone()]), None);
+        let mut v = ChildView::open("k1", app, Ok(vec![done.clone()]), false, None);
         assert!(!v.on_line(&StreamLine::Live(LiveEvent::ItemStarted { session_id: "k1".into(), turn_id: "t".into(), item_id: "m1".into(), item: ItemKind::AssistantText })));
         assert!(!v.on_line(&StreamLine::Live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "t".into(), item_id: "m1".into(), delta: Delta::Text { text: "QUEUED line\nta".into() } })));
         assert!(!v.on_line(&StreamLine::Log(done)));
@@ -258,6 +268,27 @@ mod tests {
         assert!(v.on_line(&StreamLine::Live(LiveEvent::ItemStarted { session_id: "k1".into(), turn_id: "t".into(), item_id: "m2".into(), item: ItemKind::AssistantText })));
         v.on_line(&StreamLine::Live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "t".into(), item_id: "m2".into(), delta: Delta::Text { text: "next".into() } }));
         assert!(text(&v.rows(40, 10, "k1", None)).iter().any(|r| r == "next"));
+    }
+
+    /// R-SUB-12: a synced child's history is replayed whole: one that came
+    /// with a link missing — c5 kept, c3 and c4 not arrived yet — shows
+    /// everything it has, and what fills the gap is drawn when it arrives.
+    #[test]
+    fn r_sub_12_a_synced_childs_history_with_a_gap_shows_all_it_has_and_the_rest_on_arrival() {
+        use krowk_harness::protocol::Item;
+        let app = App::new(crate::editor::Editor::new(None), 40, crate::settings::Settings::default(), None, None);
+        let ev = |id: &str, parent: Option<&str>| LogEvent { parent_id: parent.map(String::from), ..said(id, id, Item::AssistantText { text: format!("SAID-{id}") }) };
+        let history = vec![ev("c1", None), ev("c2", Some("c1")), ev("c5", Some("c4"))];
+        let mut v = ChildView::open("k1", app, Ok(history), true, None);
+        let rows = text(&v.rows(40, 20, "k1", None));
+        for id in ["c1", "c2", "c5"] {
+            assert!(rows.iter().any(|r| r.contains(&format!("SAID-{id}"))), "{id}: {rows:?}");
+        }
+        for id in ["c3", "c4"] {
+            assert!(v.on_line(&StreamLine::Log(ev(id, Some(if id == "c3" { "c2" } else { "c3" })))), "{id} is drawn when it arrives");
+        }
+        let rows = text(&v.rows(40, 20, "k1", None));
+        assert!(rows.iter().any(|r| r.contains("SAID-c4")), "{rows:?}");
     }
 
     /// R-SUB-11: a running child's log is read as far as it is written: a

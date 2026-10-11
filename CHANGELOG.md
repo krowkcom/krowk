@@ -109,6 +109,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   has already finished, or Codex runs it and krowk can't stop one of its
   agents alone yet — the bottom line says why, as `x` in the Ctrl-G list
   now does too, instead of nothing happening.
+- **Read a subagent's transcript from a device attached to a synced
+  session.** In the TUI that `krowk sync attach` (or `krowk --resume` of a
+  synced session) opens, Enter on a subagent in Ctrl-G now shows its
+  transcript as it does on the host: its prompt first, then its calls and
+  answers, read from what the session synced, then what it does next as
+  it happens. It used to open empty, saying its history could not be read
+  there, since that device has no log of the subagent. `x` in it stops the
+  subagent on the host. Text the subagent was in the middle of writing
+  when you attached shows once that answer is finished.
 
 ### Changed
 
