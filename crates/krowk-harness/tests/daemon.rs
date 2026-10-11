@@ -493,6 +493,48 @@ fn r_host_1_a_follower_gets_the_running_turns_frames_and_its_result() {
     daemon.join().unwrap().unwrap();
 }
 
+/// R-STEER-2: the count of a session's background work is sent as it
+/// changes, so a client that follows the session between changes — its
+/// job started by another client's turn, now over — is told it once
+/// caught up, before anything changes it.
+#[test]
+fn r_steer_2_following_a_session_whose_job_runs_is_told_the_count_at_once() {
+    let m = mock::serve(|_, n| {
+        mock::Reply::sse(&match n {
+            0 => mock::tool_use("t1", "bash", &serde_json::json!({"command": "sleep 30", "run_in_background": true})),
+            _ => mock::text_stream("Started."),
+        })
+    });
+    let home = Home::new("bg-count", &m.url);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        let (tx, _rx) = mpsc::channel(1024);
+        let mut cmd = home.prompt("start a job");
+        if let Command::Prompt { permission_mode, .. } = &mut cmd {
+            *permission_mode = PermissionMode::BypassPermissions;
+        }
+        let r = a.execute(cmd, tx).await.unwrap().unwrap();
+        assert_eq!(r.status, TurnStatus::Completed);
+        let b = home.client_answering(true).await;
+        let (btx, mut brx) = mpsc::channel(1024);
+        assert!(!b.attach(&r.session_id, None, btx).await.unwrap(), "no turn runs");
+        let mut seen = Vec::new();
+        let count = loop {
+            let line = tokio::time::timeout(Duration::from_secs(2), brx.recv()).await.expect("the count, at once").expect("the stream stays open");
+            if let StreamLine::Live(LiveEvent::Background { session_id, running }) = &line {
+                break (session_id.clone(), *running);
+            }
+            seen.push(line);
+        };
+        assert_eq!(count, (r.session_id.clone(), 1), "after {} lines caught up", seen.len());
+        a.stop(true).await.unwrap();
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
 /// R-PROTO-1: a client running a turn in one session while following
 /// another keeps their streams apart — each line goes to its session's.
 #[test]
