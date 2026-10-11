@@ -154,7 +154,10 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
     };
     let lease = match &o.handed {
         Some(h) => krowk_api::sync::Lease { token: h.token.clone(), fence: h.fence, relay_ticket: h.ticket.clone(), ..Default::default() },
-        None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| e.to_string())?,
+        // The fix said, not only the code: a lease that stalled must say the
+        // registry stopped answering (R-REG-1), and a held one that another
+        // device holds it.
+        None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| format!("the registry did not grant the lease ({}): {}", e.code(), e.fix()))?,
     };
     if lease.relay_ticket.is_empty() {
         return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
