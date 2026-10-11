@@ -2226,6 +2226,15 @@ impl App {
         }
     }
 
+    /// Child `sid`'s interrupt was refused: it runs on, and `x` may be
+    /// tried again.
+    pub fn not_stopping(&mut self, sid: &str) {
+        if let Some(s) = self.child(sid) {
+            s.stopping = false;
+            self.dirty = true;
+        }
+    }
+
     /// The selected subagent's session, while it is still running: what
     /// an interrupt of that one alone is sent to (R-SUB-2).
     pub fn agent_selected_running(&self) -> Option<String> {
