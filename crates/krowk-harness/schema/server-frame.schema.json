@@ -2079,6 +2079,16 @@
           "format": "uint32",
           "minimum": 0
         },
+        "backgroundSessions": {
+          "description": "Those sessions, by id: a client resuming one learns whether work of\nits — a backend's agent run in the background — still goes on here.\nNone from a daemon that does not name them (before 0.14).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "sessions": {
           "description": "The sessions it has run since it started, newest first.",
           "type": "array",
