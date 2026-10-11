@@ -79,6 +79,10 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     }
     // The daemon trusts only a repository on the trusted list, so `--trust`
     // has nothing to reach it with.
+    #[cfg(not(unix))]
+    if ctx.f.daemon {
+        return Err(fail("not_supported", "--daemon needs a unix socket, which this platform's build does not have yet"));
+    }
     #[cfg(unix)]
     if ctx.f.daemon && ctx.f.trust {
         return Err(fail("bad_flag", "--trust holds for one run in this process, and --daemon runs the turn in the host daemon — trust the repository for good (run krowk there on a terminal once), or drop --daemon"));
@@ -148,7 +152,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // now, and what it came to right before krowk exits, left behind for a
     // person who started it in another tab.
     // Its first line with text: a prompt piped in may open on a blank one.
-    let topic = prompt.trim_start().to_string();
+    let topic = prompt.trim_start().lines().next().unwrap_or_default().to_string();
     report(ctx, State::Working, &topic);
     let opts = headless::Options { prompt, resume, model, permission_mode, toolset, effort, budget, format, worktree };
     let ran = turn(ctx, cfg, opts);
