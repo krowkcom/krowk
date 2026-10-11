@@ -446,7 +446,9 @@ fn check(run: &Run, w: &World, a: &Machine, b: &Machine, model: &str) {
     let host_side = until(&ta, "the napper interrupted on A", 30, |s| s.lines().any(|l| l.contains("Agent napper") && l.contains("interrupted after")));
     capture(run.name, "b5-host-sees-it", &host_side);
     tb.keys(&["Escape"]);
+    until(&tb, "B's overlay again", 10, |s| !in_view(s) && s.contains("enter opens"));
     tb.keys(&["Escape"]);
+    until(&tb, "B's conversation", 10, |s| !s.contains("enter opens"));
     a.turns_ended(&session, 3, 120);
     let ended = until(&tb, "the second turn's end on B", 30, |s| !in_view(s) && s.lines().any(|l| l.contains("Agent waker") && l.contains("done in")));
     capture(run.name, "b6-turn-ended", &ended);
@@ -485,21 +487,28 @@ fn r_sub_10_r_sub_11_r_sub_12_live_claude_code_three_agents_one_stopped_in_the_t
         return;
     };
     let path = format!("{}:/usr/bin:/bin", bin.display());
-    // Signed in, as Claude Code itself says: krowk never reads its
-    // credentials (R-BACK-2), and nor does this.
-    let claude = |args: &[&str]| Command::new(bin.join("claude")).args(args).env_clear().env("PATH", &path).env("HOME", std::env::var_os("HOME").unwrap_or_default()).env("CLAUDE_CONFIG_DIR", &config).stdin(Stdio::null()).output();
-    if !claude(&["auth", "status"]).is_ok_and(|o| o.status.success()) {
-        eprintln!("skipped: `claude auth status` says {} is not signed in", config.display());
-        return;
-    }
-    let version = claude(&["--version"]).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-    capture("claude", "00-version", &version);
     let model = std::env::var("KROWK_LIVE_CLAUDE_MODEL").unwrap_or_else(|_| "haiku".into());
     let w = World::new("claude");
     let instances = json!({"claude:live": {"kind": "claude-code", "configDir": config}});
     // A in the fullscreen TUI, B inline: the view in both screens.
     let a = w.machine("a", json!({"instances": instances, "tui": {"screen": "fullscreen"}, "permissions": {"defaultMode": "bypassPermissions"}}), &[("PATH", path.clone())]);
-    let b = w.machine("b", json!({"tui": {"screen": "inline"}}), &[("PATH", path)]);
+    let b = w.machine("b", json!({"tui": {"screen": "inline"}}), &[("PATH", path.clone())]);
+    // Signed in, as Claude Code itself says, run as A's krowk will run it:
+    // krowk never reads its credentials (R-BACK-2), and nor does this.
+    let claude = |args: &[&str]| Command::new(bin.join("claude")).args(args).env_clear().envs(a.env.iter().map(|(k, v)| (k, v))).env("CLAUDE_CONFIG_DIR", &config).current_dir(&a.repo).stdin(Stdio::null()).output();
+    match claude(&["auth", "status"]) {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            eprintln!("skipped: `claude auth status` says {} is not signed in: {}", config.display(), String::from_utf8_lossy(&o.stdout).trim());
+            return;
+        }
+        Err(e) => {
+            eprintln!("skipped: claude could not be run with A's PATH ({path}): {e}");
+            return;
+        }
+    }
+    let version = claude(&["--version"]).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    capture("claude", "00-version", &version);
     check(&Run { name: "claude", by: "Claude Code" }, &w, &a, &b, &format!("claude:live/{model}"));
 }
 

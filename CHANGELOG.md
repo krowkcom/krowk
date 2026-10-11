@@ -46,8 +46,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   the subagent's id, and only that subagent stops: the rest of the turn
   goes on. It reaches only the subagents the session's own log started:
   another session, an id the device made up, or steering a subagent is
-  refused as before. It works whichever
-  directory the subagent's session was started from.
+  refused as before. It works whichever directory the subagent's session
+  was started from.
 - **The subagent view can take the whole screen and give it back.** In the
   inline screen it fills the terminal without switching to the alternate
   screen, so tmux, SSH and phone terminals still get only plain output.
