@@ -918,7 +918,7 @@ pub fn error(err: &Error, f: Format, quiet: bool, colour: bool) -> String {
     let head = headline(err);
     let mut lines = vec![format!("{} {}", paint(colour, RED, "✗"), paint(colour, BOLD, &head))];
     for (k, v) in &body {
-        if matches!(k.as_str(), "error" | "fix" | "retryable" | "status") {
+        if matches!(k.as_str(), "error" | "fix" | "retryable" | "status" | "stalled") {
             continue;
         }
         if let (Value::Object(fields), "details") = (v, k.as_str()) {

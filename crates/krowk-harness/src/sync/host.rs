@@ -154,7 +154,10 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
     };
     let lease = match &o.handed {
         Some(h) => krowk_api::sync::Lease { token: h.token.clone(), fence: h.fence, relay_ticket: h.ticket.clone(), ..Default::default() },
-        None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| e.to_string())?,
+        // The fix said, not only the code: a lease that stalled must say the
+        // registry stopped answering (R-REG-1), and a held one that another
+        // device holds it.
+        None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| format!("the registry did not grant the lease ({}): {}", e.code(), e.fix()))?,
     };
     if lease.relay_ticket.is_empty() {
         return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
@@ -1614,6 +1617,85 @@ mod tests {
 
         let (again, _, _) = take(&after).unwrap();
         assert_eq!(again.epoch(), 1, "rotated once");
+    }
+
+    /// A proxy in front of the registry at `to` that takes the first read
+    /// of a stored object and answers it with nothing, its connection held
+    /// open; everything else passes, a connection a request. Counts the
+    /// object reads.
+    fn quiet_once(to: std::net::SocketAddr) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let seen = reads.clone();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for mut c in l.incoming().flatten() {
+                let mut req = Vec::new();
+                let mut buf = [0u8; 16384];
+                let whole = loop {
+                    if let Some(end) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&req[..end]).to_ascii_lowercase();
+                        let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+                        if req.len() >= end + 4 + len {
+                            break true;
+                        }
+                    }
+                    match c.read(&mut buf) {
+                        Ok(0) | Err(_) => break false,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                };
+                if !whole {
+                    continue;
+                }
+                if req.starts_with(b"GET /_storage/") && seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                    held.push(c);
+                    continue;
+                }
+                let line = req.windows(2).position(|w| w == b"\r\n").unwrap();
+                let req = [&req[..line + 2], b"Connection: close\r\n", &req[line + 2..]].concat();
+                std::thread::spawn(move || {
+                    let Ok(mut up) = std::net::TcpStream::connect(to) else { return };
+                    let mut resp = Vec::new();
+                    if up.write_all(&req).is_ok() && up.read_to_end(&mut resp).is_ok() {
+                        let _ = c.write_all(&resp);
+                    }
+                });
+            }
+        });
+        (format!("http://{addr}/v1"), reads)
+    }
+
+    /// R-REG-1: attaching to a session whose first chunk read storage
+    /// answers with nothing gives that read up after the quiet limit and
+    /// makes it again, and the attach reads the whole log — where the read
+    /// once held the attach for the five-minute ceiling.
+    #[test]
+    fn r_reg_1_an_attach_whose_chunk_read_goes_quiet_reads_the_log_whole_on_the_retry() {
+        let (reg, url) = registry();
+        let (laptop, desktop) = (Dev::new(), Dev::new());
+        let (chain, g1) = list(&url, &laptop, &desktop);
+        let id = "01a0ec7b-3333-7000-8000-0000000000db";
+        let o = options(&url, &laptop, UserKeys::new(g1, []).unwrap(), chain, id);
+        let (keys, mut w, held) = take(&o).unwrap();
+        for n in 1..=2 {
+            w.push(serde_json::json!({"id": format!("01a0ec7b-0000-7000-8000-00000000000{n}"), "type": "item.completed"}));
+            w.flush(&held.token).unwrap();
+        }
+        o.api.release_lease(id, &held.token).unwrap();
+
+        let quiet = std::time::Duration::from_millis(300);
+        let (via, reads) = quiet_once(reg.url().trim_start_matches("http://").parse().unwrap());
+        let api = client(&via, &desktop).quiet_after(quiet);
+        let index = store::open_index(&keys, id, &api.show_sync_session(id).unwrap().sealed_index).unwrap();
+        let started = std::time::Instant::now();
+        let attached = store::attach(&api, &keys, id, index, None).unwrap();
+        assert_eq!(attached.events.len(), 2, "the whole log");
+        assert!(started.elapsed() < quiet + std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 3, "two chunks, the first read twice");
     }
 
     /// D8 (M2 of #200's review): a host behind the generation the list
