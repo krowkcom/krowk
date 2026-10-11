@@ -42,7 +42,14 @@ inquire = { version = "0.9", default-features = false, features = ["crossterm"] 
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 sha2 = "0.11"
-ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
+# `krowk upgrade` checks the release's Sigstore signature on checksums.txt
+# (cli/upgrade/sigstore.rs) with what TLS already links: rustls-webpki's
+# chain building and ring's ECDSA, through ureq's rustls, and the base64
+# jaq-std links. No crate is added to the lean build's list.
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["ring", "alloc"] }
+rustls-pki-types = { version = "1", default-features = false }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+ureq ={ version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
 
 [target.'cfg(unix)'.dependencies]
 # Open flags and errnos per target: their values differ by architecture.

@@ -5,6 +5,8 @@
 //! npm install are told their own command rather than having files swapped
 //! under a manager that believes it owns them.
 
+mod sigstore;
+
 use super::{Ctx, VERSION};
 use crate::output::Format;
 use krowk_api::{fail, Error};
@@ -190,12 +192,23 @@ fn archive_name(version: &str) -> String {
     format!("{name}_{version}_{os}_{arch}.tar.gz")
 }
 
-/// Downloads the archive and its checksum, refuses a mismatch, and swaps each
-/// binary in by rename, so a failure midway leaves nothing half-written.
+/// Downloads the archive and its checksum, refuses a checksum the release
+/// workflow did not sign (`sigstore`) and a mismatch, and swaps each binary
+/// in by rename, so a failure midway leaves nothing half-written.
 fn self_upgrade(dest: &Path, version: &str) -> Result<Vec<String>, Error> {
     let archive = archive_name(version);
     let base = format!("{RELEASE_DOWNLOAD}/v{version}");
-    let sums = String::from_utf8_lossy(&fetch(&format!("{base}/checksums.txt"), 1 << 20)?).into_owned();
+    let sums = fetch(&format!("{base}/checksums.txt"), 1 << 20)?;
+    let bundle = fetch(&format!("{base}/checksums.txt.sigstore.json"), 1 << 20)?;
+    sigstore::verify(&sums, &bundle, &sigstore::identity(version)).map_err(|why| {
+        fail(
+            "unverified_release",
+            format!(
+                "checksums.txt on release v{version} is not signed by krowk's release workflow: {why} — nothing was installed. If this krowk is older than a change to Sigstore's keys, install with `curl -fsSL https://krowk.com/install | bash`, or verify the release by hand (SECURITY.md → Verifying a release)"
+            ),
+        )
+    })?;
+    let sums = String::from_utf8_lossy(&sums).into_owned();
     let want = sums
         .lines()
         .filter_map(|l| l.split_once(char::is_whitespace))
